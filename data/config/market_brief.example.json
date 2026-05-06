@@ -33,7 +33,7 @@
   "dry_run": true,
   "request_timeout_seconds": 10,
   "retry": {
-    "max_attempts": 2,
+    "max_attempts": 3,
     "backoff_seconds": 1
   },
   "log_retention_days": 30

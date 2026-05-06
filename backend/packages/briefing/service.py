@@ -81,6 +81,24 @@ def run_brief_once(
         },
     )
 
+    quote_error = batch.raw_response.get("quote_error")
+    if quote_error:
+        message = f"error: Yahoo quote request failed after retries: {quote_error}"
+        append_brief_result(
+            paths,
+            date_key=date_key,
+            payload={
+                "run_id": run_id,
+                "kind": kind,
+                "status": "error",
+                "message": message,
+                "quote_path": str(quote_path),
+                "missing_symbols": batch.missing_symbols,
+                "created_at": now_iso(),
+            },
+        )
+        return BriefRunResult(1, "error", kind, message, run_id)
+
     source_errors = [quote.symbol for quote in batch.quotes if quote.source_error]
     skipped = list(dict.fromkeys([*batch.missing_symbols, *source_errors]))
     brief = build_brief(kind=kind, quotes=batch.quotes, skipped_symbols=skipped)

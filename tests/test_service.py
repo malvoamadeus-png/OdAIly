@@ -69,3 +69,41 @@ def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert result.status == "success"
     assert result.pushed is False
+
+
+def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("packages.briefing.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr(
+        "packages.briefing.service.fetch_quotes",
+        lambda **_: QuoteBatch(
+            quotes=[
+                MarketQuote(
+                    symbol="MSTR",
+                    yahoo_symbol="MSTR",
+                    display_name="MSTR",
+                    regular_market_change_percent=2.3,
+                )
+            ],
+            missing_symbols=[],
+            raw_response={"quote_error": "401 Client Error: Unauthorized", "quote_attempts": 3},
+        ),
+    )
+
+    class FailingPushClient:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            raise AssertionError("Push client should not be created when Yahoo quote fails")
+
+    monkeypatch.setattr("packages.briefing.service.PushClient", FailingPushClient)
+
+    result = run_brief_once(
+        kind="open",
+        settings=MarketBriefSettings(watchlist=["MSTR"], dry_run=False),
+        paths=make_paths(tmp_path),
+        force=False,
+    )
+
+    assert result.exit_code == 1
+    assert result.status == "error"
+    records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    assert records
+    assert "Yahoo quote request failed after retries" in records[0].read_text(encoding="utf-8")

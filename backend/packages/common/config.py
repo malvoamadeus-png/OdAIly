@@ -38,7 +38,7 @@ DEFAULT_WATCHLIST = [
 
 
 class RetrySettings(BaseModel):
-    max_attempts: int = Field(default=2, ge=1, le=5)
+    max_attempts: int = Field(default=3, ge=1, le=5)
     backoff_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
 
 

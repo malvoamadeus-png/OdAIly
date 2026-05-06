@@ -228,6 +228,7 @@ def _fetch_chart_fallback(
     timeout_seconds: float,
     raw_error: str,
     include_premarket: bool,
+    quote_attempts: int,
 ) -> QuoteBatch:
     quotes: list[MarketQuote] = []
     missing: list[str] = []
@@ -264,6 +265,7 @@ def _fetch_chart_fallback(
         missing_symbols=missing,
         raw_response={
             "quote_error": raw_error,
+            "quote_attempts": quote_attempts,
             "chart_errors": errors,
             "premarket_chart_errors": premarket_errors,
         },
@@ -324,4 +326,5 @@ def fetch_quotes(
         timeout_seconds=timeout_seconds,
         raw_error=str(last_error) if last_error else "Yahoo quote request failed.",
         include_premarket=include_premarket,
+        quote_attempts=max(1, max_attempts),
     )
