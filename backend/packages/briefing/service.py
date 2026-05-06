@@ -16,8 +16,8 @@ from packages.common.time_utils import (
     today_key,
 )
 from packages.market.models import MarketQuote, QuoteBatch
-from packages.market.providers import fetch_alpaca_iex_quotes, fetch_finnhub_quotes
-from packages.market.yahoo import fetch_quotes
+from packages.market.providers import fetch_finnhub_quotes
+from packages.market.yahoo import fetch_chart_quotes, fetch_quotes
 from packages.publisher import PushClient, PushResult
 
 
@@ -72,7 +72,20 @@ def _quality_error(
         for quote in batch.quotes
         if quote.source_error is None and _value_for_kind(quote, kind) is not None
     ]
-    valid_crypto_count = sum(1 for quote in valid_quotes if quote.symbol in CRYPTO_STOCK_SYMBOLS)
+    quality_quotes = valid_quotes
+    if kind in {"premarket", "open"}:
+        now = now_shanghai()
+        max_age_seconds = settings.max_quote_age_minutes * 60
+        quality_quotes = []
+        for quote in valid_quotes:
+            quote_time = _parse_quote_time(_time_for_kind(quote, kind))
+            if quote_time is None:
+                continue
+            age_seconds = abs((now - quote_time.astimezone(now.tzinfo)).total_seconds())
+            if age_seconds <= max_age_seconds:
+                quality_quotes.append(quote)
+
+    valid_crypto_count = sum(1 for quote in quality_quotes if quote.symbol in CRYPTO_STOCK_SYMBOLS)
     if valid_crypto_count < settings.min_valid_crypto_stocks:
         return (
             "insufficient valid crypto stock quotes: "
@@ -80,27 +93,9 @@ def _quality_error(
         )
 
     if kind in {"close", "open"}:
-        valid_index_count = sum(1 for quote in valid_quotes if quote.symbol in {"SPX", "IXIC", "DJI"})
+        valid_index_count = sum(1 for quote in quality_quotes if quote.symbol in {"SPX", "IXIC", "DJI"})
         if valid_index_count < settings.min_valid_indices:
             return f"insufficient valid index quotes: {valid_index_count}/{settings.min_valid_indices}"
-
-    if kind in {"premarket", "open"}:
-        now = now_shanghai()
-        max_age_seconds = settings.max_quote_age_minutes * 60
-        stale_symbols: list[str] = []
-        for quote in valid_quotes:
-            quote_time = _parse_quote_time(_time_for_kind(quote, kind))
-            if quote_time is None:
-                stale_symbols.append(quote.symbol)
-                continue
-            age_seconds = abs((now - quote_time.astimezone(now.tzinfo)).total_seconds())
-            if age_seconds > max_age_seconds:
-                stale_symbols.append(quote.symbol)
-        if stale_symbols:
-            return (
-                "stale or missing quote timestamps beyond "
-                f"{settings.max_quote_age_minutes} minutes: {','.join(stale_symbols[:8])}"
-            )
     return None
 
 
@@ -150,6 +145,20 @@ def _fetch_market_quotes(
                     )
                 )
                 continue
+        elif source == "yahoo_chart":
+            try:
+                batch = fetch_chart_quotes(
+                    symbols=settings.watchlist,
+                    kind=kind,
+                    overrides=settings.yahoo_symbol_overrides,
+                    timeout_seconds=settings.request_timeout_seconds,
+                    max_attempts=settings.retry.max_attempts,
+                    backoff_seconds=settings.retry.backoff_seconds,
+                )
+            except Exception as exc:
+                attempts.append(_source_attempt(source=source, status="error", message=str(exc)))
+                continue
+            last_batch = batch
         elif source == "finnhub":
             if not settings.finnhub_api_key:
                 attempts.append(
@@ -166,32 +175,6 @@ def _fetch_market_quotes(
                     kind=kind,
                     api_key=settings.finnhub_api_key,
                     overrides=settings.finnhub_symbol_overrides,
-                    timeout_seconds=settings.request_timeout_seconds,
-                    max_attempts=settings.retry.max_attempts,
-                    backoff_seconds=settings.retry.backoff_seconds,
-                )
-            except Exception as exc:
-                attempts.append(_source_attempt(source=source, status="error", message=str(exc)))
-                continue
-            last_batch = batch
-        elif source == "alpaca_iex":
-            if not settings.alpaca_api_key or not settings.alpaca_api_secret:
-                attempts.append(
-                    _source_attempt(
-                        source=source,
-                        status="skipped",
-                        message="ALPACA_API_KEY or ALPACA_API_SECRET is not configured.",
-                    )
-                )
-                continue
-            try:
-                batch = fetch_alpaca_iex_quotes(
-                    symbols=settings.watchlist,
-                    kind=kind,
-                    api_key=settings.alpaca_api_key,
-                    api_secret=settings.alpaca_api_secret,
-                    feed=settings.alpaca_feed,
-                    overrides=settings.alpaca_symbol_overrides,
                     timeout_seconds=settings.request_timeout_seconds,
                     max_attempts=settings.retry.max_attempts,
                     backoff_seconds=settings.retry.backoff_seconds,

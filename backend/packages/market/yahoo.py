@@ -61,48 +61,197 @@ def _quote_from_row(symbol_by_yahoo: dict[str, str], row: dict[str, Any]) -> Mar
     )
 
 
+def _get_json_with_retries(
+    *,
+    url: str,
+    params: dict[str, Any],
+    timeout_seconds: float,
+    max_attempts: int,
+    backoff_seconds: float,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, max_attempts) and backoff_seconds > 0:
+                time.sleep(backoff_seconds * attempt)
+    raise RuntimeError(str(last_error) if last_error else f"GET failed: {url}")
+
+
+def _latest_valid_point(
+    *,
+    timestamps: list[Any],
+    closes: list[Any],
+    premarket_only: bool = False,
+) -> tuple[int | float | None, float | None]:
+    points: list[tuple[int | float | None, float]] = []
+    for index, close in enumerate(closes):
+        price = _to_float(close)
+        if price is None:
+            continue
+        timestamp = timestamps[index] if index < len(timestamps) else None
+        if premarket_only:
+            if timestamp is None or not _is_premarket_timestamp(timestamp):
+                continue
+        points.append((timestamp, price))
+    if not points:
+        return None, None
+    return points[-1]
+
+
+def _change_percent(price: float | None, previous_close: float | None) -> float | None:
+    if price is None or previous_close in (None, 0):
+        return None
+    return ((price - previous_close) / previous_close) * 100
+
+
+def _quote_from_chart_result(
+    *,
+    source_symbol: str,
+    yahoo_symbol: str,
+    result: dict[str, Any],
+    kind: str,
+) -> MarketQuote:
+    meta = result.get("meta") or {}
+    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
+    timestamps = result.get("timestamp") or []
+    closes = [_to_float(item) for item in (quote.get("close") or [])]
+    valid_closes = [item for item in closes if item is not None]
+
+    source_error: str | None = None
+    latest_timestamp: int | float | None = None
+    latest_price: float | None = None
+    previous_close: float | None = None
+
+    if kind == "close":
+        valid_points = [
+            (timestamps[index] if index < len(timestamps) else None, price)
+            for index, price in enumerate(closes)
+            if price is not None
+        ]
+        if len(valid_points) >= 2:
+            latest_timestamp, latest_price = valid_points[-1]
+            previous_close = valid_points[-2][1]
+        else:
+            source_error = "Yahoo chart daily data missing at least two valid closes."
+    elif kind == "premarket":
+        latest_timestamp, latest_price = _latest_valid_point(
+            timestamps=timestamps,
+            closes=quote.get("close") or [],
+            premarket_only=True,
+        )
+        previous_close = _to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose"))
+        if latest_price is None:
+            source_error = "Yahoo chart premarket data missing valid 1m close."
+    elif kind == "open":
+        latest_timestamp, latest_price = _latest_valid_point(
+            timestamps=timestamps,
+            closes=quote.get("close") or [],
+            premarket_only=False,
+        )
+        previous_close = _to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose"))
+        if latest_price is None:
+            source_error = "Yahoo chart intraday data missing valid 1m close."
+    else:
+        source_error = f"Unsupported Yahoo chart brief kind: {kind}"
+
+    change_percent = _change_percent(latest_price, previous_close)
+    if source_error is None and change_percent is None:
+        source_error = "Yahoo chart data missing previous close."
+
+    payload: dict[str, Any] = {
+        "symbol": source_symbol,
+        "yahoo_symbol": yahoo_symbol,
+        "display_name": str(meta.get("shortName") or meta.get("longName") or source_symbol),
+        "quote_type": str(meta.get("instrumentType") or "") or None,
+        "market_state": meta.get("marketState"),
+        "currency": meta.get("currency"),
+        "source_error": source_error,
+    }
+    if kind == "premarket":
+        payload.update(
+            {
+                "pre_market_price": latest_price,
+                "pre_market_change_percent": change_percent,
+                "pre_market_time": utc_timestamp_to_iso(latest_timestamp),
+                "regular_market_price": _to_float(meta.get("regularMarketPrice")),
+                "regular_market_time": utc_timestamp_to_iso(meta.get("regularMarketTime")),
+            }
+        )
+    else:
+        payload.update(
+            {
+                "regular_market_price": latest_price,
+                "regular_market_change_percent": change_percent,
+                "regular_market_time": utc_timestamp_to_iso(latest_timestamp or meta.get("regularMarketTime")),
+            }
+        )
+    return MarketQuote.model_validate(payload)
+
+
+def _chart_summary(quote: MarketQuote, previous_close: float | None = None) -> dict[str, Any]:
+    return {
+        "symbol": quote.symbol,
+        "provider_symbol": quote.yahoo_symbol,
+        "regular_market_price": quote.regular_market_price,
+        "regular_market_change_percent": quote.regular_market_change_percent,
+        "regular_market_time": quote.regular_market_time,
+        "pre_market_price": quote.pre_market_price,
+        "pre_market_change_percent": quote.pre_market_change_percent,
+        "pre_market_time": quote.pre_market_time,
+        "previous_close": previous_close,
+        "source_error": quote.source_error,
+    }
+
+
+def _chart_request_params(kind: str) -> dict[str, str]:
+    if kind == "close":
+        return {"range": "5d", "interval": "1d", "includePrePost": "false"}
+    return {"range": "1d", "interval": "1m", "includePrePost": "true"}
+
+
 def _chart_quote(
     *,
     source_symbol: str,
     yahoo_symbol: str,
+    kind: str,
     timeout_seconds: float,
-) -> MarketQuote:
-    response = requests.get(
-        f"{YAHOO_CHART_URL}/{yahoo_symbol}",
-        params={"range": "5d", "interval": "1d", "includePrePost": "false"},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-        },
-        timeout=timeout_seconds,
+    max_attempts: int,
+    backoff_seconds: float,
+) -> tuple[MarketQuote, dict[str, Any]]:
+    payload = _get_json_with_retries(
+        url=f"{YAHOO_CHART_URL}/{yahoo_symbol}",
+        params=_chart_request_params(kind),
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
     )
-    response.raise_for_status()
-    payload = response.json()
     chart = payload.get("chart") or {}
     result = ((chart.get("result") or [None])[0]) or {}
-    meta = result.get("meta") or {}
-    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-    closes = [_to_float(item) for item in (quote.get("close") or [])]
-    valid_closes = [item for item in closes if item is not None]
-    latest_price = _to_float(meta.get("regularMarketPrice")) or (valid_closes[-1] if valid_closes else None)
-    previous_close = _to_float(meta.get("chartPreviousClose"))
-    if previous_close is None and len(valid_closes) >= 2:
-        previous_close = valid_closes[-2]
-    change_percent = None
-    if latest_price is not None and previous_close not in (None, 0):
-        change_percent = ((latest_price - previous_close) / previous_close) * 100
-
-    return MarketQuote(
-        symbol=source_symbol,
+    quote = _quote_from_chart_result(
+        source_symbol=source_symbol,
         yahoo_symbol=yahoo_symbol,
-        display_name=str(meta.get("shortName") or meta.get("longName") or source_symbol),
-        quote_type=str(meta.get("instrumentType") or "") or None,
-        market_state=meta.get("marketState"),
-        currency=meta.get("currency"),
-        regular_market_price=latest_price,
-        regular_market_change_percent=change_percent,
-        regular_market_time=utc_timestamp_to_iso(meta.get("regularMarketTime")),
+        result=result,
+        kind=kind,
     )
+    meta = result.get("meta") or {}
+    summary = _chart_summary(
+        quote,
+        previous_close=_to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose")),
+    )
+    return quote, summary
 
 
 def _is_premarket_timestamp(timestamp: int | float) -> bool:
@@ -110,139 +259,38 @@ def _is_premarket_timestamp(timestamp: int | float) -> bool:
     return dt_time(4, 0) <= eastern_time < dt_time(9, 30)
 
 
-def _premarket_chart_quote(
+def fetch_chart_quotes(
     *,
-    source_symbol: str,
-    yahoo_symbol: str,
-    base_quote: MarketQuote | None,
-    timeout_seconds: float,
-) -> MarketQuote:
-    response = requests.get(
-        f"{YAHOO_CHART_URL}/{yahoo_symbol}",
-        params={"range": "1d", "interval": "1m", "includePrePost": "true"},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-        },
-        timeout=timeout_seconds,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    chart = payload.get("chart") or {}
-    result = ((chart.get("result") or [None])[0]) or {}
-    meta = result.get("meta") or {}
-    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-    timestamps = result.get("timestamp") or []
-    closes = quote.get("close") or []
-    premarket_points = [
-        (timestamp, _to_float(close))
-        for timestamp, close in zip(timestamps, closes, strict=False)
-        if close is not None and _is_premarket_timestamp(timestamp)
-    ]
-    valid_points = [(timestamp, close) for timestamp, close in premarket_points if close is not None]
-    latest_timestamp: int | float | None = None
-    latest_price: float | None = None
-    if valid_points:
-        latest_timestamp, latest_price = valid_points[-1]
-
-    previous_close = (
-        _to_float(meta.get("previousClose"))
-        or _to_float(meta.get("chartPreviousClose"))
-        or (base_quote.regular_market_price if base_quote else None)
-    )
-    change_percent = None
-    if latest_price is not None and previous_close not in (None, 0):
-        change_percent = ((latest_price - previous_close) / previous_close) * 100
-
-    if base_quote is None:
-        base_quote = MarketQuote(
-            symbol=source_symbol,
-            yahoo_symbol=yahoo_symbol,
-            display_name=str(meta.get("shortName") or meta.get("longName") or source_symbol),
-            quote_type=str(meta.get("instrumentType") or "") or None,
-            market_state=meta.get("marketState"),
-            currency=meta.get("currency"),
-            regular_market_price=_to_float(meta.get("regularMarketPrice")),
-            regular_market_change_percent=None,
-            regular_market_time=utc_timestamp_to_iso(meta.get("regularMarketTime")),
-        )
-
-    return base_quote.model_copy(
-        update={
-            "display_name": base_quote.display_name
-            or str(meta.get("shortName") or meta.get("longName") or source_symbol),
-            "quote_type": base_quote.quote_type or str(meta.get("instrumentType") or "") or None,
-            "market_state": base_quote.market_state or meta.get("marketState"),
-            "currency": base_quote.currency or meta.get("currency"),
-            "pre_market_price": latest_price,
-            "pre_market_change_percent": change_percent,
-            "pre_market_time": utc_timestamp_to_iso(latest_timestamp),
-            "source_error": None,
-        }
-    )
-
-
-def _enrich_premarket_quotes(
-    *,
-    quotes: list[MarketQuote],
-    yahoo_by_symbol: dict[str, str],
-    timeout_seconds: float,
-) -> tuple[list[MarketQuote], dict[str, str]]:
-    by_symbol = {quote.symbol: quote for quote in quotes}
-    enriched: list[MarketQuote] = []
-    errors: dict[str, str] = {}
-
-    for source_symbol, yahoo_symbol in yahoo_by_symbol.items():
-        base_quote = by_symbol.get(source_symbol)
-        if base_quote and base_quote.pre_market_change_percent is not None:
-            enriched.append(base_quote)
-            continue
-        try:
-            enriched.append(
-                _premarket_chart_quote(
-                    source_symbol=source_symbol,
-                    yahoo_symbol=yahoo_symbol,
-                    base_quote=base_quote,
-                    timeout_seconds=timeout_seconds,
-                )
-            )
-        except Exception as exc:
-            errors[source_symbol] = str(exc)
-            if base_quote is not None:
-                enriched.append(base_quote)
-            else:
-                enriched.append(
-                    MarketQuote(
-                        symbol=source_symbol,
-                        yahoo_symbol=yahoo_symbol,
-                        display_name=source_symbol,
-                        source_error=str(exc),
-                    )
-                )
-    return enriched, errors
-
-
-def _fetch_chart_fallback(
-    *,
-    yahoo_by_symbol: dict[str, str],
-    timeout_seconds: float,
-    raw_error: str,
-    include_premarket: bool,
-    quote_attempts: int,
+    symbols: list[str],
+    kind: str,
+    overrides: dict[str, str] | None = None,
+    timeout_seconds: float = 10.0,
+    max_attempts: int = 2,
+    backoff_seconds: float = 1.0,
 ) -> QuoteBatch:
+    normalized_symbols = list(dict.fromkeys(item.strip().upper() for item in symbols if item.strip()))
+    yahoo_by_symbol = {symbol: yahoo_symbol_for(symbol, overrides) for symbol in normalized_symbols}
     quotes: list[MarketQuote] = []
     missing: list[str] = []
     errors: dict[str, str] = {}
+    summaries: dict[str, dict[str, Any]] = {}
     for source_symbol, yahoo_symbol in yahoo_by_symbol.items():
         try:
-            quotes.append(
-                _chart_quote(
-                    source_symbol=source_symbol,
-                    yahoo_symbol=yahoo_symbol,
-                    timeout_seconds=timeout_seconds,
-                )
+            quote, summary = _chart_quote(
+                source_symbol=source_symbol,
+                yahoo_symbol=yahoo_symbol,
+                kind=kind,
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
             )
+            quotes.append(quote)
+            summaries[source_symbol] = summary
+            if quote.source_error:
+                missing.append(source_symbol)
+                errors[source_symbol] = quote.source_error
         except Exception as exc:
+            missing.append(source_symbol)
             errors[source_symbol] = str(exc)
             quotes.append(
                 MarketQuote(
@@ -252,22 +300,16 @@ def _fetch_chart_fallback(
                     source_error=str(exc),
                 )
             )
-    premarket_errors: dict[str, str] = {}
-    if include_premarket:
-        quotes, premarket_errors = _enrich_premarket_quotes(
-            quotes=quotes,
-            yahoo_by_symbol=yahoo_by_symbol,
-            timeout_seconds=timeout_seconds,
-        )
-
     return QuoteBatch(
         quotes=quotes,
-        missing_symbols=missing,
+        missing_symbols=list(dict.fromkeys(missing)),
         raw_response={
-            "quote_error": raw_error,
-            "quote_attempts": quote_attempts,
-            "chart_errors": errors,
-            "premarket_chart_errors": premarket_errors,
+            "provider": "yahoo_chart",
+            "kind": kind,
+            "request_params": _chart_request_params(kind),
+            "quote_attempts": max(1, max_attempts),
+            "summaries": summaries,
+            "errors": errors,
         },
     )
 
@@ -285,46 +327,36 @@ def fetch_quotes(
     yahoo_by_symbol = {symbol: yahoo_symbol_for(symbol, overrides) for symbol in normalized_symbols}
     symbol_by_yahoo = {value: key for key, value in yahoo_by_symbol.items()}
 
-    last_error: Exception | None = None
-    for attempt in range(1, max(1, max_attempts) + 1):
-        try:
-            response = requests.get(
-                YAHOO_QUOTE_URL,
-                params={"symbols": ",".join(yahoo_by_symbol.values())},
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json,text/plain,*/*",
-                },
-                timeout=timeout_seconds,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            rows = ((payload.get("quoteResponse") or {}).get("result") or [])
-            quotes = [_quote_from_row(symbol_by_yahoo, row) for row in rows if isinstance(row, dict)]
-            found = {quote.symbol for quote in quotes}
-            missing = [symbol for symbol in normalized_symbols if symbol not in found]
-            premarket_errors: dict[str, str] = {}
-            if include_premarket:
-                quotes, premarket_errors = _enrich_premarket_quotes(
-                    quotes=quotes,
-                    yahoo_by_symbol=yahoo_by_symbol,
-                    timeout_seconds=timeout_seconds,
-                )
-                found = {quote.symbol for quote in quotes if quote.source_error is None}
-                missing = [symbol for symbol in normalized_symbols if symbol not in found]
-            raw_response = dict(payload)
-            if include_premarket:
-                raw_response["premarket_chart_errors"] = premarket_errors
-            return QuoteBatch(quotes=quotes, missing_symbols=missing, raw_response=raw_response)
-        except Exception as exc:
-            last_error = exc
-            if attempt < max(1, max_attempts) and backoff_seconds > 0:
-                time.sleep(backoff_seconds * attempt)
+    try:
+        payload = _get_json_with_retries(
+            url=YAHOO_QUOTE_URL,
+            params={"symbols": ",".join(yahoo_by_symbol.values())},
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+    except Exception as exc:
+        return QuoteBatch(
+            quotes=[],
+            missing_symbols=normalized_symbols,
+            raw_response={
+                "provider": "yahoo_quote",
+                "quote_error": str(exc),
+                "quote_attempts": max(1, max_attempts),
+            },
+        )
 
-    return _fetch_chart_fallback(
-        yahoo_by_symbol=yahoo_by_symbol,
-        timeout_seconds=timeout_seconds,
-        raw_error=str(last_error) if last_error else "Yahoo quote request failed.",
-        include_premarket=include_premarket,
-        quote_attempts=max(1, max_attempts),
+    rows = ((payload.get("quoteResponse") or {}).get("result") or [])
+    quotes = [_quote_from_row(symbol_by_yahoo, row) for row in rows if isinstance(row, dict)]
+    found = {quote.symbol for quote in quotes}
+    missing = [symbol for symbol in normalized_symbols if symbol not in found]
+    raw_response = dict(payload)
+    raw_response["provider"] = "yahoo_quote"
+    raw_response["quote_attempts"] = max(1, max_attempts)
+    if include_premarket:
+        raw_response["include_premarket"] = True
+    return QuoteBatch(
+        quotes=quotes,
+        missing_symbols=missing,
+        raw_response=raw_response,
     )

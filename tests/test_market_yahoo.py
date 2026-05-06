@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from packages.market.yahoo import yahoo_symbol_for
-from packages.market.yahoo import fetch_quotes
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from packages.market.yahoo import fetch_chart_quotes, fetch_quotes, yahoo_symbol_for
+
+
+def _et_timestamp(hour: int, minute: int) -> int:
+    return int(datetime(2026, 5, 6, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp())
 
 
 def test_yahoo_symbol_for_normalizes_indices_and_tickers() -> None:
@@ -14,7 +20,7 @@ def test_yahoo_symbol_for_allows_overrides() -> None:
     assert yahoo_symbol_for("hodl", {"HODL": "HODL.CN"}) == "HODL.CN"
 
 
-def test_fetch_quotes_falls_back_to_chart(monkeypatch) -> None:
+def test_fetch_quotes_records_quote_error_without_chart_fallback(monkeypatch) -> None:
     class Response:
         def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
             self.status_code = status_code
@@ -28,35 +34,17 @@ def test_fetch_quotes_falls_back_to_chart(monkeypatch) -> None:
             return self.payload
 
     def fake_get(url, params, headers, timeout):  # noqa: ANN001
-        if "v7/finance/quote" in url:
-            return Response(status_code=403)
-        return Response(
-            status_code=200,
-            payload={
-                "chart": {
-                    "result": [
-                        {
-                            "meta": {
-                                "regularMarketPrice": 110,
-                                "chartPreviousClose": 100,
-                                "currency": "USD",
-                            },
-                            "indicators": {"quote": [{"close": [100, 110]}]},
-                        }
-                    ]
-                }
-            },
-        )
+        assert "v7/finance/quote" in url
+        return Response(status_code=403)
 
     monkeypatch.setattr("packages.market.yahoo.requests.get", fake_get)
     batch = fetch_quotes(symbols=["MSTR"], timeout_seconds=1, max_attempts=1)
 
-    assert batch.quotes[0].symbol == "MSTR"
-    assert batch.quotes[0].regular_market_change_percent == 10
+    assert batch.quotes == []
     assert batch.raw_response["quote_error"] == "forbidden"
 
 
-def test_fetch_quotes_enriches_premarket_from_intraday_chart(monkeypatch) -> None:
+def test_fetch_chart_quotes_close_uses_last_daily_close_vs_previous_daily_close(monkeypatch) -> None:
     class Response:
         def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
             self.status_code = status_code
@@ -70,22 +58,9 @@ def test_fetch_quotes_enriches_premarket_from_intraday_chart(monkeypatch) -> Non
             return self.payload
 
     def fake_get(url, params, headers, timeout):  # noqa: ANN001
-        if "v7/finance/quote" in url:
-            return Response(
-                status_code=200,
-                payload={
-                    "quoteResponse": {
-                        "result": [
-                            {
-                                "symbol": "MSTR",
-                                "shortName": "MSTR",
-                                "regularMarketPrice": 100,
-                                "regularMarketChangePercent": 1,
-                            }
-                        ]
-                    }
-                },
-            )
+        assert "v8/finance/chart" in url
+        assert params["range"] == "5d"
+        assert params["interval"] == "1d"
         return Response(
             status_code=200,
             payload={
@@ -93,14 +68,11 @@ def test_fetch_quotes_enriches_premarket_from_intraday_chart(monkeypatch) -> Non
                     "result": [
                         {
                             "meta": {
-                                "previousClose": 100,
-                                "regularMarketPrice": 100,
+                                "chartPreviousClose": 50,
                                 "currency": "USD",
                             },
-                            "timestamp": [
-                                1778061600,  # 2026-05-06 05:00 ET
-                            ],
-                            "indicators": {"quote": [{"close": [105]}]},
+                            "timestamp": [1777852800, 1777939200, 1778025600],
+                            "indicators": {"quote": [{"close": [100, 120, 126]}]},
                         }
                     ]
                 }
@@ -108,21 +80,21 @@ def test_fetch_quotes_enriches_premarket_from_intraday_chart(monkeypatch) -> Non
         )
 
     monkeypatch.setattr("packages.market.yahoo.requests.get", fake_get)
-    batch = fetch_quotes(
+    batch = fetch_chart_quotes(
         symbols=["MSTR"],
+        kind="close",
         timeout_seconds=1,
         max_attempts=1,
-        include_premarket=True,
     )
 
     quote = batch.quotes[0]
     assert quote.symbol == "MSTR"
-    assert quote.pre_market_price == 105
-    assert quote.pre_market_change_percent == 5
-    assert quote.pre_market_time is not None
+    assert quote.regular_market_price == 126
+    assert quote.regular_market_change_percent == 5
+    assert batch.raw_response["provider"] == "yahoo_chart"
 
 
-def test_fetch_quotes_fallback_enriches_premarket_after_quote_error(monkeypatch) -> None:
+def test_fetch_chart_quotes_open_uses_latest_minute_vs_previous_close(monkeypatch) -> None:
     class Response:
         def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
             self.status_code = status_code
@@ -139,26 +111,6 @@ def test_fetch_quotes_fallback_enriches_premarket_after_quote_error(monkeypatch)
 
     def fake_get(url, params, headers, timeout):  # noqa: ANN001
         calls.append({"url": url, "params": params})
-        if "v7/finance/quote" in url:
-            return Response(status_code=401)
-        if params["interval"] == "1d":
-            return Response(
-                status_code=200,
-                payload={
-                    "chart": {
-                        "result": [
-                            {
-                                "meta": {
-                                    "regularMarketPrice": 100,
-                                    "chartPreviousClose": 100,
-                                    "currency": "USD",
-                                },
-                                "indicators": {"quote": [{"close": [100]}]},
-                            }
-                        ]
-                    }
-                },
-            )
         return Response(
             status_code=200,
             payload={
@@ -167,13 +119,65 @@ def test_fetch_quotes_fallback_enriches_premarket_after_quote_error(monkeypatch)
                         {
                             "meta": {
                                 "previousClose": 100,
-                                "regularMarketPrice": 100,
                                 "currency": "USD",
                             },
                             "timestamp": [
-                                1778061600,  # 2026-05-06 05:00 ET
+                                _et_timestamp(4, 0),
+                                _et_timestamp(9, 31),
                             ],
-                            "indicators": {"quote": [{"close": [103]}]},
+                            "indicators": {"quote": [{"close": [102, 106]}]},
+                        }
+                    ]
+                }
+            },
+    )
+
+    monkeypatch.setattr("packages.market.yahoo.requests.get", fake_get)
+    batch = fetch_chart_quotes(
+        symbols=["MSTR"],
+        kind="open",
+        timeout_seconds=1,
+        max_attempts=1,
+    )
+
+    quote = batch.quotes[0]
+    assert quote.regular_market_price == 106
+    assert quote.regular_market_change_percent == 6
+    assert any(call["params"].get("includePrePost") == "true" for call in calls)
+
+
+def test_fetch_chart_quotes_premarket_filters_to_premarket_window(monkeypatch) -> None:
+    class Response:
+        def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self.payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError("unauthorized")
+
+        def json(self) -> dict:
+            return self.payload
+
+    def fake_get(url, params, headers, timeout):  # noqa: ANN001
+        assert params["range"] == "1d"
+        assert params["interval"] == "1m"
+        assert params["includePrePost"] == "true"
+        return Response(
+            status_code=200,
+            payload={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "previousClose": 100,
+                                "currency": "USD",
+                            },
+                            "timestamp": [
+                                _et_timestamp(4, 5),
+                                _et_timestamp(9, 31),
+                            ],
+                            "indicators": {"quote": [{"close": [103, 110]}]},
                         }
                     ]
                 }
@@ -181,15 +185,14 @@ def test_fetch_quotes_fallback_enriches_premarket_after_quote_error(monkeypatch)
         )
 
     monkeypatch.setattr("packages.market.yahoo.requests.get", fake_get)
-    batch = fetch_quotes(
+    batch = fetch_chart_quotes(
         symbols=["MSTR"],
+        kind="premarket",
         timeout_seconds=1,
         max_attempts=1,
-        include_premarket=True,
     )
 
     quote = batch.quotes[0]
     assert quote.pre_market_price == 103
     assert quote.pre_market_change_percent == 3
-    assert batch.raw_response["quote_error"] == "unauthorized"
-    assert any(call["params"].get("includePrePost") == "true" for call in calls)
+    assert quote.pre_market_time is not None

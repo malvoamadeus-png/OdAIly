@@ -44,8 +44,8 @@ class RetrySettings(BaseModel):
 
 class MarketBriefSettings(BaseModel):
     watchlist: list[str] = Field(default_factory=lambda: list(DEFAULT_WATCHLIST))
-    market_data_sources: list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]] = Field(
-        default_factory=lambda: ["yahoo_quote", "finnhub", "alpaca_iex"]
+    market_data_sources: list[Literal["yahoo_quote", "yahoo_chart", "finnhub"]] = Field(
+        default_factory=lambda: ["yahoo_quote", "yahoo_chart", "finnhub"]
     )
     yahoo_symbol_overrides: dict[str, str] = Field(
         default_factory=lambda: {
@@ -64,10 +64,6 @@ class MarketBriefSettings(BaseModel):
             "DJI": "^DJI",
         }
     )
-    alpaca_api_key: str | None = None
-    alpaca_api_secret: str | None = None
-    alpaca_feed: Literal["iex", "sip", "delayed_sip"] = "iex"
-    alpaca_symbol_overrides: dict[str, str] = Field(default_factory=dict)
     min_valid_crypto_stocks: int = Field(default=10, ge=1, le=100)
     min_valid_indices: int = Field(default=2, ge=0, le=4)
     max_quote_age_minutes: int = Field(default=10, ge=1, le=1440)
@@ -96,8 +92,8 @@ class MarketBriefSettings(BaseModel):
     @classmethod
     def normalize_market_data_sources(
         cls,
-        value: list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]],
-    ) -> list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]]:
+        value: list[Literal["yahoo_quote", "yahoo_chart", "finnhub"]],
+    ) -> list[Literal["yahoo_quote", "yahoo_chart", "finnhub"]]:
         result = list(dict.fromkeys(value))
         if not result:
             raise ValueError("market_data_sources cannot be empty")
@@ -108,7 +104,7 @@ class MarketBriefSettings(BaseModel):
     def normalize_overrides(cls, value: dict[str, str]) -> dict[str, str]:
         return {key.strip().upper(): symbol.strip() for key, symbol in value.items() if key and symbol}
 
-    @field_validator("finnhub_symbol_overrides", "alpaca_symbol_overrides")
+    @field_validator("finnhub_symbol_overrides")
     @classmethod
     def normalize_provider_overrides(cls, value: dict[str, str]) -> dict[str, str]:
         return {key.strip().upper(): symbol.strip().upper() for key, symbol in value.items() if key and symbol}
@@ -207,15 +203,6 @@ def _apply_common_env(payload: dict) -> dict:
     finnhub_api_key = os.getenv("FINNHUB_API_KEY")
     if finnhub_api_key:
         payload["finnhub_api_key"] = finnhub_api_key.strip()
-    alpaca_api_key = os.getenv("ALPACA_API_KEY")
-    if alpaca_api_key:
-        payload["alpaca_api_key"] = alpaca_api_key.strip()
-    alpaca_api_secret = os.getenv("ALPACA_API_SECRET")
-    if alpaca_api_secret:
-        payload["alpaca_api_secret"] = alpaca_api_secret.strip()
-    alpaca_feed = os.getenv("ALPACA_FEED")
-    if alpaca_feed:
-        payload["alpaca_feed"] = alpaca_feed.strip().lower()
     return payload
 
 

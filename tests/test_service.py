@@ -37,6 +37,7 @@ def test_run_once_skips_without_valid_data(monkeypatch, tmp_path) -> None:
         settings=MarketBriefSettings(
             watchlist=["MSTR"],
             dry_run=True,
+            market_data_sources=["yahoo_quote"],
             min_valid_crypto_stocks=1,
             min_valid_indices=0,
         ),
@@ -113,6 +114,7 @@ def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch,
         settings=MarketBriefSettings(
             watchlist=["MSTR"],
             dry_run=False,
+            market_data_sources=["yahoo_quote"],
             min_valid_crypto_stocks=1,
             min_valid_indices=0,
         ),
@@ -135,6 +137,14 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
             quotes=[],
             missing_symbols=["MSTR"],
             raw_response={"quote_error": "401 Client Error: Unauthorized", "quote_attempts": 3},
+        ),
+    )
+    monkeypatch.setattr(
+        "packages.briefing.service.fetch_chart_quotes",
+        lambda **_: QuoteBatch(
+            quotes=[],
+            missing_symbols=["MSTR"],
+            raw_response={"provider": "yahoo_chart"},
         ),
     )
     monkeypatch.setattr(
@@ -164,7 +174,7 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
             watchlist=["MSTR"],
             dry_run=True,
             finnhub_api_key="test-key",
-            market_data_sources=["yahoo_quote", "finnhub"],
+            market_data_sources=["yahoo_quote", "yahoo_chart", "finnhub"],
             min_valid_crypto_stocks=1,
             min_valid_indices=0,
         ),

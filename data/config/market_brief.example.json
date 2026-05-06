@@ -25,8 +25,8 @@
   ],
   "market_data_sources": [
     "yahoo_quote",
-    "finnhub",
-    "alpaca_iex"
+    "yahoo_chart",
+    "finnhub"
   ],
   "yahoo_symbol_overrides": {
     "SPX": "^GSPC",
@@ -41,10 +41,6 @@
     "IXIC": "^IXIC",
     "DJI": "^DJI"
   },
-  "alpaca_api_key": null,
-  "alpaca_api_secret": null,
-  "alpaca_feed": "iex",
-  "alpaca_symbol_overrides": {},
   "min_valid_crypto_stocks": 10,
   "min_valid_indices": 2,
   "max_quote_age_minutes": 10,

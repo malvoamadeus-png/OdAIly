@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -13,7 +12,6 @@ from .models import MarketQuote, QuoteBatch
 
 
 FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
-ALPACA_SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 
 
 def _to_float(value: Any) -> float | None:
@@ -188,118 +186,6 @@ def fetch_finnhub_quotes(
         missing_symbols=list(dict.fromkeys(missing)),
         raw_response={
             "provider": "finnhub",
-            "quote_attempts": max(1, max_attempts),
-            "summaries": summaries,
-            "errors": errors,
-        },
-    )
-
-
-def _alpaca_time(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(timespec="seconds")
-    return str(value)
-
-
-def fetch_alpaca_iex_quotes(
-    *,
-    symbols: list[str],
-    kind: BriefKind,
-    api_key: str,
-    api_secret: str,
-    feed: str = "iex",
-    overrides: dict[str, str] | None = None,
-    timeout_seconds: float = 10.0,
-    max_attempts: int = 3,
-    backoff_seconds: float = 1.0,
-) -> QuoteBatch:
-    normalized_symbols = list(dict.fromkeys(item.strip().upper() for item in symbols if item.strip()))
-    provider_by_source = {
-        source_symbol: _provider_symbol_for(source_symbol, overrides)
-        for source_symbol in normalized_symbols
-    }
-    source_by_provider = {provider: source for source, provider in provider_by_source.items()}
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "APCA-API-KEY-ID": api_key,
-        "APCA-API-SECRET-KEY": api_secret,
-    }
-    response = _get_with_retries(
-        url=ALPACA_SNAPSHOTS_URL,
-        params={"symbols": ",".join(provider_by_source.values()), "feed": feed},
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-        max_attempts=max_attempts,
-        backoff_seconds=backoff_seconds,
-    )
-    payload = response.json()
-    snapshots = payload.get("snapshots") if isinstance(payload, dict) else None
-    if snapshots is None and isinstance(payload, dict):
-        snapshots = payload
-    snapshots = snapshots or {}
-
-    quotes: list[MarketQuote] = []
-    missing: list[str] = []
-    errors: dict[str, str] = {}
-    summaries: dict[str, dict[str, Any]] = {}
-
-    for provider_symbol, source_symbol in source_by_provider.items():
-        snapshot = snapshots.get(provider_symbol) or {}
-        latest_trade = snapshot.get("latestTrade") or {}
-        minute_bar = snapshot.get("minuteBar") or {}
-        daily_bar = snapshot.get("dailyBar") or {}
-        prev_daily_bar = snapshot.get("prevDailyBar") or {}
-        price = (
-            _to_float(latest_trade.get("p"))
-            or _to_float(minute_bar.get("c"))
-            or _to_float(daily_bar.get("c"))
-        )
-        previous_close = _to_float(prev_daily_bar.get("c"))
-        change_pct = _change_percent(price, previous_close)
-        timestamp = _alpaca_time(latest_trade.get("t") or minute_bar.get("t") or daily_bar.get("t"))
-        if price is None or change_pct is None:
-            missing.append(source_symbol)
-            errors[source_symbol] = "Alpaca snapshot missing price or previous close."
-            quotes.append(
-                _quote_for_kind(
-                    kind=kind,
-                    source_symbol=source_symbol,
-                    provider_symbol=provider_symbol,
-                    display_name=source_symbol,
-                    price=None,
-                    change_percent=None,
-                    timestamp=None,
-                    source_error=errors[source_symbol],
-                )
-            )
-            continue
-        summaries[source_symbol] = {
-            "provider_symbol": provider_symbol,
-            "price": price,
-            "previous_close": previous_close,
-            "change_percent": change_pct,
-            "timestamp": timestamp,
-        }
-        quotes.append(
-            _quote_for_kind(
-                kind=kind,
-                source_symbol=source_symbol,
-                provider_symbol=provider_symbol,
-                display_name=source_symbol,
-                price=price,
-                change_percent=change_pct,
-                timestamp=timestamp,
-            )
-        )
-
-    return QuoteBatch(
-        quotes=quotes,
-        missing_symbols=list(dict.fromkeys(missing)),
-        raw_response={
-            "provider": "alpaca_iex",
-            "feed": feed,
             "quote_attempts": max(1, max_attempts),
             "summaries": summaries,
             "errors": errors,
