@@ -84,6 +84,9 @@ python backend\src\main.py x-init-db
 python backend\src\main.py x-capture-worker
 ```
 
+If you initialize Supabase manually, run `supabase/x_capture_schema.sql` once
+in the Supabase SQL Editor before deploying the frontend.
+
 For frontend development and Vercel deployment:
 
 ```powershell
