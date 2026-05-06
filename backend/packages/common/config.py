@@ -44,6 +44,9 @@ class RetrySettings(BaseModel):
 
 class MarketBriefSettings(BaseModel):
     watchlist: list[str] = Field(default_factory=lambda: list(DEFAULT_WATCHLIST))
+    market_data_sources: list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]] = Field(
+        default_factory=lambda: ["yahoo_quote", "finnhub", "alpaca_iex"]
+    )
     yahoo_symbol_overrides: dict[str, str] = Field(
         default_factory=lambda: {
             "SPX": "^GSPC",
@@ -52,6 +55,22 @@ class MarketBriefSettings(BaseModel):
             "DJI": "^DJI",
         }
     )
+    finnhub_api_key: str | None = None
+    finnhub_symbol_overrides: dict[str, str] = Field(
+        default_factory=lambda: {
+            "SPX": "^GSPC",
+            "VIX": "^VIX",
+            "IXIC": "^IXIC",
+            "DJI": "^DJI",
+        }
+    )
+    alpaca_api_key: str | None = None
+    alpaca_api_secret: str | None = None
+    alpaca_feed: Literal["iex", "sip", "delayed_sip"] = "iex"
+    alpaca_symbol_overrides: dict[str, str] = Field(default_factory=dict)
+    min_valid_crypto_stocks: int = Field(default=10, ge=1, le=100)
+    min_valid_indices: int = Field(default=2, ge=0, le=4)
+    max_quote_age_minutes: int = Field(default=10, ge=1, le=1440)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = True
     request_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
@@ -73,10 +92,26 @@ class MarketBriefSettings(BaseModel):
             raise ValueError("watchlist cannot be empty")
         return result
 
+    @field_validator("market_data_sources")
+    @classmethod
+    def normalize_market_data_sources(
+        cls,
+        value: list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]],
+    ) -> list[Literal["yahoo_quote", "finnhub", "alpaca_iex"]]:
+        result = list(dict.fromkeys(value))
+        if not result:
+            raise ValueError("market_data_sources cannot be empty")
+        return result
+
     @field_validator("yahoo_symbol_overrides")
     @classmethod
     def normalize_overrides(cls, value: dict[str, str]) -> dict[str, str]:
         return {key.strip().upper(): symbol.strip() for key, symbol in value.items() if key and symbol}
+
+    @field_validator("finnhub_symbol_overrides", "alpaca_symbol_overrides")
+    @classmethod
+    def normalize_provider_overrides(cls, value: dict[str, str]) -> dict[str, str]:
+        return {key.strip().upper(): symbol.strip().upper() for key, symbol in value.items() if key and symbol}
 
 
 def _load_json(path: Path) -> dict:
@@ -169,6 +204,18 @@ def _apply_common_env(payload: dict) -> dict:
     dry_run = os.getenv("ODAILY_DRY_RUN")
     if dry_run is not None:
         payload["dry_run"] = dry_run.strip().lower() not in {"0", "false", "no", "off"}
+    finnhub_api_key = os.getenv("FINNHUB_API_KEY")
+    if finnhub_api_key:
+        payload["finnhub_api_key"] = finnhub_api_key.strip()
+    alpaca_api_key = os.getenv("ALPACA_API_KEY")
+    if alpaca_api_key:
+        payload["alpaca_api_key"] = alpaca_api_key.strip()
+    alpaca_api_secret = os.getenv("ALPACA_API_SECRET")
+    if alpaca_api_secret:
+        payload["alpaca_api_secret"] = alpaca_api_secret.strip()
+    alpaca_feed = os.getenv("ALPACA_FEED")
+    if alpaca_feed:
+        payload["alpaca_feed"] = alpaca_feed.strip().lower()
     return payload
 
 

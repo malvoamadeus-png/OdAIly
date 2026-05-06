@@ -23,12 +23,31 @@
     "IXIC",
     "DJI"
   ],
+  "market_data_sources": [
+    "yahoo_quote",
+    "finnhub",
+    "alpaca_iex"
+  ],
   "yahoo_symbol_overrides": {
     "SPX": "^GSPC",
     "VIX": "^VIX",
     "IXIC": "^IXIC",
     "DJI": "^DJI"
   },
+  "finnhub_api_key": null,
+  "finnhub_symbol_overrides": {
+    "SPX": "^GSPC",
+    "VIX": "^VIX",
+    "IXIC": "^IXIC",
+    "DJI": "^DJI"
+  },
+  "alpaca_api_key": null,
+  "alpaca_api_secret": null,
+  "alpaca_feed": "iex",
+  "alpaca_symbol_overrides": {},
+  "min_valid_crypto_stocks": 10,
+  "min_valid_indices": 2,
+  "max_quote_age_minutes": 10,
   "push_endpoint": "http://47.113.217.70:8501/push/data",
   "dry_run": true,
   "request_timeout_seconds": 10,
