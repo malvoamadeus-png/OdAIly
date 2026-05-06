@@ -1,0 +1,315 @@
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
+export type Settings = {
+  global_interval_seconds: number;
+  max_concurrency: number;
+  jitter_seconds: number;
+  updated_at: string | null;
+};
+
+export type Account = {
+  id: number;
+  username: string;
+  username_lower: string;
+  display_name: string | null;
+  profile_url: string | null;
+  enabled: boolean;
+  interval_seconds: number | null;
+  seeded_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+};
+
+export type Attempt = {
+  id: number;
+  username_lower: string;
+  status: string;
+  candidate_count: number;
+  seeded_count: number;
+  new_count: number;
+  saved_count: number;
+  error: string | null;
+  started_at: string;
+  finished_at: string;
+};
+
+export type TaskItem = {
+  id: number;
+  source_item_id: string;
+  source_url: string | null;
+  title: string | null;
+  content: string;
+  status: string;
+  created_at: string;
+};
+
+export type DashboardPayload = {
+  settings: Settings;
+  accounts: Account[];
+  attempts: Attempt[];
+  tasks: TaskItem[];
+};
+
+export type AccountPatch = {
+  display_name?: string | null;
+  interval_seconds?: number | null;
+  enabled?: boolean;
+};
+
+type AccountCreateInput = {
+  username_or_url: string;
+  display_name: string | null;
+  interval_seconds: number | null;
+  enabled: boolean;
+};
+
+const defaultSettings: Settings = {
+  global_interval_seconds: 30,
+  max_concurrency: 2,
+  jitter_seconds: 5,
+  updated_at: null,
+};
+
+const usernamePattern = /^[A-Za-z0-9_]{1,15}$/;
+const reservedPaths = new Set([
+  'home',
+  'explore',
+  'i',
+  'search',
+  'messages',
+  'notifications',
+  'settings',
+  'tos',
+  'privacy',
+  'compose',
+]);
+
+let client: SupabaseClient | null = null;
+
+function supabase(): SupabaseClient {
+  if (client) {
+    return client;
+  }
+  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+  if (!url || !anonKey) {
+    throw new Error('缺少 VITE_SUPABASE_URL 或 VITE_SUPABASE_ANON_KEY');
+  }
+  client = createClient(url, anonKey);
+  return client;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function assertData<T>(data: T | null, fallbackMessage: string): T {
+  if (data === null) {
+    throw new Error(fallbackMessage);
+  }
+  return data;
+}
+
+function raise(error: { message: string } | null): void {
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export function normalizeUsername(value: string): string {
+  let raw = value.trim();
+  if (!raw) {
+    throw new Error('账号不能为空');
+  }
+  if (raw.startsWith('@')) {
+    raw = raw.slice(1);
+  }
+
+  let username: string;
+  if (!raw.includes('://') && !raw.includes('/')) {
+    username = raw;
+  } else {
+    if (!raw.includes('://')) {
+      raw = `https://${raw.replace(/^\/+/, '')}`;
+    }
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (!['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'].includes(host)) {
+      throw new Error('只支持 x.com 或 twitter.com 用户主页');
+    }
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length !== 1) {
+      throw new Error('请输入直接的 X 用户主页地址');
+    }
+    username = parts[0].replace(/^@/, '');
+  }
+
+  if (reservedPaths.has(username.toLowerCase()) || !usernamePattern.test(username)) {
+    throw new Error(`无效的 X 用户名：${username}`);
+  }
+  return username;
+}
+
+export async function loadDashboard(): Promise<DashboardPayload> {
+  const [settings, accounts, attempts, tasks] = await Promise.all([
+    getSettings(),
+    listAccounts(),
+    listRecentAttempts(30),
+    listRecentTasks(20),
+  ]);
+  return { settings, accounts, attempts, tasks };
+}
+
+export async function getSettings(): Promise<Settings> {
+  const { data, error } = await supabase()
+    .from('x_capture_settings')
+    .select('global_interval_seconds,max_concurrency,jitter_seconds,updated_at')
+    .eq('singleton_key', 'global')
+    .maybeSingle();
+  raise(error);
+  if (data) {
+    return data as Settings;
+  }
+
+  const created = await supabase()
+    .from('x_capture_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        global_interval_seconds: defaultSettings.global_interval_seconds,
+        max_concurrency: defaultSettings.max_concurrency,
+        jitter_seconds: defaultSettings.jitter_seconds,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select('global_interval_seconds,max_concurrency,jitter_seconds,updated_at')
+    .single();
+  raise(created.error);
+  return assertData(created.data as Settings | null, '无法初始化全局配置');
+}
+
+export async function updateSettings(payload: Omit<Settings, 'updated_at'>): Promise<Settings> {
+  const { data, error } = await supabase()
+    .from('x_capture_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        global_interval_seconds: payload.global_interval_seconds,
+        max_concurrency: payload.max_concurrency,
+        jitter_seconds: payload.jitter_seconds,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select('global_interval_seconds,max_concurrency,jitter_seconds,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as Settings | null, '保存全局配置失败');
+}
+
+export async function listAccounts(): Promise<Account[]> {
+  const { data, error } = await supabase()
+    .from('x_capture_accounts')
+    .select(
+      [
+        'id',
+        'username',
+        'username_lower',
+        'display_name',
+        'profile_url',
+        'enabled',
+        'interval_seconds',
+        'seeded_at',
+        'last_polled_at',
+        'last_success_at',
+        'last_error',
+      ].join(','),
+    )
+    .order('enabled', { ascending: false })
+    .order('username_lower', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as Account[];
+}
+
+export async function createAccount(input: AccountCreateInput): Promise<Account> {
+  const username = normalizeUsername(input.username_or_url);
+  const displayName = input.display_name?.trim() || null;
+  const { data, error } = await supabase()
+    .from('x_capture_accounts')
+    .upsert(
+      {
+        username,
+        username_lower: username.toLowerCase(),
+        display_name: displayName,
+        profile_url: `https://x.com/${username}`,
+        enabled: input.enabled,
+        interval_seconds: input.interval_seconds,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'username_lower' },
+    )
+    .select('*')
+    .single();
+  raise(error);
+  return assertData(data as Account | null, '保存账号失败');
+}
+
+export async function updateAccount(accountId: number, patch: AccountPatch): Promise<Account> {
+  const payload: Record<string, string | number | boolean | null> = {
+    updated_at: nowIso(),
+  };
+  if ('display_name' in patch) {
+    payload.display_name = patch.display_name?.trim() || null;
+  }
+  if ('interval_seconds' in patch) {
+    payload.interval_seconds = patch.interval_seconds ?? null;
+  }
+  if ('enabled' in patch && patch.enabled !== undefined) {
+    payload.enabled = patch.enabled;
+  }
+
+  const { data, error } = await supabase().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();
+  raise(error);
+  return assertData(data as Account | null, '更新账号失败');
+}
+
+export async function deleteAccount(accountId: number): Promise<void> {
+  const { error } = await supabase().from('x_capture_accounts').delete().eq('id', accountId);
+  raise(error);
+}
+
+async function listRecentAttempts(limit: number): Promise<Attempt[]> {
+  const { data, error } = await supabase()
+    .from('x_capture_attempts')
+    .select(
+      [
+        'id',
+        'username_lower',
+        'status',
+        'candidate_count',
+        'seeded_count',
+        'new_count',
+        'saved_count',
+        'error',
+        'started_at',
+        'finished_at',
+      ].join(','),
+    )
+    .order('started_at', { ascending: false })
+    .limit(limit);
+  raise(error);
+  return (data ?? []) as unknown as Attempt[];
+}
+
+async function listRecentTasks(limit: number): Promise<TaskItem[]> {
+  const { data, error } = await supabase()
+    .from('tasks')
+    .select('id,source_item_id,source_url,title,content,status,created_at')
+    .eq('source', 'x')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  raise(error);
+  return (data ?? []) as TaskItem[];
+}

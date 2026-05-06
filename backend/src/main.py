@@ -35,6 +35,13 @@ def parse_args() -> argparse.Namespace:
     worker = subparsers.add_parser("run-worker", help="Run the scheduled worker.")
     add_common(worker)
 
+    x_init_db = subparsers.add_parser("x-init-db", help="Initialize X capture Postgres tables.")
+    x_init_db.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
+    x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -119,6 +126,32 @@ def doctor_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def x_init_db_command(args: argparse.Namespace) -> int:
+    from packages.x_capture.repository import PostgresXCaptureRepository
+
+    repository = PostgresXCaptureRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] x-capture database schema initialized")
+    return 0
+
+
+def x_capture_worker_command(args: argparse.Namespace) -> int:
+    from packages.x_capture import FXTwitterClient, XCaptureWorker
+    from packages.x_capture.repository import PostgresXCaptureRepository
+
+    repository = PostgresXCaptureRepository(args.database_url)
+    worker = XCaptureWorker(
+        repository=repository,
+        client=FXTwitterClient(),
+    )
+    if args.once:
+        stats = worker.run_once()
+        print(f"[odaily] x-capture once completed. accounts={len(stats)}")
+        return 0 if all(item.status == "success" for item in stats) else 1
+    worker.run_forever()
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -126,6 +159,10 @@ def main() -> int:
             return run_once_command(args)
         if args.command == "run-worker":
             return run_worker_command(args)
+        if args.command == "x-init-db":
+            return x_init_db_command(args)
+        if args.command == "x-capture-worker":
+            return x_capture_worker_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:

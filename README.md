@@ -70,6 +70,32 @@ Every real request sends:
 }
 ```
 
+## X Capture Console
+
+The first X capture module stores raw public X/Twitter posts into Postgres
+`tasks` with `status='pending'`. It uses `SUPABASE_DB_URL` or `DATABASE_URL`
+for direct Postgres access in the backend worker. The browser console is a
+Vite static app that connects to Supabase with `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY`.
+
+```powershell
+pip install -r backend\requirements.txt
+python backend\src\main.py x-init-db
+python backend\src\main.py x-capture-worker
+```
+
+For frontend development and Vercel deployment:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
+directly through Supabase. The worker listens on Postgres
+`x_capture_config_changed` notifications and does not expose a console port.
+
 ## Linux Service
 
 Use `/opt/OdAIly` for deployment and `deploy/odaily-worker.service` as the
