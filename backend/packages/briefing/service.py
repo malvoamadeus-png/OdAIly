@@ -65,6 +65,7 @@ def run_brief_once(
         timeout_seconds=settings.request_timeout_seconds,
         max_attempts=settings.retry.max_attempts,
         backoff_seconds=settings.retry.backoff_seconds,
+        include_premarket=kind == "premarket",
     )
     quote_path = save_market_quotes(
         paths,
