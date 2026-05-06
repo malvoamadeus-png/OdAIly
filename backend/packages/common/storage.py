@@ -33,6 +33,12 @@ def save_market_quotes(paths: AppPaths, *, run_id: str, payload: Any) -> Path:
     return path
 
 
+def save_gate_quotes(paths: AppPaths, *, run_id: str, payload: Any) -> Path:
+    path = paths.raw_dir / "gate_quotes" / today_key() / f"{run_id}.json"
+    _write_json(path, payload)
+    return path
+
+
 def append_brief_result(paths: AppPaths, *, date_key: str, payload: dict[str, Any]) -> Path:
     path = paths.processed_dir / "briefs" / f"{date_key}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)

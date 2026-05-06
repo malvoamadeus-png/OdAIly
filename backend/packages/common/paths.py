@@ -15,6 +15,7 @@ class AppPaths:
     exports_dir: Path
     config_dir: Path
     market_brief_config_path: Path
+    gate_tradfi_config_path: Path
 
 
 def get_paths() -> AppPaths:
@@ -31,6 +32,7 @@ def get_paths() -> AppPaths:
         exports_dir=data_dir / "exports",
         config_dir=config_dir,
         market_brief_config_path=config_dir / "market_brief.json",
+        gate_tradfi_config_path=config_dir / "gate_tradfi.json",
     )
 
 
@@ -44,6 +46,7 @@ def ensure_runtime_dirs(paths: AppPaths) -> None:
         paths.exports_dir,
         paths.config_dir,
         paths.raw_dir / "market_quotes",
+        paths.raw_dir / "gate_quotes",
         paths.processed_dir / "briefs",
     ):
         path.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,7 @@ def make_paths(root) -> AppPaths:  # noqa: ANN001
         exports_dir=data / "exports",
         config_dir=data / "config",
         market_brief_config_path=data / "config" / "market_brief.json",
+        gate_tradfi_config_path=data / "config" / "gate_tradfi.json",
     )
 
 

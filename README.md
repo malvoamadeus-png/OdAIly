@@ -1,7 +1,7 @@
 # OdAIly
 
-OdAIly is a Python worker that generates US market crypto-stock briefs and sends
-them to the Push Data API with `isPublish=false`.
+OdAIly is a Python worker that generates market briefs and sends them to the
+Push Data API with `isPublish=false`.
 
 ## Structure
 
@@ -20,8 +20,10 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 cp data/config/market_brief.example.json data/config/market_brief.json
+cp data/config/gate_tradfi.example.json data/config/gate_tradfi.json
 python backend/src/main.py doctor
-python backend/src/main.py run-once --kind close --dry-run --force
+python backend/src/main.py run-once --task us-market --kind close --dry-run --force
+python backend/src/main.py run-once --task gate-tradfi --kind morning --dry-run --force
 ```
 
 On Windows PowerShell:
@@ -31,26 +33,31 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
 Copy-Item data\config\market_brief.example.json data\config\market_brief.json
+Copy-Item data\config\gate_tradfi.example.json data\config\gate_tradfi.json
 python backend\src\main.py doctor
-python backend\src\main.py run-once --kind close --dry-run --force
+python backend\src\main.py run-once --task us-market --kind close --dry-run --force
+python backend\src\main.py run-once --task gate-tradfi --kind morning --dry-run --force
 ```
 
-## Schedules
+## Tasks And Schedules
 
-- `close`: 08:00 Asia/Shanghai, using the latest regular market change.
-- `premarket`: 04:05 America/New_York, using Yahoo pre-market change.
-- `open`: 09:31 America/New_York, using Yahoo regular market change.
+- `us-market close`: 08:00 Asia/Shanghai.
+- `us-market premarket`: 04:05 America/New_York.
+- `us-market open`: 09:31 America/New_York.
+- `gate-tradfi morning`: 08:00 Asia/Shanghai.
+- `gate-tradfi open`: 09:31 America/New_York.
 
 Weekend runs are skipped unless `--force` is passed. If Yahoo returns no valid
-market data, the worker records a skipped result and does not call the Push Data
-API.
+market data, or Gate returns no valid title candidate data, the worker records a
+skipped result and does not call the Push Data API.
 
 ## Send Behavior
 
 The default config uses `dry_run=true`. To send to the API:
 
 ```bash
-python backend/src/main.py run-once --kind open --send
+python backend/src/main.py run-once --task us-market --kind open --send
+python backend/src/main.py run-once --task gate-tradfi --kind open --send
 ```
 
 Every real request sends:

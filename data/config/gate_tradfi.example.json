@@ -1,0 +1,31 @@
+{
+  "tradfi_symbols": {
+    "XAUUSD": "黄金",
+    "XAGUSD": "白银",
+    "USDCNH": "美元兑离岸人民币",
+    "USDJPY": "美元兑日元",
+    "EUSTX50": "欧洲50指数",
+    "UK100": "英国富时100指数",
+    "GER40": "德国DAX40指数",
+    "XTIUSD": "WTI 原油",
+    "XBRUSD": "布伦特原油"
+  },
+  "futures_symbols": {
+    "BVIXUSDT": {
+      "contract": "BVIX_USDT",
+      "display_name": "BVIX"
+    },
+    "EVIXUSDT": {
+      "contract": "EVIX_USDT",
+      "display_name": "EVIX"
+    }
+  },
+  "push_endpoint": "http://47.113.217.70:8501/push/data",
+  "dry_run": true,
+  "request_timeout_seconds": 10,
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "log_retention_days": 30
+}

@@ -5,29 +5,29 @@ import sys
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from packages.briefing.service import run_brief_once  # noqa: E402
-from packages.common.config import BriefKind, load_settings  # noqa: E402
+from packages.common.config import load_gate_settings, load_settings  # noqa: E402
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
-from packages.common.time_utils import EASTERN_TZ, SHANGHAI_TZ  # noqa: E402
+from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
+from packages.tasks.registry import TASKS, run_task_once  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="OdAIly US market brief worker.")
+    parser = argparse.ArgumentParser(description="OdAIly content publishing worker.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_common(command_parser: argparse.ArgumentParser) -> None:
-        command_parser.add_argument("--config", help="Path to data/config/market_brief.json.")
+        command_parser.add_argument("--config", help="Path to task config JSON.")
 
-    run_once = subparsers.add_parser("run-once", help="Generate one market brief.")
+    run_once = subparsers.add_parser("run-once", help="Generate one content brief.")
     add_common(run_once)
-    run_once.add_argument("--kind", choices=["close", "premarket", "open"], required=True)
+    run_once.add_argument("--task", choices=sorted(TASKS), default="us-market")
+    run_once.add_argument("--kind", required=True)
     run_once.add_argument("--dry-run", action="store_true", help="Do not call the Push Data API.")
     run_once.add_argument("--send", action="store_true", help="Call the Push Data API even if config uses dry_run.")
     run_once.add_argument("--force", action="store_true", help="Run even on weekends.")
@@ -35,8 +35,7 @@ def parse_args() -> argparse.Namespace:
     worker = subparsers.add_parser("run-worker", help="Run the scheduled worker.")
     add_common(worker)
 
-    doctor = subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
-    add_common(doctor)
+    subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
 
@@ -52,16 +51,16 @@ def _dry_run_override(args: argparse.Namespace) -> bool | None:
 
 def run_once_command(args: argparse.Namespace) -> int:
     paths = get_paths()
-    settings = load_settings(args.config)
-    result = run_brief_once(
+    result = run_task_once(
+        task_id=args.task,
         kind=args.kind,
-        settings=settings,
+        config_path=args.config,
         paths=paths,
         dry_run_override=_dry_run_override(args),
         force=args.force,
     )
     print(
-        f"[odaily] kind={result.kind} status={result.status} "
+        f"[odaily] task={args.task} kind={result.kind} status={result.status} "
         f"run_id={result.run_id} message={result.message}"
     )
     return result.exit_code
@@ -69,45 +68,54 @@ def run_once_command(args: argparse.Namespace) -> int:
 
 def run_worker_command(args: argparse.Namespace) -> int:
     paths = get_paths()
-    settings = load_settings(args.config)
     ensure_runtime_dirs(paths)
     scheduler = BlockingScheduler(timezone=SHANGHAI_TZ)
 
-    def add_job(kind: BriefKind, trigger: CronTrigger, job_id: str) -> None:
-        scheduler.add_job(
-            lambda brief_kind=kind: run_brief_once(
-                kind=brief_kind,
-                settings=settings,
-                paths=paths,
-            ),
-            trigger,
-            id=job_id,
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-
-    add_job("close", CronTrigger(hour=8, minute=0, timezone=SHANGHAI_TZ), "brief-close-0800-cst")
-    add_job("premarket", CronTrigger(hour=4, minute=5, timezone=EASTERN_TZ), "brief-premarket-0405-et")
-    add_job("open", CronTrigger(hour=9, minute=31, timezone=EASTERN_TZ), "brief-open-0931-et")
-    print(
-        "[odaily] worker started. close=08:00 Asia/Shanghai; "
-        "premarket=04:05 America/New_York; open=09:31 America/New_York"
-    )
+    for task_id, task in TASKS.items():
+        for schedule in task.schedules:
+            scheduler.add_job(
+                lambda scheduled_task=task_id, scheduled_kind=schedule.kind: run_task_once(
+                    task_id=scheduled_task,
+                    kind=scheduled_kind,
+                    config_path=None,
+                    paths=paths,
+                    dry_run_override=None,
+                    force=False,
+                ),
+                schedule.trigger,
+                id=schedule.job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+    descriptions = [
+        f"{task_id}:{schedule.description}"
+        for task_id, task in TASKS.items()
+        for schedule in task.schedules
+    ]
+    print("[odaily] worker started. " + "; ".join(descriptions))
     scheduler.start()
     return 0
 
 
 def doctor_command(args: argparse.Namespace) -> int:
     paths = get_paths()
-    settings = load_settings(args.config)
     ensure_runtime_dirs(paths)
     print(f"[odaily] root={paths.root_dir}")
-    print(f"[odaily] config={Path(args.config).resolve() if args.config else paths.market_brief_config_path}")
-    print(f"[odaily] watchlist={','.join(settings.watchlist)}")
-    print(f"[odaily] push_endpoint={settings.push_endpoint}")
-    print(f"[odaily] dry_run={settings.dry_run}")
-    print("[odaily] schedules close=08:00 Asia/Shanghai premarket=04:05 America/New_York open=09:31 America/New_York")
+    market_settings = load_settings(None)
+    gate_settings = load_gate_settings(None)
+    print(f"[odaily] us-market config={paths.market_brief_config_path}")
+    print(f"[odaily] us-market watchlist={','.join(market_settings.watchlist)}")
+    print(f"[odaily] us-market push_endpoint={market_settings.push_endpoint}")
+    print(f"[odaily] us-market dry_run={market_settings.dry_run}")
+    print(f"[odaily] gate-tradfi config={paths.gate_tradfi_config_path}")
+    print(f"[odaily] gate-tradfi tradfi_symbols={','.join(gate_settings.tradfi_symbols)}")
+    print(f"[odaily] gate-tradfi futures_symbols={','.join(gate_settings.futures_symbols)}")
+    print(f"[odaily] gate-tradfi push_endpoint={gate_settings.push_endpoint}")
+    print(f"[odaily] gate-tradfi dry_run={gate_settings.dry_run}")
+    for task_id, task in TASKS.items():
+        schedules = ", ".join(schedule.description for schedule in task.schedules)
+        print(f"[odaily] schedules {task_id}: {schedules}")
     return 0
 
 
