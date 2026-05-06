@@ -7,6 +7,7 @@ from packages.market.models import MarketQuote
 
 
 NAME_MAP = {
+    "FRMM": "FRMM",
     "MSTR": "Strategy",
     "COIN": "Coinbase",
     "SBET": "Sharplink Gaming",
@@ -14,15 +15,40 @@ NAME_MAP = {
     "CRCL": "Circle",
     "ALTS": "ALT5 Sigma",
     "HUT": "Hut 8",
-    "BNC": "BNC",
+    "BNC": "BNB Network",
     "ABTC": "American Bitcoin",
     "ETHZ": "ETHZilla",
     "HODL": "Sol Strategies",
     "BTBT": "Bit Digital",
     "HOOD": "Robinhood",
+    "DFDV": "DeFi Development",
+    "TRON": "Tron Inc.",
+    "BLSH": "Bullish",
     "RIOT": "Riot Platforms",
     "MARA": "MARA Holdings",
+    "UPXI": "Upexi",
     "BTCS": "BTCS",
+}
+
+CRYPTO_STOCK_SYMBOLS = {
+    "FRMM",
+    "CRCL",
+    "BTBT",
+    "HOOD",
+    "HUT",
+    "COIN",
+    "DFDV",
+    "TRON",
+    "BLSH",
+    "RIOT",
+    "MARA",
+    "ABTC",
+    "MSTR",
+    "SBET",
+    "UPXI",
+    "BTCS",
+    "BNC",
+    "HODL",
 }
 
 INDICES_MAP = {
@@ -60,16 +86,34 @@ def _format_percent(value: float) -> str:
     return f"{abs(value):.2f}".rstrip("0").rstrip(".") + "%"
 
 
-def _top5_sentence(quotes: list[MarketQuote], *, kind: BriefKind) -> str:
-    items = [(quote, _value_for_kind(quote, kind)) for quote in quotes if quote.symbol not in INDICES_MAP]
-    valid = [(quote, value) for quote, value in items if value is not None]
-    if not valid:
+def _stock_moves(quotes: list[MarketQuote], *, kind: BriefKind) -> list[tuple[MarketQuote, float]]:
+    return [
+        (quote, value)
+        for quote in quotes
+        if quote.symbol in CRYPTO_STOCK_SYMBOLS
+        for value in [_value_for_kind(quote, kind)]
+        if value is not None
+    ]
+
+
+def _trend_for_moves(moves: list[tuple[MarketQuote, float]]) -> str:
+    mean = sum(value for _, value in moves) / len(moves)
+    return "普涨" if mean > 0 else "普跌"
+
+
+def _sorted_moves_for_trend(
+    moves: list[tuple[MarketQuote, float]],
+    *,
+    trend: str,
+) -> list[tuple[MarketQuote, float]]:
+    return sorted(moves, key=lambda item: item[1], reverse=trend == "普涨")
+
+
+def _top5_sentence(moves: list[tuple[MarketQuote, float]], *, kind: BriefKind, trend: str) -> str:
+    if not moves:
         return ""
 
-    mean = sum(value for _, value in valid) / len(valid)
-    trend = "普涨" if mean > 0 else "普跌"
-    sorted_items = sorted(valid, key=lambda item: item[1], reverse=mean > 0)
-    top5 = sorted_items[:5]
+    top5 = _sorted_moves_for_trend(moves, trend=trend)[:5]
 
     parts: list[str] = []
     for quote, value in top5:
@@ -79,6 +123,20 @@ def _top5_sentence(quotes: list[MarketQuote], *, kind: BriefKind) -> str:
             action = "上涨" if value >= 0 else "下跌"
         parts.append(f"{_display_name(quote)} {action} {_format_percent(value)}")
     return f"加密概念股{trend}，{'，'.join(parts)}"
+
+
+def _brief_prefix(kind: BriefKind) -> str:
+    if kind == "close":
+        return "美股收盘"
+    if kind == "open":
+        return "美股开盘"
+    return "美股盘前"
+
+
+def _title_for_stock_moves(kind: BriefKind, moves: list[tuple[MarketQuote, float]], trend: str) -> str:
+    quote, value = _sorted_moves_for_trend(moves, trend=trend)[0]
+    action = "涨超" if value >= 0 else "跌超"
+    return f"{_brief_prefix(kind)}加密概念股{trend}，{_display_name(quote)}{action}{_format_percent(value)}"
 
 
 def _index_sentence(quotes: list[MarketQuote], *, kind: BriefKind) -> str:
@@ -97,12 +155,7 @@ def _index_sentence(quotes: list[MarketQuote], *, kind: BriefKind) -> str:
             action = "涨" if value >= 0 else "跌"
         parts.append(f"{INDICES_MAP[symbol]}{action} {_format_percent(value)}")
 
-    if kind == "close":
-        prefix = "美股收盘"
-    elif kind == "open":
-        prefix = "美股开盘"
-    else:
-        prefix = "美股盘前"
+    prefix = _brief_prefix(kind)
     return f"{prefix}，{'，'.join(parts)}" if parts else prefix
 
 
@@ -115,18 +168,17 @@ def build_brief(*, kind: BriefKind, quotes: list[MarketQuote], skipped_symbols: 
     if not valid_quotes:
         return None
 
-    stock_sentence = _top5_sentence(valid_quotes, kind=kind)
-    if not stock_sentence:
+    stock_moves = _stock_moves(valid_quotes, kind=kind)
+    if not stock_moves:
         return None
 
+    trend = _trend_for_moves(stock_moves)
+    stock_sentence = _top5_sentence(stock_moves, kind=kind, trend=trend)
+    title = _title_for_stock_moves(kind, stock_moves, trend)
+
     if kind == "premarket":
-        title = "美股盘前加密概念股快讯"
         content = f"根据 msx.com 数据，美股盘前{stock_sentence}。\n{FOOTER_TEXT}"
-    elif kind == "open":
-        title = "美股开盘加密概念股快讯"
-        content = f"根据 msx.com 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
     else:
-        title = "美股收盘加密概念股快讯"
         content = f"根据 msx.com 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
 
     return BriefPayload(
