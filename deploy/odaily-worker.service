@@ -1,0 +1,15 @@
+[Unit]
+Description=OdAIly US market brief worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py run-worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

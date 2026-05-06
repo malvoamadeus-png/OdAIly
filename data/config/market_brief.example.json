@@ -1,0 +1,40 @@
+{
+  "watchlist": [
+    "FRMM",
+    "CRCL",
+    "BTBT",
+    "HOOD",
+    "HUT",
+    "COIN",
+    "DFDV",
+    "TRON",
+    "BLSH",
+    "RIOT",
+    "MARA",
+    "ABTC",
+    "MSTR",
+    "SBET",
+    "UPXI",
+    "BTCS",
+    "BNC",
+    "HODL",
+    "SPX",
+    "VIX",
+    "IXIC",
+    "DJI"
+  ],
+  "yahoo_symbol_overrides": {
+    "SPX": "^GSPC",
+    "VIX": "^VIX",
+    "IXIC": "^IXIC",
+    "DJI": "^DJI"
+  },
+  "push_endpoint": "http://47.113.217.70:8501/push/data",
+  "dry_run": true,
+  "request_timeout_seconds": 10,
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "log_retention_days": 30
+}
