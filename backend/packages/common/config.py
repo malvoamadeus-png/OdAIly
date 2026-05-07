@@ -223,6 +223,8 @@ GateBriefKind = Literal["morning", "open"]
 
 class XProcessingSettings(BaseModel):
     openai_api_key: str | None = None
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
+    openai_api_style: Literal["responses", "chat_completions"] = "responses"
     judge_model: str = "gpt-5.4-mini"
     writer_model: str = "gpt-5.5"
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
@@ -245,6 +247,12 @@ def load_x_processing_settings() -> XProcessingSettings:
     load_dotenv()
     payload = {
         "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "openai_base_url": (
+            os.getenv("X_PROCESS_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ),
+        "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
         "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",

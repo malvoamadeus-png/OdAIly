@@ -129,12 +129,19 @@ Required runtime env:
 
 ```text
 OPENAI_API_KEY=
+X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
+X_PROCESS_OPENAI_API_STYLE=responses
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
 X_PROCESS_WRITER_MODEL=gpt-5.5
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
+
+`X_PROCESS_OPENAI_BASE_URL` may point to an OpenAI-compatible relay, usually
+ending in `/v1`. Keep `X_PROCESS_OPENAI_API_STYLE=responses` when the relay
+supports `/v1/responses`; use `chat_completions` when it only supports
+`/v1/chat/completions`.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for

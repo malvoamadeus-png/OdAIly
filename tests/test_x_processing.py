@@ -4,6 +4,7 @@ from typing import Any
 
 from packages.common.config import RetrySettings, XProcessingSettings
 from packages.publisher import PushResult
+from packages.x_processing.ai_client import OpenAIResponsesClient, to_chat_response_format
 from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
@@ -49,6 +50,17 @@ def settings() -> XProcessingSettings:
     )
 
 
+class FakeOpenAIResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+
 def task(task_id: int, status: str = "pending") -> TaskRecord:
     return TaskRecord(
         id=task_id,
@@ -71,6 +83,60 @@ def test_parse_news_type_accepts_only_known_values() -> None:
         assert "invalid news_type" in str(exc)
     else:
         raise AssertionError("invalid news_type should fail")
+
+
+def test_openai_client_uses_configured_responses_base_url(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeOpenAIResponse({"output_text": "ok"})
+
+    monkeypatch.setattr("packages.x_processing.ai_client.requests.post", fake_post)
+    client = OpenAIResponsesClient(
+        api_key="key",
+        base_url="https://relay.example.com/v1",
+        api_style="responses",
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    assert client.generate_text(model="gpt", prompt="hello") == "ok"
+    assert calls[0]["url"] == "https://relay.example.com/v1/responses"
+
+
+def test_openai_client_supports_chat_completions_style(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeOpenAIResponse({"choices": [{"message": {"content": '{"news_type":"regular"}'}}]})
+
+    monkeypatch.setattr("packages.x_processing.ai_client.requests.post", fake_post)
+    client = OpenAIResponsesClient(
+        api_key="key",
+        base_url="https://relay.example.com/v1",
+        api_style="chat_completions",
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    assert client.generate_text(model="gpt", prompt="hello", text_format={"type": "json_schema", "name": "x", "schema": {}})
+    assert calls[0]["url"] == "https://relay.example.com/v1/chat/completions"
+    assert calls[0]["json"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert calls[0]["json"]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "x", "schema": {}, "strict": True},
+    }
+
+
+def test_chat_response_format_converts_responses_json_schema() -> None:
+    assert to_chat_response_format({"type": "json_schema", "name": "x", "schema": {"type": "object"}}) == {
+        "type": "json_schema",
+        "json_schema": {"name": "x", "schema": {"type": "object"}, "strict": True},
+    }
 
 
 def test_searcher_noop_advances_to_deduped() -> None:
