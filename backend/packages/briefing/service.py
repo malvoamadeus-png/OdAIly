@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from packages.briefing.generator import CRYPTO_STOCK_SYMBOLS, build_brief
+from packages.briefing.generator import CRYPTO_STOCK_SYMBOLS, BriefPayload, build_brief
 from packages.common.config import BriefKind, MarketBriefSettings
 from packages.common.paths import AppPaths, ensure_runtime_dirs
 from packages.common.storage import append_brief_result, save_market_quotes
@@ -19,6 +19,8 @@ from packages.market.models import MarketQuote, QuoteBatch
 from packages.market.providers import fetch_finnhub_quotes
 from packages.market.yahoo import fetch_chart_quotes, fetch_quotes
 from packages.publisher import PushClient, PushResult
+from packages.x_processing.formatter import format_brief
+from packages.x_processing.models import DraftBrief
 
 
 @dataclass(slots=True)
@@ -38,6 +40,11 @@ def _push_client(settings: MarketBriefSettings) -> PushClient:
         max_attempts=settings.retry.max_attempts,
         backoff_seconds=settings.retry.backoff_seconds,
     )
+
+
+def _apply_writer2_format(brief: BriefPayload) -> BriefPayload:
+    formatted = format_brief(DraftBrief(title=brief.title, content=brief.content))
+    return brief.model_copy(update={"title": formatted.title, "content": formatted.content})
 
 
 def _value_for_kind(quote: MarketQuote, kind: BriefKind) -> float | None:
@@ -320,6 +327,7 @@ def run_brief_once(
             },
         )
         return BriefRunResult(0, "skipped", kind, message, run_id)
+    brief = _apply_writer2_format(brief)
 
     push_result: PushResult = _push_client(settings).push(
         title=brief.title,

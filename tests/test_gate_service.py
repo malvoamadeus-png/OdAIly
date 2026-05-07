@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from packages.common.config import GateTradfiSettings
 from packages.common.paths import AppPaths
 from packages.gate.models import GateAssetQuote, GateQuoteBatch
@@ -59,4 +61,7 @@ def test_run_gate_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
     assert result.status == "success"
     assert result.pushed is False
     assert list((tmp_path / "data" / "raw" / "gate_quotes").glob("*/*.json"))
-    assert list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    assert records
+    payload = json.loads(records[0].read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["content"].startswith("Odaily星球日报讯 ")

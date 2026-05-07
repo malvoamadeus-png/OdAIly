@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -83,6 +84,9 @@ def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert result.status == "success"
     assert result.pushed is False
+    records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    payload = json.loads(records[0].read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["content"].startswith("Odaily星球日报讯 ")
 
 
 def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch, tmp_path) -> None:

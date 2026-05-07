@@ -211,7 +211,9 @@ class XProcessingWorker:
             error = push_result.error or "push failed"
             self.repository.fail_task(task.id, stage=self.stage, error=error, status="publish_failed")
             raise HandledStageError(error)
-        telegram_result = self.telegram_client.send_message(f"有新快讯：{final.title}")
+        telegram_result = self.telegram_client.send_message(
+            build_telegram_notice(title=final.title, source_url=task.source_url)
+        )
         self.repository.complete_format_publish(
             task.id,
             final_title=final.title,
@@ -278,3 +280,10 @@ def parse_news_type(value: str) -> NewsType:
     if news_type not in NEWS_TYPES:
         raise ValueError(f"invalid news_type: {news_type}")
     return news_type
+
+
+def build_telegram_notice(*, title: str, source_url: str | None) -> str:
+    text = f"有新快讯：{title}"
+    if source_url and source_url.strip():
+        text += f"\n原文链接：{source_url.strip()}"
+    return text

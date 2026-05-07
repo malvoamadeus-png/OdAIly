@@ -8,9 +8,11 @@ from packages.common.paths import AppPaths, ensure_runtime_dirs
 from packages.common.storage import append_brief_result, save_gate_quotes
 from packages.common.time_utils import is_weekend_in_eastern, now_iso, now_shanghai, today_key
 from packages.publisher import PushClient, PushResult
+from packages.x_processing.formatter import format_brief
+from packages.x_processing.models import DraftBrief
 
 from .client import GateClient
-from .generator import build_gate_brief
+from .generator import GateBriefPayload, build_gate_brief
 
 
 @dataclass(slots=True)
@@ -30,6 +32,11 @@ def _push_client(settings: GateTradfiSettings) -> PushClient:
         max_attempts=settings.retry.max_attempts,
         backoff_seconds=settings.retry.backoff_seconds,
     )
+
+
+def _apply_writer2_format(brief: GateBriefPayload) -> GateBriefPayload:
+    formatted = format_brief(DraftBrief(title=brief.title, content=brief.content))
+    return brief.model_copy(update={"title": formatted.title, "content": formatted.content})
 
 
 def run_gate_once(
@@ -105,6 +112,7 @@ def run_gate_once(
             },
         )
         return GateRunResult(0, "skipped", kind, message, run_id)
+    brief = _apply_writer2_format(brief)
 
     push_result: PushResult = _push_client(settings).push(
         title=brief.title,

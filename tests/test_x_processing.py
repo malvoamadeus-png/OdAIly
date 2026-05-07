@@ -9,7 +9,7 @@ from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
 from packages.x_processing.telegram import TelegramResult
-from packages.x_processing.worker import XProcessingWorker, parse_news_type
+from packages.x_processing.worker import XProcessingWorker, build_telegram_notice, parse_news_type
 
 
 class FakeAiClient:
@@ -139,6 +139,12 @@ def test_chat_response_format_converts_responses_json_schema() -> None:
     }
 
 
+def test_telegram_notice_includes_source_url_on_next_line() -> None:
+    assert build_telegram_notice(title="标题", source_url="https://x.com/a/status/1") == (
+        "有新快讯：标题\n原文链接：https://x.com/a/status/1"
+    )
+
+
 def test_searcher_noop_advances_to_deduped() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="judged"))
@@ -202,7 +208,7 @@ def test_format_publish_keeps_ready_review_when_telegram_fails() -> None:
     assert repo.tasks[1].status == "ready_review"
     assert repo.pipelines[1].telegram_result["ok"] is False
     assert push.calls[0]["dry_run"] is False
-    assert telegram.calls == ["有新快讯：标题"]
+    assert telegram.calls == ["有新快讯：标题\n原文链接：https://x.com/a/status/1"]
 
 
 def test_claim_skips_locked_task() -> None:
