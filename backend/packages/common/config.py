@@ -219,3 +219,46 @@ def load_gate_settings(config_path: str | None = None) -> GateTradfiSettings:
 
 
 GateBriefKind = Literal["morning", "open"]
+
+
+class XProcessingSettings(BaseModel):
+    openai_api_key: str | None = None
+    judge_model: str = "gpt-5.4-mini"
+    writer_model: str = "gpt-5.5"
+    push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
+    dry_run: bool = False
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def load_x_processing_settings() -> XProcessingSettings:
+    load_dotenv()
+    payload = {
+        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
+        "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
+        "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
+        "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
+        "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),
+        "retry": {
+            "max_attempts": int(os.getenv("X_PROCESS_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("X_PROCESS_BACKOFF_SECONDS") or 1.0),
+        },
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+    }
+    try:
+        return XProcessingSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid X processing settings: {exc}") from exc

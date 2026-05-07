@@ -44,6 +44,23 @@ export type TaskItem = {
   created_at: string;
 };
 
+export type PromptTemplate = {
+  template_key: string;
+  display_name: string;
+  active_version_id: number | null;
+  updated_at: string;
+};
+
+export type PromptVersion = {
+  id: number;
+  template_key: string;
+  version_number: number;
+  content: string;
+  note: string | null;
+  created_at: string;
+  published_at: string | null;
+};
+
 export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
@@ -312,4 +329,64 @@ async function listRecentTasks(limit: number): Promise<TaskItem[]> {
     .limit(limit);
   raise(error);
   return (data ?? []) as TaskItem[];
+}
+
+export async function listPromptTemplates(): Promise<PromptTemplate[]> {
+  const { data, error } = await supabase()
+    .from('prompt_templates')
+    .select('template_key,display_name,active_version_id,updated_at')
+    .order('template_key', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as PromptTemplate[];
+}
+
+export async function listPromptVersions(templateKey: string): Promise<PromptVersion[]> {
+  const { data, error } = await supabase()
+    .from('prompt_template_versions')
+    .select('id,template_key,version_number,content,note,created_at,published_at')
+    .eq('template_key', templateKey)
+    .order('version_number', { ascending: false });
+  raise(error);
+  return (data ?? []) as unknown as PromptVersion[];
+}
+
+export async function createPromptVersion(
+  templateKey: string,
+  content: string,
+  note: string | null,
+): Promise<PromptVersion> {
+  const versions = await listPromptVersions(templateKey);
+  const nextVersion = versions.reduce((max, item) => Math.max(max, item.version_number), 0) + 1;
+  const { data, error } = await supabase()
+    .from('prompt_template_versions')
+    .insert({
+      template_key: templateKey,
+      version_number: nextVersion,
+      content,
+      note,
+    })
+    .select('id,template_key,version_number,content,note,created_at,published_at')
+    .single();
+  raise(error);
+  return assertData(data as PromptVersion | null, '创建 Prompt 版本失败');
+}
+
+export async function publishPromptVersion(templateKey: string, versionId: number): Promise<PromptTemplate> {
+  const published = await supabase()
+    .from('prompt_template_versions')
+    .update({ published_at: nowIso() })
+    .eq('id', versionId);
+  raise(published.error);
+
+  const { data, error } = await supabase()
+    .from('prompt_templates')
+    .update({
+      active_version_id: versionId,
+      updated_at: nowIso(),
+    })
+    .eq('template_key', templateKey)
+    .select('template_key,display_name,active_version_id,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as PromptTemplate | null, '发布 Prompt 版本失败');
 }

@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   Database,
+  FileText,
   Pause,
   Plus,
   RefreshCcw,
@@ -13,6 +14,10 @@ import {
   createAccount,
   deleteAccount as deleteAccountFromSupabase,
   loadDashboard,
+  listPromptTemplates,
+  listPromptVersions,
+  createPromptVersion,
+  publishPromptVersion,
   updateAccount,
   updateSettings,
   type Account,
@@ -20,6 +25,8 @@ import {
   type Attempt,
   type Settings,
   type TaskItem,
+  type PromptTemplate,
+  type PromptVersion,
 } from './xCaptureStore';
 
 const emptySettings: Settings = {
@@ -47,6 +54,7 @@ export function App() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [view, setView] = useState<'x' | 'prompts'>('x');
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [newAccount, setNewAccount] = useState({
@@ -54,6 +62,12 @@ export function App() {
     display_name: '',
     interval_seconds: '',
   });
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [selectedPromptKey, setSelectedPromptKey] = useState('');
+  const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
+  const [promptContent, setPromptContent] = useState('');
+  const [promptNote, setPromptNote] = useState('');
+  const [savingPrompt, setSavingPrompt] = useState(false);
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const latestAttempt = attempts[0];
@@ -78,6 +92,25 @@ export function App() {
     setLoading(false);
   }
 
+  async function loadPrompts(nextSelectedKey?: string) {
+    setError('');
+    const templates = await listPromptTemplates();
+    setPromptTemplates(templates);
+    const key = nextSelectedKey || selectedPromptKey || templates[0]?.template_key || '';
+    setSelectedPromptKey(key);
+    if (!key) {
+      setPromptVersions([]);
+      setPromptContent('');
+      return;
+    }
+    const versions = await listPromptVersions(key);
+    setPromptVersions(versions);
+    const activeId = templates.find((template) => template.template_key === key)?.active_version_id;
+    const active = versions.find((version) => version.id === activeId) || versions[0];
+    setPromptContent(active?.content ?? '');
+    setPromptNote('');
+  }
+
   useEffect(() => {
     loadAll().catch((err: Error) => {
       setError(err.message);
@@ -87,6 +120,10 @@ export function App() {
       loadAll().catch((err: Error) => setError(err.message));
     }, 10000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    loadPrompts().catch((err: Error) => setError(err.message));
   }, []);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
@@ -148,6 +185,38 @@ export function App() {
     }
   }
 
+  async function selectPrompt(templateKey: string) {
+    await loadPrompts(templateKey);
+  }
+
+  async function savePromptVersion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPromptKey) return;
+    setSavingPrompt(true);
+    setError('');
+    try {
+      const version = await createPromptVersion(selectedPromptKey, promptContent, promptNote || null);
+      await publishPromptVersion(selectedPromptKey, version.id);
+      setMessage(`Prompt 已发布为 v${version.version_number}`);
+      await loadPrompts(selectedPromptKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingPrompt(false);
+    }
+  }
+
+  async function publishExistingVersion(version: PromptVersion) {
+    setError('');
+    try {
+      await publishPromptVersion(version.template_key, version.id);
+      setMessage(`已发布 v${version.version_number}`);
+      await loadPrompts(version.template_key);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -155,14 +224,17 @@ export function App() {
           <div className="brandMark">O</div>
           <div>
             <strong>OdAIly</strong>
-            <span>X Capture</span>
+            <span>{view === 'x' ? 'X Capture' : 'Prompt'}</span>
           </div>
         </div>
         <nav>
-          <a className="active" href="#accounts">
+          <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('x')}>
             <Activity size={18} /> 账号
-          </a>
-          <a href="#tasks">
+          </button>
+          <button className={view === 'x' ? 'navItem' : 'navItem active'} type="button" onClick={() => setView('prompts')}>
+            <FileText size={18} /> Prompt
+          </button>
+          <a href="#tasks" onClick={() => setView('x')}>
             <Database size={18} /> 入库
           </a>
         </nav>
@@ -171,10 +243,19 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <div>
-            <h1>X 抓取控制台</h1>
-            <p>{enabledCount} 个启用账号 · 全局 {settings.global_interval_seconds}s</p>
+            <h1>{view === 'x' ? 'X 抓取控制台' : 'Prompt 编制'}</h1>
+            <p>
+              {view === 'x'
+                ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
+                : `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`}
+            </p>
           </div>
-          <button className="iconButton" type="button" onClick={() => loadAll()} title="刷新">
+          <button
+            className="iconButton"
+            type="button"
+            onClick={() => (view === 'x' ? loadAll() : loadPrompts(selectedPromptKey))}
+            title="刷新"
+          >
             <RefreshCcw size={18} />
           </button>
         </header>
@@ -185,8 +266,10 @@ export function App() {
           </div>
         )}
 
-        <section className="toolbarBand">
-          <form className="settingsForm" onSubmit={saveSettings}>
+        {view === 'x' ? (
+          <>
+            <section className="toolbarBand">
+              <form className="settingsForm" onSubmit={saveSettings}>
             <label>
               <span>全局频率</span>
               <input
@@ -223,10 +306,10 @@ export function App() {
             <button className="primaryButton" type="submit" disabled={savingSettings}>
               <Save size={17} /> 保存
             </button>
-          </form>
-        </section>
+              </form>
+            </section>
 
-        <section id="accounts" className="section">
+            <section id="accounts" className="section">
           <div className="sectionHeader">
             <h2>账号规则</h2>
             <span>{loading ? '加载中' : `${accounts.length} 个账号`}</span>
@@ -267,9 +350,9 @@ export function App() {
               />
             ))}
           </div>
-        </section>
+            </section>
 
-        <section id="tasks" className="section">
+            <section id="tasks" className="section">
           <div className="sectionHeader">
             <h2>最近入库</h2>
             <span>{tasks.length} 条</span>
@@ -289,7 +372,24 @@ export function App() {
               </article>
             ))}
           </div>
-        </section>
+            </section>
+          </>
+        ) : (
+          <PromptPanel
+            templates={promptTemplates}
+            selectedKey={selectedPromptKey}
+            versions={promptVersions}
+            content={promptContent}
+            note={promptNote}
+            saving={savingPrompt}
+            onSelect={selectPrompt}
+            onContentChange={setPromptContent}
+            onNoteChange={setPromptNote}
+            onSave={savePromptVersion}
+            onPublish={publishExistingVersion}
+            onRefresh={() => loadPrompts(selectedPromptKey)}
+          />
+        )}
       </main>
 
       <aside className="rightRail">
@@ -321,6 +421,99 @@ export function App() {
         </div>
       </aside>
     </div>
+  );
+}
+
+function PromptPanel({
+  templates,
+  selectedKey,
+  versions,
+  content,
+  note,
+  saving,
+  onSelect,
+  onContentChange,
+  onNoteChange,
+  onSave,
+  onPublish,
+  onRefresh,
+}: {
+  templates: PromptTemplate[];
+  selectedKey: string;
+  versions: PromptVersion[];
+  content: string;
+  note: string;
+  saving: boolean;
+  onSelect: (templateKey: string) => Promise<void>;
+  onContentChange: (value: string) => void;
+  onNoteChange: (value: string) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onPublish: (version: PromptVersion) => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  const selected = templates.find((template) => template.template_key === selectedKey);
+  const activeVersion = versions.find((version) => version.id === selected?.active_version_id);
+
+  return (
+    <section className="promptLayout">
+      <aside className="promptList">
+        <div className="sectionHeader">
+          <h2>模板</h2>
+          <button className="iconButton" type="button" onClick={() => onRefresh()} title="刷新 Prompt">
+            <RefreshCcw size={17} />
+          </button>
+        </div>
+        {templates.length === 0 && <div className="emptyState">暂无 Prompt 模板，请先运行 x-process-init-db。</div>}
+        {templates.map((template) => (
+          <button
+            key={template.template_key}
+            className={template.template_key === selectedKey ? 'promptTab active' : 'promptTab'}
+            type="button"
+            onClick={() => onSelect(template.template_key)}
+          >
+            <strong>{template.display_name}</strong>
+            <span>{template.template_key}</span>
+          </button>
+        ))}
+      </aside>
+
+      <form className="promptEditor" onSubmit={onSave}>
+        <div className="sectionHeader">
+          <div>
+            <h2>{selected?.display_name || '选择模板'}</h2>
+            <span>当前版本 {activeVersion ? `v${activeVersion.version_number}` : '-'}</span>
+          </div>
+          <button className="primaryButton" type="submit" disabled={!selectedKey || saving}>
+            <Save size={17} /> 发布新版本
+          </button>
+        </div>
+        <textarea
+          value={content}
+          onChange={(event) => onContentChange(event.target.value)}
+          placeholder="Prompt 内容"
+          spellCheck={false}
+        />
+        <input value={note} onChange={(event) => onNoteChange(event.target.value)} placeholder="版本备注" />
+      </form>
+
+      <aside className="versionList">
+        <h2>版本</h2>
+        {versions.length === 0 && <div className="emptyState compact">暂无版本。</div>}
+        {versions.map((version) => (
+          <article className="versionItem" key={version.id}>
+            <div>
+              <strong>v{version.version_number}</strong>
+              {version.id === selected?.active_version_id && <span className="ok">当前</span>}
+            </div>
+            <p>{version.note || '无备注'}</p>
+            <small>{fmtTime(version.created_at)}</small>
+            <button className="iconButton" type="button" onClick={() => onPublish(version)} title="发布此版本">
+              <Zap size={16} />
+            </button>
+          </article>
+        ))}
+      </aside>
+    </section>
   );
 }
 

@@ -17,7 +17,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -69,18 +70,23 @@ nav {
   gap: 6px;
 }
 
-nav a {
+nav a,
+.navItem {
   display: flex;
   align-items: center;
   gap: 8px;
   min-height: 38px;
   padding: 0 10px;
   border-radius: 8px;
+  border: 0;
+  background: transparent;
   color: #4b5563;
+  cursor: pointer;
   text-decoration: none;
 }
 
-nav a.active {
+nav a.active,
+.navItem.active {
   background: #e8f5ef;
   color: #0f7a55;
 }
@@ -166,17 +172,29 @@ label {
   font-size: 12px;
 }
 
-input {
+input,
+textarea {
   width: 100%;
-  min-height: 36px;
   border: 1px solid #d6dbe1;
   border-radius: 6px;
-  padding: 0 10px;
   background: #ffffff;
   color: #1f2933;
 }
 
-input:focus {
+input {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+textarea {
+  min-height: 520px;
+  padding: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+input:focus,
+textarea:focus {
   border-color: #0f8a5f;
   outline: 2px solid #d9f1e6;
 }
@@ -355,6 +373,76 @@ input:focus {
   margin-top: 16px;
 }
 
+.promptLayout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 220px;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.promptList,
+.promptEditor,
+.versionList {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.promptList,
+.versionList {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.promptTab {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #394150;
+  cursor: pointer;
+  padding: 10px;
+  text-align: left;
+}
+
+.promptTab.active {
+  border-color: #86c8a7;
+  background: #eef9f3;
+}
+
+.promptTab span,
+.promptEditor .sectionHeader span,
+.versionItem p,
+.versionItem small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.promptEditor {
+  display: grid;
+  gap: 10px;
+}
+
+.versionItem {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #e5e8ec;
+  border-radius: 8px;
+}
+
+.versionItem div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .attemptItem {
   display: grid;
   gap: 4px;
@@ -394,11 +482,13 @@ input:focus {
   }
 
   .brand div:last-child,
-  nav a {
+  nav a,
+  .navItem {
     font-size: 0;
   }
 
-  nav a {
+  nav a,
+  .navItem {
     justify-content: center;
     padding: 0;
   }
@@ -438,7 +528,8 @@ input:focus {
 
   .settingsForm,
   .addAccount,
-  .accountRow {
+  .accountRow,
+  .promptLayout {
     grid-template-columns: 1fr;
   }
 

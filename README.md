@@ -99,6 +99,47 @@ The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
 directly through Supabase. The worker listens on Postgres
 `x_capture_config_changed` notifications and does not expose a console port.
 
+## X Processing Pipeline
+
+The X processing pipeline consumes new X `tasks`, classifies the news type,
+skips the search stage for v1, writes the draft with the active prompt
+version, applies deterministic formatting, pushes to the backend with
+`isPublish=false`, and sends a Telegram group notice.
+
+Initialize the processing schema and seed prompts from `docs/*.txt`:
+
+```powershell
+python backend\src\main.py x-process-init-db
+```
+
+This command deletes existing X `pending` tasks by default so old backlog does
+not flow into the new pipeline. Use `--skip-clear-pending` only when you want
+to keep the backlog.
+
+Run each stage as its own worker:
+
+```powershell
+python backend\src\main.py x-process-worker --stage judge
+python backend\src\main.py x-process-worker --stage search
+python backend\src\main.py x-process-worker --stage write
+python backend\src\main.py x-process-worker --stage format_publish
+```
+
+Required runtime env:
+
+```text
+OPENAI_API_KEY=
+X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
+X_PROCESS_WRITER_MODEL=gpt-5.5
+X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+The Vite console also includes Prompt editing and publishing. Publishing a
+prompt version updates `prompt_templates.active_version_id`; workers listen for
+`prompt_config_changed` and refresh prompt cache.
+
 ## Linux Service
 
 Use `/opt/OdAIly` for deployment and `deploy/odaily-worker.service` as the

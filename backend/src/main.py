@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from packages.common.config import load_gate_settings, load_settings  # noqa: E402
+from packages.common.config import load_x_processing_settings  # noqa: E402
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
 from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
 from packages.tasks.registry import TASKS, run_task_once  # noqa: E402
@@ -41,6 +42,23 @@ def parse_args() -> argparse.Namespace:
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
+    x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
+    x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    x_process_init.add_argument(
+        "--skip-clear-pending",
+        action="store_true",
+        help="Do not delete existing X pending tasks during initialization.",
+    )
+
+    x_process_worker = subparsers.add_parser("x-process-worker", help="Run an X processing stage worker.")
+    x_process_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    x_process_worker.add_argument(
+        "--stage",
+        choices=["judge", "search", "write", "format_publish"],
+        required=True,
+    )
+    x_process_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
 
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
@@ -152,6 +170,38 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def x_process_init_db_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.repository import PostgresXProcessingRepository
+
+    paths = get_paths()
+    repository = PostgresXProcessingRepository(args.database_url)
+    repository.init_schema()
+    repository.seed_prompt_templates(root_dir=paths.root_dir)
+    deleted = 0 if args.skip_clear_pending else repository.clear_old_pending_x_tasks()
+    print(f"[odaily] x-processing database schema initialized. deleted_pending={deleted}")
+    return 0
+
+
+def x_process_worker_command(args: argparse.Namespace) -> int:
+    from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
+
+    repository = PostgresXProcessingRepository(args.database_url)
+    worker = XProcessingWorker(
+        stage=args.stage,
+        repository=repository,
+        settings=load_x_processing_settings(),
+    )
+    if args.once:
+        result = worker.run_once()
+        print(
+            f"[odaily] x-processing once stage={result.stage} "
+            f"processed={result.processed} failed={result.failed} message={result.message}"
+        )
+        return result.exit_code
+    worker.run_forever()
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -163,6 +213,10 @@ def main() -> int:
             return x_init_db_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
+        if args.command == "x-process-init-db":
+            return x_process_init_db_command(args)
+        if args.command == "x-process-worker":
+            return x_process_worker_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:
