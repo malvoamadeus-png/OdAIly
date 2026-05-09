@@ -63,6 +63,13 @@ class DashScopeEmbeddingClient:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        batch_size = 10
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), batch_size):
+            vectors.extend(self._embed_batch(texts[start : start + batch_size]))
+        return vectors
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         payload = {"model": self.model, "input": texts}
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
@@ -76,7 +83,11 @@ class DashScopeEmbeddingClient:
                     },
                     timeout=self.timeout_seconds,
                 )
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    message = response.text.strip().replace("\n", " ")[:500]
+                    raise RuntimeError(
+                        f"{response.status_code} Client Error from DashScope embeddings: {message}"
+                    )
                 return extract_embeddings(response.json())
             except Exception as exc:
                 last_error = exc

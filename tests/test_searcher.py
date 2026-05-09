@@ -14,8 +14,10 @@ from packages.x_processing.searcher import (
 
 
 class FakeResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], *, status_code: int = 200, text: str = "ok") -> None:
         self.payload = payload
+        self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self) -> None:
         return None
@@ -56,6 +58,52 @@ def test_dashscope_embedding_client_uses_compatible_endpoint(monkeypatch) -> Non
     assert calls[0]["url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
     assert calls[0]["headers"]["Authorization"] == "Bearer dash-key"
     assert calls[0]["json"] == {"model": "text-embedding-v4", "input": ["hello"]}
+
+
+def test_dashscope_embedding_client_batches_requests(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_post(url, **kwargs):
+        texts = kwargs["json"]["input"]
+        calls.append(texts)
+        return FakeResponse({"data": [{"index": index, "embedding": [float(index)]} for index in range(len(texts))]})
+
+    monkeypatch.setattr("packages.x_processing.searcher.requests.post", fake_post)
+    client = DashScopeEmbeddingClient(
+        api_key="dash-key",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="text-embedding-v4",
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    vectors = client.embed([f"text {index}" for index in range(21)])
+
+    assert len(vectors) == 21
+    assert [len(batch) for batch in calls] == [10, 10, 1]
+
+
+def test_dashscope_embedding_client_includes_error_body(monkeypatch) -> None:
+    def fake_post(url, **kwargs):
+        return FakeResponse({}, status_code=400, text='{"message":"too many inputs"}')
+
+    monkeypatch.setattr("packages.x_processing.searcher.requests.post", fake_post)
+    client = DashScopeEmbeddingClient(
+        api_key="dash-key",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model="text-embedding-v4",
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    try:
+        client.embed(["hello"])
+    except RuntimeError as exc:
+        assert "too many inputs" in str(exc)
+    else:
+        raise AssertionError("DashScope 400 should fail with response body")
 
 
 def test_search_cache_reuses_embedding_by_content_hash(tmp_path: Path) -> None:
