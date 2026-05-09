@@ -42,6 +42,21 @@ class RetrySettings(BaseModel):
     backoff_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
 
 
+class XCaptureWorkerSettings(BaseModel):
+    attempt_retention_days: int = Field(default=3, ge=1, le=3650)
+
+
+def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
+    load_dotenv()
+    payload = {
+        "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 3,
+    }
+    try:
+        return XCaptureWorkerSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid X capture worker settings: {exc}") from exc
+
+
 class MarketBriefSettings(BaseModel):
     watchlist: list[str] = Field(default_factory=lambda: list(DEFAULT_WATCHLIST))
     market_data_sources: list[Literal["yahoo_quote", "yahoo_chart", "finnhub"]] = Field(
@@ -227,6 +242,12 @@ class XProcessingSettings(BaseModel):
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     judge_model: str = "gpt-5.4-mini"
     writer_model: str = "gpt-5.5"
+    dashscope_api_key: str | None = None
+    search_embedding_model: str = "text-embedding-v4"
+    search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    search_window_hours: int = Field(default=24, ge=1, le=168)
+    search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
+    search_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
@@ -255,6 +276,12 @@ def load_x_processing_settings() -> XProcessingSettings:
         "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
         "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
+        "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
+        "search_embedding_model": os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
+        "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "search_window_hours": int(os.getenv("SEARCH_WINDOW_HOURS") or 24),
+        "search_duplicate_threshold": float(os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88),
+        "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.78),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
         "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),
@@ -270,3 +297,27 @@ def load_x_processing_settings() -> XProcessingSettings:
         return XProcessingSettings.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"Invalid X processing settings: {exc}") from exc
+
+
+class CompetitorMonitorSettings(BaseModel):
+    blockbeats_api_key: str | None = None
+    fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+
+
+def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
+    load_dotenv()
+    payload = {
+        "blockbeats_api_key": os.getenv("BLOCKBEATS_API_KEY") or None,
+        "fetch_interval_seconds": int(os.getenv("COMPETITOR_FETCH_INTERVAL_SECONDS") or 60),
+        "request_timeout_seconds": float(os.getenv("COMPETITOR_REQUEST_TIMEOUT_SECONDS") or 20.0),
+        "retry": {
+            "max_attempts": int(os.getenv("COMPETITOR_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("COMPETITOR_BACKOFF_SECONDS") or 1.0),
+        },
+    }
+    try:
+        return CompetitorMonitorSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid competitor monitor settings: {exc}") from exc

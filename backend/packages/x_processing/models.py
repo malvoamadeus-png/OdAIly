@@ -6,10 +6,17 @@ from typing import Any, Literal
 
 
 NewsType = Literal["regular", "onchain", "funding"]
+JudgeRoute = Literal["regular", "onchain", "funding", "discard"]
+DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
 ProcessingStage = Literal["judge", "search", "write", "format_publish"]
 
 
 NEWS_TYPES: set[str] = {"regular", "onchain", "funding"}
+JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "discard"}
+DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"}
+COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
+ODAILY_REFERENCE_SOURCE = "odaily"
+PROCESSING_SOURCES: set[str] = {"x", *COMPETITOR_SOURCES}
 
 
 PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
@@ -43,6 +50,7 @@ class TaskRecord:
     source_url: str | None
     title: str | None
     content: str
+    published_at: datetime | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     status: str = "pending"
@@ -54,6 +62,7 @@ class TaskRecord:
 class PipelineRecord:
     task_id: int
     news_type: NewsType | None = None
+    candidate_id: int | None = None
     prompt_template_key: str | None = None
     prompt_version_id: int | None = None
     draft_title: str | None = None

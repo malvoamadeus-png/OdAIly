@@ -5,6 +5,7 @@ import os
 import select
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -13,12 +14,35 @@ from packages.publisher import PushClient
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
 from .formatter import format_brief, parse_draft_output
-from .models import NEWS_TYPES, PROMPT_KEY_BY_NEWS_TYPE, NewsType, ProcessingStage, StageRunResult, TaskRecord
+from .models import (
+    COMPETITOR_SOURCES,
+    DISCARD_TYPES,
+    JUDGE_ROUTES,
+    NEWS_TYPES,
+    PROMPT_KEY_BY_NEWS_TYPE,
+    DiscardType,
+    JudgeRoute,
+    NewsType,
+    ProcessingStage,
+    StageRunResult,
+    TaskRecord,
+)
 from .repository import (
     PROMPT_NOTIFY_CHANNEL,
     TASK_NOTIFY_CHANNEL,
     PostgresXProcessingRepository,
     XProcessingRepository,
+)
+from .searcher import (
+    AI_REVIEW_SCHEMA,
+    CachedEmbeddingService,
+    DashScopeEmbeddingClient,
+    SearchCache,
+    SearchDecision,
+    SearchDocument,
+    build_ai_review_prompt,
+    parse_ai_review_output,
+    top_match,
 )
 from .telegram import TelegramClient
 
@@ -29,20 +53,55 @@ class HandledStageError(RuntimeError):
 
 JUDGE_JSON_SCHEMA = {
     "type": "json_schema",
-    "name": "x_news_type",
+    "name": "x_judge_route",
     "schema": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "news_type": {
+            "route": {
                 "type": "string",
-                "enum": ["regular", "onchain", "funding"],
-            }
+                "enum": ["regular", "onchain", "funding", "discard"],
+            },
+            "discard_type": {
+                "type": "string",
+                "enum": ["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"],
+            },
         },
-        "required": ["news_type"],
+        "required": ["route", "discard_type"],
     },
     "strict": True,
 }
+
+
+JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对一条候选内容做第一道轻量判断。
+
+请严格分两步判断：
+1. 先判断它是否属于可丢弃内容。
+2. 如果不属于可丢弃内容，再判断它应该进入 regular、onchain、funding 哪类快讯模板。
+
+可丢弃内容只有四类：
+- pure_emotion：纯情绪表达，没有可报道事实。例如“你应该购买更多的 BTC”“ETH 要起飞了”“太牛了”。
+- baseless_trading_call：无逻辑的纯粹喊单、价格口号或无事实支撑的涨跌判断。例如“买入 SOL”“BTC 很快到 20 万美元”。
+- daily_chatter：寒暄、日常状态、meme、节日祝福、无新闻事实的社区闲聊。
+- non_crypto_ai：AI 泛科技内容，且不属于当前自动快讯流水线需要处理的 Crypto 新闻。
+
+不要因为内容有主观语气、营销语气或表达不规范就直接丢弃；只要有明确主体、明确动作和可报道结果，就进入后续新闻流水线。
+
+路由规则：
+- regular：常规加密行业快讯，包括项目、交易所、监管、公司、产品、合作、公告、市场事件等。
+- onchain：链上快讯，包括链上交易、地址、合约、资金流、清算、攻击、安全事件、链上数据变化等。
+- funding：融资快讯，包括融资、投资、收购、基金、估值、投资机构参与等。
+- discard：只用于上面四类可丢弃内容。
+
+只输出 JSON，不输出解释文本。格式必须为：
+{{"route":"regular|onchain|funding|discard","discard_type":"none|pure_emotion|baseless_trading_call|daily_chatter|non_crypto_ai"}}
+
+如果 route 不是 discard，discard_type 必须是 none。
+
+作者：{author}
+来源类型：{source_kind}
+内容：{content}
+"""
 
 
 class XProcessingWorker:
@@ -53,6 +112,8 @@ class XProcessingWorker:
         repository: XProcessingRepository,
         settings: XProcessingSettings,
         ai_client: TextGenerationClient | None = None,
+        search_embedding_service: CachedEmbeddingService | None = None,
+        search_ai_client: TextGenerationClient | None = None,
         push_client: PushClient | None = None,
         telegram_client: TelegramClient | None = None,
         worker_id: str | None = None,
@@ -69,7 +130,12 @@ class XProcessingWorker:
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
 
-        self.ai_client = ai_client or self._build_ai_client() if stage in {"judge", "write"} else ai_client
+        self.ai_client = (ai_client or self._build_ai_client()) if stage in {"judge", "write"} else ai_client
+        self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
+        self.search_ai_client = (
+            search_ai_client
+            or ((ai_client or self._build_ai_client()) if stage == "search" and settings.openai_api_key else ai_client)
+        )
         self.push_client = push_client or PushClient(
             endpoint=str(settings.push_endpoint),
             timeout_seconds=settings.request_timeout_seconds,
@@ -95,6 +161,21 @@ class XProcessingWorker:
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
         )
+
+    def _build_embedding_service(self) -> CachedEmbeddingService:
+        if not self.settings.dashscope_api_key:
+            raise RuntimeError("Missing DASHSCOPE_API_KEY")
+        from packages.common.paths import get_paths
+
+        client = DashScopeEmbeddingClient(
+            api_key=self.settings.dashscope_api_key,
+            base_url=str(self.settings.search_embedding_base_url),
+            model=self.settings.search_embedding_model,
+            timeout_seconds=self.settings.request_timeout_seconds,
+            max_attempts=self.settings.retry.max_attempts,
+            backoff_seconds=self.settings.retry.backoff_seconds,
+        )
+        return CachedEmbeddingService(client=client, cache=SearchCache(get_paths().searcher_cache_path))
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -135,7 +216,7 @@ class XProcessingWorker:
         if self.stage == "judge":
             self._run_judge(task)
         elif self.stage == "search":
-            self.repository.complete_search(task.id)
+            self._run_search(task)
         elif self.stage == "write":
             self._run_write(task)
         elif self.stage == "format_publish":
@@ -144,23 +225,119 @@ class XProcessingWorker:
             raise ValueError(f"unknown stage: {self.stage}")
 
     def _run_judge(self, task: TaskRecord) -> None:
-        prompt = (
-            "你是 Odaily 快讯分类器。只判断这条 X 内容应该进入哪个快讯模板。\n"
-            "只能输出 JSON：{\"news_type\":\"regular|onchain|funding\"}。\n\n"
-            f"作者：{task.metadata.get('author_display_name') or task.metadata.get('author_username') or ''}\n"
-            f"内容：{task.content}\n"
+        prompt = JUDGE_PROMPT_TEMPLATE.format(
+            author=task.metadata.get("author_display_name") or task.metadata.get("author_username") or "",
+            source_kind="信源" if is_competitor_task(task) else "X",
+            content=task.content,
         )
         raw_output = self.ai_client.generate_text(
             model=self.settings.judge_model,
             prompt=prompt,
             text_format=JUDGE_JSON_SCHEMA,
         )
-        news_type = parse_news_type(raw_output)
-        self.repository.complete_judge(
-            task.id,
-            news_type=news_type,
+        route, discard_type = parse_judge_route(raw_output)
+        if route == "discard":
+            self.repository.complete_judge_discard(
+                task.id,
+                discard_type=discard_type,
+                model=self.settings.judge_model,
+                raw_output=raw_output,
+            )
+        else:
+            self.repository.complete_judge(
+                task.id,
+                news_type=route,
+                model=self.settings.judge_model,
+                raw_output=raw_output,
+            )
+
+    def _run_search(self, task: TaskRecord) -> None:
+        if self.search_embedding_service is None:
+            raise RuntimeError("search embedding service is not configured")
+        query = SearchDocument(
+            doc_type="task",
+            doc_id=str(task.id),
+            title=task.title,
+            content=task.content,
+            source=task.source,
+            source_url=task.source_url,
+            task_id=task.id,
+            published_at=task.published_at,
+            metadata=task.metadata,
+        )
+        cache = getattr(self.search_embedding_service, "cache", None)
+        if cache is not None and hasattr(cache, "upsert_document"):
+            cache.upsert_document(query)
+        query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
+        since = utc_since_hours(self.settings.search_window_hours)
+        odaily_match = top_match(
+            query_vector,
+            self.search_embedding_service.embed_documents(self.repository.list_odaily_reference_documents(since=since)),
+        )
+        decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
+        if decision is None:
+            candidate_match = top_match(
+                query_vector,
+                self.search_embedding_service.embed_documents(self.repository.list_active_candidate_documents()),
+            )
+            decision = self._decide_match(query=query, match=candidate_match, target_type="inflight_candidate")
+        if decision and decision.is_duplicate:
+            result = decision.to_result()
+            if decision.candidate_id is not None:
+                self.repository.link_task_to_candidate(task, candidate_id=decision.candidate_id, search_result=result)
+            self.repository.complete_search_duplicate(task.id, result=result)
+            return
+        result = {
+            "is_duplicate": False,
+            "duplicate_target_type": "none",
+            "duplicate_target_id": None,
+            "reason": "no_match",
+        }
+        candidate_id, is_primary = self.repository.create_candidate_for_task(task, search_result=result)
+        if not is_primary:
+            duplicate_result = {
+                **result,
+                "is_duplicate": True,
+                "duplicate_target_type": "inflight_candidate",
+                "duplicate_target_id": str(candidate_id),
+                "reason": "same_event",
+                "candidate_id": candidate_id,
+            }
+            self.repository.complete_search_duplicate(task.id, result=duplicate_result)
+            return
+        self.repository.complete_search_ready(task.id, candidate_id=candidate_id, result={**result, "candidate_id": candidate_id})
+
+    def _decide_match(self, *, query: SearchDocument, match, target_type: str) -> SearchDecision | None:
+        if match is None:
+            return None
+        candidate_id = match.document.candidate_id if target_type == "inflight_candidate" else None
+        if match.similarity >= self.settings.search_duplicate_threshold:
+            return SearchDecision(
+                is_duplicate=True,
+                duplicate_target_type=target_type,
+                duplicate_target_id=match.document.doc_id,
+                reason="same_event",
+                similarity=match.similarity,
+                candidate_id=candidate_id,
+            )
+        if match.similarity < self.settings.search_ai_review_threshold or self.search_ai_client is None:
+            return None
+        raw_output = self.search_ai_client.generate_text(
             model=self.settings.judge_model,
-            raw_output=raw_output,
+            prompt=build_ai_review_prompt(query=query, match=match),
+            text_format=AI_REVIEW_SCHEMA,
+        )
+        payload = parse_ai_review_output(raw_output)
+        is_duplicate = bool(payload.get("is_duplicate"))
+        duplicate_type = str(payload.get("duplicate_target_type") or "none")
+        return SearchDecision(
+            is_duplicate=is_duplicate,
+            duplicate_target_type=duplicate_type if is_duplicate else "none",
+            duplicate_target_id=str((payload.get("duplicate_target_id") or match.document.doc_id) if is_duplicate else ""),
+            reason=str(payload.get("reason") or "unrelated"),
+            similarity=match.similarity,
+            candidate_id=candidate_id if is_duplicate and duplicate_type == "inflight_candidate" else None,
+            raw_ai_output=raw_output,
         )
 
     def _run_write(self, task: TaskRecord) -> None:
@@ -169,15 +346,7 @@ class XProcessingWorker:
             raise ValueError("missing news_type")
         template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
         prompt = self._get_prompt(template_key)
-        author = task.metadata.get("author_display_name") or task.metadata.get("author_username") or task.title or "Odaily"
-        input_prompt = (
-            f"{prompt.content}\n\n"
-            "【待处理原文】\n"
-            f"发布人：{author}\n"
-            f"来源链接：{task.source_url or ''}\n"
-            f"原文内容：{task.content}\n\n"
-            "请严格输出一行标题、空一行、正文。不要输出解释。"
-        )
+        input_prompt = build_writer_prompt(task=task, prompt_content=prompt.content)
         raw_output = self.ai_client.generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
@@ -206,13 +375,14 @@ class XProcessingWorker:
             title=final.title,
             content=final.content,
             dry_run=self.settings.dry_run,
+            source_url=None if is_competitor_task(task) else task.source_url,
         )
         if not push_result.ok:
             error = push_result.error or "push failed"
             self.repository.fail_task(task.id, stage=self.stage, error=error, status="publish_failed")
             raise HandledStageError(error)
         telegram_result = self.telegram_client.send_message(
-            build_telegram_notice(title=final.title, source_url=task.source_url)
+            build_telegram_notice(title=final.title, source_url=None if is_competitor_task(task) else task.source_url)
         )
         self.repository.complete_format_publish(
             task.id,
@@ -264,6 +434,43 @@ class XProcessingWorker:
 
 
 def parse_news_type(value: str) -> NewsType:
+    route, _discard_type = parse_judge_route(value)
+    if route == "discard":
+        raise ValueError("discard route does not have a news_type")
+    return route
+
+
+def is_competitor_task(task: TaskRecord) -> bool:
+    return task.source in COMPETITOR_SOURCES
+
+
+def utc_since_hours(hours: int) -> datetime:
+    return datetime.now(UTC) - timedelta(hours=hours)
+
+
+def build_writer_prompt(*, task: TaskRecord, prompt_content: str) -> str:
+    if is_competitor_task(task):
+        return (
+            f"{prompt_content}\n\n"
+            "【信源材料】\n"
+            "来源类型：信源\n"
+            f"标题：{task.title or ''}\n"
+            f"正文：{task.content}\n\n"
+            "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
+            "请严格输出一行标题、空一行、正文。"
+        )
+    author = task.metadata.get("author_display_name") or task.metadata.get("author_username") or task.title or "Odaily"
+    return (
+        f"{prompt_content}\n\n"
+        "【待处理原文】\n"
+        f"发布人：{author}\n"
+        f"来源链接：{task.source_url or ''}\n"
+        f"原文内容：{task.content}\n\n"
+        "请严格输出一行标题、空一行、正文。不要输出解释。"
+    )
+
+
+def parse_judge_route(value: str) -> tuple[JudgeRoute, DiscardType]:
     text = value.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -276,10 +483,23 @@ def parse_news_type(value: str) -> NewsType:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError("judge output must be valid JSON") from exc
-    news_type = payload.get("news_type") if isinstance(payload, dict) else None
-    if news_type not in NEWS_TYPES:
-        raise ValueError(f"invalid news_type: {news_type}")
-    return news_type
+    if not isinstance(payload, dict):
+        raise ValueError("judge output must be a JSON object")
+    if "route" in payload:
+        route = payload.get("route")
+        discard_type = payload.get("discard_type")
+    else:
+        route = payload.get("news_type")
+        discard_type = "none"
+    if route not in JUDGE_ROUTES:
+        raise ValueError(f"invalid route: {route}")
+    if discard_type not in DISCARD_TYPES:
+        raise ValueError(f"invalid discard_type: {discard_type}")
+    if route == "discard" and discard_type == "none":
+        raise ValueError("discard route requires a discard_type")
+    if route != "discard" and discard_type != "none":
+        raise ValueError("non-discard route requires discard_type none")
+    return route, discard_type
 
 
 def build_telegram_notice(*, title: str, source_url: str | None) -> str:

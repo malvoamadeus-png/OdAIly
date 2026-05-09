@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_url text,
     title text,
     content text NOT NULL,
+    published_at timestamptz,
     raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL DEFAULT 'pending',
@@ -70,6 +71,8 @@ CREATE TABLE IF NOT EXISTS x_capture_attempts (
     finished_at timestamptz NOT NULL,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS published_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS idx_x_capture_accounts_enabled ON x_capture_accounts(enabled);
 CREATE INDEX IF NOT EXISTS idx_x_seen_tweets_username ON x_seen_tweets(username_lower);

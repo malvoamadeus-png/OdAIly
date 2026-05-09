@@ -46,6 +46,7 @@ class XCaptureRepository(Protocol):
     def unseen_tweet_ids(self, tweet_ids: list[str]) -> set[str]: ...
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool: ...
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None: ...
+    def prune_attempts_before(self, cutoff: datetime) -> int: ...
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
     def list_recent_tasks(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
 
@@ -328,9 +329,9 @@ class PostgresXCaptureRepository:
             row = conn.execute(
                 """
                 INSERT INTO tasks (
-                    source, source_item_id, source_url, title, content, raw_payload, metadata, status
+                    source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
                 )
-                VALUES ('x', %(tweet_id)s, %(url)s, %(title)s, %(content)s, %(raw_payload)s, %(metadata)s, 'pending')
+                VALUES ('x', %(tweet_id)s, %(url)s, %(title)s, %(content)s, %(published_at)s, %(raw_payload)s, %(metadata)s, 'pending')
                 ON CONFLICT (source, source_item_id) DO NOTHING
                 RETURNING id
                 """,
@@ -339,6 +340,7 @@ class PostgresXCaptureRepository:
                     "url": record.url,
                     "title": f"@{record.author_username}: {record.text[:80]}",
                     "content": record.text,
+                    "published_at": record.created_at,
                     "raw_payload": self._Jsonb(payload["raw_payload"]),
                     "metadata": self._Jsonb(payload["metadata"]),
                 },
@@ -388,6 +390,19 @@ class PostgresXCaptureRepository:
                 },
             )
             conn.commit()
+
+    def prune_attempts_before(self, cutoff: datetime) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                DELETE FROM x_capture_attempts
+                WHERE started_at < %s
+                RETURNING id
+                """,
+                (cutoff,),
+            ).fetchall()
+            conn.commit()
+            return len(rows)
 
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -542,6 +557,7 @@ class InMemoryXCaptureRepository:
                 "source_url": record.url,
                 "title": f"@{record.author_username}: {record.text[:80]}",
                 "content": record.text,
+                "published_at": record.created_at,
                 "metadata": {**record.metadata, "account_id": account.id},
                 "status": "pending",
                 "created_at": utc_now(),
@@ -577,6 +593,11 @@ class InMemoryXCaptureRepository:
             payload["last_error"] = None if stats.status == "success" else stats.error
             payload["updated_at"] = utc_now()
             self.accounts[account.id] = XCaptureAccount(**payload)
+
+    def prune_attempts_before(self, cutoff: datetime) -> int:
+        before = len(self.attempts)
+        self.attempts = [attempt for attempt in self.attempts if attempt["started_at"] >= cutoff]
+        return before - len(self.attempts)
 
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]:
         return self.attempts[:limit]
@@ -630,6 +651,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_url text,
     title text,
     content text NOT NULL,
+    published_at timestamptz,
     raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL DEFAULT 'pending',
@@ -653,6 +675,8 @@ CREATE TABLE IF NOT EXISTS x_capture_attempts (
     finished_at timestamptz NOT NULL,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS published_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS idx_x_capture_accounts_enabled ON x_capture_accounts(enabled);
 CREATE INDEX IF NOT EXISTS idx_x_seen_tweets_username ON x_seen_tweets(username_lower);

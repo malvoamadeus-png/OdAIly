@@ -1,7 +1,7 @@
 # OdAIly
 
 OdAIly is a Python worker that generates market briefs and sends them to the
-Push Data API with `isPublish=false`.
+Push Data API with `isPublish=false` and `isPush=false`.
 
 ## Structure
 
@@ -41,10 +41,10 @@ python backend\src\main.py run-once --task gate-tradfi --kind morning --dry-run 
 
 ## Tasks And Schedules
 
-- `us-market close`: 08:00 Asia/Shanghai.
-- `us-market premarket`: 04:05 America/New_York.
+- `us-market close`: 09:00 Asia/Shanghai.
+- `us-market premarket`: manual `run-once` only; it is not scheduled.
 - `us-market open`: 09:31 America/New_York.
-- `gate-tradfi morning`: 08:00 Asia/Shanghai.
+- `gate-tradfi morning`: 09:00 Asia/Shanghai.
 - `gate-tradfi open`: 09:31 America/New_York.
 
 Weekend runs are skipped unless `--force` is passed. If Yahoo returns no valid
@@ -66,9 +66,14 @@ Every real request sends:
 {
   "title": "...",
   "content": "...",
-  "isPublish": false
+  "isPublish": false,
+  "isPush": false
 }
 ```
+
+X processing requests also include `sourceUrl` from the original X post. MSX
+and Gate generated briefs do not send `sourceUrl`, and no flow sends
+`imageUrl` unless it is explicitly added later.
 
 ## X Capture Console
 
@@ -99,17 +104,21 @@ The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
 directly through Supabase. The worker listens on Postgres
 `x_capture_config_changed` notifications and does not expose a console port.
 
-## X Processing Pipeline
+## X And Competitor Processing Pipeline
 
-The X processing pipeline consumes new X `tasks`, classifies the news type,
-skips the search stage for v1, writes the draft with the active prompt
-version, applies deterministic formatting, pushes to the backend with
-`isPublish=false`, and sends a Telegram group notice.
+The processing pipeline consumes X and competitor `tasks`. X tasks run through
+judge -> search -> write -> format/publish. Competitor tasks from BlockBeats,
+PANews, and Jinse run through search -> judge -> write -> format/publish.
+Odaily newsflashes are saved as reference material only and do not enter
+`tasks`. The search stage uses DashScope embeddings and suppresses duplicate
+Odaily or in-flight events before writing. Competitor URLs stay internal and
+are not sent to the backend or Telegram.
 
 Initialize the processing schema and seed prompts from `docs/*.txt`:
 
 ```powershell
 python backend\src\main.py x-process-init-db
+python backend\src\main.py competitor-init-db
 ```
 
 This command deletes existing X `pending` tasks by default so old backlog does
@@ -119,6 +128,7 @@ to keep the backlog.
 Run each stage as its own worker:
 
 ```powershell
+python backend\src\main.py competitor-monitor-worker
 python backend\src\main.py x-process-worker --stage judge
 python backend\src\main.py x-process-worker --stage search
 python backend\src\main.py x-process-worker --stage write
@@ -129,11 +139,20 @@ Required runtime env:
 
 ```text
 OPENAI_API_KEY=
+DASHSCOPE_API_KEY=
+BLOCKBEATS_API_KEY=
+X_CAPTURE_ATTEMPT_RETENTION_DAYS=3
 X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
 X_PROCESS_OPENAI_API_STYLE=responses
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
 X_PROCESS_WRITER_MODEL=gpt-5.5
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
+SEARCH_EMBEDDING_MODEL=text-embedding-v4
+SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+SEARCH_WINDOW_HOURS=24
+SEARCH_DUPLICATE_THRESHOLD=0.88
+SEARCH_AI_REVIEW_THRESHOLD=0.78
+COMPETITOR_FETCH_INTERVAL_SECONDS=60
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```

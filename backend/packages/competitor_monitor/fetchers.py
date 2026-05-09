@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+import requests
+
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/json,*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+BRAND_PATTERNS = [
+    r"BlockBeats\s*消息[，,]\s*\d{1,2}\s*月\s*\d{1,2}\s*日[，,]\s*",
+    r"PANews\s*\d{1,2}\s*月\s*\d{1,2}\s*日消息[，,]\s*",
+    r"金色财经报道[，,]?\s*(\d{1,2}\s*月\s*\d{1,2}\s*日[，,])?\s*",
+    r"Odaily\s*星球日报讯\s*",
+]
+COMPETITOR_BRAND_WORDS = ["律动", "BlockBeats", "PANews", "金色财经"]
+ODAILY_BRAND_WORDS = ["Odaily 星球日报讯", "Odaily星球日报讯"]
+
+
+@dataclass(frozen=True, slots=True)
+class NewsflashItem:
+    source: str
+    source_item_id: str
+    title: str
+    content: str
+    source_url: str | None = None
+    published_at: str | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text or "").strip()
+
+
+def clean_text(text: str) -> str:
+    junk = ["原文链接", "微信扫码", "分享划过弹出", "复制链接", "转发到微博", "重要快讯", "点赞", "收藏", "利好", "利空"]
+    for item in junk:
+        text = text.replace(item, "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def remove_media_prefix(text: str) -> str:
+    value = clean_text(strip_html(text))
+    for pattern in BRAND_PATTERNS:
+        value = re.sub(rf"^{pattern}", "", value, flags=re.IGNORECASE).strip()
+    value = re.sub(r"^据[^，,]{2,20}(报道|监测|数据|消息)[，,]\s*", "", value).strip()
+    return value
+
+
+def scrub_competitor_brands(text: str) -> str:
+    value = remove_media_prefix(text)
+    for word in COMPETITOR_BRAND_WORDS:
+        value = value.replace(word, "")
+    return clean_text(value)
+
+
+def normalize_item_content(title: str, content: str) -> str:
+    value = clean_text(strip_html(content))
+    if title and value.startswith(title):
+        value = value[len(title):].strip()
+    value = scrub_competitor_brands(value)
+    return value or scrub_competitor_brands(title)
+
+
+def stable_id(*parts: str) -> str:
+    return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def fetch_blockbeats(*, api_key: str | None, timeout_seconds: float) -> list[NewsflashItem]:
+    if not api_key:
+        raise RuntimeError("Missing BLOCKBEATS_API_KEY")
+    headers = dict(HEADERS)
+    headers["api-key"] = api_key
+    response = requests.get(
+        "https://api-pro.theblockbeats.info/v1/newsflash",
+        params={"page": 1, "size": 50, "lang": "cn"},
+        headers=headers,
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    news_list = _extract_list(payload)
+    items: list[NewsflashItem] = []
+    for news in news_list:
+        title = str(news.get("title") or news.get("name") or "").strip()
+        if not title:
+            continue
+        source_id = str(news.get("id") or news.get("flash_id") or news.get("newsflash_id") or stable_id("blockbeats", title))
+        content = normalize_item_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title))
+        published_at = str(news.get("create_time") or news.get("created_at") or news.get("publish_time") or news.get("published_at") or "")
+        source_url = str(news.get("url") or news.get("link") or f"https://www.theblockbeats.info/flash/{source_id}")
+        items.append(NewsflashItem("blockbeats", source_id, scrub_competitor_brands(title), content, source_url, published_at, news))
+    return items
+
+
+def fetch_panews(*, timeout_seconds: float) -> list[NewsflashItem]:
+    response = requests.get(
+        "https://universal-api.panewslab.com/articles",
+        params={"type": "NEWS", "isShowInList": "true", "take": 50, "skip": 0},
+        headers=HEADERS,
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    news_list = payload if isinstance(payload, list) else payload.get("data", [])
+    items: list[NewsflashItem] = []
+    for news in news_list:
+        if not isinstance(news, dict):
+            continue
+        title = str(news.get("title") or "").strip()
+        if not title:
+            continue
+        source_id = str(news.get("articleId") or news.get("id") or stable_id("panews", title))
+        content = normalize_item_content(title, str(news.get("content") or news.get("desc") or news.get("summary") or title))
+        source_url = f"https://www.panewslab.com/zh/articledetails/{source_id}.html"
+        items.append(NewsflashItem("panews", source_id, scrub_competitor_brands(title), content, source_url, str(news.get("publishedAt") or ""), news))
+    return items
+
+
+def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
+    response = requests.get("https://newapi.jinse2.com/noah/v1/breaking-news", headers=HEADERS, timeout=timeout_seconds)
+    response.raise_for_status()
+    payload = response.json()
+    items: list[NewsflashItem] = []
+    for news in payload.get("data", []):
+        if not isinstance(news, dict):
+            continue
+        title = str(news.get("title") or "").strip()
+        if not title:
+            continue
+        published_at = news.get("published_at") or ""
+        if isinstance(published_at, (int, float)) and published_at > 1000000000:
+            published_at = datetime.fromtimestamp(published_at).strftime("%Y-%m-%d %H:%M:%S")
+        source_id = str(news.get("id") or stable_id("jinse", title, str(published_at)))
+        content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
+        items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, news.get("jump_url") or "https://jinse2.com/lives", str(published_at), news))
+    return items
+
+
+def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:
+    response = requests.get(
+        "https://api.odaily.news/api/v1/newsflash",
+        params={"page": 1, "size": 50, "lang": "zh-cn"},
+        headers=HEADERS,
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items: list[NewsflashItem] = []
+    for news in _extract_list(payload):
+        title = str(news.get("title") or "").strip()
+        if not title:
+            continue
+        source_id = str(news.get("id") or news.get("newsflashId") or stable_id("odaily", title))
+        content = remove_odaily_prefix(normalize_item_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title)))
+        published_at = str(news.get("publishDate") or news.get("publishedAt") or news.get("createdAt") or news.get("createTime") or "")
+        source_url = str(news.get("sourceUrl") or news.get("link") or news.get("url") or f"https://www.odaily.news/zh-CN/newsflash/{source_id}")
+        items.append(NewsflashItem("odaily", source_id, title, content, source_url, published_at, news))
+    return items
+
+
+def _extract_list(payload: Any) -> list[dict[str, Any]]:
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        for key in ("list", "data", "items", "records", "rows"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def remove_odaily_prefix(text: str) -> str:
+    return re.sub(r"^Odaily\s*星球日报讯\s*", "", clean_text(strip_html(text)), flags=re.IGNORECASE).strip()

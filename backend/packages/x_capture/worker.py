@@ -6,12 +6,15 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .client import FXTwitterClient
 from .models import CaptureRunStats, TweetCandidate, XCaptureAccount, XCaptureSettings
 from .repository import CONFIG_NOTIFY_CHANNEL, PostgresXCaptureRepository, XCaptureRepository, utc_now
+
+
+FRESHNESS_WINDOW = timedelta(minutes=10)
 
 
 @dataclass(slots=True)
@@ -29,17 +32,22 @@ class XCaptureWorker:
         notify_wait_seconds: float = 5.0,
         notify_retry_seconds: float = 5.0,
         timeline_count: int = 20,
+        attempt_retention_days: int = 3,
+        attempt_prune_interval_seconds: float = 3600.0,
     ) -> None:
         self.repository = repository
         self.client = client or FXTwitterClient()
         self.notify_wait_seconds = notify_wait_seconds
         self.notify_retry_seconds = notify_retry_seconds
         self.timeline_count = timeline_count
+        self.attempt_retention_days = max(1, int(attempt_retention_days))
+        self.attempt_prune_interval_seconds = max(60.0, float(attempt_prune_interval_seconds))
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
         self._wake_event = threading.Event()
         self._next_due: dict[str, float] = {}
         self._snapshot = WorkerSnapshot(XCaptureSettings(), [])
+        self._last_attempt_prune_monotonic: float | None = None
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -66,12 +74,14 @@ class XCaptureWorker:
         return self._snapshot
 
     def run_once(self) -> list[CaptureRunStats]:
+        self._prune_attempts_if_due(force=True)
         snapshot = self.load_snapshot()
         return self._process_accounts(snapshot.accounts, snapshot.settings)
 
     def run_forever(self) -> None:
         snapshot = self.load_snapshot()
         notify_thread = self._start_notify_listener()
+        self._prune_attempts_if_due(force=True)
         print(
             "[odaily] x-capture worker started. "
             f"accounts={len(snapshot.accounts)} interval={snapshot.settings.global_interval_seconds}s"
@@ -85,6 +95,7 @@ class XCaptureWorker:
                     snapshot = self.load_snapshot()
                     print(f"[odaily] x-capture config loaded. accounts={len(snapshot.accounts)}")
 
+                self._prune_attempts_if_due()
                 due = [account for account in snapshot.accounts if self._next_due.get(account.username_lower, 0) <= now]
                 if due:
                     stats = self._process_accounts(due, snapshot.settings)
@@ -101,6 +112,28 @@ class XCaptureWorker:
             self.stop()
             if notify_thread:
                 notify_thread.join(timeout=2)
+
+    def _prune_attempts_if_due(self, *, force: bool = False) -> int:
+        now = time.monotonic()
+        if (
+            not force
+            and self._last_attempt_prune_monotonic is not None
+            and now - self._last_attempt_prune_monotonic < self.attempt_prune_interval_seconds
+        ):
+            return 0
+        self._last_attempt_prune_monotonic = now
+        cutoff = utc_now() - timedelta(days=self.attempt_retention_days)
+        try:
+            removed = self.repository.prune_attempts_before(cutoff)
+        except Exception as exc:
+            print(f"[odaily] x-capture prune attempts failed: {exc}")
+            return 0
+        if removed:
+            print(
+                "[odaily] x-capture pruned attempts "
+                f"removed={removed} retention_days={self.attempt_retention_days}"
+            )
+        return removed
 
     def _sleep_seconds(self, snapshot: WorkerSnapshot) -> float:
         if not snapshot.accounts:
@@ -134,14 +167,20 @@ class XCaptureWorker:
     def process_account(self, account: XCaptureAccount) -> CaptureRunStats:
         started_at = utc_now()
         try:
-            stats = self._process_account_inner(account)
+            stats = self._process_account_inner(account, scheduled_at=started_at)
         except Exception as exc:
             stats = CaptureRunStats(account=account, status="fetch_failed", error=str(exc))
         finished_at = utc_now()
         self.repository.record_attempt(stats, started_at=started_at, finished_at=finished_at)
         return stats
 
-    def _process_account_inner(self, account: XCaptureAccount) -> CaptureRunStats:
+    def _process_account_inner(
+        self,
+        account: XCaptureAccount,
+        *,
+        scheduled_at: datetime | None = None,
+    ) -> CaptureRunStats:
+        scheduled_at = scheduled_at or utc_now()
         candidates, attempt = self.client.fetch_timeline(account.username, count=self.timeline_count)
         if attempt.status != "success":
             return CaptureRunStats(
@@ -169,11 +208,18 @@ class XCaptureWorker:
         unseen = self.repository.unseen_tweet_ids([candidate.tweet_id for candidate in candidates])
         saved_count = 0
         new_count = 0
+        ignored_stale_count = 0
+        ignored_stale_tweet_ids: list[str] = []
         detail_errors: dict[str, str] = {}
         for candidate in candidates:
             if candidate.tweet_id not in unseen:
                 continue
             record = self._record_from_candidate(account, candidate, detail_errors)
+            if not is_fresh_record(record.created_at, scheduled_at):
+                if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
+                    ignored_stale_count += 1
+                    ignored_stale_tweet_ids.append(candidate.tweet_id)
+                continue
             saved = self.repository.save_task(account, record)
             if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
                 new_count += 1
@@ -189,6 +235,9 @@ class XCaptureWorker:
             metadata={
                 "attempt_url": attempt.url,
                 "detail_errors": detail_errors,
+                "freshness_window_seconds": int(FRESHNESS_WINDOW.total_seconds()),
+                "ignored_stale_count": ignored_stale_count,
+                "ignored_stale_tweet_ids": ignored_stale_tweet_ids,
             },
         )
 
@@ -238,3 +287,25 @@ class XCaptureWorker:
                     f"in {self.notify_retry_seconds:g}s: {exc}"
                 )
                 self._stop_event.wait(self.notify_retry_seconds)
+
+
+def parse_record_created_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def is_fresh_record(created_at: str | None, scheduled_at: datetime) -> bool:
+    parsed = parse_record_created_at(created_at)
+    if parsed is None:
+        return False
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=UTC)
+    scheduled_at = scheduled_at.astimezone(UTC)
+    return abs(scheduled_at - parsed) <= FRESHNESS_WINDOW

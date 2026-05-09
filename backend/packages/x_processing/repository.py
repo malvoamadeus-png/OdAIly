@@ -9,8 +9,11 @@ from typing import Any, Protocol
 from dotenv import load_dotenv
 
 from .models import (
+    COMPETITOR_SOURCES,
     NEWS_TYPES,
+    ODAILY_REFERENCE_SOURCE,
     PROMPT_KEY_BY_NEWS_TYPE,
+    PROCESSING_SOURCES,
     STAGE_SPECS,
     NewsType,
     PipelineRecord,
@@ -18,6 +21,7 @@ from .models import (
     PromptTemplateVersion,
     TaskRecord,
 )
+from .searcher import SearchDocument, content_hash
 
 
 TASK_NOTIFY_CHANNEL = "x_task_queue_changed"
@@ -43,7 +47,21 @@ class XProcessingRepository(Protocol):
         model: str,
         raw_output: str,
     ) -> None: ...
+    def complete_judge_discard(
+        self,
+        task_id: int,
+        *,
+        discard_type: str,
+        model: str,
+        raw_output: str,
+    ) -> None: ...
     def complete_search(self, task_id: int) -> None: ...
+    def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None: ...
+    def complete_search_ready(self, task_id: int, *, candidate_id: int, result: dict[str, Any]) -> None: ...
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]: ...
+    def list_active_candidate_documents(self) -> list[SearchDocument]: ...
+    def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]: ...
+    def link_task_to_candidate(self, task: TaskRecord, *, candidate_id: int, search_result: dict[str, Any]) -> None: ...
     def complete_write(
         self,
         task_id: int,
@@ -99,6 +117,7 @@ def _row_to_task(row: dict[str, Any]) -> TaskRecord:
         raw_payload=row.get("raw_payload") or {},
         metadata=row.get("metadata") or {},
         status=str(row["status"]),
+        published_at=row.get("published_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -111,6 +130,7 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
     return PipelineRecord(
         task_id=int(row["task_id"]),
         news_type=news_type,
+        candidate_id=row.get("candidate_id"),
         prompt_template_key=row.get("prompt_template_key"),
         prompt_version_id=row.get("prompt_version_id"),
         draft_title=row.get("draft_title"),
@@ -200,14 +220,21 @@ class PostgresXProcessingRepository:
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
+        sources = tuple(PROCESSING_SOURCES)
+        source_filter = "t.source = ANY(%(sources)s)"
+        if stage == "judge":
+            source_filter = "((t.source = 'x' AND t.status = %(claim_status)s) OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'searched'))"
+        elif stage == "search":
+            source_filter = "((t.source = 'x' AND t.status = %(claim_status)s) OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'pending'))"
+        else:
+            source_filter = "t.source = ANY(%(sources)s) AND t.status = %(claim_status)s"
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 WITH candidate AS (
                     SELECT id
-                    FROM tasks
-                    WHERE source = 'x'
-                      AND status = %(claim_status)s
+                    FROM tasks t
+                    WHERE {source_filter}
                       AND (locked_until IS NULL OR locked_until < now())
                     ORDER BY created_at ASC, id ASC
                     FOR UPDATE SKIP LOCKED
@@ -228,6 +255,8 @@ class PostgresXProcessingRepository:
                     "processing_status": spec.processing_status,
                     "worker_id": worker_id,
                     "lock_seconds": lock_seconds,
+                    "sources": list(sources),
+                    "competitor_sources": list(COMPETITOR_SOURCES),
                 },
             ).fetchone()
             if row is None:
@@ -274,25 +303,200 @@ class PostgresXProcessingRepository:
                     updated_at = now()
                 WHERE task_id = %s
                 """,
-                (news_type, model, self._Jsonb({"raw_output": raw_output}), task_id),
+                (
+                    news_type,
+                    model,
+                    self._Jsonb({"route": news_type, "discard_type": "none", "raw_output": raw_output}),
+                    task_id,
+                ),
             )
-            self._set_task_status(conn, task_id, "judged")
+            task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
+            next_status = "deduped" if task and task.get("source") in COMPETITOR_SOURCES else "judged"
+            self._set_task_status(conn, task_id, next_status)
             conn.commit()
 
-    def complete_search(self, task_id: int) -> None:
+    def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE x_task_pipeline
-                SET search_result = %s,
+                SET news_type = NULL,
+                    judge_model = %s,
+                    judge_output = %s,
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
                 """,
-                (self._Jsonb({"skipped": True, "reason": "searcher is no-op in v1"}), task_id),
+                (
+                    model,
+                    self._Jsonb({"route": "discard", "discard_type": discard_type, "raw_output": raw_output}),
+                    task_id,
+                ),
             )
-            self._set_task_status(conn, task_id, "deduped")
+            self._set_task_status(conn, task_id, "discarded")
             conn.commit()
+
+    def complete_search(self, task_id: int) -> None:
+        self.complete_search_ready(task_id, candidate_id=0, result={"skipped": True, "reason": "searcher is no-op"})
+
+    def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            candidate_id = result.get("candidate_id")
+            conn.execute(
+                """
+                UPDATE x_task_pipeline
+                SET candidate_id = COALESCE(%s, candidate_id),
+                    search_result = %s,
+                    last_error = NULL,
+                    updated_at = now()
+                WHERE task_id = %s
+                """,
+                (candidate_id, self._Jsonb(result), task_id),
+            )
+            self._set_task_status(conn, task_id, "duplicate")
+            conn.commit()
+
+    def complete_search_ready(self, task_id: int, *, candidate_id: int, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE x_task_pipeline
+                SET candidate_id = NULLIF(%s, 0),
+                    search_result = %s,
+                    last_error = NULL,
+                    updated_at = now()
+                WHERE task_id = %s
+                """,
+                (candidate_id, self._Jsonb(result), task_id),
+            )
+            task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
+            next_status = "searched" if task and task.get("source") in COMPETITOR_SOURCES else "deduped"
+            self._set_task_status(conn, task_id, next_status)
+            conn.commit()
+
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_item_id, source_url, title, content, published_at, raw_payload, metadata
+                FROM odaily_reference_items
+                WHERE published_at IS NULL OR published_at >= %s
+                ORDER BY published_at DESC NULLS LAST, updated_at DESC
+                """,
+                (since,),
+            ).fetchall()
+        return [
+            SearchDocument(
+                doc_type="odaily_reference",
+                doc_id=str(row["source_item_id"]),
+                title=row.get("title"),
+                content=str(row["content"]),
+                source=ODAILY_REFERENCE_SOURCE,
+                source_url=row.get("source_url"),
+                published_at=row.get("published_at"),
+                metadata=row.get("metadata") or {},
+            )
+            for row in rows
+        ]
+
+    def list_active_candidate_documents(self) -> list[SearchDocument]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, primary_task_id, title, content, status, metadata, updated_at
+                FROM search_event_candidates
+                WHERE status = 'active'
+                  AND (expires_at IS NULL OR expires_at > now())
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+        return [
+            SearchDocument(
+                doc_type="candidate",
+                doc_id=str(row["id"]),
+                title=row.get("title"),
+                content=str(row["content"]),
+                source="candidate",
+                task_id=row.get("primary_task_id"),
+                candidate_id=int(row["id"]),
+                metadata=row.get("metadata") or {},
+            )
+            for row in rows
+        ]
+
+    def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
+        text = f"{task.title or ''}\n{task.content}".strip()
+        digest = content_hash(text)
+        with self._connect() as conn:
+            with conn.transaction():
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (digest,))
+                existing = conn.execute(
+                    """
+                    SELECT id
+                    FROM search_event_candidates
+                    WHERE content_hash = %s
+                      AND status = 'active'
+                      AND (expires_at IS NULL OR expires_at > now())
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (digest,),
+                ).fetchone()
+                if existing is not None:
+                    candidate_id = int(existing["id"])
+                    self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="supporting", search_result=search_result)
+                    return candidate_id, False
+                row = conn.execute(
+                    """
+                    INSERT INTO search_event_candidates (
+                        primary_task_id, status, title, content, content_hash, metadata, expires_at
+                    )
+                    VALUES (%s, 'active', %s, %s, %s, %s, now() + interval '2 days')
+                    RETURNING id
+                    """,
+                    (
+                        task.id,
+                        task.title,
+                        task.content,
+                        digest,
+                        self._Jsonb({"source": task.source, "source_item_id": task.source_item_id}),
+                    ),
+                ).fetchone()
+                candidate_id = int(row["id"])
+                self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="primary", search_result=search_result)
+            conn.commit()
+            return candidate_id, True
+
+    def link_task_to_candidate(self, task: TaskRecord, *, candidate_id: int, search_result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            with conn.transaction():
+                self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="supporting", search_result=search_result)
+            conn.commit()
+
+    def _insert_event_source(self, conn, *, candidate_id: int, task: TaskRecord, role: str, search_result: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT INTO search_event_sources (
+                candidate_id, task_id, source, source_item_id, source_url, title, content, role, metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (candidate_id, task_id) DO UPDATE SET
+                role = EXCLUDED.role,
+                metadata = EXCLUDED.metadata,
+                updated_at = now()
+            """,
+            (
+                candidate_id,
+                task.id,
+                task.source,
+                task.source_item_id,
+                task.source_url,
+                task.title,
+                task.content,
+                role,
+                self._Jsonb({"search_result": search_result}),
+            ),
+        )
 
     def complete_write(
         self,
@@ -398,6 +602,10 @@ class InMemoryXProcessingRepository:
     def __init__(self) -> None:
         self.tasks: dict[int, TaskRecord] = {}
         self.pipelines: dict[int, PipelineRecord] = {}
+        self.odaily_references: list[SearchDocument] = []
+        self.candidates: dict[int, SearchDocument] = {}
+        self.event_sources: list[dict[str, Any]] = []
+        self._next_candidate_id = 1
         self.prompts: dict[str, PromptTemplateVersion] = {
             key: PromptTemplateVersion(id=index, template_key=key, version_number=1, content=f"prompt {key}")
             for index, key in enumerate(PROMPT_KEY_BY_NEWS_TYPE.values(), start=1)
@@ -410,7 +618,12 @@ class InMemoryXProcessingRepository:
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
-            if task.status != spec.claim_status or task.id in self._locks:
+            claim_status = spec.claim_status
+            if stage == "search" and task.source in COMPETITOR_SOURCES:
+                claim_status = "pending"
+            elif stage == "judge" and task.source in COMPETITOR_SOURCES:
+                claim_status = "searched"
+            if task.status != claim_status or task.id in self._locks:
                 continue
             self._locks.add(task.id)
             updated = TaskRecord(**{**asdict(task), "status": spec.processing_status, "updated_at": utc_now()})
@@ -428,10 +641,57 @@ class InMemoryXProcessingRepository:
     def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": news_type, "last_error": None})
-        self._set_status(task_id, "judged")
+        task = self.tasks[task_id]
+        self._set_status(task_id, "deduped" if task.source in COMPETITOR_SOURCES else "judged")
+
+    def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
+        current = self.pipelines[task_id]
+        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": None, "last_error": None})
+        self._set_status(task_id, "discarded")
 
     def complete_search(self, task_id: int) -> None:
-        self._set_status(task_id, "deduped")
+        self.complete_search_ready(task_id, candidate_id=0, result={"skipped": True, "reason": "searcher is no-op"})
+
+    def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
+        current = self.pipelines[task_id]
+        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "last_error": None})
+        self._set_status(task_id, "duplicate")
+
+    def complete_search_ready(self, task_id: int, *, candidate_id: int, result: dict[str, Any]) -> None:
+        current = self.pipelines[task_id]
+        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "candidate_id": candidate_id or None, "last_error": None})
+        task = self.tasks[task_id]
+        self._set_status(task_id, "searched" if task.source in COMPETITOR_SOURCES else "deduped")
+
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        return [
+            item
+            for item in self.odaily_references
+            if item.published_at is None or item.published_at >= since
+        ]
+
+    def list_active_candidate_documents(self) -> list[SearchDocument]:
+        return list(self.candidates.values())
+
+    def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
+        candidate_id = self._next_candidate_id
+        self._next_candidate_id += 1
+        document = SearchDocument(
+            doc_type="candidate",
+            doc_id=str(candidate_id),
+            title=task.title,
+            content=task.content,
+            source="candidate",
+            task_id=task.id,
+            candidate_id=candidate_id,
+            metadata={"source": task.source, "source_item_id": task.source_item_id},
+        )
+        self.candidates[candidate_id] = document
+        self.event_sources.append({"candidate_id": candidate_id, "task_id": task.id, "role": "primary", "search_result": search_result})
+        return candidate_id, True
+
+    def link_task_to_candidate(self, task: TaskRecord, *, candidate_id: int, search_result: dict[str, Any]) -> None:
+        self.event_sources.append({"candidate_id": candidate_id, "task_id": task.id, "role": "supporting", "search_result": search_result})
 
     def complete_write(
         self,
@@ -493,9 +753,22 @@ SCHEMA_SQL = """
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS published_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS idx_tasks_x_status_lock
 ON tasks(source, status, locked_until, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS odaily_reference_items (
+    source_item_id text PRIMARY KEY,
+    source_url text,
+    title text,
+    content text NOT NULL,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    published_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS prompt_templates (
     template_key text PRIMARY KEY,
@@ -519,6 +792,7 @@ CREATE TABLE IF NOT EXISTS prompt_template_versions (
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding')),
+    candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     search_result jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -537,7 +811,55 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
+
+CREATE TABLE IF NOT EXISTS search_event_candidates (
+    id bigserial PRIMARY KEY,
+    primary_task_id bigint REFERENCES tasks(id) ON DELETE SET NULL,
+    status text NOT NULL DEFAULT 'active',
+    title text,
+    content text NOT NULL,
+    content_hash text NOT NULL,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    expires_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS search_event_sources (
+    id bigserial PRIMARY KEY,
+    candidate_id bigint NOT NULL REFERENCES search_event_candidates(id) ON DELETE CASCADE,
+    task_id bigint REFERENCES tasks(id) ON DELETE SET NULL,
+    source text NOT NULL,
+    source_item_id text NOT NULL,
+    source_url text,
+    title text,
+    content text NOT NULL,
+    role text NOT NULL CHECK (role IN ('primary', 'supporting')),
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, task_id)
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'x_task_pipeline_candidate_fk'
+    ) THEN
+        ALTER TABLE x_task_pipeline
+        ADD CONSTRAINT x_task_pipeline_candidate_fk
+        FOREIGN KEY (candidate_id) REFERENCES search_event_candidates(id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_x_task_pipeline_news_type ON x_task_pipeline(news_type);
+CREATE INDEX IF NOT EXISTS idx_x_task_pipeline_candidate ON x_task_pipeline(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_odaily_reference_published ON odaily_reference_items(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_search_candidates_status_expires ON search_event_candidates(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_search_candidates_hash ON search_event_candidates(content_hash);
+CREATE INDEX IF NOT EXISTS idx_search_sources_candidate ON search_event_sources(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_prompt_versions_template ON prompt_template_versions(template_key, version_number DESC);
 
 CREATE OR REPLACE FUNCTION notify_x_task_queue_changed()
@@ -555,7 +877,7 @@ DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_x_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source = 'x')
+WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse'))
 EXECUTE FUNCTION notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()
@@ -579,10 +901,16 @@ EXECUTE FUNCTION notify_prompt_config_changed();
 ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prompt_template_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
+ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE search_event_sources ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_anon_all ON prompt_template_versions;
 DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
+DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
+DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
+DROP POLICY IF EXISTS search_event_sources_anon_select ON search_event_sources;
 
 DO $$
 BEGIN
@@ -590,12 +918,15 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
-        GRANT SELECT ON x_task_pipeline TO anon;
+        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO anon;
 
         EXECUTE 'CREATE POLICY prompt_templates_anon_all ON prompt_templates FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY prompt_template_versions_anon_all ON prompt_template_versions FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY x_task_pipeline_anon_select ON x_task_pipeline FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY odaily_reference_items_anon_select ON odaily_reference_items FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY search_event_candidates_anon_select ON search_event_candidates FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY search_event_sources_anon_select ON search_event_sources FOR SELECT TO anon USING (true)';
     END IF;
 END
 $$;

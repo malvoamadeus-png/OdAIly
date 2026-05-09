@@ -145,7 +145,7 @@ def run_gate_once(
         0,
         "success",
         kind,
-        "dry-run completed" if dry_run else "pushed with isPublish=false",
+        "dry-run completed" if dry_run else "pushed with isPublish=false,isPush=false",
         run_id,
         pushed=not dry_run,
     )

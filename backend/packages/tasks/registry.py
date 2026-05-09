@@ -85,15 +85,9 @@ TASKS: dict[str, TaskDefinition] = {
         schedules=(
             ScheduledKind(
                 kind="close",
-                trigger=CronTrigger(hour=8, minute=0, timezone=SHANGHAI_TZ),
-                job_id="us-market-close-0800-cst",
-                description="close=08:00 Asia/Shanghai",
-            ),
-            ScheduledKind(
-                kind="premarket",
-                trigger=CronTrigger(hour=4, minute=5, timezone=EASTERN_TZ),
-                job_id="us-market-premarket-0405-et",
-                description="premarket=04:05 America/New_York",
+                trigger=CronTrigger(hour=9, minute=0, timezone=SHANGHAI_TZ),
+                job_id="us-market-close-0900-cst",
+                description="close=09:00 Asia/Shanghai",
             ),
             ScheduledKind(
                 kind="open",
@@ -113,9 +107,9 @@ TASKS: dict[str, TaskDefinition] = {
         schedules=(
             ScheduledKind(
                 kind="morning",
-                trigger=CronTrigger(hour=8, minute=0, timezone=SHANGHAI_TZ),
-                job_id="gate-tradfi-morning-0800-cst",
-                description="morning=08:00 Asia/Shanghai",
+                trigger=CronTrigger(hour=9, minute=0, timezone=SHANGHAI_TZ),
+                job_id="gate-tradfi-morning-0900-cst",
+                description="morning=09:00 Asia/Shanghai",
             ),
             ScheduledKind(
                 kind="open",

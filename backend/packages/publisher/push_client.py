@@ -28,12 +28,15 @@ class PushClient:
         self.max_attempts = max(1, max_attempts)
         self.backoff_seconds = max(0.0, backoff_seconds)
 
-    def push(self, *, title: str, content: str, dry_run: bool) -> PushResult:
+    def push(self, *, title: str, content: str, dry_run: bool, source_url: str | None = None) -> PushResult:
         payload = {
             "title": title,
             "content": content,
             "isPublish": False,
+            "isPush": False,
         }
+        if source_url and source_url.strip():
+            payload["sourceUrl"] = source_url.strip()
         if dry_run:
             return PushResult(ok=True, response_text="dry-run: not sent", dry_run=True)
 

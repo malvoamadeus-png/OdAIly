@@ -11,7 +11,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from packages.common.config import load_gate_settings, load_settings  # noqa: E402
+from packages.common.config import load_competitor_monitor_settings, load_gate_settings, load_settings  # noqa: E402
+from packages.common.config import load_x_capture_worker_settings  # noqa: E402
 from packages.common.config import load_x_processing_settings  # noqa: E402
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
 from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
@@ -59,6 +60,13 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     x_process_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
+
+    competitor_init = subparsers.add_parser("competitor-init-db", help="Initialize competitor monitor/searcher Postgres tables.")
+    competitor_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
+    competitor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
 
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
@@ -157,10 +165,12 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
     from packages.x_capture import FXTwitterClient, XCaptureWorker
     from packages.x_capture.repository import PostgresXCaptureRepository
 
+    settings = load_x_capture_worker_settings()
     repository = PostgresXCaptureRepository(args.database_url)
     worker = XCaptureWorker(
         repository=repository,
         client=FXTwitterClient(),
+        attempt_retention_days=settings.attempt_retention_days,
     )
     if args.once:
         stats = worker.run_once()
@@ -202,6 +212,32 @@ def x_process_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def competitor_init_db_command(args: argparse.Namespace) -> int:
+    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+
+    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] competitor/searcher database schema initialized")
+    return 0
+
+
+def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
+    from packages.competitor_monitor import CompetitorMonitorWorker, PostgresCompetitorMonitorRepository
+
+    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    worker = CompetitorMonitorWorker(repository=repository, settings=load_competitor_monitor_settings())
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] competitor monitor once "
+            f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
+            f"failed={result.failed_sources}"
+        )
+        return 0 if not result.failed_sources else 1
+    worker.run_forever()
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -217,6 +253,10 @@ def main() -> int:
             return x_process_init_db_command(args)
         if args.command == "x-process-worker":
             return x_process_worker_command(args)
+        if args.command == "competitor-init-db":
+            return competitor_init_db_command(args)
+        if args.command == "competitor-monitor-worker":
+            return competitor_monitor_worker_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:
