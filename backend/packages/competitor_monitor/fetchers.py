@@ -149,14 +149,7 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
 
 
 def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:
-    response = requests.get(
-        "https://api.odaily.news/api/v1/newsflash",
-        params={"page": 1, "size": 50, "lang": "zh-cn"},
-        headers=HEADERS,
-        timeout=timeout_seconds,
-    )
-    response.raise_for_status()
-    payload = response.json()
+    payload = _fetch_odaily_payload(timeout_seconds=timeout_seconds)
     items: list[NewsflashItem] = []
     for news in _extract_list(payload):
         title = str(news.get("title") or "").strip()
@@ -168,6 +161,23 @@ def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:
         source_url = str(news.get("sourceUrl") or news.get("link") or news.get("url") or f"https://www.odaily.news/zh-CN/newsflash/{source_id}")
         items.append(NewsflashItem("odaily", source_id, title, content, source_url, published_at, news))
     return items
+
+
+def _fetch_odaily_payload(*, timeout_seconds: float) -> Any:
+    last_error: Exception | None = None
+    for base_url in ("https://api.odaily.news", "https://rss.odaily.news"):
+        try:
+            response = requests.get(
+                f"{base_url}/api/v1/newsflash",
+                params={"page": 1, "size": 50, "lang": "zh-cn"},
+                headers=HEADERS,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(str(last_error) if last_error else "Odaily newsflash request failed")
 
 
 def _extract_list(payload: Any) -> list[dict[str, Any]]:

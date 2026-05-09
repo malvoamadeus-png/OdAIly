@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from packages.competitor_monitor.fetchers import normalize_item_content, scrub_competitor_brands
+from packages.competitor_monitor.fetchers import fetch_odaily, normalize_item_content, scrub_competitor_brands
 from packages.competitor_monitor.worker import CompetitorMonitorWorker
 
 
@@ -57,3 +57,44 @@ def test_worker_saves_odaily_as_reference_and_competitors_as_tasks(monkeypatch) 
     assert result.task_inserted == 1
     assert result.reference_inserted == 1
     assert [item.source for item in repo.saved] == ["blockbeats", "odaily"]
+
+
+def test_fetch_odaily_uses_rss_host_fallback(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Response:
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            if "api.odaily.news" in self.url:
+                raise RuntimeError("dns failed")
+
+        def json(self):
+            return {
+                "data": {
+                    "list": [
+                        {
+                            "id": 1,
+                            "title": "标题",
+                            "content": "Odaily星球日报讯 正文",
+                            "publishDate": "2026-05-10 02:00:00",
+                        }
+                    ]
+                }
+            }
+
+    def fake_get(url, **kwargs):  # noqa: ANN001
+        calls.append(url)
+        return Response(url)
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", fake_get)
+
+    items = fetch_odaily(timeout_seconds=3)
+
+    assert calls == [
+        "https://api.odaily.news/api/v1/newsflash",
+        "https://rss.odaily.news/api/v1/newsflash",
+    ]
+    assert len(items) == 1
+    assert items[0].content == "正文"
