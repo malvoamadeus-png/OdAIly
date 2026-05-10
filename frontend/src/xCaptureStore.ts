@@ -61,6 +61,15 @@ export type PromptVersion = {
   published_at: string | null;
 };
 
+export type CompetitorFilterKeyword = {
+  id: number;
+  term: string;
+  term_normalized: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
@@ -79,6 +88,11 @@ type AccountCreateInput = {
   display_name: string | null;
   interval_seconds: number | null;
   enabled: boolean;
+};
+
+export type CompetitorKeywordPatch = {
+  enabled?: boolean;
+  term?: string;
 };
 
 const defaultSettings: Settings = {
@@ -389,4 +403,67 @@ export async function publishPromptVersion(templateKey: string, versionId: numbe
     .single();
   raise(error);
   return assertData(data as PromptTemplate | null, '发布 Prompt 版本失败');
+}
+
+export function normalizeCompetitorKeyword(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export async function listCompetitorFilterKeywords(): Promise<CompetitorFilterKeyword[]> {
+  const { data, error } = await supabase()
+    .from('competitor_filter_keywords')
+    .select('id,term,term_normalized,enabled,created_at,updated_at')
+    .order('enabled', { ascending: false })
+    .order('term', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as CompetitorFilterKeyword[];
+}
+
+export async function createCompetitorFilterKeywords(rawText: string): Promise<CompetitorFilterKeyword[]> {
+  const rows = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((term) => ({ term, term_normalized: normalizeCompetitorKeyword(term), enabled: true, updated_at: nowIso() }))
+    .filter((row, index, all) => row.term_normalized && all.findIndex((item) => item.term_normalized === row.term_normalized) === index);
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase()
+    .from('competitor_filter_keywords')
+    .upsert(rows, { onConflict: 'term_normalized' })
+    .select('id,term,term_normalized,enabled,created_at,updated_at');
+  raise(error);
+  return (data ?? []) as unknown as CompetitorFilterKeyword[];
+}
+
+export async function updateCompetitorFilterKeyword(
+  id: number,
+  patch: CompetitorKeywordPatch,
+): Promise<CompetitorFilterKeyword> {
+  const payload: Record<string, string | boolean> = {
+    updated_at: nowIso(),
+  };
+  if ('enabled' in patch && patch.enabled !== undefined) {
+    payload.enabled = patch.enabled;
+  }
+  if ('term' in patch && patch.term !== undefined) {
+    payload.term = patch.term.trim();
+    payload.term_normalized = normalizeCompetitorKeyword(patch.term);
+  }
+  const { data, error } = await supabase()
+    .from('competitor_filter_keywords')
+    .update(payload)
+    .eq('id', id)
+    .select('id,term,term_normalized,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as CompetitorFilterKeyword | null, '更新竞品过滤词失败');
+}
+
+export async function deleteCompetitorFilterKeyword(id: number): Promise<void> {
+  const { error } = await supabase().from('competitor_filter_keywords').delete().eq('id', id);
+  raise(error);
 }

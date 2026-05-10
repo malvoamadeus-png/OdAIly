@@ -380,9 +380,18 @@ textarea:focus {
   margin-top: 18px;
 }
 
+.competitorLayout {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 18px;
+}
+
 .promptList,
 .promptEditor,
-.versionList {
+.versionList,
+.keywordForm,
+.keywordList {
   min-width: 0;
   padding: 14px;
   border: 1px solid #e1e5e9;
@@ -391,10 +400,46 @@ textarea:focus {
 }
 
 .promptList,
-.versionList {
+.versionList,
+.keywordList {
   display: grid;
   align-content: start;
   gap: 8px;
+}
+
+.keywordForm {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.keywordTextarea {
+  min-height: 260px;
+}
+
+.keywordRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+}
+
+.keywordRow.disabled {
+  opacity: 0.62;
+}
+
+.keywordRow strong,
+.keywordRow span {
+  display: block;
+}
+
+.keywordRow span {
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .promptTab {
@@ -529,7 +574,8 @@ textarea:focus {
   .settingsForm,
   .addAccount,
   .accountRow,
-  .promptLayout {
+  .promptLayout,
+  .competitorLayout {
     grid-template-columns: 1fr;
   }
 

@@ -11,9 +11,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from packages.common.config import load_competitor_monitor_settings, load_gate_settings, load_settings  # noqa: E402
-from packages.common.config import load_x_capture_worker_settings  # noqa: E402
-from packages.common.config import load_x_processing_settings  # noqa: E402
+from packages.common.config import (  # noqa: E402
+    load_competitor_monitor_settings,
+    load_gate_settings,
+    load_pipeline_supervisor_settings,
+    load_settings,
+    load_x_capture_worker_settings,
+    load_x_processing_settings,
+)
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
 from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
 from packages.tasks.registry import TASKS, run_task_once  # noqa: E402
@@ -67,6 +72,10 @@ def parse_args() -> argparse.Namespace:
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
     competitor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
+
+    supervisor = subparsers.add_parser("pipeline-supervisor", help="Run pipeline health checks and Telegram alerts.")
+    supervisor.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    supervisor.add_argument("--once", action="store_true", help="Run one supervisor pass and exit.")
 
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
@@ -231,9 +240,26 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
         print(
             "[odaily] competitor monitor once "
             f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
-            f"failed={result.failed_sources}"
+            f"filtered={result.filtered} failed={result.failed_sources}"
         )
         return 0 if not result.failed_sources else 1
+    worker.run_forever()
+    return 0
+
+
+def pipeline_supervisor_command(args: argparse.Namespace) -> int:
+    from packages.pipeline_supervisor import PipelineSupervisorWorker, PostgresPipelineSupervisorRepository
+
+    repository = PostgresPipelineSupervisorRepository(args.database_url)
+    repository.init_schema()
+    worker = PipelineSupervisorWorker(repository=repository, settings=load_pipeline_supervisor_settings())
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] pipeline supervisor once "
+            f"checked={result.checked} sent={result.sent} suppressed={result.suppressed}"
+        )
+        return 0
     worker.run_forever()
     return 0
 
@@ -257,6 +283,8 @@ def main() -> int:
             return competitor_init_db_command(args)
         if args.command == "competitor-monitor-worker":
             return competitor_monitor_worker_command(args)
+        if args.command == "pipeline-supervisor":
+            return pipeline_supervisor_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:

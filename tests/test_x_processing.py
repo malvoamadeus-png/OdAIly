@@ -206,9 +206,17 @@ def test_chat_response_format_converts_responses_json_schema() -> None:
 
 
 def test_telegram_notice_includes_source_url_on_next_line() -> None:
-    assert build_telegram_notice(title="标题", source_url="https://x.com/a/status/1") == (
-        "有新快讯：标题\n原文链接：https://x.com/a/status/1"
+    assert build_telegram_notice(source="x", title="标题", source_url="https://x.com/a/status/1") == (
+        "X平台有新快讯：标题\nhttps://x.com/a/status/1"
     )
+
+
+def test_telegram_notice_uses_competitor_source_names() -> None:
+    assert build_telegram_notice(source="blockbeats", title="标题", source_url="https://bb.test/1") == (
+        "律动有新快讯：标题\nhttps://bb.test/1"
+    )
+    assert build_telegram_notice(source="panews", title="标题", source_url=None) == "PANews有新快讯：标题"
+    assert build_telegram_notice(source="jinse", title="标题", source_url="") == "金色财经有新快讯：标题"
 
 
 def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
@@ -362,7 +370,7 @@ def test_format_publish_keeps_ready_review_when_telegram_fails() -> None:
     assert repo.pipelines[1].telegram_result["ok"] is False
     assert push.calls[0]["dry_run"] is False
     assert push.calls[0]["source_url"] == "https://x.com/a/status/1"
-    assert telegram.calls == ["有新快讯：标题\n原文链接：https://x.com/a/status/1"]
+    assert telegram.calls == ["X平台有新快讯：标题\nhttps://x.com/a/status/1"]
 
 
 def test_competitor_publish_hides_source_url() -> None:
@@ -384,7 +392,7 @@ def test_competitor_publish_hides_source_url() -> None:
 
     assert result.processed == 1
     assert push.calls[0]["source_url"] is None
-    assert telegram.calls == ["有新快讯：标题"]
+    assert telegram.calls == ["律动有新快讯：标题\nhttps://www.theblockbeats.info/flash/1"]
 
 
 def test_claim_skips_locked_task() -> None:

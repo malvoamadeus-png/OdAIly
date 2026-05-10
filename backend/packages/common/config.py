@@ -321,3 +321,39 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
         return CompetitorMonitorSettings.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"Invalid competitor monitor settings: {exc}") from exc
+
+
+class PipelineSupervisorSettings(BaseModel):
+    interval_seconds: int = Field(default=60, ge=10, le=3600)
+    heartbeat_stale_minutes: int = Field(default=10, ge=1, le=1440)
+    task_stuck_minutes: int = Field(default=10, ge=1, le=1440)
+    alert_dedup_minutes: int = Field(default=30, ge=1, le=1440)
+    failed_window_minutes: int = Field(default=30, ge=1, le=1440)
+    failed_threshold: int = Field(default=3, ge=1, le=1000)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+
+
+def load_pipeline_supervisor_settings() -> PipelineSupervisorSettings:
+    load_dotenv()
+    payload = {
+        "interval_seconds": int(os.getenv("PIPELINE_SUPERVISOR_INTERVAL_SECONDS") or 60),
+        "heartbeat_stale_minutes": int(os.getenv("PIPELINE_SUPERVISOR_HEARTBEAT_STALE_MINUTES") or 10),
+        "task_stuck_minutes": int(os.getenv("PIPELINE_SUPERVISOR_TASK_STUCK_MINUTES") or 10),
+        "alert_dedup_minutes": int(os.getenv("PIPELINE_SUPERVISOR_ALERT_DEDUP_MINUTES") or 30),
+        "failed_window_minutes": int(os.getenv("PIPELINE_SUPERVISOR_FAILED_WINDOW_MINUTES") or 30),
+        "failed_threshold": int(os.getenv("PIPELINE_SUPERVISOR_FAILED_THRESHOLD") or 3),
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "retry": {
+            "max_attempts": int(os.getenv("PIPELINE_SUPERVISOR_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("PIPELINE_SUPERVISOR_BACKOFF_SECONDS") or 1.0),
+        },
+    }
+    try:
+        return PipelineSupervisorSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid pipeline supervisor settings: {exc}") from exc

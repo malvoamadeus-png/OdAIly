@@ -72,12 +72,33 @@ CREATE TABLE IF NOT EXISTS x_capture_attempts (
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
+    id bigserial PRIMARY KEY,
+    term text NOT NULL UNIQUE,
+    term_normalized text NOT NULL UNIQUE,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO competitor_filter_keywords (term, term_normalized, enabled)
+VALUES
+    ('跌破', '跌破', true),
+    ('突破', '突破', true),
+    ('爆仓', '爆仓', true),
+    ('Bitget', 'bitget', true)
+ON CONFLICT (term_normalized) DO UPDATE
+SET term = EXCLUDED.term,
+    updated_at = now();
+
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS published_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS idx_x_capture_accounts_enabled ON x_capture_accounts(enabled);
 CREATE INDEX IF NOT EXISTS idx_x_seen_tweets_username ON x_seen_tweets(username_lower);
 CREATE INDEX IF NOT EXISTS idx_tasks_source_status_created ON tasks(source, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_x_capture_attempts_started ON x_capture_attempts(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_competitor_filter_keywords_enabled ON competitor_filter_keywords(enabled, term_normalized);
+CREATE UNIQUE INDEX IF NOT EXISTS competitor_filter_keywords_term_normalized_key ON competitor_filter_keywords(term_normalized);
 
 CREATE OR REPLACE FUNCTION notify_x_capture_config_changed()
 RETURNS trigger AS $$
@@ -103,11 +124,13 @@ FOR EACH ROW EXECUTE FUNCTION notify_x_capture_config_changed();
 ALTER TABLE x_capture_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_capture_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_capture_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE competitor_filter_keywords ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS x_capture_settings_anon_all ON x_capture_settings;
 DROP POLICY IF EXISTS x_capture_accounts_anon_all ON x_capture_accounts;
 DROP POLICY IF EXISTS x_capture_attempts_anon_select ON x_capture_attempts;
+DROP POLICY IF EXISTS competitor_filter_keywords_anon_all ON competitor_filter_keywords;
 DROP POLICY IF EXISTS tasks_x_anon_select ON tasks;
 
 DO $$
@@ -115,12 +138,14 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE, DELETE ON x_capture_settings, x_capture_accounts TO anon;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON competitor_filter_keywords TO anon;
         GRANT SELECT ON x_capture_attempts, tasks TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE x_capture_accounts_id_seq TO anon;
+        GRANT USAGE, SELECT ON SEQUENCE x_capture_accounts_id_seq, competitor_filter_keywords_id_seq TO anon;
 
         EXECUTE 'CREATE POLICY x_capture_settings_anon_all ON x_capture_settings FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY x_capture_accounts_anon_all ON x_capture_accounts FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY x_capture_attempts_anon_select ON x_capture_attempts FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY competitor_filter_keywords_anon_all ON competitor_filter_keywords FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY tasks_x_anon_select ON tasks FOR SELECT TO anon USING (source = ''x'')';
     END IF;
 END

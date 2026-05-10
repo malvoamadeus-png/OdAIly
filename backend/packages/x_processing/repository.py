@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from dotenv import load_dotenv
 
+from packages.common.pipeline_schema import COMPETITOR_FILTER_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+
 from .models import (
     COMPETITOR_SOURCES,
     NEWS_TYPES,
@@ -82,6 +84,16 @@ class XProcessingRepository(Protocol):
         telegram_result: dict[str, Any],
     ) -> None: ...
     def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None: ...
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
 
 
 def utc_now() -> datetime:
@@ -599,6 +611,46 @@ class PostgresXProcessingRepository:
             self._set_task_status(conn, task_id, status)
             conn.commit()
 
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pipeline_worker_heartbeats (
+                    component, worker_id, status, last_seen_at, last_success_at, last_error, metadata
+                )
+                VALUES (%s, %s, %s, now(), CASE WHEN %s THEN now() ELSE NULL END, %s, %s)
+                ON CONFLICT (component, worker_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_success_at = CASE
+                        WHEN %s THEN EXCLUDED.last_success_at
+                        ELSE pipeline_worker_heartbeats.last_success_at
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = now()
+                """,
+                (
+                    component,
+                    worker_id,
+                    status,
+                    success,
+                    (error or "")[:2000] if error else None,
+                    self._Jsonb(metadata or {}),
+                    success,
+                ),
+            )
+            conn.commit()
+
     def _set_task_status(self, conn, task_id: int, status: str) -> None:
         conn.execute(
             """
@@ -764,13 +816,25 @@ class InMemoryXProcessingRepository:
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "last_error": error})
         self._set_status(task_id, status or STAGE_SPECS[stage].failure_status)
 
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        return None
+
     def _set_status(self, task_id: int, status: str) -> None:
         task = self.tasks[task_id]
         self.tasks[task_id] = TaskRecord(**{**asdict(task), "status": status, "updated_at": utc_now()})
         self._locks.discard(task_id)
 
 
-SCHEMA_SQL = """
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + """
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;

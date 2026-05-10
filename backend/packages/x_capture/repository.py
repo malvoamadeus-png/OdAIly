@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 from dotenv import load_dotenv
 
+from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
 
@@ -49,6 +51,16 @@ class XCaptureRepository(Protocol):
     def prune_attempts_before(self, cutoff: datetime) -> int: ...
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
     def list_recent_tasks(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
 
 
 class _Unset:
@@ -430,6 +442,46 @@ class PostgresXCaptureRepository:
                 (limit,),
             ).fetchall()
 
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pipeline_worker_heartbeats (
+                    component, worker_id, status, last_seen_at, last_success_at, last_error, metadata
+                )
+                VALUES (%s, %s, %s, now(), CASE WHEN %s THEN now() ELSE NULL END, %s, %s)
+                ON CONFLICT (component, worker_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_success_at = CASE
+                        WHEN %s THEN EXCLUDED.last_success_at
+                        ELSE pipeline_worker_heartbeats.last_success_at
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = now()
+                """,
+                (
+                    component,
+                    worker_id,
+                    status,
+                    success,
+                    (error or "")[:2000] if error else None,
+                    self._Jsonb(metadata or {}),
+                    success,
+                ),
+            )
+            conn.commit()
+
 
 class InMemoryXCaptureRepository:
     def __init__(self) -> None:
@@ -605,8 +657,20 @@ class InMemoryXCaptureRepository:
     def list_recent_tasks(self, *, limit: int = 25) -> list[dict[str, Any]]:
         return self.tasks[-limit:][::-1]
 
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        return None
 
-SCHEMA_SQL = """
+
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + """
 CREATE TABLE IF NOT EXISTS x_capture_settings (
     singleton_key text PRIMARY KEY DEFAULT 'global',
     global_interval_seconds integer NOT NULL DEFAULT 30 CHECK (global_interval_seconds BETWEEN 5 AND 3600),

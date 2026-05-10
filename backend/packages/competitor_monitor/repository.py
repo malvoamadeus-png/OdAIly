@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from packages.x_processing.repository import SCHEMA_SQL, _import_psycopg, get_database_url
 
@@ -10,7 +10,18 @@ from .fetchers import NewsflashItem
 
 class CompetitorMonitorRepository(Protocol):
     def init_schema(self) -> None: ...
+    def list_enabled_filter_keywords(self) -> list[str]: ...
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]: ...
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
 
 
 class PostgresCompetitorMonitorRepository:
@@ -25,6 +36,18 @@ class PostgresCompetitorMonitorRepository:
         with self._connect() as conn:
             conn.execute(SCHEMA_SQL)
             conn.commit()
+
+    def list_enabled_filter_keywords(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT term
+                FROM competitor_filter_keywords
+                WHERE enabled = true
+                ORDER BY length(term) DESC, term ASC
+                """
+            ).fetchall()
+        return [str(row["term"]) for row in rows if str(row["term"]).strip()]
 
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
         task_count = 0
@@ -89,6 +112,46 @@ class PostgresCompetitorMonitorRepository:
                     task_count += 1
             conn.commit()
         return task_count, reference_count
+
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pipeline_worker_heartbeats (
+                    component, worker_id, status, last_seen_at, last_success_at, last_error, metadata
+                )
+                VALUES (%s, %s, %s, now(), CASE WHEN %s THEN now() ELSE NULL END, %s, %s)
+                ON CONFLICT (component, worker_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_success_at = CASE
+                        WHEN %s THEN EXCLUDED.last_success_at
+                        ELSE pipeline_worker_heartbeats.last_success_at
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = now()
+                """,
+                (
+                    component,
+                    worker_id,
+                    status,
+                    success,
+                    (error or "")[:2000] if error else None,
+                    self._Jsonb(metadata or {}),
+                    success,
+                ),
+            )
+            conn.commit()
 
 
 def parse_datetime(value: str | None):

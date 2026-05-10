@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import select
 import threading
@@ -48,6 +49,7 @@ class XCaptureWorker:
         self._next_due: dict[str, float] = {}
         self._snapshot = WorkerSnapshot(XCaptureSettings(), [])
         self._last_attempt_prune_monotonic: float | None = None
+        self.worker_id = f"x_capture-{os.getpid()}"
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -74,9 +76,25 @@ class XCaptureWorker:
         return self._snapshot
 
     def run_once(self) -> list[CaptureRunStats]:
-        self._prune_attempts_if_due(force=True)
-        snapshot = self.load_snapshot()
-        return self._process_accounts(snapshot.accounts, snapshot.settings)
+        try:
+            self._prune_attempts_if_due(force=True)
+            snapshot = self.load_snapshot()
+            stats = self._process_accounts(snapshot.accounts, snapshot.settings)
+            failed = [item for item in stats if item.status != "success"]
+            self._record_heartbeat(
+                success=not failed,
+                error="; ".join(item.error or item.status for item in failed) if failed else None,
+                metadata={
+                    "accounts": len(snapshot.accounts),
+                    "processed_accounts": len(stats),
+                    "failed_accounts": len(failed),
+                    "saved_count": sum(item.saved_count for item in stats),
+                },
+            )
+            return stats
+        except Exception as exc:
+            self._record_heartbeat(success=False, error=str(exc), metadata={})
+            raise
 
     def run_forever(self) -> None:
         snapshot = self.load_snapshot()
@@ -99,6 +117,17 @@ class XCaptureWorker:
                 due = [account for account in snapshot.accounts if self._next_due.get(account.username_lower, 0) <= now]
                 if due:
                     stats = self._process_accounts(due, snapshot.settings)
+                    failed = [item for item in stats if item.status != "success"]
+                    self._record_heartbeat(
+                        success=not failed,
+                        error="; ".join(item.error or item.status for item in failed) if failed else None,
+                        metadata={
+                            "accounts": len(snapshot.accounts),
+                            "processed_accounts": len(stats),
+                            "failed_accounts": len(failed),
+                            "saved_count": sum(item.saved_count for item in stats),
+                        },
+                    )
                     for item in stats:
                         interval = item.account.effective_interval_seconds(snapshot.settings)
                         self._next_due[item.account.username_lower] = (
@@ -106,12 +135,38 @@ class XCaptureWorker:
                         )
 
                 sleep_for = self._sleep_seconds(snapshot)
+                if not due:
+                    self._record_heartbeat(
+                        success=True,
+                        error=None,
+                        metadata={
+                            "accounts": len(snapshot.accounts),
+                            "processed_accounts": 0,
+                            "failed_accounts": 0,
+                            "saved_count": 0,
+                        },
+                    )
                 self._wake_event.wait(sleep_for)
                 self._wake_event.clear()
         finally:
             self.stop()
             if notify_thread:
                 notify_thread.join(timeout=2)
+
+    def _record_heartbeat(self, *, success: bool, error: str | None, metadata: dict[str, Any]) -> None:
+        if not hasattr(self.repository, "record_worker_heartbeat"):
+            return
+        try:
+            self.repository.record_worker_heartbeat(
+                component="x_capture",
+                worker_id=self.worker_id,
+                status="ok" if success else "failed",
+                success=success,
+                error=error,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            print(f"[odaily] x-capture heartbeat failed: {exc}")
 
     def _prune_attempts_if_due(self, *, force: bool = False) -> int:
         now = time.monotonic()

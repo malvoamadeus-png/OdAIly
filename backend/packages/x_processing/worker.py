@@ -182,17 +182,26 @@ class XProcessingWorker:
         self._wake_event.set()
 
     def run_once(self) -> StageRunResult:
-        task = self.repository.claim_task(self.stage, worker_id=self.worker_id)
-        if task is None:
-            return StageRunResult(0, self.stage, 0, 0, "no task")
+        task: TaskRecord | None = None
         try:
+            task = self.repository.claim_task(self.stage, worker_id=self.worker_id)
+            if task is None:
+                result = StageRunResult(0, self.stage, 0, 0, "no task")
+                self._record_heartbeat(result)
+                return result
             self._process_task(task)
-            return StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
+            result = StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
         except HandledStageError as exc:
-            return StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
+            task_label = str(task.id) if task is not None else "unknown"
+            result = StageRunResult(1, self.stage, 0, 1, f"failed task {task_label}: {exc}")
         except Exception as exc:
-            self.repository.fail_task(task.id, stage=self.stage, error=str(exc))
-            return StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
+            if task is not None:
+                self.repository.fail_task(task.id, stage=self.stage, error=str(exc))
+                result = StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
+            else:
+                result = StageRunResult(1, self.stage, 0, 1, f"worker failed before claim: {exc}")
+        self._record_heartbeat(result)
+        return result
 
     def run_forever(self) -> None:
         notify_thread = self._start_notify_listener()
@@ -211,6 +220,26 @@ class XProcessingWorker:
             self.stop()
             if notify_thread:
                 notify_thread.join(timeout=2)
+
+    def _record_heartbeat(self, result: StageRunResult) -> None:
+        if not hasattr(self.repository, "record_worker_heartbeat"):
+            return
+        try:
+            self.repository.record_worker_heartbeat(
+                component=f"x_process_{self.stage}",
+                worker_id=self.worker_id,
+                status="ok" if not result.failed else "failed",
+                success=not bool(result.failed),
+                error=result.message if result.failed else None,
+                metadata={
+                    "stage": self.stage,
+                    "processed": result.processed,
+                    "failed": result.failed,
+                    "message": result.message,
+                },
+            )
+        except Exception as exc:
+            print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
     def _process_task(self, task: TaskRecord) -> None:
         if self.stage == "judge":
@@ -387,7 +416,7 @@ class XProcessingWorker:
             self.repository.fail_task(task.id, stage=self.stage, error=error, status="publish_failed")
             raise HandledStageError(error)
         telegram_result = self.telegram_client.send_message(
-            build_telegram_notice(title=final.title, source_url=None if is_competitor_task(task) else task.source_url)
+            build_telegram_notice(source=task.source, title=final.title, source_url=task.source_url)
         )
         self.repository.complete_format_publish(
             task.id,
@@ -507,8 +536,20 @@ def parse_judge_route(value: str) -> tuple[JudgeRoute, DiscardType]:
     return route, discard_type
 
 
-def build_telegram_notice(*, title: str, source_url: str | None) -> str:
-    text = f"有新快讯：{title}"
+SOURCE_DISPLAY_NAMES = {
+    "x": "X平台",
+    "blockbeats": "律动",
+    "panews": "PANews",
+    "jinse": "金色财经",
+}
+
+
+def source_display_name(source: str) -> str:
+    return SOURCE_DISPLAY_NAMES.get(source, source)
+
+
+def build_telegram_notice(*, source: str = "x", title: str, source_url: str | None) -> str:
+    text = f"{source_display_name(source)}有新快讯：{title}"
     if source_url and source_url.strip():
-        text += f"\n原文链接：{source_url.strip()}"
+        text += f"\n{source_url.strip()}"
     return text

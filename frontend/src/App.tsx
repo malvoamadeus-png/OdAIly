@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
+  Ban,
   Database,
   FileText,
   Pause,
@@ -11,13 +12,17 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  createCompetitorFilterKeywords,
   createAccount,
+  deleteCompetitorFilterKeyword,
   deleteAccount as deleteAccountFromSupabase,
+  listCompetitorFilterKeywords,
   loadDashboard,
   listPromptTemplates,
   listPromptVersions,
   createPromptVersion,
   publishPromptVersion,
+  updateCompetitorFilterKeyword,
   updateAccount,
   updateSettings,
   type Account,
@@ -27,6 +32,7 @@ import {
   type TaskItem,
   type PromptTemplate,
   type PromptVersion,
+  type CompetitorFilterKeyword,
 } from './xCaptureStore';
 
 const emptySettings: Settings = {
@@ -54,7 +60,7 @@ export function App() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'x' | 'prompts'>('x');
+  const [view, setView] = useState<'x' | 'prompts' | 'competitor'>('x');
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [newAccount, setNewAccount] = useState({
@@ -68,6 +74,9 @@ export function App() {
   const [promptContent, setPromptContent] = useState('');
   const [promptNote, setPromptNote] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [competitorKeywords, setCompetitorKeywords] = useState<CompetitorFilterKeyword[]>([]);
+  const [newKeywords, setNewKeywords] = useState('');
+  const [savingKeywords, setSavingKeywords] = useState(false);
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const latestAttempt = attempts[0];
@@ -111,6 +120,12 @@ export function App() {
     setPromptNote('');
   }
 
+  async function loadCompetitorKeywords() {
+    setError('');
+    const keywords = await listCompetitorFilterKeywords();
+    setCompetitorKeywords(keywords);
+  }
+
   useEffect(() => {
     loadAll().catch((err: Error) => {
       setError(err.message);
@@ -124,6 +139,10 @@ export function App() {
 
   useEffect(() => {
     loadPrompts().catch((err: Error) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    loadCompetitorKeywords().catch((err: Error) => setError(err.message));
   }, []);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
@@ -217,6 +236,53 @@ export function App() {
     }
   }
 
+  async function addCompetitorKeywords(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingKeywords(true);
+    setError('');
+    try {
+      const created = await createCompetitorFilterKeywords(newKeywords);
+      setNewKeywords('');
+      setMessage(`已保存 ${created.length} 个过滤词`);
+      await loadCompetitorKeywords();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingKeywords(false);
+    }
+  }
+
+  async function toggleCompetitorKeyword(keyword: CompetitorFilterKeyword) {
+    setError('');
+    try {
+      await updateCompetitorFilterKeyword(keyword.id, { enabled: !keyword.enabled });
+      await loadCompetitorKeywords();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeCompetitorKeyword(keyword: CompetitorFilterKeyword) {
+    setError('');
+    try {
+      await deleteCompetitorFilterKeyword(keyword.id);
+      await loadCompetitorKeywords();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const productLabel = view === 'x' ? 'X Capture' : view === 'prompts' ? 'Prompt' : '竞品';
+  const titleLabel = view === 'x' ? 'X 抓取控制台' : view === 'prompts' ? 'Prompt 编制' : '竞品过滤';
+  const subtitle =
+    view === 'x'
+      ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
+      : view === 'prompts'
+        ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
+        : `${competitorKeywords.filter((item) => item.enabled).length} 个启用过滤词`;
+  const refreshCurrent = () =>
+    view === 'x' ? loadAll() : view === 'prompts' ? loadPrompts(selectedPromptKey) : loadCompetitorKeywords();
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -224,15 +290,18 @@ export function App() {
           <div className="brandMark">O</div>
           <div>
             <strong>OdAIly</strong>
-            <span>{view === 'x' ? 'X Capture' : 'Prompt'}</span>
+            <span>{productLabel}</span>
           </div>
         </div>
         <nav>
           <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('x')}>
             <Activity size={18} /> 账号
           </button>
-          <button className={view === 'x' ? 'navItem' : 'navItem active'} type="button" onClick={() => setView('prompts')}>
+          <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('prompts')}>
             <FileText size={18} /> Prompt
+          </button>
+          <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('competitor')}>
+            <Ban size={18} /> 竞品
           </button>
           <a href="#tasks" onClick={() => setView('x')}>
             <Database size={18} /> 入库
@@ -243,17 +312,13 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <div>
-            <h1>{view === 'x' ? 'X 抓取控制台' : 'Prompt 编制'}</h1>
-            <p>
-              {view === 'x'
-                ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
-                : `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`}
-            </p>
+            <h1>{titleLabel}</h1>
+            <p>{subtitle}</p>
           </div>
           <button
             className="iconButton"
             type="button"
-            onClick={() => (view === 'x' ? loadAll() : loadPrompts(selectedPromptKey))}
+            onClick={refreshCurrent}
             title="刷新"
           >
             <RefreshCcw size={18} />
@@ -374,7 +439,7 @@ export function App() {
           </div>
             </section>
           </>
-        ) : (
+        ) : view === 'prompts' ? (
           <PromptPanel
             templates={promptTemplates}
             selectedKey={selectedPromptKey}
@@ -388,6 +453,16 @@ export function App() {
             onSave={savePromptVersion}
             onPublish={publishExistingVersion}
             onRefresh={() => loadPrompts(selectedPromptKey)}
+          />
+        ) : (
+          <CompetitorPanel
+            keywords={competitorKeywords}
+            newKeywords={newKeywords}
+            saving={savingKeywords}
+            onNewKeywordsChange={setNewKeywords}
+            onAdd={addCompetitorKeywords}
+            onToggle={toggleCompetitorKeyword}
+            onDelete={removeCompetitorKeyword}
           />
         )}
       </main>
@@ -513,6 +588,64 @@ function PromptPanel({
           </article>
         ))}
       </aside>
+    </section>
+  );
+}
+
+function CompetitorPanel({
+  keywords,
+  newKeywords,
+  saving,
+  onNewKeywordsChange,
+  onAdd,
+  onToggle,
+  onDelete,
+}: {
+  keywords: CompetitorFilterKeyword[];
+  newKeywords: string;
+  saving: boolean;
+  onNewKeywordsChange: (value: string) => void;
+  onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onToggle: (keyword: CompetitorFilterKeyword) => Promise<void>;
+  onDelete: (keyword: CompetitorFilterKeyword) => Promise<void>;
+}) {
+  return (
+    <section className="competitorLayout">
+      <form className="keywordForm" onSubmit={onAdd}>
+        <div className="sectionHeader">
+          <h2>过滤词表</h2>
+          <button className="primaryButton" type="submit" disabled={saving}>
+            <Plus size={17} /> 保存
+          </button>
+        </div>
+        <textarea
+          className="keywordTextarea"
+          value={newKeywords}
+          onChange={(event) => onNewKeywordsChange(event.target.value)}
+          placeholder={'每行一个词\n跌破\n突破'}
+          spellCheck={false}
+        />
+      </form>
+
+      <div className="keywordList">
+        {keywords.length === 0 && <div className="emptyState">暂无过滤词，请先运行 x-process-init-db 或添加新词。</div>}
+        {keywords.map((keyword) => (
+          <article className={keyword.enabled ? 'keywordRow' : 'keywordRow disabled'} key={keyword.id}>
+            <div>
+              <strong>{keyword.term}</strong>
+              <span>{keyword.enabled ? '启用' : '停用'} · {fmtTime(keyword.updated_at)}</span>
+            </div>
+            <div className="rowActions">
+              <button className="iconButton" type="button" onClick={() => onToggle(keyword)} title={keyword.enabled ? '停用' : '启用'}>
+                {keyword.enabled ? <Pause size={17} /> : <Zap size={17} />}
+              </button>
+              <button className="iconButton danger" type="button" onClick={() => onDelete(keyword)} title="删除">
+                <Trash2 size={17} />
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
