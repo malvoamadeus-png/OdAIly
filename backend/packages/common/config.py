@@ -304,6 +304,16 @@ class CompetitorMonitorSettings(BaseModel):
     fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)
     request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
+    openai_api_key: str | None = None
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
+    openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    event_review_model: str = "gpt-5.4-mini"
+    dashscope_api_key: str | None = None
+    event_embedding_model: str = "text-embedding-v4"
+    event_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    event_window_hours: int = Field(default=6, ge=1, le=168)
+    event_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
+    event_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
 
 
 def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
@@ -316,6 +326,28 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
             "max_attempts": int(os.getenv("COMPETITOR_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("COMPETITOR_BACKOFF_SECONDS") or 1.0),
         },
+        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "openai_base_url": (
+            os.getenv("X_PROCESS_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ),
+        "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "event_review_model": os.getenv("COMPETITOR_EVENT_REVIEW_MODEL") or os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
+        "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
+        "event_embedding_model": os.getenv("COMPETITOR_EVENT_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
+        "event_embedding_base_url": (
+            os.getenv("COMPETITOR_EVENT_EMBEDDING_BASE_URL")
+            or os.getenv("SEARCH_EMBEDDING_BASE_URL")
+            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ),
+        "event_window_hours": int(os.getenv("COMPETITOR_EVENT_WINDOW_HOURS") or os.getenv("SEARCH_WINDOW_HOURS") or 6),
+        "event_duplicate_threshold": float(
+            os.getenv("COMPETITOR_EVENT_DUPLICATE_THRESHOLD") or os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88
+        ),
+        "event_ai_review_threshold": float(
+            os.getenv("COMPETITOR_EVENT_AI_REVIEW_THRESHOLD") or os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.78
+        ),
     }
     try:
         return CompetitorMonitorSettings.model_validate(payload)

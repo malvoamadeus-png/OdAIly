@@ -9,6 +9,7 @@ from packages.x_processing.models import COMPETITOR_SOURCES
 
 from .fetchers import NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
+from .events import NewsflashEventAggregator
 from .repository import CompetitorMonitorRepository
 
 
@@ -17,6 +18,7 @@ class CompetitorRunResult:
     fetched: int
     task_inserted: int
     reference_inserted: int
+    events_updated: int
     filtered: int
     failed_sources: dict[str, str]
 
@@ -26,6 +28,7 @@ class CompetitorMonitorWorker:
         self.repository = repository
         self.settings = settings
         self.worker_id = f"competitor_monitor-{os.getpid()}"
+        self._event_aggregator: NewsflashEventAggregator | None = None
 
     def run_once(self) -> CompetitorRunResult:
         items = []
@@ -47,11 +50,17 @@ class CompetitorMonitorWorker:
                     failed[source] = str(exc)
             filter_terms = self._load_filter_terms()
             filtered_items, filtered_count = filter_competitor_items(items, filter_terms)
+            try:
+                event_ids = self._assign_events(filtered_items)
+            except Exception as exc:
+                failed["event_aggregator"] = str(exc)
+                event_ids = set()
             task_count, reference_count = self.repository.save_items(filtered_items)
             result = CompetitorRunResult(
                 fetched=len(items),
                 task_inserted=task_count,
                 reference_inserted=reference_count,
+                events_updated=len(event_ids),
                 filtered=filtered_count,
                 failed_sources=failed,
             )
@@ -60,6 +69,7 @@ class CompetitorMonitorWorker:
                 fetched=len(items),
                 task_inserted=0,
                 reference_inserted=0,
+                events_updated=0,
                 filtered=0,
                 failed_sources={"worker": str(exc)},
             )
@@ -75,6 +85,7 @@ class CompetitorMonitorWorker:
             print(
                 "[odaily] competitor monitor round "
                 f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
+                f"events={result.events_updated} "
                 f"filtered={result.filtered} "
                 f"failed={result.failed_sources}"
             )
@@ -103,12 +114,22 @@ class CompetitorMonitorWorker:
                     "fetched": result.fetched,
                     "task_inserted": result.task_inserted,
                     "reference_inserted": result.reference_inserted,
+                    "events_updated": result.events_updated,
                     "filtered": result.filtered,
                     "failed_sources": result.failed_sources,
                 },
             )
         except Exception as exc:
             print(f"[odaily] competitor monitor heartbeat failed: {exc}")
+
+    def _assign_events(self, items: list[NewsflashItem]) -> set[str]:
+        if not hasattr(self.repository, "upsert_newsflash_items"):
+            return set()
+        if not items:
+            return set()
+        if self._event_aggregator is None:
+            self._event_aggregator = NewsflashEventAggregator(repository=self.repository, settings=self.settings)
+        return self._event_aggregator.assign_items(items)
 
 
 def normalize_filter_term(value: str) -> str:

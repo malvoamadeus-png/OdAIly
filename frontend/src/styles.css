@@ -442,6 +442,193 @@ textarea:focus {
   font-size: 12px;
 }
 
+.eventsLayout {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.filterButton {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #d8dde3;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #394150;
+  cursor: pointer;
+}
+
+.filterButton.active {
+  border-color: #86c8a7;
+  background: #eef9f3;
+  color: #0f7a55;
+  font-weight: 650;
+}
+
+.eventTable {
+  display: grid;
+  gap: 8px;
+}
+
+.eventHeader,
+.eventRow {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 88px 142px 126px 44px;
+  gap: 10px;
+  align-items: center;
+}
+
+.eventHeader {
+  padding: 0 12px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.eventRowWrap {
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.eventRow {
+  min-height: 68px;
+  padding: 10px 12px;
+}
+
+.eventTitleButton {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #1f2933;
+  cursor: pointer;
+  text-align: left;
+}
+
+.eventTitleButton strong,
+.eventTitleButton span,
+.firstSource strong,
+.firstSource span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventTitleButton span,
+.firstSource span,
+.eventDetailMeta,
+.sourceDetailHead span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.sourceCount {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 999px;
+  background: #eef3f7;
+  color: #24313f;
+  font-weight: 700;
+}
+
+.firstSource {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.statusPill {
+  display: inline-flex;
+  justify-content: center;
+  min-height: 28px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #e8f5ef;
+  color: #0f7a55;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.statusPill.warn {
+  background: #fff7e6;
+  color: #a15c00;
+}
+
+.iconButton.favorite.active {
+  border-color: #d5a300;
+  background: #fff9db;
+  color: #a15c00;
+}
+
+.eventDetail {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.eventDetailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #edf0f3;
+}
+
+.sourceDetail {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #e5e8ec;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.sourceDetailHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sourceDetailHead strong,
+.sourceDetailHead span {
+  display: block;
+}
+
+.sourceDetailHead a {
+  color: #0f684a;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.sourceDetail h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sourceDetail p {
+  color: #394150;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.noteInput {
+  min-height: 68px;
+  background: #ffffff;
+}
+
 .promptTab {
   display: grid;
   gap: 3px;
@@ -574,6 +761,8 @@ textarea:focus {
   .settingsForm,
   .addAccount,
   .accountRow,
+  .eventHeader,
+  .eventRow,
   .promptLayout,
   .competitorLayout {
     grid-template-columns: 1fr;

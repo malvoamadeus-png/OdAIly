@@ -70,6 +70,56 @@ export type CompetitorFilterKeyword = {
   updated_at: string;
 };
 
+export type NewsflashSourceSummary = {
+  source: string;
+  title: string | null;
+  published_at: string | null;
+  source_url: string | null;
+};
+
+export type NewsflashEventSummary = {
+  event_id: string;
+  representative_title: string | null;
+  event_time: string | null;
+  first_source: string | null;
+  first_published_at: string | null;
+  source_count: number;
+  competitor_source_count: number;
+  has_odaily: boolean;
+  status: string;
+  needs_review: boolean;
+  favorite: boolean;
+  sources: NewsflashSourceSummary[];
+};
+
+export type NewsflashEventFilter =
+  | 'all'
+  | 'multi'
+  | 'with_odaily'
+  | 'high_value'
+  | 'competitor_only'
+  | 'competitor_consensus_missing'
+  | 'odaily_only'
+  | 'odaily_late'
+  | 'odaily_first'
+  | 'favorite';
+
+export type NewsflashEventSourceItem = {
+  id: number;
+  event_id: string;
+  item_id: number;
+  source: string;
+  source_item_id: string;
+  role: string;
+  match_method: string;
+  similarity: number | null;
+  title: string | null;
+  content: string;
+  source_url: string | null;
+  published_at: string | null;
+  note: string;
+};
+
 export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
@@ -93,6 +143,23 @@ type AccountCreateInput = {
 export type CompetitorKeywordPatch = {
   enabled?: boolean;
   term?: string;
+};
+
+type NewsflashEventSourceRow = {
+  id: number;
+  event_id: string;
+  item_id: number;
+  source: string;
+  source_item_id: string;
+  role: string;
+  match_method: string;
+  similarity: number | null;
+  newsflash_items: {
+    title: string | null;
+    content: string;
+    source_url: string | null;
+    published_at: string | null;
+  } | null;
 };
 
 const defaultSettings: Settings = {
@@ -465,5 +532,125 @@ export async function updateCompetitorFilterKeyword(
 
 export async function deleteCompetitorFilterKeyword(id: number): Promise<void> {
   const { error } = await supabase().from('competitor_filter_keywords').delete().eq('id', id);
+  raise(error);
+}
+
+export async function listNewsflashEvents(filter: NewsflashEventFilter = 'all', limit = 100): Promise<NewsflashEventSummary[]> {
+  let query = supabase()
+    .from('newsflash_event_summary')
+    .select(
+      [
+        'event_id',
+        'representative_title',
+        'event_time',
+        'first_source',
+        'first_published_at',
+        'source_count',
+        'competitor_source_count',
+        'has_odaily',
+        'status',
+        'needs_review',
+        'favorite',
+        'sources',
+      ].join(','),
+    )
+    .order('event_time', { ascending: false, nullsFirst: false })
+    .limit(limit);
+
+  if (filter === 'multi') {
+    query = query.gte('source_count', 2);
+  } else if (filter === 'with_odaily') {
+    query = query.eq('has_odaily', true);
+  } else if (filter === 'high_value') {
+    query = query.eq('has_odaily', true).gte('source_count', 2);
+  } else if (filter === 'competitor_only') {
+    query = query.eq('has_odaily', false).gte('competitor_source_count', 1);
+  } else if (filter === 'competitor_consensus_missing') {
+    query = query.eq('has_odaily', false).gte('competitor_source_count', 2);
+  } else if (filter === 'odaily_only') {
+    query = query.eq('has_odaily', true).eq('source_count', 1);
+  } else if (filter === 'odaily_late') {
+    query = query.eq('has_odaily', true).neq('first_source', 'odaily');
+  } else if (filter === 'odaily_first') {
+    query = query.eq('has_odaily', true).eq('first_source', 'odaily');
+  } else if (filter === 'favorite') {
+    query = query.eq('favorite', true);
+  }
+
+  const { data, error } = await query;
+  raise(error);
+  return ((data ?? []) as unknown as NewsflashEventSummary[]).map((event) => ({
+    ...event,
+    sources: Array.isArray(event.sources) ? event.sources : [],
+  }));
+}
+
+export async function listNewsflashEventSources(eventId: string): Promise<NewsflashEventSourceItem[]> {
+  const { data, error } = await supabase()
+    .from('newsflash_event_sources')
+    .select(
+      [
+        'id',
+        'event_id',
+        'item_id',
+        'source',
+        'source_item_id',
+        'role',
+        'match_method',
+        'similarity',
+        'newsflash_items(title,content,source_url,published_at)',
+      ].join(','),
+    )
+    .eq('event_id', eventId)
+    .order('role', { ascending: true })
+    .order('id', { ascending: true });
+  raise(error);
+  const rows = (data ?? []) as unknown as NewsflashEventSourceRow[];
+  const itemIds = rows.map((row) => row.item_id);
+  let notesByItem = new Map<number, string>();
+  if (itemIds.length > 0) {
+    const notes = await supabase().from('newsflash_item_notes').select('item_id,note').in('item_id', itemIds);
+    raise(notes.error);
+    notesByItem = new Map(((notes.data ?? []) as { item_id: number; note: string }[]).map((row) => [row.item_id, row.note]));
+  }
+  return rows.map((row) => ({
+    id: row.id,
+    event_id: row.event_id,
+    item_id: row.item_id,
+    source: row.source,
+    source_item_id: row.source_item_id,
+    role: row.role,
+    match_method: row.match_method,
+    similarity: row.similarity,
+    title: row.newsflash_items?.title ?? null,
+    content: row.newsflash_items?.content ?? '',
+    source_url: row.newsflash_items?.source_url ?? null,
+    published_at: row.newsflash_items?.published_at ?? null,
+    note: notesByItem.get(row.item_id) ?? '',
+  }));
+}
+
+export async function setNewsflashEventFavorite(eventId: string, favorite: boolean): Promise<void> {
+  if (favorite) {
+    const { error } = await supabase()
+      .from('newsflash_event_favorites')
+      .upsert({ event_id: eventId, favorite: true, updated_at: nowIso() }, { onConflict: 'event_id' });
+    raise(error);
+    return;
+  }
+  const { error } = await supabase().from('newsflash_event_favorites').delete().eq('event_id', eventId);
+  raise(error);
+}
+
+export async function saveNewsflashItemNote(itemId: number, note: string): Promise<void> {
+  const trimmed = note.trim();
+  if (!trimmed) {
+    const { error } = await supabase().from('newsflash_item_notes').delete().eq('item_id', itemId);
+    raise(error);
+    return;
+  }
+  const { error } = await supabase()
+    .from('newsflash_item_notes')
+    .upsert({ item_id: itemId, note: trimmed, updated_at: nowIso() }, { onConflict: 'item_id' });
   raise(error);
 }

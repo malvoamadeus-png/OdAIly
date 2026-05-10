@@ -114,6 +114,11 @@ Odaily newsflashes are saved as reference material only and do not enter
 Odaily or in-flight events before writing. Competitor URLs stay internal and
 are not sent to the backend or Telegram.
 
+The competitor monitor also writes Odaily and competitor newsflashes into the
+long-lived `newsflash_*` event tables for console review. Embeddings stay in the
+server-local SQLite search cache; Supabase only stores source items, event
+membership, favorites, and notes.
+
 Initialize the processing schema and seed prompts from `docs/*.txt`:
 
 ```powershell
@@ -149,9 +154,10 @@ X_PROCESS_WRITER_MODEL=gpt-5.5
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
 SEARCH_EMBEDDING_MODEL=text-embedding-v4
 SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-SEARCH_WINDOW_HOURS=24
+SEARCH_WINDOW_HOURS=6
 SEARCH_DUPLICATE_THRESHOLD=0.88
 SEARCH_AI_REVIEW_THRESHOLD=0.78
+COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
@@ -165,6 +171,14 @@ supports `/v1/responses`; use `chat_completions` when it only supports
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for
 `prompt_config_changed` and refresh prompt cache.
+
+After deploying the competitor event console, verify the database and workers:
+
+```powershell
+python backend\src\main.py competitor-init-db
+python backend\src\main.py competitor-monitor-worker --once
+python backend\src\main.py x-process-worker --stage search --once
+```
 
 ## Linux Service
 

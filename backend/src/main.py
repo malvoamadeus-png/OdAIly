@@ -240,7 +240,7 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
         print(
             "[odaily] competitor monitor once "
             f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
-            f"filtered={result.filtered} failed={result.failed_sources}"
+            f"events={result.events_updated} filtered={result.filtered} failed={result.failed_sources}"
         )
         return 0 if not result.failed_sources else 1
     worker.run_forever()

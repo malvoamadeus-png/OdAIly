@@ -8,7 +8,11 @@ from typing import Any, Protocol
 
 from dotenv import load_dotenv
 
-from packages.common.pipeline_schema import COMPETITOR_FILTER_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pipeline_schema import (
+    COMPETITOR_FILTER_SCHEMA_SQL,
+    NEWSFLASH_EVENT_SCHEMA_SQL,
+    PIPELINE_MONITORING_SCHEMA_SQL,
+)
 
 from .models import (
     COMPETITOR_SOURCES,
@@ -834,7 +838,7 @@ class InMemoryXProcessingRepository:
         self._locks.discard(task_id)
 
 
-SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + """
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + NEWSFLASH_EVENT_SCHEMA_SQL + """
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;

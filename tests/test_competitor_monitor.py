@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from packages.competitor_monitor.fetchers import fetch_odaily, normalize_item_content, scrub_competitor_brands
+from packages.competitor_monitor.events import EventAssignment, NewsflashEventAggregator, NewsflashItemRecord
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, match_filter_terms
 
 
 class FakeRepository:
     def __init__(self) -> None:
         self.saved = []
+        self.newsflash_items = []
+        self.assignments: list[EventAssignment] = []
+        self.events: dict[str, NewsflashItemRecord] = {}
         self.keywords: list[str] = []
+        self._next_id = 1
+        self._next_event_id = 1
 
     def init_schema(self) -> None:
         return None
@@ -20,6 +28,46 @@ class FakeRepository:
         task_count = sum(1 for item in items if item.source != "odaily")
         ref_count = sum(1 for item in items if item.source == "odaily")
         return task_count, ref_count
+
+    def upsert_newsflash_items(self, items):
+        records = []
+        for item in items:
+            existing = next(
+                (record for record in self.newsflash_items if record.source == item.source and record.source_item_id == item.source_item_id),
+                None,
+            )
+            if existing is None:
+                record = NewsflashItemRecord(
+                    id=self._next_id,
+                    source=item.source,
+                    source_item_id=item.source_item_id,
+                    source_url=item.source_url,
+                    title=item.title,
+                    content=item.content,
+                    published_at=datetime(2026, 5, 10, 10, self._next_id, tzinfo=UTC),
+                    first_seen_at=datetime(2026, 5, 10, 10, self._next_id, tzinfo=UTC),
+                )
+                self._next_id += 1
+                self.newsflash_items.append(record)
+            else:
+                record = existing
+            records.append(record)
+        return records
+
+    def list_recent_event_sources(self, *, since, exclude_item_ids):  # noqa: ANN001
+        return []
+
+    def create_event_for_item(self, item, *, needs_review=False):  # noqa: ANN001
+        event_id = f"evt_{self._next_event_id}"
+        self._next_event_id += 1
+        self.events[event_id] = item
+        return event_id
+
+    def assign_item_to_event(self, assignment):
+        self.assignments.append(assignment)
+
+    def update_event_summaries(self, event_ids):
+        self.updated_event_ids = set(event_ids)
 
     def record_worker_heartbeat(self, **kwargs):
         return None
@@ -58,11 +106,13 @@ def test_worker_saves_odaily_as_reference_and_competitors_as_tasks(monkeypatch) 
     )
     repo = FakeRepository()
     worker = CompetitorMonitorWorker(repository=repo, settings=CompetitorMonitorSettings(blockbeats_api_key="key"))
+    monkeypatch.setattr(worker, "_assign_events", lambda items: {"evt_1"})
 
     result = worker.run_once()
 
     assert result.task_inserted == 1
     assert result.reference_inserted == 1
+    assert result.events_updated == 1
     assert result.filtered == 0
     assert [item.source for item in repo.saved] == ["blockbeats", "odaily"]
 
@@ -96,6 +146,7 @@ def test_worker_skips_filtered_competitor_but_keeps_odaily_reference(monkeypatch
     repo = FakeRepository()
     repo.keywords = ["跌破", "Bitget"]
     worker = CompetitorMonitorWorker(repository=repo, settings=CompetitorMonitorSettings(blockbeats_api_key="key"))
+    monkeypatch.setattr(worker, "_assign_events", lambda items: {"evt_1"})
 
     result = worker.run_once()
 
@@ -103,6 +154,59 @@ def test_worker_skips_filtered_competitor_but_keeps_odaily_reference(monkeypatch
     assert result.reference_inserted == 1
     assert result.filtered == 1
     assert [item.source for item in repo.saved] == ["odaily"]
+
+
+def test_event_aggregator_groups_same_batch_items_and_keeps_embeddings_local() -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    class FakeEmbeddingClient:
+        model = "fake-embedding"
+
+        def embed(self, texts):
+            vectors = []
+            for text in texts:
+                if "比特币 ETF 获批" in text:
+                    vectors.append([1.0, 0.0])
+                else:
+                    vectors.append([0.0, 1.0])
+            return vectors
+
+    class FakeCache:
+        def __init__(self) -> None:
+            self.embeddings = {}
+            self.documents = []
+
+        def get_embedding(self, *, cache_key, model, text_hash):  # noqa: ANN001
+            return self.embeddings.get((cache_key, model, text_hash))
+
+        def set_embedding(self, *, cache_key, model, text_hash, vector):  # noqa: ANN001
+            self.embeddings[(cache_key, model, text_hash)] = vector
+
+        def upsert_document(self, document):
+            self.documents.append(document)
+
+    repo = FakeRepository()
+    aggregator = NewsflashEventAggregator(
+        repository=repo,
+        settings=CompetitorMonitorSettings(blockbeats_api_key="key", event_duplicate_threshold=0.88),
+        embedding_client=FakeEmbeddingClient(),
+        ai_client=None,
+        cache=FakeCache(),
+    )
+
+    event_ids = aggregator.assign_items(
+        [
+            NewsflashItem("blockbeats", "1", "比特币 ETF 获批", "比特币 ETF 获批 正文"),
+            NewsflashItem("panews", "2", "比特币 ETF 获批", "比特币 ETF 获批 另一写法"),
+            NewsflashItem("odaily", "3", "比特币 ETF 获批", "比特币 ETF 获批 本方写法"),
+        ]
+    )
+
+    assert len(event_ids) == 1
+    assert {assignment.event_id for assignment in repo.assignments} == event_ids
+    assert len(repo.assignments) == 3
+    assert all(not hasattr(record, "embedding") for record in repo.newsflash_items)
 
 
 def test_fetch_odaily_uses_rss_host_fallback(monkeypatch) -> None:
