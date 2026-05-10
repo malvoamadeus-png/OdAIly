@@ -252,6 +252,26 @@ def test_searcher_links_duplicate_to_active_candidate() -> None:
     assert repo.event_sources[-1]["role"] == "supporting"
 
 
+def test_search_retry_ignores_own_existing_candidate() -> None:
+    repo = InMemoryXProcessingRepository()
+    retry_task = competitor_task(1, status="deduping")
+    repo.add_task(retry_task)
+    repo.create_candidate_for_task(retry_task, search_result={})
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService({"task:1": [1.0, 0.0], "candidate:1": [1.0, 0.0]}),
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "searched"
+    assert repo.pipelines[1].candidate_id == 1
+
+
 def test_competitor_flows_search_then_judge() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(competitor_task(1, status="pending"))
@@ -376,3 +396,14 @@ def test_claim_skips_locked_task() -> None:
 
     assert first is not None
     assert second is None
+
+
+def test_claim_retries_expired_processing_status() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(competitor_task(1, status="deduping"))
+
+    claimed = repo.claim_task("search", worker_id="retry")
+
+    assert claimed is not None
+    assert claimed.id == 1
+    assert repo.tasks[1].status == "deduping"

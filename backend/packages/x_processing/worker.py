@@ -276,9 +276,14 @@ class XProcessingWorker:
         )
         decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
         if decision is None:
+            candidate_documents = [
+                document
+                for document in self.repository.list_active_candidate_documents()
+                if document.task_id != task.id
+            ]
             candidate_match = top_match(
                 query_vector,
-                self.search_embedding_service.embed_documents(self.repository.list_active_candidate_documents()),
+                self.search_embedding_service.embed_documents(candidate_documents),
             )
             decision = self._decide_match(query=query, match=candidate_match, target_type="inflight_candidate")
         if decision and decision.is_duplicate:

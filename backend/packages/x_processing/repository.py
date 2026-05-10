@@ -160,8 +160,8 @@ class PostgresXProcessingRepository:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
 
-    def _connect(self):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+    def _connect(self, *, autocommit: bool = False):
+        return self._psycopg.connect(self.database_url, row_factory=self._dict_row, autocommit=autocommit)
 
     def init_schema(self) -> None:
         with self._connect() as conn:
@@ -223,11 +223,23 @@ class PostgresXProcessingRepository:
         sources = tuple(PROCESSING_SOURCES)
         source_filter = "t.source = ANY(%(sources)s)"
         if stage == "judge":
-            source_filter = "((t.source = 'x' AND t.status = %(claim_status)s) OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'searched'))"
+            source_filter = """
+                (
+                    (t.source = 'x' AND t.status = %(claim_status)s)
+                    OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'searched')
+                    OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                )
+            """
         elif stage == "search":
-            source_filter = "((t.source = 'x' AND t.status = %(claim_status)s) OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'pending'))"
+            source_filter = """
+                (
+                    (t.source = 'x' AND t.status = %(claim_status)s)
+                    OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'pending')
+                    OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                )
+            """
         else:
-            source_filter = "t.source = ANY(%(sources)s) AND t.status = %(claim_status)s"
+            source_filter = "t.source = ANY(%(sources)s) AND t.status IN (%(claim_status)s, %(processing_status)s)"
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -270,14 +282,14 @@ class PostgresXProcessingRepository:
             return _row_to_task(row)
 
     def get_pipeline(self, task_id: int) -> PipelineRecord:
-        with self._connect() as conn:
+        with self._connect(autocommit=True) as conn:
             row = conn.execute("SELECT * FROM x_task_pipeline WHERE task_id = %s", (task_id,)).fetchone()
         if row is None:
             raise ValueError(f"pipeline row not found for task {task_id}")
         return _row_to_pipeline(row)
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
-        with self._connect() as conn:
+        with self._connect(autocommit=True) as conn:
             row = conn.execute(
                 """
                 SELECT v.*
@@ -375,7 +387,7 @@ class PostgresXProcessingRepository:
             conn.commit()
 
     def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
-        with self._connect() as conn:
+        with self._connect(autocommit=True) as conn:
             rows = conn.execute(
                 """
                 SELECT source_item_id, source_url, title, content, published_at, raw_payload, metadata
@@ -400,7 +412,7 @@ class PostgresXProcessingRepository:
         ]
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
-        with self._connect() as conn:
+        with self._connect(autocommit=True) as conn:
             rows = conn.execute(
                 """
                 SELECT id, primary_task_id, title, content, status, metadata, updated_at
@@ -432,7 +444,7 @@ class PostgresXProcessingRepository:
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (digest,))
                 existing = conn.execute(
                     """
-                    SELECT id
+                    SELECT id, primary_task_id
                     FROM search_event_candidates
                     WHERE content_hash = %s
                       AND status = 'active'
@@ -444,6 +456,9 @@ class PostgresXProcessingRepository:
                 ).fetchone()
                 if existing is not None:
                     candidate_id = int(existing["id"])
+                    if int(existing["primary_task_id"]) == task.id:
+                        self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="primary", search_result=search_result)
+                        return candidate_id, True
                     self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="supporting", search_result=search_result)
                     return candidate_id, False
                 row = conn.execute(
@@ -623,7 +638,7 @@ class InMemoryXProcessingRepository:
                 claim_status = "pending"
             elif stage == "judge" and task.source in COMPETITOR_SOURCES:
                 claim_status = "searched"
-            if task.status != claim_status or task.id in self._locks:
+            if task.status not in {claim_status, spec.processing_status} or task.id in self._locks:
                 continue
             self._locks.add(task.id)
             updated = TaskRecord(**{**asdict(task), "status": spec.processing_status, "updated_at": utc_now()})
@@ -674,6 +689,12 @@ class InMemoryXProcessingRepository:
         return list(self.candidates.values())
 
     def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
+        for candidate_id, document in self.candidates.items():
+            if document.task_id == task.id:
+                self.event_sources.append(
+                    {"candidate_id": candidate_id, "task_id": task.id, "role": "primary", "search_result": search_result}
+                )
+                return candidate_id, True
         candidate_id = self._next_candidate_id
         self._next_candidate_id += 1
         document = SearchDocument(
