@@ -89,7 +89,7 @@ class NewsflashEventRepository(Protocol):
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
     def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
-    def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
+    def create_event_with_source(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
     def update_event_summaries(self, event_ids: set[str]) -> None: ...
 
@@ -188,16 +188,16 @@ class NewsflashEventAggregator:
         records_by_id = {record.id: record for record in records}
         for root, item_ids in groups.components().items():
             event_ids = {assignments[item_id].event_id for item_id in item_ids if assignments.get(item_id) and assignments[item_id].event_id}
+            component_needs_review = self._has_chain_conflict(item_ids, records_by_id, vectors)
             if event_ids:
                 event_id = sorted(event_ids)[0]
-                needs_review = len(event_ids) > 1
+                needs_review = len(event_ids) > 1 or component_needs_review
                 primary_item_id: int | None = None
             else:
                 primary = min((records_by_id[item_id] for item_id in item_ids), key=_record_sort_key)
-                event_id = self.repository.create_event_for_item(primary)
-                needs_review = False
+                needs_review = component_needs_review
+                event_id = self.repository.create_event_with_source(primary, needs_review=needs_review)
                 primary_item_id = primary.id
-            needs_review = needs_review or self._has_chain_conflict(item_ids, records_by_id, vectors)
             updated_event_ids.add(event_id)
             for item_id in item_ids:
                 record = records_by_id[item_id]
@@ -212,6 +212,8 @@ class NewsflashEventAggregator:
                     and current.event_id == target_event_id
                     and current.match_method == "existing_assignment"
                 ):
+                    continue
+                if item_id == primary_item_id and target_event_id == event_id:
                     continue
                 self.repository.assign_item_to_event(
                     EventAssignment(

@@ -84,13 +84,32 @@ class FakeRepository:
                 rows.append(EventSourceRecord(event_id=assignment.event_id, item=record))
         return rows
 
-    def create_event_for_item(self, item, *, needs_review=False):  # noqa: ANN001
+    def create_event_with_source(self, item, *, needs_review=False):  # noqa: ANN001
         event_id = f"evt_{self._next_event_id}"
         self._next_event_id += 1
         self.events[event_id] = item
+        self.assignments.append(
+            EventAssignment(
+                item_id=item.id,
+                event_id=event_id,
+                role="primary",
+                match_method="new_event",
+                needs_review=needs_review,
+            )
+        )
         return event_id
 
     def assign_item_to_event(self, assignment):
+        previous = self._find_assignment(assignment.item_id)
+        if assignment.match_method == "new_event":
+            if previous is not None and previous.event_id == assignment.event_id:
+                return
+        if previous is not None and previous.event_id != assignment.event_id:
+            remaining_old_sources = [
+                item for item in self.assignments if item.item_id != assignment.item_id and item.event_id == previous.event_id
+            ]
+            if not remaining_old_sources:
+                self.events.pop(previous.event_id, None)
         self.assignments.append(assignment)
 
     def update_event_summaries(self, event_ids):
@@ -115,6 +134,13 @@ class FakeRepository:
             "deleted_events": len(deleted_event_ids),
             "updated_events": len(self.updated_event_ids),
         }
+
+    def prune_orphan_events(self):
+        assigned_event_ids = {assignment.event_id for assignment in self.assignments}
+        orphan_event_ids = set(self.events) - assigned_event_ids
+        for event_id in orphan_event_ids:
+            self.events.pop(event_id, None)
+        return len(orphan_event_ids)
 
     def repair_newsflash_timestamps(self):
         return {"updated_items": 0, "updated_events": 0}
@@ -311,6 +337,46 @@ def test_event_aggregator_groups_same_batch_items_and_keeps_embeddings_local() -
     assert all(not hasattr(record, "embedding") for record in repo.newsflash_items)
 
 
+def test_event_aggregator_new_event_is_created_with_primary_source_atomically() -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    class FakeEmbeddingClient:
+        model = "fake-embedding"
+
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    class FakeCache:
+        def get_embedding(self, *, cache_key, model, text_hash):  # noqa: ANN001
+            return None
+
+        def set_embedding(self, *, cache_key, model, text_hash, vector):  # noqa: ANN001
+            return None
+
+        def upsert_document(self, document):
+            return None
+
+    repo = FakeRepository()
+    aggregator = NewsflashEventAggregator(
+        repository=repo,
+        settings=CompetitorMonitorSettings(blockbeats_api_key="key", event_duplicate_threshold=0.88),
+        embedding_client=FakeEmbeddingClient(),
+        ai_client=None,
+        cache=FakeCache(),
+    )
+
+    event_ids = aggregator.assign_items([NewsflashItem("jinse", "j1", "某项目完成融资", "某项目完成融资 正文")])
+
+    assert len(event_ids) == 1
+    event_id = next(iter(event_ids))
+    assert event_id in repo.events
+    assert len(repo.assignments) == 1
+    assert repo.assignments[0].event_id == event_id
+    assert repo.assignments[0].role == "primary"
+    assert repo.assignments[0].match_method == "new_event"
+
+
 def test_event_aggregator_keeps_existing_assignment_when_item_reappears() -> None:
     from packages.common.config import CompetitorMonitorSettings
     from packages.competitor_monitor.fetchers import NewsflashItem
@@ -378,6 +444,42 @@ def test_prune_excluded_event_sources_removes_matches_and_keeps_remaining_event(
     assert [assignment.item_id for assignment in repo.assignments] == [odaily.id]
     assert set(repo.events) == {"evt_1"}
     assert repo.updated_event_ids == {"evt_1"}
+
+
+def test_prune_orphan_events_deletes_only_events_without_sources() -> None:
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    repo = FakeRepository()
+    item = repo.upsert_newsflash_items([NewsflashItem("odaily", "o1", "标题", "正文")])[0]
+    repo.events = {"evt_keep": item, "evt_orphan": item}
+    repo.assignments = [EventAssignment(item_id=item.id, event_id="evt_keep", role="primary", match_method="new_event")]
+
+    deleted = repo.prune_orphan_events()
+
+    assert deleted == 1
+    assert set(repo.events) == {"evt_keep"}
+
+
+def test_reassigning_last_source_deletes_previous_empty_event() -> None:
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    repo = FakeRepository()
+    item = repo.upsert_newsflash_items([NewsflashItem("odaily", "o1", "标题", "正文")])[0]
+    repo.events = {"evt_old": item, "evt_new": item}
+    repo.assignments = [EventAssignment(item_id=item.id, event_id="evt_old", role="primary", match_method="new_event")]
+
+    repo.assign_item_to_event(
+        EventAssignment(
+            item_id=item.id,
+            event_id="evt_new",
+            role="supporting",
+            match_method="embedding_high",
+            similarity=0.95,
+        )
+    )
+
+    assert set(repo.events) == {"evt_new"}
+    assert repo._find_assignment(item.id).event_id == "evt_new"
 
 
 def test_fetch_odaily_uses_rss_host_fallback(monkeypatch) -> None:

@@ -72,6 +72,12 @@ def parse_args() -> argparse.Namespace:
     competitor_prune = subparsers.add_parser("competitor-prune-excluded-events", help="Remove excluded newsflash items from event analysis.")
     competitor_prune.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
+    competitor_prune_orphans = subparsers.add_parser(
+        "competitor-prune-orphan-events",
+        help="Delete newsflash events that have no linked source items.",
+    )
+    competitor_prune_orphans.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
     competitor_repair_time = subparsers.add_parser("competitor-repair-newsflash-time", help="Repair newsflash published_at timezone interpretation.")
     competitor_repair_time.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
@@ -251,6 +257,15 @@ def competitor_prune_excluded_events_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def competitor_prune_orphan_events_command(args: argparse.Namespace) -> int:
+    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+
+    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    deleted = repository.prune_orphan_events()
+    print(f"[odaily] competitor orphan events pruned deleted_events={deleted}")
+    return 0
+
+
 def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
     from packages.competitor_monitor import PostgresCompetitorMonitorRepository
 
@@ -320,6 +335,8 @@ def main() -> int:
             return competitor_init_db_command(args)
         if args.command == "competitor-prune-excluded-events":
             return competitor_prune_excluded_events_command(args)
+        if args.command == "competitor-prune-orphan-events":
+            return competitor_prune_orphan_events_command(args)
         if args.command == "competitor-repair-newsflash-time":
             return competitor_repair_newsflash_time_command(args)
         if args.command == "competitor-monitor-worker":

@@ -18,10 +18,11 @@ class CompetitorMonitorRepository(Protocol):
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
     def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
-    def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
+    def create_event_with_source(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
     def update_event_summaries(self, event_ids: set[str]) -> None: ...
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]: ...
+    def prune_orphan_events(self) -> int: ...
     def repair_newsflash_timestamps(self) -> dict[str, int]: ...
     def record_worker_heartbeat(
         self,
@@ -226,36 +227,70 @@ class PostgresCompetitorMonitorRepository:
             ).fetchall()
         return [EventSourceRecord(event_id=str(row["event_id"]), item=_row_to_newsflash_item(row)) for row in rows]
 
-    def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str:
+    def create_event_with_source(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str:
         event_id = generate_event_id()
         event_time = item.published_at or item.first_seen_at
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO newsflash_events (
-                    event_id, representative_item_id, representative_title, event_time,
-                    first_source, first_published_at, needs_review, metadata
+            with conn.transaction():
+                conn.execute(
+                    """
+                    INSERT INTO newsflash_events (
+                        event_id, representative_item_id, representative_title, event_time,
+                        first_source, first_published_at, source_count, competitor_source_count,
+                        has_odaily, needs_review, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s)
+                    """,
+                    (
+                        event_id,
+                        item.id,
+                        item.title,
+                        event_time,
+                        item.source,
+                        event_time,
+                        0 if item.source == "odaily" else 1,
+                        item.source == "odaily",
+                        needs_review,
+                        self._Jsonb({"created_from": {"source": item.source, "source_item_id": item.source_item_id}}),
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (event_id) DO NOTHING
-                """,
-                (
-                    event_id,
-                    item.id,
-                    item.title,
-                    event_time,
-                    item.source,
-                    event_time,
-                    needs_review,
-                    self._Jsonb({"created_from": {"source": item.source, "source_item_id": item.source_item_id}}),
-                ),
-            )
+                inserted = conn.execute(
+                    """
+                    INSERT INTO newsflash_event_sources (
+                        event_id, item_id, source, source_item_id, role, match_method,
+                        similarity, matched_item_id, ai_result, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, 'primary', 'new_event', NULL, NULL, '{}'::jsonb, %s)
+                    ON CONFLICT (item_id) DO NOTHING
+                    RETURNING event_id
+                    """,
+                    (
+                        event_id,
+                        item.id,
+                        item.source,
+                        item.source_item_id,
+                        self._Jsonb({"needs_review": needs_review}),
+                    ),
+                ).fetchone()
+                if inserted is None:
+                    existing = conn.execute(
+                        "SELECT event_id FROM newsflash_event_sources WHERE item_id = %s",
+                        (item.id,),
+                    ).fetchone()
+                    conn.execute("DELETE FROM newsflash_events WHERE event_id = %s", (event_id,))
+                    if existing is not None:
+                        event_id = str(existing["event_id"])
             conn.commit()
         return event_id
 
     def assign_item_to_event(self, assignment: EventAssignment) -> None:
         with self._connect() as conn:
             with conn.transaction():
+                previous = conn.execute(
+                    "SELECT event_id FROM newsflash_event_sources WHERE item_id = %s FOR UPDATE",
+                    (assignment.item_id,),
+                ).fetchone()
+                previous_event_id = str(previous["event_id"]) if previous else None
                 conn.execute(
                     """
                     INSERT INTO newsflash_event_sources (
@@ -293,6 +328,22 @@ class PostgresCompetitorMonitorRepository:
                         "UPDATE newsflash_events SET needs_review = true, updated_at = now() WHERE event_id = %s",
                         (assignment.event_id,),
                     )
+                if previous_event_id and previous_event_id != assignment.event_id:
+                    deleted = conn.execute(
+                        """
+                        DELETE FROM newsflash_events e
+                        WHERE e.event_id = %s
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM newsflash_event_sources s
+                              WHERE s.event_id = e.event_id
+                          )
+                        RETURNING event_id
+                        """,
+                        (previous_event_id,),
+                    ).fetchone()
+                    if deleted is None:
+                        self._update_event_summaries(conn, {previous_event_id})
             conn.commit()
 
     def update_event_summaries(self, event_ids: set[str]) -> None:
@@ -301,6 +352,22 @@ class PostgresCompetitorMonitorRepository:
         with self._connect() as conn:
             self._update_event_summaries(conn, event_ids)
             conn.commit()
+
+    def prune_orphan_events(self) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                DELETE FROM newsflash_events e
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM newsflash_event_sources s
+                    WHERE s.event_id = e.event_id
+                )
+                RETURNING event_id
+                """
+            ).fetchall()
+            conn.commit()
+        return len(rows)
 
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]:
         exclude_terms = terms if terms is not None else self.list_enabled_filter_keywords()

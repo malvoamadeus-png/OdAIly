@@ -182,6 +182,49 @@ ON newsflash_event_sources(event_id);
 CREATE INDEX IF NOT EXISTS idx_newsflash_event_sources_item
 ON newsflash_event_sources(item_id);
 
+CREATE OR REPLACE FUNCTION assert_newsflash_event_has_source()
+RETURNS trigger AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM newsflash_events e WHERE e.event_id = NEW.event_id)
+       AND NOT EXISTS (
+           SELECT 1
+           FROM newsflash_event_sources s
+           WHERE s.event_id = NEW.event_id
+       ) THEN
+        RAISE EXCEPTION 'newsflash event % has no linked source item', NEW.event_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION prune_empty_newsflash_event_after_source_change()
+RETURNS trigger AS $$
+BEGIN
+    DELETE FROM newsflash_events e
+    WHERE e.event_id = OLD.event_id
+      AND NOT EXISTS (
+          SELECT 1
+          FROM newsflash_event_sources s
+          WHERE s.event_id = e.event_id
+      );
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_newsflash_event_requires_source ON newsflash_events;
+CREATE CONSTRAINT TRIGGER trg_newsflash_event_requires_source
+AFTER INSERT OR UPDATE ON newsflash_events
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION assert_newsflash_event_has_source();
+
+DROP TRIGGER IF EXISTS trg_newsflash_event_prune_empty_after_source_change ON newsflash_event_sources;
+CREATE CONSTRAINT TRIGGER trg_newsflash_event_prune_empty_after_source_change
+AFTER DELETE OR UPDATE OF event_id ON newsflash_event_sources
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION prune_empty_newsflash_event_after_source_change();
+
 CREATE OR REPLACE VIEW newsflash_event_summary AS
 SELECT
     e.event_id,
@@ -208,8 +251,8 @@ SELECT
     ) AS sources,
     COALESCE(n.note, '') AS note
 FROM newsflash_events e
-LEFT JOIN newsflash_event_sources s ON s.event_id = e.event_id
-LEFT JOIN newsflash_items i ON i.id = s.item_id
+JOIN newsflash_event_sources s ON s.event_id = e.event_id
+JOIN newsflash_items i ON i.id = s.item_id
 LEFT JOIN newsflash_event_favorites f ON f.event_id = e.event_id AND f.favorite = true
 LEFT JOIN newsflash_event_notes n ON n.event_id = e.event_id
 GROUP BY e.event_id, f.favorite, n.note;
