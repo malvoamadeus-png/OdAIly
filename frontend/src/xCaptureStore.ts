@@ -542,7 +542,11 @@ export async function deleteCompetitorFilterKeyword(id: number): Promise<void> {
   raise(error);
 }
 
-export async function listNewsflashEvents(filter: NewsflashEventFilter = 'all', limit = 100): Promise<NewsflashEventSummary[]> {
+export async function listNewsflashEvents(
+  filter: NewsflashEventFilter = 'all',
+  limit = 100,
+  offset = 0,
+): Promise<NewsflashEventSummary[]> {
   let query = supabase()
     .from('newsflash_event_summary')
     .select(
@@ -563,7 +567,7 @@ export async function listNewsflashEvents(filter: NewsflashEventFilter = 'all', 
       ].join(','),
     )
     .order('event_time', { ascending: false, nullsFirst: false })
-    .limit(limit);
+    .range(offset, offset + limit - 1);
 
   if (filter === 'multi') {
     query = query.gte('source_count', 2);

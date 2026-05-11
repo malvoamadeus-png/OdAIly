@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from packages.common.time_utils import SHANGHAI_TZ
 from packages.x_processing.repository import SCHEMA_SQL, _import_psycopg, get_database_url
 from packages.x_processing.searcher import content_hash, normalize_for_embedding
 
@@ -21,6 +22,7 @@ class CompetitorMonitorRepository(Protocol):
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
     def update_event_summaries(self, event_ids: set[str]) -> None: ...
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]: ...
+    def repair_newsflash_timestamps(self) -> dict[str, int]: ...
     def record_worker_heartbeat(
         self,
         *,
@@ -375,6 +377,48 @@ class PostgresCompetitorMonitorRepository:
             "updated_events": len(remaining_event_ids),
         }
 
+    def repair_newsflash_timestamps(self) -> dict[str, int]:
+        updated_item_ids: list[int] = []
+        with self._connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    """
+                    SELECT id, source, published_at, raw_payload
+                    FROM newsflash_items
+                    WHERE raw_payload IS NOT NULL
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+                for row in rows:
+                    raw_value = extract_raw_published_at(str(row["source"]), row.get("raw_payload") or {})
+                    fixed = parse_datetime(raw_value)
+                    if fixed is None:
+                        continue
+                    current = row.get("published_at")
+                    if isinstance(current, datetime) and current == fixed:
+                        continue
+                    conn.execute(
+                        "UPDATE newsflash_items SET published_at = %s, updated_at = now() WHERE id = %s",
+                        (fixed, row["id"]),
+                    )
+                    updated_item_ids.append(int(row["id"]))
+
+                affected_event_ids: set[str] = set()
+                if updated_item_ids:
+                    affected_rows = conn.execute(
+                        """
+                        SELECT DISTINCT event_id
+                        FROM newsflash_event_sources
+                        WHERE item_id = ANY(%s)
+                        """,
+                        (updated_item_ids,),
+                    ).fetchall()
+                    affected_event_ids = {str(row["event_id"]) for row in affected_rows}
+                    if affected_event_ids:
+                        self._update_event_summaries(conn, affected_event_ids)
+            conn.commit()
+        return {"updated_items": len(updated_item_ids), "updated_events": len(affected_event_ids)}
+
     def _update_event_summaries(self, conn, event_ids: set[str]) -> None:
         for event_id in event_ids:
             conn.execute(
@@ -464,21 +508,49 @@ class PostgresCompetitorMonitorRepository:
             conn.commit()
 
 
-def parse_datetime(value: str | None):
+RAW_PUBLISHED_AT_FIELDS: dict[str, tuple[str, ...]] = {
+    "blockbeats": ("create_time", "created_at", "publish_time", "published_at"),
+    "panews": ("publishedAt", "createdAt"),
+    "jinse": ("published_at",),
+    "odaily": ("publishDate", "publishedAt", "createdAt", "createTime"),
+}
+
+
+def extract_raw_published_at(source: str, payload: dict[str, Any]) -> Any:
+    for field in RAW_PUBLISHED_AT_FIELDS.get(source, ()):
+        value = payload.get(field)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def parse_datetime(value: Any):
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=SHANGHAI_TZ)
+    if isinstance(value, (int, float)) and value > 1000000000:
+        return datetime.fromtimestamp(float(value), tz=UTC)
     text = str(value).strip()
     if not text:
         return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
+    try:
+        numeric = float(text)
+        if numeric > 1000000000:
+            return datetime.fromtimestamp(numeric, tz=UTC)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=SHANGHAI_TZ)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(text, fmt)
+            return datetime.strptime(text, fmt).replace(tzinfo=SHANGHAI_TZ)
         except ValueError:
             pass
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return None
 
 
 def normalize_exclude_term(value: str) -> str:

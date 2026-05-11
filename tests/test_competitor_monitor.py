@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from packages.common.time_utils import SHANGHAI_TZ
 from packages.competitor_monitor.fetchers import fetch_jinse, fetch_odaily, normalize_item_content, scrub_competitor_brands
 from packages.competitor_monitor.events import EventAssignment, EventSourceRecord, NewsflashEventAggregator, NewsflashItemRecord
+from packages.competitor_monitor.repository import parse_datetime
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, match_filter_terms
 
 
@@ -113,6 +115,9 @@ class FakeRepository:
             "deleted_events": len(deleted_event_ids),
             "updated_events": len(self.updated_event_ids),
         }
+
+    def repair_newsflash_timestamps(self):
+        return {"updated_items": 0, "updated_events": 0}
 
     def record_worker_heartbeat(self, **kwargs):
         self.heartbeats.append(kwargs)
@@ -238,7 +243,19 @@ def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:
     assert len(items) == 1
     assert items[0].source_item_id == "512001"
     assert items[0].content == "美国参议院银行委员会将对法案进行首次投票"
-    assert items[0].published_at == "2026-05-09 07:36:06"
+    assert items[0].published_at == "1778283366"
+
+
+def test_parse_datetime_treats_naive_newsflash_time_as_shanghai() -> None:
+    parsed = parse_datetime("2026-05-11 10:36:58")
+
+    assert parsed == datetime(2026, 5, 11, 10, 36, 58, tzinfo=SHANGHAI_TZ)
+    assert parsed.astimezone(UTC) == datetime(2026, 5, 11, 2, 36, 58, tzinfo=UTC)
+
+
+def test_parse_datetime_keeps_explicit_utc_and_unix_timestamp() -> None:
+    assert parse_datetime("2026-05-11T02:38:00.000Z") == datetime(2026, 5, 11, 2, 38, tzinfo=UTC)
+    assert parse_datetime(1778283366) == datetime(2026, 5, 8, 23, 36, 6, tzinfo=UTC)
 
 
 def test_event_aggregator_groups_same_batch_items_and_keeps_embeddings_local() -> None:

@@ -55,21 +55,17 @@ const emptySettings: Settings = {
 
 function fmtTime(value: string | null | undefined): string {
   if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-  }).format(new Date(value));
-}
-
-function fmtNewsTime(value: string | null | undefined): string {
-  if (!value) return '-';
-  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
-  if (!match) return fmtTime(value);
-  const [, , month, day, hour, minute, second = '00'] = match;
-  return `${month}/${day} ${hour}:${minute}:${second}`;
+    hour12: false,
+  }).format(date);
 }
 
 const sourceNames: Record<string, string> = {
@@ -99,6 +95,8 @@ const eventFilters: { key: NewsflashEventFilter; label: string }[] = [
   { key: 'favorite', label: '已收藏' },
 ];
 
+const eventPageSize = 100;
+
 export function App() {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -124,7 +122,9 @@ export function App() {
   const [newKeywords, setNewKeywords] = useState('');
   const [savingKeywords, setSavingKeywords] = useState(false);
   const [eventFilter, setEventFilter] = useState<NewsflashEventFilter>('all');
+  const [eventPage, setEventPage] = useState(0);
   const [events, setEvents] = useState<NewsflashEventSummary[]>([]);
+  const [hasNextEventPage, setHasNextEventPage] = useState(false);
   const [eventSources, setEventSources] = useState<Record<string, NewsflashEventSourceItem[]>>({});
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
@@ -177,16 +177,22 @@ export function App() {
     setCompetitorKeywords(keywords);
   }
 
-  async function loadEvents(nextFilter = eventFilter, nextView = view) {
+  async function loadEvents(nextFilter = eventFilter, nextView = view, nextPage = eventPage) {
     setError('');
     setLoadingEvents(true);
     const effectiveFilter = nextView === 'favorites' ? 'favorite' : nextFilter;
     try {
-      const rows = await listNewsflashEvents(effectiveFilter);
-      setEvents(rows);
+      const rows = await listNewsflashEvents(effectiveFilter, eventPageSize + 1, nextPage * eventPageSize);
+      const pageRows = rows.slice(0, eventPageSize);
+      if (nextPage > 0 && pageRows.length === 0) {
+        setEventPage(Math.max(0, nextPage - 1));
+        return;
+      }
+      setHasNextEventPage(rows.length > eventPageSize);
+      setEvents(pageRows);
       setEventSources((current) => {
         const next = { ...current };
-        for (const event of rows) {
+        for (const event of pageRows) {
           if (!next[event.event_id] || next[event.event_id].length === 0) {
             next[event.event_id] = summarySourcesToDetails(event);
           }
@@ -218,8 +224,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    loadEvents(eventFilter, view).catch((err: Error) => setError(err.message));
-  }, [eventFilter, view]);
+    loadEvents(eventFilter, view, eventPage).catch((err: Error) => setError(err.message));
+  }, [eventFilter, eventPage, view]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -239,6 +245,14 @@ export function App() {
     } finally {
       setSavingSettings(false);
     }
+  }
+
+  function switchView(nextView: typeof view) {
+    if (nextView === 'events' || nextView === 'favorites') {
+      setEventPage(0);
+      setSelectedEventId(null);
+    }
+    setView(nextView);
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -432,7 +446,7 @@ export function App() {
         ? loadPrompts(selectedPromptKey)
         : view === 'competitor'
           ? loadCompetitorKeywords()
-          : loadEvents(eventFilter, view);
+          : loadEvents(eventFilter, view, eventPage);
 
   return (
     <div className="shell">
@@ -445,22 +459,22 @@ export function App() {
           </div>
         </div>
         <nav>
-          <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('x')}>
+          <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('x')}>
             <Activity size={18} /> 账号
           </button>
-          <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('prompts')}>
+          <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
           </button>
-          <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('competitor')}>
+          <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('competitor')}>
             <Ban size={18} /> 排除词
           </button>
-          <button className={view === 'events' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('events')}>
+          <button className={view === 'events' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('events')}>
             <Inbox size={18} /> 事件
           </button>
-          <button className={view === 'favorites' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('favorites')}>
+          <button className={view === 'favorites' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('favorites')}>
             <Star size={18} /> 收藏
           </button>
-          <a href="#tasks" onClick={() => setView('x')}>
+          <a href="#tasks" onClick={() => switchView('x')}>
             <Database size={18} /> 入库
           </a>
         </nav>
@@ -629,9 +643,20 @@ export function App() {
             loadingDetails={loadingEventDetails}
             detailErrors={eventDetailErrors}
             filter={view === 'favorites' ? 'favorite' : eventFilter}
+            page={eventPage}
+            pageSize={eventPageSize}
+            hasNextPage={hasNextEventPage}
             loading={loadingEvents}
             favoritesOnly={view === 'favorites'}
-            onFilterChange={setEventFilter}
+            onFilterChange={(nextFilter) => {
+              setEventPage(0);
+              setSelectedEventId(null);
+              setEventFilter(nextFilter);
+            }}
+            onPageChange={(nextPage) => {
+              setEventPage(nextPage);
+              setSelectedEventId(null);
+            }}
             onOpen={openEvent}
             onToggleFavorite={toggleEventFavorite}
             onSaveEventNote={saveEventNote}
@@ -801,9 +826,13 @@ function EventsPanel({
   loadingDetails,
   detailErrors,
   filter,
+  page,
+  pageSize,
+  hasNextPage,
   loading,
   favoritesOnly,
   onFilterChange,
+  onPageChange,
   onOpen,
   onToggleFavorite,
   onSaveEventNote,
@@ -815,9 +844,13 @@ function EventsPanel({
   loadingDetails: Record<string, boolean>;
   detailErrors: Record<string, string>;
   filter: NewsflashEventFilter;
+  page: number;
+  pageSize: number;
+  hasNextPage: boolean;
   loading: boolean;
   favoritesOnly: boolean;
   onFilterChange: (filter: NewsflashEventFilter) => void;
+  onPageChange: (page: number) => void;
   onOpen: (eventId: string) => Promise<void>;
   onToggleFavorite: (event: NewsflashEventSummary) => Promise<void>;
   onSaveEventNote: (event: NewsflashEventSummary, note: string) => Promise<void>;
@@ -872,7 +905,7 @@ function EventsPanel({
             <article className="eventRowWrap" key={event.event_id}>
               <div className="eventRow">
                 <button className="eventTimeButton" type="button" onClick={() => onOpen(event.event_id)}>
-                  {fmtNewsTime(event.event_time)}
+                  {fmtTime(event.event_time)}
                 </button>
                 <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
                   <strong>{shortEventId(event.event_id)}</strong>
@@ -896,7 +929,7 @@ function EventsPanel({
                 </div>
                 <div className="firstSource">
                   <strong>{event.first_source ? sourceNames[event.first_source] || event.first_source : '-'}</strong>
-                  <span>{fmtNewsTime(event.first_published_at)}</span>
+                  <span>{fmtTime(event.first_published_at)}</span>
                 </div>
                 <span className={event.needs_review ? 'statusPill warn' : 'statusPill'}>{status}</span>
                 <textarea
@@ -928,6 +961,17 @@ function EventsPanel({
             </article>
           );
         })}
+      </div>
+      <div className="paginationBar">
+        <button className="filterButton" type="button" disabled={page === 0 || loading} onClick={() => onPageChange(Math.max(0, page - 1))}>
+          上一页
+        </button>
+        <span>
+          第 {page + 1} 页 · 每页 {pageSize} 条
+        </span>
+        <button className="filterButton" type="button" disabled={loading || !hasNextPage} onClick={() => onPageChange(page + 1)}>
+          下一页
+        </button>
       </div>
     </section>
   );
@@ -1001,7 +1045,7 @@ function EventDetail({
           <div className="sourceDetailHead">
             <div>
               <strong>{sourceNames[item.source] || item.source}</strong>
-              <span>{fmtNewsTime(item.published_at)} · {item.match_method}{item.similarity != null ? ` · ${item.similarity.toFixed(3)}` : ''}</span>
+              <span>{fmtTime(item.published_at)} · {item.match_method}{item.similarity != null ? ` · ${item.similarity.toFixed(3)}` : ''}</span>
             </div>
             {item.source_url && (
               <a href={item.source_url} target="_blank" rel="noreferrer">

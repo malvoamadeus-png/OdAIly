@@ -72,6 +72,9 @@ def parse_args() -> argparse.Namespace:
     competitor_prune = subparsers.add_parser("competitor-prune-excluded-events", help="Remove excluded newsflash items from event analysis.")
     competitor_prune.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
+    competitor_repair_time = subparsers.add_parser("competitor-repair-newsflash-time", help="Repair newsflash published_at timezone interpretation.")
+    competitor_repair_time.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
     competitor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
@@ -248,6 +251,19 @@ def competitor_prune_excluded_events_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
+    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+
+    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    result = repository.repair_newsflash_timestamps()
+    print(
+        "[odaily] competitor newsflash timestamps repaired "
+        f"updated_items={result['updated_items']} "
+        f"updated_events={result['updated_events']}"
+    )
+    return 0
+
+
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
     from packages.competitor_monitor import CompetitorMonitorWorker, PostgresCompetitorMonitorRepository
 
@@ -304,6 +320,8 @@ def main() -> int:
             return competitor_init_db_command(args)
         if args.command == "competitor-prune-excluded-events":
             return competitor_prune_excluded_events_command(args)
+        if args.command == "competitor-repair-newsflash-time":
+            return competitor_repair_newsflash_time_command(args)
         if args.command == "competitor-monitor-worker":
             return competitor_monitor_worker_command(args)
         if args.command == "pipeline-supervisor":

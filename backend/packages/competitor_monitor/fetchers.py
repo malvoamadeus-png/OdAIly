@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 import requests
-
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -140,8 +136,6 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
         if not title:
             continue
         published_at = news.get("published_at") or ""
-        if isinstance(published_at, (int, float)) and published_at > 1000000000:
-            published_at = datetime.fromtimestamp(published_at).strftime("%Y-%m-%d %H:%M:%S")
         source_url = str(news.get("jump_url") or "https://jinse2.com/lives")
         source_id = str(news.get("id") or extract_jinse_live_id(source_url) or stable_id("jinse", title, str(published_at)))
         content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
