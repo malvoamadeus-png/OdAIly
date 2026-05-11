@@ -64,6 +64,14 @@ function fmtTime(value: string | null | undefined): string {
   }).format(new Date(value));
 }
 
+function fmtNewsTime(value: string | null | undefined): string {
+  if (!value) return '-';
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return fmtTime(value);
+  const [, , month, day, hour, minute, second = '00'] = match;
+  return `${month}/${day} ${hour}:${minute}:${second}`;
+}
+
 const sourceNames: Record<string, string> = {
   odaily: 'Odaily',
   blockbeats: 'BlockBeats',
@@ -864,7 +872,7 @@ function EventsPanel({
             <article className="eventRowWrap" key={event.event_id}>
               <div className="eventRow">
                 <button className="eventTimeButton" type="button" onClick={() => onOpen(event.event_id)}>
-                  {fmtTime(event.event_time)}
+                  {fmtNewsTime(event.event_time)}
                 </button>
                 <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
                   <strong>{shortEventId(event.event_id)}</strong>
@@ -888,7 +896,7 @@ function EventsPanel({
                 </div>
                 <div className="firstSource">
                   <strong>{event.first_source ? sourceNames[event.first_source] || event.first_source : '-'}</strong>
-                  <span>{fmtTime(event.first_published_at)}</span>
+                  <span>{fmtNewsTime(event.first_published_at)}</span>
                 </div>
                 <span className={event.needs_review ? 'statusPill warn' : 'statusPill'}>{status}</span>
                 <textarea
@@ -993,7 +1001,7 @@ function EventDetail({
           <div className="sourceDetailHead">
             <div>
               <strong>{sourceNames[item.source] || item.source}</strong>
-              <span>{fmtTime(item.published_at)} · {item.match_method}{item.similarity != null ? ` · ${item.similarity.toFixed(3)}` : ''}</span>
+              <span>{fmtNewsTime(item.published_at)} · {item.match_method}{item.similarity != null ? ` · ${item.similarity.toFixed(3)}` : ''}</span>
             </div>
             {item.source_url && (
               <a href={item.source_url} target="_blank" rel="noreferrer">
