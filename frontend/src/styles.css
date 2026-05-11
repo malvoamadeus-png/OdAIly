@@ -24,7 +24,7 @@ textarea {
 
 .shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 320px;
+  grid-template-columns: 220px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -125,9 +125,6 @@ h2 {
 .sectionHeader span,
 .accountIdentity span,
 .lastPoll,
-.metric small,
-.attemptItem p,
-.attemptItem small,
 .taskItem div {
   color: #6b7280;
   font-size: 12px;
@@ -243,8 +240,7 @@ textarea:focus {
 }
 
 .accountList,
-.taskList,
-.attempts {
+.taskList {
   display: grid;
   gap: 8px;
 }
@@ -339,38 +335,6 @@ textarea:focus {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-}
-
-.rightRail {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow: auto;
-  padding: 22px 18px;
-  border-left: 1px solid #e3e6ea;
-  background: #ffffff;
-}
-
-.metric {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
-  padding: 14px;
-  border: 1px solid #e1e5e9;
-  border-radius: 8px;
-}
-
-.metric span {
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.metric strong {
-  font-size: 24px;
-}
-
-.attempts {
-  margin-top: 16px;
 }
 
 .promptLayout {
@@ -477,34 +441,45 @@ textarea:focus {
 
 .eventTable {
   display: grid;
-  gap: 8px;
-  overflow-x: auto;
-}
-
-.eventHeader,
-.eventRow {
-  display: grid;
-  grid-template-columns: 112px 148px repeat(4, minmax(180px, 1fr)) 72px 130px 112px 44px;
-  gap: 8px;
-  align-items: center;
-  min-width: 1180px;
-}
-
-.eventHeader {
-  padding: 0 12px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.eventRowWrap {
+  max-height: calc(100vh - 162px);
+  overflow: auto;
   border: 1px solid #e1e5e9;
   border-radius: 8px;
   background: #ffffff;
 }
 
+.eventHeader,
 .eventRow {
-  min-height: 68px;
-  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: 112px 190px repeat(4, minmax(220px, 1fr)) 74px 128px 118px 176px 42px;
+  gap: 8px;
+  align-items: start;
+  min-width: 1600px;
+}
+
+.eventHeader {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e1e5e9;
+  background: #f8fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.eventRowWrap {
+  border-bottom: 1px solid #edf0f3;
+}
+
+.eventRowWrap:last-child {
+  border-bottom: 0;
+}
+
+.eventRow {
+  min-height: 86px;
+  padding: 12px;
 }
 
 .eventTimeButton,
@@ -525,13 +500,10 @@ textarea:focus {
 }
 
 .eventTitleButton strong,
-.eventTitleButton span,
-.eventSourceCell,
 .firstSource strong,
 .firstSource span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .eventTitleButton span,
@@ -544,14 +516,17 @@ textarea:focus {
 
 .eventSourceCell {
   min-width: 0;
-  min-height: 38px;
+  min-height: 48px;
   padding: 7px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: #f7f9fb;
   color: #1f2933;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+  white-space: normal;
   text-align: left;
 }
 
@@ -584,6 +559,7 @@ textarea:focus {
 .statusPill {
   display: inline-flex;
   justify-content: center;
+  align-items: center;
   min-height: 28px;
   padding: 5px 8px;
   border-radius: 999px;
@@ -591,6 +567,7 @@ textarea:focus {
   color: #0f7a55;
   font-size: 12px;
   font-weight: 650;
+  text-align: center;
 }
 
 .statusPill.warn {
@@ -608,6 +585,7 @@ textarea:focus {
   display: grid;
   gap: 10px;
   padding: 0 12px 12px;
+  background: #fbfcfd;
 }
 
 .eventDetailMeta {
@@ -653,6 +631,20 @@ textarea:focus {
   color: #394150;
   font-size: 14px;
   line-height: 1.55;
+}
+
+.detailPending {
+  color: #8a94a3;
+}
+
+.eventNoteInput {
+  min-height: 68px;
+  max-height: 96px;
+  padding: 8px;
+  background: #ffffff;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
 }
 
 .noteInput {
@@ -706,27 +698,6 @@ textarea:focus {
   gap: 8px;
 }
 
-.attemptItem {
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-  border: 1px solid #e5e8ec;
-  border-radius: 8px;
-}
-
-.attemptItem div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.attemptItem strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ok {
   color: #0f8a5f;
 }
@@ -756,12 +727,8 @@ textarea:focus {
     padding: 0;
   }
 
-  .rightRail {
-    grid-column: 2;
-    position: static;
-    height: auto;
-    border-left: 0;
-    border-top: 1px solid #e3e6ea;
+  .eventTable {
+    max-height: calc(100vh - 148px);
   }
 }
 
@@ -771,7 +738,7 @@ textarea:focus {
   }
 
   .sidebar,
-  .rightRail {
+  .eventTable {
     position: static;
     height: auto;
   }
@@ -779,6 +746,10 @@ textarea:focus {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid #e3e6ea;
+  }
+
+  .eventTable {
+    max-height: none;
   }
 
   nav {

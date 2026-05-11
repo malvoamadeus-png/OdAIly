@@ -71,10 +71,14 @@ export type CompetitorFilterKeyword = {
 };
 
 export type NewsflashSourceSummary = {
+  id?: number;
+  item_id?: number;
   source: string;
+  source_item_id?: string;
   title: string | null;
   published_at: string | null;
   source_url: string | null;
+  content?: string | null;
 };
 
 export type NewsflashEventSummary = {
@@ -89,6 +93,7 @@ export type NewsflashEventSummary = {
   status: string;
   needs_review: boolean;
   favorite: boolean;
+  note: string;
   sources: NewsflashSourceSummary[];
 };
 
@@ -145,7 +150,7 @@ export type CompetitorKeywordPatch = {
   term?: string;
 };
 
-type NewsflashEventSourceRow = {
+type NewsflashEventSourceLinkRow = {
   id: number;
   event_id: string;
   item_id: number;
@@ -154,12 +159,14 @@ type NewsflashEventSourceRow = {
   role: string;
   match_method: string;
   similarity: number | null;
-  newsflash_items: {
-    title: string | null;
-    content: string;
-    source_url: string | null;
-    published_at: string | null;
-  } | null;
+};
+
+type NewsflashItemRow = {
+  id: number;
+  title: string | null;
+  content: string;
+  source_url: string | null;
+  published_at: string | null;
 };
 
 const defaultSettings: Settings = {
@@ -551,6 +558,7 @@ export async function listNewsflashEvents(filter: NewsflashEventFilter = 'all', 
         'status',
         'needs_review',
         'favorite',
+        'note',
         'sources',
       ].join(','),
     )
@@ -581,6 +589,7 @@ export async function listNewsflashEvents(filter: NewsflashEventFilter = 'all', 
   raise(error);
   return ((data ?? []) as unknown as NewsflashEventSummary[]).map((event) => ({
     ...event,
+    note: event.note ?? '',
     sources: Array.isArray(event.sources) ? event.sources : [],
   }));
 }
@@ -598,19 +607,24 @@ export async function listNewsflashEventSources(eventId: string): Promise<Newsfl
         'role',
         'match_method',
         'similarity',
-        'newsflash_items(title,content,source_url,published_at)',
       ].join(','),
     )
     .eq('event_id', eventId)
     .order('role', { ascending: true })
     .order('id', { ascending: true });
   raise(error);
-  const rows = (data ?? []) as unknown as NewsflashEventSourceRow[];
+  const rows = (data ?? []) as unknown as NewsflashEventSourceLinkRow[];
   const itemIds = rows.map((row) => row.item_id);
+  let itemsById = new Map<number, NewsflashItemRow>();
   let notesByItem = new Map<number, string>();
   if (itemIds.length > 0) {
-    const notes = await supabase().from('newsflash_item_notes').select('item_id,note').in('item_id', itemIds);
+    const [items, notes] = await Promise.all([
+      supabase().from('newsflash_items').select('id,title,content,source_url,published_at').in('id', itemIds),
+      supabase().from('newsflash_item_notes').select('item_id,note').in('item_id', itemIds),
+    ]);
+    raise(items.error);
     raise(notes.error);
+    itemsById = new Map(((items.data ?? []) as NewsflashItemRow[]).map((item) => [item.id, item]));
     notesByItem = new Map(((notes.data ?? []) as { item_id: number; note: string }[]).map((row) => [row.item_id, row.note]));
   }
   return rows.map((row) => ({
@@ -622,10 +636,10 @@ export async function listNewsflashEventSources(eventId: string): Promise<Newsfl
     role: row.role,
     match_method: row.match_method,
     similarity: row.similarity,
-    title: row.newsflash_items?.title ?? null,
-    content: row.newsflash_items?.content ?? '',
-    source_url: row.newsflash_items?.source_url ?? null,
-    published_at: row.newsflash_items?.published_at ?? null,
+    title: itemsById.get(row.item_id)?.title ?? null,
+    content: itemsById.get(row.item_id)?.content ?? '',
+    source_url: itemsById.get(row.item_id)?.source_url ?? null,
+    published_at: itemsById.get(row.item_id)?.published_at ?? null,
     note: notesByItem.get(row.item_id) ?? '',
   }));
 }
@@ -652,5 +666,18 @@ export async function saveNewsflashItemNote(itemId: number, note: string): Promi
   const { error } = await supabase()
     .from('newsflash_item_notes')
     .upsert({ item_id: itemId, note: trimmed, updated_at: nowIso() }, { onConflict: 'item_id' });
+  raise(error);
+}
+
+export async function saveNewsflashEventNote(eventId: string, note: string): Promise<void> {
+  const trimmed = note.trim();
+  if (!trimmed) {
+    const { error } = await supabase().from('newsflash_event_notes').delete().eq('event_id', eventId);
+    raise(error);
+    return;
+  }
+  const { error } = await supabase()
+    .from('newsflash_event_notes')
+    .upsert({ event_id: eventId, note: trimmed, updated_at: nowIso() }, { onConflict: 'event_id' });
   raise(error);
 }

@@ -172,6 +172,13 @@ CREATE TABLE IF NOT EXISTS newsflash_event_favorites (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS newsflash_event_notes (
+    event_id text PRIMARY KEY REFERENCES newsflash_events(event_id) ON DELETE CASCADE,
+    note text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS newsflash_item_notes (
     item_id bigint PRIMARY KEY REFERENCES newsflash_items(id) ON DELETE CASCADE,
     note text NOT NULL DEFAULT '',
@@ -211,12 +218,14 @@ SELECT
             )
         ) FILTER (WHERE s.id IS NOT NULL),
         '[]'::jsonb
-    ) AS sources
+    ) AS sources,
+    COALESCE(n.note, '') AS note
 FROM newsflash_events e
 LEFT JOIN newsflash_event_sources s ON s.event_id = e.event_id
 LEFT JOIN newsflash_items i ON i.id = s.item_id
 LEFT JOIN newsflash_event_favorites f ON f.event_id = e.event_id AND f.favorite = true
-GROUP BY e.event_id, f.favorite;
+LEFT JOIN newsflash_event_notes n ON n.event_id = e.event_id
+GROUP BY e.event_id, f.favorite, n.note;
 
 CREATE OR REPLACE FUNCTION notify_x_task_queue_changed()
 RETURNS trigger AS $$
@@ -264,6 +273,7 @@ ALTER TABLE newsflash_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_event_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_event_favorites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE newsflash_event_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_item_notes ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
@@ -276,6 +286,7 @@ DROP POLICY IF EXISTS newsflash_items_anon_select ON newsflash_items;
 DROP POLICY IF EXISTS newsflash_events_anon_select ON newsflash_events;
 DROP POLICY IF EXISTS newsflash_event_sources_anon_select ON newsflash_event_sources;
 DROP POLICY IF EXISTS newsflash_event_favorites_anon_all ON newsflash_event_favorites;
+DROP POLICY IF EXISTS newsflash_event_notes_anon_all ON newsflash_event_notes;
 DROP POLICY IF EXISTS newsflash_item_notes_anon_all ON newsflash_item_notes;
 
 DO $$
@@ -286,7 +297,7 @@ BEGIN
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
         GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO anon;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_item_notes TO anon;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes TO anon;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq, newsflash_event_sources_id_seq TO anon;
 
         EXECUTE 'CREATE POLICY prompt_templates_anon_all ON prompt_templates FOR ALL TO anon USING (true) WITH CHECK (true)';
@@ -299,6 +310,7 @@ BEGIN
         EXECUTE 'CREATE POLICY newsflash_events_anon_select ON newsflash_events FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY newsflash_event_sources_anon_select ON newsflash_event_sources FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY newsflash_event_favorites_anon_all ON newsflash_event_favorites FOR ALL TO anon USING (true) WITH CHECK (true)';
+        EXECUTE 'CREATE POLICY newsflash_event_notes_anon_all ON newsflash_event_notes FOR ALL TO anon USING (true) WITH CHECK (true)';
         EXECUTE 'CREATE POLICY newsflash_item_notes_anon_all ON newsflash_item_notes FOR ALL TO anon USING (true) WITH CHECK (true)';
     END IF;
 END

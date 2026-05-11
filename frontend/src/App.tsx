@@ -26,6 +26,7 @@ import {
   listPromptVersions,
   createPromptVersion,
   publishPromptVersion,
+  saveNewsflashEventNote,
   saveNewsflashItemNote,
   setNewsflashEventFavorite,
   updateCompetitorFilterKeyword,
@@ -119,10 +120,10 @@ export function App() {
   const [eventSources, setEventSources] = useState<Record<string, NewsflashEventSourceItem[]>>({});
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [loadingEventDetails, setLoadingEventDetails] = useState<Record<string, boolean>>({});
+  const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
-  const latestAttempt = attempts[0];
-
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
     value: string,
@@ -175,6 +176,15 @@ export function App() {
     try {
       const rows = await listNewsflashEvents(effectiveFilter);
       setEvents(rows);
+      setEventSources((current) => {
+        const next = { ...current };
+        for (const event of rows) {
+          if (!next[event.event_id] || next[event.event_id].length === 0) {
+            next[event.event_id] = summarySourcesToDetails(event);
+          }
+        }
+        return next;
+      });
     } finally {
       setLoadingEvents(false);
     }
@@ -331,10 +341,25 @@ export function App() {
   }
 
   async function openEvent(eventId: string) {
-    setSelectedEventId((current) => (current === eventId ? null : eventId));
-    if (!eventSources[eventId]) {
-      const rows = await listNewsflashEventSources(eventId);
-      setEventSources((current) => ({ ...current, [eventId]: rows }));
+    let shouldOpen = true;
+    setSelectedEventId((current) => {
+      shouldOpen = current !== eventId;
+      return shouldOpen ? eventId : null;
+    });
+    if (!shouldOpen) return;
+
+    setEventDetailErrors((current) => ({ ...current, [eventId]: '' }));
+    if (!eventSources[eventId]?.some((source) => source.content)) {
+      setLoadingEventDetails((current) => ({ ...current, [eventId]: true }));
+      try {
+        const rows = await listNewsflashEventSources(eventId);
+        setEventSources((current) => ({ ...current, [eventId]: rows.length > 0 ? rows : current[eventId] || [] }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setEventDetailErrors((current) => ({ ...current, [eventId]: message }));
+      } finally {
+        setLoadingEventDetails((current) => ({ ...current, [eventId]: false }));
+      }
     }
   }
 
@@ -356,6 +381,17 @@ export function App() {
       const rows = await listNewsflashEventSources(item.event_id);
       setEventSources((current) => ({ ...current, [item.event_id]: rows }));
       setMessage('备注已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function saveEventNote(event: NewsflashEventSummary, note: string) {
+    setError('');
+    try {
+      await saveNewsflashEventNote(event.event_id, note);
+      setEvents((current) => current.map((item) => (item.event_id === event.event_id ? { ...item, note: note.trim() } : item)));
+      setMessage('事件备注已保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -582,45 +618,19 @@ export function App() {
             events={events}
             selectedEventId={selectedEventId}
             sourcesByEvent={eventSources}
+            loadingDetails={loadingEventDetails}
+            detailErrors={eventDetailErrors}
             filter={view === 'favorites' ? 'favorite' : eventFilter}
             loading={loadingEvents}
             favoritesOnly={view === 'favorites'}
             onFilterChange={setEventFilter}
             onOpen={openEvent}
             onToggleFavorite={toggleEventFavorite}
+            onSaveEventNote={saveEventNote}
             onSaveNote={saveItemNote}
           />
         )}
       </main>
-
-      <aside className="rightRail">
-        <div className="metric">
-          <span>最近抓取</span>
-          <strong>{latestAttempt ? latestAttempt.status : '-'}</strong>
-          <small>{latestAttempt ? fmtTime(latestAttempt.finished_at) : '-'}</small>
-        </div>
-        <div className="metric">
-          <span>新增</span>
-          <strong>{latestAttempt?.new_count ?? 0}</strong>
-          <small>保存 {latestAttempt?.saved_count ?? 0}</small>
-        </div>
-        <div className="attempts">
-          <h2>抓取记录</h2>
-          {attempts.length === 0 && <div className="emptyState compact">暂无抓取记录。</div>}
-          {attempts.slice(0, 12).map((attempt) => (
-            <div className="attemptItem" key={attempt.id}>
-              <div>
-                <strong>@{attempt.username_lower}</strong>
-                <span className={attempt.status === 'success' ? 'ok' : 'bad'}>{attempt.status}</span>
-              </div>
-              <p>
-                候选 {attempt.candidate_count} · seed {attempt.seeded_count} · 新 {attempt.new_count}
-              </p>
-              {attempt.error && <small>{attempt.error}</small>}
-            </div>
-          ))}
-        </div>
-      </aside>
     </div>
   );
 }
@@ -780,23 +790,29 @@ function EventsPanel({
   events,
   selectedEventId,
   sourcesByEvent,
+  loadingDetails,
+  detailErrors,
   filter,
   loading,
   favoritesOnly,
   onFilterChange,
   onOpen,
   onToggleFavorite,
+  onSaveEventNote,
   onSaveNote,
 }: {
   events: NewsflashEventSummary[];
   selectedEventId: string | null;
   sourcesByEvent: Record<string, NewsflashEventSourceItem[]>;
+  loadingDetails: Record<string, boolean>;
+  detailErrors: Record<string, string>;
   filter: NewsflashEventFilter;
   loading: boolean;
   favoritesOnly: boolean;
   onFilterChange: (filter: NewsflashEventFilter) => void;
   onOpen: (eventId: string) => Promise<void>;
   onToggleFavorite: (event: NewsflashEventSummary) => Promise<void>;
+  onSaveEventNote: (event: NewsflashEventSummary, note: string) => Promise<void>;
   onSaveNote: (item: NewsflashEventSourceItem, note: string) => Promise<void>;
 }) {
   return (
@@ -826,6 +842,7 @@ function EventsPanel({
           <span>共同发布</span>
           <span>首发</span>
           <span>状态</span>
+          <span>备注</span>
           <span />
         </div>
         {loading && <div className="emptyState">事件加载中。</div>}
@@ -851,7 +868,7 @@ function EventsPanel({
                 </button>
                 <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
                   <strong>{shortEventId(event.event_id)}</strong>
-                  <span>{event.event_id}</span>
+                  <span>{event.representative_title || event.event_id}</span>
                 </button>
                 {eventSourceColumns.map((source) => {
                   const item = sourcesByName[source.key];
@@ -861,7 +878,6 @@ function EventsPanel({
                       key={source.key}
                       type="button"
                       onClick={() => onOpen(event.event_id)}
-                      title={item?.title || ''}
                     >
                       {item?.title || ''}
                     </button>
@@ -875,6 +891,14 @@ function EventsPanel({
                   <span>{fmtTime(event.first_published_at)}</span>
                 </div>
                 <span className={event.needs_review ? 'statusPill warn' : 'statusPill'}>{status}</span>
+                <textarea
+                  className="eventNoteInput"
+                  defaultValue={event.note}
+                  maxLength={120}
+                  placeholder="备注"
+                  onClick={(mouseEvent) => mouseEvent.stopPropagation()}
+                  onBlur={(blurEvent) => onSaveEventNote(event, blurEvent.currentTarget.value)}
+                />
                 <button
                   className={event.favorite ? 'iconButton favorite active' : 'iconButton favorite'}
                   type="button"
@@ -888,6 +912,8 @@ function EventsPanel({
                 <EventDetail
                   event={event}
                   sources={sourcesByEvent[event.event_id] || []}
+                  loading={Boolean(loadingDetails[event.event_id])}
+                  error={detailErrors[event.event_id] || ''}
                   onSaveNote={onSaveNote}
                 />
               )}
@@ -897,6 +923,24 @@ function EventsPanel({
       </div>
     </section>
   );
+}
+
+function summarySourcesToDetails(event: NewsflashEventSummary): NewsflashEventSourceItem[] {
+  return (event.sources || []).map((source, index) => ({
+    id: source.id ?? -index - 1,
+    event_id: event.event_id,
+    item_id: source.item_id ?? -index - 1,
+    source: source.source,
+    source_item_id: source.source_item_id ?? '',
+    role: index === 0 ? 'primary' : 'supporting',
+    match_method: 'summary',
+    similarity: null,
+    title: source.title,
+    content: source.content ?? '',
+    source_url: source.source_url,
+    published_at: source.published_at,
+    note: '',
+  }));
 }
 
 function pickEventSources(sources: NewsflashSourceSummary[]) {
@@ -924,22 +968,26 @@ function shortEventId(eventId: string) {
 function EventDetail({
   event,
   sources,
+  loading,
+  error,
   onSaveNote,
 }: {
   event: NewsflashEventSummary;
   sources: NewsflashEventSourceItem[];
+  loading: boolean;
+  error: string;
   onSaveNote: (item: NewsflashEventSourceItem, note: string) => Promise<void>;
 }) {
-  if (sources.length === 0) {
-    return <div className="eventDetail"><div className="emptyState compact">详情加载中。</div></div>;
-  }
   return (
     <div className="eventDetail">
       <div className="eventDetailMeta">
         <span>{event.event_id}</span>
         <span>{event.source_count} 个来源</span>
         <span>首发 {event.first_source ? sourceNames[event.first_source] || event.first_source : '-'}</span>
+        {loading && <span>详情加载中</span>}
+        {error && <span className="bad">详情加载失败：{error}</span>}
       </div>
+      {sources.length === 0 && <div className="emptyState compact">暂无详情来源。</div>}
       {sources.map((item) => (
         <article className="sourceDetail" key={item.id}>
           <div className="sourceDetailHead">
@@ -954,13 +1002,15 @@ function EventDetail({
             )}
           </div>
           <h3>{item.title || item.source_item_id}</h3>
-          <p>{item.content}</p>
-          <textarea
-            className="noteInput"
-            defaultValue={item.note}
-            placeholder="备注"
-            onBlur={(event) => onSaveNote(item, event.currentTarget.value)}
-          />
+          {item.content ? <p>{item.content}</p> : <p className="detailPending">{loading ? '正文加载中。' : '正文暂未加载。'}</p>}
+          {item.item_id > 0 && (
+            <textarea
+              className="noteInput"
+              defaultValue={item.note}
+              placeholder="来源备注"
+              onBlur={(event) => onSaveNote(item, event.currentTarget.value)}
+            />
+          )}
         </article>
       ))}
     </div>
