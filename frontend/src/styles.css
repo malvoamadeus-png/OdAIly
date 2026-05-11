@@ -478,14 +478,16 @@ textarea:focus {
 .eventTable {
   display: grid;
   gap: 8px;
+  overflow-x: auto;
 }
 
 .eventHeader,
 .eventRow {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 88px 142px 126px 44px;
-  gap: 10px;
+  grid-template-columns: 112px 148px repeat(4, minmax(180px, 1fr)) 72px 130px 112px 44px;
+  gap: 8px;
   align-items: center;
+  min-width: 1180px;
 }
 
 .eventHeader {
@@ -505,6 +507,7 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.eventTimeButton,
 .eventTitleButton {
   display: grid;
   gap: 4px;
@@ -516,8 +519,14 @@ textarea:focus {
   text-align: left;
 }
 
+.eventTimeButton {
+  color: #4b5563;
+  font-size: 12px;
+}
+
 .eventTitleButton strong,
 .eventTitleButton span,
+.eventSourceCell,
 .firstSource strong,
 .firstSource span {
   overflow: hidden;
@@ -531,6 +540,28 @@ textarea:focus {
 .sourceDetailHead span {
   color: #6b7280;
   font-size: 12px;
+}
+
+.eventSourceCell {
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #f7f9fb;
+  color: #1f2933;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.eventSourceCell:empty {
+  cursor: default;
+}
+
+.eventSourceCell.filled:hover {
+  border-color: #b7d7c7;
+  background: #f1faf5;
 }
 
 .sourceCount {
@@ -761,8 +792,6 @@ textarea:focus {
   .settingsForm,
   .addAccount,
   .accountRow,
-  .eventHeader,
-  .eventRow,
   .promptLayout,
   .competitorLayout {
     grid-template-columns: 1fr;

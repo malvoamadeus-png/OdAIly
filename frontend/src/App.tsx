@@ -41,6 +41,7 @@ import {
   type CompetitorFilterKeyword,
   type NewsflashEventFilter,
   type NewsflashEventSourceItem,
+  type NewsflashSourceSummary,
   type NewsflashEventSummary,
 } from './xCaptureStore';
 
@@ -64,16 +65,23 @@ function fmtTime(value: string | null | undefined): string {
 
 const sourceNames: Record<string, string> = {
   odaily: 'Odaily',
-  blockbeats: '律动',
+  blockbeats: 'BlockBeats',
   panews: 'PANews',
   jinse: '金色',
 };
+
+const eventSourceColumns = [
+  { key: 'odaily', label: 'Odaily' },
+  { key: 'blockbeats', label: 'BlockBeats' },
+  { key: 'panews', label: 'PANews' },
+  { key: 'jinse', label: '金色' },
+] as const;
 
 const eventFilters: { key: NewsflashEventFilter; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'multi', label: '多家共同' },
   { key: 'with_odaily', label: '我们也发' },
-  { key: 'high_value', label: '高价值对比' },
+  { key: 'high_value', label: '含Odaily群发' },
   { key: 'competitor_only', label: '竞品有我方无' },
   { key: 'competitor_consensus_missing', label: '竞品共识缺口' },
   { key: 'odaily_only', label: '仅我方' },
@@ -810,7 +818,11 @@ function EventsPanel({
 
       <div className="eventTable">
         <div className="eventHeader">
+          <span>时间</span>
           <span>事件</span>
+          {eventSourceColumns.map((source) => (
+            <span key={source.key}>{source.label}</span>
+          ))}
           <span>共同发布</span>
           <span>首发</span>
           <span>状态</span>
@@ -820,11 +832,12 @@ function EventsPanel({
         {!loading && events.length === 0 && <div className="emptyState">暂无事件。</div>}
         {events.map((event) => {
           const sources = event.sources || [];
+          const sourcesByName = pickEventSources(sources);
           const sourceNamesText = sources.map((source) => sourceNames[source.source] || source.source).join(' / ');
           const status = event.needs_review
             ? '待确认'
             : event.has_odaily && event.source_count >= 2
-              ? '高价值对比'
+              ? '含Odaily群发'
               : event.has_odaily
                 ? '仅我方'
                 : event.competitor_source_count >= 2
@@ -833,10 +846,27 @@ function EventsPanel({
           return (
             <article className="eventRowWrap" key={event.event_id}>
               <div className="eventRow">
-                <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
-                  <strong>{event.representative_title || event.event_id}</strong>
-                  <span>{fmtTime(event.event_time)} · {event.event_id}</span>
+                <button className="eventTimeButton" type="button" onClick={() => onOpen(event.event_id)}>
+                  {fmtTime(event.event_time)}
                 </button>
+                <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
+                  <strong>{shortEventId(event.event_id)}</strong>
+                  <span>{event.event_id}</span>
+                </button>
+                {eventSourceColumns.map((source) => {
+                  const item = sourcesByName[source.key];
+                  return (
+                    <button
+                      className={item ? 'eventSourceCell filled' : 'eventSourceCell'}
+                      key={source.key}
+                      type="button"
+                      onClick={() => onOpen(event.event_id)}
+                      title={item?.title || ''}
+                    >
+                      {item?.title || ''}
+                    </button>
+                  );
+                })}
                 <div className="sourceCount" title={sourceNamesText || '无来源'}>
                   {event.source_count}
                 </div>
@@ -867,6 +897,28 @@ function EventsPanel({
       </div>
     </section>
   );
+}
+
+function pickEventSources(sources: NewsflashSourceSummary[]) {
+  const result: Record<string, NewsflashSourceSummary | undefined> = {};
+  for (const source of [...sources].sort(compareSourceSummary)) {
+    if (!result[source.source]) {
+      result[source.source] = source;
+    }
+  }
+  return result;
+}
+
+function compareSourceSummary(left: NewsflashSourceSummary, right: NewsflashSourceSummary) {
+  const leftTime = left.published_at ? new Date(left.published_at).getTime() : Number.MAX_SAFE_INTEGER;
+  const rightTime = right.published_at ? new Date(right.published_at).getTime() : Number.MAX_SAFE_INTEGER;
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  return (left.title || '').localeCompare(right.title || '');
+}
+
+function shortEventId(eventId: string) {
+  const normalized = eventId.replace(/^evt_/, '');
+  return `事件${normalized.slice(-6) || eventId}`;
 }
 
 function EventDetail({

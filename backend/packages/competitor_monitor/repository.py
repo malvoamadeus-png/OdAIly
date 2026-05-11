@@ -15,6 +15,7 @@ class CompetitorMonitorRepository(Protocol):
     def list_enabled_filter_keywords(self) -> list[str]: ...
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]: ...
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
+    def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
     def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
@@ -161,6 +162,34 @@ class PostgresCompetitorMonitorRepository:
                 records.append(_row_to_newsflash_item(row))
             conn.commit()
         return records
+
+    def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]:
+        if not item_ids:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    s.event_id,
+                    i.id,
+                    i.source,
+                    i.source_item_id,
+                    i.source_url,
+                    i.title,
+                    i.content,
+                    i.published_at,
+                    i.first_seen_at,
+                    i.metadata
+                FROM newsflash_event_sources s
+                JOIN newsflash_items i ON i.id = s.item_id
+                JOIN newsflash_events e ON e.event_id = s.event_id
+                WHERE e.status = 'active'
+                  AND i.id = ANY(%s)
+                ORDER BY i.id ASC
+                """,
+                (list(item_ids),),
+            ).fetchall()
+        return [EventSourceRecord(event_id=str(row["event_id"]), item=_row_to_newsflash_item(row)) for row in rows]
 
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]:
         params: dict[str, Any] = {"since": since}

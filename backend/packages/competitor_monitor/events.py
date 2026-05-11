@@ -87,6 +87,7 @@ class EventAssignment:
 
 class NewsflashEventRepository(Protocol):
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
+    def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
     def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
@@ -120,17 +121,31 @@ class NewsflashEventAggregator:
         since = min((record.published_at or record.first_seen_at or datetime.now(UTC)) for record in records) - timedelta(
             hours=self.settings.event_window_hours
         )
+        record_ids = {record.id for record in records}
+        existing_assignments = self.repository.list_existing_event_sources(item_ids=record_ids)
+        existing_by_item_id = {source.item.id: source for source in existing_assignments}
         existing_sources = self.repository.list_recent_event_sources(
             since=since,
-            exclude_item_ids={record.id for record in records},
+            exclude_item_ids=record_ids,
         )
         existing_vectors = self._embed_records([source.item for source in existing_sources])
 
         groups = _DisjointSet({record.id for record in records})
         assignments: dict[int, EventAssignment] = {}
-        event_by_root: dict[int, str] = {}
+        for record in records:
+            existing = existing_by_item_id.get(record.id)
+            if existing is None:
+                continue
+            assignments[record.id] = EventAssignment(
+                item_id=record.id,
+                event_id=existing.event_id,
+                role="supporting",
+                match_method="existing_assignment",
+            )
 
         for record in records:
+            if record.id in existing_by_item_id:
+                continue
             best = self._best_existing_match(record, vectors[record.id], existing_sources, existing_vectors)
             if best is None:
                 continue
@@ -144,7 +159,6 @@ class NewsflashEventAggregator:
                 matched_item_id=source.item.id,
                 ai_result=ai_result,
             )
-            event_by_root[record.id] = source.event_id
 
         for left_index, left in enumerate(records):
             for right in records[left_index + 1 :]:
@@ -184,21 +198,31 @@ class NewsflashEventAggregator:
                 needs_review = False
                 primary_item_id = primary.id
             needs_review = needs_review or self._has_chain_conflict(item_ids, records_by_id, vectors)
-            event_by_root[root] = event_id
             updated_event_ids.add(event_id)
             for item_id in item_ids:
                 record = records_by_id[item_id]
                 current = assignments.get(item_id)
+                target_event_id = event_id
+                if item_id in existing_by_item_id and current and current.event_id and current.event_id != event_id:
+                    target_event_id = current.event_id
+                    updated_event_ids.add(target_event_id)
+                if (
+                    item_id in existing_by_item_id
+                    and current
+                    and current.event_id == target_event_id
+                    and current.match_method == "existing_assignment"
+                ):
+                    continue
                 self.repository.assign_item_to_event(
                     EventAssignment(
                         item_id=item_id,
-                        event_id=event_id,
+                        event_id=target_event_id,
                         role="primary" if item_id == primary_item_id else "supporting",
                         match_method=current.match_method if current else "new_event",
                         similarity=current.similarity if current else None,
                         matched_item_id=current.matched_item_id if current else None,
                         ai_result=current.ai_result if current else {},
-                        needs_review=needs_review or (current.needs_review if current else False),
+                        needs_review=needs_review or (target_event_id != event_id) or (current.needs_review if current else False),
                     )
                 )
         self.repository.update_event_summaries(updated_event_ids)
