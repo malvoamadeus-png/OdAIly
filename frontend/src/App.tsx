@@ -301,7 +301,7 @@ export function App() {
     try {
       const created = await createCompetitorFilterKeywords(newKeywords);
       setNewKeywords('');
-      setMessage(`已保存 ${created.length} 个过滤词`);
+      setMessage(`已保存 ${created.length} 个排除词`);
       await loadCompetitorKeywords();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -362,14 +362,14 @@ export function App() {
   }
 
   const productLabel =
-    view === 'x' ? 'X Capture' : view === 'prompts' ? 'Prompt' : view === 'competitor' ? '竞品' : view === 'favorites' ? '收藏' : '事件';
+    view === 'x' ? 'X Capture' : view === 'prompts' ? 'Prompt' : view === 'competitor' ? '排除词' : view === 'favorites' ? '收藏' : '事件';
   const titleLabel =
     view === 'x'
       ? 'X 抓取控制台'
       : view === 'prompts'
         ? 'Prompt 编制'
         : view === 'competitor'
-          ? '竞品过滤'
+          ? '排除词'
           : view === 'favorites'
             ? '收藏事件'
             : '事件复盘';
@@ -379,7 +379,7 @@ export function App() {
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
         : view === 'competitor'
-          ? `${competitorKeywords.filter((item) => item.enabled).length} 个启用过滤词`
+          ? `${competitorKeywords.filter((item) => item.enabled).length} 个启用排除词`
           : `${events.length} 个事件`;
   const refreshCurrent = () =>
     view === 'x'
@@ -408,7 +408,7 @@ export function App() {
             <FileText size={18} /> Prompt
           </button>
           <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('competitor')}>
-            <Ban size={18} /> 竞品
+            <Ban size={18} /> 排除词
           </button>
           <button className={view === 'events' ? 'navItem active' : 'navItem'} type="button" onClick={() => setView('events')}>
             <Inbox size={18} /> 事件
@@ -739,7 +739,7 @@ function CompetitorPanel({
     <section className="competitorLayout">
       <form className="keywordForm" onSubmit={onAdd}>
         <div className="sectionHeader">
-          <h2>过滤词表</h2>
+          <h2>排除词表</h2>
           <button className="primaryButton" type="submit" disabled={saving}>
             <Plus size={17} /> 保存
           </button>
@@ -754,7 +754,7 @@ function CompetitorPanel({
       </form>
 
       <div className="keywordList">
-        {keywords.length === 0 && <div className="emptyState">暂无过滤词，请先运行 x-process-init-db 或添加新词。</div>}
+        {keywords.length === 0 && <div className="emptyState">暂无排除词，请先运行初始化命令或添加新词。</div>}
         {keywords.map((keyword) => (
           <article className={keyword.enabled ? 'keywordRow' : 'keywordRow disabled'} key={keyword.id}>
             <div>

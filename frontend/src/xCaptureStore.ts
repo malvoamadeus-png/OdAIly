@@ -527,7 +527,7 @@ export async function updateCompetitorFilterKeyword(
     .select('id,term,term_normalized,enabled,created_at,updated_at')
     .single();
   raise(error);
-  return assertData(data as CompetitorFilterKeyword | null, '更新竞品过滤词失败');
+  return assertData(data as CompetitorFilterKeyword | null, '更新排除词失败');
 }
 
 export async function deleteCompetitorFilterKeyword(id: number): Promise<void> {

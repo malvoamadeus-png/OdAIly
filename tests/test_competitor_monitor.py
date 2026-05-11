@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from packages.competitor_monitor.fetchers import fetch_odaily, normalize_item_content, scrub_competitor_brands
+from packages.competitor_monitor.fetchers import fetch_jinse, fetch_odaily, normalize_item_content, scrub_competitor_brands
 from packages.competitor_monitor.events import EventAssignment, EventSourceRecord, NewsflashEventAggregator, NewsflashItemRecord
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, match_filter_terms
 
@@ -14,6 +14,8 @@ class FakeRepository:
         self.assignments: list[EventAssignment] = []
         self.events: dict[str, NewsflashItemRecord] = {}
         self.keywords: list[str] = []
+        self.updated_event_ids = set()
+        self.heartbeats = []
         self._next_id = 1
         self._next_event_id = 1
 
@@ -92,8 +94,28 @@ class FakeRepository:
     def update_event_summaries(self, event_ids):
         self.updated_event_ids = set(event_ids)
 
+    def prune_excluded_event_sources(self, terms=None):
+        from packages.competitor_monitor.worker import match_filter_terms
+
+        active_terms = self.keywords if terms is None else terms
+        matched_item_ids = {record.id for record in self.newsflash_items if match_filter_terms(_record_to_item(record), active_terms)}
+        affected_event_ids = {assignment.event_id for assignment in self.assignments if assignment.item_id in matched_item_ids}
+        before = len(self.assignments)
+        self.assignments = [assignment for assignment in self.assignments if assignment.item_id not in matched_item_ids]
+        remaining_event_ids = {assignment.event_id for assignment in self.assignments}
+        deleted_event_ids = affected_event_ids - remaining_event_ids
+        for event_id in deleted_event_ids:
+            self.events.pop(event_id, None)
+        self.updated_event_ids = affected_event_ids - deleted_event_ids
+        return {
+            "matched_items": len(matched_item_ids),
+            "removed_sources": before - len(self.assignments),
+            "deleted_events": len(deleted_event_ids),
+            "updated_events": len(self.updated_event_ids),
+        }
+
     def record_worker_heartbeat(self, **kwargs):
-        return None
+        self.heartbeats.append(kwargs)
 
 
 def test_competitor_brand_scrub_removes_fixed_prefix_and_names() -> None:
@@ -113,7 +135,7 @@ def test_normalize_content_removes_title_prefix() -> None:
     assert normalize_item_content(title, content) == "该项目完成融资。"
 
 
-def test_worker_saves_odaily_as_reference_and_competitors_as_tasks(monkeypatch) -> None:
+def test_worker_saves_unexcluded_odaily_as_reference_and_competitors_as_tasks(monkeypatch) -> None:
     from packages.competitor_monitor.fetchers import NewsflashItem
     from packages.common.config import CompetitorMonitorSettings
 
@@ -137,6 +159,9 @@ def test_worker_saves_odaily_as_reference_and_competitors_as_tasks(monkeypatch) 
     assert result.reference_inserted == 1
     assert result.events_updated == 1
     assert result.filtered == 0
+    assert result.fetched_by_source == {"blockbeats": 1, "panews": 0, "jinse": 0, "odaily": 1}
+    assert result.filtered_by_source == {"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0}
+    assert repo.heartbeats[-1]["metadata"]["fetched_by_source"]["blockbeats"] == 1
     assert [item.source for item in repo.saved] == ["blockbeats", "odaily"]
 
 
@@ -152,7 +177,7 @@ def test_filter_keywords_match_title_body_and_bitget_case_insensitive() -> None:
     assert match_filter_terms(case_hit, ["Bitget"]) == ["Bitget"]
 
 
-def test_worker_skips_filtered_competitor_but_keeps_odaily_reference(monkeypatch) -> None:
+def test_worker_excludes_all_sources_from_tasks_references_and_events(monkeypatch) -> None:
     from packages.common.config import CompetitorMonitorSettings
     from packages.competitor_monitor.fetchers import NewsflashItem
 
@@ -169,14 +194,51 @@ def test_worker_skips_filtered_competitor_but_keeps_odaily_reference(monkeypatch
     repo = FakeRepository()
     repo.keywords = ["跌破", "Bitget"]
     worker = CompetitorMonitorWorker(repository=repo, settings=CompetitorMonitorSettings(blockbeats_api_key="key"))
-    monkeypatch.setattr(worker, "_assign_events", lambda items: {"evt_1"})
+    assigned_batches = []
+
+    def fake_assign_events(items):
+        assigned_batches.append(items)
+        return {"evt_1"} if items else set()
+
+    monkeypatch.setattr(worker, "_assign_events", fake_assign_events)
 
     result = worker.run_once()
 
     assert result.task_inserted == 0
-    assert result.reference_inserted == 1
-    assert result.filtered == 1
-    assert [item.source for item in repo.saved] == ["odaily"]
+    assert result.reference_inserted == 0
+    assert result.events_updated == 0
+    assert result.filtered == 2
+    assert result.filtered_by_source["blockbeats"] == 1
+    assert result.filtered_by_source["odaily"] == 1
+    assert assigned_batches == [[]]
+    assert repo.saved == []
+    assert repo.heartbeats[-1]["metadata"]["filtered_by_source"]["odaily"] == 1
+
+
+def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "title": "美国参议院银行委员会将对法案进行首次投票",
+                        "published_at": 1778283366,
+                        "jump_url": "https://www.jinse2.com/lives/512001.html",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", lambda *args, **kwargs: Response())
+
+    items = fetch_jinse(timeout_seconds=3)
+
+    assert len(items) == 1
+    assert items[0].source_item_id == "512001"
+    assert items[0].content == "美国参议院银行委员会将对法案进行首次投票"
+    assert items[0].published_at == "2026-05-09 07:36:06"
 
 
 def test_event_aggregator_groups_same_batch_items_and_keeps_embeddings_local() -> None:
@@ -274,6 +336,33 @@ def test_event_aggregator_keeps_existing_assignment_when_item_reappears() -> Non
     assert len(repo.assignments) == 1
 
 
+def test_prune_excluded_event_sources_removes_matches_and_keeps_remaining_event() -> None:
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    repo = FakeRepository()
+    blockbeats, odaily, jinse = repo.upsert_newsflash_items(
+        [
+            NewsflashItem("blockbeats", "b1", "BTC 突破 10 万美元", "正文"),
+            NewsflashItem("odaily", "o1", "ETH 现货 ETF 获批", "正文"),
+            NewsflashItem("jinse", "j1", "Bitget 宣布上线新币", "正文"),
+        ]
+    )
+    repo.events = {"evt_1": blockbeats, "evt_2": jinse}
+    repo.assignments = [
+        EventAssignment(item_id=blockbeats.id, event_id="evt_1", role="primary", match_method="new_event"),
+        EventAssignment(item_id=odaily.id, event_id="evt_1", role="supporting", match_method="embedding_high"),
+        EventAssignment(item_id=jinse.id, event_id="evt_2", role="primary", match_method="new_event"),
+    ]
+    repo.keywords = ["突破", "Bitget"]
+
+    result = repo.prune_excluded_event_sources()
+
+    assert result == {"matched_items": 2, "removed_sources": 2, "deleted_events": 1, "updated_events": 1}
+    assert [assignment.item_id for assignment in repo.assignments] == [odaily.id]
+    assert set(repo.events) == {"evt_1"}
+    assert repo.updated_event_ids == {"evt_1"}
+
+
 def test_fetch_odaily_uses_rss_host_fallback(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -313,3 +402,17 @@ def test_fetch_odaily_uses_rss_host_fallback(monkeypatch) -> None:
     ]
     assert len(items) == 1
     assert items[0].content == "正文"
+
+
+def _record_to_item(record: NewsflashItemRecord):
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    return NewsflashItem(
+        record.source,
+        record.source_item_id,
+        record.title or "",
+        record.content,
+        record.source_url,
+        record.published_at.isoformat() if record.published_at else None,
+        metadata=record.metadata,
+    )

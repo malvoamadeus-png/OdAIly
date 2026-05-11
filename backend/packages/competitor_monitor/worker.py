@@ -5,12 +5,14 @@ import time
 from dataclasses import dataclass
 
 from packages.common.config import CompetitorMonitorSettings
-from packages.x_processing.models import COMPETITOR_SOURCES
 
 from .fetchers import NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
 from .events import NewsflashEventAggregator
 from .repository import CompetitorMonitorRepository
+
+
+NEWSFLASH_SOURCES = ("blockbeats", "panews", "jinse", "odaily")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,9 @@ class CompetitorRunResult:
     events_updated: int
     filtered: int
     failed_sources: dict[str, str]
+    fetched_by_source: dict[str, int]
+    filtered_by_source: dict[str, int]
+    sample_titles_by_source: dict[str, list[str]]
 
 
 class CompetitorMonitorWorker:
@@ -33,6 +38,8 @@ class CompetitorMonitorWorker:
     def run_once(self) -> CompetitorRunResult:
         items = []
         failed: dict[str, str] = {}
+        fetched_by_source = {source: 0 for source in NEWSFLASH_SOURCES}
+        sample_titles_by_source: dict[str, list[str]] = {source: [] for source in NEWSFLASH_SOURCES}
         try:
             fetchers = {
                 "blockbeats": lambda: fetch_blockbeats(
@@ -45,11 +52,17 @@ class CompetitorMonitorWorker:
             }
             for source, fn in fetchers.items():
                 try:
-                    items.extend(fn())
+                    source_items = fn()
+                    fetched_by_source[source] = len(source_items)
+                    sample_titles_by_source[source] = [item.title for item in source_items[:3]]
+                    if not source_items:
+                        print(f"[odaily] competitor monitor source empty source={source}")
+                    items.extend(source_items)
                 except Exception as exc:
                     failed[source] = str(exc)
-            filter_terms = self._load_filter_terms()
-            filtered_items, filtered_count = filter_competitor_items(items, filter_terms)
+                    print(f"[odaily] competitor monitor source failed source={source} error={exc}")
+            exclude_terms = self._load_exclude_terms()
+            filtered_items, filtered_count, filtered_by_source = exclude_newsflash_items(items, exclude_terms)
             try:
                 event_ids = self._assign_events(filtered_items)
             except Exception as exc:
@@ -63,6 +76,9 @@ class CompetitorMonitorWorker:
                 events_updated=len(event_ids),
                 filtered=filtered_count,
                 failed_sources=failed,
+                fetched_by_source=fetched_by_source,
+                filtered_by_source=filtered_by_source,
+                sample_titles_by_source=sample_titles_by_source,
             )
         except Exception as exc:
             result = CompetitorRunResult(
@@ -72,6 +88,9 @@ class CompetitorMonitorWorker:
                 events_updated=0,
                 filtered=0,
                 failed_sources={"worker": str(exc)},
+                fetched_by_source=fetched_by_source,
+                filtered_by_source={source: 0 for source in NEWSFLASH_SOURCES},
+                sample_titles_by_source=sample_titles_by_source,
             )
             self._record_heartbeat(result)
             raise
@@ -87,17 +106,19 @@ class CompetitorMonitorWorker:
                 f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
                 f"events={result.events_updated} "
                 f"filtered={result.filtered} "
+                f"fetched_by_source={result.fetched_by_source} "
+                f"filtered_by_source={result.filtered_by_source} "
                 f"failed={result.failed_sources}"
             )
             time.sleep(self.settings.fetch_interval_seconds)
 
-    def _load_filter_terms(self) -> list[str]:
+    def _load_exclude_terms(self) -> list[str]:
         if not hasattr(self.repository, "list_enabled_filter_keywords"):
             return []
         try:
             return self.repository.list_enabled_filter_keywords()
         except Exception as exc:
-            print(f"[odaily] competitor monitor filter keywords load failed: {exc}")
+            print(f"[odaily] competitor monitor exclude keywords load failed: {exc}")
             return []
 
     def _record_heartbeat(self, result: CompetitorRunResult) -> None:
@@ -116,6 +137,9 @@ class CompetitorMonitorWorker:
                     "reference_inserted": result.reference_inserted,
                     "events_updated": result.events_updated,
                     "filtered": result.filtered,
+                    "fetched_by_source": result.fetched_by_source,
+                    "filtered_by_source": result.filtered_by_source,
+                    "sample_titles_by_source": result.sample_titles_by_source,
                     "failed_sources": result.failed_sources,
                 },
             )
@@ -132,37 +156,45 @@ class CompetitorMonitorWorker:
         return self._event_aggregator.assign_items(items)
 
 
-def normalize_filter_term(value: str) -> str:
+def normalize_exclude_term(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
 
-def match_filter_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
-    haystack = normalize_filter_term(f"{item.title}\n{item.content}")
+def match_exclude_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
+    haystack = normalize_exclude_term(f"{item.title}\n{item.content}")
     matches: list[str] = []
     for term in terms:
-        normalized = normalize_filter_term(term)
+        normalized = normalize_exclude_term(term)
         if normalized and normalized in haystack:
             matches.append(term)
     return matches
 
 
-def filter_competitor_items(items: list[NewsflashItem], terms: list[str]) -> tuple[list[NewsflashItem], int]:
+def exclude_newsflash_items(items: list[NewsflashItem], terms: list[str]) -> tuple[list[NewsflashItem], int, dict[str, int]]:
+    filtered_by_source = {source: 0 for source in NEWSFLASH_SOURCES}
     if not terms:
-        return items, 0
+        return items, 0, filtered_by_source
     kept: list[NewsflashItem] = []
     filtered = 0
     for item in items:
-        if item.source not in COMPETITOR_SOURCES:
-            kept.append(item)
-            continue
-        matches = match_filter_terms(item, terms)
+        matches = match_exclude_terms(item, terms)
         if matches:
             filtered += 1
+            filtered_by_source[item.source] = filtered_by_source.get(item.source, 0) + 1
             print(
-                "[odaily] competitor monitor filtered "
+                "[odaily] competitor monitor excluded "
                 f"source={item.source} source_item_id={item.source_item_id} "
                 f"matched_terms={matches} title={item.title}"
             )
             continue
         kept.append(item)
+    return kept, filtered, filtered_by_source
+
+
+def filter_competitor_items(items: list[NewsflashItem], terms: list[str]) -> tuple[list[NewsflashItem], int]:
+    kept, filtered, _ = exclude_newsflash_items(items, terms)
     return kept, filtered
+
+
+def match_filter_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
+    return match_exclude_terms(item, terms)

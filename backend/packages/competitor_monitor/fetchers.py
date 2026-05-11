@@ -142,10 +142,18 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
         published_at = news.get("published_at") or ""
         if isinstance(published_at, (int, float)) and published_at > 1000000000:
             published_at = datetime.fromtimestamp(published_at).strftime("%Y-%m-%d %H:%M:%S")
-        source_id = str(news.get("id") or stable_id("jinse", title, str(published_at)))
+        source_url = str(news.get("jump_url") or "https://jinse2.com/lives")
+        source_id = str(news.get("id") or extract_jinse_live_id(source_url) or stable_id("jinse", title, str(published_at)))
         content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
-        items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, news.get("jump_url") or "https://jinse2.com/lives", str(published_at), news))
+        items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, source_url, str(published_at), news))
     return items
+
+
+def extract_jinse_live_id(source_url: str | None) -> str | None:
+    if not source_url:
+        return None
+    match = re.search(r"/lives/(\d+)(?:\.html)?(?:[?#].*)?$", str(source_url))
+    return match.group(1) if match else None
 
 
 def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:

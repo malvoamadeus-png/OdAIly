@@ -20,6 +20,7 @@ class CompetitorMonitorRepository(Protocol):
     def create_event_for_item(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
     def update_event_summaries(self, event_ids: set[str]) -> None: ...
+    def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]: ...
     def record_worker_heartbeat(
         self,
         *,
@@ -296,53 +297,131 @@ class PostgresCompetitorMonitorRepository:
         if not event_ids:
             return
         with self._connect() as conn:
-            for event_id in event_ids:
-                conn.execute(
-                    """
-                    WITH source_rows AS (
-                        SELECT
-                            s.event_id,
-                            i.id,
-                            i.source,
-                            i.title,
-                            COALESCE(i.published_at, i.first_seen_at) AS source_time
-                        FROM newsflash_event_sources s
-                        JOIN newsflash_items i ON i.id = s.item_id
-                        WHERE s.event_id = %s
-                    ),
-                    aggregate_rows AS (
-                        SELECT
-                            event_id,
-                            count(DISTINCT source) AS source_count,
-                            count(DISTINCT source) FILTER (WHERE source <> 'odaily') AS competitor_source_count,
-                            bool_or(source = 'odaily') AS has_odaily,
-                            min(source_time) AS event_time
-                        FROM source_rows
-                        GROUP BY event_id
-                    ),
-                    first_row AS (
-                        SELECT DISTINCT ON (event_id)
-                            event_id, id, source, title, source_time
-                        FROM source_rows
-                        ORDER BY event_id, source_time ASC NULLS LAST, id ASC
-                    )
-                    UPDATE newsflash_events e
-                    SET representative_item_id = first_row.id,
-                        representative_title = first_row.title,
-                        event_time = aggregate_rows.event_time,
-                        first_source = first_row.source,
-                        first_published_at = first_row.source_time,
-                        source_count = aggregate_rows.source_count,
-                        competitor_source_count = aggregate_rows.competitor_source_count,
-                        has_odaily = aggregate_rows.has_odaily,
-                        updated_at = now()
-                    FROM aggregate_rows
-                    JOIN first_row ON first_row.event_id = aggregate_rows.event_id
-                    WHERE e.event_id = aggregate_rows.event_id
-                    """,
-                    (event_id,),
-                )
+            self._update_event_summaries(conn, event_ids)
             conn.commit()
+
+    def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]:
+        exclude_terms = terms if terms is not None else self.list_enabled_filter_keywords()
+        normalized_terms = [normalized for term in exclude_terms if (normalized := normalize_exclude_term(term))]
+        if not normalized_terms:
+            return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}
+
+        with self._connect() as conn:
+            with conn.transaction():
+                matched_rows = conn.execute(
+                    """
+                    SELECT id
+                    FROM newsflash_items
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM unnest(%s::text[]) AS term
+                        WHERE strpos(
+                            lower(regexp_replace(coalesce(title, '') || E'\n' || coalesce(content, ''), '\\s+', ' ', 'g')),
+                            term
+                        ) > 0
+                    )
+                    """,
+                    (normalized_terms,),
+                ).fetchall()
+                matched_item_ids = [int(row["id"]) for row in matched_rows]
+                if not matched_item_ids:
+                    return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}
+
+                affected_rows = conn.execute(
+                    """
+                    SELECT DISTINCT event_id
+                    FROM newsflash_event_sources
+                    WHERE item_id = ANY(%s)
+                    """,
+                    (matched_item_ids,),
+                ).fetchall()
+                affected_event_ids = {str(row["event_id"]) for row in affected_rows}
+                if not affected_event_ids:
+                    return {"matched_items": len(matched_item_ids), "removed_sources": 0, "deleted_events": 0, "updated_events": 0}
+
+                removed_rows = conn.execute(
+                    """
+                    DELETE FROM newsflash_event_sources
+                    WHERE item_id = ANY(%s)
+                    RETURNING event_id
+                    """,
+                    (matched_item_ids,),
+                ).fetchall()
+                removed_sources = len(removed_rows)
+
+                deleted_rows = conn.execute(
+                    """
+                    DELETE FROM newsflash_events e
+                    WHERE e.event_id = ANY(%s)
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM newsflash_event_sources s
+                          WHERE s.event_id = e.event_id
+                      )
+                    RETURNING event_id
+                    """,
+                    (list(affected_event_ids),),
+                ).fetchall()
+                deleted_event_ids = {str(row["event_id"]) for row in deleted_rows}
+                remaining_event_ids = affected_event_ids - deleted_event_ids
+                if remaining_event_ids:
+                    self._update_event_summaries(conn, remaining_event_ids)
+            conn.commit()
+
+        return {
+            "matched_items": len(matched_item_ids),
+            "removed_sources": removed_sources,
+            "deleted_events": len(deleted_event_ids),
+            "updated_events": len(remaining_event_ids),
+        }
+
+    def _update_event_summaries(self, conn, event_ids: set[str]) -> None:
+        for event_id in event_ids:
+            conn.execute(
+                """
+                WITH source_rows AS (
+                    SELECT
+                        s.event_id,
+                        i.id,
+                        i.source,
+                        i.title,
+                        COALESCE(i.published_at, i.first_seen_at) AS source_time
+                    FROM newsflash_event_sources s
+                    JOIN newsflash_items i ON i.id = s.item_id
+                    WHERE s.event_id = %s
+                ),
+                aggregate_rows AS (
+                    SELECT
+                        event_id,
+                        count(DISTINCT source) AS source_count,
+                        count(DISTINCT source) FILTER (WHERE source <> 'odaily') AS competitor_source_count,
+                        bool_or(source = 'odaily') AS has_odaily,
+                        min(source_time) AS event_time
+                    FROM source_rows
+                    GROUP BY event_id
+                ),
+                first_row AS (
+                    SELECT DISTINCT ON (event_id)
+                        event_id, id, source, title, source_time
+                    FROM source_rows
+                    ORDER BY event_id, source_time ASC NULLS LAST, id ASC
+                )
+                UPDATE newsflash_events e
+                SET representative_item_id = first_row.id,
+                    representative_title = first_row.title,
+                    event_time = aggregate_rows.event_time,
+                    first_source = first_row.source,
+                    first_published_at = first_row.source_time,
+                    source_count = aggregate_rows.source_count,
+                    competitor_source_count = aggregate_rows.competitor_source_count,
+                    has_odaily = aggregate_rows.has_odaily,
+                    updated_at = now()
+                FROM aggregate_rows
+                JOIN first_row ON first_row.event_id = aggregate_rows.event_id
+                WHERE e.event_id = aggregate_rows.event_id
+                """,
+                (event_id,),
+            )
 
     def record_worker_heartbeat(
         self,
@@ -400,6 +479,10 @@ def parse_datetime(value: str | None):
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def normalize_exclude_term(value: str) -> str:
+    return " ".join(str(value).strip().lower().split())
 
 
 def _row_to_newsflash_item(row: dict[str, Any]) -> NewsflashItemRecord:
