@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.common.config import RetrySettings, XProcessingSettings
@@ -82,6 +84,7 @@ def task(task_id: int, status: str = "pending") -> TaskRecord:
         source_url="https://x.com/a/status/1",
         title="@a: text",
         content="Binance raised 5000USDT",
+        published_at=datetime.now(UTC),
         status=status,
         metadata={"author_display_name": "Alice"},
     )
@@ -95,6 +98,7 @@ def competitor_task(task_id: int, status: str = "pending") -> TaskRecord:
         source_url="https://www.theblockbeats.info/flash/1",
         title="某项目完成融资",
         content="某项目完成融资，金额为 500 万美元。",
+        published_at=datetime.now(UTC),
         status=status,
         metadata={"source_kind": "competitor"},
     )
@@ -149,6 +153,58 @@ def test_judge_discards_garbage_expression() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "discarded"
     assert repo.pipelines[1].news_type is None
+
+
+def test_judge_precheck_discards_non_crypto_ai_without_model_call() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            id=1,
+            source="panews",
+            source_item_id="019e164f-6649-7198-ac25-92834a16ae2c",
+            source_url="https://www.panewslab.com/zh/articledetails/019e164f-6649-7198-ac25-92834a16ae2c.html",
+            title="国务院办公厅：完善人工智能治理，加快推进人工智能健康发展综合性立法",
+            content="完善人工智能治理，加快推进人工智能健康发展综合性立法。",
+            published_at=datetime.now(UTC),
+            status="searched",
+            metadata={"source_kind": "competitor"},
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"regular","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "discarded"
+    assert repo.pipelines[1].news_type is None
+    assert fake_ai.calls == []
+
+
+def test_judge_precheck_keeps_crypto_ai_news_for_model() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            id=1,
+            source="panews",
+            source_item_id="crypto-ai-1",
+            source_url="https://www.panewslab.com/zh/articles/crypto-ai-1",
+            title="Web3 AI 项目完成融资",
+            content="该 Web3 AI 项目完成 500 万美元融资，将用于链上智能体开发。",
+            published_at=datetime.now(UTC),
+            status="searched",
+            metadata={"source_kind": "competitor"},
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"funding","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "deduped"
+    assert repo.pipelines[1].news_type == "funding"
+    assert len(fake_ai.calls) == 1
 
 
 def test_openai_client_uses_configured_responses_base_url(monkeypatch) -> None:
@@ -393,6 +449,64 @@ def test_competitor_publish_hides_source_url() -> None:
     assert result.processed == 1
     assert push.calls[0]["source_url"] is None
     assert telegram.calls == ["律动有新快讯：标题\nhttps://www.theblockbeats.info/flash/1"]
+
+
+def test_processing_expires_missing_published_at_before_model_call() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            id=1,
+            source="x",
+            source_item_id="tweet-missing-time",
+            source_url="https://x.com/a/status/1",
+            title="@a: text",
+            content="Binance raised 5000USDT",
+            status="pending",
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"funding","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert result.failed == 0
+    assert repo.tasks[1].status == "expired"
+    assert "missing_published_at" in (repo.pipelines[1].last_error or "")
+    assert fake_ai.calls == []
+
+
+def test_processing_expires_stale_written_task_before_push_or_telegram() -> None:
+    repo = InMemoryXProcessingRepository()
+    stale = task(1, status="written")
+    repo.add_task(
+        TaskRecord(
+            **{
+                **asdict(stale),
+                "published_at": datetime.now(UTC) - timedelta(minutes=30),
+            }
+        )
+    )
+    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="format_publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert result.failed == 0
+    assert repo.tasks[1].status == "expired"
+    assert "expired_by_freshness_gate" in (repo.pipelines[1].last_error or "")
+    assert push.calls == []
+    assert telegram.calls == []
 
 
 def test_claim_skips_locked_task() -> None:

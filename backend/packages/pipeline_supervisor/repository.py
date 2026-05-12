@@ -1,10 +1,30 @@
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import date, datetime
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
 from packages.x_processing.repository import _import_psycopg, get_database_url
+
+
+def to_json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): to_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return sorted(
+            (to_json_safe(item) for item in value),
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+        )
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 class PipelineSupervisorRepository(Protocol):
@@ -194,7 +214,7 @@ class PostgresPipelineSupervisorRepository:
                 WHERE pipeline_alerts.last_sent_at < %s
                 RETURNING alert_key
                 """,
-                (alert_key, message, self._Jsonb(metadata or {}), dedup_cutoff),
+                (alert_key, message, self._Jsonb(to_json_safe(metadata or {})), dedup_cutoff),
             ).fetchone()
             conn.commit()
             return row is not None

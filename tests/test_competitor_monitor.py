@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from packages.common.time_utils import SHANGHAI_TZ
 from packages.competitor_monitor.fetchers import fetch_jinse, fetch_odaily, normalize_item_content, scrub_competitor_brands
@@ -172,7 +172,7 @@ def test_worker_saves_unexcluded_odaily_as_reference_and_competitors_as_tasks(mo
 
     monkeypatch.setattr(
         "packages.competitor_monitor.worker.fetch_blockbeats",
-        lambda **kwargs: [NewsflashItem("blockbeats", "1", "竞品", "正文")],
+        lambda **kwargs: [NewsflashItem("blockbeats", "1", "竞品", "正文", published_at=datetime.now(UTC).isoformat())],
     )
     monkeypatch.setattr("packages.competitor_monitor.worker.fetch_panews", lambda **kwargs: [])
     monkeypatch.setattr("packages.competitor_monitor.worker.fetch_jinse", lambda **kwargs: [])
@@ -194,6 +194,41 @@ def test_worker_saves_unexcluded_odaily_as_reference_and_competitors_as_tasks(mo
     assert result.filtered_by_source == {"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0}
     assert repo.heartbeats[-1]["metadata"]["fetched_by_source"]["blockbeats"] == 1
     assert [item.source for item in repo.saved] == ["blockbeats", "odaily"]
+
+
+def test_worker_keeps_stale_competitor_in_events_but_skips_tasks(monkeypatch) -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    fresh_time = datetime.now(UTC).isoformat()
+    stale_time = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+    stale_item = NewsflashItem("blockbeats", "old", "旧竞品", "旧正文", published_at=stale_time)
+    fresh_item = NewsflashItem("panews", "new", "新竞品", "新正文", published_at=fresh_time)
+    odaily_item = NewsflashItem("odaily", "o1", "本方", "本方正文", published_at=stale_time)
+    monkeypatch.setattr("packages.competitor_monitor.worker.fetch_blockbeats", lambda **kwargs: [stale_item])
+    monkeypatch.setattr("packages.competitor_monitor.worker.fetch_panews", lambda **kwargs: [fresh_item])
+    monkeypatch.setattr("packages.competitor_monitor.worker.fetch_jinse", lambda **kwargs: [])
+    monkeypatch.setattr("packages.competitor_monitor.worker.fetch_odaily", lambda **kwargs: [odaily_item])
+    repo = FakeRepository()
+    worker = CompetitorMonitorWorker(repository=repo, settings=CompetitorMonitorSettings(blockbeats_api_key="key"))
+    assigned_batches = []
+
+    def fake_assign_events(items):
+        assigned_batches.append(items)
+        return {"evt_1"}
+
+    monkeypatch.setattr(worker, "_assign_events", fake_assign_events)
+
+    result = worker.run_once()
+
+    assert [item.source_item_id for item in assigned_batches[0]] == ["old", "new", "o1"]
+    assert [item.source_item_id for item in repo.saved] == ["new", "o1"]
+    assert result.task_inserted == 1
+    assert result.reference_inserted == 1
+    assert result.events_updated == 1
+    assert result.expired_for_tasks == 1
+    assert result.expired_for_tasks_by_source["blockbeats"] == 1
+    assert repo.heartbeats[-1]["metadata"]["expired_for_tasks"] == 1
 
 
 def test_filter_keywords_match_title_body_and_bitget_case_insensitive() -> None:
@@ -417,6 +452,97 @@ def test_event_aggregator_keeps_existing_assignment_when_item_reappears() -> Non
     assert len(repo.events) == 1
     assert {assignment.event_id for assignment in repo.assignments} == first_event_ids
     assert len(repo.assignments) == 1
+
+
+def test_event_aggregator_skips_embedding_when_all_items_already_assigned() -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    class FailingEmbeddingClient:
+        model = "fake-embedding"
+
+        def embed(self, texts):
+            raise AssertionError("existing assignments should not be embedded again")
+
+    class FakeCache:
+        def get_embedding(self, *, cache_key, model, text_hash):  # noqa: ANN001
+            return None
+
+        def set_embedding(self, *, cache_key, model, text_hash, vector):  # noqa: ANN001
+            return None
+
+        def upsert_document(self, document):
+            return None
+
+    repo = FakeRepository()
+    item = NewsflashItem("blockbeats", "same-1", "标题", "正文")
+    record = repo.upsert_newsflash_items([item])[0]
+    repo.events = {"evt_existing": record}
+    repo.assignments = [
+        EventAssignment(item_id=record.id, event_id="evt_existing", role="primary", match_method="new_event")
+    ]
+    aggregator = NewsflashEventAggregator(
+        repository=repo,
+        settings=CompetitorMonitorSettings(blockbeats_api_key="key"),
+        embedding_client=FailingEmbeddingClient(),
+        ai_client=None,
+        cache=FakeCache(),
+    )
+
+    event_ids = aggregator.assign_items([item])
+
+    assert event_ids == {"evt_existing"}
+    assert repo.updated_event_ids == {"evt_existing"}
+    assert len(repo.assignments) == 1
+
+
+def test_event_aggregator_can_match_new_item_to_reappearing_assigned_item() -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    class FakeEmbeddingClient:
+        model = "fake-embedding"
+
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    class FakeCache:
+        def __init__(self) -> None:
+            self.embeddings = {}
+
+        def get_embedding(self, *, cache_key, model, text_hash):  # noqa: ANN001
+            return self.embeddings.get((cache_key, model, text_hash))
+
+        def set_embedding(self, *, cache_key, model, text_hash, vector):  # noqa: ANN001
+            self.embeddings[(cache_key, model, text_hash)] = vector
+
+        def upsert_document(self, document):
+            return None
+
+    repo = FakeRepository()
+    existing_item = NewsflashItem("blockbeats", "existing", "比特币 ETF 获批", "比特币 ETF 获批 正文")
+    existing_record = repo.upsert_newsflash_items([existing_item])[0]
+    repo.events = {"evt_existing": existing_record}
+    repo.assignments = [
+        EventAssignment(item_id=existing_record.id, event_id="evt_existing", role="primary", match_method="new_event")
+    ]
+    new_item = NewsflashItem("panews", "new", "比特币 ETF 获批", "比特币 ETF 获批 另一写法")
+    aggregator = NewsflashEventAggregator(
+        repository=repo,
+        settings=CompetitorMonitorSettings(blockbeats_api_key="key", event_duplicate_threshold=0.88),
+        embedding_client=FakeEmbeddingClient(),
+        ai_client=None,
+        cache=FakeCache(),
+    )
+
+    event_ids = aggregator.assign_items([existing_item, new_item])
+
+    assert event_ids == {"evt_existing"}
+    new_record = next(record for record in repo.newsflash_items if record.source_item_id == "new")
+    new_assignment = repo._find_assignment(new_record.id)
+    assert new_assignment is not None
+    assert new_assignment.event_id == "evt_existing"
+    assert new_assignment.matched_item_id == existing_record.id
 
 
 def test_prune_excluded_event_sources_removes_matches_and_keeps_remaining_event() -> None:

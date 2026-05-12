@@ -8,6 +8,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
+from .freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
 from .paths import get_paths
 
 
@@ -44,12 +45,20 @@ class RetrySettings(BaseModel):
 
 class XCaptureWorkerSettings(BaseModel):
     attempt_retention_days: int = Field(default=3, ge=1, le=3650)
+    processing_freshness_window_seconds: int = Field(
+        default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+        ge=1,
+        le=86400,
+    )
 
 
 def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
     load_dotenv()
     payload = {
         "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 3,
+        "processing_freshness_window_seconds": (
+            os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
+        ),
     }
     try:
         return XCaptureWorkerSettings.model_validate(payload)
@@ -255,6 +264,11 @@ class XProcessingSettings(BaseModel):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    processing_freshness_window_seconds: int = Field(
+        default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+        ge=1,
+        le=86400,
+    )
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -292,6 +306,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
         "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "processing_freshness_window_seconds": (
+            os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
+        ),
     }
     try:
         return XProcessingSettings.model_validate(payload)
@@ -303,6 +320,7 @@ class CompetitorMonitorSettings(BaseModel):
     blockbeats_api_key: str | None = None
     fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)
     request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
+    event_assignment_timeout_seconds: int = Field(default=240, ge=30, le=1800)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
@@ -314,6 +332,11 @@ class CompetitorMonitorSettings(BaseModel):
     event_window_hours: int = Field(default=6, ge=1, le=168)
     event_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     event_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    processing_freshness_window_seconds: int = Field(
+        default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+        ge=1,
+        le=86400,
+    )
 
 
 def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
@@ -322,6 +345,7 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
         "blockbeats_api_key": os.getenv("BLOCKBEATS_API_KEY") or None,
         "fetch_interval_seconds": int(os.getenv("COMPETITOR_FETCH_INTERVAL_SECONDS") or 60),
         "request_timeout_seconds": float(os.getenv("COMPETITOR_REQUEST_TIMEOUT_SECONDS") or 20.0),
+        "event_assignment_timeout_seconds": int(os.getenv("COMPETITOR_EVENT_ASSIGNMENT_TIMEOUT_SECONDS") or 240),
         "retry": {
             "max_attempts": int(os.getenv("COMPETITOR_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("COMPETITOR_BACKOFF_SECONDS") or 1.0),
@@ -347,6 +371,9 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
         ),
         "event_ai_review_threshold": float(
             os.getenv("COMPETITOR_EVENT_AI_REVIEW_THRESHOLD") or os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.78
+        ),
+        "processing_freshness_window_seconds": (
+            os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         ),
     }
     try:

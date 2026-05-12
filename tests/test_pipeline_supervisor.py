@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.common.config import PipelineSupervisorSettings, RetrySettings
+from packages.pipeline_supervisor.repository import to_json_safe
 from packages.pipeline_supervisor.worker import PipelineSupervisorWorker
 from packages.x_processing.telegram import TelegramResult
 
@@ -127,3 +128,15 @@ def test_supervisor_detects_worker_without_recent_success() -> None:
     assert result.checked == 1
     assert "无近期成功心跳" in telegram.calls[0]
     assert "competitor_monitor" in telegram.calls[0]
+
+
+def test_supervisor_metadata_is_json_safe() -> None:
+    now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+
+    payload = to_json_safe({"last_seen_at": now, "items": ({"at": now},), "ids": {2, 1}})
+
+    assert payload == {
+        "last_seen_at": "2026-05-11T14:00:00+00:00",
+        "items": [{"at": "2026-05-11T14:00:00+00:00"}],
+        "ids": [1, 2],
+    }

@@ -9,7 +9,7 @@ Push Data API with `isPublish=false` and `isPush=false`.
 backend/   Python worker and business packages
 frontend/  Reserved for future UI
 data/      Runtime data, configs, raw quotes, processed briefs, exports
-docs/      Project docs and archived source requirements
+docs/      Project docs, module specs, and prompt templates
 tests/     Unit and integration tests
 ```
 
@@ -104,20 +104,28 @@ The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
 directly through Supabase. The worker listens on Postgres
 `x_capture_config_changed` notifications and does not expose a console port.
 
-## X And Competitor Processing Pipeline
+## Collectors And Processing Pipeline
 
-The processing pipeline consumes X and competitor `tasks`. X tasks run through
-judge -> search -> write -> format/publish. Competitor tasks from BlockBeats,
-PANews, and Jinse run through search -> judge -> write -> format/publish.
-Odaily newsflashes are saved as reference material only and do not enter
-`tasks`. The search stage uses DashScope embeddings and suppresses duplicate
-Odaily or in-flight events before writing. Competitor URLs stay internal and
-are not sent to the backend or Telegram.
+The pipeline uses collectors plus stage workers. Collector-X stores raw X posts
+in `tasks`. Collector-Competitor stores BlockBeats, PANews, and Jinse items in
+`tasks`, while Odaily newsflashes are saved as reference material and do not
+enter the writing queue.
 
-The competitor monitor also writes Odaily and competitor newsflashes into the
-long-lived `newsflash_*` event tables for console review. Embeddings stay in the
-server-local SQLite search cache; Supabase only stores source items, event
-membership, favorites, and notes.
+Publishing freshness is controlled by `PROCESSING_FRESHNESS_WINDOW_SECONDS`
+(default `600`). Collector-X and Collector-Competitor skip stale source items
+when writing `tasks`; the processing workers also expire stale or unknown-time
+tasks before AI, Push API, or Telegram calls. Competitor/Odaily event replay
+data still enters `newsflash_*` so the event console can backfill downtime.
+
+X tasks run through judge -> search -> write -> format/publish. Competitor
+tasks run through search -> judge -> write -> format/publish. The search stage
+uses DashScope embeddings and suppresses duplicate Odaily or in-flight events
+before writing. Competitor URLs stay internal and are not sent to the backend.
+
+The current implementation names still use `x_capture` and
+`competitor_monitor`. This README uses the business names Collector-X and
+Collector-Competitor, but the commands and packages are not renamed in this
+change.
 
 Initialize the processing schema and seed prompts from `docs/*.txt`:
 
@@ -147,6 +155,7 @@ OPENAI_API_KEY=
 DASHSCOPE_API_KEY=
 BLOCKBEATS_API_KEY=
 X_CAPTURE_ATTEMPT_RETENTION_DAYS=3
+PROCESSING_FRESHNESS_WINDOW_SECONDS=600
 X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
 X_PROCESS_OPENAI_API_STYLE=responses
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
@@ -184,3 +193,15 @@ python backend\src\main.py x-process-worker --stage search --once
 
 Use `/opt/OdAIly` for deployment and `deploy/odaily-worker.service` as the
 systemd template. Keep `data/config/market_brief.json` and `.env` out of Git.
+
+## Documentation
+
+- `docs/完整程序架构.md`: system contract and documentation index.
+- `docs/收集者-X.md`: X/Twitter collection and task ingestion.
+- `docs/收集者-竞品.md`: competitor and Odaily reference collection.
+- `docs/控制台.md`: console module index.
+- `docs/判断者.md`: route and discard rules.
+- `docs/搜索者.md`: duplicate detection and embedding strategy.
+- `docs/编写者1.md`: AI draft generation and prompt version tracing.
+- `docs/编写者2.md`: deterministic formatting and push behavior.
+- `docs/监督者.md`: pipeline health checks and alerts.

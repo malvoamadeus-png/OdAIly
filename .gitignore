@@ -24,7 +24,15 @@ frontend/.next/
 frontend/dist/
 frontend/*.tsbuildinfo
 
-docs/
+docs/__pycache__/
+docs/*.py
+docs/*probe*
+docs/*debug*
+docs/*临时*
+docs/*草稿*
+docs/查重.md
+docs/*发布推送接口*.md
+docs/*接口发布推送*.md
 tests/
 
 data/config/*.json

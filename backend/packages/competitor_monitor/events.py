@@ -113,39 +113,48 @@ class NewsflashEventAggregator:
     def assign_items(self, items: list[NewsflashItem]) -> set[str]:
         if not items:
             return set()
+        started = time.monotonic()
+        print(f"[odaily] competitor event phase=upsert_items count={len(items)}")
         records = self.repository.upsert_newsflash_items(items)
         if not records:
             return set()
 
-        vectors = self._embed_records(records)
-        since = min((record.published_at or record.first_seen_at or datetime.now(UTC)) for record in records) - timedelta(
-            hours=self.settings.event_window_hours
-        )
         record_ids = {record.id for record in records}
+        print(f"[odaily] competitor event phase=list_existing count={len(records)}")
         existing_assignments = self.repository.list_existing_event_sources(item_ids=record_ids)
         existing_by_item_id = {source.item.id: source for source in existing_assignments}
+        new_records = [record for record in records if record.id not in existing_by_item_id]
+        updated_event_ids = {source.event_id for source in existing_assignments}
+        if not new_records:
+            self.repository.update_event_summaries(updated_event_ids)
+            print(
+                "[odaily] competitor event phase=existing_only "
+                f"records={len(records)} events={len(updated_event_ids)} elapsed_seconds={time.monotonic() - started:.1f}"
+            )
+            return updated_event_ids
+
+        print(f"[odaily] competitor event phase=embed_new count={len(new_records)}")
+        vectors = self._embed_records(new_records)
+        new_record_ids = {record.id for record in new_records}
+        since = min((record.published_at or record.first_seen_at or datetime.now(UTC)) for record in new_records) - timedelta(
+            hours=self.settings.event_window_hours
+        )
+        print(f"[odaily] competitor event phase=list_recent since={since.isoformat()} exclude_count={len(new_record_ids)}")
         existing_sources = self.repository.list_recent_event_sources(
             since=since,
-            exclude_item_ids=record_ids,
+            exclude_item_ids=new_record_ids,
         )
+        print(f"[odaily] competitor event phase=embed_recent count={len(existing_sources)}")
         existing_vectors = self._embed_records([source.item for source in existing_sources])
 
-        groups = _DisjointSet({record.id for record in records})
+        groups = _DisjointSet({record.id for record in new_records})
         assignments: dict[int, EventAssignment] = {}
-        for record in records:
-            existing = existing_by_item_id.get(record.id)
-            if existing is None:
-                continue
-            assignments[record.id] = EventAssignment(
-                item_id=record.id,
-                event_id=existing.event_id,
-                role="supporting",
-                match_method="existing_assignment",
-            )
 
-        for record in records:
-            if record.id in existing_by_item_id:
-                continue
+        print(
+            "[odaily] competitor event phase=match_existing "
+            f"new_count={len(new_records)} recent_count={len(existing_sources)}"
+        )
+        for record in new_records:
             best = self._best_existing_match(record, vectors[record.id], existing_sources, existing_vectors)
             if best is None:
                 continue
@@ -160,8 +169,9 @@ class NewsflashEventAggregator:
                 ai_result=ai_result,
             )
 
-        for left_index, left in enumerate(records):
-            for right in records[left_index + 1 :]:
+        print(f"[odaily] competitor event phase=match_batch new_count={len(new_records)}")
+        for left_index, left in enumerate(new_records):
+            for right in new_records[left_index + 1 :]:
                 decision = self._same_event_decision(
                     left=left,
                     right=right,
@@ -184,8 +194,8 @@ class NewsflashEventAggregator:
                             ai_result=decision["ai_result"],
                         )
 
-        updated_event_ids: set[str] = set()
-        records_by_id = {record.id: record for record in records}
+        records_by_id = {record.id: record for record in new_records}
+        print(f"[odaily] competitor event phase=write_assignments components={len(groups.components())}")
         for root, item_ids in groups.components().items():
             event_ids = {assignments[item_id].event_id for item_id in item_ids if assignments.get(item_id) and assignments[item_id].event_id}
             component_needs_review = self._has_chain_conflict(item_ids, records_by_id, vectors)
@@ -227,12 +237,19 @@ class NewsflashEventAggregator:
                         needs_review=needs_review or (target_event_id != event_id) or (current.needs_review if current else False),
                     )
                 )
+        print(f"[odaily] competitor event phase=update_summaries events={len(updated_event_ids)}")
         self.repository.update_event_summaries(updated_event_ids)
+        print(
+            "[odaily] competitor event phase=done "
+            f"records={len(records)} new_records={len(new_records)} events={len(updated_event_ids)} "
+            f"elapsed_seconds={time.monotonic() - started:.1f}"
+        )
         return updated_event_ids
 
     def _embed_records(self, records: list[NewsflashItemRecord]) -> dict[int, list[float]]:
         if not records:
             return {}
+        started = time.monotonic()
         texts: list[str] = []
         missing: list[tuple[NewsflashItemRecord, str, str]] = []
         vectors: dict[int, list[float]] = {}
@@ -249,10 +266,15 @@ class NewsflashEventAggregator:
                 vectors[record.id] = cached
             self.cache.upsert_document(document)
         if missing:
+            print(f"[odaily] competitor event embeddings request missing={len(missing)} cached={len(vectors)}")
             embedded = self.embedding_client.embed(texts)
             for (record, key, text_hash), vector in zip(missing, embedded):
                 self.cache.set_embedding(cache_key=key, model=self.embedding_client.model, text_hash=text_hash, vector=vector)
                 vectors[record.id] = vector
+        print(
+            "[odaily] competitor event embeddings ready "
+            f"records={len(records)} missing={len(missing)} elapsed_seconds={time.monotonic() - started:.1f}"
+        )
         return vectors
 
     def _best_existing_match(

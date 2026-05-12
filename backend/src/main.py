@@ -192,6 +192,7 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
         repository=repository,
         client=FXTwitterClient(),
         attempt_retention_days=settings.attempt_retention_days,
+        freshness_window_seconds=settings.processing_freshness_window_seconds,
     )
     if args.once:
         stats = worker.run_once()
@@ -290,8 +291,11 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
             "[odaily] competitor monitor once "
             f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
             f"events={result.events_updated} filtered={result.filtered} "
+            f"expired_for_tasks={result.expired_for_tasks} "
+            f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
             f"fetched_by_source={result.fetched_by_source} "
             f"filtered_by_source={result.filtered_by_source} "
+            f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
             f"failed={result.failed_sources}"
         )
         return 0 if not result.failed_sources else 1

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import threading
 import time
@@ -10,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from packages.common.config import XProcessingSettings
+from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.publisher import PushClient
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
@@ -104,6 +106,29 @@ JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对一
 """
 
 
+AI_TOPIC_PATTERN = re.compile(
+    r"人工智能|生成式\s*AI|AIGC|大模型|机器学习|深度学习|智能体|"
+    r"OpenAI|ChatGPT|DeepSeek|Claude|Gemini|Sora|"
+    r"(?<![A-Za-z0-9.])AI(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+CRYPTO_CONTEXT_PATTERN = re.compile(
+    r"Web3|Crypto|DeFi|NFT|DAO|DApp|"
+    r"加密|区块链|链上|公链|主网|测试网|智能合约|"
+    r"比特币|以太坊|稳定币|代币|空投|质押|挖矿|矿工|矿企|"
+    r"交易所|钱包|预言机|跨链|Layer\s*2|L2|"
+    r"BTC|ETH|USDT|USDC|SOL|BNB|"
+    r"Bitcoin|Ethereum|Solana|Binance|Coinbase|OKX|Tether|Circle|"
+    r"币安|欧易|CZ|Vitalik|Worldcoin|"
+    r"Polymarket|Base|Arbitrum|Optimism|Polygon|Avalanche|"
+    r"Uniswap|Aave|Curve|Chainlink|Bittensor",
+    re.IGNORECASE,
+)
+
+DETERMINISTIC_JUDGE_MODEL = "deterministic-precheck"
+
+
 class XProcessingWorker:
     def __init__(
         self,
@@ -189,6 +214,10 @@ class XProcessingWorker:
                 result = StageRunResult(0, self.stage, 0, 0, "no task")
                 self._record_heartbeat(result)
                 return result
+            if self._expire_task_if_stale(task):
+                result = StageRunResult(0, self.stage, 1, 0, f"expired task {task.id}")
+                self._record_heartbeat(result)
+                return result
             self._process_task(task)
             result = StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
         except HandledStageError as exc:
@@ -253,7 +282,42 @@ class XProcessingWorker:
         else:
             raise ValueError(f"unknown stage: {self.stage}")
 
+    def _expire_task_if_stale(self, task: TaskRecord) -> bool:
+        check = evaluate_source_freshness(
+            task.published_at,
+            window_seconds=self.settings.processing_freshness_window_seconds,
+        )
+        if check.is_fresh:
+            return False
+        error = freshness_error(check)
+        self.repository.fail_task(task.id, stage=self.stage, error=error, status="expired")
+        delay = int(check.delay_seconds) if check.delay_seconds is not None else "-"
+        published = check.published_at.isoformat() if check.published_at else "-"
+        print(
+            "[odaily] x-processing freshness expired "
+            f"stage={self.stage} task_id={task.id} source={task.source} source_item_id={task.source_item_id} "
+            f"published_at={published} delay_seconds={delay} "
+            f"window_seconds={check.window_seconds} action=expire_task"
+        )
+        return True
+
     def _run_judge(self, task: TaskRecord) -> None:
+        deterministic_discard_type = deterministic_judge_discard_type(task)
+        if deterministic_discard_type is not None:
+            raw_output = json.dumps(
+                {
+                    "route": "discard",
+                    "discard_type": deterministic_discard_type,
+                },
+                ensure_ascii=False,
+            )
+            self.repository.complete_judge_discard(
+                task.id,
+                discard_type=deterministic_discard_type,
+                model=DETERMINISTIC_JUDGE_MODEL,
+                raw_output=raw_output,
+            )
+            return
         prompt = JUDGE_PROMPT_TEMPLATE.format(
             author=task.metadata.get("author_display_name") or task.metadata.get("author_username") or "",
             source_kind="信源" if is_competitor_task(task) else "X",
@@ -480,6 +544,13 @@ def is_competitor_task(task: TaskRecord) -> bool:
 
 def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
+
+
+def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
+    text = f"{task.title or ''}\n{task.content}"
+    if AI_TOPIC_PATTERN.search(text) and not CRYPTO_CONTEXT_PATTERN.search(text):
+        return "non_crypto_ai"
+    return None
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt_content: str) -> str:

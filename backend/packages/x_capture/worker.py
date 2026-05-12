@@ -10,12 +10,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from packages.common.freshness import (
+    DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+    ensure_utc,
+    evaluate_source_freshness,
+)
+
 from .client import FXTwitterClient
 from .models import CaptureRunStats, TweetCandidate, XCaptureAccount, XCaptureSettings
 from .repository import CONFIG_NOTIFY_CHANNEL, PostgresXCaptureRepository, XCaptureRepository, utc_now
-
-
-FRESHNESS_WINDOW = timedelta(minutes=10)
 
 
 @dataclass(slots=True)
@@ -35,6 +38,7 @@ class XCaptureWorker:
         timeline_count: int = 20,
         attempt_retention_days: int = 3,
         attempt_prune_interval_seconds: float = 3600.0,
+        freshness_window_seconds: int = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
     ) -> None:
         self.repository = repository
         self.client = client or FXTwitterClient()
@@ -43,6 +47,7 @@ class XCaptureWorker:
         self.timeline_count = timeline_count
         self.attempt_retention_days = max(1, int(attempt_retention_days))
         self.attempt_prune_interval_seconds = max(60.0, float(attempt_prune_interval_seconds))
+        self.freshness_window_seconds = max(1, int(freshness_window_seconds))
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
         self._wake_event = threading.Event()
@@ -270,7 +275,11 @@ class XCaptureWorker:
             if candidate.tweet_id not in unseen:
                 continue
             record = self._record_from_candidate(account, candidate, detail_errors)
-            if not is_fresh_record(record.created_at, scheduled_at):
+            if not is_fresh_record(
+                record.created_at,
+                scheduled_at,
+                window_seconds=self.freshness_window_seconds,
+            ):
                 if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
                     ignored_stale_count += 1
                     ignored_stale_tweet_ids.append(candidate.tweet_id)
@@ -290,7 +299,7 @@ class XCaptureWorker:
             metadata={
                 "attempt_url": attempt.url,
                 "detail_errors": detail_errors,
-                "freshness_window_seconds": int(FRESHNESS_WINDOW.total_seconds()),
+                "freshness_window_seconds": self.freshness_window_seconds,
                 "ignored_stale_count": ignored_stale_count,
                 "ignored_stale_tweet_ids": ignored_stale_tweet_ids,
             },
@@ -356,11 +365,20 @@ def parse_record_created_at(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def is_fresh_record(created_at: str | None, scheduled_at: datetime) -> bool:
+def is_fresh_record(
+    created_at: str | None,
+    scheduled_at: datetime,
+    *,
+    window_seconds: int = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+) -> bool:
     parsed = parse_record_created_at(created_at)
-    if parsed is None:
-        return False
-    if scheduled_at.tzinfo is None:
-        scheduled_at = scheduled_at.replace(tzinfo=UTC)
-    scheduled_at = scheduled_at.astimezone(UTC)
-    return abs(scheduled_at - parsed) <= FRESHNESS_WINDOW
+    if parsed is not None:
+        parsed = ensure_utc(parsed)
+    check = evaluate_source_freshness(
+        parsed,
+        reference_time=scheduled_at,
+        window_seconds=window_seconds,
+    )
+    if check.delay_seconds is not None and check.delay_seconds < 0:
+        return abs(check.delay_seconds) <= max(1, int(window_seconds))
+    return check.is_fresh

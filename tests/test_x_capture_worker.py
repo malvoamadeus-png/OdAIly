@@ -142,6 +142,38 @@ def test_stale_tweets_are_marked_seen_without_tasks() -> None:
     assert repo.tasks == []
 
 
+def test_x_capture_freshness_window_uses_processing_env(monkeypatch) -> None:
+    monkeypatch.setenv("PROCESSING_FRESHNESS_WINDOW_SECONDS", "300")
+
+    settings = load_x_capture_worker_settings()
+
+    assert settings.processing_freshness_window_seconds == 300
+
+
+def test_x_capture_custom_freshness_window_marks_older_tweet_seen() -> None:
+    repo = InMemoryXCaptureRepository()
+    repo.create_account(username_or_url="ai_9684xtpa")
+    stale_time = twitter_time(datetime.now(UTC) - timedelta(minutes=6))
+    worker = XCaptureWorker(
+        repository=repo,
+        client=FakeClient(
+            [
+                [candidate("1")],
+                [candidate("1"), candidate("2", created_at_raw=stale_time)],
+            ]
+        ),
+        freshness_window_seconds=300,
+    )
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].metadata["freshness_window_seconds"] == 300
+    assert stats[0].metadata["ignored_stale_tweet_ids"] == ["2"]
+    assert "2" in repo.seen
+    assert repo.tasks == []
+
+
 def test_config_refresh_removes_disabled_account_from_schedule() -> None:
     repo = InMemoryXCaptureRepository()
     account = repo.create_account(username_or_url="ai_9684xtpa")
