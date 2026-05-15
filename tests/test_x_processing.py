@@ -11,7 +11,7 @@ from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
 from packages.x_processing.searcher import SearchDocument
-from packages.x_processing.telegram import TelegramResult
+from packages.x_processing.telegram import TelegramClient, TelegramResult
 from packages.x_processing.worker import XProcessingWorker, build_telegram_notice, parse_judge_route, parse_news_type
 
 
@@ -76,6 +76,17 @@ class FakeOpenAIResponse:
         return self.payload
 
 
+class FakeTelegramResponse:
+    status_code = 200
+    text = '{"ok":true}'
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {"ok": True}
+
+
 def task(task_id: int, status: str = "pending") -> TaskRecord:
     return TaskRecord(
         id=task_id,
@@ -114,6 +125,104 @@ def test_parse_news_type_accepts_only_known_values() -> None:
         assert "invalid route" in str(exc)
     else:
         raise AssertionError("invalid news_type should fail")
+
+
+def test_telegram_client_includes_message_thread_id(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, *, json: dict[str, Any], timeout: float) -> FakeTelegramResponse:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeTelegramResponse()
+
+    monkeypatch.setattr("packages.x_processing.telegram.requests.post", fake_post)
+    client = TelegramClient(
+        bot_token="token",
+        chat_id="-100123",
+        message_thread_id="11",
+        timeout_seconds=5.0,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    result = client.send_message("hello", message_thread_id="22")
+
+    assert result.ok is True
+    assert calls[0]["json"] == {
+        "chat_id": "-100123",
+        "text": "hello",
+        "disable_web_page_preview": True,
+        "message_thread_id": 22,
+    }
+
+
+def test_telegram_client_can_send_reply_markup(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, *, json: dict[str, Any], timeout: float) -> FakeTelegramResponse:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeTelegramResponse()
+
+    monkeypatch.setattr("packages.x_processing.telegram.requests.post", fake_post)
+    client = TelegramClient(
+        bot_token="token",
+        chat_id="-100123",
+        message_thread_id="11",
+        timeout_seconds=5.0,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+    markup = {"inline_keyboard": [[{"text": "确认已读", "callback_data": "w3_confirm:101"}]]}
+
+    result = client.send_message("hello", reply_markup=markup)
+
+    assert result.ok is True
+    assert calls[0]["json"]["reply_markup"] == markup
+
+
+def test_telegram_client_can_create_forum_topic(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, *, json: dict[str, Any], timeout: float) -> FakeTelegramResponse:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeTelegramResponse()
+
+    monkeypatch.setattr("packages.x_processing.telegram.requests.post", fake_post)
+    client = TelegramClient(
+        bot_token="token",
+        chat_id="-100123",
+        timeout_seconds=5.0,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    result = client.create_forum_topic("审核者")
+
+    assert result.ok is True
+    assert calls[0]["url"].endswith("/createForumTopic")
+    assert calls[0]["json"] == {"chat_id": "-100123", "name": "审核者"}
+
+
+def test_telegram_client_omits_empty_message_thread_id(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, *, json: dict[str, Any], timeout: float) -> FakeTelegramResponse:
+        calls.append({"url": url, "json": json, "timeout": timeout})
+        return FakeTelegramResponse()
+
+    monkeypatch.setattr("packages.x_processing.telegram.requests.post", fake_post)
+    client = TelegramClient(
+        bot_token="token",
+        chat_id="-100123",
+        message_thread_id="",
+        timeout_seconds=5.0,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    result = client.send_message("hello")
+
+    assert result.ok is True
+    assert "message_thread_id" not in calls[0]["json"]
 
 
 def test_parse_judge_route_validates_discard_type() -> None:

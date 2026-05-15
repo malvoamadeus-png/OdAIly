@@ -4,24 +4,26 @@ import argparse
 import sys
 from pathlib import Path
 
-from apscheduler.schedulers.blocking import BlockingScheduler
-
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from packages.common.config import (  # noqa: E402
+    load_auditor_settings,
     load_competitor_monitor_settings,
     load_gate_settings,
     load_pipeline_supervisor_settings,
     load_settings,
+    load_writer3_settings,
     load_x_capture_worker_settings,
     load_x_processing_settings,
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
 from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
-from packages.tasks.registry import TASKS, run_task_once  # noqa: E402
+
+
+SCHEDULED_TASK_IDS = ("gate-tradfi", "us-market")
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +35,7 @@ def parse_args() -> argparse.Namespace:
 
     run_once = subparsers.add_parser("run-once", help="Generate one content brief.")
     add_common(run_once)
-    run_once.add_argument("--task", choices=sorted(TASKS), default="us-market")
+    run_once.add_argument("--task", choices=SCHEDULED_TASK_IDS, default="us-market")
     run_once.add_argument("--kind", required=True)
     run_once.add_argument("--dry-run", action="store_true", help="Do not call the Push Data API.")
     run_once.add_argument("--send", action="store_true", help="Call the Push Data API even if config uses dry_run.")
@@ -89,6 +91,43 @@ def parse_args() -> argparse.Namespace:
     supervisor.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     supervisor.add_argument("--once", action="store_true", help="Run one supervisor pass and exit.")
 
+    telegram_test = subparsers.add_parser("telegram-test", help="Send a Telegram test message.")
+    telegram_test.add_argument("--text", default="OdAIly Telegram topic test", help="Message text to send.")
+    telegram_test.add_argument("--message-thread-id", help="Telegram forum topic message_thread_id.")
+
+    telegram_topic = subparsers.add_parser("telegram-create-topic", help="Create a Telegram forum topic and print message_thread_id.")
+    telegram_topic.add_argument("--name", default="审核者", help="Telegram forum topic name.")
+
+    writer3_init = subparsers.add_parser("writer3-init-db", help="Initialize Writer3 Postgres tables.")
+    writer3_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    writer3_backfill = subparsers.add_parser("writer3-backfill-odaily", help="Backfill Odaily references for Writer3.")
+    writer3_backfill.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_backfill.add_argument("--days", type=int, default=90)
+
+    writer3_sync = subparsers.add_parser("writer3-sync-index", help="Sync Writer3 local Odaily index from Supabase.")
+    writer3_sync.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_sync.add_argument("--days", type=int, default=90)
+
+    writer3_worker = subparsers.add_parser("writer3-worker", help="Run Writer3 Telegram topic worker.")
+    writer3_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_worker.add_argument("--once", action="store_true", help="Process one Writer3 task and exit.")
+
+    writer3_confirm_worker = subparsers.add_parser("writer3-confirm-worker", help="Run Writer3 Telegram confirmation button worker.")
+    writer3_confirm_worker.add_argument("--once", action="store_true", help="Process one Telegram getUpdates response and exit.")
+    writer3_confirm_worker.add_argument("--poll-timeout", type=int, default=20, help="Telegram getUpdates timeout in seconds.")
+
+    writer3_reset = subparsers.add_parser("writer3-reset-task", help="Reset one Writer3 task for retry.")
+    writer3_reset.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_reset.add_argument("--task-id", type=int, required=True)
+
+    auditor_init = subparsers.add_parser("auditor-init-db", help="Initialize Auditor Postgres tables.")
+    auditor_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    auditor_worker = subparsers.add_parser("auditor-worker", help="Run Odaily published-news auditor worker.")
+    auditor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    auditor_worker.add_argument("--once", action="store_true", help="Process one auditor task and exit.")
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -104,6 +143,8 @@ def _dry_run_override(args: argparse.Namespace) -> bool | None:
 
 
 def run_once_command(args: argparse.Namespace) -> int:
+    from packages.tasks.registry import run_task_once
+
     paths = get_paths()
     result = run_task_once(
         task_id=args.task,
@@ -121,6 +162,10 @@ def run_once_command(args: argparse.Namespace) -> int:
 
 
 def run_worker_command(args: argparse.Namespace) -> int:
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    from packages.tasks.registry import TASKS, run_task_once
+
     paths = get_paths()
     ensure_runtime_dirs(paths)
     scheduler = BlockingScheduler(timezone=SHANGHAI_TZ)
@@ -153,6 +198,8 @@ def run_worker_command(args: argparse.Namespace) -> int:
 
 
 def doctor_command(args: argparse.Namespace) -> int:
+    from packages.tasks.registry import TASKS
+
     paths = get_paths()
     ensure_runtime_dirs(paths)
     print(f"[odaily] root={paths.root_dir}")
@@ -320,6 +367,185 @@ def pipeline_supervisor_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def telegram_test_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.telegram import TelegramClient
+
+    settings = load_x_processing_settings()
+    client = TelegramClient(
+        bot_token=settings.telegram_bot_token,
+        chat_id=settings.telegram_chat_id,
+        message_thread_id=settings.telegram_message_thread_id,
+        timeout_seconds=settings.telegram_timeout_seconds,
+        max_attempts=settings.retry.max_attempts,
+        backoff_seconds=settings.retry.backoff_seconds,
+    )
+    result = client.send_message(args.text, message_thread_id=args.message_thread_id)
+    if result.ok:
+        print(
+            "[odaily] telegram test sent "
+            f"status_code={result.status_code} message_thread_id={args.message_thread_id or settings.telegram_message_thread_id}"
+        )
+        return 0
+    if result.skipped:
+        print(f"[odaily] telegram test skipped: {result.error}", file=sys.stderr)
+        return 1
+    print(f"[odaily] telegram test failed: {result.error}", file=sys.stderr)
+    if result.response_text:
+        print(result.response_text[:1000], file=sys.stderr)
+    return 1
+
+
+def telegram_create_topic_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.telegram import TelegramClient
+
+    settings = load_x_processing_settings()
+    client = TelegramClient(
+        bot_token=settings.telegram_bot_token,
+        chat_id=settings.telegram_chat_id,
+        message_thread_id=settings.telegram_message_thread_id,
+        timeout_seconds=settings.telegram_timeout_seconds,
+        max_attempts=settings.retry.max_attempts,
+        backoff_seconds=settings.retry.backoff_seconds,
+    )
+    result = client.create_forum_topic(args.name)
+    if result.ok:
+        message_thread_id = None
+        if isinstance(result.response_json, dict):
+            topic = result.response_json.get("result")
+            if isinstance(topic, dict):
+                message_thread_id = topic.get("message_thread_id")
+        print(f"[odaily] telegram topic created name={args.name} message_thread_id={message_thread_id}")
+        return 0 if message_thread_id is not None else 1
+    if result.skipped:
+        print(f"[odaily] telegram topic create skipped: {result.error}", file=sys.stderr)
+        return 1
+    print(f"[odaily] telegram topic create failed: {result.error}", file=sys.stderr)
+    if result.response_text:
+        print(result.response_text[:1000], file=sys.stderr)
+    return 1
+
+
+def writer3_init_db_command(args: argparse.Namespace) -> int:
+    from packages.writer3 import PostgresWriter3Repository
+
+    repository = PostgresWriter3Repository(args.database_url)
+    repository.init_schema()
+    print("[odaily] writer3 database schema initialized")
+    return 0
+
+
+def writer3_backfill_odaily_command(args: argparse.Namespace) -> int:
+    from packages.writer3 import PostgresWriter3Repository, backfill_odaily_references
+
+    settings = load_writer3_settings()
+    repository = PostgresWriter3Repository(args.database_url)
+    repository.init_schema()
+    result = backfill_odaily_references(
+        repository=repository,
+        days=args.days,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
+    print(
+        "[odaily] writer3 odaily backfill "
+        f"days={args.days} pages={result['pages']} fetched={result['fetched']} upserted={result['upserted']}"
+    )
+    return 0
+
+
+def writer3_sync_index_command(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    from packages.writer3 import PostgresWriter3Repository, Writer3Index
+
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    repository = PostgresWriter3Repository(args.database_url)
+    index = Writer3Index(paths.writer3_index_path)
+    since = datetime.now(UTC) - timedelta(days=args.days)
+    references = repository.list_odaily_references(since=since)
+    upserted = index.upsert_references(references)
+    pruned = index.prune_before(since)
+    print(f"[odaily] writer3 index synced days={args.days} upserted={upserted} pruned={pruned}")
+    return 0
+
+
+def writer3_worker_command(args: argparse.Namespace) -> int:
+    from packages.writer3 import PostgresWriter3Repository, Writer3Index, Writer3Worker
+
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    repository = PostgresWriter3Repository(args.database_url)
+    index = Writer3Index(paths.writer3_index_path)
+    settings = load_writer3_settings()
+    worker = Writer3Worker(repository=repository, index=index, settings=settings)
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] writer3 once "
+            f"processed={result.processed} sent={result.sent} skipped={result.skipped} "
+            f"failed={result.failed} message={result.message}"
+        )
+        return result.exit_code
+    worker.run_forever()
+    return 0
+
+
+def writer3_confirm_worker_command(args: argparse.Namespace) -> int:
+    from packages.writer3 import Writer3Index, Writer3TelegramConfirmWorker
+
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    settings = load_writer3_settings()
+    index = Writer3Index(paths.writer3_index_path)
+    worker = Writer3TelegramConfirmWorker(index=index, settings=settings, poll_timeout_seconds=args.poll_timeout)
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] writer3 confirm once "
+            f"updates={result.updates} confirmed={result.confirmed} ignored={result.ignored} "
+            f"failed={result.failed} message={result.message}"
+        )
+        return result.exit_code
+    worker.run_forever()
+    return 0
+
+
+def writer3_reset_task_command(args: argparse.Namespace) -> int:
+    from packages.writer3 import PostgresWriter3Repository
+
+    repository = PostgresWriter3Repository(args.database_url)
+    changed = repository.reset_task(args.task_id)
+    print(f"[odaily] writer3 reset task_id={args.task_id} changed={changed}")
+    return 0 if changed else 1
+
+
+def auditor_init_db_command(args: argparse.Namespace) -> int:
+    from packages.auditor import PostgresAuditorRepository
+
+    repository = PostgresAuditorRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] auditor database schema initialized")
+    return 0
+
+
+def auditor_worker_command(args: argparse.Namespace) -> int:
+    from packages.auditor import AuditorWorker, PostgresAuditorRepository
+
+    repository = PostgresAuditorRepository(args.database_url)
+    settings = load_auditor_settings()
+    worker = AuditorWorker(repository=repository, settings=settings)
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] auditor once "
+            f"processed={result.processed} passed={result.passed} flagged={result.flagged} "
+            f"failed={result.failed} message={result.message}"
+        )
+        return result.exit_code
+    worker.run_forever()
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -347,6 +573,26 @@ def main() -> int:
             return competitor_monitor_worker_command(args)
         if args.command == "pipeline-supervisor":
             return pipeline_supervisor_command(args)
+        if args.command == "telegram-test":
+            return telegram_test_command(args)
+        if args.command == "telegram-create-topic":
+            return telegram_create_topic_command(args)
+        if args.command == "writer3-init-db":
+            return writer3_init_db_command(args)
+        if args.command == "writer3-backfill-odaily":
+            return writer3_backfill_odaily_command(args)
+        if args.command == "writer3-sync-index":
+            return writer3_sync_index_command(args)
+        if args.command == "writer3-worker":
+            return writer3_worker_command(args)
+        if args.command == "writer3-confirm-worker":
+            return writer3_confirm_worker_command(args)
+        if args.command == "writer3-reset-task":
+            return writer3_reset_task_command(args)
+        if args.command == "auditor-init-db":
+            return auditor_init_db_command(args)
+        if args.command == "auditor-worker":
+            return auditor_worker_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:

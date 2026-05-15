@@ -170,6 +170,7 @@ class XProcessingWorker:
         self.telegram_client = telegram_client or TelegramClient(
             bot_token=settings.telegram_bot_token,
             chat_id=settings.telegram_chat_id,
+            message_thread_id=settings.telegram_message_thread_id,
             timeout_seconds=settings.telegram_timeout_seconds,
             max_attempts=settings.retry.max_attempts,
             backoff_seconds=settings.retry.backoff_seconds,

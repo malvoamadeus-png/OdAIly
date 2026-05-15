@@ -16,6 +16,7 @@ class TextGenerationClient(Protocol):
         model: str,
         prompt: str,
         text_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str: ...
 
 
@@ -43,14 +44,25 @@ class OpenAIResponsesClient:
         model: str,
         prompt: str,
         text_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         if self.api_style == "responses":
             url = self._responses_url()
-            payload = self._responses_payload(model=model, prompt=prompt, text_format=text_format)
+            payload = self._responses_payload(
+                model=model,
+                prompt=prompt,
+                text_format=text_format,
+                reasoning_effort=reasoning_effort,
+            )
             extractor = extract_response_text
         elif self.api_style == "chat_completions":
             url = self._chat_completions_url()
-            payload = self._chat_completions_payload(model=model, prompt=prompt, text_format=text_format)
+            payload = self._chat_completions_payload(
+                model=model,
+                prompt=prompt,
+                text_format=text_format,
+                reasoning_effort=reasoning_effort,
+            )
             extractor = extract_chat_completion_text
         else:
             raise ValueError(f"Unsupported OpenAI API style: {self.api_style}")
@@ -91,6 +103,7 @@ class OpenAIResponsesClient:
         model: str,
         prompt: str,
         text_format: dict[str, Any] | None,
+        reasoning_effort: str | None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -98,6 +111,8 @@ class OpenAIResponsesClient:
         }
         if text_format is not None:
             payload["text"] = {"format": text_format}
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
         return payload
 
     def _chat_completions_payload(
@@ -106,6 +121,7 @@ class OpenAIResponsesClient:
         model: str,
         prompt: str,
         text_format: dict[str, Any] | None,
+        reasoning_effort: str | None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -113,6 +129,8 @@ class OpenAIResponsesClient:
         }
         if text_format is not None:
             payload["response_format"] = to_chat_response_format(text_format)
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         return payload
 
 

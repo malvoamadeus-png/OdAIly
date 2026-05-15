@@ -65,6 +65,8 @@ def normalize_item_content(title: str, content: str) -> str:
     value = clean_text(strip_html(content))
     if title and value.startswith(title):
         value = value[len(title):].strip()
+    if title and value.startswith(f"【{title}】"):
+        value = value[len(title) + 2:].strip()
     value = scrub_competitor_brands(value)
     return value or scrub_competitor_brands(title)
 
@@ -125,22 +127,47 @@ def fetch_panews(*, timeout_seconds: float) -> list[NewsflashItem]:
 
 
 def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
-    response = requests.get("https://newapi.jinse2.com/noah/v1/breaking-news", headers=HEADERS, timeout=timeout_seconds)
+    response = requests.get(
+        "https://api.coinmeta.info/live/list",
+        params={"limit": 50},
+        headers=HEADERS,
+        timeout=timeout_seconds,
+    )
     response.raise_for_status()
     payload = response.json()
     items: list[NewsflashItem] = []
-    for news in payload.get("data", []):
+    for news in _extract_jinse_lives(payload):
         if not isinstance(news, dict):
             continue
-        title = str(news.get("title") or "").strip()
+        title = str(news.get("title") or extract_jinse_title(news.get("content")) or "").strip()
         if not title:
             continue
-        published_at = news.get("published_at") or ""
-        source_url = str(news.get("jump_url") or "https://jinse2.com/lives")
+        published_at = news.get("created_at") or news.get("published_at") or ""
+        live_id = news.get("id")
+        source_url = str(news.get("jump_url") or (f"https://www.jinse2.com/lives/{live_id}.html" if live_id else "https://www.jinse2.com/lives"))
         source_id = str(news.get("id") or extract_jinse_live_id(source_url) or stable_id("jinse", title, str(published_at)))
         content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
         items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, source_url, str(published_at), news))
     return items
+
+
+def _extract_jinse_lives(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    lives: list[dict[str, Any]] = []
+    for group in payload.get("list") or []:
+        if isinstance(group, dict):
+            lives.extend(item for item in group.get("lives") or [] if isinstance(item, dict))
+    if lives:
+        return lives
+    data = payload.get("data")
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def extract_jinse_title(content: Any) -> str:
+    text = clean_text(strip_html(str(content or "")))
+    match = re.match(r"^【([^】]+)】", text)
+    return match.group(1).strip() if match else ""
 
 
 def extract_jinse_live_id(source_url: str | None) -> str | None:

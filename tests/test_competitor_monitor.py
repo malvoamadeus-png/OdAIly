@@ -307,6 +307,49 @@ def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:
     assert items[0].published_at == "1778283366"
 
 
+def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "news": 2,
+                "count": 2,
+                "top_id": 512327,
+                "bottom_id": 512326,
+                "list": [
+                    {
+                        "date": "2026-05-12",
+                        "lives": [
+                            {
+                                "id": 512327,
+                                "content": "【半导体股市值占标普 500 总市值比例达创纪录的 23%】金色财经报道，5月12日消息，半导体股市值占标普 500 总市值比例达创纪录的 23%。",
+                                "link": "https://x.com/Cointelegraph/status/2054069277632741773",
+                                "created_at": 1778563741,
+                            },
+                            {
+                                "id": 512326,
+                                "content": "【BIT关联地址卖出最后持有的99,612枚HYPE】金色财经报道，5月12日，据Onchain Lens监测，BIT关联地址卖出最后99,612枚HYPE。",
+                                "created_at": 1778563583,
+                            },
+                        ],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", lambda *args, **kwargs: Response())
+
+    items = fetch_jinse(timeout_seconds=3)
+
+    assert len(items) == 2
+    assert items[0].source_item_id == "512327"
+    assert items[0].title == "半导体股市值占标普 500 总市值比例达创纪录的 23%"
+    assert "金色财经报道" not in items[0].content
+    assert items[0].source_url == "https://www.jinse2.com/lives/512327.html"
+    assert items[0].published_at == "1778563741"
+
+
 def test_parse_datetime_treats_naive_newsflash_time_as_shanghai() -> None:
     parsed = parse_datetime("2026-05-11 10:36:58")
 

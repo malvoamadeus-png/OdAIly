@@ -114,6 +114,174 @@ CREATE INDEX IF NOT EXISTS idx_search_candidates_hash ON search_event_candidates
 CREATE INDEX IF NOT EXISTS idx_search_sources_candidate ON search_event_sources(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_prompt_versions_template ON prompt_template_versions(template_key, version_number DESC);
 
+CREATE TABLE IF NOT EXISTS auditor_checks (
+    id bigserial PRIMARY KEY,
+    source_item_id text NOT NULL,
+    source_url text,
+    title text,
+    content text NOT NULL,
+    content_hash text NOT NULL,
+    published_at timestamptz,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'passed', 'flagged', 'failed', 'skipped')),
+    locked_by text,
+    locked_until timestamptz,
+    attempt_count integer NOT NULL DEFAULT 0,
+    model text,
+    prompt_version text NOT NULL,
+    raw_output text,
+    audit_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    telegram_text text,
+    telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    last_error text,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    alerted_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (source_item_id, content_hash, prompt_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auditor_checks_status_lock
+ON auditor_checks(status, locked_until, updated_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_auditor_checks_source_item
+ON auditor_checks(source_item_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_auditor_checks_published
+ON auditor_checks(published_at DESC NULLS LAST);
+
+CREATE TABLE IF NOT EXISTS writer3_contexts (
+    id bigserial PRIMARY KEY,
+    task_id bigint REFERENCES tasks(id) ON DELETE SET NULL,
+    current_source text,
+    current_source_item_id text,
+    current_source_url text,
+    current_title text,
+    current_content text,
+    current_published_at timestamptz,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'skipped', 'sent', 'failed')),
+    locked_by text,
+    locked_until timestamptz,
+    attempt_count integer NOT NULL DEFAULT 0,
+    analysis_model text,
+    writer_model text,
+    writer_reasoning_effort text,
+    analysis_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    candidates jsonb NOT NULL DEFAULT '[]'::jsonb,
+    context_text text,
+    evidence_source_item_ids text[] NOT NULL DEFAULT ARRAY[]::text[],
+    telegram_text text,
+    telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    skip_reason text,
+    last_error text,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    sent_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name = 'writer3_contexts'
+          AND constraint_type = 'PRIMARY KEY'
+          AND constraint_name = 'writer3_contexts_pkey'
+    ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.key_column_usage
+        WHERE table_name = 'writer3_contexts'
+          AND constraint_name = 'writer3_contexts_pkey'
+          AND column_name = 'task_id'
+    ) THEN
+        ALTER TABLE writer3_contexts DROP CONSTRAINT writer3_contexts_pkey;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'writer3_contexts'
+          AND column_name = 'id'
+    ) THEN
+        ALTER TABLE writer3_contexts ADD COLUMN id bigserial;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE table_name = 'writer3_contexts'
+          AND constraint_type = 'PRIMARY KEY'
+          AND constraint_name = 'writer3_contexts_pkey'
+    ) THEN
+        ALTER TABLE writer3_contexts ADD PRIMARY KEY (id);
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'writer3_contexts'
+          AND column_name = 'task_id'
+          AND is_nullable = 'NO'
+    ) THEN
+        ALTER TABLE writer3_contexts ALTER COLUMN task_id DROP NOT NULL;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_source') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_source text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_source_item_id') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_source_item_id text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_source_url') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_source_url text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_title') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_title text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_content') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_content text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'writer3_contexts' AND column_name = 'current_published_at') THEN
+        ALTER TABLE writer3_contexts ADD COLUMN current_published_at timestamptz;
+    END IF;
+
+    UPDATE writer3_contexts
+    SET current_source = COALESCE(current_source, 'task'),
+        current_source_item_id = COALESCE(current_source_item_id, task_id::text)
+    WHERE current_source IS NULL
+       OR current_source_item_id IS NULL;
+
+    ALTER TABLE writer3_contexts ALTER COLUMN current_source SET NOT NULL;
+    ALTER TABLE writer3_contexts ALTER COLUMN current_source_item_id SET NOT NULL;
+END
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS writer3_contexts_current_source_item_key
+ON writer3_contexts(current_source, current_source_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_writer3_contexts_status_lock
+ON writer3_contexts(status, locked_until, updated_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_writer3_contexts_sent_at
+ON writer3_contexts(sent_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_writer3_contexts_current_published
+ON writer3_contexts(current_published_at DESC NULLS LAST);
+
+ALTER TABLE writer3_contexts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS writer3_contexts_anon_select ON writer3_contexts;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        GRANT USAGE ON SCHEMA public TO anon;
+        GRANT SELECT ON writer3_contexts TO anon;
+        EXECUTE 'CREATE POLICY writer3_contexts_anon_select ON writer3_contexts FOR SELECT TO anon USING (true)';
+    END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS newsflash_items (
     id bigserial PRIMARY KEY,
     source text NOT NULL,
@@ -312,6 +480,8 @@ ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
 ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search_event_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auditor_checks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE writer3_contexts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_event_sources ENABLE ROW LEVEL SECURITY;
@@ -325,6 +495,8 @@ DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
 DROP POLICY IF EXISTS search_event_sources_anon_select ON search_event_sources;
+DROP POLICY IF EXISTS auditor_checks_anon_select ON auditor_checks;
+DROP POLICY IF EXISTS writer3_contexts_anon_select ON writer3_contexts;
 DROP POLICY IF EXISTS newsflash_items_anon_select ON newsflash_items;
 DROP POLICY IF EXISTS newsflash_events_anon_select ON newsflash_events;
 DROP POLICY IF EXISTS newsflash_event_sources_anon_select ON newsflash_event_sources;
@@ -338,7 +510,8 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
-        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
+        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources, auditor_checks TO anon;
+        GRANT SELECT ON writer3_contexts TO anon;
         GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO anon;
         GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes TO anon;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq, newsflash_event_sources_id_seq TO anon;
@@ -349,6 +522,8 @@ BEGIN
         EXECUTE 'CREATE POLICY odaily_reference_items_anon_select ON odaily_reference_items FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY search_event_candidates_anon_select ON search_event_candidates FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY search_event_sources_anon_select ON search_event_sources FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY auditor_checks_anon_select ON auditor_checks FOR SELECT TO anon USING (true)';
+        EXECUTE 'CREATE POLICY writer3_contexts_anon_select ON writer3_contexts FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY newsflash_items_anon_select ON newsflash_items FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY newsflash_events_anon_select ON newsflash_events FOR SELECT TO anon USING (true)';
         EXECUTE 'CREATE POLICY newsflash_event_sources_anon_select ON newsflash_event_sources FOR SELECT TO anon USING (true)';

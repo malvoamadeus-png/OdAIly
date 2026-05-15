@@ -170,6 +170,16 @@ COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+TELEGRAM_MESSAGE_THREAD_ID=
+WRITER3_START_AFTER=
+WRITER3_HISTORY_DAYS=90
+WRITER3_ANALYSIS_MODEL=gpt-5.4-mini
+WRITER3_WRITER_MODEL=gpt-5.5
+WRITER3_WRITER_REASONING_EFFORT=medium
+WRITER3_CANDIDATE_LIMIT=20
+WRITER3_CONTEXT_CANDIDATES=5
+WRITER3_CURRENT_FRESHNESS_WINDOW_SECONDS=600
+WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 ```
 
 `X_PROCESS_OPENAI_BASE_URL` may point to an OpenAI-compatible relay, usually
@@ -187,6 +197,11 @@ After deploying the competitor event console, verify the database and workers:
 python backend\src\main.py competitor-init-db
 python backend\src\main.py competitor-monitor-worker --once
 python backend\src\main.py x-process-worker --stage search --once
+python backend\src\main.py writer3-init-db
+python backend\src\main.py writer3-backfill-odaily --days 90
+python backend\src\main.py writer3-sync-index --days 90
+python backend\src\main.py writer3-worker --once
+python backend\src\main.py writer3-reset-task --task-id 123
 ```
 
 ## Linux Service

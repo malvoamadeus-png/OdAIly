@@ -18,12 +18,18 @@ class AppPaths:
     gate_tradfi_config_path: Path
     searcher_dir: Path | None = None
     searcher_cache_path: Path | None = None
+    writer3_dir: Path | None = None
+    writer3_index_path: Path | None = None
 
     def __post_init__(self) -> None:
         searcher_dir = self.searcher_dir or self.processed_dir / "searcher"
         searcher_cache_path = self.searcher_cache_path or searcher_dir / "searcher.sqlite"
+        writer3_dir = self.writer3_dir or self.processed_dir / "writer3"
+        writer3_index_path = self.writer3_index_path or writer3_dir / "writer3.sqlite"
         object.__setattr__(self, "searcher_dir", searcher_dir)
         object.__setattr__(self, "searcher_cache_path", searcher_cache_path)
+        object.__setattr__(self, "writer3_dir", writer3_dir)
+        object.__setattr__(self, "writer3_index_path", writer3_index_path)
 
 
 def get_paths() -> AppPaths:
@@ -43,6 +49,8 @@ def get_paths() -> AppPaths:
         gate_tradfi_config_path=config_dir / "gate_tradfi.json",
         searcher_dir=data_dir / "processed" / "searcher",
         searcher_cache_path=data_dir / "processed" / "searcher" / "searcher.sqlite",
+        writer3_dir=data_dir / "processed" / "writer3",
+        writer3_index_path=data_dir / "processed" / "writer3" / "writer3.sqlite",
     )
 
 
@@ -59,5 +67,6 @@ def ensure_runtime_dirs(paths: AppPaths) -> None:
         paths.raw_dir / "gate_quotes",
         paths.processed_dir / "briefs",
         paths.searcher_dir,
+        paths.writer3_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)

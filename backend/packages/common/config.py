@@ -263,6 +263,7 @@ class XProcessingSettings(BaseModel):
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
     processing_freshness_window_seconds: int = Field(
         default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
@@ -305,6 +306,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         },
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": os.getenv("TELEGRAM_MESSAGE_THREAD_ID") or None,
         "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
@@ -391,6 +393,7 @@ class PipelineSupervisorSettings(BaseModel):
     failed_threshold: int = Field(default=3, ge=1, le=1000)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
 
@@ -406,6 +409,7 @@ def load_pipeline_supervisor_settings() -> PipelineSupervisorSettings:
         "failed_threshold": int(os.getenv("PIPELINE_SUPERVISOR_FAILED_THRESHOLD") or 3),
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": os.getenv("TELEGRAM_MESSAGE_THREAD_ID") or None,
         "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
         "retry": {
             "max_attempts": int(os.getenv("PIPELINE_SUPERVISOR_MAX_ATTEMPTS") or 3),
@@ -416,3 +420,107 @@ def load_pipeline_supervisor_settings() -> PipelineSupervisorSettings:
         return PipelineSupervisorSettings.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"Invalid pipeline supervisor settings: {exc}") from exc
+
+
+class Writer3Settings(BaseModel):
+    openai_api_key: str | None = None
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
+    openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    analysis_model: str = "gpt-5.4-mini"
+    writer_model: str = "gpt-5.5"
+    writer_reasoning_effort: str = "medium"
+    history_days: int = Field(default=90, ge=1, le=365)
+    candidate_limit: int = Field(default=20, ge=1, le=100)
+    context_candidates: int = Field(default=5, ge=1, le=20)
+    current_freshness_window_seconds: int = Field(default=600, ge=1, le=86400)
+    request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    start_after: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    worker_idle_sleep_seconds: float = Field(default=10.0, ge=1.0, le=300.0)
+
+
+def load_writer3_settings() -> Writer3Settings:
+    load_dotenv()
+    payload = {
+        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "openai_base_url": (
+            os.getenv("WRITER3_OPENAI_BASE_URL")
+            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ),
+        "openai_api_style": os.getenv("WRITER3_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "analysis_model": os.getenv("WRITER3_ANALYSIS_MODEL") or "gpt-5.4-mini",
+        "writer_model": os.getenv("WRITER3_WRITER_MODEL") or "gpt-5.5",
+        "writer_reasoning_effort": os.getenv("WRITER3_WRITER_REASONING_EFFORT") or "medium",
+        "history_days": int(os.getenv("WRITER3_HISTORY_DAYS") or 90),
+        "candidate_limit": int(os.getenv("WRITER3_CANDIDATE_LIMIT") or 20),
+        "context_candidates": int(os.getenv("WRITER3_CONTEXT_CANDIDATES") or 5),
+        "current_freshness_window_seconds": int(os.getenv("WRITER3_CURRENT_FRESHNESS_WINDOW_SECONDS") or 600),
+        "request_timeout_seconds": float(os.getenv("WRITER3_REQUEST_TIMEOUT_SECONDS") or 60.0),
+        "retry": {
+            "max_attempts": int(os.getenv("WRITER3_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("WRITER3_BACKOFF_SECONDS") or 1.0),
+        },
+        "start_after": os.getenv("WRITER3_START_AFTER") or None,
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": os.getenv("WRITER3_TELEGRAM_MESSAGE_THREAD_ID") or None,
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "worker_idle_sleep_seconds": float(os.getenv("WRITER3_WORKER_IDLE_SLEEP_SECONDS") or 10.0),
+    }
+    try:
+        return Writer3Settings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Writer3 settings: {exc}") from exc
+
+
+class AuditorSettings(BaseModel):
+    openai_api_key: str | None = None
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
+    openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    model: str = "gpt-5.4-mini"
+    lookback_minutes: int = Field(default=120, ge=1, le=10080)
+    max_items_per_run: int = Field(default=20, ge=1, le=200)
+    request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    worker_idle_sleep_seconds: float = Field(default=10.0, ge=1.0, le=300.0)
+
+
+def load_auditor_settings() -> AuditorSettings:
+    load_dotenv()
+    payload = {
+        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "openai_base_url": (
+            os.getenv("AUDITOR_OPENAI_BASE_URL")
+            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ),
+        "openai_api_style": os.getenv("AUDITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "model": os.getenv("AUDITOR_MODEL") or "gpt-5.4-mini",
+        "lookback_minutes": int(os.getenv("AUDITOR_LOOKBACK_MINUTES") or 120),
+        "max_items_per_run": int(os.getenv("AUDITOR_MAX_ITEMS_PER_RUN") or 20),
+        "request_timeout_seconds": float(os.getenv("AUDITOR_REQUEST_TIMEOUT_SECONDS") or 60.0),
+        "retry": {
+            "max_attempts": int(os.getenv("AUDITOR_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("AUDITOR_BACKOFF_SECONDS") or 1.0),
+        },
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": os.getenv("AUDITOR_TELEGRAM_MESSAGE_THREAD_ID") or None,
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "worker_idle_sleep_seconds": float(os.getenv("AUDITOR_WORKER_IDLE_SLEEP_SECONDS") or 10.0),
+    }
+    try:
+        return AuditorSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Auditor settings: {exc}") from exc

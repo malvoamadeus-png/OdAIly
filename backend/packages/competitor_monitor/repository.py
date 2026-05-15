@@ -578,7 +578,7 @@ class PostgresCompetitorMonitorRepository:
 RAW_PUBLISHED_AT_FIELDS: dict[str, tuple[str, ...]] = {
     "blockbeats": ("create_time", "created_at", "publish_time", "published_at"),
     "panews": ("publishedAt", "createdAt"),
-    "jinse": ("published_at",),
+    "jinse": ("created_at", "published_at"),
     "odaily": ("publishDate", "publishedAt", "createdAt", "createTime"),
 }
 
