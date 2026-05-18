@@ -217,7 +217,7 @@ Production sync rules:
 
    ```bash
    git fetch origin
-   git pull --ff-only origin codex/competitor-event-console
+   git pull --ff-only origin main
    ```
 
 4. Verify the worktree is clean:
