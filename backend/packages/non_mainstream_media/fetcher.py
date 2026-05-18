@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -24,6 +25,18 @@ REQUEST_HEADERS = {
 
 A16Z_CONTENT_TYPES = {"article", "podcast", "videos", "listicles", "papers"}
 A16Z_BASE_URL = "https://a16zcrypto.com"
+FORBES_BASE_URL = "https://www.forbes.com"
+FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
+FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
+HK01_BASE_URL = "https://www.hk01.com"
+HK01_ISSUE_URL = (
+    "https://www.hk01.com/issue/10154/"
+    "nft%E8%99%9B%E6%93%AC%E8%B2%A8%E5%B9%A3-"
+    "%E5%B0%88%E5%8D%80-%E6%AF%94%E7%89%B9%E5%B9%A3-"
+    "%E4%BB%A5%E5%A4%AA%E5%B9%A3-%E5%8D%80%E5%A1%8A"
+    "%E9%8F%88%E4%B8%AD%E4%BD%A0%E9%9C%80%E9%97%9C%E6%B3%A8"
+    "%E7%9A%84%E4%B8%80%E5%88%87"
+)
 DISCLAIMER_MARKERS = [
     "the views expressed here are those of the individual ah capital management",
     "the views expressed here are those of the individual a16z personnel",
@@ -40,6 +53,20 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         display_name="a16z crypto Posts",
         homepage_url="https://a16zcrypto.com/posts/",
         list_url="https://a16zcrypto.com/posts/",
+        capture_method="html_request",
+    ),
+    "forbes_digital_assets": SiteDefinition(
+        site_key="forbes_digital_assets",
+        display_name="Forbes Digital Assets",
+        homepage_url=FORBES_SECTION_URL,
+        list_url=FORBES_FEED_URL,
+        capture_method="html_request",
+    ),
+    "hk01_virtual_assets": SiteDefinition(
+        site_key="hk01_virtual_assets",
+        display_name="HK01 NFT / Virtual Assets",
+        homepage_url=HK01_ISSUE_URL,
+        list_url=HK01_ISSUE_URL,
         capture_method="html_request",
     ),
 }
@@ -59,6 +86,12 @@ def fetch_discovered_pages(
     if site.site_key == "a16z_crypto_posts":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_a16z_pages(html, base_url=site.homepage_url)
+    if site.site_key == "forbes_digital_assets":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_forbes_pages(xml, base_url=site.homepage_url)
+    if site.site_key == "hk01_virtual_assets":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_hk01_pages(html, base_url=site.homepage_url)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -73,6 +106,12 @@ def fetch_article(
     if site.site_key == "a16z_crypto_posts":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return parse_a16z_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    if site.site_key == "forbes_digital_assets":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return parse_forbes_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    if site.site_key == "hk01_virtual_assets":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return parse_hk01_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -116,6 +155,48 @@ def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[Dis
             continue
         seen.add(detail_url)
         results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url))
+    return results
+
+
+def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> list[DiscoveredPage]:
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid Forbes RSS payload") from exc
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        if not link:
+            continue
+        detail_url = normalize_url(urljoin(base_url, link))
+        if not is_forbes_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url))
+    return results
+
+
+def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[DiscoveredPage]:
+    payload = extract_next_data_payload(html)
+    props = payload.get("props", {})
+    page_props = props.get("pageProps") or props.get("initialProps", {}).get("pageProps", {})
+    issue = page_props.get("issue") or {}
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for block in issue.get("blocks", []):
+        for article in block.get("articles", []):
+            article_data = article.get("data") or {}
+            detail_path = article_data.get("publishUrl") or article_data.get("canonicalUrl")
+            if not detail_path:
+                continue
+            detail_url = normalize_url(urljoin(base_url, str(detail_path)))
+            if detail_url in seen:
+                continue
+            seen.add(detail_url)
+            results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url))
     return results
 
 
@@ -179,6 +260,143 @@ def parse_a16z_article(html: str, *, page_url: str, source_item_id: str) -> Pars
     )
 
 
+def parse_forbes_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    payload = extract_next_data_payload(html)
+    article = (((payload.get("props") or {}).get("pageProps") or {}).get("data") or {}).get("article") or {}
+    canonical = normalize_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or str(article.get("canonicalUrl") or "")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            article.get("title")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at = parse_published_at(article.get("date"))
+    author_names = normalize_string_list(article.get("authorsList"), field_name="name") or normalize_string_list(
+        article.get("author"),
+        field_name="name",
+    )
+    categories = normalize_string_list(
+        [
+            article.get("displayChannel"),
+            article.get("displaySection"),
+            article.get("channelSection"),
+        ]
+    )
+    body = clean_body_text(extract_forbes_body(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            article.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "article_id": article.get("articleId"),
+        "blog_name": article.get("blogName"),
+        "date_raw": article.get("date"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=published_at,
+        author_names=author_names,
+        tags=[],
+        categories=categories,
+        excerpt=excerpt,
+        content_format="forbes_digital_assets",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "article_id": article.get("articleId"),
+            "blog_name": article.get("blogName"),
+        },
+        metadata=metadata,
+    )
+
+
+def parse_hk01_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    payload = extract_next_data_payload(html)
+    props = payload.get("props", {})
+    page_props = props.get("pageProps") or props.get("initialProps", {}).get("pageProps", {})
+    article = page_props.get("article") or {}
+    canonical = normalize_url(
+        urljoin(
+            HK01_BASE_URL,
+            str(article.get("canonicalUrl") or article.get("publishUrl") or select_attr(soup, "link[rel='canonical']", "href") or page_url),
+        )
+    )
+    title = clean_inline_text(
+        str(
+            article.get("title")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at = parse_unix_timestamp(article.get("publishTime")) or parse_published_at(article.get("publishTime"))
+    author_names = normalize_string_list(article.get("authors"), field_name="name")
+    tags = normalize_string_list(article.get("tags"), field_name="name")
+    categories = normalize_string_list(
+        [
+            article.get("mainCategory"),
+            article.get("categories"),
+        ],
+        field_name="name",
+    )
+    body = clean_body_text(extract_hk01_body(article.get("blocks", [])) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            article.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "article_id": article.get("articleId"),
+        "publish_time_raw": article.get("publishTime"),
+        "content_type": article.get("contentType"),
+        "main_category_id": article.get("mainCategoryId"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=published_at,
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="hk01_issue_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "article_id": article.get("articleId"),
+            "content_type": article.get("contentType"),
+        },
+        metadata=metadata,
+    )
+
+
 def find_structured_content(soup: BeautifulSoup) -> dict[str, Any]:
     for script in soup.select("script[type='application/ld+json']"):
         raw = script.string or script.get_text() or ""
@@ -221,6 +439,80 @@ def pick_structured_article(payload: Any) -> dict[str, Any] | None:
             if match:
                 return match
     return None
+
+
+def extract_next_data_payload(html: str) -> dict[str, Any]:
+    match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+    if match is None:
+        return {}
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+
+
+def is_forbes_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().endswith("forbes.com") and parsed.path.startswith("/sites/digital-assets/") and not parsed.path.endswith("/feed/")
+
+
+def extract_forbes_body(soup: BeautifulSoup) -> str:
+    best_text = ""
+    for selector in (".article-body", ".fs-article", "article"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        fragment = BeautifulSoup(str(node), "html.parser")
+        drop_noise(fragment)
+        parts: list[str] = []
+        for part in collect_text_parts(fragment):
+            lower_part = part.lower()
+            if lower_part.startswith("sign up now for cryptocodex"):
+                continue
+            if lower_part.startswith("sign up now for the free cryptocodex"):
+                continue
+            if lower_part.startswith("this voice experience is generated by ai"):
+                continue
+            parts.append(part)
+        text = "\n\n".join(parts).strip()
+        if len(text) > len(best_text):
+            best_text = text
+    return best_text
+
+
+def extract_hk01_body(blocks: list[dict[str, Any]]) -> str:
+    html_token_parts: list[str] = []
+    summary_parts: list[str] = []
+    for block in blocks:
+        token_parts = extract_hk01_text_nodes(block.get("htmlTokens"))
+        if token_parts:
+            html_token_parts.extend(token_parts)
+            continue
+        summary_parts.extend(extract_hk01_text_nodes(block.get("summary")))
+    parts = html_token_parts or summary_parts
+    return "\n\n".join(unique_preserve_order(parts)).strip()
+
+
+def extract_hk01_text_nodes(value: Any) -> list[str]:
+    parts: list[str] = []
+    if isinstance(value, str):
+        text = clean_inline_text(BeautifulSoup(value, "html.parser").get_text(" ", strip=True))
+        if text:
+            parts.append(text)
+        return parts
+    if isinstance(value, list):
+        for item in value:
+            parts.extend(extract_hk01_text_nodes(item))
+        return parts
+    if isinstance(value, dict):
+        for key in ("content", "text", "summary", "title"):
+            if key in value:
+                parts.extend(extract_hk01_text_nodes(value.get(key)))
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                parts.extend(extract_hk01_text_nodes(nested))
+        return parts
+    return parts
 
 
 def extract_body_text(soup: BeautifulSoup) -> str:
@@ -274,6 +566,8 @@ def drop_noise(fragment: BeautifulSoup) -> None:
         re.IGNORECASE,
     )
     for node in fragment.find_all(True):
+        if not isinstance(node, Tag) or getattr(node, "attrs", None) is None:
+            continue
         attrs = " ".join(
             str(value)
             for key in ("id", "class", "aria-label", "data-testid")
@@ -311,6 +605,13 @@ def clean_body_text(value: str) -> str:
         normalized = clean_inline_text(chunk)
         if not normalized:
             continue
+        lower_normalized = normalized.lower()
+        if lower_normalized.startswith("sign up now for cryptocodex"):
+            continue
+        if lower_normalized.startswith("sign up now for the free cryptocodex"):
+            continue
+        if lower_normalized.startswith("this voice experience is generated by ai"):
+            continue
         if normalized.lower().startswith(("related posts", "read more", "recommended")):
             continue
         paragraphs.append(normalized)
@@ -318,6 +619,11 @@ def clean_body_text(value: str) -> str:
 
 
 def infer_content_format(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.netloc.lower().endswith("forbes.com") and parsed.path.startswith("/sites/digital-assets/"):
+        return "forbes_digital_assets"
+    if parsed.netloc.lower().endswith("hk01.com"):
+        return "hk01_issue_article"
     parts = [part for part in urlparse(url).path.split("/") if part]
     if len(parts) >= 2 and parts[0] == "posts":
         return parts[1]
@@ -347,6 +653,20 @@ def parse_published_at(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def parse_unix_timestamp(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number > 10_000_000_000:
+        number = number / 1000
+    return datetime.fromtimestamp(number, tz=UTC)
 
 
 def pick_heading_text(soup: BeautifulSoup) -> str:

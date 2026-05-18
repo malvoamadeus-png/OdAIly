@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
-from packages.non_mainstream_media.fetcher import clean_body_text, discover_a16z_pages, parse_a16z_article
+from packages.non_mainstream_media.fetcher import (
+    clean_body_text,
+    discover_a16z_pages,
+    discover_forbes_pages,
+    discover_hk01_pages,
+    parse_a16z_article,
+    parse_forbes_article,
+    parse_hk01_article,
+)
 from packages.non_mainstream_media.models import DiscoveredPage, ParsedArticle, SiteDefinition
 from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
 from packages.non_mainstream_media.worker import NonMainstreamMediaWorker
@@ -71,6 +80,196 @@ def test_parse_a16z_article_extracts_structured_fields_and_cleans_disclaimer() -
     assert article.content == "First paragraph.\n\nSecond paragraph."
     assert article.content_format == "article"
     assert article.metadata["structured_type"] == "Article"
+
+
+def test_discover_forbes_pages_reads_digital_assets_rss() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Strategy article</title>
+          <link>https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/</link>
+        </item>
+        <item>
+          <title>Duplicate</title>
+          <link>https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/?utm_source=test</link>
+        </item>
+        <item>
+          <title>Other section</title>
+          <link>https://www.forbes.com/sites/other/2026/05/16/not-included/</link>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_forbes_pages(xml)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/"
+    ]
+
+
+def test_discover_hk01_pages_reads_issue_blocks() -> None:
+    payload = {
+        "props": {
+            "initialProps": {
+                "pageProps": {
+                    "issue": {
+                        "blocks": [
+                            {
+                                "articles": [
+                                    {
+                                        "data": {
+                                            "publishUrl": "/topic/60347049/sample-story",
+                                            "canonicalUrl": "/topic/60347049/sample-story",
+                                        }
+                                    },
+                                    {
+                                        "data": {
+                                            "publishUrl": "/topic/60347049/sample-story?utm_source=test",
+                                            "canonicalUrl": "/topic/60347049/sample-story",
+                                        }
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+    html = (
+        '<html><head><script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(payload)
+        + "</script></head></html>"
+    )
+
+    pages = discover_hk01_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.hk01.com/topic/60347049/sample-story/"
+    ]
+
+
+def test_parse_forbes_article_extracts_body_and_filters_newsletter() -> None:
+    payload = {
+        "props": {
+            "pageProps": {
+                "data": {
+                    "article": {
+                        "title": "Strategy Sale Plan",
+                        "date": "2026-05-16T10:10:47.624Z",
+                        "description": "Strategy may sell bitcoin to fund repurchases.",
+                        "articleId": "abc123",
+                        "blogName": "Digital Assets",
+                        "authorsList": [{"name": "Billy Bambrough"}],
+                        "displayChannel": "Innovation",
+                        "displaySection": "Digital Assets",
+                    }
+                }
+            }
+        }
+    }
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/" />
+        <meta property="og:description" content="Fallback description." />
+        <script id="__NEXT_DATA__" type="application/json">__PAYLOAD__</script>
+      </head>
+      <body>
+        <article>
+          <div class="article-body">
+            <p>Bitcoin dropped as Strategy hinted it may sell part of its holdings.</p>
+            <p>Sign up now for CryptoCodex - A free crypto newsletter.</p>
+            <p>Executives said any sale would support debt repurchases.</p>
+          </div>
+        </article>
+      </body>
+    </html>
+    """.replace("__PAYLOAD__", json.dumps(payload))
+
+    article = parse_forbes_article(
+        html,
+        page_url="https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/",
+        source_item_id="https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/",
+    )
+
+    assert article.canonical_url == "https://www.forbes.com/sites/digital-assets/2026/05/16/strategy-plan/"
+    assert article.title == "Strategy Sale Plan"
+    assert article.published_at == datetime(2026, 5, 16, 10, 10, 47, 624000, tzinfo=UTC)
+    assert article.author_names == ["Billy Bambrough"]
+    assert article.categories == ["Innovation", "Digital Assets"]
+    assert article.content == (
+        "Bitcoin dropped as Strategy hinted it may sell part of its holdings.\n\n"
+        "Executives said any sale would support debt repurchases."
+    )
+    assert article.excerpt == "Strategy may sell bitcoin to fund repurchases."
+    assert article.content_format == "forbes_digital_assets"
+
+
+def test_parse_hk01_article_extracts_text_blocks_and_metadata() -> None:
+    payload = {
+        "props": {
+            "initialProps": {
+                "pageProps": {
+                    "article": {
+                        "articleId": 60347049,
+                        "canonicalUrl": "/topic/60347049/sample-story",
+                        "publishUrl": "/topic/60347049/sample-story",
+                        "title": "HK01 stablecoin explainer",
+                        "description": "Hong Kong stablecoin regulation moves closer.",
+                        "publishTime": 1778202029,
+                        "contentType": "article",
+                        "mainCategory": {"name": "Commentary"},
+                        "categories": [{"name": "Crypto"}],
+                        "authors": [{"name": "Guest Author"}],
+                        "tags": [{"name": "Stablecoin"}, {"name": "Hong Kong"}],
+                        "blocks": [
+                            {"blockType": "summary", "summary": "Ignore summary if html exists"},
+                            {
+                                "blockType": "article",
+                                "htmlTokens": [
+                                    [{"type": "h2", "content": "Background"}],
+                                    [{"type": "text", "content": "Hong Kong moved its stablecoin framework forward."}],
+                                    [{"type": "text", "content": "Issuers will need stronger reserve and compliance controls."}],
+                                ],
+                            },
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.hk01.com/topic/60347049/sample-story" />
+        <script id="__NEXT_DATA__" type="application/json">__PAYLOAD__</script>
+      </head>
+      <body></body>
+    </html>
+    """.replace("__PAYLOAD__", json.dumps(payload))
+
+    article = parse_hk01_article(
+        html,
+        page_url="https://www.hk01.com/topic/60347049/sample-story",
+        source_item_id="https://www.hk01.com/topic/60347049/sample-story/",
+    )
+
+    assert article.canonical_url == "https://www.hk01.com/topic/60347049/sample-story/"
+    assert article.title == "HK01 stablecoin explainer"
+    assert article.published_at == datetime(2026, 5, 8, 1, 0, 29, tzinfo=UTC)
+    assert article.author_names == ["Guest Author"]
+    assert article.tags == ["Stablecoin", "Hong Kong"]
+    assert article.categories == ["Commentary", "Crypto"]
+    assert article.content == (
+        "Background\n\n"
+        "Hong Kong moved its stablecoin framework forward.\n\n"
+        "Issuers will need stronger reserve and compliance controls."
+    )
+    assert article.excerpt == "Hong Kong stablecoin regulation moves closer."
+    assert article.content_format == "hk01_issue_article"
 
 
 def test_clean_body_text_removes_disclaimer_tail() -> None:
