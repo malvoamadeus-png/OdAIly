@@ -96,7 +96,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 DROP TRIGGER IF EXISTS trg_non_mainstream_media_sources_notify ON non_mainstream_media_sources;
 CREATE TRIGGER trg_non_mainstream_media_sources_notify
-AFTER INSERT OR UPDATE OR DELETE ON non_mainstream_media_sources
+AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;
