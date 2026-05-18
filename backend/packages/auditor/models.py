@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 AuditorStatus = Literal["pending", "processing", "passed", "flagged", "failed", "skipped"]
 AuditorSeverity = Literal["low", "medium", "high"]
-AuditorIssueType = Literal["punctuation", "grammar", "typo", "spacing", "format", "other"]
+AuditorIssueType = Literal["punctuation", "grammar", "typo", "format", "other"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,4 +37,3 @@ class AuditorResult:
     severity: AuditorSeverity
     issues: list[AuditorIssue]
     summary: str
-

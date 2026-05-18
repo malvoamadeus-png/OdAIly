@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v1"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v2"
 
 
 AUDITOR_SCHEMA = {
@@ -25,7 +25,7 @@ AUDITOR_SCHEMA = {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "type": {"type": "string", "enum": ["punctuation", "grammar", "typo", "spacing", "format", "other"]},
+                        "type": {"type": "string", "enum": ["punctuation", "grammar", "typo", "format", "other"]},
                         "location": {"type": "string", "enum": ["title", "content"]},
                         "original": {"type": "string"},
                         "suggested": {"type": "string"},
@@ -49,9 +49,10 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 标点错误：连续标点、英文标点混用、括号或引号不配对、明显句末标点缺失。
 - 语法错误：主谓宾残缺、语序明显不通、重复粘贴、断句异常。
 - 错别字或同音误用：只在上下文非常明确时提示。
-- 中英文和数字排版异常：数字、币种、英文缩写、百分号、括号附近的明显空格异常。
 
 不要检查：
+- 中英文之间、数字与中文单位之间、数字与币种之间、英文缩写与括号之间、中文与括号之间的空格风格。
+- 千分位逗号、钱包地址展示、省略号、半角/全角括号、数量表达是否统一。
 - Odaily 固定前缀、媒体称谓、常见术语格式是否统一。
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
@@ -83,7 +84,9 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
         if not isinstance(raw_issue, dict):
             continue
         issue_type = str(raw_issue.get("type") or "other")
-        if issue_type not in {"punctuation", "grammar", "typo", "spacing", "format", "other"}:
+        if issue_type == "spacing":
+            continue
+        if issue_type not in {"punctuation", "grammar", "typo", "format", "other"}:
             issue_type = "other"
         location = str(raw_issue.get("location") or "content")
         if location not in {"title", "content"}:
@@ -145,4 +148,3 @@ def _loads_json_object(raw_output: str) -> dict[str, Any]:
 
 def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
-

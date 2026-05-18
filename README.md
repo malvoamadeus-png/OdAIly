@@ -207,7 +207,52 @@ python backend\src\main.py writer3-reset-task --task-id 123
 ## Linux Service
 
 Use `/opt/OdAIly` for deployment and `deploy/odaily-worker.service` as the
-systemd template. Keep `data/config/market_brief.json` and `.env` out of Git.
+systemd template.
+
+Production sync rules:
+
+1. Develop and test in the local checkout first.
+2. Commit and push repo-tracked changes to GitHub.
+3. Update the server from `/opt/OdAIly` with:
+
+   ```bash
+   git fetch origin
+   git pull --ff-only origin codex/competitor-event-console
+   ```
+
+4. Verify the worktree is clean:
+
+   ```bash
+   git status --short
+   ```
+
+5. Verify running services and recent logs:
+
+   ```bash
+   systemctl is-active odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-competitor-monitor.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   ```
+
+Production servers are not a long-term editing environment for repo-tracked
+files. If a temporary hotfix is applied on the server during an incident, copy
+it back into the local checkout and commit it to GitHub immediately; otherwise
+the next clean pull will overwrite it.
+
+Keep these local-only runtime assets on the server and out of Git:
+
+- `.env`
+- `.venv/`
+- `data/raw/`
+- `data/processed/`
+- `data/exports/`
+- `data/config/market_brief.json`
+
+Clean these worktree pollutants instead of keeping them beside the repo:
+
+- `.codex-backups/`
+- `.env.codex-*`
+- ad hoc debug scripts and one-off restore files
+- temporary copied docs or experiment directories that are not tracked by Git
 
 ## Documentation
 
