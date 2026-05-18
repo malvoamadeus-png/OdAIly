@@ -4,6 +4,7 @@ import {
   Ban,
   Database,
   FileText,
+  Globe2,
   Inbox,
   Pause,
   Plus,
@@ -29,12 +30,18 @@ import {
   saveNewsflashEventNote,
   saveNewsflashItemNote,
   setNewsflashEventFavorite,
+  loadNonMainstreamDashboard,
   updateCompetitorFilterKeyword,
   updateAccount,
+  updateNonMainstreamSettings,
+  updateNonMainstreamSource,
   updateSettings,
   type Account,
   type AccountPatch,
   type Attempt,
+  type NonMainstreamDashboardPayload,
+  type NonMainstreamSettings,
+  type NonMainstreamSource,
   type Settings,
   type TaskItem,
   type PromptTemplate,
@@ -49,6 +56,12 @@ import {
 const emptySettings: Settings = {
   global_interval_seconds: 30,
   max_concurrency: 2,
+  jitter_seconds: 5,
+  updated_at: null,
+};
+
+const emptyNonMainstreamSettings: NonMainstreamSettings = {
+  global_interval_seconds: 60,
   jitter_seconds: 5,
   updated_at: null,
 };
@@ -99,14 +112,18 @@ const eventPageSize = 100;
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(emptySettings);
+  const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'x' | 'prompts' | 'competitor' | 'events' | 'favorites'>('x');
+  const [view, setView] = useState<'x' | 'non_mainstream' | 'prompts' | 'competitor' | 'events' | 'favorites'>('x');
   const [loading, setLoading] = useState(true);
+  const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [savingNonMainstreamSettings, setSavingNonMainstreamSettings] = useState(false);
   const [newAccount, setNewAccount] = useState({
     username_or_url: '',
     display_name: '',
@@ -132,11 +149,25 @@ export function App() {
   const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
+  const enabledNonMainstreamCount = useMemo(
+    () => nonMainstreamSources.filter((source) => source.enabled).length,
+    [nonMainstreamSources],
+  );
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
     value: string,
   ) {
     setSettings((current) => ({
+      ...current,
+      [key]: Number(value),
+    }));
+  }
+
+  function updateNonMainstreamSetting<K extends keyof Pick<NonMainstreamSettings, 'global_interval_seconds' | 'jitter_seconds'>>(
+    key: K,
+    value: string,
+  ) {
+    setNonMainstreamSettings((current) => ({
       ...current,
       [key]: Number(value),
     }));
@@ -150,6 +181,14 @@ export function App() {
     setAttempts(dashboard.attempts);
     setTasks(dashboard.tasks);
     setLoading(false);
+  }
+
+  async function loadNonMainstreamAll() {
+    setError('');
+    const dashboard: NonMainstreamDashboardPayload = await loadNonMainstreamDashboard();
+    setNonMainstreamSettings(dashboard.settings);
+    setNonMainstreamSources(dashboard.sources);
+    setLoadingNonMainstream(false);
   }
 
   async function loadPrompts(nextSelectedKey?: string) {
@@ -205,12 +244,14 @@ export function App() {
   }
 
   useEffect(() => {
-    loadAll().catch((err: Error) => {
+    Promise.all([loadAll(), loadNonMainstreamAll()]).catch((err: Error) => {
       setError(err.message);
       setLoading(false);
+      setLoadingNonMainstream(false);
     });
     const timer = window.setInterval(() => {
       loadAll().catch((err: Error) => setError(err.message));
+      loadNonMainstreamAll().catch((err: Error) => setError(err.message));
     }, 10000);
     return () => window.clearInterval(timer);
   }, []);
@@ -247,6 +288,25 @@ export function App() {
     }
   }
 
+  async function saveNonMainstreamSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingNonMainstreamSettings(true);
+    setError('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const updated = await updateNonMainstreamSettings({
+        global_interval_seconds: Number(form.get('global_interval_seconds')),
+        jitter_seconds: Number(form.get('jitter_seconds')),
+      });
+      setNonMainstreamSettings(updated);
+      setMessage('非主流媒体设置已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingNonMainstreamSettings(false);
+    }
+  }
+
   function switchView(nextView: typeof view) {
     if (nextView === 'events' || nextView === 'favorites') {
       setEventPage(0);
@@ -279,6 +339,16 @@ export function App() {
     try {
       await updateAccount(account.id, patch);
       await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function patchNonMainstreamSource(source: NonMainstreamSource, enabled: boolean) {
+    setError('');
+    try {
+      await updateNonMainstreamSource(source.id, { enabled });
+      await loadNonMainstreamAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -420,10 +490,22 @@ export function App() {
   }
 
   const productLabel =
-    view === 'x' ? 'X Capture' : view === 'prompts' ? 'Prompt' : view === 'competitor' ? '排除词' : view === 'favorites' ? '收藏' : '事件';
+    view === 'x'
+      ? 'X Capture'
+      : view === 'non_mainstream'
+        ? 'Non-Mainstream Media'
+        : view === 'prompts'
+          ? 'Prompt'
+          : view === 'competitor'
+            ? '排除词'
+            : view === 'favorites'
+              ? '收藏'
+              : '事件';
   const titleLabel =
     view === 'x'
       ? 'X 抓取控制台'
+      : view === 'non_mainstream'
+        ? '非主流媒体抓取控制台'
       : view === 'prompts'
         ? 'Prompt 编制'
         : view === 'competitor'
@@ -434,6 +516,8 @@ export function App() {
   const subtitle =
     view === 'x'
       ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
+      : view === 'non_mainstream'
+        ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
         : view === 'competitor'
@@ -442,6 +526,8 @@ export function App() {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
+      : view === 'non_mainstream'
+        ? loadNonMainstreamAll()
       : view === 'prompts'
         ? loadPrompts(selectedPromptKey)
         : view === 'competitor'
@@ -461,6 +547,13 @@ export function App() {
         <nav>
           <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('x')}>
             <Activity size={18} /> 账号
+          </button>
+          <button
+            className={view === 'non_mainstream' ? 'navItem active' : 'navItem'}
+            type="button"
+            onClick={() => switchView('non_mainstream')}
+          >
+            <Globe2 size={18} /> 外媒
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
@@ -610,6 +703,16 @@ export function App() {
           </div>
             </section>
           </>
+        ) : view === 'non_mainstream' ? (
+          <NonMainstreamPanel
+            settings={nonMainstreamSettings}
+            sources={nonMainstreamSources}
+            loading={loadingNonMainstream}
+            saving={savingNonMainstreamSettings}
+            onSettingChange={updateNonMainstreamSetting}
+            onSave={saveNonMainstreamSettings}
+            onToggleSource={patchNonMainstreamSource}
+          />
         ) : view === 'prompts' ? (
           <PromptPanel
             templates={promptTemplates}
@@ -665,6 +768,108 @@ export function App() {
         )}
       </main>
     </div>
+  );
+}
+
+function NonMainstreamPanel({
+  settings,
+  sources,
+  loading,
+  saving,
+  onSettingChange,
+  onSave,
+  onToggleSource,
+}: {
+  settings: NonMainstreamSettings;
+  sources: NonMainstreamSource[];
+  loading: boolean;
+  saving: boolean;
+  onSettingChange: (key: 'global_interval_seconds' | 'jitter_seconds', value: string) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
+}) {
+  return (
+    <section className="nonMainstreamLayout">
+      <form className="nonMainstreamSettingsForm" onSubmit={onSave}>
+        <label>
+          <span>全局频率</span>
+          <input
+            name="global_interval_seconds"
+            type="number"
+            min="10"
+            max="3600"
+            value={settings.global_interval_seconds}
+            onChange={(event) => onSettingChange('global_interval_seconds', event.target.value)}
+          />
+        </label>
+        <label>
+          <span>抖动秒</span>
+          <input
+            name="jitter_seconds"
+            type="number"
+            min="0"
+            max="300"
+            value={settings.jitter_seconds}
+            onChange={(event) => onSettingChange('jitter_seconds', event.target.value)}
+          />
+        </label>
+        <button className="primaryButton" type="submit" disabled={saving}>
+          <Save size={17} /> 保存
+        </button>
+      </form>
+
+      <div className="nonMainstreamList">
+        <div className="sectionHeader">
+          <h2>已接入站点</h2>
+          <span>{loading ? '加载中' : `${sources.length} 个站点`}</span>
+        </div>
+        {sources.length === 0 && <div className="emptyState">暂无已接入站点，请先运行初始化命令。</div>}
+        {sources.map((source) => (
+          <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function NonMainstreamSourceRow({
+  source,
+  onToggleSource,
+}: {
+  source: NonMainstreamSource;
+  onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
+}) {
+  return (
+    <article className={source.enabled ? 'sourceRow' : 'sourceRow disabled'}>
+      <div className="sourceIdentity">
+        <div className="statusDot" />
+        <div>
+          <strong>{source.display_name}</strong>
+          <span>{source.site_key}</span>
+        </div>
+      </div>
+      <div className="sourceMeta">
+        <strong>{source.capture_method === 'html_request' ? 'HTML 直抓' : '浏览器模拟'}</strong>
+        <span>{source.seeded_at ? '已 seed' : '待 seed'}</span>
+      </div>
+      <a className="sourceLink" href={source.homepage_url} target="_blank" rel="noreferrer">
+        {source.homepage_url}
+      </a>
+      <div className="sourceStatus">
+        <strong>{fmtTime(source.last_polled_at)}</strong>
+        <span>{source.last_error || (source.last_success_at ? `上次成功 ${fmtTime(source.last_success_at)}` : '暂无执行记录')}</span>
+      </div>
+      <div className="rowActions">
+        <button
+          className="iconButton"
+          type="button"
+          onClick={() => onToggleSource(source, !source.enabled)}
+          title={source.enabled ? '停用' : '启用'}
+        >
+          {source.enabled ? <Pause size={17} /> : <Zap size={17} />}
+        </button>
+      </div>
+    </article>
   );
 }
 

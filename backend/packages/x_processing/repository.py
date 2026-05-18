@@ -17,9 +17,11 @@ from packages.common.pipeline_schema import (
 from .models import (
     COMPETITOR_SOURCES,
     NEWS_TYPES,
+    NON_MAINSTREAM_MEDIA_SOURCE,
     ODAILY_REFERENCE_SOURCE,
     PROMPT_KEY_BY_NEWS_TYPE,
     PROCESSING_SOURCES,
+    SEARCH_FIRST_SOURCES,
     STAGE_SPECS,
     NewsType,
     PipelineRecord,
@@ -38,6 +40,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
     "x_regular_writer": ("X 常规快讯", "docs/常规快讯模板.txt", "initial regular writer template"),
     "x_onchain_writer": ("X 链上快讯", "docs/链上快讯模板.txt", "initial onchain writer template"),
     "x_funding_writer": ("X 融资快讯", "docs/融资快讯模板.txt", "initial funding writer template"),
+    "non_mainstream_media_writer": (
+        "非主流外媒快讯",
+        "docs/外媒模板.txt",
+        "initial non-mainstream media writer template",
+    ),
 }
 
 
@@ -242,7 +249,7 @@ class PostgresXProcessingRepository:
             source_filter = """
                 (
                     (t.source = 'x' AND t.status = %(claim_status)s)
-                    OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'searched')
+                    OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'searched')
                     OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
                 )
             """
@@ -250,7 +257,7 @@ class PostgresXProcessingRepository:
             source_filter = """
                 (
                     (t.source = 'x' AND t.status = %(claim_status)s)
-                    OR (t.source = ANY(%(competitor_sources)s) AND t.status = 'pending')
+                    OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'pending')
                     OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
                 )
             """
@@ -284,7 +291,7 @@ class PostgresXProcessingRepository:
                     "worker_id": worker_id,
                     "lock_seconds": lock_seconds,
                     "sources": list(sources),
-                    "competitor_sources": list(COMPETITOR_SOURCES),
+                    "search_first_sources": list(SEARCH_FIRST_SOURCES),
                 },
             ).fetchone()
             if row is None:
@@ -339,7 +346,7 @@ class PostgresXProcessingRepository:
                 ),
             )
             task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
-            next_status = "deduped" if task and task.get("source") in COMPETITOR_SOURCES else "judged"
+            next_status = "deduped" if task and task.get("source") in SEARCH_FIRST_SOURCES else "judged"
             self._set_task_status(conn, task_id, next_status)
             conn.commit()
 
@@ -398,7 +405,7 @@ class PostgresXProcessingRepository:
                 (candidate_id, self._Jsonb(result), task_id),
             )
             task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
-            next_status = "searched" if task and task.get("source") in COMPETITOR_SOURCES else "deduped"
+            next_status = "searched" if task and task.get("source") in SEARCH_FIRST_SOURCES else "deduped"
             self._set_task_status(conn, task_id, next_status)
             conn.commit()
 
@@ -690,9 +697,9 @@ class InMemoryXProcessingRepository:
         spec = STAGE_SPECS[stage]
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
             claim_status = spec.claim_status
-            if stage == "search" and task.source in COMPETITOR_SOURCES:
+            if stage == "search" and task.source in SEARCH_FIRST_SOURCES:
                 claim_status = "pending"
-            elif stage == "judge" and task.source in COMPETITOR_SOURCES:
+            elif stage == "judge" and task.source in SEARCH_FIRST_SOURCES:
                 claim_status = "searched"
             if task.status not in {claim_status, spec.processing_status} or task.id in self._locks:
                 continue
@@ -713,7 +720,7 @@ class InMemoryXProcessingRepository:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": news_type, "last_error": None})
         task = self.tasks[task_id]
-        self._set_status(task_id, "deduped" if task.source in COMPETITOR_SOURCES else "judged")
+        self._set_status(task_id, "deduped" if task.source in SEARCH_FIRST_SOURCES else "judged")
 
     def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
@@ -732,7 +739,7 @@ class InMemoryXProcessingRepository:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "candidate_id": candidate_id or None, "last_error": None})
         task = self.tasks[task_id]
-        self._set_status(task_id, "searched" if task.source in COMPETITOR_SOURCES else "deduped")
+        self._set_status(task_id, "searched" if task.source in SEARCH_FIRST_SOURCES else "deduped")
 
     def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         return [
@@ -880,7 +887,7 @@ CREATE TABLE IF NOT EXISTS prompt_template_versions (
 
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding')),
+    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media')),
     candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -966,7 +973,7 @@ DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_x_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse'))
+WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media'))
 EXECUTE FUNCTION notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()

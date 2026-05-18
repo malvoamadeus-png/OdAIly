@@ -150,8 +150,15 @@ h2 {
   margin-top: 18px;
 }
 
+.nonMainstreamLayout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
 .settingsForm,
-.addAccount {
+.addAccount,
+.nonMainstreamSettingsForm {
   display: grid;
   grid-template-columns: repeat(3, minmax(110px, 1fr)) 112px;
   gap: 10px;
@@ -239,8 +246,13 @@ textarea:focus {
   margin-bottom: 10px;
 }
 
+.nonMainstreamSettingsForm {
+  grid-template-columns: minmax(140px, 220px) minmax(140px, 220px) 112px;
+}
+
 .accountList,
-.taskList {
+.taskList,
+.nonMainstreamList {
   display: grid;
   gap: 8px;
 }
@@ -261,6 +273,18 @@ textarea:focus {
   opacity: 0.62;
 }
 
+.sourceRow {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.2fr) minmax(120px, 0.8fr) minmax(240px, 1.6fr) minmax(180px, 1fr) 52px;
+  gap: 10px;
+  align-items: center;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
 .accountIdentity {
   display: flex;
   align-items: center;
@@ -268,8 +292,29 @@ textarea:focus {
   min-width: 0;
 }
 
+.sourceIdentity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .accountIdentity strong,
-.accountIdentity span {
+.accountIdentity span,
+.sourceIdentity strong,
+.sourceIdentity span,
+.sourceMeta strong,
+.sourceMeta span,
+.sourceStatus strong,
+.sourceStatus span {
+  display: block;
+}
+
+.accountIdentity strong,
+.accountIdentity span,
+.sourceIdentity strong,
+.sourceIdentity span,
+.sourceLink {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -285,6 +330,31 @@ textarea:focus {
 
 .disabled .statusDot {
   background: #9aa4b2;
+}
+
+.sourceMeta,
+.sourceStatus {
+  min-width: 0;
+}
+
+.sourceMeta strong,
+.sourceStatus strong,
+.sourceLink {
+  color: #1f2933;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sourceMeta span,
+.sourceStatus span,
+.sourceIdentity span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.sourceLink {
+  min-width: 0;
+  text-decoration: none;
 }
 
 .rowActions {
@@ -777,7 +847,9 @@ textarea:focus {
 
   .settingsForm,
   .addAccount,
+  .nonMainstreamSettingsForm,
   .accountRow,
+  .sourceRow,
   .promptLayout,
   .competitorLayout {
     grid-template-columns: 1fr;

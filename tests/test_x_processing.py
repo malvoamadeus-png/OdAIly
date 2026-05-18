@@ -115,10 +115,29 @@ def competitor_task(task_id: int, status: str = "pending") -> TaskRecord:
     )
 
 
+def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
+    return TaskRecord(
+        id=task_id,
+        source="non_mainstream_media",
+        source_item_id=f"nm-{task_id}",
+        source_url="https://a16zcrypto.com/posts/article/token-launch/",
+        title="A16z crypto posts new token launch thesis",
+        content="A16z details a new token launch model and its market implications.",
+        published_at=datetime.now(UTC),
+        status=status,
+        metadata={
+            "site_key": "a16z_crypto_posts",
+            "site_display_name": "a16z crypto Posts",
+            "author_names": ["Alice", "Bob"],
+        },
+    )
+
+
 def test_parse_news_type_accepts_only_known_values() -> None:
     assert parse_news_type('{"news_type":"regular"}') == "regular"
     assert parse_news_type('{"route":"regular","discard_type":"none"}') == "regular"
     assert parse_news_type('```json\n{"news_type":"onchain"}\n```') == "onchain"
+    assert parse_news_type('{"route":"non_mainstream_media","discard_type":"none"}') == "non_mainstream_media"
     try:
         parse_news_type('{"news_type":"market"}')
     except ValueError as exc:
@@ -382,6 +401,11 @@ def test_telegram_notice_uses_competitor_source_names() -> None:
     )
     assert build_telegram_notice(source="panews", title="标题", source_url=None) == "PANews有新快讯：标题"
     assert build_telegram_notice(source="jinse", title="标题", source_url="") == "金色财经有新快讯：标题"
+    assert build_telegram_notice(
+        source="non_mainstream_media",
+        title="标题",
+        source_url="https://a16zcrypto.com/posts/article/token-launch/",
+    ) == "非主流外媒有新快讯：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
 
 
 def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
@@ -464,6 +488,31 @@ def test_competitor_flows_search_then_judge() -> None:
     assert repo.tasks[1].status == "deduped"
 
 
+def test_non_mainstream_flows_search_then_judge() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(non_mainstream_task(1, status="pending"))
+    search_worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService({"task:1": [0.0, 1.0]}),
+    )
+
+    assert search_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "searched"
+
+    fake_ai = FakeAiClient(['{"route":"non_mainstream_media","discard_type":"none"}'])
+    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "deduped"
+    assert repo.pipelines[1].news_type == "non_mainstream_media"
+    assert fake_ai.calls[0]["text_format"]["name"] == "non_mainstream_media_judge_route"
+    assert "来源媒体：a16z crypto Posts" in fake_ai.calls[0]["prompt"]
+    assert "标题：A16z crypto posts new token launch thesis" in fake_ai.calls[0]["prompt"]
+
+
 def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="deduped"))
@@ -499,6 +548,26 @@ def test_competitor_writer_uses_source_material_without_brand_or_url() -> None:
     assert "theblockbeats" not in prompt.lower()
     assert "BlockBeats" not in prompt
     assert "律动" not in prompt
+
+
+def test_non_mainstream_writer_uses_dedicated_prompt_template() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(non_mainstream_task(1, status="deduped"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, news_type="non_mainstream_media")
+    fake_ai = FakeAiClient(["标题\n\n正文"])
+    worker = XProcessingWorker(stage="write", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "written"
+    assert repo.pipelines[1].prompt_template_key == "non_mainstream_media_writer"
+    prompt = fake_ai.calls[0]["prompt"]
+    assert "【待处理外媒原文】" in prompt
+    assert "来源媒体：a16z crypto Posts" in prompt
+    assert "作者：Alice、Bob" in prompt
+    assert "来源链接：https://a16zcrypto.com/posts/article/token-launch/" in prompt
+    assert "禁止提及采集媒体名称" not in prompt
 
 
 def test_formatter_applies_writer2_rules() -> None:
@@ -558,6 +627,29 @@ def test_competitor_publish_hides_source_url() -> None:
     assert result.processed == 1
     assert push.calls[0]["source_url"] is None
     assert telegram.calls == ["律动有新快讯：标题\nhttps://www.theblockbeats.info/flash/1"]
+
+
+def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(non_mainstream_task(1, status="written"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="format_publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "ready_review"
+    assert push.calls[0]["source_url"] is None
+    assert telegram.calls == ["非主流外媒有新快讯：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
 
 
 def test_processing_expires_missing_published_at_before_model_call() -> None:

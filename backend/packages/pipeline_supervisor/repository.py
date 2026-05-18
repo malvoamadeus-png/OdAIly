@@ -54,6 +54,7 @@ class PostgresPipelineSupervisorRepository:
     def list_stale_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         expected = [
             "x_capture",
+            "non_mainstream_media",
             "competitor_monitor",
             "x_process_judge",
             "x_process_search",
@@ -92,6 +93,7 @@ class PostgresPipelineSupervisorRepository:
     def list_stale_success_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         expected = [
             "x_capture",
+            "non_mainstream_media",
             "competitor_monitor",
             "x_process_judge",
             "x_process_search",
@@ -131,7 +133,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media"],
                     ["pending", "judged", "searched", "deduped", "written"],
                     cutoff,
                 ),
@@ -154,7 +156,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media"],
                     ["judging", "deduping", "writing", "formatting"],
                     cutoff,
                 ),
@@ -175,7 +177,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY count(*) DESC, latest_updated_at DESC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media"],
                     ["judge_failed", "search_failed", "write_failed", "format_failed", "publish_failed"],
                     since,
                     threshold,

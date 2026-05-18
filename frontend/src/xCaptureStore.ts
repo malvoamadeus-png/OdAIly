@@ -7,6 +7,12 @@ export type Settings = {
   updated_at: string | null;
 };
 
+export type NonMainstreamSettings = {
+  global_interval_seconds: number;
+  jitter_seconds: number;
+  updated_at: string | null;
+};
+
 export type Account = {
   id: number;
   username: string;
@@ -32,6 +38,19 @@ export type Attempt = {
   error: string | null;
   started_at: string;
   finished_at: string;
+};
+
+export type NonMainstreamSource = {
+  id: number;
+  site_key: string;
+  display_name: string;
+  homepage_url: string;
+  capture_method: 'html_request' | 'browser_render';
+  enabled: boolean;
+  seeded_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
 };
 
 export type TaskItem = {
@@ -132,9 +151,18 @@ export type DashboardPayload = {
   tasks: TaskItem[];
 };
 
+export type NonMainstreamDashboardPayload = {
+  settings: NonMainstreamSettings;
+  sources: NonMainstreamSource[];
+};
+
 export type AccountPatch = {
   display_name?: string | null;
   interval_seconds?: number | null;
+  enabled?: boolean;
+};
+
+export type NonMainstreamSourcePatch = {
   enabled?: boolean;
 };
 
@@ -172,6 +200,12 @@ type NewsflashItemRow = {
 const defaultSettings: Settings = {
   global_interval_seconds: 30,
   max_concurrency: 2,
+  jitter_seconds: 5,
+  updated_at: null,
+};
+
+const defaultNonMainstreamSettings: NonMainstreamSettings = {
+  global_interval_seconds: 60,
   jitter_seconds: 5,
   updated_at: null,
 };
@@ -266,6 +300,11 @@ export async function loadDashboard(): Promise<DashboardPayload> {
   return { settings, accounts, attempts, tasks };
 }
 
+export async function loadNonMainstreamDashboard(): Promise<NonMainstreamDashboardPayload> {
+  const [settings, sources] = await Promise.all([getNonMainstreamSettings(), listNonMainstreamSources()]);
+  return { settings, sources };
+}
+
 export async function getSettings(): Promise<Settings> {
   const { data, error } = await supabase()
     .from('x_capture_settings')
@@ -314,6 +353,54 @@ export async function updateSettings(payload: Omit<Settings, 'updated_at'>): Pro
   return assertData(data as Settings | null, '保存全局配置失败');
 }
 
+export async function getNonMainstreamSettings(): Promise<NonMainstreamSettings> {
+  const { data, error } = await supabase()
+    .from('non_mainstream_media_settings')
+    .select('global_interval_seconds,jitter_seconds,updated_at')
+    .eq('singleton_key', 'global')
+    .maybeSingle();
+  raise(error);
+  if (data) {
+    return data as NonMainstreamSettings;
+  }
+
+  const created = await supabase()
+    .from('non_mainstream_media_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        global_interval_seconds: defaultNonMainstreamSettings.global_interval_seconds,
+        jitter_seconds: defaultNonMainstreamSettings.jitter_seconds,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select('global_interval_seconds,jitter_seconds,updated_at')
+    .single();
+  raise(created.error);
+  return assertData(created.data as NonMainstreamSettings | null, '无法初始化非主流媒体全局配置');
+}
+
+export async function updateNonMainstreamSettings(
+  payload: Omit<NonMainstreamSettings, 'updated_at'>,
+): Promise<NonMainstreamSettings> {
+  const { data, error } = await supabase()
+    .from('non_mainstream_media_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        global_interval_seconds: payload.global_interval_seconds,
+        jitter_seconds: payload.jitter_seconds,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select('global_interval_seconds,jitter_seconds,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as NonMainstreamSettings | null, '保存非主流媒体全局配置失败');
+}
+
 export async function listAccounts(): Promise<Account[]> {
   const { data, error } = await supabase()
     .from('x_capture_accounts')
@@ -336,6 +423,29 @@ export async function listAccounts(): Promise<Account[]> {
     .order('username_lower', { ascending: true });
   raise(error);
   return (data ?? []) as unknown as Account[];
+}
+
+export async function listNonMainstreamSources(): Promise<NonMainstreamSource[]> {
+  const { data, error } = await supabase()
+    .from('non_mainstream_media_sources')
+    .select(
+      [
+        'id',
+        'site_key',
+        'display_name',
+        'homepage_url',
+        'capture_method',
+        'enabled',
+        'seeded_at',
+        'last_polled_at',
+        'last_success_at',
+        'last_error',
+      ].join(','),
+    )
+    .order('enabled', { ascending: false })
+    .order('display_name', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as NonMainstreamSource[];
 }
 
 export async function createAccount(input: AccountCreateInput): Promise<Account> {
@@ -378,6 +488,39 @@ export async function updateAccount(accountId: number, patch: AccountPatch): Pro
   const { data, error } = await supabase().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();
   raise(error);
   return assertData(data as Account | null, '更新账号失败');
+}
+
+export async function updateNonMainstreamSource(
+  sourceId: number,
+  patch: NonMainstreamSourcePatch,
+): Promise<NonMainstreamSource> {
+  const payload: Record<string, string | boolean> = {
+    updated_at: nowIso(),
+  };
+  if ('enabled' in patch && patch.enabled !== undefined) {
+    payload.enabled = patch.enabled;
+  }
+  const { data, error } = await supabase()
+    .from('non_mainstream_media_sources')
+    .update(payload)
+    .eq('id', sourceId)
+    .select(
+      [
+        'id',
+        'site_key',
+        'display_name',
+        'homepage_url',
+        'capture_method',
+        'enabled',
+        'seeded_at',
+        'last_polled_at',
+        'last_success_at',
+        'last_error',
+      ].join(','),
+    )
+    .single();
+  raise(error);
+  return assertData(data as NonMainstreamSource | null, '更新非主流媒体站点失败');
 }
 
 export async function deleteAccount(accountId: number): Promise<void> {

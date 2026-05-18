@@ -21,6 +21,7 @@ from .models import (
     DISCARD_TYPES,
     JUDGE_ROUTES,
     NEWS_TYPES,
+    NON_MAINSTREAM_MEDIA_SOURCE,
     PROMPT_KEY_BY_NEWS_TYPE,
     DiscardType,
     JudgeRoute,
@@ -53,7 +54,7 @@ class HandledStageError(RuntimeError):
     pass
 
 
-JUDGE_JSON_SCHEMA = {
+X_JUDGE_JSON_SCHEMA = {
     "type": "json_schema",
     "name": "x_judge_route",
     "schema": {
@@ -75,7 +76,29 @@ JUDGE_JSON_SCHEMA = {
 }
 
 
-JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对一条候选内容做第一道轻量判断。
+NON_MAINSTREAM_JUDGE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "non_mainstream_media_judge_route",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "route": {
+                "type": "string",
+                "enum": ["non_mainstream_media", "discard"],
+            },
+            "discard_type": {
+                "type": "string",
+                "enum": ["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"],
+            },
+        },
+        "required": ["route", "discard_type"],
+    },
+    "strict": True,
+}
+
+
+X_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对一条候选内容做第一道轻量判断。
 
 请严格分两步判断：
 1. 先判断它是否属于可丢弃内容。
@@ -103,6 +126,36 @@ JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对一
 作者：{author}
 来源类型：{source_kind}
 内容：{content}
+"""
+
+NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是判断一条非主流外媒原文，是否值得进入后续快讯写作。
+
+请严格分两步判断：
+1. 先判断它是否属于可丢弃内容。
+2. 如果不属于可丢弃内容，统一输出 non_mainstream_media。
+
+可丢弃内容只有四类：
+- pure_emotion：纯情绪表达，没有可报道事实。
+- baseless_trading_call：无逻辑的纯粹喊单、价格口号或无事实支撑的涨跌判断。
+- daily_chatter：寒暄、日常状态、meme、节日祝福、无新闻事实的社区闲聊。
+- non_crypto_ai：AI 泛科技内容，且不属于当前自动快讯流水线需要处理的 Crypto 新闻。
+
+不要因为内容有主观语气、营销语气或表达不规范就直接丢弃；只要有明确主体、明确动作和可报道结果，就保留。
+
+只允许两种 route：
+- non_mainstream_media：保留并进入非主流媒体专用模板。
+- discard：只用于上面四类可丢弃内容。
+
+只输出 JSON，不输出解释文本。格式必须为：
+{{"route":"non_mainstream_media|discard","discard_type":"none|pure_emotion|baseless_trading_call|daily_chatter|non_crypto_ai"}}
+
+如果 route 不是 discard，discard_type 必须是 none。
+
+来源媒体：{site_display_name}
+作者：{author_names}
+标题：{title}
+来源链接：{source_url}
+正文：{content}
 """
 
 
@@ -319,15 +372,25 @@ class XProcessingWorker:
                 raw_output=raw_output,
             )
             return
-        prompt = JUDGE_PROMPT_TEMPLATE.format(
+        prompt = X_JUDGE_PROMPT_TEMPLATE.format(
             author=task.metadata.get("author_display_name") or task.metadata.get("author_username") or "",
             source_kind="信源" if is_competitor_task(task) else "X",
             content=task.content,
         )
+        schema = X_JUDGE_JSON_SCHEMA
+        if is_non_mainstream_media_task(task):
+            prompt = NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE.format(
+                site_display_name=task.metadata.get("site_display_name") or "非主流外媒",
+                author_names="、".join(task.metadata.get("author_names") or []),
+                title=task.title or "",
+                source_url=task.source_url or "",
+                content=task.content,
+            )
+            schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
         raw_output = self.ai_client.generate_text(
             model=self.settings.judge_model,
             prompt=prompt,
-            text_format=JUDGE_JSON_SCHEMA,
+            text_format=schema,
         )
         route, discard_type = parse_judge_route(raw_output)
         if route == "discard":
@@ -474,7 +537,7 @@ class XProcessingWorker:
             title=final.title,
             content=final.content,
             dry_run=self.settings.dry_run,
-            source_url=None if is_competitor_task(task) else task.source_url,
+            source_url=None if hide_source_url(task) else task.source_url,
         )
         if not push_result.ok:
             error = push_result.error or "push failed"
@@ -543,6 +606,14 @@ def is_competitor_task(task: TaskRecord) -> bool:
     return task.source in COMPETITOR_SOURCES
 
 
+def is_non_mainstream_media_task(task: TaskRecord) -> bool:
+    return task.source == NON_MAINSTREAM_MEDIA_SOURCE
+
+
+def hide_source_url(task: TaskRecord) -> bool:
+    return is_competitor_task(task) or is_non_mainstream_media_task(task)
+
+
 def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
 
@@ -555,6 +626,19 @@ def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt_content: str) -> str:
+    if is_non_mainstream_media_task(task):
+        author_names = "、".join(task.metadata.get("author_names") or []) or "未知"
+        site_display_name = task.metadata.get("site_display_name") or "非主流外媒"
+        return (
+            f"{prompt_content}\n\n"
+            "【待处理外媒原文】\n"
+            f"来源媒体：{site_display_name}\n"
+            f"作者：{author_names}\n"
+            f"标题：{task.title or ''}\n"
+            f"来源链接：{task.source_url or ''}\n"
+            f"原文正文：{task.content}\n\n"
+            "请严格输出一行标题、空一行、正文。不要输出解释。"
+        )
     if is_competitor_task(task):
         return (
             f"{prompt_content}\n\n"
@@ -613,6 +697,7 @@ SOURCE_DISPLAY_NAMES = {
     "blockbeats": "律动",
     "panews": "PANews",
     "jinse": "金色财经",
+    "non_mainstream_media": "非主流外媒",
 }
 
 

@@ -51,6 +51,19 @@ def parse_args() -> argparse.Namespace:
     x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
 
+    non_mainstream_init = subparsers.add_parser(
+        "non-mainstream-media-init-db",
+        help="Initialize non-mainstream media Postgres tables.",
+    )
+    non_mainstream_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    non_mainstream_worker = subparsers.add_parser(
+        "non-mainstream-media-worker",
+        help="Run the non-mainstream media capture worker.",
+    )
+    non_mainstream_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    non_mainstream_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
     x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
     x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_init.add_argument(
@@ -244,6 +257,29 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
     if args.once:
         stats = worker.run_once()
         print(f"[odaily] x-capture once completed. accounts={len(stats)}")
+        return 0 if all(item.status == "success" for item in stats) else 1
+    worker.run_forever()
+    return 0
+
+
+def non_mainstream_media_init_db_command(args: argparse.Namespace) -> int:
+    from packages.non_mainstream_media import PostgresNonMainstreamMediaRepository, get_site_registry
+
+    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    repository.init_schema()
+    repository.sync_sources(list(get_site_registry().values()))
+    print("[odaily] non-mainstream media database schema initialized")
+    return 0
+
+
+def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
+    from packages.non_mainstream_media import NonMainstreamMediaWorker, PostgresNonMainstreamMediaRepository
+
+    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    worker = NonMainstreamMediaWorker(repository=repository)
+    if args.once:
+        stats = worker.run_once()
+        print(f"[odaily] non-mainstream media once completed. sources={len(stats)}")
         return 0 if all(item.status == "success" for item in stats) else 1
     worker.run_forever()
     return 0
@@ -557,6 +593,10 @@ def main() -> int:
             return x_init_db_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
+        if args.command == "non-mainstream-media-init-db":
+            return non_mainstream_media_init_db_command(args)
+        if args.command == "non-mainstream-media-worker":
+            return non_mainstream_media_worker_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
         if args.command == "x-process-worker":
