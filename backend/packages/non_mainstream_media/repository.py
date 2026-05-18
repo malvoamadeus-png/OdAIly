@@ -96,6 +96,9 @@ class PostgresNonMainstreamMediaRepository:
                         homepage_url = EXCLUDED.homepage_url,
                         capture_method = EXCLUDED.capture_method,
                         updated_at = now()
+                    WHERE non_mainstream_media_sources.display_name IS DISTINCT FROM EXCLUDED.display_name
+                       OR non_mainstream_media_sources.homepage_url IS DISTINCT FROM EXCLUDED.homepage_url
+                       OR non_mainstream_media_sources.capture_method IS DISTINCT FROM EXCLUDED.capture_method
                     """,
                     (site.site_key, site.display_name, site.homepage_url, site.capture_method),
                 )
