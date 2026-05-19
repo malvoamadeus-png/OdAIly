@@ -158,6 +158,7 @@ X_CAPTURE_ATTEMPT_RETENTION_DAYS=3
 PROCESSING_FRESHNESS_WINDOW_SECONDS=600
 X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
 X_PROCESS_OPENAI_API_STYLE=responses
+COMPETITOR_OPENAI_API_STYLE=
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
 X_PROCESS_WRITER_MODEL=gpt-5.5
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
@@ -185,7 +186,9 @@ WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 `X_PROCESS_OPENAI_BASE_URL` may point to an OpenAI-compatible relay, usually
 ending in `/v1`. Keep `X_PROCESS_OPENAI_API_STYLE=responses` when the relay
 supports `/v1/responses`; use `chat_completions` when it only supports
-`/v1/chat/completions`.
+`/v1/chat/completions`. Set `COMPETITOR_OPENAI_API_STYLE` only when the
+competitor event-review endpoint needs a different style from the rest of the
+X-processing workers.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for

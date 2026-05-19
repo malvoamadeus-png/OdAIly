@@ -166,6 +166,18 @@ def test_normalize_content_removes_title_prefix() -> None:
     assert normalize_item_content(title, content) == "该项目完成融资。"
 
 
+def test_competitor_api_style_can_override_x_process_style(monkeypatch) -> None:
+    from packages.common.config import load_competitor_monitor_settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("X_PROCESS_OPENAI_API_STYLE", "responses")
+    monkeypatch.setenv("COMPETITOR_OPENAI_API_STYLE", "chat_completions")
+
+    settings = load_competitor_monitor_settings()
+
+    assert settings.openai_api_style == "chat_completions"
+
+
 def test_worker_saves_unexcluded_odaily_as_reference_and_competitors_as_tasks(monkeypatch) -> None:
     from packages.competitor_monitor.fetchers import NewsflashItem
     from packages.common.config import CompetitorMonitorSettings

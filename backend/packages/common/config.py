@@ -358,7 +358,7 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
             or os.getenv("OPENAI_BASE_URL")
             or "https://api.openai.com/v1"
         ),
-        "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "openai_api_style": os.getenv("COMPETITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
         "event_review_model": os.getenv("COMPETITOR_EVENT_REVIEW_MODEL") or os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "event_embedding_model": os.getenv("COMPETITOR_EVENT_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
