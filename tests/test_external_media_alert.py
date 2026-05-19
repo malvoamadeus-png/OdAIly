@@ -106,7 +106,7 @@ def build_task(
     )
 
 
-def test_domain_judge_keeps_crypto_section_without_model() -> None:
+def test_domain_judge_keeps_strong_crypto_title_without_model() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(
         build_task(
@@ -114,7 +114,7 @@ def test_domain_judge_keeps_crypto_section_without_model() -> None:
             status="pending",
             site_key="ft_crypto",
             site_display_name="FT Crypto",
-            title="Investors weigh token issuance plans",
+            title="Investors weigh crypto token issuance plans",
             excerpt="Section story",
             source_url="https://www.ft.com/content/one/",
         )
@@ -134,6 +134,34 @@ def test_domain_judge_keeps_crypto_section_without_model() -> None:
     assert repo.pipelines[1].domain_route == "crypto"
     assert repo.pipelines[1].domain_model == "deterministic-domain-precheck"
     assert ai_client.calls == []
+
+
+def test_domain_judge_does_not_auto_keep_fortune_non_crypto_title() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="pending",
+            site_key="fortune_crypto",
+            site_display_name="Fortune Crypto",
+            title="How Coach became Gen Z’s favorite affordable luxury handbag brand",
+            excerpt="Retail feature",
+            source_url="https://fortune.com/2026/05/19/coach-handbags-comeback-millennials-gen-z/",
+        )
+    )
+    ai_client = FakeAIClient(['{"route":"discard"}'])
+    worker = ExternalMediaAlertWorker(
+        stage="domain_judge",
+        repository=repo,
+        settings=settings(),
+        ai_client=ai_client,
+    )
+
+    worker.run_once()
+
+    assert repo.tasks[1].status == "discarded"
+    assert repo.pipelines[1].discard_reason == "non_crypto"
+    assert len(ai_client.calls) == 1
 
 
 def test_domain_judge_discards_strong_non_crypto_title_without_model() -> None:

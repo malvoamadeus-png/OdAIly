@@ -167,6 +167,8 @@ def test_discover_fortune_pages_reads_section_story_titles() -> None:
         <a href="/2026/05/18/bitcoin-funds-hit-record-inflows/">Bitcoin funds hit record inflows</a>
         <a href="/2026/05/18/bitcoin-funds-hit-record-inflows/?utm_source=test">Duplicate story</a>
         <a href="/2026/05/18/ether-l2-fees-slide/">Ether L2 fees slide</a>
+        <a href="/2026/05/19/coach-handbags-comeback-millennials-gen-z/">How Coach became Gen Z’s favorite affordable luxury handbag brand</a>
+        <a href="/2026/05/19/us-israel-iran-war-energy-gas-prices-coal-oil/">High gas prices are just the beginning</a>
         <a href="/video/crypto-roundup/">Video roundup</a>
       </body>
     </html>

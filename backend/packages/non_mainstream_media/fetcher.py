@@ -36,6 +36,12 @@ BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
 FT_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:ft.com+crypto&hl=en-US&gl=US&ceid=US:en"
 FT_GOOGLE_NEWS_MAX_ITEMS = 25
+FORTUNE_CRYPTO_PATTERN = re.compile(
+    r"crypto|bitcoin|ethereum|stablecoin|token|tokenized|blockchain|web3|defi|nft|dao|airdrop|staking|"
+    r"btc|eth|sol|bnb|usdt|usdc|layer\s*2|l2|onchain|wallet|exchange|miner|mining|"
+    r"比特币|以太坊|稳定币|代币|区块链|加密|公链|链上|钱包|交易所|矿工|挖矿",
+    re.IGNORECASE,
+)
 HK01_ISSUE_URL = (
     "https://www.hk01.com/issue/10154/"
     "nft%E8%99%9B%E6%93%AC%E8%B2%A8%E5%B9%A3-"
@@ -293,6 +299,8 @@ def discover_fortune_pages(html: str, *, base_url: str = FORTUNE_BASE_URL) -> li
             continue
         detail_url = normalize_url(urljoin(base_url, href))
         if not is_fortune_article_url(detail_url):
+            continue
+        if not is_fortune_crypto_relevant(title, detail_url):
             continue
         if detail_url in seen:
             continue
@@ -795,6 +803,12 @@ def is_fortune_article_url(url: str) -> bool:
     if parts[0] == "section":
         return False
     return all(part.isdigit() for part in parts[:3])
+
+
+def is_fortune_crypto_relevant(title: str, url: str) -> bool:
+    if "/crypto/" in urlparse(url).path.lower():
+        return True
+    return bool(FORTUNE_CRYPTO_PATTERN.search(title))
 
 
 def is_wsj_article_url(url: str) -> bool:

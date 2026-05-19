@@ -67,7 +67,6 @@ ALERT_AI_REVIEW_SCHEMA = {
 }
 
 
-ALWAYS_CRYPTO_SITES = {"ft_crypto", "fortune_crypto"}
 CRYPTO_PATTERN = re.compile(
     r"crypto|bitcoin|ethereum|stablecoin|token|blockchain|web3|defi|nft|dao|airdrop|staking|"
     r"btc|eth|sol|bnb|usdt|usdc|layer\s*2|l2|onchain|wallet|exchange|miner|mining|"
@@ -417,15 +416,10 @@ def utc_since_hours(hours: int) -> datetime:
 
 
 def deterministic_domain_route(task) -> DomainJudgeRoute | None:
-    site_key = str(task.metadata.get("site_key") or "")
-    if site_key in ALWAYS_CRYPTO_SITES:
-        return "crypto"
     text = " ".join(
         filter(
             None,
             [
-                site_key,
-                str(task.metadata.get("site_display_name") or ""),
                 str(task.title or ""),
                 str(task.metadata.get("excerpt") or task.content or ""),
                 str(task.source_url or ""),
