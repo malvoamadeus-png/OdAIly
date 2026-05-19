@@ -184,28 +184,50 @@ def test_discover_fortune_pages_reads_section_story_titles() -> None:
     ]
 
 
-def test_discover_ft_pages_reads_crypto_content_links() -> None:
-    html = """
-    <html>
-      <body>
-        <a href="/crypto">FT Crypto</a>
-        <a href="/content/bd1544e9-67ac-4132-b7a0-7d9dab1723c2">Bitcoin ETFs draw in new inflows</a>
-        <a href="/content/bd1544e9-67ac-4132-b7a0-7d9dab1723c2?shareType=nongift">Duplicate story</a>
-        <a href="/content/8c5fd1d1-0c4e-47ba-8ea3-0209e46e9f44" aria-label="Stablecoin rules advance in Europe"></a>
-        <a href="/stream/markets-live">Live</a>
-      </body>
-    </html>
+def test_discover_ft_pages_reads_google_news_rss_and_decodes_ft_links(monkeypatch) -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Bitcoin ETFs draw in new inflows - Financial Times</title>
+          <link>https://news.google.com/rss/articles/AAA?oc=5</link>
+          <description><![CDATA[<a href=\"https://news.google.com/rss/articles/AAA?oc=5\">Bitcoin ETFs draw in new inflows</a>&nbsp;&nbsp;<font color=\"#6f6f6f\">Financial Times</font>]]></description>
+          <source url="https://www.ft.com">Financial Times</source>
+        </item>
+        <item>
+          <title>Duplicate story - Financial Times</title>
+          <link>https://news.google.com/rss/articles/BBB?oc=5</link>
+          <description><![CDATA[<a href=\"https://news.google.com/rss/articles/BBB?oc=5\">Duplicate story</a>&nbsp;&nbsp;<font color=\"#6f6f6f\">Financial Times</font>]]></description>
+          <source url="https://www.ft.com">Financial Times</source>
+        </item>
+        <item>
+          <title>Ignore other publisher - Other News</title>
+          <link>https://news.google.com/rss/articles/CCC?oc=5</link>
+          <description><![CDATA[<a href=\"https://news.google.com/rss/articles/CCC?oc=5\">Ignore other publisher</a>&nbsp;&nbsp;<font color=\"#6f6f6f\">Other News</font>]]></description>
+          <source url="https://example.com">Other News</source>
+        </item>
+      </channel>
+    </rss>
     """
 
-    pages = discover_ft_pages(html)
+    decoded = {
+        "https://news.google.com/rss/articles/AAA?oc=5": "https://www.ft.com/content/bd1544e9-67ac-4132-b7a0-7d9dab1723c2",
+        "https://news.google.com/rss/articles/BBB?oc=5": "https://www.ft.com/content/bd1544e9-67ac-4132-b7a0-7d9dab1723c2?shareType=nongift",
+        "https://news.google.com/rss/articles/CCC?oc=5": "https://example.com/content/not-ft",
+    }
+
+    def fake_decode_google_news_url(source_url: str, **_: object) -> str | None:
+        return decoded[source_url]
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.decode_google_news_url", fake_decode_google_news_url)
+
+    pages = discover_ft_pages(xml)
 
     assert [page.detail_url for page in pages] == [
         "https://www.ft.com/content/bd1544e9-67ac-4132-b7a0-7d9dab1723c2/",
-        "https://www.ft.com/content/8c5fd1d1-0c4e-47ba-8ea3-0209e46e9f44/",
     ]
     assert [page.title for page in pages] == [
         "Bitcoin ETFs draw in new inflows",
-        "Stablecoin rules advance in Europe",
     ]
 
 

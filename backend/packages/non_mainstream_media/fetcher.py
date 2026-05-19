@@ -6,7 +6,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -33,6 +33,9 @@ FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
+GOOGLE_NEWS_BASE_URL = "https://news.google.com"
+FT_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:ft.com+crypto&hl=en-US&gl=US&ceid=US:en"
+FT_GOOGLE_NEWS_MAX_ITEMS = 25
 HK01_ISSUE_URL = (
     "https://www.hk01.com/issue/10154/"
     "nft%E8%99%9B%E6%93%AC%E8%B2%A8%E5%B9%A3-"
@@ -140,8 +143,19 @@ def fetch_discovered_pages(
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_hk01_pages(html, base_url=site.homepage_url)
     if site.site_key == "ft_crypto":
-        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return discover_ft_pages(html, base_url=site.homepage_url)
+        xml = fetch_html(
+            FT_GOOGLE_NEWS_RSS_URL,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        return discover_ft_pages(
+            xml,
+            base_url=site.homepage_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
     if site.site_key in {"wsj_business", "wsj_economy", "wsj_finance"}:
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_wsj_pages(xml, base_url=site.homepage_url)
@@ -287,24 +301,52 @@ def discover_fortune_pages(html: str, *, base_url: str = FORTUNE_BASE_URL) -> li
     return results
 
 
-def discover_ft_pages(html: str, *, base_url: str = FT_BASE_URL) -> list[DiscoveredPage]:
-    soup = BeautifulSoup(html, "html.parser")
+def discover_ft_pages(
+    xml_text: str,
+    *,
+    base_url: str = FT_BASE_URL,
+    timeout_seconds: float = 20.0,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid FT discovery RSS payload") from exc
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
-    for anchor in soup.select("a[href]"):
-        href = anchor.get("href")
-        if not href:
+    for item in root.findall(".//item")[:FT_GOOGLE_NEWS_MAX_ITEMS]:
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        source_name = clean_inline_text(item.findtext("source", default=""))
+        description_html = item.findtext("description", default="")
+        if not link or not title:
             continue
-        title = clean_inline_text(anchor.get_text(" ", strip=True) or str(anchor.get("aria-label") or anchor.get("title") or ""))
-        if len(title) < 8:
+        if source_name and source_name != "Financial Times":
             continue
-        detail_url = normalize_url(urljoin(base_url, href))
+        decoded_url = decode_google_news_url(
+            link,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        if not decoded_url:
+            continue
+        detail_url = normalize_url(urljoin(base_url, decoded_url))
         if not is_ft_article_url(detail_url):
             continue
         if detail_url in seen:
             continue
         seen.add(detail_url)
-        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title))
+        excerpt = extract_google_news_excerpt(description_html, title=title, source_name=source_name or "Financial Times")
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=strip_google_news_source_suffix(title, "Financial Times"),
+                excerpt=excerpt or None,
+            )
+        )
     return results
 
 
@@ -608,6 +650,128 @@ def extract_next_data_payload(html: str) -> dict[str, Any]:
         return json.loads(match.group(1))
     except json.JSONDecodeError:
         return {}
+
+
+def decode_google_news_url(
+    source_url: str,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> str | None:
+    parsed = urlparse(source_url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if parsed.netloc.lower() != "news.google.com" or len(path_parts) < 2 or path_parts[-2] not in {"articles", "read"}:
+        return source_url
+    base64_str = path_parts[-1]
+    params = get_google_news_decoding_params(
+        base64_str,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+    )
+    if not params:
+        return None
+    signature, timestamp = params
+    return execute_google_news_decode(
+        base64_str,
+        signature=signature,
+        timestamp=timestamp,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+    )
+
+
+def get_google_news_decoding_params(
+    base64_str: str,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> tuple[str, str] | None:
+    for candidate_url in (
+        f"{GOOGLE_NEWS_BASE_URL}/articles/{base64_str}",
+        f"{GOOGLE_NEWS_BASE_URL}/rss/articles/{base64_str}",
+    ):
+        try:
+            html = fetch_html(
+                candidate_url,
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
+        except RuntimeError:
+            continue
+        signature_match = re.search(r'data-n-a-sg="([^"]+)"', html)
+        timestamp_match = re.search(r'data-n-a-ts="([^"]+)"', html)
+        if signature_match and timestamp_match:
+            return signature_match.group(1), timestamp_match.group(1)
+    return None
+
+
+def execute_google_news_decode(
+    base64_str: str,
+    *,
+    signature: str,
+    timestamp: str,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> str | None:
+    payload = [
+        "Fbv4je",
+        (
+            f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],'
+            f'"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{base64_str}",{timestamp},"{signature}"]'
+        ),
+    ]
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            response = requests.post(
+                f"{GOOGLE_NEWS_BASE_URL}/_/DotsSplashUi/data/batchexecute",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "User-Agent": REQUEST_HEADERS["User-Agent"],
+                },
+                data=f"f.req={quote(json.dumps([[payload]]))}",
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            parts = response.text.split("\n\n")
+            if len(parts) < 2:
+                return None
+            parsed = json.loads(parts[1])[:-2]
+            decoded = json.loads(parsed[0][2])[1]
+            return normalize_url(decoded)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            time.sleep(max(0.0, backoff_seconds) * attempt)
+    if last_error:
+        return None
+    return None
+
+
+def strip_google_news_source_suffix(title: str, source_name: str) -> str:
+    suffix = f" - {source_name}".strip()
+    if title.endswith(suffix):
+        return title[: -len(suffix)].strip()
+    return title.strip()
+
+
+def extract_google_news_excerpt(description_html: str, *, title: str, source_name: str) -> str:
+    if not description_html:
+        return ""
+    text = clean_inline_text(BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True))
+    clean_title = strip_google_news_source_suffix(title, source_name)
+    if text.startswith(clean_title):
+        text = text[len(clean_title) :].strip()
+    if text.endswith(source_name):
+        text = text[: -len(source_name)].strip()
+    return text.strip(" -\u00a0")
 
 
 def is_forbes_article_url(url: str) -> bool:
