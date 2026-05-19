@@ -16,7 +16,10 @@ Prompt 控制台不管理模型选择、reasoning effort、超时、重试或输
 - 发布某个版本为当前生效版本。
 - 保留历史版本，便于回滚和追溯。
 
-当前写作模板除了 X 的常规、链上、融资模板外，还需要支持非主流媒体专用模板 `non_mainstream_media_writer`。
+当前 Prompt 模板除了 X 的常规、链上、融资模板外，还需要支持：
+
+- 非主流媒体全文写作模板 `non_mainstream_media_writer`
+- 外媒标题提醒链路的领域分类模板 `external_media_alert_domain_judge`
 
 相关表：
 
@@ -51,11 +54,13 @@ worker 启动时也必须主动加载当前生效 Prompt，不能只依赖通知
 - `docs/链上快讯模板.txt`
 - `docs/融资快讯模板.txt`
 - `docs/外媒模板.txt` -> `non_mainstream_media_writer`
+- `docs/外媒标题领域判断模板.txt` -> `external_media_alert_domain_judge`
 
 相关命令：
 
 ```powershell
 python backend\src\main.py x-process-init-db
+python backend\src\main.py external-media-alert-init-db
 ```
 
 ## 相关文档

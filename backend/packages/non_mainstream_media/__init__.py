@@ -4,6 +4,7 @@ from .models import (
     NonMainstreamMediaSettings,
     NonMainstreamMediaSource,
     ParsedArticle,
+    PipelineMode,
     SiteDefinition,
     SourceRunStats,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "NonMainstreamMediaSource",
     "NonMainstreamMediaWorker",
     "ParsedArticle",
+    "PipelineMode",
     "PostgresNonMainstreamMediaRepository",
     "SiteDefinition",
     "SourceRunStats",

@@ -168,6 +168,8 @@ class NonMainstreamMediaWorker:
                 seeded_count=len(discovered_ids),
                 metadata={"first_seen_seed": True},
             )
+        if site.pipeline_mode == "alert_only":
+            return self._save_alert_only_tasks(source, pages)
         unseen = self.repository.unseen_source_item_ids(source.site_key, discovered_ids)
         new_count = 0
         saved_count = 0
@@ -199,6 +201,25 @@ class NonMainstreamMediaWorker:
             saved_count=saved_count,
             error=f"{len(detail_errors)} detail page(s) failed" if detail_errors else None,
             metadata={"detail_errors": detail_errors},
+        )
+
+    def _save_alert_only_tasks(self, source: NonMainstreamMediaSource, pages: list[Any]) -> SourceRunStats:
+        unseen = self.repository.unseen_source_item_ids(source.site_key, [page.source_item_id for page in pages])
+        new_count = 0
+        saved_count = 0
+        for page in pages:
+            if page.source_item_id not in unseen:
+                continue
+            if self.repository.mark_seen(source, page.source_item_id, seeded=False):
+                new_count += 1
+            if self.repository.save_alert_task(source, page):
+                saved_count += 1
+        return SourceRunStats(
+            source=source,
+            status="success",
+            candidate_count=len(pages),
+            new_count=new_count,
+            saved_count=saved_count,
         )
 
     def _record_heartbeat(

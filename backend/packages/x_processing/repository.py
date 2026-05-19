@@ -45,6 +45,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "docs/外媒模板.txt",
         "initial non-mainstream media writer template",
     ),
+    "external_media_alert_domain_judge": (
+        "外媒标题领域判断",
+        "docs/外媒标题领域判断模板.txt",
+        "initial external media alert domain judge template",
+    ),
 }
 
 

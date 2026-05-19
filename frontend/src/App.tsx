@@ -788,6 +788,9 @@ function NonMainstreamPanel({
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
 }) {
+  const writeFlowSources = sources.filter((source) => source.pipeline_mode !== 'alert_only');
+  const alertOnlySources = sources.filter((source) => source.pipeline_mode === 'alert_only');
+
   return (
     <section className="nonMainstreamLayout">
       <form className="nonMainstreamSettingsForm" onSubmit={onSave}>
@@ -824,9 +827,28 @@ function NonMainstreamPanel({
           <span>{loading ? '加载中' : `${sources.length} 个站点`}</span>
         </div>
         {sources.length === 0 && <div className="emptyState">暂无已接入站点，请先运行初始化命令。</div>}
-        {sources.map((source) => (
-          <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
-        ))}
+        {writeFlowSources.length > 0 && (
+          <>
+            <div className="sectionHeader">
+              <h2>进入编写链路</h2>
+              <span>{writeFlowSources.length} 个站点</span>
+            </div>
+            {writeFlowSources.map((source) => (
+              <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
+            ))}
+          </>
+        )}
+        {alertOnlySources.length > 0 && (
+          <>
+            <div className="sectionHeader">
+              <h2>标题提醒链路</h2>
+              <span>{alertOnlySources.length} 个站点</span>
+            </div>
+            {alertOnlySources.map((source) => (
+              <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
+            ))}
+          </>
+        )}
       </div>
     </section>
   );

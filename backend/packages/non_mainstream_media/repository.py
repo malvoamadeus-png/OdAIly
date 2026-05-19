@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
 
-from .models import NonMainstreamMediaSettings, NonMainstreamMediaSource, ParsedArticle, SiteDefinition, SourceRunStats
+from .models import DiscoveredPage, NonMainstreamMediaSettings, NonMainstreamMediaSource, ParsedArticle, SiteDefinition, SourceRunStats
 
 
 CONFIG_NOTIFY_CHANNEL = "non_mainstream_media_config_changed"
@@ -29,6 +29,7 @@ class NonMainstreamMediaRepository(Protocol):
     def mark_seen(self, source: NonMainstreamMediaSource, source_item_id: str, *, seeded: bool) -> bool: ...
     def unseen_source_item_ids(self, site_key: str, source_item_ids: list[str]) -> set[str]: ...
     def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool: ...
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool: ...
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None: ...
     def record_worker_heartbeat(
         self,
@@ -57,6 +58,7 @@ def _row_to_source(row: dict[str, Any]) -> NonMainstreamMediaSource:
         display_name=str(row["display_name"]),
         homepage_url=str(row["homepage_url"]),
         capture_method=str(row["capture_method"]),
+        pipeline_mode=str(row.get("pipeline_mode") or "write_flow"),
         enabled=bool(row["enabled"]),
         seeded_at=row.get("seeded_at"),
         last_polled_at=row.get("last_polled_at"),
@@ -88,19 +90,21 @@ class PostgresNonMainstreamMediaRepository:
                 conn.execute(
                     """
                     INSERT INTO non_mainstream_media_sources (
-                        site_key, display_name, homepage_url, capture_method, enabled
+                        site_key, display_name, homepage_url, capture_method, pipeline_mode, enabled
                     )
-                    VALUES (%s, %s, %s, %s, true)
+                    VALUES (%s, %s, %s, %s, %s, true)
                     ON CONFLICT (site_key) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         homepage_url = EXCLUDED.homepage_url,
                         capture_method = EXCLUDED.capture_method,
+                        pipeline_mode = EXCLUDED.pipeline_mode,
                         updated_at = now()
                     WHERE non_mainstream_media_sources.display_name IS DISTINCT FROM EXCLUDED.display_name
                        OR non_mainstream_media_sources.homepage_url IS DISTINCT FROM EXCLUDED.homepage_url
                        OR non_mainstream_media_sources.capture_method IS DISTINCT FROM EXCLUDED.capture_method
+                       OR non_mainstream_media_sources.pipeline_mode IS DISTINCT FROM EXCLUDED.pipeline_mode
                     """,
-                    (site.site_key, site.display_name, site.homepage_url, site.capture_method),
+                    (site.site_key, site.display_name, site.homepage_url, site.capture_method, site.pipeline_mode),
                 )
             conn.commit()
 
@@ -164,7 +168,7 @@ class PostgresNonMainstreamMediaRepository:
                 SELECT *
                 FROM non_mainstream_media_sources
                 {where}
-                ORDER BY enabled DESC, display_name ASC, site_key ASC
+                ORDER BY enabled DESC, pipeline_mode ASC, display_name ASC, site_key ASC
                 """
             ).fetchall()
         return [_row_to_source(row) for row in rows]
@@ -246,6 +250,7 @@ class PostgresNonMainstreamMediaRepository:
             "site_key": source.site_key,
             "site_display_name": source.display_name,
             "capture_method": source.capture_method,
+            "pipeline_mode": source.pipeline_mode,
             "content_format": article.content_format,
             "author_names": article.author_names,
             "tags": article.tags,
@@ -281,6 +286,53 @@ class PostgresNonMainstreamMediaRepository:
                     "content": article.content,
                     "published_at": article.published_at,
                     "raw_payload": self._Jsonb(article.raw_payload),
+                    "metadata": self._Jsonb(metadata),
+                },
+            ).fetchone()
+            conn.commit()
+            return row is not None
+
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+        content = (page.excerpt or page.title or page.detail_url).strip()
+        metadata = {
+            "site_key": source.site_key,
+            "site_display_name": source.display_name,
+            "capture_method": source.capture_method,
+            "pipeline_mode": source.pipeline_mode,
+            "excerpt": page.excerpt,
+            "source_kind": "external_media_alert",
+        }
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO tasks (
+                    source, source_item_id, source_url, title, content, raw_payload, metadata, status
+                )
+                VALUES (
+                    'external_media_alert',
+                    %(source_item_id)s,
+                    %(source_url)s,
+                    %(title)s,
+                    %(content)s,
+                    %(raw_payload)s,
+                    %(metadata)s,
+                    'pending'
+                )
+                ON CONFLICT (source, source_item_id) DO NOTHING
+                RETURNING id
+                """,
+                {
+                    "source_item_id": page.source_item_id,
+                    "source_url": page.detail_url,
+                    "title": page.title,
+                    "content": content,
+                    "raw_payload": self._Jsonb(
+                        {
+                            "detail_url": page.detail_url,
+                            "title": page.title,
+                            "excerpt": page.excerpt,
+                        }
+                    ),
                     "metadata": self._Jsonb(metadata),
                 },
             ).fetchone()
@@ -372,6 +424,7 @@ class InMemoryNonMainstreamMediaRepository:
                     display_name=site.display_name,
                     homepage_url=site.homepage_url,
                     capture_method=site.capture_method,
+                    pipeline_mode=site.pipeline_mode,
                 )
                 self.sources[self._source_id] = source
                 self._source_id += 1
@@ -382,6 +435,7 @@ class InMemoryNonMainstreamMediaRepository:
                     "display_name": site.display_name,
                     "homepage_url": site.homepage_url,
                     "capture_method": site.capture_method,
+                    "pipeline_mode": site.pipeline_mode,
                     "updated_at": utc_now(),
                 }
             )
@@ -467,6 +521,7 @@ class InMemoryNonMainstreamMediaRepository:
                     "site_key": source.site_key,
                     "site_display_name": source.display_name,
                     "capture_method": source.capture_method,
+                    "pipeline_mode": source.pipeline_mode,
                     "content_format": article.content_format,
                     "author_names": article.author_names,
                     "tags": article.tags,
@@ -476,6 +531,38 @@ class InMemoryNonMainstreamMediaRepository:
                     "source_kind": "non_mainstream_media",
                 },
                 "raw_payload": article.raw_payload,
+                "status": "pending",
+            }
+        )
+        return True
+
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+        if any(
+            item["source"] == "external_media_alert" and item["source_item_id"] == page.source_item_id
+            for item in self.tasks
+        ):
+            return False
+        self.tasks.append(
+            {
+                "source": "external_media_alert",
+                "source_item_id": page.source_item_id,
+                "source_url": page.detail_url,
+                "title": page.title,
+                "content": page.excerpt or page.title or page.detail_url,
+                "published_at": None,
+                "metadata": {
+                    "site_key": source.site_key,
+                    "site_display_name": source.display_name,
+                    "capture_method": source.capture_method,
+                    "pipeline_mode": source.pipeline_mode,
+                    "excerpt": page.excerpt,
+                    "source_kind": "external_media_alert",
+                },
+                "raw_payload": {
+                    "detail_url": page.detail_url,
+                    "title": page.title,
+                    "excerpt": page.excerpt,
+                },
                 "status": "pending",
             }
         )
@@ -551,6 +638,7 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     display_name text NOT NULL,
     homepage_url text NOT NULL,
     capture_method text NOT NULL CHECK (capture_method IN ('html_request', 'browser_render')),
+    pipeline_mode text NOT NULL DEFAULT 'write_flow',
     enabled boolean NOT NULL DEFAULT true,
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -559,6 +647,23 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS pipeline_mode text NOT NULL DEFAULT 'write_flow';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'non_mainstream_media_sources_pipeline_mode_check'
+    ) THEN
+        ALTER TABLE non_mainstream_media_sources
+        ADD CONSTRAINT non_mainstream_media_sources_pipeline_mode_check
+        CHECK (pipeline_mode IN ('write_flow', 'alert_only'));
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS non_mainstream_media_seen_items (
     id bigserial PRIMARY KEY,
@@ -596,7 +701,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 DROP TRIGGER IF EXISTS trg_non_mainstream_media_sources_notify ON non_mainstream_media_sources;
 CREATE TRIGGER trg_non_mainstream_media_sources_notify
-AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, enabled ON non_mainstream_media_sources
+AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;

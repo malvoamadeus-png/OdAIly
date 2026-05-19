@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 CaptureMethod = Literal["html_request", "browser_render"]
 CaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty", "unsupported_method"]
+PipelineMode = Literal["write_flow", "alert_only"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class NonMainstreamMediaSource:
     display_name: str
     homepage_url: str
     capture_method: CaptureMethod
+    pipeline_mode: PipelineMode = "write_flow"
     enabled: bool = True
     seeded_at: datetime | None = None
     last_polled_at: datetime | None = None
@@ -39,12 +41,15 @@ class SiteDefinition:
     homepage_url: str
     list_url: str
     capture_method: CaptureMethod
+    pipeline_mode: PipelineMode
 
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredPage:
     source_item_id: str
     detail_url: str
+    title: str | None = None
+    excerpt: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

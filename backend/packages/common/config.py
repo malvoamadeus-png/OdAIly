@@ -318,6 +318,95 @@ def load_x_processing_settings() -> XProcessingSettings:
         raise ValueError(f"Invalid X processing settings: {exc}") from exc
 
 
+class ExternalMediaAlertSettings(BaseModel):
+    openai_api_key: str | None = None
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
+    openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    domain_judge_model: str = "gpt-5.5-mini"
+    dashscope_api_key: str | None = None
+    search_embedding_model: str = "text-embedding-v4"
+    search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    search_window_hours: int = Field(default=168, ge=1, le=720)
+    search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
+    search_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+
+
+def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
+    load_dotenv()
+    payload = {
+        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
+        "openai_base_url": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_OPENAI_BASE_URL")
+            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        ),
+        "openai_api_style": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_OPENAI_API_STYLE")
+            or os.getenv("X_PROCESS_OPENAI_API_STYLE")
+            or "responses"
+        ),
+        "domain_judge_model": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL")
+            or os.getenv("X_PROCESS_JUDGE_MODEL")
+            or "gpt-5.5-mini"
+        ),
+        "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
+        "search_embedding_model": os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
+        "search_embedding_base_url": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_EMBEDDING_BASE_URL")
+            or os.getenv("SEARCH_EMBEDDING_BASE_URL")
+            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ),
+        "search_window_hours": int(os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_WINDOW_HOURS") or 168),
+        "search_duplicate_threshold": float(
+            os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_DUPLICATE_THRESHOLD")
+            or os.getenv("SEARCH_DUPLICATE_THRESHOLD")
+            or 0.88
+        ),
+        "search_ai_review_threshold": float(
+            os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_AI_REVIEW_THRESHOLD")
+            or os.getenv("SEARCH_AI_REVIEW_THRESHOLD")
+            or 0.78
+        ),
+        "request_timeout_seconds": float(
+            os.getenv("EXTERNAL_MEDIA_ALERT_REQUEST_TIMEOUT_SECONDS")
+            or os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS")
+            or 30.0
+        ),
+        "retry": {
+            "max_attempts": int(
+                os.getenv("EXTERNAL_MEDIA_ALERT_MAX_ATTEMPTS")
+                or os.getenv("X_PROCESS_MAX_ATTEMPTS")
+                or 3
+            ),
+            "backoff_seconds": float(
+                os.getenv("EXTERNAL_MEDIA_ALERT_BACKOFF_SECONDS")
+                or os.getenv("X_PROCESS_BACKOFF_SECONDS")
+                or 1.0
+            ),
+        },
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_TELEGRAM_MESSAGE_THREAD_ID")
+            or os.getenv("TELEGRAM_MESSAGE_THREAD_ID")
+            or None
+        ),
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+    }
+    try:
+        return ExternalMediaAlertSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid external media alert settings: {exc}") from exc
+
+
 class CompetitorMonitorSettings(BaseModel):
     blockbeats_api_key: str | None = None
     fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)

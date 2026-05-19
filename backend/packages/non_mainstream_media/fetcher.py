@@ -29,6 +29,10 @@ FORBES_BASE_URL = "https://www.forbes.com"
 FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
 FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
 HK01_BASE_URL = "https://www.hk01.com"
+FORTUNE_BASE_URL = "https://fortune.com"
+FT_BASE_URL = "https://www.ft.com"
+WSJ_BASE_URL = "https://www.wsj.com"
+BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 HK01_ISSUE_URL = (
     "https://www.hk01.com/issue/10154/"
     "nft%E8%99%9B%E6%93%AC%E8%B2%A8%E5%B9%A3-"
@@ -54,6 +58,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         homepage_url="https://a16zcrypto.com/posts/",
         list_url="https://a16zcrypto.com/posts/",
         capture_method="html_request",
+        pipeline_mode="write_flow",
     ),
     "forbes_digital_assets": SiteDefinition(
         site_key="forbes_digital_assets",
@@ -61,6 +66,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         homepage_url=FORBES_SECTION_URL,
         list_url=FORBES_FEED_URL,
         capture_method="html_request",
+        pipeline_mode="write_flow",
     ),
     "hk01_virtual_assets": SiteDefinition(
         site_key="hk01_virtual_assets",
@@ -68,6 +74,47 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         homepage_url=HK01_ISSUE_URL,
         list_url=HK01_ISSUE_URL,
         capture_method="html_request",
+        pipeline_mode="write_flow",
+    ),
+    "ft_crypto": SiteDefinition(
+        site_key="ft_crypto",
+        display_name="FT Crypto",
+        homepage_url="https://www.ft.com/crypto",
+        list_url="https://www.ft.com/crypto",
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+    ),
+    "wsj_business": SiteDefinition(
+        site_key="wsj_business",
+        display_name="WSJ Business",
+        homepage_url="https://www.wsj.com/business?mod=nav_top_section",
+        list_url="https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml",
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+    ),
+    "wsj_economy": SiteDefinition(
+        site_key="wsj_economy",
+        display_name="WSJ Economy",
+        homepage_url="https://www.wsj.com/economy?mod=nav_top_section",
+        list_url="https://feeds.content.dowjones.io/public/rss/socialeconomyfeed",
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+    ),
+    "wsj_finance": SiteDefinition(
+        site_key="wsj_finance",
+        display_name="WSJ Finance",
+        homepage_url="https://www.wsj.com/finance?mod=nav_top_section",
+        list_url="https://feeds.content.dowjones.io/public/rss/socialmarketsfeed",
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+    ),
+    "fortune_crypto": SiteDefinition(
+        site_key="fortune_crypto",
+        display_name="Fortune Crypto",
+        homepage_url="https://fortune.com/section/crypto/",
+        list_url="https://fortune.com/section/crypto/",
+        capture_method="html_request",
+        pipeline_mode="alert_only",
     ),
 }
 
@@ -92,6 +139,15 @@ def fetch_discovered_pages(
     if site.site_key == "hk01_virtual_assets":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_hk01_pages(html, base_url=site.homepage_url)
+    if site.site_key == "ft_crypto":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_ft_pages(html, base_url=site.homepage_url)
+    if site.site_key in {"wsj_business", "wsj_economy", "wsj_finance"}:
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_wsj_pages(xml, base_url=site.homepage_url)
+    if site.site_key == "fortune_crypto":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_fortune_pages(html, base_url=site.homepage_url)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -167,6 +223,8 @@ def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> 
         raise ValueError("invalid Forbes RSS payload") from exc
     for item in root.findall(".//item"):
         link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        excerpt = clean_inline_text(item.findtext("description", default=""))
         if not link:
             continue
         detail_url = normalize_url(urljoin(base_url, link))
@@ -175,7 +233,14 @@ def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> 
         if detail_url in seen:
             continue
         seen.add(detail_url)
-        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url))
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=excerpt or None,
+            )
+        )
     return results
 
 
@@ -196,7 +261,101 @@ def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[Dis
             if detail_url in seen:
                 continue
             seen.add(detail_url)
-            results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url))
+            title = clean_inline_text(str(article_data.get("title") or article_data.get("name") or ""))
+            results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title or None))
+    return results
+
+
+def discover_fortune_pages(html: str, *, base_url: str = FORTUNE_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        if len(title) < 8:
+            continue
+        detail_url = normalize_url(urljoin(base_url, href))
+        if not is_fortune_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title))
+    return results
+
+
+def discover_ft_pages(html: str, *, base_url: str = FT_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        title = clean_inline_text(anchor.get_text(" ", strip=True) or str(anchor.get("aria-label") or anchor.get("title") or ""))
+        if len(title) < 8:
+            continue
+        detail_url = normalize_url(urljoin(base_url, href))
+        if not is_ft_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title))
+    return results
+
+
+def discover_wsj_pages(xml_text: str, *, base_url: str = WSJ_BASE_URL) -> list[DiscoveredPage]:
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid WSJ RSS payload") from exc
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        excerpt = clean_inline_text(item.findtext("description", default=""))
+        if not link or not title:
+            continue
+        detail_url = normalize_url(urljoin(base_url, link))
+        if not is_wsj_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title,
+                excerpt=excerpt or None,
+            )
+        )
+    return results
+
+
+def discover_bloomberg_pages(html: str, *, base_url: str = BLOOMBERG_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        if len(title) < 8:
+            continue
+        detail_url = normalize_url(urljoin(base_url, href))
+        if not is_bloomberg_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title))
     return results
 
 
@@ -454,6 +613,42 @@ def extract_next_data_payload(html: str) -> dict[str, Any]:
 def is_forbes_article_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.netloc.lower().endswith("forbes.com") and parsed.path.startswith("/sites/digital-assets/") and not parsed.path.endswith("/feed/")
+
+
+def is_ft_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    return parsed.netloc.lower().endswith("ft.com") and len(parts) == 2 and parts[0] == "content"
+
+
+def is_fortune_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("fortune.com"):
+        return False
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 4:
+        return False
+    if parts[0] == "section":
+        return False
+    return all(part.isdigit() for part in parts[:3])
+
+
+def is_wsj_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("wsj.com"):
+        return False
+    path = parsed.path.rstrip("/")
+    if path.startswith("/articles/"):
+        return True
+    parts = [part for part in path.split("/") if part]
+    return len(parts) >= 2 and parts[0] in {"business", "economy", "finance"}
+
+
+def is_bloomberg_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("bloomberg.com"):
+        return False
+    return parsed.path.startswith(("/news/articles/", "/opinion/articles/", "/graphics/"))
 
 
 def extract_forbes_body(soup: BeautifulSoup) -> str:

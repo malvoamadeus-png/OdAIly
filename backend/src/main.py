@@ -10,6 +10,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from packages.common.config import (  # noqa: E402
+    load_external_media_alert_settings,
     load_auditor_settings,
     load_competitor_monitor_settings,
     load_gate_settings,
@@ -63,6 +64,24 @@ def parse_args() -> argparse.Namespace:
     )
     non_mainstream_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     non_mainstream_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
+    external_alert_init = subparsers.add_parser(
+        "external-media-alert-init-db",
+        help="Initialize external media alert Postgres tables.",
+    )
+    external_alert_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    external_alert_worker = subparsers.add_parser(
+        "external-media-alert-worker",
+        help="Run the external media alert worker.",
+    )
+    external_alert_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    external_alert_worker.add_argument(
+        "--stage",
+        choices=["domain_judge", "search", "notify"],
+        required=True,
+    )
+    external_alert_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
 
     x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
     x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
@@ -281,6 +300,40 @@ def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
         stats = worker.run_once()
         print(f"[odaily] non-mainstream media once completed. sources={len(stats)}")
         return 0 if all(item.status == "success" for item in stats) else 1
+    worker.run_forever()
+    return 0
+
+
+def external_media_alert_init_db_command(args: argparse.Namespace) -> int:
+    from packages.external_media_alert import PostgresExternalMediaAlertRepository
+    from packages.x_processing.repository import PostgresXProcessingRepository
+
+    paths = get_paths()
+    x_repository = PostgresXProcessingRepository(args.database_url)
+    x_repository.init_schema()
+    x_repository.seed_prompt_templates(root_dir=paths.root_dir)
+    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] external media alert database schema initialized")
+    return 0
+
+
+def external_media_alert_worker_command(args: argparse.Namespace) -> int:
+    from packages.external_media_alert import ExternalMediaAlertWorker, PostgresExternalMediaAlertRepository
+
+    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    worker = ExternalMediaAlertWorker(
+        stage=args.stage,
+        repository=repository,
+        settings=load_external_media_alert_settings(),
+    )
+    if args.once:
+        result = worker.run_once()
+        print(
+            f"[odaily] external media alert once stage={result.stage} "
+            f"processed={result.processed} failed={result.failed} message={result.message}"
+        )
+        return result.exit_code
     worker.run_forever()
     return 0
 
@@ -597,6 +650,10 @@ def main() -> int:
             return non_mainstream_media_init_db_command(args)
         if args.command == "non-mainstream-media-worker":
             return non_mainstream_media_worker_command(args)
+        if args.command == "external-media-alert-init-db":
+            return external_media_alert_init_db_command(args)
+        if args.command == "external-media-alert-worker":
+            return external_media_alert_worker_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
         if args.command == "x-process-worker":
