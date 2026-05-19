@@ -209,8 +209,14 @@ python backend\src\main.py writer3-reset-task --task-id 123
 
 ## Linux Service
 
-Use `/opt/OdAIly` for deployment and `deploy/odaily-worker.service` as the
-systemd template.
+Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
+`deploy/`, including:
+
+- `deploy/odaily-worker.service`
+- `deploy/odaily-competitor-monitor.service`
+- `deploy/odaily-non-mainstream-media.service`
+- `deploy/odaily-external-media-alert@.service`
+- `deploy/odaily-pipeline-supervisor.service`
 
 Production sync rules:
 
@@ -232,8 +238,8 @@ Production sync rules:
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-competitor-monitor.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked
