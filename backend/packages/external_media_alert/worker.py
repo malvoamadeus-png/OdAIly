@@ -67,22 +67,6 @@ ALERT_AI_REVIEW_SCHEMA = {
 }
 
 
-CRYPTO_PATTERN = re.compile(
-    r"crypto|bitcoin|ethereum|stablecoin|token|blockchain|web3|defi|nft|dao|airdrop|staking|"
-    r"btc|eth|sol|bnb|usdt|usdc|layer\s*2|l2|onchain|wallet|exchange|miner|mining|"
-    r"比特币|以太坊|稳定币|代币|区块链|加密|公链|链上|钱包|交易所|矿工|挖矿",
-    re.IGNORECASE,
-)
-NON_CRYPTO_PATTERN = re.compile(
-    r"soccer|football|basketball|movie|movies|music|celebrity|travel|tourism|restaurant|food|fashion|beauty|"
-    r"weather|storm|hurricane|wildfire|recipe|hollywood|actor|singer|book review|"
-    r"体育|足球|篮球|电影|明星|旅游|餐厅|美食|时尚|美容|天气|台风|暴雨|食谱|演唱会|"
-    r"chatgpt|openai|claude|gemini|deepseek|artificial intelligence|machine learning|大模型|人工智能",
-    re.IGNORECASE,
-)
-DETERMINISTIC_DOMAIN_MODEL = "deterministic-domain-precheck"
-
-
 class ExternalMediaAlertWorker:
     def __init__(
         self,
@@ -221,26 +205,6 @@ class ExternalMediaAlertWorker:
         raise ValueError(f"unknown stage: {self.stage}")
 
     def _run_domain_judge(self, task) -> None:
-        deterministic = deterministic_domain_route(task)
-        if deterministic == "crypto":
-            raw_output = json.dumps({"route": "crypto"}, ensure_ascii=False)
-            self.repository.complete_domain(
-                task.id,
-                route="crypto",
-                prompt=None,
-                model=DETERMINISTIC_DOMAIN_MODEL,
-                raw_output=raw_output,
-            )
-            return
-        if deterministic == "discard":
-            raw_output = json.dumps({"route": "discard"}, ensure_ascii=False)
-            self.repository.complete_domain_discard(
-                task.id,
-                prompt=None,
-                model=DETERMINISTIC_DOMAIN_MODEL,
-                raw_output=raw_output,
-            )
-            return
         prompt = self._get_prompt(ALERT_PROMPT_KEY)
         raw_output = self.ai_client.generate_text(
             model=self.settings.domain_judge_model,
@@ -413,24 +377,6 @@ class ExternalMediaAlertWorker:
 
 def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
-
-
-def deterministic_domain_route(task) -> DomainJudgeRoute | None:
-    text = " ".join(
-        filter(
-            None,
-            [
-                str(task.title or ""),
-                str(task.metadata.get("excerpt") or task.content or ""),
-                str(task.source_url or ""),
-            ],
-        )
-    )
-    if CRYPTO_PATTERN.search(text):
-        return "crypto"
-    if NON_CRYPTO_PATTERN.search(text):
-        return "discard"
-    return None
 
 
 def build_domain_prompt(*, task, prompt_content: str) -> str:

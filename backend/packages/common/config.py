@@ -322,7 +322,7 @@ class ExternalMediaAlertSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    domain_judge_model: str = "gpt-5.5-mini"
+    domain_judge_model: str = "gpt-5.4-mini"
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -355,7 +355,7 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
         "domain_judge_model": (
             os.getenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL")
             or os.getenv("X_PROCESS_JUDGE_MODEL")
-            or "gpt-5.5-mini"
+            or "gpt-5.4-mini"
         ),
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",

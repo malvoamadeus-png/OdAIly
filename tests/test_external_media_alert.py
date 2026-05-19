@@ -106,7 +106,7 @@ def build_task(
     )
 
 
-def test_domain_judge_keeps_strong_crypto_title_without_model() -> None:
+def test_domain_judge_sends_strong_crypto_title_to_model() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(
         build_task(
@@ -119,7 +119,7 @@ def test_domain_judge_keeps_strong_crypto_title_without_model() -> None:
             source_url="https://www.ft.com/content/one/",
         )
     )
-    ai_client = FakeAIClient([])
+    ai_client = FakeAIClient(['{"route":"crypto"}'])
     worker = ExternalMediaAlertWorker(
         stage="domain_judge",
         repository=repo,
@@ -132,11 +132,11 @@ def test_domain_judge_keeps_strong_crypto_title_without_model() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "classified"
     assert repo.pipelines[1].domain_route == "crypto"
-    assert repo.pipelines[1].domain_model == "deterministic-domain-precheck"
-    assert ai_client.calls == []
+    assert repo.pipelines[1].domain_model == "gpt-5.4-mini"
+    assert len(ai_client.calls) == 1
 
 
-def test_domain_judge_does_not_auto_keep_fortune_non_crypto_title() -> None:
+def test_domain_judge_sends_fortune_non_crypto_title_to_model() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(
         build_task(
@@ -164,7 +164,7 @@ def test_domain_judge_does_not_auto_keep_fortune_non_crypto_title() -> None:
     assert len(ai_client.calls) == 1
 
 
-def test_domain_judge_discards_strong_non_crypto_title_without_model() -> None:
+def test_domain_judge_sends_strong_non_crypto_title_to_model() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(
         build_task(
@@ -181,13 +181,45 @@ def test_domain_judge_discards_strong_non_crypto_title_without_model() -> None:
         stage="domain_judge",
         repository=repo,
         settings=settings(),
-        ai_client=FakeAIClient([]),
+        ai_client=FakeAIClient(['{"route":"discard"}']),
     )
 
     worker.run_once()
 
     assert repo.tasks[1].status == "discarded"
     assert repo.pipelines[1].discard_reason == "non_crypto"
+    assert repo.pipelines[1].domain_model == "gpt-5.4-mini"
+
+
+def test_domain_judge_sends_short_ticker_substring_to_model() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="pending",
+            site_key="wsj_finance",
+            site_display_name="WSJ Finance",
+            title=(
+                "Heard on the Street: While everyone obsesses over what happens to oil flows in the Strait of "
+                "Hormuz, a solar-power revolution is under way in some emerging countries"
+            ),
+            excerpt="Solar-power trade-barrier story.",
+            source_url="https://www.wsj.com/finance/investing/to-cash-in-on-solar-stocks-look-for-trade-barriers-ad33e94f/",
+        )
+    )
+    ai_client = FakeAIClient(['{"route":"discard"}'])
+    worker = ExternalMediaAlertWorker(
+        stage="domain_judge",
+        repository=repo,
+        settings=settings(),
+        ai_client=ai_client,
+    )
+
+    worker.run_once()
+
+    assert repo.tasks[1].status == "discarded"
+    assert repo.pipelines[1].discard_reason == "non_crypto"
+    assert len(ai_client.calls) == 1
 
 
 def test_domain_judge_uses_model_for_ambiguous_title() -> None:
