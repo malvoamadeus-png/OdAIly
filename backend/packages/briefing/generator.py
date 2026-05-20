@@ -59,7 +59,7 @@ INDICES_MAP = {
 }
 
 FOOTER_TEXT = (
-    "据悉，msx.com 是一个去中心化 RWA 交易平台，累计已上线数百种 RWA 代币，"
+    "据悉，MSX.COM 是一个去中心化 RWA 交易平台，累计已上线数百种 RWA 代币，"
     "涵盖 AAPL、AMZN、GOOGL、META、MSFT、NFLX、NVDA 等美股及 ETF 代币标的。"
 )
 
@@ -177,9 +177,9 @@ def build_brief(*, kind: BriefKind, quotes: list[MarketQuote], skipped_symbols: 
     title = _title_for_stock_moves(kind, stock_moves, trend)
 
     if kind == "premarket":
-        content = f"根据 MSX.com 数据，美股盘前{stock_sentence}。\n{FOOTER_TEXT}"
+        content = f"根据 MSX.COM 数据，美股盘前{stock_sentence}。\n{FOOTER_TEXT}"
     else:
-        content = f"根据 MSX.com 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
+        content = f"根据 MSX.COM 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
 
     return BriefPayload(
         title=title,
