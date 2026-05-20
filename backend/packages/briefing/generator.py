@@ -177,9 +177,9 @@ def build_brief(*, kind: BriefKind, quotes: list[MarketQuote], skipped_symbols: 
     title = _title_for_stock_moves(kind, stock_moves, trend)
 
     if kind == "premarket":
-        content = f"根据 msx.com 数据，美股盘前{stock_sentence}。\n{FOOTER_TEXT}"
+        content = f"根据 MSX.com 数据，美股盘前{stock_sentence}。\n{FOOTER_TEXT}"
     else:
-        content = f"根据 msx.com 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
+        content = f"根据 MSX.com 数据，{_index_sentence(valid_quotes, kind=kind)}。{stock_sentence}。\n{FOOTER_TEXT}"
 
     return BriefPayload(
         title=title,
