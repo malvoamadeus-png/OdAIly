@@ -161,6 +161,7 @@ X_PROCESS_OPENAI_API_STYLE=responses
 COMPETITOR_OPENAI_API_STYLE=
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
 X_PROCESS_WRITER_MODEL=gpt-5.5
+X_PROCESS_WRITER_REASONING_EFFORT=high
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
 SEARCH_EMBEDDING_MODEL=text-embedding-v4
 SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -188,7 +189,8 @@ ending in `/v1`. Keep `X_PROCESS_OPENAI_API_STYLE=responses` when the relay
 supports `/v1/responses`; use `chat_completions` when it only supports
 `/v1/chat/completions`. Set `COMPETITOR_OPENAI_API_STYLE` only when the
 competitor event-review endpoint needs a different style from the rest of the
-X-processing workers.
+X-processing workers. `X_PROCESS_WRITER_REASONING_EFFORT` controls the
+reasoning effort used by 编写者1 and now defaults to `high`.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for

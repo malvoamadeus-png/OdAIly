@@ -512,6 +512,7 @@ class XProcessingWorker:
         raw_output = self.ai_client.generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
+            reasoning_effort=self.settings.writer_reasoning_effort,
         )
         draft = parse_draft_output(raw_output)
         self.repository.complete_write(

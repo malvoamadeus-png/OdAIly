@@ -251,6 +251,7 @@ class XProcessingSettings(BaseModel):
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     judge_model: str = "gpt-5.4-mini"
     writer_model: str = "gpt-5.5"
+    writer_reasoning_effort: str = "high"
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -291,6 +292,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
         "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
+        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "high",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
