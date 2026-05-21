@@ -373,6 +373,7 @@ class PostgresXProcessingRepository:
                     task_id,
                 ),
             )
+            self._release_primary_candidate(conn, task_id=task_id, release_reason="discarded")
             self._set_task_status(conn, task_id, "discarded")
             conn.commit()
 
@@ -624,6 +625,7 @@ class PostgresXProcessingRepository:
                 """,
                 (error[:2000], task_id),
             )
+            self._release_primary_candidate(conn, task_id=task_id, release_reason=status)
             self._set_task_status(conn, task_id, status)
             conn.commit()
 
@@ -680,6 +682,40 @@ class PostgresXProcessingRepository:
             (status, task_id),
         )
 
+    def _release_primary_candidate(self, conn, *, task_id: int, release_reason: str) -> None:
+        row = conn.execute(
+            """
+            SELECT c.id
+            FROM x_task_pipeline p
+            JOIN search_event_candidates c ON c.id = p.candidate_id
+            WHERE p.task_id = %s
+              AND c.primary_task_id = %s
+              AND c.status = 'active'
+            """,
+            (task_id, task_id),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute(
+            """
+            UPDATE search_event_candidates
+            SET status = 'inactive',
+                expires_at = now(),
+                metadata = metadata || %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (
+                self._Jsonb(
+                    {
+                        "released_by_task_id": task_id,
+                        "released_by_task_status": release_reason,
+                    }
+                ),
+                row["id"],
+            ),
+        )
+
 
 class InMemoryXProcessingRepository:
     def __init__(self) -> None:
@@ -730,6 +766,7 @@ class InMemoryXProcessingRepository:
     def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": None, "last_error": None})
+        self._release_primary_candidate(task_id)
         self._set_status(task_id, "discarded")
 
     def complete_search(self, task_id: int) -> None:
@@ -830,6 +867,7 @@ class InMemoryXProcessingRepository:
     def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None:
         current = self.pipelines.get(task_id, PipelineRecord(task_id=task_id))
         self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "last_error": error})
+        self._release_primary_candidate(task_id)
         self._set_status(task_id, status or STAGE_SPECS[stage].failure_status)
 
     def record_worker_heartbeat(
@@ -848,6 +886,15 @@ class InMemoryXProcessingRepository:
         task = self.tasks[task_id]
         self.tasks[task_id] = TaskRecord(**{**asdict(task), "status": status, "updated_at": utc_now()})
         self._locks.discard(task_id)
+
+    def _release_primary_candidate(self, task_id: int) -> None:
+        candidate_id = self.pipelines.get(task_id, PipelineRecord(task_id=task_id)).candidate_id
+        if candidate_id is None:
+            return
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None or candidate.task_id != task_id:
+            return
+        self.candidates.pop(candidate_id, None)
 
 
 SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + NEWSFLASH_EVENT_SCHEMA_SQL + """

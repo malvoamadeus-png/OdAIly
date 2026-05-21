@@ -20,8 +20,22 @@ class FakeAiClient:
         self.outputs = outputs
         self.calls: list[dict[str, Any]] = []
 
-    def generate_text(self, *, model: str, prompt: str, text_format: dict[str, Any] | None = None) -> str:
-        self.calls.append({"model": model, "prompt": prompt, "text_format": text_format})
+    def generate_text(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        text_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        self.calls.append(
+            {
+                "model": model,
+                "prompt": prompt,
+                "text_format": text_format,
+                "reasoning_effort": reasoning_effort,
+            }
+        )
         return self.outputs.pop(0)
 
 
@@ -467,6 +481,53 @@ def test_search_retry_ignores_own_existing_candidate() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "searched"
     assert repo.pipelines[1].candidate_id == 1
+
+
+def test_judge_discard_releases_primary_candidate() -> None:
+    repo = InMemoryXProcessingRepository()
+    competitor = competitor_task(1, status="searched")
+    repo.add_task(competitor)
+    repo.pipelines[1] = PipelineRecord(task_id=1, candidate_id=1)
+    repo.create_candidate_for_task(competitor, search_result={})
+    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"daily_chatter"}'])
+    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "discarded"
+    assert 1 not in repo.candidates
+
+
+def test_write_failure_releases_primary_candidate_and_allows_retry_event() -> None:
+    repo = InMemoryXProcessingRepository()
+    primary = task(1, status="deduped")
+    repo.add_task(primary)
+    candidate_id, _ = repo.create_candidate_for_task(primary, search_result={})
+    repo.pipelines[1] = PipelineRecord(task_id=1, news_type="funding", candidate_id=candidate_id)
+    writer = XProcessingWorker(stage="write", repository=repo, settings=settings(), ai_client=FakeAiClient(["标题-only"]))
+
+    result = writer.run_once()
+
+    assert result.failed == 1
+    assert repo.tasks[1].status == "write_failed"
+    assert 1 not in repo.candidates
+
+    retry = task(2, status="judged")
+    repo.add_task(retry)
+    search_worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService({"task:2": [0.0, 1.0]}),
+    )
+
+    retry_result = search_worker.run_once()
+
+    assert retry_result.processed == 1
+    assert repo.tasks[2].status == "deduped"
+    assert repo.pipelines[2].candidate_id == 2
 
 
 def test_competitor_flows_search_then_judge() -> None:
