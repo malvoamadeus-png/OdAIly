@@ -769,6 +769,30 @@ textarea:focus {
   gap: 10px;
 }
 
+.featureModeToggle {
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #e5e8ec;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.featureModeToggle input {
+  width: auto;
+  margin: 0;
+}
+
+.featureModeToggle span {
+  font-size: 13px;
+  font-weight: 650;
+  color: #1f2937;
+}
+
+.featureModeToggle small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
 .versionItem {
   display: grid;
   gap: 6px;
@@ -780,6 +804,12 @@ textarea:focus {
 .versionItem div {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
+}
+
+.versionActions {
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
 }
 

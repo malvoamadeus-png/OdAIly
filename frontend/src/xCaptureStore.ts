@@ -68,6 +68,7 @@ export type PromptTemplate = {
   template_key: string;
   display_name: string;
   active_version_id: number | null;
+  feature_mode_enabled: boolean;
   updated_at: string;
 };
 
@@ -568,7 +569,7 @@ async function listRecentTasks(limit: number): Promise<TaskItem[]> {
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {
   const { data, error } = await supabase()
     .from('prompt_templates')
-    .select('template_key,display_name,active_version_id,updated_at')
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
     .order('template_key', { ascending: true });
   raise(error);
   return (data ?? []) as unknown as PromptTemplate[];
@@ -619,10 +620,57 @@ export async function publishPromptVersion(templateKey: string, versionId: numbe
       updated_at: nowIso(),
     })
     .eq('template_key', templateKey)
-    .select('template_key,display_name,active_version_id,updated_at')
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
     .single();
   raise(error);
   return assertData(data as PromptTemplate | null, '发布 Prompt 版本失败');
+}
+
+export async function updatePromptTemplateFeatureMode(
+  templateKey: string,
+  enabled: boolean,
+): Promise<PromptTemplate> {
+  const { data, error } = await supabase()
+    .from('prompt_templates')
+    .update({
+      feature_mode_enabled: enabled,
+      updated_at: nowIso(),
+    })
+    .eq('template_key', templateKey)
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as PromptTemplate | null, 'failed to update prompt feature mode');
+}
+
+export async function deletePromptVersion(templateKey: string, versionId: number): Promise<void> {
+  const [templates, versions] = await Promise.all([listPromptTemplates(), listPromptVersions(templateKey)]);
+  const template = templates.find((item) => item.template_key === templateKey);
+  const targetVersion = versions.find((item) => item.id === versionId);
+  if (!template || !targetVersion) {
+    throw new Error('prompt version not found');
+  }
+  if (versions.length <= 1) {
+    throw new Error('at least one prompt version must remain');
+  }
+
+  if (template.active_version_id === versionId) {
+    const fallback = versions.find((item) => item.id !== versionId);
+    if (!fallback) {
+      throw new Error('cannot delete the active prompt version');
+    }
+    const { error: updateError } = await supabase()
+      .from('prompt_templates')
+      .update({
+        active_version_id: fallback.id,
+        updated_at: nowIso(),
+      })
+      .eq('template_key', templateKey);
+    raise(updateError);
+  }
+
+  const { error } = await supabase().from('prompt_template_versions').delete().eq('id', versionId);
+  raise(error);
 }
 
 export function normalizeCompetitorKeyword(value: string): string {

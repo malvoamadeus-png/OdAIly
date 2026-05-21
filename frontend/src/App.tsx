@@ -26,6 +26,7 @@ import {
   listPromptTemplates,
   listPromptVersions,
   createPromptVersion,
+  deletePromptVersion,
   publishPromptVersion,
   saveNewsflashEventNote,
   saveNewsflashItemNote,
@@ -35,6 +36,7 @@ import {
   updateAccount,
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
+  updatePromptTemplateFeatureMode,
   updateSettings,
   type Account,
   type AccountPatch,
@@ -135,6 +137,8 @@ export function App() {
   const [promptContent, setPromptContent] = useState('');
   const [promptNote, setPromptNote] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [updatingPromptFeatureMode, setUpdatingPromptFeatureMode] = useState(false);
+  const [deletingPromptVersionId, setDeletingPromptVersionId] = useState<number | null>(null);
   const [competitorKeywords, setCompetitorKeywords] = useState<CompetitorFilterKeyword[]>([]);
   const [newKeywords, setNewKeywords] = useState('');
   const [savingKeywords, setSavingKeywords] = useState(false);
@@ -393,6 +397,42 @@ export function App() {
       await loadPrompts(version.template_key);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function togglePromptFeatureMode(enabled: boolean) {
+    if (!selectedPromptKey) return;
+    setUpdatingPromptFeatureMode(true);
+    setError('');
+    try {
+      await updatePromptTemplateFeatureMode(selectedPromptKey, enabled);
+      setMessage(enabled ? '已开启特色模式' : '已关闭特色模式');
+      await loadPrompts(selectedPromptKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingPromptFeatureMode(false);
+    }
+  }
+
+  async function removePromptVersion(version: PromptVersion) {
+    const confirmed = window.confirm(
+      version.id === promptTemplates.find((item) => item.template_key === version.template_key)?.active_version_id
+        ? `确认删除当前生效的 v${version.version_number} 吗？删除后会自动切换到剩余最新版本。`
+        : `确认删除 v${version.version_number} 吗？`,
+    );
+    if (!confirmed) return;
+
+    setDeletingPromptVersionId(version.id);
+    setError('');
+    try {
+      await deletePromptVersion(version.template_key, version.id);
+      setMessage(`已删除 v${version.version_number}`);
+      await loadPrompts(version.template_key);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingPromptVersionId(null);
     }
   }
 
@@ -721,11 +761,15 @@ export function App() {
             content={promptContent}
             note={promptNote}
             saving={savingPrompt}
+            featureModeSaving={updatingPromptFeatureMode}
+            deletingVersionId={deletingPromptVersionId}
             onSelect={selectPrompt}
             onContentChange={setPromptContent}
             onNoteChange={setPromptNote}
             onSave={savePromptVersion}
+            onToggleFeatureMode={togglePromptFeatureMode}
             onPublish={publishExistingVersion}
+            onDeleteVersion={removePromptVersion}
             onRefresh={() => loadPrompts(selectedPromptKey)}
           />
         ) : view === 'competitor' ? (
@@ -902,11 +946,15 @@ function PromptPanel({
   content,
   note,
   saving,
+  featureModeSaving,
+  deletingVersionId,
   onSelect,
   onContentChange,
   onNoteChange,
   onSave,
+  onToggleFeatureMode,
   onPublish,
+  onDeleteVersion,
   onRefresh,
 }: {
   templates: PromptTemplate[];
@@ -915,11 +963,15 @@ function PromptPanel({
   content: string;
   note: string;
   saving: boolean;
+  featureModeSaving: boolean;
+  deletingVersionId: number | null;
   onSelect: (templateKey: string) => Promise<void>;
   onContentChange: (value: string) => void;
   onNoteChange: (value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onToggleFeatureMode: (enabled: boolean) => Promise<void>;
   onPublish: (version: PromptVersion) => Promise<void>;
+  onDeleteVersion: (version: PromptVersion) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
   const selected = templates.find((template) => template.template_key === selectedKey);
@@ -958,6 +1010,16 @@ function PromptPanel({
             <Save size={17} /> 发布新版本
           </button>
         </div>
+        <label className="featureModeToggle">
+          <input
+            type="checkbox"
+            checked={Boolean(selected?.feature_mode_enabled)}
+            disabled={!selected || featureModeSaving}
+            onChange={(event) => void onToggleFeatureMode(event.target.checked)}
+          />
+          <span>开启特色模式</span>
+          <small>启用后，后端会在执行时自动在 Prompt 最前面加上“开启特色模式”。</small>
+        </label>
         <textarea
           value={content}
           onChange={(event) => onContentChange(event.target.value)}
@@ -978,9 +1040,20 @@ function PromptPanel({
             </div>
             <p>{version.note || '无备注'}</p>
             <small>{fmtTime(version.created_at)}</small>
-            <button className="iconButton" type="button" onClick={() => onPublish(version)} title="发布此版本">
-              <Zap size={16} />
-            </button>
+            <div className="versionActions">
+              <button className="iconButton" type="button" onClick={() => onPublish(version)} title="发布此版本">
+                <Zap size={16} />
+              </button>
+              <button
+                className="iconButton danger"
+                type="button"
+                disabled={deletingVersionId === version.id}
+                onClick={() => onDeleteVersion(version)}
+                title="删除此版本"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
           </article>
         ))}
       </aside>

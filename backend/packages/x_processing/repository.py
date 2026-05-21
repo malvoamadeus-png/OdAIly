@@ -52,6 +52,10 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+PROMPT_FEATURE_MODE_DEFAULTS: dict[str, bool] = {
+    "x_onchain_writer": True,
+}
+
 
 class XProcessingRepository(Protocol):
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None: ...
@@ -177,6 +181,7 @@ def _row_to_prompt(row: dict[str, Any]) -> PromptTemplateVersion:
         template_key=str(row["template_key"]),
         version_number=int(row["version_number"]),
         content=str(row["content"]),
+        feature_mode_enabled=bool(row.get("feature_mode_enabled") or False),
         note=row.get("note"),
         created_at=row.get("created_at"),
         published_at=row.get("published_at"),
@@ -207,15 +212,16 @@ class PostgresXProcessingRepository:
         with self._connect() as conn:
             for template_key, (display_name, relative_path, note) in PROMPT_SEEDS.items():
                 content = (root_dir / relative_path).read_text(encoding="utf-8")
+                feature_mode_enabled = PROMPT_FEATURE_MODE_DEFAULTS.get(template_key, False)
                 conn.execute(
                     """
-                    INSERT INTO prompt_templates (template_key, display_name)
-                    VALUES (%s, %s)
+                    INSERT INTO prompt_templates (template_key, display_name, feature_mode_enabled)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT (template_key) DO UPDATE
                     SET display_name = EXCLUDED.display_name,
                         updated_at = now()
                     """,
-                    (template_key, display_name),
+                    (template_key, display_name, feature_mode_enabled),
                 )
                 existing = conn.execute(
                     "SELECT active_version_id FROM prompt_templates WHERE template_key = %s",
@@ -320,7 +326,7 @@ class PostgresXProcessingRepository:
         with self._connect(autocommit=True) as conn:
             row = conn.execute(
                 """
-                SELECT v.*
+                SELECT v.*, t.feature_mode_enabled
                 FROM prompt_templates t
                 JOIN prompt_template_versions v ON v.id = t.active_version_id
                 WHERE t.template_key = %s
@@ -726,7 +732,13 @@ class InMemoryXProcessingRepository:
         self.event_sources: list[dict[str, Any]] = []
         self._next_candidate_id = 1
         self.prompts: dict[str, PromptTemplateVersion] = {
-            key: PromptTemplateVersion(id=index, template_key=key, version_number=1, content=f"prompt {key}")
+            key: PromptTemplateVersion(
+                id=index,
+                template_key=key,
+                version_number=1,
+                content=f"prompt {key}",
+                feature_mode_enabled=PROMPT_FEATURE_MODE_DEFAULTS.get(key, False),
+            )
             for index, key in enumerate(PROMPT_KEY_BY_NEWS_TYPE.values(), start=1)
         }
         self._locks: set[int] = set()
@@ -922,9 +934,12 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     template_key text PRIMARY KEY,
     display_name text NOT NULL,
     active_version_id bigint,
+    feature_mode_enabled boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_enabled boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS prompt_template_versions (
     id bigserial PRIMARY KEY,
@@ -1033,7 +1048,14 @@ RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify(
         'prompt_config_changed',
-        json_build_object('template_key', NEW.template_key, 'active_version_id', NEW.active_version_id)::text
+        json_build_object(
+            'template_key',
+            NEW.template_key,
+            'active_version_id',
+            NEW.active_version_id,
+            'feature_mode_enabled',
+            NEW.feature_mode_enabled
+        )::text
     );
     RETURN NEW;
 END;
@@ -1041,9 +1063,12 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_prompt_templates_notify ON prompt_templates;
 CREATE TRIGGER trg_prompt_templates_notify
-AFTER UPDATE OF active_version_id ON prompt_templates
+AFTER UPDATE OF active_version_id, feature_mode_enabled ON prompt_templates
 FOR EACH ROW
-WHEN (OLD.active_version_id IS DISTINCT FROM NEW.active_version_id)
+WHEN (
+    OLD.active_version_id IS DISTINCT FROM NEW.active_version_id
+    OR OLD.feature_mode_enabled IS DISTINCT FROM NEW.feature_mode_enabled
+)
 EXECUTE FUNCTION notify_prompt_config_changed();
 
 ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
@@ -1065,7 +1090,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
-        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON prompt_template_versions TO anon;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO anon;
 

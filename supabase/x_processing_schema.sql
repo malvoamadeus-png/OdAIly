@@ -26,9 +26,12 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     template_key text PRIMARY KEY,
     display_name text NOT NULL,
     active_version_id bigint,
+    feature_mode_enabled boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_enabled boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS prompt_template_versions (
     id bigserial PRIMARY KEY,
@@ -461,7 +464,14 @@ RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify(
         'prompt_config_changed',
-        json_build_object('template_key', NEW.template_key, 'active_version_id', NEW.active_version_id)::text
+        json_build_object(
+            'template_key',
+            NEW.template_key,
+            'active_version_id',
+            NEW.active_version_id,
+            'feature_mode_enabled',
+            NEW.feature_mode_enabled
+        )::text
     );
     RETURN NEW;
 END;
@@ -469,9 +479,12 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_prompt_templates_notify ON prompt_templates;
 CREATE TRIGGER trg_prompt_templates_notify
-AFTER UPDATE OF active_version_id ON prompt_templates
+AFTER UPDATE OF active_version_id, feature_mode_enabled ON prompt_templates
 FOR EACH ROW
-WHEN (OLD.active_version_id IS DISTINCT FROM NEW.active_version_id)
+WHEN (
+    OLD.active_version_id IS DISTINCT FROM NEW.active_version_id
+    OR OLD.feature_mode_enabled IS DISTINCT FROM NEW.feature_mode_enabled
+)
 EXECUTE FUNCTION notify_prompt_config_changed();
 
 ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
@@ -509,7 +522,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
-        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON prompt_template_versions TO anon;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources, auditor_checks TO anon;
         GRANT SELECT ON writer3_contexts TO anon;
         GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO anon;

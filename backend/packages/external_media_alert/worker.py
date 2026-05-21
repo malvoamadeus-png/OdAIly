@@ -14,6 +14,7 @@ from uuid import uuid4
 from packages.common.config import ExternalMediaAlertSettings
 from packages.common.paths import get_paths
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
+from packages.x_processing.models import PromptTemplateVersion, render_prompt_content
 from packages.x_processing.searcher import CachedEmbeddingService, DashScopeEmbeddingClient, SearchCache, SearchDecision, SearchDocument, top_match
 from packages.x_processing.telegram import TelegramClient
 
@@ -208,7 +209,7 @@ class ExternalMediaAlertWorker:
         prompt = self._get_prompt(ALERT_PROMPT_KEY)
         raw_output = self.ai_client.generate_text(
             model=self.settings.domain_judge_model,
-            prompt=build_domain_prompt(task=task, prompt_content=prompt.content),
+            prompt=build_domain_prompt(task=task, prompt=prompt),
             text_format=DOMAIN_JSON_SCHEMA,
         )
         route = parse_domain_route(raw_output)
@@ -379,10 +380,10 @@ def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
 
 
-def build_domain_prompt(*, task, prompt_content: str) -> str:
+def build_domain_prompt(*, task, prompt: PromptTemplateVersion) -> str:
     excerpt = str(task.metadata.get("excerpt") or task.content or "").strip()
     return (
-        f"{prompt_content}\n\n"
+        f"{render_prompt_content(prompt)}\n\n"
         "【待判断标题提醒】\n"
         f"来源媒体：{task.metadata.get('site_display_name') or '外媒'}\n"
         f"站点标识：{task.metadata.get('site_key') or ''}\n"

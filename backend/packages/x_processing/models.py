@@ -19,6 +19,7 @@ COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
 ODAILY_REFERENCE_SOURCE = "odaily"
 SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE}
 PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
+FEATURE_MODE_PREFIX = "开启特色模式"
 
 
 PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
@@ -83,9 +84,19 @@ class PromptTemplateVersion:
     template_key: str
     version_number: int
     content: str
+    feature_mode_enabled: bool = False
     note: str | None = None
     created_at: datetime | None = None
     published_at: datetime | None = None
+
+
+def render_prompt_content(prompt: PromptTemplateVersion) -> str:
+    if not prompt.feature_mode_enabled:
+        return prompt.content
+    stripped_content = prompt.content.lstrip()
+    if stripped_content.startswith(FEATURE_MODE_PREFIX):
+        return prompt.content
+    return f"{FEATURE_MODE_PREFIX}\n\n{prompt.content}"
 
 
 @dataclass(frozen=True, slots=True)

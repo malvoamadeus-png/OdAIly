@@ -2,7 +2,7 @@
 
 ## 职责
 
-控制台-Prompt 用于管理 Prompt 内容和版本，并发布某个版本为当前生效版本。
+控制台-Prompt 用于管理 Prompt 内容、版本和模板级开关，并发布某个版本为当前生效版本。
 
 Prompt 控制台不管理模型选择、reasoning effort、超时、重试或输出 schema。
 
@@ -14,6 +14,8 @@ Prompt 控制台不管理模型选择、reasoning effort、超时、重试或输
 - 新建 Prompt 版本。
 - 编辑版本内容。
 - 发布某个版本为当前生效版本。
+- 删除历史版本；如果删除的是当前生效版本，控制台必须先切换到其余版本，或自动回退到剩余最新版本。
+- 为每个模板维护 `特色模式` 开关；该开关只修改模板级配置，不直接改写版本正文。
 - 保留历史版本，便于回滚和追溯。
 
 当前 Prompt 模板除了 X 的常规、链上、融资模板外，还需要支持：
@@ -26,11 +28,16 @@ Prompt 控制台不管理模型选择、reasoning effort、超时、重试或输
 - `prompt_templates`
 - `prompt_template_versions`
 
+其中：
+
+- `prompt_templates.active_version_id` 表示当前生效版本。
+- `prompt_templates.feature_mode_enabled` 表示该模板是否开启特色模式。
+
 ## 发布生效
 
 保存草稿或创建新版本时，不通知 worker。
 
-发布版本时，控制台更新 `prompt_templates.active_version_id`，数据库触发 `prompt_config_changed` 通知。处理 worker 收到通知后刷新本地 Prompt 缓存。
+发布版本或切换 `特色模式` 时，控制台更新 `prompt_templates`，数据库触发 `prompt_config_changed` 通知。处理 worker 收到通知后刷新本地 Prompt 缓存。
 
 worker 启动时也必须主动加载当前生效 Prompt，不能只依赖通知。
 

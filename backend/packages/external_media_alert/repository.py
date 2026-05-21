@@ -84,6 +84,7 @@ def _row_to_prompt(row: dict[str, Any]) -> PromptTemplateVersion:
         template_key=str(row["template_key"]),
         version_number=int(row["version_number"]),
         content=str(row["content"]),
+        feature_mode_enabled=bool(row.get("feature_mode_enabled") or False),
         note=row.get("note"),
         created_at=row.get("created_at"),
         published_at=row.get("published_at"),
@@ -178,7 +179,7 @@ class PostgresExternalMediaAlertRepository:
         with self._connect(autocommit=True) as conn:
             row = conn.execute(
                 """
-                SELECT v.*
+                SELECT v.*, t.feature_mode_enabled
                 FROM prompt_templates t
                 JOIN prompt_template_versions v ON v.id = t.active_version_id
                 WHERE t.template_key = %s

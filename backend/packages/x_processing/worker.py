@@ -27,8 +27,10 @@ from .models import (
     JudgeRoute,
     NewsType,
     ProcessingStage,
+    PromptTemplateVersion,
     StageRunResult,
     TaskRecord,
+    render_prompt_content,
 )
 from .repository import (
     PROMPT_NOTIFY_CHANNEL,
@@ -508,7 +510,7 @@ class XProcessingWorker:
             raise ValueError("missing news_type")
         template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
         prompt = self._get_prompt(template_key)
-        input_prompt = build_writer_prompt(task=task, prompt_content=prompt.content)
+        input_prompt = build_writer_prompt(task=task, prompt=prompt)
         raw_output = self.ai_client.generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
@@ -626,12 +628,12 @@ def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
     return None
 
 
-def build_writer_prompt(*, task: TaskRecord, prompt_content: str) -> str:
+def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
     if is_non_mainstream_media_task(task):
         author_names = "、".join(task.metadata.get("author_names") or []) or "未知"
         site_display_name = task.metadata.get("site_display_name") or "非主流外媒"
         return (
-            f"{prompt_content}\n\n"
+            f"{render_prompt_content(prompt)}\n\n"
             "【待处理外媒原文】\n"
             f"来源媒体：{site_display_name}\n"
             f"作者：{author_names}\n"
@@ -652,7 +654,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt_content: str) -> str:
         )
     author = task.metadata.get("author_display_name") or task.metadata.get("author_username") or task.title or "Odaily"
     return (
-        f"{prompt_content}\n\n"
+        f"{render_prompt_content(prompt)}\n\n"
         "【待处理原文】\n"
         f"发布人：{author}\n"
         f"来源链接：{task.source_url or ''}\n"
