@@ -183,6 +183,7 @@ class PostgresExternalMediaAlertRepository:
                 FROM prompt_templates t
                 JOIN prompt_template_versions v ON v.id = t.active_version_id
                 WHERE t.template_key = %s
+                  AND v.deleted_at IS NULL
                 """,
                 (template_key,),
             ).fetchone()

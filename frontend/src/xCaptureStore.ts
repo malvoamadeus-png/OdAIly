@@ -580,6 +580,7 @@ export async function listPromptVersions(templateKey: string): Promise<PromptVer
     .from('prompt_template_versions')
     .select('id,template_key,version_number,content,note,created_at,published_at')
     .eq('template_key', templateKey)
+    .is('deleted_at', null)
     .order('version_number', { ascending: false });
   raise(error);
   return (data ?? []) as unknown as PromptVersion[];
@@ -590,8 +591,15 @@ export async function createPromptVersion(
   content: string,
   note: string | null,
 ): Promise<PromptVersion> {
-  const versions = await listPromptVersions(templateKey);
-  const nextVersion = versions.reduce((max, item) => Math.max(max, item.version_number), 0) + 1;
+  const { data: latestVersionRow, error: latestVersionError } = await supabase()
+    .from('prompt_template_versions')
+    .select('version_number')
+    .eq('template_key', templateKey)
+    .order('version_number', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  raise(latestVersionError);
+  const nextVersion = Number(latestVersionRow?.version_number ?? 0) + 1;
   const { data, error } = await supabase()
     .from('prompt_template_versions')
     .insert({
@@ -669,7 +677,12 @@ export async function deletePromptVersion(templateKey: string, versionId: number
     raise(updateError);
   }
 
-  const { error } = await supabase().from('prompt_template_versions').delete().eq('id', versionId);
+  const { error } = await supabase()
+    .from('prompt_template_versions')
+    .update({
+      deleted_at: nowIso(),
+    })
+    .eq('id', versionId);
   raise(error);
 }
 

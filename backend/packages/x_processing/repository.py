@@ -330,6 +330,7 @@ class PostgresXProcessingRepository:
                 FROM prompt_templates t
                 JOIN prompt_template_versions v ON v.id = t.active_version_id
                 WHERE t.template_key = %s
+                  AND v.deleted_at IS NULL
                 """,
                 (template_key,),
             ).fetchone()
@@ -949,8 +950,11 @@ CREATE TABLE IF NOT EXISTS prompt_template_versions (
     note text,
     created_at timestamptz NOT NULL DEFAULT now(),
     published_at timestamptz,
+    deleted_at timestamptz,
     UNIQUE (template_key, version_number)
 );
+
+ALTER TABLE prompt_template_versions ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1090,7 +1094,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         GRANT USAGE ON SCHEMA public TO anon;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON prompt_template_versions TO anon;
+        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO anon;
 
