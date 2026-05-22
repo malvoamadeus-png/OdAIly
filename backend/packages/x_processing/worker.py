@@ -644,7 +644,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
         )
     if is_competitor_task(task):
         return (
-            f"{prompt_content}\n\n"
+            f"{render_prompt_content(prompt)}\n\n"
             "【信源材料】\n"
             "来源类型：信源\n"
             f"标题：{task.title or ''}\n"
