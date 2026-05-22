@@ -140,10 +140,13 @@ def extract_response_text(payload: dict[str, Any]) -> str:
         return output_text.strip()
 
     parts: list[str] = []
-    for item in payload.get("output", []):
+    for item in payload.get("output") or []:
         if not isinstance(item, dict):
             continue
-        for content in item.get("content", []):
+        content_items = item.get("content")
+        if not isinstance(content_items, list):
+            continue
+        for content in content_items:
             if isinstance(content, dict) and content.get("type") == "output_text":
                 text = content.get("text")
                 if isinstance(text, str):
