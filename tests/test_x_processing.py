@@ -10,7 +10,7 @@ from packages.x_processing.ai_client import OpenAIResponsesClient, to_chat_respo
 from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
-from packages.x_processing.searcher import SearchDocument
+from packages.x_processing.searcher import SearchDocument, document_cache_key
 from packages.x_processing.telegram import TelegramClient, TelegramResult
 from packages.x_processing.worker import XProcessingWorker, build_telegram_notice, parse_judge_route, parse_news_type
 
@@ -76,7 +76,31 @@ class FakeEmbeddingService:
         return self.vectors.get(cache_key, [1.0, 0.0])
 
     def embed_documents(self, documents: list[SearchDocument]):
-        return [(doc, self.vectors.get(f"{doc.doc_type}:{doc.doc_id}", [1.0, 0.0])) for doc in documents]
+        return [
+            (
+                doc,
+                self.vectors.get(
+                    document_cache_key(doc),
+                    self.vectors.get(f"{doc.doc_type}:{doc.doc_id}", [1.0, 0.0]),
+                ),
+            )
+            for doc in documents
+        ]
+
+
+class CountingRepository(InMemoryXProcessingRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.odaily_reads = 0
+        self.candidate_reads = 0
+
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        self.odaily_reads += 1
+        return super().list_odaily_reference_documents(since=since)
+
+    def list_active_candidate_documents(self) -> list[SearchDocument]:
+        self.candidate_reads += 1
+        return super().list_active_candidate_documents()
 
 
 class FakeOpenAIResponse:
@@ -430,7 +454,12 @@ def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
         repository=repo,
         settings=settings(),
         ai_client=None,
-        search_embedding_service=FakeEmbeddingService({"task:1": [0.0, 1.0]}),
+        search_embedding_service=FakeEmbeddingService(
+            {
+                "task:1": [0.0, 1.0],
+                "odaily_reference:odaily:od-1": [0.0, 1.0],
+            }
+        ),
     )
 
     result = worker.run_once()
@@ -461,6 +490,77 @@ def test_searcher_links_duplicate_to_active_candidate() -> None:
     assert repo.tasks[2].status == "duplicate"
     assert repo.event_sources[-1]["candidate_id"] == 1
     assert repo.event_sources[-1]["role"] == "supporting"
+
+
+def test_searcher_uses_local_mirrored_odaily_references_after_warmup() -> None:
+    repo = CountingRepository()
+    repo.add_task(competitor_task(1, status="pending"))
+    repo.odaily_references = [
+        SearchDocument(
+            doc_type="odaily_reference",
+            doc_id="od-1",
+            title="某项目完成融资",
+            content="Odaily 已发布",
+            source="odaily",
+            source_url="https://www.odaily.news/post/1",
+            published_at=datetime.now(UTC),
+        )
+    ]
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService(
+            {
+                "task:1": [0.0, 1.0],
+                "odaily_reference:odaily:od-1": [0.0, 1.0],
+            }
+        ),
+    )
+    worker._search_cache().upsert_documents(repo.odaily_references)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "duplicate"
+    assert repo.odaily_reads == 0
+
+
+def test_searcher_uses_local_mirrored_candidates_after_warmup() -> None:
+    repo = CountingRepository()
+    primary = competitor_task(1, status="deduped")
+    repo.add_task(primary)
+    candidate_id, _ = repo.create_candidate_for_task(primary, search_result={})
+    duplicate = competitor_task(2, status="pending")
+    repo.add_task(duplicate)
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService({"task:2": [1.0, 0.0], "candidate:1": [1.0, 0.0]}),
+    )
+    worker._search_cache().upsert_document(
+        SearchDocument(
+            doc_type="candidate",
+            doc_id=str(candidate_id),
+            title=primary.title,
+            content=primary.content,
+            source="candidate",
+            task_id=primary.id,
+            candidate_id=candidate_id,
+            status="active",
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(days=2),
+        )
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[2].status == "duplicate"
+    assert repo.candidate_reads == 0
 
 
 def test_search_retry_ignores_own_existing_candidate() -> None:

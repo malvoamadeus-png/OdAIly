@@ -274,6 +274,47 @@ def test_worker_prune_respects_hourly_interval() -> None:
     assert worker._prune_attempts_if_due() == 0
 
 
+def test_inmemory_repository_samples_noop_success_attempts_per_account_window() -> None:
+    repo = InMemoryXCaptureRepository()
+    account = repo.create_account(username_or_url="ai_9684xtpa")
+    started = datetime.now(UTC)
+
+    repo.record_attempt(
+        stats=repo_stats(account, "success"),
+        started_at=started,
+        finished_at=started + timedelta(seconds=1),
+    )
+    repo.record_attempt(
+        stats=repo_stats(account, "success"),
+        started_at=started + timedelta(minutes=5),
+        finished_at=started + timedelta(minutes=5, seconds=1),
+    )
+
+    assert len(repo.attempts) == 1
+
+
+def test_inmemory_repository_keeps_interesting_success_attempts() -> None:
+    from packages.x_capture.models import CaptureRunStats
+
+    repo = InMemoryXCaptureRepository()
+    account = repo.create_account(username_or_url="ai_9684xtpa")
+    started = datetime.now(UTC)
+    success = CaptureRunStats(account=account, status="success", new_count=1, saved_count=1)
+
+    repo.record_attempt(
+        stats=success,
+        started_at=started,
+        finished_at=started + timedelta(seconds=1),
+    )
+    repo.record_attempt(
+        stats=success,
+        started_at=started + timedelta(minutes=5),
+        finished_at=started + timedelta(minutes=5, seconds=1),
+    )
+
+    assert len(repo.attempts) == 2
+
+
 def test_attempt_retention_env_defaults_to_three_days(monkeypatch) -> None:
     monkeypatch.delenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS", raising=False)
 

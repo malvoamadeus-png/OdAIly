@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.x_processing.searcher import (
@@ -121,3 +122,78 @@ def test_search_cache_reuses_embedding_by_content_hash(tmp_path: Path) -> None:
 def test_embedding_text_uses_title_and_content_only() -> None:
     assert normalize_for_embedding(title="标题", content="正文") == "标题：标题\n正文：正文"
     assert cosine_similarity([1, 0], [1, 0]) == 1.0
+
+
+def test_search_cache_reads_local_odaily_candidates_and_alert_history(tmp_path: Path) -> None:
+    cache = SearchCache(tmp_path / "searcher.sqlite")
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+    cache.upsert_documents(
+        [
+            SearchDocument(
+                doc_type="odaily_reference",
+                doc_id="od-1",
+                title="Odaily",
+                content="Reference",
+                source="odaily",
+                published_at=now,
+            ),
+            SearchDocument(
+                doc_type="candidate",
+                doc_id="1",
+                title="Candidate",
+                content="In flight",
+                source="candidate",
+                task_id=101,
+                candidate_id=1,
+                status="active",
+                created_at=now,
+                expires_at=now + timedelta(days=2),
+            ),
+            SearchDocument(
+                doc_type="external_media_alert_history",
+                doc_id="alert-1",
+                title="Alert",
+                content="Already notified",
+                source="external_media_alert",
+                task_id=201,
+                status="notified",
+                created_at=now,
+            ),
+        ]
+    )
+
+    odaily = cache.list_odaily_reference_documents(since=now - timedelta(hours=1))
+    candidates = cache.list_active_candidate_documents()
+    alerts = cache.list_notified_alert_documents(since=now - timedelta(hours=1))
+
+    assert [doc.doc_id for doc in odaily] == ["od-1"]
+    assert [doc.doc_id for doc in candidates] == ["1"]
+    assert [doc.doc_id for doc in alerts] == ["alert-1"]
+
+
+def test_search_cache_can_mark_candidate_inactive(tmp_path: Path) -> None:
+    cache = SearchCache(tmp_path / "searcher.sqlite")
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+    cache.upsert_document(
+        SearchDocument(
+            doc_type="candidate",
+            doc_id="7",
+            title="Candidate",
+            content="Body",
+            source="candidate",
+            task_id=7,
+            candidate_id=7,
+            status="active",
+            created_at=now,
+            expires_at=now + timedelta(days=2),
+        )
+    )
+
+    cache.mark_document_status(
+        cache_key="candidate:7",
+        status="inactive",
+        expires_at=now,
+        metadata_updates={"released_by_task_status": "discarded"},
+    )
+
+    assert cache.list_active_candidate_documents() == []

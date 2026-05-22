@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from packages.common.config import ExternalMediaAlertSettings
+from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.models import PromptTemplateVersion, render_prompt_content
@@ -92,6 +93,7 @@ class ExternalMediaAlertWorker:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
+        self._search_cache_store = SearchCache(_search_cache_path_for_repository(self.repository))
 
         self.ai_client = (ai_client or self._build_ai_client()) if stage in {"domain_judge", "search"} else ai_client
         self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
@@ -103,6 +105,18 @@ class ExternalMediaAlertWorker:
             timeout_seconds=settings.telegram_timeout_seconds,
             max_attempts=settings.retry.max_attempts,
             backoff_seconds=settings.retry.backoff_seconds,
+        )
+        self._heartbeat = HeartbeatThrottle(
+            component=f"external_media_alert_{self.stage}",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
         )
 
     def _build_ai_client(self) -> TextGenerationClient:
@@ -128,7 +142,7 @@ class ExternalMediaAlertWorker:
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
         )
-        return CachedEmbeddingService(client=client, cache=SearchCache(get_paths().searcher_cache_path))
+        return CachedEmbeddingService(client=client, cache=self._search_cache_store)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -177,9 +191,7 @@ class ExternalMediaAlertWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         try:
-            self.repository.record_worker_heartbeat(
-                component=f"external_media_alert_{self.stage}",
-                worker_id=self.worker_id,
+            self._heartbeat.send(
                 status="ok" if not result.failed else "failed",
                 success=not bool(result.failed),
                 error=result.message if result.failed else None,
@@ -248,8 +260,8 @@ class ExternalMediaAlertWorker:
         if cache is not None and hasattr(cache, "upsert_document"):
             cache.upsert_document(query)
         recent_since = utc_since_hours(self.settings.search_window_hours)
-        odaily_documents = self.repository.list_odaily_reference_documents(since=recent_since)
-        history_documents_all = self.repository.list_notified_alert_documents(since=None)
+        odaily_documents = self._load_odaily_reference_documents(since=recent_since)
+        history_documents_all = self._load_history_documents(since=None)
         exact = exact_duplicate_decision(query=query, documents=odaily_documents, target_type="odaily_published")
         if exact is None:
             exact = exact_duplicate_decision(
@@ -261,7 +273,7 @@ class ExternalMediaAlertWorker:
             self.repository.complete_search_duplicate(task.id, result=exact.to_result())
             return
 
-        history_documents_recent = self.repository.list_notified_alert_documents(since=recent_since)
+        history_documents_recent = self._load_history_documents(since=recent_since)
         query_vector = self.search_embedding_service.embed_one(
             cache_key=f"external_media_alert_task:{task.id}",
             text=query.embedding_text,
@@ -328,6 +340,25 @@ class ExternalMediaAlertWorker:
             self.repository.fail_task(task.id, stage=self.stage, error=error, status="notify_failed")
             raise HandledStageError(error)
         self.repository.complete_notify(task.id, telegram_result=result.model_dump(mode="json"))
+        cache = self._search_cache()
+        if cache is not None:
+            now = datetime.now(UTC)
+            cache.upsert_document(
+                SearchDocument(
+                    doc_type="external_media_alert_history",
+                    doc_id=task.source_item_id,
+                    title=task.title,
+                    content=task.content,
+                    source=task.source,
+                    source_url=task.source_url,
+                    task_id=task.id,
+                    published_at=task.published_at,
+                    status="notified",
+                    created_at=task.created_at or now,
+                    updated_at=now,
+                    metadata=task.metadata,
+                )
+            )
 
     def _get_prompt(self, template_key: str):
         prompt = self._prompt_cache.get(template_key)
@@ -374,6 +405,31 @@ class ExternalMediaAlertWorker:
                 print(f"[odaily] external media alert listener reconnecting stage={self.stage}: {exc}")
                 self._wake_event.set()
                 self._stop_event.wait(self.notify_wait_seconds)
+
+    def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        cache = self._search_cache()
+        if cache is None:
+            return self.repository.list_odaily_reference_documents(since=since)
+        local_documents = cache.list_odaily_reference_documents(since=since)
+        if local_documents:
+            return local_documents
+        remote_documents = self.repository.list_odaily_reference_documents(since=since)
+        cache.upsert_documents(remote_documents)
+        return remote_documents
+
+    def _load_history_documents(self, *, since: datetime | None) -> list[SearchDocument]:
+        cache = self._search_cache()
+        if cache is None:
+            return self.repository.list_notified_alert_documents(since=since)
+        local_documents = cache.list_notified_alert_documents(since=since)
+        if local_documents:
+            return local_documents
+        remote_documents = self.repository.list_notified_alert_documents(since=since)
+        cache.upsert_documents(remote_documents)
+        return remote_documents
+
+    def _search_cache(self) -> SearchCache | None:
+        return self._search_cache_store
 
 
 def utc_since_hours(hours: int) -> datetime:
@@ -499,3 +555,10 @@ def strip_code_fence(value: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return text
+
+
+def _search_cache_path_for_repository(repository: Any):
+    paths = get_paths()
+    if type(repository).__name__.startswith("Postgres"):
+        return paths.searcher_cache_path
+    return paths.processed_dir / "searcher" / f"test-alert-searcher-{uuid4().hex}.sqlite"

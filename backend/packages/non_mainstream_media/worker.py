@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from packages.common.heartbeat import HeartbeatThrottle
 from .fetcher import fetch_article, fetch_discovered_pages, get_site_registry
 from .models import NonMainstreamMediaSettings, NonMainstreamMediaSource, SiteDefinition, SourceRunStats
 from .repository import CONFIG_NOTIFY_CHANNEL, NonMainstreamMediaRepository, PostgresNonMainstreamMediaRepository, utc_now
@@ -45,6 +46,18 @@ class NonMainstreamMediaWorker:
         self._wake_event = threading.Event()
         self._next_due: dict[str, float] = {}
         self._snapshot = WorkerSnapshot(NonMainstreamMediaSettings(), [])
+        self._heartbeat = HeartbeatThrottle(
+            component="non_mainstream_media",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
+        )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -256,9 +269,7 @@ class NonMainstreamMediaWorker:
             ],
         }
         try:
-            self.repository.record_worker_heartbeat(
-                component="non_mainstream_media",
-                worker_id=self.worker_id,
+            self._heartbeat.send(
                 status="ok" if ok else "failed",
                 success=ok,
                 error=heartbeat_error,

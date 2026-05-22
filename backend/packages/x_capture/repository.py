@@ -7,6 +7,11 @@ from typing import Any, Protocol
 
 from dotenv import load_dotenv
 
+from packages.common.attempt_sampling import (
+    NOOP_SUCCESS_WINDOW,
+    should_sample_x_capture_attempt,
+    x_capture_attempt_fingerprint,
+)
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
 
 from .client import normalize_username
@@ -362,29 +367,79 @@ class PostgresXCaptureRepository:
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
         metadata = dict(stats.metadata)
+        fingerprint = x_capture_attempt_fingerprint(
+            status=stats.status,
+            candidate_count=stats.candidate_count,
+            seeded_count=stats.seeded_count,
+            new_count=stats.new_count,
+            saved_count=stats.saved_count,
+            error=stats.error,
+            metadata=metadata,
+        )
         with self._connect() as conn:
-            conn.execute(
+            previous = conn.execute(
                 """
-                INSERT INTO x_capture_attempts (
-                    account_id, username_lower, status, source, candidate_count, seeded_count,
-                    new_count, saved_count, error, started_at, finished_at, metadata
-                )
-                VALUES (%s, %s, %s, 'fxtwitter', %s, %s, %s, %s, %s, %s, %s, %s)
+                SELECT finished_at, metadata
+                FROM x_capture_attempts
+                WHERE account_id = %s
+                  AND status = 'success'
+                  AND new_count = 0
+                  AND saved_count = 0
+                  AND finished_at >= %s
+                ORDER BY finished_at DESC, id DESC
+                LIMIT 1
                 """,
-                (
-                    stats.account.id,
-                    stats.account.username_lower,
-                    stats.status,
-                    stats.candidate_count,
-                    stats.seeded_count,
-                    stats.new_count,
-                    stats.saved_count,
-                    stats.error,
-                    started_at,
-                    finished_at,
-                    self._Jsonb(metadata),
-                ),
-            )
+                (stats.account.id, finished_at - NOOP_SUCCESS_WINDOW),
+            ).fetchone()
+            previous_finished_at = previous.get("finished_at") if previous else None
+            previous_metadata = previous.get("metadata") if previous else {}
+            previous_fingerprint = None
+            if previous is not None:
+                previous_fingerprint = x_capture_attempt_fingerprint(
+                    status="success",
+                    candidate_count=int(previous_metadata.get("candidate_count") or 0),
+                    seeded_count=int(previous_metadata.get("seeded_count") or 0),
+                    new_count=0,
+                    saved_count=0,
+                    error=None,
+                    metadata=previous_metadata,
+                )
+            if should_sample_x_capture_attempt(
+                status=stats.status,
+                new_count=stats.new_count,
+                saved_count=stats.saved_count,
+                fingerprint=fingerprint,
+                finished_at=finished_at,
+                previous_finished_at=previous_finished_at,
+                previous_fingerprint=previous_fingerprint,
+            ):
+                persisted_metadata = {
+                    **metadata,
+                    "candidate_count": stats.candidate_count,
+                    "seeded_count": stats.seeded_count,
+                }
+                conn.execute(
+                    """
+                    INSERT INTO x_capture_attempts (
+                        account_id, username_lower, status, source, candidate_count, seeded_count,
+                        new_count, saved_count, error, started_at, finished_at, metadata
+                    )
+                    VALUES (%s, %s, %s, 'fxtwitter', %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        stats.account.id,
+                        stats.account.username_lower,
+                        stats.status,
+                        stats.candidate_count,
+                        stats.seeded_count,
+                        stats.new_count,
+                        stats.saved_count,
+                        stats.error,
+                        started_at,
+                        finished_at,
+                        self._Jsonb(persisted_metadata),
+                    ),
+                )
             conn.execute(
                 """
                 UPDATE x_capture_accounts
@@ -619,24 +674,71 @@ class InMemoryXCaptureRepository:
         return True
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
-        self.attempts.insert(
-            0,
-            {
-                "id": len(self.attempts) + 1,
-                "account_id": stats.account.id,
-                "username_lower": stats.account.username_lower,
-                "status": stats.status,
-                "source": "fxtwitter",
-                "candidate_count": stats.candidate_count,
-                "seeded_count": stats.seeded_count,
-                "new_count": stats.new_count,
-                "saved_count": stats.saved_count,
-                "error": stats.error,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "metadata": stats.metadata,
-            },
+        metadata = {
+            **stats.metadata,
+            "candidate_count": stats.candidate_count,
+            "seeded_count": stats.seeded_count,
+        }
+        fingerprint = x_capture_attempt_fingerprint(
+            status=stats.status,
+            candidate_count=stats.candidate_count,
+            seeded_count=stats.seeded_count,
+            new_count=stats.new_count,
+            saved_count=stats.saved_count,
+            error=stats.error,
+            metadata=metadata,
         )
+        previous = next(
+            (
+                attempt
+                for attempt in self.attempts
+                if attempt["account_id"] == stats.account.id
+                and attempt["status"] == "success"
+                and attempt["new_count"] == 0
+                and attempt["saved_count"] == 0
+                and attempt["finished_at"] >= finished_at - NOOP_SUCCESS_WINDOW
+            ),
+            None,
+        )
+        previous_fingerprint = None
+        if previous is not None:
+            previous_metadata = dict(previous["metadata"])
+            previous_fingerprint = x_capture_attempt_fingerprint(
+                status="success",
+                candidate_count=int(previous["candidate_count"]),
+                seeded_count=int(previous["seeded_count"]),
+                new_count=0,
+                saved_count=0,
+                error=None,
+                metadata=previous_metadata,
+            )
+        if should_sample_x_capture_attempt(
+            status=stats.status,
+            new_count=stats.new_count,
+            saved_count=stats.saved_count,
+            fingerprint=fingerprint,
+            finished_at=finished_at,
+            previous_finished_at=previous["finished_at"] if previous else None,
+            previous_fingerprint=previous_fingerprint,
+        ):
+            self.attempts.insert(
+                0,
+                {
+                    "id": len(self.attempts) + 1,
+                    "account_id": stats.account.id,
+                    "username_lower": stats.account.username_lower,
+                    "status": stats.status,
+                    "source": "fxtwitter",
+                    "candidate_count": stats.candidate_count,
+                    "seeded_count": stats.seeded_count,
+                    "new_count": stats.new_count,
+                    "saved_count": stats.saved_count,
+                    "error": stats.error,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "metadata": metadata,
+                },
+            )
         account = self.accounts.get(stats.account.id)
         if account:
             payload = asdict(account)

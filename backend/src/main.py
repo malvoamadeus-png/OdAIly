@@ -321,6 +321,7 @@ def external_media_alert_init_db_command(args: argparse.Namespace) -> int:
 def external_media_alert_worker_command(args: argparse.Namespace) -> int:
     from packages.external_media_alert import ExternalMediaAlertWorker, PostgresExternalMediaAlertRepository
 
+    ensure_runtime_dirs(get_paths())
     repository = PostgresExternalMediaAlertRepository(args.database_url)
     worker = ExternalMediaAlertWorker(
         stage=args.stage,
@@ -353,6 +354,7 @@ def x_process_init_db_command(args: argparse.Namespace) -> int:
 def x_process_worker_command(args: argparse.Namespace) -> int:
     from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
 
+    ensure_runtime_dirs(get_paths())
     repository = PostgresXProcessingRepository(args.database_url)
     worker = XProcessingWorker(
         stage=args.stage,
@@ -417,9 +419,20 @@ def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
 
 
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
-    from packages.competitor_monitor import CompetitorMonitorWorker, PostgresCompetitorMonitorRepository
+    from packages.competitor_monitor import (
+        CompetitorMonitorWorker,
+        LocalFirstCompetitorMonitorRepository,
+        PostgresCompetitorMonitorRepository,
+    )
+    from packages.competitor_monitor.local_state import CompetitorEventStateStore
 
-    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    remote_repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository = LocalFirstCompetitorMonitorRepository(
+        remote=remote_repository,
+        state_store=CompetitorEventStateStore(paths.competitor_monitor_db_path),
+    )
     worker = CompetitorMonitorWorker(repository=repository, settings=load_competitor_monitor_settings())
     if args.once:
         result = worker.run_once()

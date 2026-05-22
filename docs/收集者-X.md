@@ -2,96 +2,101 @@
 
 ## 职责
 
-收集者-X 负责根据控制台配置抓取 X/Twitter 账号的公开内容，将可处理的原始内容写入 `tasks` 表，供后续判断者、搜索者和编写者处理。
-
-当前代码实现使用 `backend/packages/x_capture` 和 `x-capture-worker` 命令，本轮只补齐文档，不改代码命名。
+收集者-X 根据控制台配置抓取 X/Twitter 账号公开内容，将符合时效要求的新内容写入 `tasks`，供后续判断者、搜索者和编写者处理。
 
 ## 配置来源
 
 控制台通过 Supabase 维护：
 
-- `x_capture_settings`：全局抓取频率、并发数、抖动时间。
-- `x_capture_accounts`：账号、展示名、单账号频率、启停状态、最近抓取状态。
+- `x_capture_settings`
+- `x_capture_accounts`
 
-worker 启动时主动加载配置，运行中监听 `x_capture_config_changed` 通知并刷新内存配置，不需要重启服务。
+worker 启动时加载配置，运行中通过 `LISTEN/NOTIFY` 感知配置变更。
 
-## 抓取行为
+## 入库规则
 
-收集者-X 负责：
+每条抓到的 X 内容在通过基础去重与时效检查后，写入：
 
-- 按账号频率和全局并发限制调度抓取。
-- 对多账号抓取加入抖动，避免所有账号同时请求。
-- 解析 X 用户名或主页 URL。
-- 使用来源侧 ID 去重，避免同一推文重复入库。
-- 按来源原发布时间做入口时效过滤，默认只让 10 分钟内的内容进入 `tasks`。
-- 对过期或缺少发布时间的推文仍标记 seen，避免服务重启后反复尝试同一条旧内容。
-- 写入抓取 attempt，记录候选数量、入库数量、错误和耗时。
-- 将新内容写入 `tasks`，初始状态为 `pending`。
+- `tasks.source = 'x'`
+- `tasks.status = 'pending'`
 
-收集者-X 不负责：
+判断时效使用来源原始发布时间，而不是任务入库时间。
 
-- 判断内容是否值得发布。
-- 判断快讯类型。
-- 判断是否与 Odaily 已发布内容重复。
-- 生成快讯文本。
-- 推送后台。
+默认时效窗：
 
-## 时效过滤
+- `PROCESSING_FRESHNESS_WINDOW_SECONDS=600`
 
-收集者-X 的 10 分钟过滤是发布流水线入口规则，不是事件复盘规则。
+## `x_capture_attempts` 的用途
 
-- 判断基准使用 X 来源原始 `created_at`，不使用任务入库时间。
-- 默认窗口由 `PROCESSING_FRESHNESS_WINDOW_SECONDS=600` 控制。
-- 超过窗口或缺少来源时间的推文不写入 `tasks`。
-- 被过滤推文仍写入 seen 集合，并在 `x_capture_attempts.metadata` 中记录 `freshness_window_seconds`、`ignored_stale_count` 和 `ignored_stale_tweet_ids`。
-- 如果未来 X 也进入事件复盘，应单独写事件表，不复用 `tasks` 是否入库作为事件复盘条件。
+`x_capture_attempts` 是数据库表，不是内存计数。
 
-## 写入数据
+它保留的目的有两件事：
 
-X 内容写入 `tasks` 时，至少保留：
+- 给控制台展示每个账号最近抓取是否正常
+- 给排障提供最近轮询的候选数、入库数、错误和元数据
 
-- `source`：固定为 `x`。
-- `source_item_id`：X 来源侧唯一 ID。
-- `source_url`：原始 X 链接。
-- `title`：可为空。
-- `content`：抓取到的正文。
-- `published_at`：X 来源原始发布时间。
-- `raw_payload`：原始响应中的关键字段。
-- `status`：初始为 `pending`。
+这张表现在仍保留，但改成采样写入，避免每次空轮询都打数据库。
 
-抓取记录写入 `x_capture_attempts`，用于控制台观察抓取是否正常工作。
+## `x_capture_attempts` 写入规则
 
-## 流程位置
+### 一定写入
 
-```text
-控制台 X 配置
-  -> 收集者-X 抓取账号内容
-  -> tasks(status=pending)
-  -> 判断者
-  -> 搜索者
-  -> 编写者1
-  -> 编写者2
-  -> 后台审核
-```
+- `status != success`
+- `new_count > 0`
+- `saved_count > 0`
 
-`tasks` 新任务和状态变化会触发后续处理 worker 的队列通知。
+### 采样写入
+
+对于“success 且本轮没有新东西”的空轮询：
+
+- 每个账号最多每 10 分钟落一条
+- 如果本轮元数据指纹和上一条采样成功记录不同，也会提前写入
+
+当前指纹会综合这些信息：
+
+- `status`
+- `candidate_count`
+- `seeded_count`
+- `new_count`
+- `saved_count`
+- `error`
+- `metadata`
+
+## 为什么仍然保留这张表
+
+原因不是“每轮都必须留痕”，而是：
+
+- 控制台仍需要看到最近抓取情况
+- 出错、出新内容、行为变化时仍需要完整落库
+- 对纯空轮询则没有必要维持原来的高写频
+
+## 心跳
+
+收集者-X 仍然写 `pipeline_worker_heartbeats`。
+
+当前心跳策略：
+
+- 稳定态最多 60 秒写一次
+- 状态切换立即写
+- 失败立即写
+
+因此“心跳”现在表示 worker 还在健康轮询，不再等价于“每次轮询都写库”。
+
+## 与监督者的关系
+
+因为 `x_capture_attempts` 改成采样，监督者判定 X 收集是否健康时，不再只看 attempt 表。
+
+当前健康条件是二选一：
+
+- 最近窗口内存在成功 attempt
+- 最近窗口内存在成功 heartbeat
+
+这样即使 10 分钟内没有新内容、attempt 没新增，也不会误报服务挂掉。
 
 ## 运行命令
 
-初始化 X 抓取表：
-
 ```powershell
 python backend\src\main.py x-init-db
-```
-
-运行收集者-X：
-
-```powershell
 python backend\src\main.py x-capture-worker
 ```
 
-## 相关文档
-
-- `控制台-X抓取.md`：账号和频率配置。
-- `判断者.md`：X 内容预筛和路由。
-- `搜索者.md`：查重和 in-flight 去重。

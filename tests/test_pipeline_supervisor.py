@@ -17,6 +17,7 @@ class FakeSupervisorRepository:
         self.stuck_tasks: list[dict[str, Any]] = []
         self.failed_tasks: list[dict[str, Any]] = []
         self.x_success_count = 1
+        self.x_success_heartbeats = 0
         self.claimed: set[str] = set()
 
     def init_schema(self) -> None:
@@ -39,6 +40,9 @@ class FakeSupervisorRepository:
 
     def count_recent_x_success_attempts(self, *, since: datetime) -> int:
         return self.x_success_count
+
+    def count_recent_x_capture_success_heartbeats(self, *, since: datetime) -> int:
+        return self.x_success_heartbeats
 
     def claim_alert(self, *, alert_key: str, message: str, dedup_cutoff: datetime, metadata: dict[str, Any] | None = None) -> bool:
         if alert_key in self.claimed:
@@ -128,6 +132,19 @@ def test_supervisor_detects_worker_without_recent_success() -> None:
     assert result.checked == 1
     assert "无近期成功心跳" in telegram.calls[0]
     assert "competitor_monitor" in telegram.calls[0]
+
+
+def test_supervisor_accepts_recent_x_capture_heartbeat_when_attempts_are_sampled() -> None:
+    repo = FakeSupervisorRepository()
+    repo.x_success_count = 0
+    repo.x_success_heartbeats = 1
+    telegram = FakeTelegramClient()
+    worker = PipelineSupervisorWorker(repository=repo, settings=settings(), telegram_client=telegram)
+
+    result = worker.run_once()
+
+    assert result.checked == 0
+    assert telegram.calls == []
 
 
 def test_supervisor_metadata_is_json_safe() -> None:

@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from packages.common.config import XProcessingSettings
 from packages.common.freshness import evaluate_source_freshness, freshness_error
+from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.paths import get_paths
 from packages.publisher import PushClient
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
@@ -29,6 +31,7 @@ from .models import (
     ProcessingStage,
     PromptTemplateVersion,
     StageRunResult,
+    STAGE_SPECS,
     TaskRecord,
     render_prompt_content,
 )
@@ -209,6 +212,7 @@ class XProcessingWorker:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
+        self._search_cache_store = SearchCache(_search_cache_path_for_repository(self.repository))
 
         self.ai_client = (ai_client or self._build_ai_client()) if stage in {"judge", "write"} else ai_client
         self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
@@ -230,6 +234,18 @@ class XProcessingWorker:
             max_attempts=settings.retry.max_attempts,
             backoff_seconds=settings.retry.backoff_seconds,
         )
+        self._heartbeat = HeartbeatThrottle(
+            component=f"x_process_{self.stage}",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
+        )
 
     def _build_ai_client(self) -> TextGenerationClient:
         if not self.settings.openai_api_key:
@@ -246,8 +262,6 @@ class XProcessingWorker:
     def _build_embedding_service(self) -> CachedEmbeddingService:
         if not self.settings.dashscope_api_key:
             raise RuntimeError("Missing DASHSCOPE_API_KEY")
-        from packages.common.paths import get_paths
-
         client = DashScopeEmbeddingClient(
             api_key=self.settings.dashscope_api_key,
             base_url=str(self.settings.search_embedding_base_url),
@@ -256,7 +270,7 @@ class XProcessingWorker:
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
         )
-        return CachedEmbeddingService(client=client, cache=SearchCache(get_paths().searcher_cache_path))
+        return CachedEmbeddingService(client=client, cache=self._search_cache_store)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -282,6 +296,7 @@ class XProcessingWorker:
         except Exception as exc:
             if task is not None:
                 self.repository.fail_task(task.id, stage=self.stage, error=str(exc))
+                self._release_local_candidate_for_task(task.id, release_reason=STAGE_SPECS[self.stage].failure_status)
                 result = StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
             else:
                 result = StageRunResult(1, self.stage, 0, 1, f"worker failed before claim: {exc}")
@@ -310,9 +325,7 @@ class XProcessingWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         try:
-            self.repository.record_worker_heartbeat(
-                component=f"x_process_{self.stage}",
-                worker_id=self.worker_id,
+            self._heartbeat.send(
                 status="ok" if not result.failed else "failed",
                 success=not bool(result.failed),
                 error=result.message if result.failed else None,
@@ -347,6 +360,7 @@ class XProcessingWorker:
             return False
         error = freshness_error(check)
         self.repository.fail_task(task.id, stage=self.stage, error=error, status="expired")
+        self._release_local_candidate_for_task(task.id, release_reason="expired")
         delay = int(check.delay_seconds) if check.delay_seconds is not None else "-"
         published = check.published_at.isoformat() if check.published_at else "-"
         print(
@@ -360,6 +374,7 @@ class XProcessingWorker:
     def _run_judge(self, task: TaskRecord) -> None:
         deterministic_discard_type = deterministic_judge_discard_type(task)
         if deterministic_discard_type is not None:
+            self._release_local_candidate_for_task(task.id, release_reason="discarded")
             raw_output = json.dumps(
                 {
                     "route": "discard",
@@ -396,6 +411,7 @@ class XProcessingWorker:
         )
         route, discard_type = parse_judge_route(raw_output)
         if route == "discard":
+            self._release_local_candidate_for_task(task.id, release_reason="discarded")
             self.repository.complete_judge_discard(
                 task.id,
                 discard_type=discard_type,
@@ -431,15 +447,11 @@ class XProcessingWorker:
         since = utc_since_hours(self.settings.search_window_hours)
         odaily_match = top_match(
             query_vector,
-            self.search_embedding_service.embed_documents(self.repository.list_odaily_reference_documents(since=since)),
+            self.search_embedding_service.embed_documents(self._load_odaily_reference_documents(since=since)),
         )
         decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
         if decision is None:
-            candidate_documents = [
-                document
-                for document in self.repository.list_active_candidate_documents()
-                if document.task_id != task.id
-            ]
+            candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
             candidate_match = top_match(
                 query_vector,
                 self.search_embedding_service.embed_documents(candidate_documents),
@@ -458,6 +470,8 @@ class XProcessingWorker:
             "reason": "no_match",
         }
         candidate_id, is_primary = self.repository.create_candidate_for_task(task, search_result=result)
+        if is_primary:
+            self._mirror_active_candidate(task=task, candidate_id=candidate_id)
         if not is_primary:
             duplicate_result = {
                 **result,
@@ -530,11 +544,13 @@ class XProcessingWorker:
         pipeline = self.repository.get_pipeline(task.id)
         if not pipeline.draft_title or not pipeline.draft_content:
             self.repository.fail_task(task.id, stage=self.stage, error="missing draft title or content", status="format_failed")
+            self._release_local_candidate_for_task(task.id, release_reason="format_failed")
             raise HandledStageError("missing draft title or content")
         try:
             final = format_brief(parse_draft_output(f"{pipeline.draft_title}\n\n{pipeline.draft_content}"))
         except Exception as exc:
             self.repository.fail_task(task.id, stage=self.stage, error=str(exc), status="format_failed")
+            self._release_local_candidate_for_task(task.id, release_reason="format_failed")
             raise HandledStageError(str(exc)) from exc
         push_result = self.push_client.push(
             title=final.title,
@@ -545,6 +561,7 @@ class XProcessingWorker:
         if not push_result.ok:
             error = push_result.error or "push failed"
             self.repository.fail_task(task.id, stage=self.stage, error=error, status="publish_failed")
+            self._release_local_candidate_for_task(task.id, release_reason="publish_failed")
             raise HandledStageError(error)
         telegram_result = self.telegram_client.send_message(
             build_telegram_notice(source=task.source, title=final.title, source_url=task.source_url)
@@ -556,6 +573,73 @@ class XProcessingWorker:
             push_result=push_result.model_dump(mode="json"),
             telegram_result=telegram_result.model_dump(mode="json"),
         )
+
+    def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        cache = self._search_cache()
+        if cache is None:
+            return self.repository.list_odaily_reference_documents(since=since)
+        local_documents = cache.list_odaily_reference_documents(since=since)
+        if local_documents:
+            return local_documents
+        remote_documents = self.repository.list_odaily_reference_documents(since=since)
+        cache.upsert_documents(remote_documents)
+        return remote_documents
+
+    def _load_active_candidate_documents(self, *, exclude_task_id: int) -> list[SearchDocument]:
+        cache = self._search_cache()
+        if cache is None:
+            documents = self.repository.list_active_candidate_documents()
+        else:
+            documents = cache.list_active_candidate_documents()
+            if not documents:
+                documents = self.repository.list_active_candidate_documents()
+                cache.upsert_documents(documents)
+        return [document for document in documents if document.task_id != exclude_task_id]
+
+    def _mirror_active_candidate(self, *, task: TaskRecord, candidate_id: int) -> None:
+        cache = self._search_cache()
+        if cache is None:
+            return
+        now = datetime.now(UTC)
+        cache.upsert_document(
+            SearchDocument(
+                doc_type="candidate",
+                doc_id=str(candidate_id),
+                title=task.title,
+                content=task.content,
+                source="candidate",
+                task_id=task.id,
+                candidate_id=candidate_id,
+                status="active",
+                created_at=now,
+                updated_at=now,
+                expires_at=now + timedelta(days=2),
+                metadata={"source": task.source, "source_item_id": task.source_item_id, **task.metadata},
+            )
+        )
+
+    def _release_local_candidate_for_task(self, task_id: int, *, release_reason: str) -> None:
+        cache = self._search_cache()
+        if cache is None:
+            return
+        try:
+            pipeline = self.repository.get_pipeline(task_id)
+        except Exception:
+            return
+        if pipeline.candidate_id is None:
+            return
+        cache.mark_document_status(
+            cache_key=f"candidate:{pipeline.candidate_id}",
+            status="inactive",
+            expires_at=datetime.now(UTC),
+            metadata_updates={
+                "released_by_task_id": task_id,
+                "released_by_task_status": release_reason,
+            },
+        )
+
+    def _search_cache(self) -> SearchCache | None:
+        return self._search_cache_store
 
     def _get_prompt(self, template_key: str):
         prompt = self._prompt_cache.get(template_key)
@@ -713,3 +797,10 @@ def build_telegram_notice(*, source: str = "x", title: str, source_url: str | No
     if source_url and source_url.strip():
         text += f"\n{source_url.strip()}"
     return text
+
+
+def _search_cache_path_for_repository(repository: Any):
+    paths = get_paths()
+    if type(repository).__name__.startswith("Postgres"):
+        return paths.searcher_cache_path
+    return paths.processed_dir / "searcher" / f"test-searcher-{uuid4().hex}.sqlite"

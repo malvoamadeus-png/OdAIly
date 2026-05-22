@@ -56,6 +56,21 @@ class FakeEmbeddingService:
         return [(document, [0.0, 1.0]) for document in documents]
 
 
+class CountingAlertRepository(InMemoryExternalMediaAlertRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.odaily_reads = 0
+        self.history_reads = 0
+
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        self.odaily_reads += 1
+        return super().list_odaily_reference_documents(since=since)
+
+    def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
+        self.history_reads += 1
+        return super().list_notified_alert_documents(since=since)
+
+
 class FakeTelegramClient:
     def __init__(self, *, ok: bool = True) -> None:
         self.ok = ok
@@ -336,6 +351,45 @@ def test_search_marks_duplicate_when_matching_prior_alert_history() -> None:
     assert repo.pipelines[2].search_result["duplicate_target_type"] == "external_media_alert_history"
 
 
+def test_search_uses_local_mirrored_alert_history_after_warmup() -> None:
+    repo = CountingAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="classified",
+            site_key="ft_crypto",
+            site_display_name="FT Crypto",
+            title="Stablecoin bill clears key hurdle in the Senate",
+            excerpt="New source, same title",
+            source_url="https://www.ft.com/content/two/",
+        )
+    )
+    worker = ExternalMediaAlertWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=FakeAIClient([]),
+        search_embedding_service=FakeEmbeddingService(),
+        search_ai_client=FakeAIClient([]),
+    )
+    worker._search_cache().upsert_document(
+        SearchDocument(
+            doc_type="external_media_alert_history",
+            doc_id="https://fortune.com/2026/05/18/stablecoin-bill/",
+            title="Stablecoin bill clears key hurdle in the Senate",
+            content="Earlier reminder",
+            source="external_media_alert",
+            status="notified",
+            created_at=datetime(2026, 5, 19, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    worker.run_once()
+
+    assert repo.tasks[1].status == "duplicate"
+    assert repo.history_reads == 0
+
+
 def test_notify_sends_separate_telegram_notice() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(
@@ -363,3 +417,29 @@ def test_notify_sends_separate_telegram_notice() -> None:
     assert telegram.calls == [
         "外媒标题提醒：FT Crypto｜Token market makers face tighter oversight\nhttps://www.ft.com/content/notice/"
     ]
+
+
+def test_notify_mirrors_history_into_local_cache() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="deduped",
+            site_key="ft_crypto",
+            site_display_name="FT Crypto",
+            title="Token market makers face tighter oversight",
+            excerpt="Alert content",
+            source_url="https://www.ft.com/content/notice/",
+        )
+    )
+    worker = ExternalMediaAlertWorker(
+        stage="notify",
+        repository=repo,
+        settings=settings(),
+        telegram_client=FakeTelegramClient(ok=True),
+    )
+
+    worker.run_once()
+
+    cached = worker._search_cache().list_notified_alert_documents()
+    assert [document.doc_id for document in cached] == ["https://www.ft.com/content/notice/"]

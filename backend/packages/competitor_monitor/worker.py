@@ -7,9 +7,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from types import FrameType
 from typing import Iterator
+from uuid import uuid4
 
 from packages.common.config import CompetitorMonitorSettings
 from packages.common.freshness import evaluate_source_freshness
+from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.paths import get_paths
+from packages.x_processing.searcher import SearchCache, SearchDocument
 
 from .fetchers import NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
@@ -46,6 +50,19 @@ class CompetitorMonitorWorker:
         self.settings = settings
         self.worker_id = f"competitor_monitor-{os.getpid()}"
         self._event_aggregator: NewsflashEventAggregator | None = None
+        self._search_cache = SearchCache(_search_cache_path_for_repository(self.repository))
+        self._heartbeat = HeartbeatThrottle(
+            component="competitor_monitor",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
+        )
 
     def run_once(self) -> CompetitorRunResult:
         items = []
@@ -87,6 +104,7 @@ class CompetitorMonitorWorker:
                 event_elapsed_seconds = time.monotonic() - event_started
             task_items, expired_for_tasks, expired_for_tasks_by_source = self._filter_items_for_tasks(filtered_items)
             task_count, reference_count = self.repository.save_items(task_items)
+            self._mirror_odaily_references(task_items)
             result = CompetitorRunResult(
                 fetched=len(items),
                 task_inserted=task_count,
@@ -183,9 +201,7 @@ class CompetitorMonitorWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         try:
-            self.repository.record_worker_heartbeat(
-                component="competitor_monitor",
-                worker_id=self.worker_id,
+            self._heartbeat.send(
                 status="ok" if not result.failed_sources else "failed",
                 success=not bool(result.failed_sources),
                 error=str(result.failed_sources) if result.failed_sources else None,
@@ -227,6 +243,25 @@ class CompetitorMonitorWorker:
             elapsed = time.monotonic() - started
             print(f"[odaily] competitor event aggregation finished elapsed_seconds={elapsed:.1f}")
         return event_ids
+
+    def _mirror_odaily_references(self, items: list[NewsflashItem]) -> None:
+        odaily_documents = [
+            SearchDocument(
+                doc_type="odaily_reference",
+                doc_id=item.source_item_id,
+                title=item.title,
+                content=item.content,
+                source="odaily",
+                source_url=item.source_url,
+                published_at=parse_datetime(item.published_at),
+                status="published",
+                metadata=item.metadata,
+            )
+            for item in items
+            if item.source == "odaily"
+        ]
+        if odaily_documents:
+            self._search_cache.upsert_documents(odaily_documents)
 
 
 @contextmanager
@@ -293,3 +328,10 @@ def filter_competitor_items(items: list[NewsflashItem], terms: list[str]) -> tup
 
 def match_filter_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
     return match_exclude_terms(item, terms)
+
+
+def _search_cache_path_for_repository(repository) -> Any:
+    paths = get_paths()
+    if type(repository).__name__.startswith("Postgres"):
+        return paths.searcher_cache_path
+    return paths.processed_dir / "searcher" / f"test-competitor-searcher-{uuid4().hex}.sqlite"

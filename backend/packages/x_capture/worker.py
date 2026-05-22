@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.freshness import (
     DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
     ensure_utc,
@@ -55,6 +56,18 @@ class XCaptureWorker:
         self._snapshot = WorkerSnapshot(XCaptureSettings(), [])
         self._last_attempt_prune_monotonic: float | None = None
         self.worker_id = f"x_capture-{os.getpid()}"
+        self._heartbeat = HeartbeatThrottle(
+            component="x_capture",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
+        )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -162,9 +175,7 @@ class XCaptureWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         try:
-            self.repository.record_worker_heartbeat(
-                component="x_capture",
-                worker_id=self.worker_id,
+            self._heartbeat.send(
                 status="ok" if success else "failed",
                 success=success,
                 error=error,

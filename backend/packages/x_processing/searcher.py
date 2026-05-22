@@ -126,6 +126,10 @@ class SearchDocument:
     task_id: int | None = None
     candidate_id: int | None = None
     published_at: datetime | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    expires_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -165,12 +169,22 @@ class SearchCache:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_schema()
+        self._init_or_rebuild()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _init_or_rebuild(self) -> None:
+        try:
+            self._init_schema()
+        except sqlite3.DatabaseError:
+            try:
+                self.path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._init_schema()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -198,13 +212,27 @@ class SearchCache:
                     content text NOT NULL,
                     source_url text,
                     published_at text,
+                    status text,
+                    created_at text,
+                    expires_at text,
                     metadata_json text NOT NULL,
                     content_hash text NOT NULL,
                     updated_at text NOT NULL
                 )
                 """
             )
+            existing_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+            }
+            if "status" not in existing_columns:
+                conn.execute("ALTER TABLE documents ADD COLUMN status text")
+            if "created_at" not in existing_columns:
+                conn.execute("ALTER TABLE documents ADD COLUMN created_at text")
+            if "expires_at" not in existing_columns:
+                conn.execute("ALTER TABLE documents ADD COLUMN expires_at text")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_search_documents_type ON documents(doc_type, source, doc_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_search_documents_status ON documents(doc_type, status, published_at)")
             conn.commit()
 
     def get_embedding(self, *, cache_key: str, model: str, text_hash: str) -> list[float] | None:
@@ -239,15 +267,15 @@ class SearchCache:
     def upsert_documents(self, documents: list[SearchDocument]) -> None:
         if not documents:
             return
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
         with self._connect() as conn:
             conn.executemany(
                 """
                 INSERT INTO documents (
                     cache_key, doc_type, doc_id, source, task_id, candidate_id, title, content,
-                    source_url, published_at, metadata_json, content_hash, updated_at
+                    source_url, published_at, status, created_at, expires_at, metadata_json, content_hash, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET
                     doc_type = excluded.doc_type,
                     doc_id = excluded.doc_id,
@@ -258,6 +286,9 @@ class SearchCache:
                     content = excluded.content,
                     source_url = excluded.source_url,
                     published_at = excluded.published_at,
+                    status = excluded.status,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
                     metadata_json = excluded.metadata_json,
                     content_hash = excluded.content_hash,
                     updated_at = excluded.updated_at
@@ -274,14 +305,109 @@ class SearchCache:
                         document.content,
                         document.source_url,
                         document.published_at.isoformat() if document.published_at else None,
+                        document.status,
+                        document.created_at.isoformat() if document.created_at else None,
+                        document.expires_at.isoformat() if document.expires_at else None,
                         json.dumps(document.metadata, ensure_ascii=False, sort_keys=True),
                         content_hash(document.embedding_text),
-                        now,
+                        (document.updated_at or now).isoformat(),
                     )
                     for document in documents
                 ],
             )
             conn.commit()
+
+    def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+        return self._list_documents(
+            """
+            SELECT *
+            FROM documents
+            WHERE doc_type = 'odaily_reference'
+              AND (published_at IS NULL OR published_at >= ?)
+            ORDER BY published_at IS NULL ASC, published_at DESC, updated_at DESC
+            """,
+            (since.isoformat(),),
+        )
+
+    def list_active_candidate_documents(self) -> list[SearchDocument]:
+        now = datetime.now(UTC).isoformat()
+        return self._list_documents(
+            """
+            SELECT *
+            FROM documents
+            WHERE doc_type = 'candidate'
+              AND COALESCE(status, 'active') = 'active'
+              AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY updated_at DESC
+            """,
+            (now,),
+        )
+
+    def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
+        if since is None:
+            return self._list_documents(
+                """
+                SELECT *
+                FROM documents
+                WHERE doc_type = 'external_media_alert_history'
+                  AND COALESCE(status, 'notified') = 'notified'
+                ORDER BY created_at IS NULL ASC, created_at DESC, updated_at DESC
+                """,
+                (),
+            )
+        return self._list_documents(
+            """
+            SELECT *
+            FROM documents
+            WHERE doc_type = 'external_media_alert_history'
+              AND COALESCE(status, 'notified') = 'notified'
+              AND (created_at IS NULL OR created_at >= ?)
+            ORDER BY created_at IS NULL ASC, created_at DESC, updated_at DESC
+            """,
+            (since.isoformat(),),
+        )
+
+    def mark_document_status(
+        self,
+        *,
+        cache_key: str,
+        status: str,
+        expires_at: datetime | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT metadata_json FROM documents WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+            if row is None:
+                return
+            metadata = json.loads(str(row["metadata_json"])) if row["metadata_json"] else {}
+            if metadata_updates:
+                metadata.update(metadata_updates)
+            conn.execute(
+                """
+                UPDATE documents
+                SET status = ?,
+                    expires_at = ?,
+                    metadata_json = ?,
+                    updated_at = ?
+                WHERE cache_key = ?
+                """,
+                (
+                    status,
+                    expires_at.isoformat() if expires_at else None,
+                    json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                    datetime.now(UTC).isoformat(),
+                    cache_key,
+                ),
+            )
+            conn.commit()
+
+    def _list_documents(self, sql: str, params: tuple[Any, ...]) -> list[SearchDocument]:
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_search_document(row) for row in rows]
 
 
 class CachedEmbeddingService:
@@ -320,11 +446,43 @@ class CachedEmbeddingService:
 
 
 def document_cache_key(document: SearchDocument) -> str:
+    if document.doc_type == "candidate" and document.candidate_id is not None:
+        return f"candidate:{document.candidate_id}"
     if document.task_id is not None:
         return f"task:{document.task_id}"
     if document.candidate_id is not None:
         return f"candidate:{document.candidate_id}"
     return f"{document.doc_type}:{document.source}:{document.doc_id}"
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    text = str(value).strip() if value not in (None, "") else ""
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _row_to_search_document(row: sqlite3.Row) -> SearchDocument:
+    metadata_json = str(row["metadata_json"]) if row["metadata_json"] is not None else "{}"
+    return SearchDocument(
+        doc_type=str(row["doc_type"]),
+        doc_id=str(row["doc_id"]),
+        title=row["title"],
+        content=str(row["content"]),
+        source=str(row["source"]),
+        source_url=row["source_url"],
+        task_id=row["task_id"],
+        candidate_id=row["candidate_id"],
+        published_at=_parse_dt(row["published_at"]),
+        status=row["status"],
+        created_at=_parse_dt(row["created_at"]),
+        updated_at=_parse_dt(row["updated_at"]),
+        expires_at=_parse_dt(row["expires_at"]),
+        metadata=json.loads(metadata_json) if metadata_json else {},
+    )
 
 
 def top_match(query_vector: list[float], documents: list[tuple[SearchDocument, list[float]]]) -> SearchMatch | None:

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from packages.common.config import Writer3Settings
+from packages.common.heartbeat import HeartbeatThrottle
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.telegram import TelegramClient
 
@@ -52,6 +53,18 @@ class Writer3Worker:
         self.start_after = parse_start_after(self.settings.start_after)
         self.ai_client = ai_client or self._build_ai_client()
         self.telegram_client = telegram_client or self._build_telegram_client()
+        self._heartbeat_throttle = HeartbeatThrottle(
+            component="writer3",
+            worker_id=self.worker_id,
+            writer=lambda component, worker_id, status, success, error, metadata: self.repository.record_worker_heartbeat(
+                component=component,
+                worker_id=worker_id,
+                status=status,
+                success=success,
+                error=error,
+                metadata=metadata,
+            ),
+        )
 
     def run_once(self) -> Writer3RunResult:
         task = self.repository.claim_task(
@@ -209,9 +222,7 @@ class Writer3Worker:
 
     def _heartbeat(self, *, success: bool, error: str | None = None, metadata: dict[str, Any] | None = None) -> None:
         try:
-            self.repository.record_worker_heartbeat(
-                component="writer3",
-                worker_id=self.worker_id,
+            self._heartbeat_throttle.send(
                 status="ok" if success else "failed",
                 success=success,
                 error=error,

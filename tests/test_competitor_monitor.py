@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from packages.common.time_utils import SHANGHAI_TZ
 from packages.competitor_monitor.fetchers import fetch_jinse, fetch_odaily, normalize_item_content, scrub_competitor_brands
 from packages.competitor_monitor.events import EventAssignment, EventSourceRecord, NewsflashEventAggregator, NewsflashItemRecord
+from packages.competitor_monitor.local_first_repository import LocalFirstCompetitorMonitorRepository
+from packages.competitor_monitor.local_state import CompetitorEventStateStore
 from packages.competitor_monitor.repository import parse_datetime
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, match_filter_terms
 
@@ -147,6 +150,16 @@ class FakeRepository:
 
     def record_worker_heartbeat(self, **kwargs):
         self.heartbeats.append(kwargs)
+
+
+class CountingRecentSourcesRepository(FakeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recent_reads = 0
+
+    def list_recent_event_sources(self, *, since, exclude_item_ids):  # noqa: ANN001
+        self.recent_reads += 1
+        return super().list_recent_event_sources(since=since, exclude_item_ids=exclude_item_ids)
 
 
 def test_competitor_brand_scrub_removes_fixed_prefix_and_names() -> None:
@@ -598,6 +611,48 @@ def test_event_aggregator_can_match_new_item_to_reappearing_assigned_item() -> N
     assert new_assignment is not None
     assert new_assignment.event_id == "evt_existing"
     assert new_assignment.matched_item_id == existing_record.id
+
+
+def test_local_first_repository_reuses_local_recent_event_sources_between_batches(tmp_path: Path) -> None:
+    from packages.common.config import CompetitorMonitorSettings
+    from packages.competitor_monitor.fetchers import NewsflashItem
+
+    class FakeEmbeddingClient:
+        model = "fake-embedding"
+
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    class FakeCache:
+        def get_embedding(self, *, cache_key, model, text_hash):  # noqa: ANN001
+            return None
+
+        def set_embedding(self, *, cache_key, model, text_hash, vector):  # noqa: ANN001
+            return None
+
+        def upsert_document(self, document):
+            return None
+
+    remote = CountingRecentSourcesRepository()
+    repository = LocalFirstCompetitorMonitorRepository(
+        remote=remote,
+        state_store=CompetitorEventStateStore(tmp_path / "competitor.sqlite"),
+    )
+    aggregator = NewsflashEventAggregator(
+        repository=repository,
+        settings=CompetitorMonitorSettings(blockbeats_api_key="key", event_duplicate_threshold=0.88),
+        embedding_client=FakeEmbeddingClient(),
+        ai_client=None,
+        cache=FakeCache(),
+    )
+
+    first = NewsflashItem("blockbeats", "existing", "比特币 ETF 获批", "比特币 ETF 获批 正文")
+    second = NewsflashItem("panews", "new", "比特币 ETF 获批", "比特币 ETF 获批 另一写法")
+
+    aggregator.assign_items([first])
+    aggregator.assign_items([second])
+
+    assert remote.recent_reads == 1
 
 
 def test_prune_excluded_event_sources_removes_matches_and_keeps_remaining_event() -> None:

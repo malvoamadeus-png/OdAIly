@@ -171,7 +171,10 @@ class PipelineSupervisorWorker:
                 )
             )
 
-        if self.repository.count_recent_x_success_attempts(since=heartbeat_cutoff) == 0:
+        if (
+            self.repository.count_recent_x_success_attempts(since=heartbeat_cutoff) == 0
+            and self.repository.count_recent_x_capture_success_heartbeats(since=heartbeat_cutoff) == 0
+        ):
             alerts.append(
                 PipelineAlert(
                     alert_key="x_capture:no_recent_success_attempt",

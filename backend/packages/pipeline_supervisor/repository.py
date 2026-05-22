@@ -35,6 +35,7 @@ class PipelineSupervisorRepository(Protocol):
     def list_stuck_processing_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
     def list_recent_failed_tasks(self, *, since: datetime, threshold: int) -> list[dict[str, Any]]: ...
     def count_recent_x_success_attempts(self, *, since: datetime) -> int: ...
+    def count_recent_x_capture_success_heartbeats(self, *, since: datetime) -> int: ...
     def claim_alert(self, *, alert_key: str, message: str, dedup_cutoff: datetime, metadata: dict[str, Any] | None = None) -> bool: ...
 
 
@@ -202,6 +203,19 @@ class PostgresPipelineSupervisorRepository:
                 FROM x_capture_attempts
                 WHERE status = 'success'
                   AND finished_at >= %s
+                """,
+                (since,),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def count_recent_x_capture_success_heartbeats(self, *, since: datetime) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT count(*)::int AS count
+                FROM pipeline_worker_heartbeats
+                WHERE component = 'x_capture'
+                  AND last_success_at >= %s
                 """,
                 (since,),
             ).fetchone()
