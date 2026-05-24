@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.common.config import PipelineSupervisorSettings, RetrySettings
-from packages.pipeline_supervisor.repository import to_json_safe
+from packages.pipeline_supervisor.repository import EXPECTED_HEARTBEAT_COMPONENTS, to_json_safe
 from packages.pipeline_supervisor.worker import PipelineSupervisorWorker
 from packages.x_processing.telegram import TelegramResult
 
@@ -157,3 +157,7 @@ def test_supervisor_metadata_is_json_safe() -> None:
         "items": [{"at": "2026-05-11T14:00:00+00:00"}],
         "ids": [1, 2],
     }
+
+
+def test_supervisor_expected_heartbeats_exclude_external_media_fetcher() -> None:
+    assert "external_media_alert_fetcher" not in EXPECTED_HEARTBEAT_COMPONENTS

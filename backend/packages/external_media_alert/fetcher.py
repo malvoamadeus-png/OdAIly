@@ -14,11 +14,6 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from packages.common.heartbeat import HeartbeatThrottle
-from packages.non_mainstream_media.fetcher import (
-    decode_google_news_url,
-    extract_google_news_excerpt,
-    strip_google_news_source_suffix,
-)
 
 from .models import ExternalMediaSourceDefinition, MediaNewsflashItem, MediaSourceRunResult
 from .repository import ExternalMediaAlertRepository
@@ -33,7 +28,7 @@ REQUEST_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
-GOOGLE_NEWS_THE_BLOCK_RSS_URL = "https://news.google.com/rss/search?q=site:theblock.co+crypto&hl=en-US&gl=US&ceid=US:en"
+THE_BLOCK_RSS_URL = "https://www.theblock.co/rss.xml"
 MAX_ITEMS_PER_SOURCE = 25
 
 
@@ -58,7 +53,7 @@ SITE_REGISTRY: dict[str, ExternalMediaSourceDefinition] = {
         site_key="the_block",
         display_name="The Block",
         homepage_url="https://www.theblock.co/",
-        feed_url=GOOGLE_NEWS_THE_BLOCK_RSS_URL,
+        feed_url=THE_BLOCK_RSS_URL,
         list_url="https://www.theblock.co/latest-crypto-news",
         capture_method="rss",
     ),
@@ -155,14 +150,6 @@ def parse_feed_items(
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
         raise ValueError(f"invalid RSS payload for {site.site_key}") from exc
-    if site.site_key == "the_block":
-        return parse_google_news_feed_items(
-            site,
-            root,
-            timeout_seconds=timeout_seconds,
-            max_attempts=max_attempts,
-            backoff_seconds=backoff_seconds,
-        )
     seen: set[str] = set()
     items: list[MediaNewsflashItem] = []
     for item in root.findall(".//item")[:MAX_ITEMS_PER_SOURCE]:
@@ -190,57 +177,6 @@ def parse_feed_items(
                 source_url=source_url,
                 published_at=parse_feed_datetime(item.findtext("pubDate", default="") or item.findtext("published", default="")),
                 raw_payload={"title": title, "link": link, "description": description},
-                metadata={
-                    "site_key": site.site_key,
-                    "site_display_name": site.display_name,
-                    "capture_method": "rss",
-                },
-            )
-        )
-    return items
-
-
-def parse_google_news_feed_items(
-    site: ExternalMediaSourceDefinition,
-    root: ET.Element,
-    *,
-    timeout_seconds: float,
-    max_attempts: int = 3,
-    backoff_seconds: float = 1.0,
-) -> list[MediaNewsflashItem]:
-    seen: set[str] = set()
-    items: list[MediaNewsflashItem] = []
-    for item in root.findall(".//item")[:MAX_ITEMS_PER_SOURCE]:
-        raw_title = clean_inline_text(item.findtext("title", default=""))
-        link = clean_inline_text(item.findtext("link", default=""))
-        source_name = clean_inline_text(item.findtext("source", default=""))
-        if not raw_title or not link:
-            continue
-        if source_name and source_name != site.display_name:
-            continue
-        decoded_url = decode_google_news_url(
-            link,
-            timeout_seconds=timeout_seconds,
-            max_attempts=max_attempts,
-            backoff_seconds=backoff_seconds,
-        )
-        if not decoded_url:
-            continue
-        source_url = normalize_url(decoded_url)
-        if source_url in seen:
-            continue
-        seen.add(source_url)
-        title = strip_google_news_source_suffix(raw_title, source_name or site.display_name)
-        description = item.findtext("description", default="")
-        excerpt = extract_google_news_excerpt(description, title=raw_title, source_name=source_name or site.display_name)
-        items.append(
-            MediaNewsflashItem(
-                source=site.site_key,
-                title=title,
-                content=choose_content(title=title, description=excerpt),
-                source_url=source_url,
-                published_at=parse_feed_datetime(item.findtext("pubDate", default="")),
-                raw_payload={"title": raw_title, "link": link, "description": description},
                 metadata={
                     "site_key": site.site_key,
                     "site_display_name": site.display_name,

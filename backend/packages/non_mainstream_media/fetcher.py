@@ -25,12 +25,20 @@ REQUEST_HEADERS = {
 
 A16Z_CONTENT_TYPES = {"article", "podcast", "videos", "listicles", "papers"}
 A16Z_BASE_URL = "https://a16zcrypto.com"
+COINDESK_BASE_URL = "https://www.coindesk.com"
+COINDESK_FEED_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+COINTELEGRAPH_BASE_URL = "https://cointelegraph.com"
+COINTELEGRAPH_FEED_URL = "https://cointelegraph.com/rss"
+DECRYPT_BASE_URL = "https://decrypt.co"
+DECRYPT_FEED_URL = "https://decrypt.co/feed"
 FORBES_BASE_URL = "https://www.forbes.com"
 FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
 FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
 HK01_BASE_URL = "https://www.hk01.com"
 FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
+THE_BLOCK_BASE_URL = "https://www.theblock.co"
+THE_BLOCK_RSS_URL = "https://www.theblock.co/rss.xml"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -66,6 +74,30 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         display_name="a16z crypto Posts",
         homepage_url="https://a16zcrypto.com/posts/",
         list_url="https://a16zcrypto.com/posts/",
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+    ),
+    "coindesk": SiteDefinition(
+        site_key="coindesk",
+        display_name="CoinDesk",
+        homepage_url=COINDESK_BASE_URL,
+        list_url=COINDESK_FEED_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+    ),
+    "cointelegraph": SiteDefinition(
+        site_key="cointelegraph",
+        display_name="Cointelegraph",
+        homepage_url=COINTELEGRAPH_BASE_URL,
+        list_url=COINTELEGRAPH_FEED_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+    ),
+    "decrypt": SiteDefinition(
+        site_key="decrypt",
+        display_name="Decrypt",
+        homepage_url=DECRYPT_BASE_URL,
+        list_url=DECRYPT_FEED_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
     ),
@@ -125,6 +157,14 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         capture_method="html_request",
         pipeline_mode="alert_only",
     ),
+    "the_block": SiteDefinition(
+        site_key="the_block",
+        display_name="The Block",
+        homepage_url=THE_BLOCK_BASE_URL,
+        list_url=THE_BLOCK_RSS_URL,
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+    ),
 }
 
 
@@ -142,6 +182,15 @@ def fetch_discovered_pages(
     if site.site_key == "a16z_crypto_posts":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_a16z_pages(html, base_url=site.homepage_url)
+    if site.site_key == "coindesk":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_coindesk_pages(xml, base_url=site.homepage_url)
+    if site.site_key == "cointelegraph":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_cointelegraph_pages(xml, base_url=site.homepage_url)
+    if site.site_key == "decrypt":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_decrypt_pages(xml, base_url=site.homepage_url)
     if site.site_key == "forbes_digital_assets":
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_forbes_pages(xml, base_url=site.homepage_url)
@@ -168,6 +217,9 @@ def fetch_discovered_pages(
     if site.site_key == "fortune_crypto":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_fortune_pages(html, base_url=site.homepage_url)
+    if site.site_key == "the_block":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_the_block_pages(xml, base_url=site.homepage_url)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -182,6 +234,15 @@ def fetch_article(
     if site.site_key == "a16z_crypto_posts":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return parse_a16z_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    if site.site_key == "coindesk":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return parse_coindesk_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    if site.site_key == "cointelegraph":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return parse_cointelegraph_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    if site.site_key == "decrypt":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return parse_decrypt_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     if site.site_key == "forbes_digital_assets":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return parse_forbes_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
@@ -234,6 +295,39 @@ def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[Dis
     return results
 
 
+def discover_coindesk_pages(xml_text: str, *, base_url: str = COINDESK_BASE_URL) -> list[DiscoveredPage]:
+    return discover_rss_pages(
+        xml_text,
+        base_url=base_url,
+        href_patterns=(r"^https://www\.coindesk\.com/.+/$",),
+        excluded_patterns=(r"/tv/", r"/video/", r"/podcasts?/", r"/livewire/"),
+    )
+
+
+def discover_cointelegraph_pages(xml_text: str, *, base_url: str = COINTELEGRAPH_BASE_URL) -> list[DiscoveredPage]:
+    return discover_rss_pages(
+        xml_text,
+        base_url=base_url,
+        href_patterns=(r"^https://cointelegraph\.com/news/.+$",),
+    )
+
+
+def discover_decrypt_pages(xml_text: str, *, base_url: str = DECRYPT_BASE_URL) -> list[DiscoveredPage]:
+    return discover_rss_pages(
+        xml_text,
+        base_url=base_url,
+        href_patterns=(r"^https://decrypt\.co/\d+/.+$",),
+    )
+
+
+def discover_the_block_pages(xml_text: str, *, base_url: str = THE_BLOCK_BASE_URL) -> list[DiscoveredPage]:
+    return discover_rss_pages(
+        xml_text,
+        base_url=base_url,
+        href_patterns=(r"^https://www\.theblock\.co/post/\d+/.+$",),
+    )
+
+
 def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> list[DiscoveredPage]:
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
@@ -259,6 +353,44 @@ def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> 
                 detail_url=detail_url,
                 title=title or None,
                 excerpt=excerpt or None,
+            )
+        )
+    return results
+
+
+def discover_rss_pages(
+    xml_text: str,
+    *,
+    base_url: str,
+    href_patterns: tuple[str, ...],
+    excluded_patterns: tuple[str, ...] = (),
+) -> list[DiscoveredPage]:
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid RSS payload") from exc
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        description = item.findtext("description", default="")
+        if not link or not title:
+            continue
+        detail_url = normalize_url(urljoin(base_url, link))
+        if href_patterns and not any(re.match(pattern, detail_url) for pattern in href_patterns):
+            continue
+        if excluded_patterns and any(re.search(pattern, detail_url) for pattern in excluded_patterns):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=extract_feed_excerpt(description, title=title) or None,
             )
         )
     return results
@@ -469,6 +601,197 @@ def parse_a16z_article(html: str, *, page_url: str, source_item_id: str) -> Pars
     )
 
 
+def parse_coindesk_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or select_meta_content(soup, "property", "article:published_time")
+        or structured.get("dateCreated")
+    )
+    canonical = normalize_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or str(structured.get("url") or "")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    categories = normalize_string_list(structured.get("articleSection"))
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(extract_coindesk_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or structured.get("abstract")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="coindesk_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "structured_type": structured.get("@type"),
+            "structured_headline": structured.get("headline") or structured.get("name"),
+        },
+        metadata=metadata,
+    )
+
+
+def parse_cointelegraph_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    published_at_raw = (
+        select_meta_content(soup, "property", "article:published_time")
+        or select_meta_content(soup, "name", "article:published_time")
+        or select_meta_content(soup, "property", "og:updated_time")
+    )
+    canonical = normalize_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = extract_cointelegraph_authors(soup)
+    categories = normalize_string_list(select_meta_content(soup, "property", "article:section"))
+    tags = normalize_keywords(
+        select_meta_content(soup, "property", "article:tag") or select_meta_content(soup, "name", "keywords")
+    )
+    body = clean_body_text(extract_cointelegraph_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": None,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="cointelegraph_news",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "byline": extract_cointelegraph_byline_text(soup),
+        },
+        metadata=metadata,
+    )
+
+
+def parse_decrypt_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or select_meta_content(soup, "property", "article:published_time")
+        or structured.get("dateCreated")
+    )
+    canonical = normalize_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or str(structured.get("url") or "")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name") or normalize_string_list(
+        extract_decrypt_author(soup)
+    )
+    categories = normalize_string_list(structured.get("articleSection"))
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(extract_decrypt_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="decrypt_news",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "structured_type": structured.get("@type"),
+            "structured_headline": structured.get("headline") or structured.get("name"),
+        },
+        metadata=metadata,
+    )
+
+
 def parse_forbes_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
     soup = BeautifulSoup(html, "html.parser")
     payload = extract_next_data_payload(html)
@@ -650,6 +973,21 @@ def pick_structured_article(payload: Any) -> dict[str, Any] | None:
     return None
 
 
+def extract_cointelegraph_authors(soup: BeautifulSoup) -> list[str]:
+    byline = extract_cointelegraph_byline_text(soup)
+    if not byline:
+        return []
+    matches = re.findall(r"(?:Written by|Reviewed by)\s+(.+?)\s*(?:,|$)", byline)
+    return unique_preserve_order(clean_inline_text(match.replace("\u2060", " ")) for match in matches if clean_inline_text(match))
+
+
+def extract_cointelegraph_byline_text(soup: BeautifulSoup) -> str:
+    node = soup.select_one("[data-testid='post-byline']")
+    if node is None:
+        return ""
+    return clean_inline_text(node.get_text(" ", strip=True).replace("\u2060", " "))
+
+
 def extract_next_data_payload(html: str) -> dict[str, Any]:
     match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
     if match is None:
@@ -782,6 +1120,15 @@ def extract_google_news_excerpt(description_html: str, *, title: str, source_nam
     return text.strip(" -\u00a0")
 
 
+def extract_feed_excerpt(description_html: str, *, title: str = "") -> str:
+    if not description_html:
+        return ""
+    text = clean_inline_text(BeautifulSoup(description_html, "html.parser").get_text(" ", strip=True))
+    if title and text.startswith(title):
+        text = text[len(title) :].strip()
+    return text.strip(" -\u00a0")
+
+
 def is_forbes_article_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.netloc.lower().endswith("forbes.com") and parsed.path.startswith("/sites/digital-assets/") and not parsed.path.endswith("/feed/")
@@ -853,6 +1200,31 @@ def extract_forbes_body(soup: BeautifulSoup) -> str:
     return best_text
 
 
+def extract_coindesk_body(soup: BeautifulSoup) -> str:
+    node = soup.select_one("div.document-body")
+    if node is None:
+        return ""
+    return extract_body_from_node(node)
+
+
+def extract_cointelegraph_body(soup: BeautifulSoup) -> str:
+    for selector in ("[data-testid='post'] .ct-prose-2", "[data-testid='post']", "main"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = extract_body_from_node(node)
+        if text:
+            return text
+    return ""
+
+
+def extract_decrypt_body(soup: BeautifulSoup) -> str:
+    node = soup.select_one(".post-content")
+    if node is None:
+        return ""
+    return extract_body_from_node(node)
+
+
 def extract_hk01_body(blocks: list[dict[str, Any]]) -> str:
     html_token_parts: list[str] = []
     summary_parts: list[str] = []
@@ -886,6 +1258,19 @@ def extract_hk01_text_nodes(value: Any) -> list[str]:
                 parts.extend(extract_hk01_text_nodes(nested))
         return parts
     return parts
+
+
+def extract_decrypt_author(soup: BeautifulSoup) -> str:
+    author = select_meta_content(soup, "name", "author") or ""
+    if " / " in author:
+        return author.split(" / ", 1)[1].strip()
+    return author.strip()
+
+
+def extract_body_from_node(node: Tag) -> str:
+    fragment = BeautifulSoup(str(node), "html.parser")
+    drop_noise(fragment)
+    return "\n\n".join(part for part in collect_text_parts(fragment) if part).strip()
 
 
 def extract_body_text(soup: BeautifulSoup) -> str:
@@ -984,6 +1369,8 @@ def clean_body_text(value: str) -> str:
         if lower_normalized.startswith("sign up now for the free cryptocodex"):
             continue
         if lower_normalized.startswith("this voice experience is generated by ai"):
+            continue
+        if lower_normalized.startswith("daily debrief newsletter"):
             continue
         if normalized.lower().startswith(("related posts", "read more", "recommended")):
             continue

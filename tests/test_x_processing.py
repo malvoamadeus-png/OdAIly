@@ -491,9 +491,9 @@ def test_telegram_notice_uses_competitor_source_names() -> None:
         source="non_mainstream_media",
         title="标题",
         source_url="https://a16zcrypto.com/posts/article/token-launch/",
-        route_label="非主流外媒",
+        route_label="外媒",
         feature_mode_enabled=False,
-    ) == "非主流外媒有新快讯-非主流外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
+    ) == "外媒有新快讯-外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
 
 
 def test_telegram_notice_can_override_with_site_display_name() -> None:
@@ -501,10 +501,10 @@ def test_telegram_notice_can_override_with_site_display_name() -> None:
         source="mainstream_media",
         title="标题",
         source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
-        route_label="主流外媒",
+        route_label="外媒",
         feature_mode_enabled=False,
         site_display_name="CoinDesk",
-    ) == "CoinDesk有新快讯-主流外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
+    ) == "CoinDesk有新快讯-外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
 
 
 def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
@@ -798,11 +798,12 @@ def test_non_mainstream_writer_uses_dedicated_prompt_template() -> None:
 
     assert result.processed == 1
     assert repo.tasks[1].status == "written"
-    assert repo.pipelines[1].prompt_template_key == "non_mainstream_media_writer"
+    assert repo.pipelines[1].prompt_template_key == "mainstream_media_writer"
     prompt = fake_ai.calls[0]["prompt"]
     assert "【待处理外媒原文】" in prompt
     assert "来源媒体：a16z crypto Posts" in prompt
     assert "作者：Alice、Bob" in prompt
+    assert "原标题：A16z crypto posts new token launch thesis" in prompt
     assert "来源链接：https://a16zcrypto.com/posts/article/token-launch/" in prompt
     assert "禁止提及采集媒体名称" not in prompt
 
@@ -819,7 +820,7 @@ def test_mainstream_media_writer_uses_dedicated_prompt_template() -> None:
     assert repo.tasks[1].status == "written"
     assert repo.pipelines[1].prompt_template_key == "mainstream_media_writer"
     prompt = fake_ai.calls[0]["prompt"]
-    assert "【待处理主流外媒快讯】" in prompt
+    assert "【待处理外媒快讯】" in prompt
     assert "来源媒体：CoinDesk" in prompt
     assert "原标题：Bitcoin ETFs add to inflow streak" in prompt
     assert "来源链接：https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak" in prompt
@@ -922,10 +923,10 @@ def test_mainstream_media_publish_keeps_source_url_and_site_name() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
     assert push.calls[0]["source_url"] == "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
-    assert telegram.calls == ["CoinDesk有新快讯-主流外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
+    assert telegram.calls == ["CoinDesk有新快讯-外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
 
 
-def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> None:
+def test_non_mainstream_publish_keeps_source_url_and_uses_site_name() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(non_mainstream_task(1, status="written"))
     repo.pipelines[1] = PipelineRecord(
@@ -950,8 +951,8 @@ def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> N
 
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
-    assert push.calls[0]["source_url"] is None
-    assert telegram.calls == ["非主流外媒有新快讯-非主流外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
+    assert push.calls[0]["source_url"] == "https://a16zcrypto.com/posts/article/token-launch/"
+    assert telegram.calls == ["a16z crypto Posts有新快讯-外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
 
 
 def test_format_publish_falls_back_to_uncategorized_standard_mode_when_pipeline_metadata_missing() -> None:

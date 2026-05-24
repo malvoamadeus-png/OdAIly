@@ -30,7 +30,7 @@ PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
     "regular": "x_regular_writer",
     "onchain": "x_onchain_writer",
     "funding": "x_funding_writer",
-    "non_mainstream_media": "non_mainstream_media_writer",
+    "non_mainstream_media": "mainstream_media_writer",
     "mainstream_media": "mainstream_media_writer",
 }
 

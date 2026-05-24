@@ -44,12 +44,12 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
     "x_onchain_writer": ("X 链上快讯", "docs/链上快讯模板.txt", "initial onchain writer template"),
     "x_funding_writer": ("X 融资快讯", "docs/融资快讯模板.txt", "initial funding writer template"),
     "non_mainstream_media_writer": (
-        "非主流外媒快讯",
+        "外媒快讯（旧）",
         "docs/外媒模板.txt",
         "initial non-mainstream media writer template",
     ),
     "mainstream_media_writer": (
-        "主流外媒快讯",
+        "外媒快讯",
         "docs/主流外媒快讯模板.txt",
         "initial mainstream media writer template",
     ),

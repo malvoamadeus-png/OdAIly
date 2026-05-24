@@ -112,6 +112,10 @@ const eventFilters: { key: NewsflashEventFilter; label: string }[] = [
 
 const eventPageSize = 100;
 
+function visiblePromptTemplates(templates: PromptTemplate[]): PromptTemplate[] {
+  return templates.filter((template) => template.template_key !== 'non_mainstream_media_writer');
+}
+
 export function App() {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
@@ -197,9 +201,12 @@ export function App() {
 
   async function loadPrompts(nextSelectedKey?: string) {
     setError('');
-    const templates = await listPromptTemplates();
+    const templates = visiblePromptTemplates(await listPromptTemplates());
     setPromptTemplates(templates);
-    const key = nextSelectedKey || selectedPromptKey || templates[0]?.template_key || '';
+    const requestedKey = nextSelectedKey || selectedPromptKey;
+    const key = templates.some((template) => template.template_key === requestedKey)
+      ? requestedKey || ''
+      : templates[0]?.template_key || '';
     setSelectedPromptKey(key);
     if (!key) {
       setPromptVersions([]);
@@ -303,7 +310,7 @@ export function App() {
         jitter_seconds: Number(form.get('jitter_seconds')),
       });
       setNonMainstreamSettings(updated);
-      setMessage('非主流媒体设置已保存');
+      setMessage('外媒设置已保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -533,7 +540,7 @@ export function App() {
     view === 'x'
       ? 'X Capture'
       : view === 'non_mainstream'
-        ? 'Non-Mainstream Media'
+        ? 'External Media'
         : view === 'prompts'
           ? 'Prompt'
           : view === 'competitor'
@@ -545,7 +552,7 @@ export function App() {
     view === 'x'
       ? 'X 抓取控制台'
       : view === 'non_mainstream'
-        ? '非主流媒体抓取控制台'
+        ? '外媒抓取控制台'
       : view === 'prompts'
         ? 'Prompt 编制'
         : view === 'competitor'
@@ -867,10 +874,10 @@ function NonMainstreamPanel({
 
       <div className="nonMainstreamList">
         <div className="sectionHeader">
-          <h2>已接入站点</h2>
+          <h2>已接入外媒</h2>
           <span>{loading ? '加载中' : `${sources.length} 个站点`}</span>
         </div>
-        {sources.length === 0 && <div className="emptyState">暂无已接入站点，请先运行初始化命令。</div>}
+        {sources.length === 0 && <div className="emptyState">暂无已接入外媒，请先运行初始化命令。</div>}
         {writeFlowSources.length > 0 && (
           <>
             <div className="sectionHeader">

@@ -4,7 +4,8 @@ import json
 from datetime import UTC, datetime
 
 from packages.external_media_alert import ALERT_PROMPT_KEY, InMemoryExternalMediaAlertRepository, MAINSTREAM_MEDIA_TASK_SOURCE
-from packages.external_media_alert.models import MediaNewsflashItem
+from packages.external_media_alert.fetcher import get_site_registry, parse_feed_items
+from packages.external_media_alert.models import ExternalMediaSourceDefinition, MediaNewsflashItem
 from packages.external_media_alert.worker import ExternalMediaAlertWorker
 from packages.common.config import ExternalMediaAlertSettings, RetrySettings
 from packages.x_processing.searcher import SearchDocument
@@ -121,6 +122,48 @@ def build_task(
             "source_kind": source,
         },
     )
+
+
+def test_the_block_uses_official_rss_feed() -> None:
+    site = get_site_registry()["the_block"]
+
+    assert site.feed_url == "https://www.theblock.co/rss.xml"
+
+
+def test_parse_feed_items_handles_the_block_rss_payload() -> None:
+    site = ExternalMediaSourceDefinition(
+        site_key="the_block",
+        display_name="The Block",
+        homepage_url="https://www.theblock.co/",
+        feed_url="https://www.theblock.co/rss.xml",
+        list_url="https://www.theblock.co/latest-crypto-news",
+    )
+    xml_text = """
+    <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+      <channel>
+        <item>
+          <title>First The Block Title</title>
+          <link>https://www.theblock.co/post/123/first-story?utm_source=rss&amp;utm_medium=rss</link>
+          <description><![CDATA[First The Block Title - Lead paragraph from rss.]]></description>
+          <pubDate>Sat, 24 May 2026 10:00:00 +0000</pubDate>
+        </item>
+        <item>
+          <title>Duplicate Should Collapse</title>
+          <link>https://www.theblock.co/post/123/first-story?utm_source=other</link>
+          <description><![CDATA[Different query string but same article.]]></description>
+          <pubDate>Sat, 24 May 2026 10:01:00 +0000</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    items = parse_feed_items(site, xml_text, timeout_seconds=1)
+
+    assert len(items) == 1
+    assert items[0].title == "First The Block Title"
+    assert items[0].content == "Lead paragraph from rss."
+    assert items[0].source_url == "https://www.theblock.co/post/123/first-story"
+    assert items[0].metadata["site_key"] == "the_block"
 
 
 def test_domain_judge_sends_strong_crypto_title_to_model() -> None:

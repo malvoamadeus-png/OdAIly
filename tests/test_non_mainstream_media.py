@@ -7,12 +7,20 @@ from packages.non_mainstream_media.fetcher import (
     clean_body_text,
     discover_a16z_pages,
     discover_bloomberg_pages,
+    discover_coindesk_pages,
+    discover_cointelegraph_pages,
+    discover_decrypt_pages,
     discover_ft_pages,
     discover_fortune_pages,
     discover_forbes_pages,
     discover_hk01_pages,
+    discover_the_block_pages,
     discover_wsj_pages,
+    get_site_registry,
     parse_a16z_article,
+    parse_coindesk_article,
+    parse_cointelegraph_article,
+    parse_decrypt_article,
     parse_forbes_article,
     parse_hk01_article,
 )
@@ -84,6 +92,246 @@ def test_parse_a16z_article_extracts_structured_fields_and_cleans_disclaimer() -
     assert article.content == "First paragraph.\n\nSecond paragraph."
     assert article.content_format == "article"
     assert article.metadata["structured_type"] == "Article"
+
+
+def test_registry_assigns_new_external_media_pipeline_modes() -> None:
+    registry = get_site_registry()
+
+    assert registry["coindesk"].pipeline_mode == "write_flow"
+    assert registry["cointelegraph"].pipeline_mode == "write_flow"
+    assert registry["decrypt"].pipeline_mode == "write_flow"
+    assert registry["the_block"].pipeline_mode == "alert_only"
+
+
+def test_discover_coindesk_pages_reads_rss_titles() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Bitcoin ETFs add to inflow streak</title>
+          <link>https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak</link>
+          <description><![CDATA[Bitcoin ETFs add to inflow streak - Spot funds logged a fifth straight day of net inflows.]]></description>
+        </item>
+        <item>
+          <title>Duplicate title</title>
+          <link>https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak?utm_source=rss</link>
+        </item>
+        <item>
+          <title>Ignore TV</title>
+          <link>https://www.coindesk.com/tv/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak</link>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_coindesk_pages(xml)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak/"
+    ]
+    assert pages[0].excerpt == "Spot funds logged a fifth straight day of net inflows."
+
+
+def test_parse_coindesk_article_extracts_structured_fields_and_body() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak" />
+        <meta property="og:description" content="Spot Bitcoin ETFs extended their inflow streak for a fifth day." />
+        <script type="application/ld+json">
+          {
+            "@context": "http://schema.org",
+            "@type": "NewsArticle",
+            "headline": "Bitcoin ETFs add to inflow streak",
+            "url": "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+            "datePublished": "2026-05-24T10:00:00Z",
+            "articleSection": ["Markets"],
+            "author": [{"@type": "Person", "name": "Margaux Nijkerk"}],
+            "keywords": "Bitcoin, ETF"
+          }
+        </script>
+      </head>
+      <body>
+        <h1>Bitcoin ETFs add to inflow streak</h1>
+        <div class="document-body">
+          <p>Spot Bitcoin ETFs logged a fifth straight day of inflows.</p>
+          <p>BlackRock's IBIT led the move.</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    article = parse_coindesk_article(
+        html,
+        page_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+        source_item_id="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak/",
+    )
+
+    assert article.canonical_url == "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak/"
+    assert article.title == "Bitcoin ETFs add to inflow streak"
+    assert article.author_names == ["Margaux Nijkerk"]
+    assert article.categories == ["Markets"]
+    assert article.tags == ["Bitcoin", "ETF"]
+    assert article.content == "Spot Bitcoin ETFs logged a fifth straight day of inflows.\n\nBlackRock's IBIT led the move."
+    assert article.content_format == "coindesk_article"
+
+
+def test_discover_cointelegraph_pages_reads_rss_titles() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Crypto Today</title>
+          <link>https://cointelegraph.com/news/crypto-today?utm_source=rss_feed</link>
+          <description><![CDATA[Crypto Today - A roundup of the latest crypto headlines.]]></description>
+        </item>
+        <item>
+          <title>Ignore markets category</title>
+          <link>https://cointelegraph.com/magazine/feature-story</link>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_cointelegraph_pages(xml)
+
+    assert [page.detail_url for page in pages] == ["https://cointelegraph.com/news/crypto-today/"]
+    assert pages[0].excerpt == "A roundup of the latest crypto headlines."
+
+
+def test_parse_cointelegraph_article_extracts_body_and_byline() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://cointelegraph.com/news/crypto-today" />
+        <meta property="og:title" content="Crypto Today" />
+        <meta property="og:description" content="A roundup of the latest crypto headlines." />
+        <meta property="article:published_time" content="2026-05-24T11:00:00Z" />
+      </head>
+      <body>
+        <main>
+          <div data-testid="post">
+            <div data-testid="post-byline">Written by Cointelegraph, Staff Writer. Reviewed by Bryan O'Shea, Staff Editor.</div>
+            <div class="ct-prose-2 mt-4 pb-10">
+              <p>Need to know what happened in crypto today?</p>
+              <p>Bitcoin ETFs kept their inflow streak alive.</p>
+              <p>Solana fees also rebounded.</p>
+            </div>
+          </div>
+        </main>
+      </body>
+    </html>
+    """
+
+    article = parse_cointelegraph_article(
+        html,
+        page_url="https://cointelegraph.com/news/crypto-today",
+        source_item_id="https://cointelegraph.com/news/crypto-today/",
+    )
+
+    assert article.canonical_url == "https://cointelegraph.com/news/crypto-today/"
+    assert article.title == "Crypto Today"
+    assert article.author_names == ["Cointelegraph", "Bryan O'Shea"]
+    assert article.content == (
+        "Need to know what happened in crypto today?\n\n"
+        "Bitcoin ETFs kept their inflow streak alive.\n\n"
+        "Solana fees also rebounded."
+    )
+    assert article.content_format == "cointelegraph_news"
+
+
+def test_discover_decrypt_pages_reads_rss_titles() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Bitcoin Dives Below $75K</title>
+          <link>https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion?utm_source=feed</link>
+          <description><![CDATA[Bitcoin Dives Below $75K - Liquidations neared $1 billion during the slide.]]></description>
+        </item>
+        <item>
+          <title>Ignore non-article link</title>
+          <link>https://decrypt.co/news</link>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_decrypt_pages(xml)
+
+    assert [page.detail_url for page in pages] == [
+        "https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion/"
+    ]
+    assert pages[0].excerpt == "Liquidations neared $1 billion during the slide."
+
+
+def test_parse_decrypt_article_extracts_body_and_author() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion" />
+        <meta name="author" content="Decrypt / Andrew Hayward" />
+        <meta property="og:description" content="Bitcoin touched its lowest price in a month overnight." />
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "NewsArticle",
+            "headline": "Bitcoin Dives Below $75K",
+            "url": "https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion",
+            "datePublished": "2026-05-24T12:00:00Z",
+            "articleSection": ["Markets"],
+            "keywords": "Bitcoin, Liquidations"
+          }
+        </script>
+      </head>
+      <body>
+        <main>
+          <div class="grid grid-cols-1 md:grid-cols-8 unreset post-content md:pb-20">
+            <p>Bitcoin is starting to rebound after a rocky night.</p>
+            <p>The coin is currently trading around $75,500.</p>
+            <p>Daily Debrief Newsletter</p>
+          </div>
+        </main>
+      </body>
+    </html>
+    """
+
+    article = parse_decrypt_article(
+        html,
+        page_url="https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion",
+        source_item_id="https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion/",
+    )
+
+    assert article.canonical_url == "https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion/"
+    assert article.title == "Bitcoin Dives Below $75K"
+    assert article.author_names == ["Andrew Hayward"]
+    assert article.categories == ["Markets"]
+    assert article.tags == ["Bitcoin", "Liquidations"]
+    assert article.content == "Bitcoin is starting to rebound after a rocky night.\n\nThe coin is currently trading around $75,500."
+    assert article.content_format == "decrypt_news"
+
+
+def test_discover_the_block_pages_reads_official_rss_titles() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>First The Block Title</title>
+          <link>https://www.theblock.co/post/123/first-story?utm_source=rss</link>
+          <description><![CDATA[First The Block Title - Lead paragraph from rss.]]></description>
+        </item>
+        <item>
+          <title>Duplicate</title>
+          <link>https://www.theblock.co/post/123/first-story?utm_source=other</link>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_the_block_pages(xml)
+
+    assert [page.detail_url for page in pages] == ["https://www.theblock.co/post/123/first-story/"]
+    assert pages[0].excerpt == "Lead paragraph from rss."
 
 
 def test_discover_forbes_pages_reads_digital_assets_rss() -> None:
@@ -608,3 +856,113 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "excerpt": "Fresh alert item",
         "source_kind": "external_media_alert",
     }
+
+
+def test_worker_new_write_flow_site_saves_external_media_article(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "coindesk": SiteDefinition(
+            site_key="coindesk",
+            display_name="CoinDesk",
+            homepage_url="https://www.coindesk.com/",
+            list_url="https://www.coindesk.com/arc/outboundfeeds/rss/",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.coindesk.com/markets/2026/05/24/seed-story/",
+            detail_url="https://www.coindesk.com/markets/2026/05/24/seed-story/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.coindesk.com/markets/2026/05/24/new-story/",
+            detail_url="https://www.coindesk.com/markets/2026/05/24/new-story/",
+            title="New story",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "coindesk"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        assert site.site_key == "coindesk"
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "New story",
+            content="Spot Bitcoin ETFs extended their inflow streak.",
+            published_at=datetime(2026, 5, 24, 10, 0, tzinfo=UTC),
+            author_names=["Margaux Nijkerk"],
+            tags=["Bitcoin"],
+            categories=["Markets"],
+            excerpt="Spot Bitcoin ETFs extended their inflow streak.",
+            content_format="coindesk_article",
+            raw_payload={"page_url": page.detail_url},
+            metadata={"structured_type": "NewsArticle", "published_at_raw": "2026-05-24T10:00:00Z"},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert repository.tasks[0]["source"] == "non_mainstream_media"
+    assert repository.tasks[0]["metadata"]["site_key"] == "coindesk"
+    assert repository.tasks[0]["metadata"]["pipeline_mode"] == "write_flow"
+
+
+def test_worker_the_block_alert_only_saves_title_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "the_block": SiteDefinition(
+            site_key="the_block",
+            display_name="The Block",
+            homepage_url="https://www.theblock.co/",
+            list_url="https://www.theblock.co/rss.xml",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.theblock.co/post/123/seed-story/",
+            detail_url="https://www.theblock.co/post/123/seed-story/",
+            title="Seed story",
+            excerpt="Seed excerpt",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.theblock.co/post/124/new-story/",
+            detail_url="https://www.theblock.co/post/124/new-story/",
+            title="New story",
+            excerpt="Lead paragraph from rss.",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "the_block"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        raise AssertionError("The Block should stay in alert_only mode and never fetch article正文")
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert repository.tasks[0]["source"] == "external_media_alert"
+    assert repository.tasks[0]["metadata"]["site_key"] == "the_block"
+    assert repository.tasks[0]["metadata"]["pipeline_mode"] == "alert_only"

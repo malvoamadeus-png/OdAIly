@@ -27,6 +27,22 @@ def to_json_safe(value: Any) -> Any:
     return str(value)
 
 
+EXPECTED_HEARTBEAT_COMPONENTS = [
+    "x_capture",
+    "non_mainstream_media",
+    "competitor_monitor",
+    "external_media_alert_domain_judge",
+    "external_media_alert_search",
+    "external_media_alert_notify",
+    "x_process_judge",
+    "x_process_search",
+    "x_process_write",
+    "x_process_format_publish",
+]
+
+MONITORED_TASK_SOURCES = ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"]
+
+
 class PipelineSupervisorRepository(Protocol):
     def init_schema(self) -> None: ...
     def list_stale_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
@@ -53,19 +69,6 @@ class PostgresPipelineSupervisorRepository:
             conn.commit()
 
     def list_stale_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
-        expected = [
-            "x_capture",
-            "non_mainstream_media",
-            "competitor_monitor",
-            "external_media_alert_fetcher",
-            "external_media_alert_domain_judge",
-            "external_media_alert_search",
-            "external_media_alert_notify",
-            "x_process_judge",
-            "x_process_search",
-            "x_process_write",
-            "x_process_format_publish",
-        ]
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -91,24 +94,11 @@ class PostgresPipelineSupervisorRepository:
                 WHERE latest.last_seen_at IS NULL OR latest.last_seen_at < %s
                 ORDER BY expected.component ASC
                 """,
-                (expected, cutoff),
+                (EXPECTED_HEARTBEAT_COMPONENTS, cutoff),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def list_stale_success_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
-        expected = [
-            "x_capture",
-            "non_mainstream_media",
-            "competitor_monitor",
-            "external_media_alert_fetcher",
-            "external_media_alert_domain_judge",
-            "external_media_alert_search",
-            "external_media_alert_notify",
-            "x_process_judge",
-            "x_process_search",
-            "x_process_write",
-            "x_process_format_publish",
-        ]
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -125,7 +115,7 @@ class PostgresPipelineSupervisorRepository:
                   AND (last_success_at IS NULL OR last_success_at < %s)
                 ORDER BY component ASC
                 """,
-                (expected, cutoff, cutoff),
+                (EXPECTED_HEARTBEAT_COMPONENTS, cutoff, cutoff),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -142,7 +132,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
+                    MONITORED_TASK_SOURCES,
                     ["pending", "judged", "searched", "classified", "deduped", "written"],
                     cutoff,
                 ),
@@ -165,7 +155,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
+                    MONITORED_TASK_SOURCES,
                     ["judging", "classifying", "deduping", "writing", "formatting", "notifying"],
                     cutoff,
                 ),
@@ -186,7 +176,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY count(*) DESC, latest_updated_at DESC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
+                    MONITORED_TASK_SOURCES,
                     ["judge_failed", "domain_failed", "search_failed", "write_failed", "format_failed", "publish_failed", "notify_failed"],
                     since,
                     threshold,
