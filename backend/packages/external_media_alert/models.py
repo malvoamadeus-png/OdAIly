@@ -8,9 +8,14 @@ from typing import Any, Literal
 AlertStage = Literal["domain_judge", "search", "notify"]
 DomainRoute = Literal["crypto"]
 DomainJudgeRoute = Literal["crypto", "discard"]
+DomainDiscardReason = Literal["none", "non_crypto", "market_analysis"]
+ExternalMediaCaptureMethod = Literal["rss", "html_request"]
+ExternalMediaCaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty"]
 
 
 ALERT_TASK_SOURCE = "external_media_alert"
+MAINSTREAM_MEDIA_TASK_SOURCE = "mainstream_media"
+DOMAIN_WORKER_TASK_SOURCES = (ALERT_TASK_SOURCE, MAINSTREAM_MEDIA_TASK_SOURCE)
 ALERT_PROMPT_KEY = "external_media_alert_domain_judge"
 
 
@@ -50,3 +55,35 @@ class StageRunResult:
     processed: int = 0
     failed: int = 0
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalMediaSourceDefinition:
+    site_key: str
+    display_name: str
+    homepage_url: str
+    feed_url: str | None = None
+    list_url: str | None = None
+    capture_method: ExternalMediaCaptureMethod = "rss"
+
+
+@dataclass(frozen=True, slots=True)
+class MediaNewsflashItem:
+    source: str
+    title: str
+    content: str
+    source_url: str | None = None
+    published_at: datetime | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MediaSourceRunResult:
+    source: ExternalMediaSourceDefinition
+    status: ExternalMediaCaptureStatus
+    candidate_count: int = 0
+    saved_count: int = 0
+    duplicate_count: int = 0
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

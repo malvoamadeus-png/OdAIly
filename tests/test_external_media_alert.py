@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from packages.external_media_alert import ALERT_PROMPT_KEY, InMemoryExternalMediaAlertRepository
+from packages.external_media_alert import ALERT_PROMPT_KEY, InMemoryExternalMediaAlertRepository, MAINSTREAM_MEDIA_TASK_SOURCE
+from packages.external_media_alert.models import MediaNewsflashItem
 from packages.external_media_alert.worker import ExternalMediaAlertWorker
 from packages.common.config import ExternalMediaAlertSettings, RetrySettings
 from packages.x_processing.searcher import SearchDocument
@@ -100,11 +101,12 @@ def build_task(
     title: str,
     excerpt: str,
     source_url: str,
+    source: str = "external_media_alert",
 ) -> TaskRecord:
     now = datetime(2026, 5, 19, 12, 0, tzinfo=UTC)
     return TaskRecord(
         id=task_id,
-        source="external_media_alert",
+        source=source,
         source_item_id=source_url,
         source_url=source_url,
         title=title,
@@ -116,7 +118,7 @@ def build_task(
             "site_key": site_key,
             "site_display_name": site_display_name,
             "excerpt": excerpt,
-            "source_kind": "external_media_alert",
+            "source_kind": source,
         },
     )
 
@@ -134,7 +136,7 @@ def test_domain_judge_sends_strong_crypto_title_to_model() -> None:
             source_url="https://www.ft.com/content/one/",
         )
     )
-    ai_client = FakeAIClient(['{"route":"crypto"}'])
+    ai_client = FakeAIClient(['{"route":"crypto","discard_reason":"none"}'])
     worker = ExternalMediaAlertWorker(
         stage="domain_judge",
         repository=repo,
@@ -164,7 +166,7 @@ def test_domain_judge_sends_fortune_non_crypto_title_to_model() -> None:
             source_url="https://fortune.com/2026/05/19/coach-handbags-comeback-millennials-gen-z/",
         )
     )
-    ai_client = FakeAIClient(['{"route":"discard"}'])
+    ai_client = FakeAIClient(['{"route":"discard","discard_reason":"non_crypto"}'])
     worker = ExternalMediaAlertWorker(
         stage="domain_judge",
         repository=repo,
@@ -196,7 +198,7 @@ def test_domain_judge_sends_strong_non_crypto_title_to_model() -> None:
         stage="domain_judge",
         repository=repo,
         settings=settings(),
-        ai_client=FakeAIClient(['{"route":"discard"}']),
+        ai_client=FakeAIClient(['{"route":"discard","discard_reason":"non_crypto"}']),
     )
 
     worker.run_once()
@@ -222,7 +224,7 @@ def test_domain_judge_sends_short_ticker_substring_to_model() -> None:
             source_url="https://www.wsj.com/finance/investing/to-cash-in-on-solar-stocks-look-for-trade-barriers-ad33e94f/",
         )
     )
-    ai_client = FakeAIClient(['{"route":"discard"}'])
+    ai_client = FakeAIClient(['{"route":"discard","discard_reason":"non_crypto"}'])
     worker = ExternalMediaAlertWorker(
         stage="domain_judge",
         repository=repo,
@@ -256,7 +258,7 @@ def test_domain_judge_uses_model_for_ambiguous_title() -> None:
             source_url="https://www.wsj.com/articles/macro-risk-assets/",
         )
     )
-    ai_client = FakeAIClient(['{"route":"crypto"}'])
+    ai_client = FakeAIClient(['{"route":"crypto","discard_reason":"none"}'])
     worker = ExternalMediaAlertWorker(
         stage="domain_judge",
         repository=repo,
@@ -272,6 +274,59 @@ def test_domain_judge_uses_model_for_ambiguous_title() -> None:
     assert repo.pipelines[1].prompt_version_id == 9
     assert "来源媒体：WSJ Finance" in str(ai_client.calls[0]["prompt"])
     assert '"enum": ["crypto", "discard"]' in json.dumps(ai_client.calls[0]["text_format"], ensure_ascii=False)
+    assert '"enum": ["none", "non_crypto", "market_analysis"]' in json.dumps(ai_client.calls[0]["text_format"], ensure_ascii=False)
+
+
+def test_domain_judge_discards_mainstream_market_analysis() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="pending",
+            site_key="coindesk",
+            site_display_name="CoinDesk",
+            title="Bitcoin price outlook shows resistance near $110K",
+            excerpt="Analysts expect BTC to move between support and resistance while major indices stay mixed.",
+            source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-price-outlook",
+            source=MAINSTREAM_MEDIA_TASK_SOURCE,
+        )
+    )
+    worker = ExternalMediaAlertWorker(
+        stage="domain_judge",
+        repository=repo,
+        settings=settings(),
+        ai_client=FakeAIClient(['{"route":"discard","discard_reason":"market_analysis"}']),
+    )
+
+    worker.run_once()
+
+    assert repo.tasks[1].status == "discarded"
+    assert repo.pipelines[1].discard_reason == "market_analysis"
+    assert repo.pipelines[1].domain_output["discard_reason"] == "market_analysis"
+
+
+def test_media_newsflash_save_enqueues_mainstream_media_task() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+
+    saved, duplicate = repo.save_media_newsflash_items(
+        [
+            MediaNewsflashItem(
+                source="coindesk",
+                title="Bitcoin ETFs add to inflow streak",
+                content="Spot Bitcoin ETFs extended their inflow streak for a fifth day.",
+                source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+                metadata={"site_key": "coindesk", "site_display_name": "CoinDesk"},
+            )
+        ]
+    )
+
+    tasks = list(repo.tasks.values())
+
+    assert (saved, duplicate) == (1, 0)
+    assert len(tasks) == 1
+    assert tasks[0].source == MAINSTREAM_MEDIA_TASK_SOURCE
+    assert tasks[0].metadata["site_display_name"] == "CoinDesk"
+    assert tasks[0].metadata["original_title"] == "Bitcoin ETFs add to inflow streak"
 
 
 def test_search_marks_duplicate_when_matching_odaily_history() -> None:

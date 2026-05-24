@@ -57,6 +57,7 @@ class PostgresPipelineSupervisorRepository:
             "x_capture",
             "non_mainstream_media",
             "competitor_monitor",
+            "external_media_alert_fetcher",
             "external_media_alert_domain_judge",
             "external_media_alert_search",
             "external_media_alert_notify",
@@ -99,6 +100,7 @@ class PostgresPipelineSupervisorRepository:
             "x_capture",
             "non_mainstream_media",
             "competitor_monitor",
+            "external_media_alert_fetcher",
             "external_media_alert_domain_judge",
             "external_media_alert_search",
             "external_media_alert_notify",
@@ -140,7 +142,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "external_media_alert"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
                     ["pending", "judged", "searched", "classified", "deduped", "written"],
                     cutoff,
                 ),
@@ -163,7 +165,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY oldest_updated_at ASC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "external_media_alert"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
                     ["judging", "classifying", "deduping", "writing", "formatting", "notifying"],
                     cutoff,
                 ),
@@ -184,7 +186,7 @@ class PostgresPipelineSupervisorRepository:
                 ORDER BY count(*) DESC, latest_updated_at DESC
                 """,
                 (
-                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "external_media_alert"],
+                    ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"],
                     ["judge_failed", "domain_failed", "search_failed", "write_failed", "format_failed", "publish_failed", "notify_failed"],
                     since,
                     threshold,

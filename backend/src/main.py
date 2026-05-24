@@ -83,6 +83,13 @@ def parse_args() -> argparse.Namespace:
     )
     external_alert_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
 
+    external_alert_fetcher = subparsers.add_parser(
+        "external-media-alert-fetcher",
+        help="Run the external media newsflash fetcher.",
+    )
+    external_alert_fetcher.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    external_alert_fetcher.add_argument("--once", action="store_true", help="Run one fetch pass and exit.")
+
     x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
     x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_init.add_argument(
@@ -336,6 +343,29 @@ def external_media_alert_worker_command(args: argparse.Namespace) -> int:
         )
         return result.exit_code
     worker.run_forever()
+    return 0
+
+
+def external_media_alert_fetcher_command(args: argparse.Namespace) -> int:
+    from packages.external_media_alert import ExternalMediaFetcher, PostgresExternalMediaAlertRepository
+
+    settings = load_external_media_alert_settings()
+    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    fetcher = ExternalMediaFetcher(
+        repository=repository,
+        request_timeout_seconds=settings.request_timeout_seconds,
+        max_attempts=settings.retry.max_attempts,
+        backoff_seconds=settings.retry.backoff_seconds,
+    )
+    if args.once:
+        stats = fetcher.run_once()
+        print(
+            "[odaily] external media fetcher once completed. "
+            f"sources={len(stats)} saved={sum(item.saved_count for item in stats)} "
+            f"duplicates={sum(item.duplicate_count for item in stats)}"
+        )
+        return 0 if all(item.status == "success" for item in stats) else 1
+    fetcher.run_forever()
     return 0
 
 
@@ -667,6 +697,8 @@ def main() -> int:
             return external_media_alert_init_db_command(args)
         if args.command == "external-media-alert-worker":
             return external_media_alert_worker_command(args)
+        if args.command == "external-media-alert-fetcher":
+            return external_media_alert_fetcher_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
         if args.command == "x-process-worker":

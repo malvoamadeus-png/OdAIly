@@ -22,6 +22,7 @@ from .models import (
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
     JUDGE_ROUTES,
+    MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
     PROMPT_KEY_BY_NEWS_TYPE,
@@ -520,9 +521,13 @@ class XProcessingWorker:
 
     def _run_write(self, task: TaskRecord) -> None:
         pipeline = self.repository.get_pipeline(task.id)
-        if pipeline.news_type is None:
+        template_key = None
+        if is_mainstream_media_task(task):
+            template_key = "mainstream_media_writer"
+        elif pipeline.news_type is not None:
+            template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
+        if template_key is None:
             raise ValueError("missing news_type")
-        template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
         prompt = self._get_prompt(template_key)
         input_prompt = build_writer_prompt(task=task, prompt=prompt)
         raw_output = self.ai_client.generate_text(
@@ -564,7 +569,12 @@ class XProcessingWorker:
             self._release_local_candidate_for_task(task.id, release_reason="publish_failed")
             raise HandledStageError(error)
         telegram_result = self.telegram_client.send_message(
-            build_telegram_notice(source=task.source, title=final.title, source_url=task.source_url)
+            build_telegram_notice(
+                source=task.source,
+                title=final.title,
+                source_url=task.source_url,
+                site_display_name=task.metadata.get("site_display_name") if is_mainstream_media_task(task) else None,
+            )
         )
         self.repository.complete_format_publish(
             task.id,
@@ -697,6 +707,10 @@ def is_non_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == NON_MAINSTREAM_MEDIA_SOURCE
 
 
+def is_mainstream_media_task(task: TaskRecord) -> bool:
+    return task.source == MAINSTREAM_MEDIA_SOURCE
+
+
 def hide_source_url(task: TaskRecord) -> bool:
     return is_competitor_task(task) or is_non_mainstream_media_task(task)
 
@@ -724,6 +738,18 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             f"标题：{task.title or ''}\n"
             f"来源链接：{task.source_url or ''}\n"
             f"原文正文：{task.content}\n\n"
+            "请严格输出一行标题、空一行、正文。不要输出解释。"
+        )
+    if is_mainstream_media_task(task):
+        site_display_name = task.metadata.get("site_display_name") or "主流外媒"
+        original_title = task.metadata.get("original_title") or task.title or ""
+        return (
+            f"{render_prompt_content(prompt)}\n\n"
+            "【待处理主流外媒快讯】\n"
+            f"来源媒体：{site_display_name}\n"
+            f"原标题：{original_title}\n"
+            f"来源链接：{task.source_url or ''}\n"
+            f"原始快讯：{task.content}\n\n"
             "请严格输出一行标题、空一行、正文。不要输出解释。"
         )
     if is_competitor_task(task):
@@ -785,6 +811,7 @@ SOURCE_DISPLAY_NAMES = {
     "panews": "PANews",
     "jinse": "金色财经",
     "non_mainstream_media": "非主流外媒",
+    "mainstream_media": "主流外媒",
 }
 
 
@@ -792,8 +819,9 @@ def source_display_name(source: str) -> str:
     return SOURCE_DISPLAY_NAMES.get(source, source)
 
 
-def build_telegram_notice(*, source: str = "x", title: str, source_url: str | None) -> str:
-    text = f"{source_display_name(source)}有新快讯：{title}"
+def build_telegram_notice(*, source: str = "x", title: str, source_url: str | None, site_display_name: str | None = None) -> str:
+    display_name = site_display_name.strip() if site_display_name and site_display_name.strip() else source_display_name(source)
+    text = f"{display_name}有新快讯：{title}"
     if source_url and source_url.strip():
         text += f"\n{source_url.strip()}"
     return text

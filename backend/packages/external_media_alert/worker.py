@@ -19,7 +19,15 @@ from packages.x_processing.models import PromptTemplateVersion, render_prompt_co
 from packages.x_processing.searcher import CachedEmbeddingService, DashScopeEmbeddingClient, SearchCache, SearchDecision, SearchDocument, top_match
 from packages.x_processing.telegram import TelegramClient
 
-from .models import ALERT_PROMPT_KEY, ALERT_TASK_SOURCE, AlertStage, DomainJudgeRoute, StageRunResult
+from .models import (
+    ALERT_PROMPT_KEY,
+    ALERT_TASK_SOURCE,
+    AlertStage,
+    DomainDiscardReason,
+    DomainJudgeRoute,
+    MAINSTREAM_MEDIA_TASK_SOURCE,
+    StageRunResult,
+)
 from .repository import PROMPT_NOTIFY_CHANNEL, TASK_NOTIFY_CHANNEL, ExternalMediaAlertRepository, PostgresExternalMediaAlertRepository, utc_now
 
 
@@ -37,9 +45,13 @@ DOMAIN_JSON_SCHEMA = {
             "route": {
                 "type": "string",
                 "enum": ["crypto", "discard"],
-            }
+            },
+            "discard_reason": {
+                "type": "string",
+                "enum": ["none", "non_crypto", "market_analysis"],
+            },
         },
-        "required": ["route"],
+        "required": ["route", "discard_reason"],
     },
     "strict": True,
 }
@@ -224,13 +236,14 @@ class ExternalMediaAlertWorker:
             prompt=build_domain_prompt(task=task, prompt=prompt),
             text_format=DOMAIN_JSON_SCHEMA,
         )
-        route = parse_domain_route(raw_output)
+        route, discard_reason = parse_domain_route(raw_output)
         if route == "discard":
             self.repository.complete_domain_discard(
                 task.id,
                 prompt=prompt,
                 model=self.settings.domain_judge_model,
                 raw_output=raw_output,
+                discard_reason=discard_reason,
             )
             return
         self.repository.complete_domain(
@@ -438,18 +451,20 @@ def utc_since_hours(hours: int) -> datetime:
 
 def build_domain_prompt(*, task, prompt: PromptTemplateVersion) -> str:
     excerpt = str(task.metadata.get("excerpt") or task.content or "").strip()
+    source_kind = "主流外媒快讯" if task.source == MAINSTREAM_MEDIA_TASK_SOURCE else "外媒标题提醒"
     return (
         f"{render_prompt_content(prompt)}\n\n"
-        "【待判断标题提醒】\n"
+        f"【待判断内容】\n"
+        f"任务类型：{source_kind}\n"
         f"来源媒体：{task.metadata.get('site_display_name') or '外媒'}\n"
         f"站点标识：{task.metadata.get('site_key') or ''}\n"
         f"标题：{task.title or ''}\n"
-        f"摘要：{excerpt}\n"
+        f"内容摘要：{excerpt}\n"
         f"原链接：{task.source_url or ''}\n"
     )
 
 
-def parse_domain_route(value: str) -> DomainJudgeRoute:
+def parse_domain_route(value: str) -> tuple[DomainJudgeRoute, DomainDiscardReason]:
     text = strip_code_fence(value)
     payload = json.loads(text)
     if not isinstance(payload, dict):
@@ -457,7 +472,14 @@ def parse_domain_route(value: str) -> DomainJudgeRoute:
     route = payload.get("route")
     if route not in {"crypto", "discard"}:
         raise ValueError(f"invalid domain route: {route}")
-    return route
+    discard_reason = payload.get("discard_reason")
+    if discard_reason not in {"none", "non_crypto", "market_analysis"}:
+        raise ValueError(f"invalid discard_reason: {discard_reason}")
+    if route == "discard" and discard_reason == "none":
+        raise ValueError("discard route requires a discard_reason")
+    if route != "discard" and discard_reason != "none":
+        raise ValueError("crypto route requires discard_reason none")
+    return route, discard_reason
 
 
 def exact_duplicate_decision(

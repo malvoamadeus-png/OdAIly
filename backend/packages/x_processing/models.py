@@ -5,20 +5,23 @@ from datetime import datetime
 from typing import Any, Literal
 
 
-NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media"]
+NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "discard"]
 DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
 ProcessingStage = Literal["judge", "search", "write", "format_publish"]
 
 
 NON_MAINSTREAM_MEDIA_SOURCE = "non_mainstream_media"
-NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media"}
+MAINSTREAM_MEDIA_SOURCE = "mainstream_media"
+NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "mainstream_media"}
 JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "discard"}
 DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"}
 COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
 ODAILY_REFERENCE_SOURCE = "odaily"
 SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE}
 PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
+WRITE_ONLY_SOURCES: set[str] = {MAINSTREAM_MEDIA_SOURCE}
+WRITE_STAGE_SOURCES: set[str] = {*PROCESSING_SOURCES, *WRITE_ONLY_SOURCES}
 FEATURE_MODE_PREFIX = "开启特色模式"
 
 
@@ -27,6 +30,7 @@ PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
     "onchain": "x_onchain_writer",
     "funding": "x_funding_writer",
     "non_mainstream_media": "non_mainstream_media_writer",
+    "mainstream_media": "mainstream_media_writer",
 }
 
 

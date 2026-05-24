@@ -171,6 +171,24 @@ def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
     )
 
 
+def mainstream_task(task_id: int, status: str = "deduped") -> TaskRecord:
+    return TaskRecord(
+        id=task_id,
+        source="mainstream_media",
+        source_item_id=f"mm-{task_id}",
+        source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+        title="Bitcoin ETFs add to inflow streak",
+        content="Spot Bitcoin ETFs extended their inflow streak for a fifth day.",
+        published_at=datetime.now(UTC),
+        status=status,
+        metadata={
+            "site_key": "coindesk",
+            "site_display_name": "CoinDesk",
+            "original_title": "Bitcoin ETFs add to inflow streak",
+        },
+    )
+
+
 def test_parse_news_type_accepts_only_known_values() -> None:
     assert parse_news_type('{"news_type":"regular"}') == "regular"
     assert parse_news_type('{"route":"regular","discard_type":"none"}') == "regular"
@@ -444,6 +462,15 @@ def test_telegram_notice_uses_competitor_source_names() -> None:
         title="标题",
         source_url="https://a16zcrypto.com/posts/article/token-launch/",
     ) == "非主流外媒有新快讯：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
+
+
+def test_telegram_notice_can_override_with_site_display_name() -> None:
+    assert build_telegram_notice(
+        source="mainstream_media",
+        title="标题",
+        source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+        site_display_name="CoinDesk",
+    ) == "CoinDesk有新快讯：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
 
 
 def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
@@ -731,6 +758,25 @@ def test_non_mainstream_writer_uses_dedicated_prompt_template() -> None:
     assert "禁止提及采集媒体名称" not in prompt
 
 
+def test_mainstream_media_writer_uses_dedicated_prompt_template() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(mainstream_task(1, status="deduped"))
+    fake_ai = FakeAiClient(["标题\n\n正文"])
+    worker = XProcessingWorker(stage="write", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "written"
+    assert repo.pipelines[1].prompt_template_key == "mainstream_media_writer"
+    prompt = fake_ai.calls[0]["prompt"]
+    assert "【待处理主流外媒快讯】" in prompt
+    assert "来源媒体：CoinDesk" in prompt
+    assert "原标题：Bitcoin ETFs add to inflow streak" in prompt
+    assert "来源链接：https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak" in prompt
+    assert "原始快讯：Spot Bitcoin ETFs extended their inflow streak for a fifth day." in prompt
+
+
 def test_formatter_applies_writer2_rules() -> None:
     formatted = format_brief(
         DraftBrief(
@@ -788,6 +834,29 @@ def test_competitor_publish_hides_source_url() -> None:
     assert result.processed == 1
     assert push.calls[0]["source_url"] is None
     assert telegram.calls == ["律动有新快讯：标题\nhttps://www.theblockbeats.info/flash/1"]
+
+
+def test_mainstream_media_publish_keeps_source_url_and_site_name() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(mainstream_task(1, status="written"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="format_publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "ready_review"
+    assert push.calls[0]["source_url"] == "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
+    assert telegram.calls == ["CoinDesk有新快讯：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
 
 
 def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> None:

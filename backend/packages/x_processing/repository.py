@@ -16,6 +16,7 @@ from packages.common.pipeline_schema import (
 
 from .models import (
     COMPETITOR_SOURCES,
+    MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
     ODAILY_REFERENCE_SOURCE,
@@ -23,6 +24,7 @@ from .models import (
     PROCESSING_SOURCES,
     SEARCH_FIRST_SOURCES,
     STAGE_SPECS,
+    WRITE_STAGE_SOURCES,
     NewsType,
     PipelineRecord,
     ProcessingStage,
@@ -44,6 +46,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "非主流外媒快讯",
         "docs/外媒模板.txt",
         "initial non-mainstream media writer template",
+    ),
+    "mainstream_media_writer": (
+        "主流外媒快讯",
+        "docs/主流外媒快讯模板.txt",
+        "initial mainstream media writer template",
     ),
     "external_media_alert_domain_judge": (
         "外媒标题领域判断",
@@ -254,7 +261,7 @@ class PostgresXProcessingRepository:
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
-        sources = tuple(PROCESSING_SOURCES)
+        sources = tuple(WRITE_STAGE_SOURCES if stage in {"write", "format_publish"} else PROCESSING_SOURCES)
         source_filter = "t.source = ANY(%(sources)s)"
         if stage == "judge":
             source_filter = """
@@ -749,7 +756,10 @@ class InMemoryXProcessingRepository:
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
+        allowed_sources = WRITE_STAGE_SOURCES if stage in {"write", "format_publish"} else PROCESSING_SOURCES
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
+            if task.source not in allowed_sources:
+                continue
             claim_status = spec.claim_status
             if stage == "search" and task.source in SEARCH_FIRST_SOURCES:
                 claim_status = "pending"
@@ -958,7 +968,7 @@ ALTER TABLE prompt_template_versions ADD COLUMN IF NOT EXISTS deleted_at timesta
 
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media')),
+    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'mainstream_media')),
     candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -977,6 +987,11 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_news_type_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_news_type_check
+    CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'mainstream_media'));
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
 
@@ -1044,7 +1059,7 @@ DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_x_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media'))
+WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media', 'mainstream_media'))
 EXECUTE FUNCTION notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()

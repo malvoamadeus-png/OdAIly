@@ -9,7 +9,17 @@ from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.repository import _import_psycopg, get_database_url
 from packages.x_processing.searcher import SearchDocument
 
-from .models import ALERT_PROMPT_KEY, ALERT_TASK_SOURCE, AlertStage, DomainRoute, ExternalMediaAlertPipelineRecord, STAGE_SPECS
+from .models import (
+    ALERT_PROMPT_KEY,
+    ALERT_TASK_SOURCE,
+    AlertStage,
+    DOMAIN_WORKER_TASK_SOURCES,
+    DomainRoute,
+    ExternalMediaAlertPipelineRecord,
+    MAINSTREAM_MEDIA_TASK_SOURCE,
+    MediaNewsflashItem,
+    STAGE_SPECS,
+)
 
 
 TASK_NOTIFY_CHANNEL = "external_media_alert_task_queue_changed"
@@ -20,10 +30,36 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def normalize_media_title_key(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    compact = "".join(ch for ch in text if ch.isalnum())
+    return compact or " ".join(text.split())
+
+
+def build_mainstream_media_task_source_item_id(*, source: str, source_url: str | None, title: str) -> str:
+    normalized_url = normalize_compare_url(source_url)
+    if normalized_url:
+        return f"{source}:{normalized_url}"
+    title_key = normalize_media_title_key(title)
+    return f"{source}:title:{title_key or 'untitled'}"
+
+
+def normalize_compare_url(value: str | None) -> str:
+    if not value:
+        return ""
+    text = value.strip().lower()
+    text = text.split("#", 1)[0]
+    text = text.split("?", 1)[0]
+    return text.rstrip("/")
+
+
 class ExternalMediaAlertRepository(Protocol):
     def init_schema(self) -> None: ...
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None: ...
     def get_pipeline(self, task_id: int) -> ExternalMediaAlertPipelineRecord: ...
+    def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]: ...
     def get_active_prompt(self, template_key: str = ALERT_PROMPT_KEY) -> PromptTemplateVersion: ...
     def complete_domain(
         self,
@@ -124,13 +160,14 @@ class PostgresExternalMediaAlertRepository:
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
+        sources = [ALERT_TASK_SOURCE] if stage == "notify" else list(DOMAIN_WORKER_TASK_SOURCES)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 WITH candidate AS (
                     SELECT id
                     FROM tasks
-                    WHERE source = %(source)s
+                    WHERE source = ANY(%(sources)s)
                       AND status IN (%(claim_status)s, %(processing_status)s)
                       AND (locked_until IS NULL OR locked_until < now())
                     ORDER BY created_at ASC, id ASC
@@ -148,7 +185,7 @@ class PostgresExternalMediaAlertRepository:
                 RETURNING t.*
                 """,
                 {
-                    "source": ALERT_TASK_SOURCE,
+                    "sources": sources,
                     "claim_status": spec.claim_status,
                     "processing_status": spec.processing_status,
                     "worker_id": worker_id,
@@ -174,6 +211,86 @@ class PostgresExternalMediaAlertRepository:
         if row is None:
             raise ValueError(f"external media alert pipeline row not found for task {task_id}")
         return _row_to_pipeline(row)
+
+    def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]:
+        if not items:
+            return 0, 0
+        saved = 0
+        duplicate = 0
+        with self._connect() as conn:
+            for item in items:
+                title_key = normalize_media_title_key(item.title)
+                if not title_key:
+                    duplicate += 1
+                    continue
+                effective_published_at = item.published_at or utc_now()
+                task_source_item_id = build_mainstream_media_task_source_item_id(
+                    source=item.source,
+                    source_url=item.source_url,
+                    title=item.title,
+                )
+                row = conn.execute(
+                    """
+                    INSERT INTO media_newsflash (source, title, content, source_url, title_key, published_at)
+                    SELECT %s, %s, %s, %s, %s, %s
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM media_newsflash
+                        WHERE source = %s
+                          AND (
+                              title_key = %s
+                              OR (%s IS NOT NULL AND source_url = %s)
+                          )
+                    )
+                    RETURNING id
+                    """,
+                    (
+                        item.source,
+                        item.title,
+                        item.content,
+                        item.source_url,
+                        title_key,
+                        effective_published_at,
+                        item.source,
+                        title_key,
+                        item.source_url,
+                        item.source_url,
+                    ),
+                ).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                    ON CONFLICT (source, source_item_id) DO NOTHING
+                    """,
+                    (
+                        MAINSTREAM_MEDIA_TASK_SOURCE,
+                        task_source_item_id,
+                        item.source_url,
+                        item.title,
+                        item.content,
+                        effective_published_at,
+                        self._Jsonb(item.raw_payload),
+                        self._Jsonb(
+                            {
+                                **item.metadata,
+                                "source_kind": MAINSTREAM_MEDIA_TASK_SOURCE,
+                                "origin_source": item.source,
+                                "media_source_item_id": task_source_item_id,
+                                "original_title": item.title,
+                                "excerpt": item.content,
+                            }
+                        ),
+                    ),
+                )
+                if row is None:
+                    duplicate += 1
+                else:
+                    saved += 1
+            conn.commit()
+        return saved, duplicate
 
     def get_active_prompt(self, template_key: str = ALERT_PROMPT_KEY) -> PromptTemplateVersion:
         with self._connect(autocommit=True) as conn:
@@ -346,8 +463,13 @@ class PostgresExternalMediaAlertRepository:
         ]
 
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
-        where = "t.source = %s AND t.status = 'notified'"
-        params: list[Any] = [ALERT_TASK_SOURCE]
+        where = """
+            (
+                (t.source = %s AND t.status = 'notified')
+                OR (t.source = %s AND t.status IN ('ready_review', 'notified'))
+            )
+        """
+        params: list[Any] = [ALERT_TASK_SOURCE, MAINSTREAM_MEDIA_TASK_SOURCE]
         if since is not None:
             where += " AND t.created_at >= %s"
             params.append(since)
@@ -361,20 +483,23 @@ class PostgresExternalMediaAlertRepository:
                 """,
                 params,
             ).fetchall()
-        return [
-            SearchDocument(
-                doc_type="external_media_alert_history",
-                doc_id=str(row["source_item_id"]),
-                title=row.get("title"),
-                content=str(row["content"]),
-                source=ALERT_TASK_SOURCE,
-                source_url=row.get("source_url"),
-                task_id=int(row["id"]),
-                published_at=row.get("published_at"),
-                metadata=row.get("metadata") or {},
+        documents: list[SearchDocument] = []
+        for row in rows:
+            metadata = row.get("metadata") or {}
+            documents.append(
+                SearchDocument(
+                    doc_type="external_media_alert_history",
+                    doc_id=str(row["source_item_id"]),
+                    title=row.get("title"),
+                    content=str(row["content"]),
+                    source=str(metadata.get("source_kind") or row.get("source") or ALERT_TASK_SOURCE),
+                    source_url=row.get("source_url"),
+                    task_id=int(row["id"]),
+                    published_at=row.get("published_at"),
+                    metadata=metadata,
+                )
             )
-            for row in rows
-        ]
+        return documents
 
     def record_worker_heartbeat(
         self,
@@ -434,6 +559,7 @@ class InMemoryExternalMediaAlertRepository:
     def __init__(self) -> None:
         self.tasks: dict[int, TaskRecord] = {}
         self.pipelines: dict[int, ExternalMediaAlertPipelineRecord] = {}
+        self.media_newsflashes: list[dict[str, Any]] = []
         self.odaily_references: list[SearchDocument] = []
         self.prompts: dict[str, PromptTemplateVersion] = {
             ALERT_PROMPT_KEY: PromptTemplateVersion(
@@ -445,18 +571,86 @@ class InMemoryExternalMediaAlertRepository:
         }
         self.heartbeats: list[dict[str, Any]] = []
         self._locks: set[int] = set()
+        self._next_task_id = 1
 
     def init_schema(self) -> None:
         return None
 
     def add_task(self, task: TaskRecord) -> None:
         self.tasks[task.id] = task
+        self._next_task_id = max(self._next_task_id, task.id + 1)
+
+    def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]:
+        saved = 0
+        duplicate = 0
+        for item in items:
+            title_key = normalize_media_title_key(item.title)
+            if not title_key:
+                duplicate += 1
+                continue
+            effective_published_at = item.published_at or utc_now()
+            task_source_item_id = build_mainstream_media_task_source_item_id(
+                source=item.source,
+                source_url=item.source_url,
+                title=item.title,
+            )
+            exists = any(
+                row["source"] == item.source
+                and (
+                    row["title_key"] == title_key
+                    or (item.source_url and row.get("source_url") == item.source_url)
+                )
+                for row in self.media_newsflashes
+            )
+            if not any(
+                task.source == MAINSTREAM_MEDIA_TASK_SOURCE and task.source_item_id == task_source_item_id
+                for task in self.tasks.values()
+            ):
+                now = utc_now()
+                self.tasks[self._next_task_id] = TaskRecord(
+                    id=self._next_task_id,
+                    source=MAINSTREAM_MEDIA_TASK_SOURCE,
+                    source_item_id=task_source_item_id,
+                    source_url=item.source_url,
+                    title=item.title,
+                    content=item.content,
+                    published_at=effective_published_at,
+                    raw_payload=item.raw_payload,
+                    metadata={
+                        **item.metadata,
+                        "source_kind": MAINSTREAM_MEDIA_TASK_SOURCE,
+                        "origin_source": item.source,
+                        "media_source_item_id": task_source_item_id,
+                        "original_title": item.title,
+                        "excerpt": item.content,
+                    },
+                    status="pending",
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._next_task_id += 1
+            if exists:
+                duplicate += 1
+                continue
+            self.media_newsflashes.append(
+                {
+                    "source": item.source,
+                    "title": item.title,
+                    "content": item.content,
+                    "source_url": item.source_url,
+                    "title_key": title_key,
+                    "published_at": effective_published_at,
+                }
+            )
+            saved += 1
+        return saved, duplicate
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         del worker_id, lock_seconds
         spec = STAGE_SPECS[stage]
+        claim_sources = {ALERT_TASK_SOURCE} if stage == "notify" else set(DOMAIN_WORKER_TASK_SOURCES)
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
-            if task.source != ALERT_TASK_SOURCE:
+            if task.source not in claim_sources:
                 continue
             if task.status not in {spec.claim_status, spec.processing_status} or task.id in self._locks:
                 continue
@@ -557,7 +751,9 @@ class InMemoryExternalMediaAlertRepository:
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
         results: list[SearchDocument] = []
         for task in self.tasks.values():
-            if task.source != ALERT_TASK_SOURCE or task.status != "notified":
+            is_alert_history = task.source == ALERT_TASK_SOURCE and task.status == "notified"
+            is_mainstream_history = task.source == MAINSTREAM_MEDIA_TASK_SOURCE and task.status in {"ready_review", "notified"}
+            if not is_alert_history and not is_mainstream_history:
                 continue
             if since is not None and task.created_at is not None and task.created_at < since:
                 continue
@@ -567,7 +763,7 @@ class InMemoryExternalMediaAlertRepository:
                     doc_id=task.source_item_id,
                     title=task.title,
                     content=task.content,
-                    source=ALERT_TASK_SOURCE,
+                    source=str(task.metadata.get("source_kind") or task.source),
                     source_url=task.source_url,
                     task_id=task.id,
                     published_at=task.published_at,
@@ -631,7 +827,7 @@ ON tasks(source, status, locked_until, created_at ASC);
 CREATE TABLE IF NOT EXISTS external_media_alert_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     domain_route text CHECK (domain_route IS NULL OR domain_route IN ('crypto')),
-    discard_reason text CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto')),
+    discard_reason text CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis')),
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
     domain_model text,
@@ -642,6 +838,17 @@ CREATE TABLE IF NOT EXISTS external_media_alert_pipeline (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE external_media_alert_pipeline
+    DROP CONSTRAINT IF EXISTS external_media_alert_pipeline_domain_route_check;
+ALTER TABLE external_media_alert_pipeline
+    DROP CONSTRAINT IF EXISTS external_media_alert_pipeline_discard_reason_check;
+ALTER TABLE external_media_alert_pipeline
+    ADD CONSTRAINT external_media_alert_pipeline_domain_route_check
+    CHECK (domain_route IS NULL OR domain_route IN ('crypto'));
+ALTER TABLE external_media_alert_pipeline
+    ADD CONSTRAINT external_media_alert_pipeline_discard_reason_check
+    CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis'));
 
 CREATE INDEX IF NOT EXISTS idx_external_media_alert_pipeline_route
 ON external_media_alert_pipeline(domain_route);
@@ -661,6 +868,30 @@ DROP TRIGGER IF EXISTS trg_tasks_external_media_alert_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_external_media_alert_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source = 'external_media_alert')
+WHEN (NEW.source IN ('external_media_alert', 'mainstream_media'))
 EXECUTE FUNCTION notify_external_media_alert_task_queue_changed();
+
+CREATE TABLE IF NOT EXISTS media_newsflash (
+    id bigserial PRIMARY KEY,
+    source text NOT NULL,
+    title text NOT NULL,
+    content text NOT NULL,
+    source_url text,
+    title_key text,
+    published_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE media_newsflash ADD COLUMN IF NOT EXISTS source_url text;
+ALTER TABLE media_newsflash ADD COLUMN IF NOT EXISTS title_key text;
+ALTER TABLE media_newsflash ADD COLUMN IF NOT EXISTS published_at timestamptz;
+ALTER TABLE media_newsflash ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE media_newsflash ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_media_newsflash_source_title_key
+ON media_newsflash(source, title_key);
+
+CREATE INDEX IF NOT EXISTS idx_media_newsflash_source_url
+ON media_newsflash(source, source_url);
 """
