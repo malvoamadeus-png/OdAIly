@@ -311,18 +311,20 @@ def test_parse_decrypt_article_extracts_body_and_author() -> None:
     assert article.content_format == "decrypt_news"
 
 
-def test_discover_the_block_pages_reads_official_rss_titles() -> None:
+def test_discover_the_block_pages_reads_google_news_titles() -> None:
     xml = """
     <rss version="2.0">
       <channel>
         <item>
-          <title>First The Block Title</title>
-          <link>https://www.theblock.co/post/123/first-story?utm_source=rss</link>
-          <description><![CDATA[First The Block Title - Lead paragraph from rss.]]></description>
+          <title>First The Block Title - The Block</title>
+          <link>https://news.google.com/rss/articles/CBMiTestStory?oc=5</link>
+          <source url="https://www.theblock.co/">The Block</source>
+          <description><![CDATA[First The Block Title - Lead paragraph from rss. The Block]]></description>
         </item>
         <item>
-          <title>Duplicate</title>
-          <link>https://www.theblock.co/post/123/first-story?utm_source=other</link>
+          <title>Ignore other source - Bloomberg</title>
+          <link>https://news.google.com/rss/articles/CBMiIgnoreOtherSource?oc=5</link>
+          <source url="https://www.bloomberg.com/">Bloomberg</source>
         </item>
       </channel>
     </rss>
@@ -330,7 +332,8 @@ def test_discover_the_block_pages_reads_official_rss_titles() -> None:
 
     pages = discover_the_block_pages(xml)
 
-    assert [page.detail_url for page in pages] == ["https://www.theblock.co/post/123/first-story/"]
+    assert [page.detail_url for page in pages] == ["https://news.google.com/rss/articles/CBMiTestStory?oc=5"]
+    assert pages[0].title == "First The Block Title"
     assert pages[0].excerpt == "Lead paragraph from rss."
 
 
@@ -926,7 +929,7 @@ def test_worker_the_block_alert_only_saves_title_task(monkeypatch) -> None:
             site_key="the_block",
             display_name="The Block",
             homepage_url="https://www.theblock.co/",
-            list_url="https://www.theblock.co/rss.xml",
+            list_url="https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en",
             capture_method="html_request",
             pipeline_mode="alert_only",
         )

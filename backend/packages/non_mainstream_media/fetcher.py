@@ -38,7 +38,7 @@ HK01_BASE_URL = "https://www.hk01.com"
 FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
 THE_BLOCK_BASE_URL = "https://www.theblock.co"
-THE_BLOCK_RSS_URL = "https://www.theblock.co/rss.xml"
+THE_BLOCK_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -161,7 +161,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         site_key="the_block",
         display_name="The Block",
         homepage_url=THE_BLOCK_BASE_URL,
-        list_url=THE_BLOCK_RSS_URL,
+        list_url=THE_BLOCK_GOOGLE_NEWS_RSS_URL,
         capture_method="html_request",
         pipeline_mode="alert_only",
     ),
@@ -320,12 +320,35 @@ def discover_decrypt_pages(xml_text: str, *, base_url: str = DECRYPT_BASE_URL) -
     )
 
 
-def discover_the_block_pages(xml_text: str, *, base_url: str = THE_BLOCK_BASE_URL) -> list[DiscoveredPage]:
-    return discover_rss_pages(
-        xml_text,
-        base_url=base_url,
-        href_patterns=(r"^https://www\.theblock\.co/post/\d+/.+$",),
-    )
+def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -> list[DiscoveredPage]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid The Block discovery RSS payload") from exc
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        item_source = clean_inline_text(item.findtext("source", default=""))
+        description_html = item.findtext("description", default="")
+        if not link or not title:
+            continue
+        if item_source and item_source != source_name:
+            continue
+        if link in seen:
+            continue
+        seen.add(link)
+        results.append(
+            DiscoveredPage(
+                source_item_id=link,
+                detail_url=link,
+                title=strip_google_news_source_suffix(title, item_source or source_name),
+                excerpt=extract_google_news_excerpt(description_html, title=title, source_name=item_source or source_name)
+                or None,
+            )
+        )
+    return results
 
 
 def discover_forbes_pages(xml_text: str, *, base_url: str = FORBES_BASE_URL) -> list[DiscoveredPage]:
