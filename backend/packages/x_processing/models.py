@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 
@@ -23,6 +23,7 @@ PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
 WRITE_ONLY_SOURCES: set[str] = {MAINSTREAM_MEDIA_SOURCE}
 WRITE_STAGE_SOURCES: set[str] = {*PROCESSING_SOURCES, *WRITE_ONLY_SOURCES}
 FEATURE_MODE_PREFIX = "开启特色模式"
+ACTIVE_CANDIDATE_TTL = timedelta(hours=24)
 
 
 PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {

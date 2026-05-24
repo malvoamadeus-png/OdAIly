@@ -15,6 +15,7 @@ from packages.common.pipeline_schema import (
 )
 
 from .models import (
+    ACTIVE_CANDIDATE_TTL,
     COMPETITOR_SOURCES,
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
@@ -459,15 +460,18 @@ class PostgresXProcessingRepository:
         ]
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
+        created_after = utc_now() - ACTIVE_CANDIDATE_TTL
         with self._connect(autocommit=True) as conn:
             rows = conn.execute(
                 """
-                SELECT id, primary_task_id, title, content, status, metadata, updated_at
+                SELECT id, primary_task_id, title, content, status, metadata, created_at, updated_at, expires_at
                 FROM search_event_candidates
                 WHERE status = 'active'
-                  AND (expires_at IS NULL OR expires_at > now())
+                  AND created_at > %s
+                  AND expires_at > now()
                 ORDER BY updated_at DESC
-                """
+                """,
+                (created_after,),
             ).fetchall()
         return [
             SearchDocument(
@@ -478,6 +482,10 @@ class PostgresXProcessingRepository:
                 source="candidate",
                 task_id=row.get("primary_task_id"),
                 candidate_id=int(row["id"]),
+                status=row.get("status"),
+                created_at=row.get("created_at"),
+                updated_at=row.get("updated_at"),
+                expires_at=row.get("expires_at"),
                 metadata=row.get("metadata") or {},
             )
             for row in rows
@@ -486,6 +494,8 @@ class PostgresXProcessingRepository:
     def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
         text = f"{task.title or ''}\n{task.content}".strip()
         digest = content_hash(text)
+        expires_at = utc_now() + ACTIVE_CANDIDATE_TTL
+        created_after = utc_now() - ACTIVE_CANDIDATE_TTL
         with self._connect() as conn:
             with conn.transaction():
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (digest,))
@@ -495,11 +505,12 @@ class PostgresXProcessingRepository:
                     FROM search_event_candidates
                     WHERE content_hash = %s
                       AND status = 'active'
-                      AND (expires_at IS NULL OR expires_at > now())
+                      AND created_at > %s
+                      AND expires_at > now()
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
-                    (digest,),
+                    (digest, created_after),
                 ).fetchone()
                 if existing is not None:
                     candidate_id = int(existing["id"])
@@ -513,7 +524,7 @@ class PostgresXProcessingRepository:
                     INSERT INTO search_event_candidates (
                         primary_task_id, status, title, content, content_hash, metadata, expires_at
                     )
-                    VALUES (%s, 'active', %s, %s, %s, %s, now() + interval '2 days')
+                    VALUES (%s, 'active', %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -522,6 +533,7 @@ class PostgresXProcessingRepository:
                         task.content,
                         digest,
                         self._Jsonb({"source": task.source, "source_item_id": task.source_item_id}),
+                        expires_at,
                     ),
                 ).fetchone()
                 candidate_id = int(row["id"])
@@ -820,7 +832,19 @@ class InMemoryXProcessingRepository:
         ]
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
-        return list(self.candidates.values())
+        now = datetime.now(UTC)
+        created_after = now - ACTIVE_CANDIDATE_TTL
+        return [
+            document
+            for document in self.candidates.values()
+            if (
+                document.status == "active"
+                and document.created_at is not None
+                and document.created_at > created_after
+                and document.expires_at is not None
+                and document.expires_at > now
+            )
+        ]
 
     def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
         for candidate_id, document in self.candidates.items():
@@ -831,6 +855,7 @@ class InMemoryXProcessingRepository:
                 return candidate_id, True
         candidate_id = self._next_candidate_id
         self._next_candidate_id += 1
+        now = datetime.now(UTC)
         document = SearchDocument(
             doc_type="candidate",
             doc_id=str(candidate_id),
@@ -839,6 +864,10 @@ class InMemoryXProcessingRepository:
             source="candidate",
             task_id=task.id,
             candidate_id=candidate_id,
+            status="active",
+            created_at=now,
+            updated_at=now,
+            expires_at=now + ACTIVE_CANDIDATE_TTL,
             metadata={"source": task.source, "source_item_id": task.source_item_id},
         )
         self.candidates[candidate_id] = document

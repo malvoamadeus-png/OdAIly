@@ -613,7 +613,7 @@ def test_searcher_uses_local_mirrored_candidates_after_warmup() -> None:
             candidate_id=candidate_id,
             status="active",
             created_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(days=2),
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
     )
 

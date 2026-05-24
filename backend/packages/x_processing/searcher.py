@@ -12,6 +12,8 @@ from typing import Any, Protocol
 
 import requests
 
+from .models import ACTIVE_CANDIDATE_TTL
+
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -330,17 +332,19 @@ class SearchCache:
         )
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
+        created_after = (now - ACTIVE_CANDIDATE_TTL).isoformat()
         return self._list_documents(
             """
             SELECT *
             FROM documents
             WHERE doc_type = 'candidate'
               AND COALESCE(status, 'active') = 'active'
-              AND (expires_at IS NULL OR expires_at > ?)
+              AND created_at > ?
+              AND expires_at > ?
             ORDER BY updated_at DESC
             """,
-            (now,),
+            (created_after, now.isoformat()),
         )
 
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:

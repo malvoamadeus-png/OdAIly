@@ -19,6 +19,7 @@ from packages.publisher import PushClient
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
 from .formatter import format_brief, parse_draft_output
 from .models import (
+    ACTIVE_CANDIDATE_TTL,
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
     JUDGE_ROUTES,
@@ -626,7 +627,7 @@ class XProcessingWorker:
                 status="active",
                 created_at=now,
                 updated_at=now,
-                expires_at=now + timedelta(days=2),
+                expires_at=now + ACTIVE_CANDIDATE_TTL,
                 metadata={"source": task.source, "source_item_id": task.source_item_id, **task.metadata},
             )
         )

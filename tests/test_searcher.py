@@ -126,7 +126,7 @@ def test_embedding_text_uses_title_and_content_only() -> None:
 
 def test_search_cache_reads_local_odaily_candidates_and_alert_history(tmp_path: Path) -> None:
     cache = SearchCache(tmp_path / "searcher.sqlite")
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+    now = datetime(2099, 5, 22, 12, 0, tzinfo=UTC)
     cache.upsert_documents(
         [
             SearchDocument(
@@ -147,7 +147,7 @@ def test_search_cache_reads_local_odaily_candidates_and_alert_history(tmp_path: 
                 candidate_id=1,
                 status="active",
                 created_at=now,
-                expires_at=now + timedelta(days=2),
+                expires_at=now + timedelta(hours=24),
             ),
             SearchDocument(
                 doc_type="external_media_alert_history",
@@ -173,7 +173,7 @@ def test_search_cache_reads_local_odaily_candidates_and_alert_history(tmp_path: 
 
 def test_search_cache_can_mark_candidate_inactive(tmp_path: Path) -> None:
     cache = SearchCache(tmp_path / "searcher.sqlite")
-    now = datetime(2026, 5, 22, 12, 0, tzinfo=UTC)
+    now = datetime(2099, 5, 22, 12, 0, tzinfo=UTC)
     cache.upsert_document(
         SearchDocument(
             doc_type="candidate",
@@ -185,7 +185,7 @@ def test_search_cache_can_mark_candidate_inactive(tmp_path: Path) -> None:
             candidate_id=7,
             status="active",
             created_at=now,
-            expires_at=now + timedelta(days=2),
+            expires_at=now + timedelta(hours=24),
         )
     )
 
@@ -194,6 +194,47 @@ def test_search_cache_can_mark_candidate_inactive(tmp_path: Path) -> None:
         status="inactive",
         expires_at=now,
         metadata_updates={"released_by_task_status": "discarded"},
+    )
+
+    assert cache.list_active_candidate_documents() == []
+
+
+def test_search_cache_ignores_candidate_without_expiry(tmp_path: Path) -> None:
+    cache = SearchCache(tmp_path / "searcher.sqlite")
+    now = datetime(2099, 5, 22, 12, 0, tzinfo=UTC)
+    cache.upsert_document(
+        SearchDocument(
+            doc_type="candidate",
+            doc_id="9",
+            title="Candidate",
+            content="Body",
+            source="candidate",
+            task_id=9,
+            candidate_id=9,
+            status="active",
+            created_at=now,
+        )
+    )
+
+    assert cache.list_active_candidate_documents() == []
+
+
+def test_search_cache_ignores_candidate_older_than_ttl_even_if_expiry_is_future(tmp_path: Path) -> None:
+    cache = SearchCache(tmp_path / "searcher.sqlite")
+    now = datetime.now(UTC)
+    cache.upsert_document(
+        SearchDocument(
+            doc_type="candidate",
+            doc_id="10",
+            title="Old Candidate",
+            content="Body",
+            source="candidate",
+            task_id=10,
+            candidate_id=10,
+            status="active",
+            created_at=now - timedelta(hours=25),
+            expires_at=now + timedelta(hours=23),
+        )
     )
 
     assert cache.list_active_candidate_documents() == []
