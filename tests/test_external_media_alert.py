@@ -329,6 +329,56 @@ def test_media_newsflash_save_enqueues_mainstream_media_task() -> None:
     assert tasks[0].metadata["original_title"] == "Bitcoin ETFs add to inflow streak"
 
 
+def test_media_newsflash_duplicate_title_does_not_enqueue_task() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    first = MediaNewsflashItem(
+        source="coindesk",
+        title="Bitcoin ETFs add to inflow streak",
+        content="First version.",
+        source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+        metadata={"site_key": "coindesk", "site_display_name": "CoinDesk"},
+    )
+    duplicate_by_title = MediaNewsflashItem(
+        source="coindesk",
+        title="Bitcoin ETFs add to inflow streak",
+        content="Second version.",
+        source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak-update",
+        metadata={"site_key": "coindesk", "site_display_name": "CoinDesk"},
+    )
+
+    assert repo.save_media_newsflash_items([first]) == (1, 0)
+    assert repo.save_media_newsflash_items([duplicate_by_title]) == (0, 1)
+
+    tasks = list(repo.tasks.values())
+    assert len(tasks) == 1
+    assert tasks[0].source_item_id == "coindesk:https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
+
+
+def test_media_newsflash_duplicate_url_does_not_enqueue_task() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    first = MediaNewsflashItem(
+        source="decrypt",
+        title="Bitcoin dips as traders de-risk",
+        content="First version.",
+        source_url="https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion",
+        metadata={"site_key": "decrypt", "site_display_name": "Decrypt"},
+    )
+    duplicate_by_url = MediaNewsflashItem(
+        source="decrypt",
+        title="A different title",
+        content="Second version.",
+        source_url="https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion",
+        metadata={"site_key": "decrypt", "site_display_name": "Decrypt"},
+    )
+
+    assert repo.save_media_newsflash_items([first]) == (1, 0)
+    assert repo.save_media_newsflash_items([duplicate_by_url]) == (0, 1)
+
+    tasks = list(repo.tasks.values())
+    assert len(tasks) == 1
+    assert tasks[0].source_item_id == "decrypt:https://decrypt.co/368912/bitcoin-drops-75k-crypto-liquidations-near-1-billion"
+
+
 def test_search_marks_duplicate_when_matching_odaily_history() -> None:
     repo = InMemoryExternalMediaAlertRepository()
     repo.add_task(

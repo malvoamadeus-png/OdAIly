@@ -73,6 +73,7 @@ class PipelineRecord:
     candidate_id: int | None = None
     prompt_template_key: str | None = None
     prompt_version_id: int | None = None
+    writer_feature_mode_enabled: bool | None = None
     draft_title: str | None = None
     draft_content: str | None = None
     final_title: str | None = None

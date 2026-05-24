@@ -166,12 +166,16 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
     news_type = row.get("news_type")
     if news_type not in NEWS_TYPES:
         news_type = None
+    writer_feature_mode_enabled = row.get("writer_feature_mode_enabled")
     return PipelineRecord(
         task_id=int(row["task_id"]),
         news_type=news_type,
         candidate_id=row.get("candidate_id"),
         prompt_template_key=row.get("prompt_template_key"),
         prompt_version_id=row.get("prompt_version_id"),
+        writer_feature_mode_enabled=(
+            bool(writer_feature_mode_enabled) if writer_feature_mode_enabled is not None else None
+        ),
         draft_title=row.get("draft_title"),
         draft_content=row.get("draft_content"),
         final_title=row.get("final_title"),
@@ -572,6 +576,7 @@ class PostgresXProcessingRepository:
                 UPDATE x_task_pipeline
                 SET prompt_template_key = %s,
                     prompt_version_id = %s,
+                    writer_feature_mode_enabled = %s,
                     writer_model = %s,
                     writer_output = %s,
                     draft_title = %s,
@@ -583,6 +588,7 @@ class PostgresXProcessingRepository:
                 (
                     prompt.template_key,
                     prompt.id,
+                    prompt.feature_mode_enabled,
                     model,
                     self._Jsonb({"raw_output": raw_output}),
                     draft_title,
@@ -858,6 +864,7 @@ class InMemoryXProcessingRepository:
                 **asdict(current),
                 "prompt_template_key": prompt.template_key,
                 "prompt_version_id": prompt.id,
+                "writer_feature_mode_enabled": prompt.feature_mode_enabled,
                 "draft_title": draft_title,
                 "draft_content": draft_content,
                 "last_error": None,
@@ -975,6 +982,7 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     search_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
+    writer_feature_mode_enabled boolean,
     writer_model text,
     writer_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     draft_title text,
@@ -994,6 +1002,7 @@ ALTER TABLE x_task_pipeline
     CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'mainstream_media'));
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS writer_feature_mode_enabled boolean;
 
 CREATE TABLE IF NOT EXISTS search_event_candidates (
     id bigserial PRIMARY KEY,

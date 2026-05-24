@@ -257,6 +257,9 @@ class PostgresExternalMediaAlertRepository:
                         item.source_url,
                     ),
                 ).fetchone()
+                if row is None:
+                    duplicate += 1
+                    continue
                 conn.execute(
                     """
                     INSERT INTO tasks (
@@ -285,10 +288,7 @@ class PostgresExternalMediaAlertRepository:
                         ),
                     ),
                 )
-                if row is None:
-                    duplicate += 1
-                else:
-                    saved += 1
+                saved += 1
             conn.commit()
         return saved, duplicate
 
@@ -602,6 +602,9 @@ class InMemoryExternalMediaAlertRepository:
                 )
                 for row in self.media_newsflashes
             )
+            if exists:
+                duplicate += 1
+                continue
             if not any(
                 task.source == MAINSTREAM_MEDIA_TASK_SOURCE and task.source_item_id == task_source_item_id
                 for task in self.tasks.values()
@@ -629,9 +632,6 @@ class InMemoryExternalMediaAlertRepository:
                     updated_at=now,
                 )
                 self._next_task_id += 1
-            if exists:
-                duplicate += 1
-                continue
             self.media_newsflashes.append(
                 {
                     "source": item.source,

@@ -29,6 +29,7 @@ from .models import (
     DiscardType,
     JudgeRoute,
     NewsType,
+    PipelineRecord,
     ProcessingStage,
     PromptTemplateVersion,
     StageRunResult,
@@ -573,6 +574,8 @@ class XProcessingWorker:
                 source=task.source,
                 title=final.title,
                 source_url=task.source_url,
+                route_label=resolve_notice_route_label(task=task, pipeline=pipeline),
+                feature_mode_enabled=pipeline.writer_feature_mode_enabled,
                 site_display_name=task.metadata.get("site_display_name") if is_mainstream_media_task(task) else None,
             )
         )
@@ -819,9 +822,36 @@ def source_display_name(source: str) -> str:
     return SOURCE_DISPLAY_NAMES.get(source, source)
 
 
-def build_telegram_notice(*, source: str = "x", title: str, source_url: str | None, site_display_name: str | None = None) -> str:
+ROUTE_DISPLAY_NAMES = {
+    "regular": "常规",
+    "onchain": "链上",
+    "funding": "融资",
+    "non_mainstream_media": "非主流外媒",
+    "mainstream_media": "主流外媒",
+}
+
+
+def resolve_notice_route_label(*, task: TaskRecord, pipeline: PipelineRecord) -> str:
+    if is_mainstream_media_task(task):
+        return ROUTE_DISPLAY_NAMES["mainstream_media"]
+    if pipeline.news_type is None:
+        return "未分类"
+    return ROUTE_DISPLAY_NAMES.get(pipeline.news_type, "未分类")
+
+
+def build_telegram_notice(
+    *,
+    source: str = "x",
+    title: str,
+    source_url: str | None,
+    route_label: str | None = None,
+    feature_mode_enabled: bool | None = None,
+    site_display_name: str | None = None,
+) -> str:
     display_name = site_display_name.strip() if site_display_name and site_display_name.strip() else source_display_name(source)
-    text = f"{display_name}有新快讯：{title}"
+    normalized_route_label = route_label.strip() if route_label and route_label.strip() else "未分类"
+    mode_label = "特色模式" if bool(feature_mode_enabled) else "标准模式"
+    text = f"{display_name}有新快讯-{normalized_route_label}-{mode_label}：{title}"
     if source_url and source_url.strip():
         text += f"\n{source_url.strip()}"
     return text

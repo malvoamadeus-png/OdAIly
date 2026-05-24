@@ -446,22 +446,54 @@ def test_chat_response_format_converts_responses_json_schema() -> None:
 
 
 def test_telegram_notice_includes_source_url_on_next_line() -> None:
-    assert build_telegram_notice(source="x", title="标题", source_url="https://x.com/a/status/1") == (
-        "X平台有新快讯：标题\nhttps://x.com/a/status/1"
+    assert build_telegram_notice(
+        source="x",
+        title="标题",
+        source_url="https://x.com/a/status/1",
+        route_label="常规",
+        feature_mode_enabled=False,
+    ) == (
+        "X平台有新快讯-常规-标准模式：标题\nhttps://x.com/a/status/1"
     )
 
 
 def test_telegram_notice_uses_competitor_source_names() -> None:
-    assert build_telegram_notice(source="blockbeats", title="标题", source_url="https://bb.test/1") == (
-        "律动有新快讯：标题\nhttps://bb.test/1"
+    assert build_telegram_notice(
+        source="blockbeats",
+        title="标题",
+        source_url="https://bb.test/1",
+        route_label="融资",
+        feature_mode_enabled=False,
+    ) == (
+        "律动有新快讯-融资-标准模式：标题\nhttps://bb.test/1"
     )
-    assert build_telegram_notice(source="panews", title="标题", source_url=None) == "PANews有新快讯：标题"
-    assert build_telegram_notice(source="jinse", title="标题", source_url="") == "金色财经有新快讯：标题"
+    assert (
+        build_telegram_notice(
+            source="panews",
+            title="标题",
+            source_url=None,
+            route_label="链上",
+            feature_mode_enabled=True,
+        )
+        == "PANews有新快讯-链上-特色模式：标题"
+    )
+    assert (
+        build_telegram_notice(
+            source="jinse",
+            title="标题",
+            source_url="",
+            route_label="常规",
+            feature_mode_enabled=False,
+        )
+        == "金色财经有新快讯-常规-标准模式：标题"
+    )
     assert build_telegram_notice(
         source="non_mainstream_media",
         title="标题",
         source_url="https://a16zcrypto.com/posts/article/token-launch/",
-    ) == "非主流外媒有新快讯：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
+        route_label="非主流外媒",
+        feature_mode_enabled=False,
+    ) == "非主流外媒有新快讯-非主流外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"
 
 
 def test_telegram_notice_can_override_with_site_display_name() -> None:
@@ -469,8 +501,10 @@ def test_telegram_notice_can_override_with_site_display_name() -> None:
         source="mainstream_media",
         title="标题",
         source_url="https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak",
+        route_label="主流外媒",
+        feature_mode_enabled=False,
         site_display_name="CoinDesk",
-    ) == "CoinDesk有新快讯：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
+    ) == "CoinDesk有新快讯-主流外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
 
 
 def test_searcher_creates_candidate_for_x_and_advances_to_deduped() -> None:
@@ -715,9 +749,24 @@ def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
     assert repo.tasks[1].status == "written"
     assert pipeline.prompt_template_key == "x_funding_writer"
     assert pipeline.prompt_version_id == repo.prompts["x_funding_writer"].id
+    assert pipeline.writer_feature_mode_enabled is False
     assert pipeline.draft_title == "融资标题"
     assert pipeline.draft_content == "融资正文"
     assert fake_ai.calls[0]["model"] == "gpt-5.5"
+
+
+def test_writer_persists_feature_mode_state_to_pipeline() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(task(1, status="deduped"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, news_type="onchain")
+    fake_ai = FakeAiClient(["链上标题\n\n链上正文"])
+    worker = XProcessingWorker(stage="write", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.pipelines[1].prompt_template_key == "x_onchain_writer"
+    assert repo.pipelines[1].writer_feature_mode_enabled is True
 
 
 def test_competitor_writer_uses_source_material_without_brand_or_url() -> None:
@@ -792,7 +841,13 @@ def test_formatter_applies_writer2_rules() -> None:
 def test_format_publish_keeps_ready_review_when_telegram_fails() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="written"))
-    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="regular",
+        writer_feature_mode_enabled=False,
+        draft_title="标题",
+        draft_content="正文",
+    )
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=False, error="telegram failed"))
     worker = XProcessingWorker(
@@ -811,13 +866,19 @@ def test_format_publish_keeps_ready_review_when_telegram_fails() -> None:
     assert repo.pipelines[1].telegram_result["ok"] is False
     assert push.calls[0]["dry_run"] is False
     assert push.calls[0]["source_url"] == "https://x.com/a/status/1"
-    assert telegram.calls == ["X平台有新快讯：标题\nhttps://x.com/a/status/1"]
+    assert telegram.calls == ["X平台有新快讯-常规-标准模式：标题\nhttps://x.com/a/status/1"]
 
 
 def test_competitor_publish_hides_source_url() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(competitor_task(1, status="written"))
-    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="funding",
+        writer_feature_mode_enabled=False,
+        draft_title="标题",
+        draft_content="正文",
+    )
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -833,13 +894,18 @@ def test_competitor_publish_hides_source_url() -> None:
 
     assert result.processed == 1
     assert push.calls[0]["source_url"] is None
-    assert telegram.calls == ["律动有新快讯：标题\nhttps://www.theblockbeats.info/flash/1"]
+    assert telegram.calls == ["律动有新快讯-融资-标准模式：标题\nhttps://www.theblockbeats.info/flash/1"]
 
 
 def test_mainstream_media_publish_keeps_source_url_and_site_name() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(mainstream_task(1, status="written"))
-    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        writer_feature_mode_enabled=False,
+        draft_title="标题",
+        draft_content="正文",
+    )
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -856,13 +922,19 @@ def test_mainstream_media_publish_keeps_source_url_and_site_name() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
     assert push.calls[0]["source_url"] == "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
-    assert telegram.calls == ["CoinDesk有新快讯：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
+    assert telegram.calls == ["CoinDesk有新快讯-主流外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
 
 
 def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(non_mainstream_task(1, status="written"))
-    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="non_mainstream_media",
+        writer_feature_mode_enabled=False,
+        draft_title="标题",
+        draft_content="正文",
+    )
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -879,7 +951,28 @@ def test_non_mainstream_publish_hides_source_url_and_uses_telegram_prefix() -> N
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
     assert push.calls[0]["source_url"] is None
-    assert telegram.calls == ["非主流外媒有新快讯：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
+    assert telegram.calls == ["非主流外媒有新快讯-非主流外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
+
+
+def test_format_publish_falls_back_to_uncategorized_standard_mode_when_pipeline_metadata_missing() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(task(1, status="written"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, draft_title="标题", draft_content="正文")
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="format_publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert telegram.calls == ["X平台有新快讯-未分类-标准模式：标题\nhttps://x.com/a/status/1"]
 
 
 def test_processing_expires_missing_published_at_before_model_call() -> None:
