@@ -1,6 +1,46 @@
 -- Non-mainstream media capture console and worker schema.
 -- Run through `python backend/src/main.py non-mainstream-media-init-db` when possible.
 
+CREATE TABLE IF NOT EXISTS console_admins (
+    email text PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION is_console_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.console_admins
+        WHERE lower(email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
+    );
+$$;
+
+ALTER TABLE console_admins ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS console_admins_authenticated_self_select ON console_admins;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON console_admins FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON console_admins TO authenticated;
+        EXECUTE 'CREATE POLICY console_admins_authenticated_self_select ON console_admins
+            FOR SELECT TO authenticated
+            USING (lower(email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+    END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS tasks (
     id bigserial PRIMARY KEY,
     source text NOT NULL,
@@ -104,16 +144,25 @@ ALTER TABLE non_mainstream_media_sources ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS non_mainstream_media_settings_anon_all ON non_mainstream_media_settings;
 DROP POLICY IF EXISTS non_mainstream_media_sources_anon_all ON non_mainstream_media_sources;
+DROP POLICY IF EXISTS non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings;
+DROP POLICY IF EXISTS non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT, INSERT, UPDATE ON non_mainstream_media_settings, non_mainstream_media_sources TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE non_mainstream_media_sources_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON non_mainstream_media_settings, non_mainstream_media_sources FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE non_mainstream_media_sources_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY non_mainstream_media_settings_anon_all ON non_mainstream_media_settings FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY non_mainstream_media_sources_anon_all ON non_mainstream_media_sources FOR ALL TO anon USING (true) WITH CHECK (true)';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON non_mainstream_media_settings, non_mainstream_media_sources TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE non_mainstream_media_sources_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;
 END
 $$;

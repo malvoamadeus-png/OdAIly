@@ -12,7 +12,7 @@ from packages.common.attempt_sampling import (
     should_sample_x_capture_attempt,
     x_capture_attempt_fingerprint,
 )
-from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
@@ -772,7 +772,7 @@ class InMemoryXCaptureRepository:
         return None
 
 
-SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + """
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + """
 CREATE TABLE IF NOT EXISTS x_capture_settings (
     singleton_key text PRIMARY KEY DEFAULT 'global',
     global_interval_seconds integer NOT NULL DEFAULT 30 CHECK (global_interval_seconds BETWEEN 5 AND 3600),
@@ -879,19 +879,32 @@ DROP POLICY IF EXISTS x_capture_settings_anon_all ON x_capture_settings;
 DROP POLICY IF EXISTS x_capture_accounts_anon_all ON x_capture_accounts;
 DROP POLICY IF EXISTS x_capture_attempts_anon_select ON x_capture_attempts;
 DROP POLICY IF EXISTS tasks_x_anon_select ON tasks;
+DROP POLICY IF EXISTS x_capture_settings_console_admin_all ON x_capture_settings;
+DROP POLICY IF EXISTS x_capture_accounts_console_admin_all ON x_capture_accounts;
+DROP POLICY IF EXISTS x_capture_attempts_console_admin_select ON x_capture_attempts;
+DROP POLICY IF EXISTS tasks_x_console_admin_select ON tasks;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON x_capture_settings, x_capture_accounts TO anon;
-        GRANT SELECT ON x_capture_attempts, tasks TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE x_capture_accounts_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON x_capture_settings, x_capture_accounts, x_capture_attempts, tasks FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE x_capture_accounts_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY x_capture_settings_anon_all ON x_capture_settings FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY x_capture_accounts_anon_all ON x_capture_accounts FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY x_capture_attempts_anon_select ON x_capture_attempts FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY tasks_x_anon_select ON tasks FOR SELECT TO anon USING (source = ''x'')';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON x_capture_settings, x_capture_accounts TO authenticated;
+        GRANT SELECT ON x_capture_attempts, tasks TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE x_capture_accounts_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY x_capture_settings_console_admin_all ON x_capture_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY x_capture_accounts_console_admin_all ON x_capture_accounts
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY x_capture_attempts_console_admin_select ON x_capture_attempts
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY tasks_x_console_admin_select ON tasks
+            FOR SELECT TO authenticated USING (is_console_admin() AND source = ''x'')';
     END IF;
 END
 $$;

@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import {
   Activity,
   Ban,
@@ -19,17 +20,22 @@ import {
   createAccount,
   deleteCompetitorFilterKeyword,
   deleteAccount as deleteAccountFromSupabase,
+  getCurrentConsoleAdmin,
+  getCurrentSession,
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
   loadDashboard,
   listPromptTemplates,
+  onConsoleAuthStateChange,
   listPromptVersions,
   createPromptVersion,
   deletePromptVersion,
   publishPromptVersion,
   saveNewsflashEventNote,
   saveNewsflashItemNote,
+  signInWithPassword,
+  signOut as signOutFromSupabase,
   setNewsflashEventFavorite,
   loadNonMainstreamDashboard,
   updateCompetitorFilterKeyword,
@@ -53,6 +59,7 @@ import {
   type NewsflashEventSourceItem,
   type NewsflashSourceSummary,
   type NewsflashEventSummary,
+  type ConsoleAdmin,
 } from './xCaptureStore';
 
 const emptySettings: Settings = {
@@ -116,7 +123,209 @@ function visiblePromptTemplates(templates: PromptTemplate[]): PromptTemplate[] {
   return templates.filter((template) => template.template_key !== 'non_mainstream_media_writer');
 }
 
+type ConsoleAppProps = {
+  adminEmail: string;
+  onSignOut: () => Promise<void>;
+  signingOut: boolean;
+};
+
+function AuthShell({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="authShell">
+      <div className="authCard">
+        <div className="brand">
+          <div className="brandMark">O</div>
+          <div>
+            <strong>OdAIly</strong>
+            <span>Console Access</span>
+          </div>
+        </div>
+        <div className="authIntro">
+          <h1>{title}</h1>
+          <p>{subtitle}</p>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [admin, setAdmin] = useState<ConsoleAdmin | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const authRequestRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    const syncAccess = async (nextSession: Session | null) => {
+      const requestId = authRequestRef.current + 1;
+      authRequestRef.current = requestId;
+      setSession(nextSession);
+
+      if (!nextSession) {
+        setAdmin(null);
+        setAuthError('');
+        setAuthChecking(false);
+        setAuthReady(true);
+        return;
+      }
+
+      setAuthChecking(true);
+      setAuthReady(false);
+      setAuthError('');
+      try {
+        const nextAdmin = await getCurrentConsoleAdmin();
+        if (!mountedRef.current || authRequestRef.current !== requestId) {
+          return;
+        }
+        setAdmin(nextAdmin);
+        if (!nextAdmin) {
+          setAuthError('当前邮箱没有控制台权限，请先运行 console-grant-admin 加入白名单。');
+        }
+      } catch (err) {
+        if (!mountedRef.current || authRequestRef.current !== requestId) {
+          return;
+        }
+        setAdmin(null);
+        setAuthError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!mountedRef.current || authRequestRef.current !== requestId) {
+          return;
+        }
+        setAuthChecking(false);
+        setAuthReady(true);
+      }
+    };
+
+    getCurrentSession()
+      .then((nextSession) => syncAccess(nextSession))
+      .catch((err) => {
+        if (!mountedRef.current) {
+          return;
+        }
+        setSession(null);
+        setAdmin(null);
+        setAuthChecking(false);
+        setAuthReady(true);
+        setAuthError(err instanceof Error ? err.message : String(err));
+      });
+
+    const unsubscribe = onConsoleAuthStateChange((nextSession) => {
+      void syncAccess(nextSession);
+    });
+
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
+  }, []);
+
+  async function handleSignIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSigningIn(true);
+    setAuthError('');
+    try {
+      await signInWithPassword(email, password);
+      setPassword('');
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) {
+        setSigningIn(false);
+      }
+    }
+  }
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await signOutFromSupabase();
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mountedRef.current) {
+        setSigningOut(false);
+      }
+    }
+  }
+
+  if (!authReady || authChecking) {
+    return (
+      <AuthShell title="验证控制台访问权限" subtitle="正在检查 Supabase 登录状态和管理员白名单。">
+        <div className="emptyState">正在验证，请稍候。</div>
+      </AuthShell>
+    );
+  }
+
+  if (!session) {
+    return (
+      <AuthShell title="登录控制台" subtitle="使用 Supabase 邮箱密码登录。仅已加入管理员白名单的邮箱可以访问。">
+        <form className="authForm" onSubmit={handleSignIn}>
+          <label>
+            <span>邮箱</span>
+            <input
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="name@example.com"
+            />
+          </label>
+          <label>
+            <span>密码</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="请输入密码"
+            />
+          </label>
+          {authError && <div className="notice error">{authError}</div>}
+          <button className="primaryButton authSubmit" type="submit" disabled={signingIn}>
+            登录
+          </button>
+        </form>
+      </AuthShell>
+    );
+  }
+
+  if (!admin) {
+    return (
+      <AuthShell title="已登录，但没有控制台权限" subtitle="当前账号已通过身份验证，但不在管理员白名单中。">
+        <div className="authMeta">
+          <strong>当前账号</strong>
+          <span>{session.user.email ?? '-'}</span>
+        </div>
+        {authError && <div className="notice error">{authError}</div>}
+        <button className="secondaryButton" type="button" onClick={() => void handleSignOut()} disabled={signingOut}>
+          退出登录
+        </button>
+      </AuthShell>
+    );
+  }
+
+  return <ConsoleApp adminEmail={admin.email} onSignOut={handleSignOut} signingOut={signingOut} />;
+}
+
+function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -626,6 +835,11 @@ export function App() {
             <h1>{titleLabel}</h1>
             <p>{subtitle}</p>
           </div>
+          <div className="topbarActions">
+            <div className="userBadge">
+              <strong>管理员</strong>
+              <span>{adminEmail}</span>
+            </div>
           <button
             className="iconButton"
             type="button"
@@ -634,6 +848,10 @@ export function App() {
           >
             <RefreshCcw size={18} />
           </button>
+            <button className="secondaryButton" type="button" onClick={() => void onSignOut()} disabled={signingOut}>
+              退出登录
+            </button>
+          </div>
         </header>
 
         {(message || error) && (

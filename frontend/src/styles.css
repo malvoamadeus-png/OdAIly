@@ -28,6 +28,58 @@ textarea {
   min-height: 100vh;
 }
 
+.authShell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(15, 138, 95, 0.16), transparent 34%),
+    linear-gradient(180deg, #f7faf8 0%, #eef2f5 100%);
+}
+
+.authCard {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid #d9e0e6;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 60px rgba(31, 41, 51, 0.08);
+}
+
+.authIntro {
+  display: grid;
+  gap: 8px;
+}
+
+.authIntro p,
+.authMeta span {
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.authForm {
+  display: grid;
+  gap: 12px;
+}
+
+.authSubmit,
+.secondaryButton {
+  min-height: 40px;
+}
+
+.authMeta {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 10px;
+  background: #f8fafb;
+}
+
 .sidebar {
   position: sticky;
   top: 0;
@@ -102,6 +154,12 @@ nav a.active,
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.topbarActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 h1,
@@ -204,6 +262,7 @@ textarea:focus {
 }
 
 .primaryButton,
+.secondaryButton,
 .iconButton {
   display: inline-flex;
   align-items: center;
@@ -221,7 +280,19 @@ textarea:focus {
   font-weight: 650;
 }
 
+.secondaryButton {
+  padding: 0 14px;
+  background: #ffffff;
+  border-color: #d8dde3;
+  color: #394150;
+}
+
 .primaryButton:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.secondaryButton:disabled {
   cursor: wait;
   opacity: 0.7;
 }
@@ -235,6 +306,37 @@ textarea:focus {
 
 .iconButton.danger {
   color: #b42318;
+}
+
+.userBadge {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid #d8dde3;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.userBadge strong,
+.userBadge span {
+  display: block;
+}
+
+.userBadge strong {
+  font-size: 11px;
+  color: #4b5563;
+  letter-spacing: 0.02em;
+}
+
+.userBadge span {
+  max-width: 240px;
+  overflow: hidden;
+  color: #1f2933;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sectionHeader {
@@ -852,6 +954,15 @@ textarea:focus {
     display: block;
   }
 
+  .authShell {
+    padding: 16px;
+  }
+
+  .authCard {
+    padding: 22px 18px;
+    border-radius: 14px;
+  }
+
   .sidebar,
   .eventTable {
     position: static;
@@ -887,5 +998,19 @@ textarea:focus {
 
   .content {
     padding: 18px 14px 28px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbarActions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .userBadge {
+    width: 100%;
   }
 }

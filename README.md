@@ -81,7 +81,8 @@ The first X capture module stores raw public X/Twitter posts into Postgres
 `tasks` with `status='pending'`. It uses `SUPABASE_DB_URL` or `DATABASE_URL`
 for direct Postgres access in the backend worker. The browser console is a
 Vite static app that connects to Supabase with `VITE_SUPABASE_URL` and
-`VITE_SUPABASE_ANON_KEY`.
+`VITE_SUPABASE_ANON_KEY`, then authenticates operators with Supabase Auth
+email/password before any console table access is allowed.
 
 ```powershell
 pip install -r backend\requirements.txt
@@ -100,9 +101,16 @@ npm install
 npm run dev
 ```
 
+Bootstrap a console admin after schema initialization:
+
+```powershell
+python backend\src\main.py console-grant-admin --email your-admin@example.com
+```
+
 The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
-directly through Supabase. The worker listens on Postgres
-`x_capture_config_changed` notifications and does not expose a console port.
+directly through Supabase, but only for authenticated emails present in
+`console_admins`. The worker listens on Postgres `x_capture_config_changed`
+notifications and does not expose a console port.
 
 ## Collectors And Processing Pipeline
 

@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from dotenv import load_dotenv
 
 from packages.common.pipeline_schema import (
+    CONSOLE_AUTH_SCHEMA_SQL,
     COMPETITOR_FILTER_SCHEMA_SQL,
     NEWSFLASH_EVENT_SCHEMA_SQL,
     PIPELINE_MONITORING_SCHEMA_SQL,
@@ -956,7 +957,7 @@ class InMemoryXProcessingRepository:
         self.candidates.pop(candidate_id, None)
 
 
-SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + NEWSFLASH_EVENT_SCHEMA_SQL + """
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + NEWSFLASH_EVENT_SCHEMA_SQL + """
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
@@ -1141,22 +1142,39 @@ DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
 DROP POLICY IF EXISTS search_event_sources_anon_select ON search_event_sources;
+DROP POLICY IF EXISTS prompt_templates_console_admin_all ON prompt_templates;
+DROP POLICY IF EXISTS prompt_template_versions_console_admin_all ON prompt_template_versions;
+DROP POLICY IF EXISTS x_task_pipeline_console_admin_select ON x_task_pipeline;
+DROP POLICY IF EXISTS odaily_reference_items_console_admin_select ON odaily_reference_items;
+DROP POLICY IF EXISTS search_event_candidates_console_admin_select ON search_event_candidates;
+DROP POLICY IF EXISTS search_event_sources_console_admin_select ON search_event_sources;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT, INSERT, UPDATE ON prompt_templates TO anon;
-        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO anon;
-        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE prompt_template_versions_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY prompt_templates_anon_all ON prompt_templates FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY prompt_template_versions_anon_all ON prompt_template_versions FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY x_task_pipeline_anon_select ON x_task_pipeline FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY odaily_reference_items_anon_select ON odaily_reference_items FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY search_event_candidates_anon_select ON search_event_candidates FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY search_event_sources_anon_select ON search_event_sources FOR SELECT TO anon USING (true)';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON prompt_templates TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO authenticated;
+        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY prompt_templates_console_admin_all ON prompt_templates
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY prompt_template_versions_console_admin_all ON prompt_template_versions
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY x_task_pipeline_console_admin_select ON x_task_pipeline
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY odaily_reference_items_console_admin_select ON odaily_reference_items
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY search_event_candidates_console_admin_select ON search_event_candidates
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY search_event_sources_console_admin_select ON search_event_sources
+            FOR SELECT TO authenticated USING (is_console_admin())';
     END IF;
 END
 $$;

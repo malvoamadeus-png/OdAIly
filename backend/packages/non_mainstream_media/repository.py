@@ -4,7 +4,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Protocol
 
-from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
 
 from .models import DiscoveredPage, NonMainstreamMediaSettings, NonMainstreamMediaSource, ParsedArticle, SiteDefinition, SourceRunStats
@@ -603,7 +603,7 @@ class InMemoryNonMainstreamMediaRepository:
         )
 
 
-SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + """
+SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + """
 CREATE TABLE IF NOT EXISTS tasks (
     id bigserial PRIMARY KEY,
     source text NOT NULL,
@@ -709,16 +709,25 @@ ALTER TABLE non_mainstream_media_sources ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS non_mainstream_media_settings_anon_all ON non_mainstream_media_settings;
 DROP POLICY IF EXISTS non_mainstream_media_sources_anon_all ON non_mainstream_media_sources;
+DROP POLICY IF EXISTS non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings;
+DROP POLICY IF EXISTS non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT, INSERT, UPDATE ON non_mainstream_media_settings, non_mainstream_media_sources TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE non_mainstream_media_sources_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON non_mainstream_media_settings, non_mainstream_media_sources FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE non_mainstream_media_sources_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY non_mainstream_media_settings_anon_all ON non_mainstream_media_settings FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY non_mainstream_media_sources_anon_all ON non_mainstream_media_sources FOR ALL TO anon USING (true) WITH CHECK (true)';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON non_mainstream_media_settings, non_mainstream_media_sources TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE non_mainstream_media_sources_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;
 END
 $$;

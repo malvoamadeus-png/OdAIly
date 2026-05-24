@@ -20,4 +20,12 @@ npm install
 npm run dev
 ```
 
-The page writes X capture settings and accounts directly through Supabase.
+The page uses Supabase Auth email/password login. The browser still boots with
+the anon key, but console data access requires an authenticated session whose
+email is present in `console_admins`.
+
+Bootstrap a console admin after the database schema is initialized:
+
+```powershell
+python ..\backend\src\main.py console-grant-admin --email your-admin@example.com
+```

@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 
 export type Settings = {
   global_interval_seconds: number;
@@ -146,6 +146,12 @@ export type NewsflashEventSourceItem = {
   note: string;
 };
 
+export type ConsoleAdmin = {
+  email: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
@@ -239,6 +245,40 @@ function supabase(): SupabaseClient {
   }
   client = createClient(url, anonKey);
   return client;
+}
+
+export async function getCurrentSession(): Promise<Session | null> {
+  const { data, error } = await supabase().auth.getSession();
+  raise(error);
+  return data.session;
+}
+
+export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
+  const {
+    data: { subscription },
+  } = supabase().auth.onAuthStateChange((_event, session) => {
+    listener(session);
+  });
+  return () => subscription.unsubscribe();
+}
+
+export async function signInWithPassword(email: string, password: string): Promise<void> {
+  const { error } = await supabase().auth.signInWithPassword({
+    email: email.trim().toLowerCase(),
+    password,
+  });
+  raise(error);
+}
+
+export async function signOut(): Promise<void> {
+  const { error } = await supabase().auth.signOut();
+  raise(error);
+}
+
+export async function getCurrentConsoleAdmin(): Promise<ConsoleAdmin | null> {
+  const { data, error } = await supabase().from('console_admins').select('email,created_at,updated_at').limit(1).maybeSingle();
+  raise(error);
+  return (data ?? null) as ConsoleAdmin | null;
 }
 
 function nowIso(): string {

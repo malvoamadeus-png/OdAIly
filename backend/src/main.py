@@ -48,6 +48,26 @@ def parse_args() -> argparse.Namespace:
     x_init_db = subparsers.add_parser("x-init-db", help="Initialize X capture Postgres tables.")
     x_init_db.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
+    console_grant_admin = subparsers.add_parser(
+        "console-grant-admin",
+        help="Grant one email access to the Supabase-backed console.",
+    )
+    console_grant_admin.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    console_grant_admin.add_argument("--email", required=True, help="Admin email address.")
+
+    console_revoke_admin = subparsers.add_parser(
+        "console-revoke-admin",
+        help="Revoke one email from the Supabase-backed console.",
+    )
+    console_revoke_admin.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    console_revoke_admin.add_argument("--email", required=True, help="Admin email address.")
+
+    console_list_admins = subparsers.add_parser(
+        "console-list-admins",
+        help="List console admin emails from Supabase.",
+    )
+    console_list_admins.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
@@ -265,6 +285,38 @@ def x_init_db_command(args: argparse.Namespace) -> int:
     repository = PostgresXCaptureRepository(args.database_url)
     repository.init_schema()
     print("[odaily] x-capture database schema initialized")
+    return 0
+
+
+def console_grant_admin_command(args: argparse.Namespace) -> int:
+    from packages.common.console_auth import PostgresConsoleAuthRepository
+
+    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository.init_schema()
+    record = repository.upsert_admin(args.email)
+    print(f"[odaily] console admin granted email={record.email}")
+    return 0
+
+
+def console_revoke_admin_command(args: argparse.Namespace) -> int:
+    from packages.common.console_auth import PostgresConsoleAuthRepository
+
+    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository.init_schema()
+    removed = repository.delete_admin(args.email)
+    print(f"[odaily] console admin revoked email={args.email.strip().lower()} removed={removed}")
+    return 0 if removed else 1
+
+
+def console_list_admins_command(args: argparse.Namespace) -> int:
+    from packages.common.console_auth import PostgresConsoleAuthRepository
+
+    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository.init_schema()
+    admins = repository.list_admins()
+    for admin in admins:
+        print(f"{admin.email}\tcreated_at={admin.created_at}\tupdated_at={admin.updated_at}")
+    print(f"[odaily] console admin count={len(admins)}")
     return 0
 
 
@@ -687,6 +739,12 @@ def main() -> int:
             return run_worker_command(args)
         if args.command == "x-init-db":
             return x_init_db_command(args)
+        if args.command == "console-grant-admin":
+            return console_grant_admin_command(args)
+        if args.command == "console-revoke-admin":
+            return console_revoke_admin_command(args)
+        if args.command == "console-list-admins":
+            return console_list_admins_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
         if args.command == "non-mainstream-media-init-db":

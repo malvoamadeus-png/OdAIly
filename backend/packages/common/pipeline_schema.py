@@ -30,6 +30,49 @@ ON pipeline_alerts(last_sent_at DESC);
 """
 
 
+CONSOLE_AUTH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS console_admins (
+    email text PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION is_console_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.console_admins
+        WHERE lower(email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
+    );
+$$;
+
+ALTER TABLE console_admins ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS console_admins_authenticated_self_select ON console_admins;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON console_admins FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON console_admins TO authenticated;
+        EXECUTE 'CREATE POLICY console_admins_authenticated_self_select ON console_admins
+            FOR SELECT TO authenticated
+            USING (lower(email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+    END IF;
+END
+$$;
+"""
+
+
 COMPETITOR_FILTER_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
     id bigserial PRIMARY KEY,
@@ -76,15 +119,22 @@ SET term = EXCLUDED.term,
 ALTER TABLE competitor_filter_keywords ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS competitor_filter_keywords_anon_all ON competitor_filter_keywords;
+DROP POLICY IF EXISTS competitor_filter_keywords_console_admin_all ON competitor_filter_keywords;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON competitor_filter_keywords TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE competitor_filter_keywords_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON competitor_filter_keywords FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE competitor_filter_keywords_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY competitor_filter_keywords_anon_all ON competitor_filter_keywords FOR ALL TO anon USING (true) WITH CHECK (true)';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON competitor_filter_keywords TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE competitor_filter_keywords_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY competitor_filter_keywords_console_admin_all ON competitor_filter_keywords
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;
 END
 $$;
@@ -257,6 +307,14 @@ LEFT JOIN newsflash_event_favorites f ON f.event_id = e.event_id AND f.favorite 
 LEFT JOIN newsflash_event_notes n ON n.event_id = e.event_id
 GROUP BY e.event_id, f.favorite, n.note;
 
+DO $$
+BEGIN
+    IF current_setting('server_version_num')::integer >= 150000 THEN
+        EXECUTE 'ALTER VIEW newsflash_event_summary SET (security_invoker = true)';
+    END IF;
+END
+$$;
+
 ALTER TABLE newsflash_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_event_sources ENABLE ROW LEVEL SECURITY;
@@ -270,21 +328,39 @@ DROP POLICY IF EXISTS newsflash_event_sources_anon_select ON newsflash_event_sou
 DROP POLICY IF EXISTS newsflash_event_favorites_anon_all ON newsflash_event_favorites;
 DROP POLICY IF EXISTS newsflash_event_notes_anon_all ON newsflash_event_notes;
 DROP POLICY IF EXISTS newsflash_item_notes_anon_all ON newsflash_item_notes;
+DROP POLICY IF EXISTS newsflash_items_console_admin_select ON newsflash_items;
+DROP POLICY IF EXISTS newsflash_events_console_admin_select ON newsflash_events;
+DROP POLICY IF EXISTS newsflash_event_sources_console_admin_select ON newsflash_event_sources;
+DROP POLICY IF EXISTS newsflash_event_favorites_console_admin_all ON newsflash_event_favorites;
+DROP POLICY IF EXISTS newsflash_event_notes_console_admin_all ON newsflash_event_notes;
+DROP POLICY IF EXISTS newsflash_item_notes_console_admin_all ON newsflash_item_notes;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO anon;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes TO anon;
-        GRANT USAGE, SELECT ON SEQUENCE newsflash_event_sources_id_seq TO anon;
+        REVOKE ALL PRIVILEGES ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary FROM anon;
+        REVOKE ALL PRIVILEGES ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE newsflash_event_sources_id_seq FROM anon;
+    END IF;
 
-        EXECUTE 'CREATE POLICY newsflash_items_anon_select ON newsflash_items FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY newsflash_events_anon_select ON newsflash_events FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY newsflash_event_sources_anon_select ON newsflash_event_sources FOR SELECT TO anon USING (true)';
-        EXECUTE 'CREATE POLICY newsflash_event_favorites_anon_all ON newsflash_event_favorites FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY newsflash_event_notes_anon_all ON newsflash_event_notes FOR ALL TO anon USING (true) WITH CHECK (true)';
-        EXECUTE 'CREATE POLICY newsflash_item_notes_anon_all ON newsflash_item_notes FOR ALL TO anon USING (true) WITH CHECK (true)';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO authenticated;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE newsflash_event_sources_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY newsflash_items_console_admin_select ON newsflash_items
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY newsflash_events_console_admin_select ON newsflash_events
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY newsflash_event_sources_console_admin_select ON newsflash_event_sources
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY newsflash_event_favorites_console_admin_all ON newsflash_event_favorites
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY newsflash_event_notes_console_admin_all ON newsflash_event_notes
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY newsflash_item_notes_console_admin_all ON newsflash_item_notes
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;
 END
 $$;
@@ -414,13 +490,19 @@ ON writer3_contexts(current_published_at DESC NULLS LAST);
 ALTER TABLE writer3_contexts ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS writer3_contexts_anon_select ON writer3_contexts;
+DROP POLICY IF EXISTS writer3_contexts_console_admin_select ON writer3_contexts;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT ON writer3_contexts TO anon;
-        EXECUTE 'CREATE POLICY writer3_contexts_anon_select ON writer3_contexts FOR SELECT TO anon USING (true)';
+        REVOKE ALL PRIVILEGES ON writer3_contexts FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON writer3_contexts TO authenticated;
+        EXECUTE 'CREATE POLICY writer3_contexts_console_admin_select ON writer3_contexts
+            FOR SELECT TO authenticated USING (is_console_admin())';
     END IF;
 END
 $$;
@@ -466,13 +548,19 @@ ON auditor_checks(published_at DESC NULLS LAST);
 ALTER TABLE auditor_checks ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS auditor_checks_anon_select ON auditor_checks;
+DROP POLICY IF EXISTS auditor_checks_console_admin_select ON auditor_checks;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        GRANT USAGE ON SCHEMA public TO anon;
-        GRANT SELECT ON auditor_checks TO anon;
-        EXECUTE 'CREATE POLICY auditor_checks_anon_select ON auditor_checks FOR SELECT TO anon USING (true)';
+        REVOKE ALL PRIVILEGES ON auditor_checks FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON auditor_checks TO authenticated;
+        EXECUTE 'CREATE POLICY auditor_checks_console_admin_select ON auditor_checks
+            FOR SELECT TO authenticated USING (is_console_admin())';
     END IF;
 END
 $$;
