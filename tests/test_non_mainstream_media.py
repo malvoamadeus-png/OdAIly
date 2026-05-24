@@ -13,6 +13,7 @@ from packages.non_mainstream_media.fetcher import (
     discover_ft_pages,
     discover_fortune_pages,
     discover_forbes_pages,
+    fetch_discovered_pages,
     discover_hk01_pages,
     discover_the_block_pages,
     discover_wsj_pages,
@@ -335,6 +336,32 @@ def test_discover_the_block_pages_reads_google_news_titles() -> None:
     assert [page.detail_url for page in pages] == ["https://news.google.com/rss/articles/CBMiTestStory?oc=5"]
     assert pages[0].title == "First The Block Title"
     assert pages[0].excerpt == "Lead paragraph from rss."
+
+
+def test_fetch_discovered_pages_dispatches_the_block_without_detail_fetch(monkeypatch) -> None:
+    site = get_site_registry()["the_block"]
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>First The Block Title - The Block</title>
+          <link>https://news.google.com/rss/articles/CBMiDispatchStory?oc=5</link>
+          <source url="https://www.theblock.co/">The Block</source>
+          <description><![CDATA[First The Block Title - Lead paragraph from rss. The Block]]></description>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        assert url == site.list_url
+        return xml
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert [page.detail_url for page in pages] == ["https://news.google.com/rss/articles/CBMiDispatchStory?oc=5"]
 
 
 def test_discover_forbes_pages_reads_digital_assets_rss() -> None:

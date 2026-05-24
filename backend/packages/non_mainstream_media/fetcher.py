@@ -219,7 +219,7 @@ def fetch_discovered_pages(
         return discover_fortune_pages(html, base_url=site.homepage_url)
     if site.site_key == "the_block":
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return discover_the_block_pages(xml, base_url=site.homepage_url)
+        return discover_the_block_pages(xml)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
