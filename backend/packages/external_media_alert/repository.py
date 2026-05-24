@@ -229,34 +229,58 @@ class PostgresExternalMediaAlertRepository:
                     source_url=item.source_url,
                     title=item.title,
                 )
-                row = conn.execute(
-                    """
-                    INSERT INTO media_newsflash (source, title, content, source_url, title_key, published_at)
-                    SELECT %s, %s, %s, %s, %s, %s
-                    WHERE NOT EXISTS (
-                        SELECT 1
-                        FROM media_newsflash
-                        WHERE source = %s
-                          AND (
-                              title_key = %s
-                              OR (%s IS NOT NULL AND source_url = %s)
-                          )
-                    )
-                    RETURNING id
-                    """,
-                    (
-                        item.source,
-                        item.title,
-                        item.content,
-                        item.source_url,
-                        title_key,
-                        effective_published_at,
-                        item.source,
-                        title_key,
-                        item.source_url,
-                        item.source_url,
-                    ),
-                ).fetchone()
+                if item.source_url:
+                    row = conn.execute(
+                        """
+                        INSERT INTO media_newsflash (source, title, content, source_url, title_key, published_at)
+                        SELECT %s, %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM media_newsflash
+                            WHERE source = %s
+                              AND (
+                                  title_key = %s
+                                  OR source_url = %s
+                              )
+                        )
+                        RETURNING id
+                        """,
+                        (
+                            item.source,
+                            item.title,
+                            item.content,
+                            item.source_url,
+                            title_key,
+                            effective_published_at,
+                            item.source,
+                            title_key,
+                            item.source_url,
+                        ),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        INSERT INTO media_newsflash (source, title, content, source_url, title_key, published_at)
+                        SELECT %s, %s, %s, %s, %s, %s
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM media_newsflash
+                            WHERE source = %s
+                              AND title_key = %s
+                        )
+                        RETURNING id
+                        """,
+                        (
+                            item.source,
+                            item.title,
+                            item.content,
+                            item.source_url,
+                            title_key,
+                            effective_published_at,
+                            item.source,
+                            title_key,
+                        ),
+                    ).fetchone()
                 if row is None:
                     duplicate += 1
                     continue
