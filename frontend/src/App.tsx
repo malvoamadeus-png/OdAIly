@@ -191,6 +191,16 @@ export function App() {
   const [signingOut, setSigningOut] = useState(false);
   const authRequestRef = useRef(0);
   const mountedRef = useRef(true);
+  const sessionRef = useRef<Session | null>(null);
+  const adminRef = useRef<ConsoleAdmin | null>(null);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    adminRef.current = admin;
+  }, [admin]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -198,6 +208,11 @@ export function App() {
     const syncAccess = async (nextSession: Session | null) => {
       const requestId = authRequestRef.current + 1;
       authRequestRef.current = requestId;
+      const currentSession = sessionRef.current;
+      const currentAdmin = adminRef.current;
+      const previousEmail = currentSession?.user.email?.toLowerCase() ?? null;
+      const nextEmail = nextSession?.user.email?.toLowerCase() ?? null;
+      const isSameAccount = previousEmail !== null && previousEmail === nextEmail;
       setSession(nextSession);
 
       if (!nextSession) {
@@ -208,8 +223,10 @@ export function App() {
         return;
       }
 
-      setAuthChecking(true);
-      setAuthReady(false);
+      if (!isSameAccount || !currentAdmin) {
+        setAuthChecking(true);
+        setAuthReady(false);
+      }
       setAuthError('');
       try {
         const nextAdmin = await getCurrentConsoleAdmin();
@@ -224,14 +241,18 @@ export function App() {
         if (!mountedRef.current || authRequestRef.current !== requestId) {
           return;
         }
-        setAdmin(null);
-        setAuthError(err instanceof Error ? err.message : String(err));
+        if (!isSameAccount || !currentAdmin) {
+          setAdmin(null);
+          setAuthError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
         if (!mountedRef.current || authRequestRef.current !== requestId) {
           return;
         }
-        setAuthChecking(false);
-        setAuthReady(true);
+        if (!isSameAccount || !currentAdmin) {
+          setAuthChecking(false);
+          setAuthReady(true);
+        }
       }
     };
 
