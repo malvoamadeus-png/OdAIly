@@ -428,6 +428,29 @@ def test_parse_decrypt_article_extracts_body_and_author() -> None:
     assert article.content_format == "decrypt_news"
 
 
+def test_discover_the_block_pages_reads_official_rss_titles() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>First The Block Title</title>
+          <link>https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc?utm_source=rss&amp;utm_medium=rss</link>
+          <description><![CDATA[<p>Lead paragraph from official rss.</p>]]></description>
+          <pubDate>Mon, 25 May 2026 04:35:03 -0400</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_the_block_pages(xml)
+
+    assert [page.detail_url for page in pages] == ["https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc/"]
+    assert pages[0].title == "First The Block Title"
+    assert pages[0].excerpt == "Lead paragraph from official rss."
+    assert pages[0].published_at == datetime(2026, 5, 25, 8, 35, 3, tzinfo=UTC)
+    assert pages[0].published_at_raw == "Mon, 25 May 2026 04:35:03 -0400"
+
+
 def test_discover_the_block_pages_reads_google_news_titles() -> None:
     xml = """
     <rss version="2.0">
@@ -454,7 +477,38 @@ def test_discover_the_block_pages_reads_google_news_titles() -> None:
     assert pages[0].excerpt == "Lead paragraph from rss."
 
 
-def test_fetch_discovered_pages_dispatches_the_block_without_detail_fetch(monkeypatch) -> None:
+def test_fetch_discovered_pages_dispatches_the_block_with_jina_official_rss(monkeypatch) -> None:
+    site = get_site_registry()["the_block"]
+    markdown = """
+Title: The Block
+
+URL Source: https://www.theblock.co/rss.xml
+
+Markdown Content:
+# The Block
+
+### [First The Block Title](https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc?utm_source=rss&utm_medium=rss)
+
+[https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc?utm_source=rss&utm_medium=rss](https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc?utm_source=rss&utm_medium=rss)
+
+Mon, 25 May 2026 04:35:03 -0400
+""".strip()
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        if url == site.list_url:
+            raise RuntimeError("request failed url=https://www.theblock.co/rss.xml: 403")
+        assert url == f"https://r.jina.ai/http://{site.list_url}"
+        return markdown
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert [page.detail_url for page in pages] == ["https://www.theblock.co/post/402447/bitcoin-og-moves-2650-btc/"]
+    assert pages[0].published_at == datetime(2026, 5, 25, 8, 35, 3, tzinfo=UTC)
+
+
+def test_fetch_discovered_pages_dispatches_the_block_to_google_news_fallback(monkeypatch) -> None:
     site = get_site_registry()["the_block"]
     xml = """
     <rss version="2.0">
@@ -464,13 +518,18 @@ def test_fetch_discovered_pages_dispatches_the_block_without_detail_fetch(monkey
           <link>https://news.google.com/rss/articles/CBMiDispatchStory?oc=5</link>
           <source url="https://www.theblock.co/">The Block</source>
           <description><![CDATA[First The Block Title - Lead paragraph from rss. The Block]]></description>
+          <pubDate>Mon, 25 May 2026 08:35:03 GMT</pubDate>
         </item>
       </channel>
     </rss>
     """
 
     def fake_fetch_html(url: str, **_: object) -> str:
-        assert url == site.list_url
+        if url == site.list_url:
+            raise RuntimeError("request failed url=https://www.theblock.co/rss.xml: 403")
+        if url == f"https://r.jina.ai/http://{site.list_url}":
+            raise RuntimeError("jina official rss unavailable")
+        assert url == "https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en"
         return xml
 
     monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
@@ -478,6 +537,7 @@ def test_fetch_discovered_pages_dispatches_the_block_without_detail_fetch(monkey
     pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
 
     assert [page.detail_url for page in pages] == ["https://news.google.com/rss/articles/CBMiDispatchStory?oc=5"]
+    assert pages[0].published_at == datetime(2026, 5, 25, 8, 35, 3, tzinfo=UTC)
 
 
 def test_discover_forbes_pages_reads_digital_assets_rss() -> None:

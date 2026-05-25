@@ -52,6 +52,7 @@ TETHER_NEWS_PROXY_API_URL = (
 FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
 THE_BLOCK_BASE_URL = "https://www.theblock.co"
+THE_BLOCK_OFFICIAL_RSS_URL = "https://www.theblock.co/rss.xml"
 THE_BLOCK_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
@@ -183,7 +184,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         site_key="the_block",
         display_name="The Block",
         homepage_url=THE_BLOCK_BASE_URL,
-        list_url=THE_BLOCK_GOOGLE_NEWS_RSS_URL,
+        list_url=THE_BLOCK_OFFICIAL_RSS_URL,
         capture_method="html_request",
         pipeline_mode="alert_only",
     ),
@@ -273,8 +274,12 @@ def fetch_discovered_pages(
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_fortune_pages(html, base_url=site.homepage_url)
     if site.site_key == "the_block":
-        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return discover_the_block_pages(xml)
+        return fetch_the_block_discovered_pages(
+            site,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -435,6 +440,59 @@ def fetch_cointelegraph_discovered_pages(
     return []
 
 
+def fetch_the_block_discovered_pages(
+    site: SiteDefinition,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    primary_error: str | None = None
+    try:
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=1, backoff_seconds=0.0)
+        pages = discover_the_block_pages(xml, source_name=site.display_name)
+        if pages:
+            return pages
+        primary_error = "the block official rss returned no pages"
+    except Exception as exc:
+        primary_error = f"the block official rss failed: {exc}"
+
+    proxy_error: str | None = None
+    try:
+        markdown = fetch_html(
+            build_jina_proxy_url(site.list_url),
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        pages = discover_the_block_pages_from_jina_rss(markdown, base_url=site.homepage_url)
+        if pages:
+            return pages
+        proxy_error = "the block official rss via jina returned no pages"
+    except Exception as exc:
+        proxy_error = f"the block official rss via jina failed: {exc}"
+
+    fallback_error: str | None = None
+    try:
+        xml = fetch_html(
+            THE_BLOCK_GOOGLE_NEWS_RSS_URL,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        pages = discover_the_block_pages(xml, source_name=site.display_name)
+        if pages:
+            return pages
+        fallback_error = "the block google-news fallback returned no pages"
+    except Exception as exc:
+        fallback_error = f"the block google-news fallback failed: {exc}"
+
+    message_parts = [part for part in (primary_error, proxy_error, fallback_error) if part]
+    if message_parts:
+        raise RuntimeError("; ".join(message_parts))
+    return []
+
+
 def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[DiscoveredPage]:
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
@@ -534,7 +592,7 @@ def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
     for item in root.findall(".//item"):
-        link = clean_inline_text(item.findtext("link", default=""))
+        link = normalize_the_block_discovery_url(clean_inline_text(item.findtext("link", default="")))
         title = clean_inline_text(item.findtext("title", default=""))
         item_source = clean_inline_text(item.findtext("source", default=""))
         description_html = item.findtext("description", default="")
@@ -546,17 +604,61 @@ def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -
         if link in seen:
             continue
         seen.add(link)
+        clean_title = strip_google_news_source_suffix(title, item_source or source_name) if item_source else title
+        excerpt = (
+            extract_google_news_excerpt(description_html, title=title, source_name=item_source or source_name)
+            if item_source
+            else extract_feed_excerpt(description_html, title=clean_title)
+        )
         results.append(
             DiscoveredPage(
                 source_item_id=link,
                 detail_url=link,
-                title=strip_google_news_source_suffix(title, item_source or source_name),
-                excerpt=extract_google_news_excerpt(description_html, title=title, source_name=item_source or source_name)
-                or None,
+                title=clean_title,
+                excerpt=excerpt or None,
                 published_at=parse_published_at(published_at_raw),
                 published_at_raw=published_at_raw or None,
             )
         )
+    return results
+
+
+def discover_the_block_pages_from_jina_rss(payload: str, *, base_url: str = THE_BLOCK_BASE_URL) -> list[DiscoveredPage]:
+    text = extract_jina_markdown_payload(payload)
+    lines = [line.strip() for line in text.splitlines()]
+    heading_pattern = re.compile(r"^### \[(?P<title>.+?)\]\((?P<link>https://www\.theblock\.co/post/[^)]+)\)$")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    index = 0
+    while index < len(lines):
+        match = heading_pattern.fullmatch(lines[index])
+        if not match:
+            index += 1
+            continue
+        title = clean_inline_text(match.group("title"))
+        detail_url = normalize_the_block_discovery_url(normalize_url(urljoin(base_url, match.group("link"))))
+        published_index = next_nonempty_line(lines, index + 1)
+        published_at_raw = ""
+        while published_index is not None and published_index < len(lines):
+            candidate = clean_inline_text(lines[published_index])
+            if candidate.startswith("### ["):
+                break
+            if parse_published_at(candidate) is not None:
+                published_at_raw = candidate
+                break
+            published_index = next_nonempty_line(lines, published_index + 1)
+        if detail_url and title and detail_url not in seen:
+            seen.add(detail_url)
+            results.append(
+                DiscoveredPage(
+                    source_item_id=detail_url,
+                    detail_url=detail_url,
+                    title=title,
+                    published_at=parse_published_at(published_at_raw),
+                    published_at_raw=published_at_raw or None,
+                )
+            )
+        index += 1
     return results
 
 
@@ -1782,6 +1884,18 @@ def strip_markdown_formatting(value: str) -> str:
     text = text.replace("**", "").replace("__", "").replace("`", "")
     text = text.replace("–", " – ")
     return text
+
+
+def normalize_the_block_discovery_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("theblock.co"):
+        return url.strip()
+    normalized = normalize_url(url)
+    normalized_parsed = urlparse(normalized)
+    normalized = urlunparse(normalized_parsed._replace(query="", fragment=""))
+    if not normalized.endswith("/"):
+        normalized += "/"
+    return normalized
 
 
 def extract_decrypt_author(soup: BeautifulSoup) -> str:
