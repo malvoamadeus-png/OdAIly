@@ -124,7 +124,10 @@ class WhaleWatchHyperliquidWorker:
         cutoff = state.last_seen_time or 0
         for fill in fills:
             fill_time = _int(fill.get("time")) or 0
-            if fill_time < cutoff:
+            # `mark_seeded()` stores the latest seen fill timestamp. On later polls
+            # we must require a strictly newer fill, otherwise a newly added
+            # address will replay the latest historical fill once.
+            if fill_time <= cutoff:
                 continue
             activity = detect_hyperliquid_activity(whale=whale, fill=fill)
             if activity is None:

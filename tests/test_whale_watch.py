@@ -134,6 +134,28 @@ def test_hyperliquid_worker_first_run_seeds_without_telegram() -> None:
     assert repo.states[1].last_seen_time == 1779704646349
 
 
+def test_hyperliquid_worker_does_not_replay_latest_historical_fill_after_seed() -> None:
+    repo = FakeHyperliquidRepository()
+    client = FakeHyperliquidClient([hyper_fill()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl-seed-boundary",
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.seeded == 1
+    assert second.detected == 0
+    assert second.inserted == 0
+    assert second.sent == 0
+    assert telegram.messages == []
+
+
 def test_hyperliquid_worker_sends_large_activity_once_and_skips_small() -> None:
     repo = FakeHyperliquidRepository()
     repo.states[1] = HyperliquidState(address_id=1, seeded_at=datetime.now(UTC), last_seen_time=1779701000000)
