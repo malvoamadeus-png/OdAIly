@@ -300,13 +300,14 @@ class PostgresNonMainstreamMediaRepository:
             "capture_method": source.capture_method,
             "pipeline_mode": source.pipeline_mode,
             "excerpt": page.excerpt,
+            "published_at_raw": page.published_at_raw,
             "source_kind": "external_media_alert",
         }
         with self._connect() as conn:
             row = conn.execute(
                 """
                 INSERT INTO tasks (
-                    source, source_item_id, source_url, title, content, raw_payload, metadata, status
+                    source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
                 )
                 VALUES (
                     'external_media_alert',
@@ -314,6 +315,7 @@ class PostgresNonMainstreamMediaRepository:
                     %(source_url)s,
                     %(title)s,
                     %(content)s,
+                    %(published_at)s,
                     %(raw_payload)s,
                     %(metadata)s,
                     'pending'
@@ -326,11 +328,13 @@ class PostgresNonMainstreamMediaRepository:
                     "source_url": page.detail_url,
                     "title": page.title,
                     "content": content,
+                    "published_at": page.published_at,
                     "raw_payload": self._Jsonb(
                         {
                             "detail_url": page.detail_url,
                             "title": page.title,
                             "excerpt": page.excerpt,
+                            "published_at_raw": page.published_at_raw,
                         }
                     ),
                     "metadata": self._Jsonb(metadata),
@@ -549,19 +553,21 @@ class InMemoryNonMainstreamMediaRepository:
                 "source_url": page.detail_url,
                 "title": page.title,
                 "content": page.excerpt or page.title or page.detail_url,
-                "published_at": None,
+                "published_at": page.published_at,
                 "metadata": {
                     "site_key": source.site_key,
                     "site_display_name": source.display_name,
                     "capture_method": source.capture_method,
                     "pipeline_mode": source.pipeline_mode,
                     "excerpt": page.excerpt,
+                    "published_at_raw": page.published_at_raw,
                     "source_kind": "external_media_alert",
                 },
                 "raw_payload": {
                     "detail_url": page.detail_url,
                     "title": page.title,
                     "excerpt": page.excerpt,
+                    "published_at_raw": page.published_at_raw,
                 },
                 "status": "pending",
             }

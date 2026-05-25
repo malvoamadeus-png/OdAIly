@@ -50,6 +50,8 @@ class DiscoveredPage:
     detail_url: str
     title: str | None = None
     excerpt: str | None = None
+    published_at: datetime | None = None
+    published_at_raw: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

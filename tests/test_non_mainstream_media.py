@@ -14,7 +14,9 @@ from packages.non_mainstream_media.fetcher import (
     discover_fortune_pages,
     discover_forbes_pages,
     fetch_discovered_pages,
+    fetch_article,
     discover_hk01_pages,
+    discover_tether_pages,
     discover_the_block_pages,
     discover_wsj_pages,
     get_site_registry,
@@ -24,6 +26,7 @@ from packages.non_mainstream_media.fetcher import (
     parse_decrypt_article,
     parse_forbes_article,
     parse_hk01_article,
+    parse_tether_article,
 )
 from packages.non_mainstream_media.models import DiscoveredPage, ParsedArticle, SiteDefinition
 from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
@@ -101,6 +104,7 @@ def test_registry_assigns_new_external_media_pipeline_modes() -> None:
     assert registry["coindesk"].pipeline_mode == "write_flow"
     assert registry["cointelegraph"].pipeline_mode == "write_flow"
     assert registry["decrypt"].pipeline_mode == "write_flow"
+    assert registry["tether_news"].pipeline_mode == "write_flow"
     assert registry["the_block"].pipeline_mode == "alert_only"
 
 
@@ -185,6 +189,7 @@ def test_discover_cointelegraph_pages_reads_rss_titles() -> None:
           <title>Crypto Today</title>
           <link>https://cointelegraph.com/news/crypto-today?utm_source=rss_feed</link>
           <description><![CDATA[Crypto Today - A roundup of the latest crypto headlines.]]></description>
+          <pubDate>Sat, 24 May 2026 11:00:00 +0000</pubDate>
         </item>
         <item>
           <title>Ignore markets category</title>
@@ -198,6 +203,7 @@ def test_discover_cointelegraph_pages_reads_rss_titles() -> None:
 
     assert [page.detail_url for page in pages] == ["https://cointelegraph.com/news/crypto-today/"]
     assert pages[0].excerpt == "A roundup of the latest crypto headlines."
+    assert pages[0].published_at == datetime(2026, 5, 24, 11, 0, tzinfo=UTC)
 
 
 def test_parse_cointelegraph_article_extracts_body_and_byline() -> None:
@@ -239,6 +245,116 @@ def test_parse_cointelegraph_article_extracts_body_and_byline() -> None:
         "Solana fees also rebounded."
     )
     assert article.content_format == "cointelegraph_news"
+
+
+def test_discover_cointelegraph_pages_reads_google_news_sitemap_publication_time() -> None:
+    xml = """
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+      <url>
+        <loc>https://cointelegraph.com/news/kalshi-launches-advocacy-group-to-counter-anti-prediction-market-lobbying</loc>
+        <news:news>
+          <news:publication>
+            <news:name>Cointelegraph</news:name>
+            <news:language>en</news:language>
+          </news:publication>
+          <news:publication_date>2026-05-25T04:07:32.071Z</news:publication_date>
+          <news:title>Kalshi backs prediction markets lobby group with former Trump official</news:title>
+        </news:news>
+      </url>
+      <url>
+        <loc>https://cointelegraph.com/magazine/feature-story</loc>
+        <news:news>
+          <news:publication_date>2026-05-25T04:08:00.000Z</news:publication_date>
+          <news:title>Ignore non news path</news:title>
+        </news:news>
+      </url>
+    </urlset>
+    """
+
+    pages = discover_cointelegraph_pages(xml)
+
+    assert [page.detail_url for page in pages] == [
+        "https://cointelegraph.com/news/kalshi-launches-advocacy-group-to-counter-anti-prediction-market-lobbying/"
+    ]
+    assert pages[0].title == "Kalshi backs prediction markets lobby group with former Trump official"
+    assert pages[0].published_at == datetime(2026, 5, 25, 4, 7, 32, 71000, tzinfo=UTC)
+    assert pages[0].published_at_raw == "2026-05-25T04:07:32.071Z"
+
+
+def test_fetch_discovered_pages_cointelegraph_falls_back_to_rss(monkeypatch) -> None:
+    site = get_site_registry()["cointelegraph"]
+    calls: list[str] = []
+    rss = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Crypto Today</title>
+          <link>https://cointelegraph.com/news/crypto-today?utm_source=rss_feed</link>
+          <description><![CDATA[Crypto Today - A roundup of the latest crypto headlines.]]></description>
+          <pubDate>Sat, 24 May 2026 11:00:00 +0000</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url == site.list_url:
+            raise RuntimeError("primary sitemap unavailable")
+        if url == "https://cointelegraph.com/rss":
+            return rss
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert calls == [site.list_url, "https://cointelegraph.com/rss"]
+    assert [page.detail_url for page in pages] == ["https://cointelegraph.com/news/crypto-today/"]
+    assert pages[0].published_at == datetime(2026, 5, 24, 11, 0, tzinfo=UTC)
+
+
+def test_fetch_article_uses_discovery_published_at_when_cointelegraph_html_has_no_time(monkeypatch) -> None:
+    page = DiscoveredPage(
+        source_item_id="https://cointelegraph.com/news/crypto-today/",
+        detail_url="https://cointelegraph.com/news/crypto-today/",
+        title="Crypto Today",
+        published_at=datetime(2026, 5, 24, 11, 0, tzinfo=UTC),
+        published_at_raw="2026-05-24T11:00:00Z",
+    )
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://cointelegraph.com/news/crypto-today" />
+        <meta property="og:title" content="Crypto Today" />
+        <meta property="og:description" content="A roundup of the latest crypto headlines." />
+      </head>
+      <body>
+        <main>
+          <div data-testid="post">
+            <div data-testid="post-byline">Written by Cointelegraph, Staff Writer.</div>
+            <div class="ct-prose-2 mt-4 pb-10">
+              <p>Need to know what happened in crypto today?</p>
+              <p>Bitcoin ETFs kept their inflow streak alive.</p>
+            </div>
+          </div>
+        </main>
+      </body>
+    </html>
+    """
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", lambda *_args, **_kwargs: html)
+
+    parsed = fetch_article(
+        get_site_registry()["cointelegraph"],
+        page,
+        timeout_seconds=20,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    assert parsed.published_at == datetime(2026, 5, 24, 11, 0, tzinfo=UTC)
+    assert parsed.metadata["published_at_raw"] == "2026-05-24T11:00:00Z"
 
 
 def test_discover_decrypt_pages_reads_rss_titles() -> None:
@@ -435,6 +551,40 @@ def test_discover_hk01_pages_reads_issue_blocks() -> None:
         "https://www.hk01.com/topic/60347049/sample-story/"
     ]
     assert [page.title for page in pages] == ["HK01 sample story"]
+
+
+def test_discover_tether_pages_reads_wordpress_posts_payload() -> None:
+    payload = [
+        {
+            "id": 2663,
+            "date_gmt": "2026-05-25T07:30:00",
+            "link": "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+            "title": {
+                "rendered": "Tether and the Government of Georgia to Launch GEL₮, the Official Stablecoin of Georgia"
+            },
+            "excerpt": {
+                "rendered": (
+                    "<p>25 May, 2026 &#8211; Tether today announced plans to launch GEL&#x20AE; in Georgia [&hellip;]</p>"
+                )
+            },
+        },
+        {
+            "id": 2664,
+            "date_gmt": "2026-05-25T07:30:00",
+            "link": "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/?utm_source=test",
+            "title": {"rendered": "Duplicate copy"},
+            "excerpt": {"rendered": "<p>Duplicate excerpt</p>"},
+        },
+    ]
+
+    pages = discover_tether_pages(payload)
+
+    assert [page.detail_url for page in pages] == [
+        "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+    ]
+    assert pages[0].source_item_id == pages[0].detail_url
+    assert pages[0].title == "Tether and the Government of Georgia to Launch GEL₮, the Official Stablecoin of Georgia"
+    assert pages[0].excerpt == "25 May, 2026 – Tether today announced plans to launch GEL₮ in Georgia […]"
 
 
 def test_discover_fortune_pages_reads_section_story_titles() -> None:
@@ -717,6 +867,63 @@ def test_parse_hk01_article_extracts_text_blocks_and_metadata() -> None:
     assert article.content_format == "hk01_issue_article"
 
 
+def test_parse_tether_article_extracts_wp_body_and_terms() -> None:
+    payload = [
+        {
+            "id": 2663,
+            "date_gmt": "2026-05-25T07:30:00",
+            "link": "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+            "title": {
+                "rendered": "Tether and the Government of Georgia to Launch GEL₮, the Official Stablecoin of Georgia"
+            },
+            "excerpt": {
+                "rendered": "<p>25 May, 2026 &#8211; Tether announced plans to launch GEL&#x20AE; in Georgia.</p>"
+            },
+            "content": {
+                "rendered": (
+                    "<p><strong>25 May, 2026</strong> &#8211; Tether announced plans to launch GEL&#x20AE; in Georgia."
+                    "<br><br>The stablecoin is designed to support faster payments and cross-border transfers.</p>"
+                    "<p>Officials said the project will operate under a stablecoin regulatory framework.</p>"
+                )
+            },
+            "_embedded": {
+                "wp:term": [
+                    [
+                        {"taxonomy": "category", "name": "News"},
+                        {"taxonomy": "category", "name": "Others"},
+                    ],
+                    [
+                        {"taxonomy": "post_tag", "name": "Stablecoin"},
+                        {"taxonomy": "post_tag", "name": "Georgia"},
+                    ],
+                ]
+            },
+        }
+    ]
+
+    article = parse_tether_article(
+        payload,
+        page_url="https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+        source_item_id="https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+    )
+
+    assert article.canonical_url == (
+        "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/"
+    )
+    assert article.title == "Tether and the Government of Georgia to Launch GEL₮, the Official Stablecoin of Georgia"
+    assert article.published_at == datetime(2026, 5, 25, 7, 30, tzinfo=UTC)
+    assert article.tags == ["Stablecoin", "Georgia"]
+    assert article.categories == ["News", "Others"]
+    assert article.content == (
+        "25 May, 2026 – Tether announced plans to launch GEL₮ in Georgia.\n\n"
+        "The stablecoin is designed to support faster payments and cross-border transfers.\n\n"
+        "Officials said the project will operate under a stablecoin regulatory framework."
+    )
+    assert article.excerpt == "25 May, 2026 – Tether announced plans to launch GEL₮ in Georgia."
+    assert article.content_format == "tether_news_post"
+    assert article.metadata["post_id"] == 2663
+
+
 def test_clean_body_text_removes_disclaimer_tail() -> None:
     raw = (
         "Intro paragraph.\n\nUseful detail.\n\n"
@@ -884,6 +1091,7 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "capture_method": "html_request",
         "pipeline_mode": "alert_only",
         "excerpt": "Fresh alert item",
+        "published_at_raw": None,
         "source_kind": "external_media_alert",
     }
 
@@ -947,6 +1155,69 @@ def test_worker_new_write_flow_site_saves_external_media_article(monkeypatch) ->
     assert repository.tasks[0]["source"] == "non_mainstream_media"
     assert repository.tasks[0]["metadata"]["site_key"] == "coindesk"
     assert repository.tasks[0]["metadata"]["pipeline_mode"] == "write_flow"
+
+
+def test_worker_cointelegraph_keeps_discovery_published_at_in_saved_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "cointelegraph": SiteDefinition(
+            site_key="cointelegraph",
+            display_name="Cointelegraph",
+            homepage_url="https://cointelegraph.com/",
+            list_url="https://cointelegraph.com/sitemap/google-news.xml",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://cointelegraph.com/news/seed-story/",
+            detail_url="https://cointelegraph.com/news/seed-story/",
+            title="Seed story",
+            published_at=datetime(2026, 5, 24, 10, 58, tzinfo=UTC),
+            published_at_raw="2026-05-24T10:58:00Z",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://cointelegraph.com/news/new-story/",
+            detail_url="https://cointelegraph.com/news/new-story/",
+            title="New story",
+            published_at=datetime(2026, 5, 24, 11, 0, tzinfo=UTC),
+            published_at_raw="2026-05-24T11:00:00Z",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "cointelegraph"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        assert site.site_key == "cointelegraph"
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "New story",
+            content="Prediction markets are ramping up their lobbying push.",
+            published_at=page.published_at,
+            author_names=["Cointelegraph"],
+            excerpt="Prediction markets are ramping up their lobbying push.",
+            content_format="cointelegraph_news",
+            raw_payload={"page_url": page.detail_url},
+            metadata={"published_at_raw": page.published_at_raw},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert repository.tasks[0]["source"] == "non_mainstream_media"
+    assert repository.tasks[0]["published_at"] == datetime(2026, 5, 24, 11, 0, tzinfo=UTC)
+    assert repository.tasks[0]["metadata"]["published_at_raw"] == "2026-05-24T11:00:00Z"
 
 
 def test_worker_the_block_alert_only_saves_title_task(monkeypatch) -> None:

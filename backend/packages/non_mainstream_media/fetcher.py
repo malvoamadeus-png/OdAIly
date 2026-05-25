@@ -4,7 +4,9 @@ import json
 import re
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -28,6 +30,7 @@ A16Z_BASE_URL = "https://a16zcrypto.com"
 COINDESK_BASE_URL = "https://www.coindesk.com"
 COINDESK_FEED_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 COINTELEGRAPH_BASE_URL = "https://cointelegraph.com"
+COINTELEGRAPH_GOOGLE_NEWS_SITEMAP_URL = "https://cointelegraph.com/sitemap/google-news.xml"
 COINTELEGRAPH_FEED_URL = "https://cointelegraph.com/rss"
 DECRYPT_BASE_URL = "https://decrypt.co"
 DECRYPT_FEED_URL = "https://decrypt.co/feed"
@@ -35,6 +38,12 @@ FORBES_BASE_URL = "https://www.forbes.com"
 FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
 FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
 HK01_BASE_URL = "https://www.hk01.com"
+TETHER_BASE_URL = "https://tether.io"
+TETHER_NEWS_URL = "https://tether.io/news/"
+TETHER_NEWS_API_URL = (
+    "https://tether.io/wp-json/wp/v2/posts"
+    "?categories=3&per_page=100&_fields=id,date_gmt,date,link,title,excerpt"
+)
 FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
 THE_BLOCK_BASE_URL = "https://www.theblock.co"
@@ -89,7 +98,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         site_key="cointelegraph",
         display_name="Cointelegraph",
         homepage_url=COINTELEGRAPH_BASE_URL,
-        list_url=COINTELEGRAPH_FEED_URL,
+        list_url=COINTELEGRAPH_GOOGLE_NEWS_SITEMAP_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
     ),
@@ -114,6 +123,14 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         display_name="HK01 NFT / Virtual Assets",
         homepage_url=HK01_ISSUE_URL,
         list_url=HK01_ISSUE_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+    ),
+    "tether_news": SiteDefinition(
+        site_key="tether_news",
+        display_name="Tether News",
+        homepage_url=TETHER_NEWS_URL,
+        list_url=TETHER_NEWS_API_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
     ),
@@ -186,8 +203,12 @@ def fetch_discovered_pages(
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_coindesk_pages(xml, base_url=site.homepage_url)
     if site.site_key == "cointelegraph":
-        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return discover_cointelegraph_pages(xml, base_url=site.homepage_url)
+        return fetch_cointelegraph_discovered_pages(
+            site,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
     if site.site_key == "decrypt":
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_decrypt_pages(xml, base_url=site.homepage_url)
@@ -197,6 +218,14 @@ def fetch_discovered_pages(
     if site.site_key == "hk01_virtual_assets":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_hk01_pages(html, base_url=site.homepage_url)
+    if site.site_key == "tether_news":
+        payload = fetch_json(
+            site.list_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        return discover_tether_pages(payload, base_url=site.homepage_url)
     if site.site_key == "ft_crypto":
         xml = fetch_html(
             FT_GOOGLE_NEWS_RSS_URL,
@@ -231,25 +260,37 @@ def fetch_article(
     max_attempts: int = 3,
     backoff_seconds: float = 1.0,
 ) -> ParsedArticle:
+    article: ParsedArticle
     if site.site_key == "a16z_crypto_posts":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_a16z_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    if site.site_key == "coindesk":
+        article = parse_a16z_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "coindesk":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_coindesk_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    if site.site_key == "cointelegraph":
+        article = parse_coindesk_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "cointelegraph":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_cointelegraph_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    if site.site_key == "decrypt":
+        article = parse_cointelegraph_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "decrypt":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_decrypt_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    if site.site_key == "forbes_digital_assets":
+        article = parse_decrypt_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "forbes_digital_assets":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_forbes_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    if site.site_key == "hk01_virtual_assets":
+        article = parse_forbes_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "hk01_virtual_assets":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
-        return parse_hk01_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
-    raise ValueError(f"unsupported site registry entry: {site.site_key}")
+        article = parse_hk01_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "tether_news":
+        slug = pick_tether_post_slug(page.detail_url)
+        payload = fetch_json(
+            f"{TETHER_BASE_URL}/wp-json/wp/v2/posts?slug={quote(slug)}&_embed=wp:term",
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        article = parse_tether_article(payload, page_url=page.detail_url, source_item_id=page.source_item_id)
+    else:
+        raise ValueError(f"unsupported site registry entry: {site.site_key}")
+    return apply_discovery_page_fallback(article, page)
 
 
 def fetch_html(
@@ -271,6 +312,65 @@ def fetch_html(
                 break
             time.sleep(max(0.0, backoff_seconds) * attempt)
     raise RuntimeError(f"request failed url={url}: {last_error}") from last_error
+
+
+def fetch_json(
+    url: str,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            response = requests.get(url, headers=REQUEST_HEADERS, timeout=timeout_seconds)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            time.sleep(max(0.0, backoff_seconds) * attempt)
+    raise RuntimeError(f"request failed url={url}: {last_error}") from last_error
+
+
+def fetch_cointelegraph_discovered_pages(
+    site: SiteDefinition,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    primary_error: str | None = None
+    try:
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        pages = discover_cointelegraph_sitemap_pages(xml, base_url=site.homepage_url)
+        if pages:
+            return pages
+        primary_error = "cointelegraph google-news sitemap returned no pages"
+    except Exception as exc:
+        primary_error = f"cointelegraph google-news sitemap failed: {exc}"
+
+    fallback_error: str | None = None
+    try:
+        xml = fetch_html(
+            COINTELEGRAPH_FEED_URL,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        pages = discover_cointelegraph_rss_pages(xml, base_url=site.homepage_url)
+        if pages:
+            return pages
+        fallback_error = "cointelegraph rss fallback returned no pages"
+    except Exception as exc:
+        fallback_error = f"cointelegraph rss fallback failed: {exc}"
+
+    message_parts = [part for part in (primary_error, fallback_error) if part]
+    if message_parts:
+        raise RuntimeError("; ".join(message_parts))
+    return []
 
 
 def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[DiscoveredPage]:
@@ -305,6 +405,50 @@ def discover_coindesk_pages(xml_text: str, *, base_url: str = COINDESK_BASE_URL)
 
 
 def discover_cointelegraph_pages(xml_text: str, *, base_url: str = COINTELEGRAPH_BASE_URL) -> list[DiscoveredPage]:
+    pages = discover_cointelegraph_sitemap_pages(xml_text, base_url=base_url)
+    if pages:
+        return pages
+    return discover_cointelegraph_rss_pages(xml_text, base_url=base_url)
+
+
+def discover_cointelegraph_sitemap_pages(xml_text: str, *, base_url: str = COINTELEGRAPH_BASE_URL) -> list[DiscoveredPage]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid Cointelegraph sitemap payload") from exc
+    ns = {
+        "sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
+        "news": "http://www.google.com/schemas/sitemap-news/0.9",
+    }
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for item in root.findall(".//sm:url", ns):
+        link = clean_inline_text(item.findtext("sm:loc", default="", namespaces=ns))
+        title = clean_inline_text(item.findtext("news:news/news:title", default="", namespaces=ns))
+        published_at_raw = clean_inline_text(
+            item.findtext("news:news/news:publication_date", default="", namespaces=ns)
+        )
+        if not link:
+            continue
+        detail_url = normalize_url(urljoin(base_url, link))
+        if not re.match(r"^https://cointelegraph\.com/news/.+$", detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
+
+
+def discover_cointelegraph_rss_pages(xml_text: str, *, base_url: str = COINTELEGRAPH_BASE_URL) -> list[DiscoveredPage]:
     return discover_rss_pages(
         xml_text,
         base_url=base_url,
@@ -332,6 +476,7 @@ def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -
         title = clean_inline_text(item.findtext("title", default=""))
         item_source = clean_inline_text(item.findtext("source", default=""))
         description_html = item.findtext("description", default="")
+        published_at_raw = clean_inline_text(item.findtext("pubDate", default="") or item.findtext("published", default=""))
         if not link or not title:
             continue
         if item_source and item_source != source_name:
@@ -346,6 +491,8 @@ def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -
                 title=strip_google_news_source_suffix(title, item_source or source_name),
                 excerpt=extract_google_news_excerpt(description_html, title=title, source_name=item_source or source_name)
                 or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
             )
         )
     return results
@@ -398,6 +545,12 @@ def discover_rss_pages(
         link = clean_inline_text(item.findtext("link", default=""))
         title = clean_inline_text(item.findtext("title", default=""))
         description = item.findtext("description", default="")
+        published_at_raw = clean_inline_text(
+            item.findtext("pubDate", default="")
+            or item.findtext("published", default="")
+            or item.findtext("{http://www.w3.org/2005/Atom}published", default="")
+            or item.findtext("{http://www.w3.org/2005/Atom}updated", default="")
+        )
         if not link or not title:
             continue
         detail_url = normalize_url(urljoin(base_url, link))
@@ -414,6 +567,8 @@ def discover_rss_pages(
                 detail_url=detail_url,
                 title=title or None,
                 excerpt=extract_feed_excerpt(description, title=title) or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
             )
         )
     return results
@@ -438,6 +593,33 @@ def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[Dis
             seen.add(detail_url)
             title = clean_inline_text(str(article_data.get("title") or article_data.get("name") or ""))
             results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title or None))
+    return results
+
+
+def discover_tether_pages(payload: Any, *, base_url: str = TETHER_BASE_URL) -> list[DiscoveredPage]:
+    if not isinstance(payload, list):
+        raise ValueError("invalid Tether discovery payload")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        link = normalize_url(urljoin(base_url, str(item.get("link") or "")))
+        title = extract_wp_rendered_text(item.get("title"))
+        excerpt = extract_wp_rendered_text(item.get("excerpt"))
+        if not link or not title:
+            continue
+        if link in seen:
+            continue
+        seen.add(link)
+        results.append(
+            DiscoveredPage(
+                source_item_id=link,
+                detail_url=link,
+                title=title,
+                excerpt=excerpt or None,
+            )
+        )
     return results
 
 
@@ -695,6 +877,7 @@ def parse_cointelegraph_article(html: str, *, page_url: str, source_item_id: str
         select_meta_content(soup, "property", "article:published_time")
         or select_meta_content(soup, "name", "article:published_time")
         or select_meta_content(soup, "property", "og:updated_time")
+        or extract_cointelegraph_embedded_published_at(html)
     )
     canonical = normalize_url(
         select_attr(soup, "link[rel='canonical']", "href")
@@ -747,6 +930,18 @@ def parse_cointelegraph_article(html: str, *, page_url: str, source_item_id: str
         },
         metadata=metadata,
     )
+
+
+def apply_discovery_page_fallback(article: ParsedArticle, page: DiscoveredPage) -> ParsedArticle:
+    published_at = article.published_at or page.published_at
+    metadata = dict(article.metadata)
+    changed = published_at != article.published_at
+    if not metadata.get("published_at_raw") and page.published_at_raw:
+        metadata["published_at_raw"] = page.published_at_raw
+        changed = True
+    if not changed:
+        return article
+    return replace(article, published_at=published_at, metadata=metadata)
 
 
 def parse_decrypt_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
@@ -952,6 +1147,45 @@ def parse_hk01_article(html: str, *, page_url: str, source_item_id: str) -> Pars
     )
 
 
+def parse_tether_article(payload: Any, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    if isinstance(payload, list):
+        if not payload:
+            raise ValueError(f"Tether article payload is empty for {page_url}")
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid Tether article payload for {page_url}")
+    canonical = normalize_url(urljoin(TETHER_BASE_URL, str(payload.get("link") or page_url)))
+    title = extract_wp_rendered_text(payload.get("title")) or canonical
+    body = clean_body_text(extract_wp_rendered_body(str((payload.get("content") or {}).get("rendered") or "")))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = extract_wp_rendered_text(payload.get("excerpt")) or body[:240]
+    published_at_raw = payload.get("date_gmt") or payload.get("date")
+    metadata = {
+        "canonical_url": canonical,
+        "post_id": payload.get("id"),
+        "published_at_raw": published_at_raw,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=[],
+        tags=extract_wp_term_names(payload, taxonomy="post_tag"),
+        categories=extract_wp_term_names(payload, taxonomy="category"),
+        excerpt=excerpt,
+        content_format="tether_news_post",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "post_id": payload.get("id"),
+        },
+        metadata=metadata,
+    )
+
+
 def find_structured_content(soup: BeautifulSoup) -> dict[str, Any]:
     for script in soup.select("script[type='application/ld+json']"):
         raw = script.string or script.get_text() or ""
@@ -1009,6 +1243,17 @@ def extract_cointelegraph_byline_text(soup: BeautifulSoup) -> str:
     if node is None:
         return ""
     return clean_inline_text(node.get_text(" ", strip=True).replace("\u2060", " "))
+
+
+def extract_cointelegraph_embedded_published_at(html: str) -> str | None:
+    for pattern in (
+        r'"publishedAt"\s*:\s*"([^"]+)"',
+        r'"datePublished"\s*:\s*"([^"]+)"',
+    ):
+        match = re.search(pattern, html)
+        if match:
+            return clean_inline_text(match.group(1))
+    return None
 
 
 def extract_next_data_payload(html: str) -> dict[str, Any]:
@@ -1283,6 +1528,57 @@ def extract_hk01_text_nodes(value: Any) -> list[str]:
     return parts
 
 
+def extract_wp_rendered_text(value: Any) -> str:
+    if isinstance(value, dict):
+        rendered = value.get("rendered")
+        if rendered is not None:
+            value = rendered
+    if not isinstance(value, str):
+        return ""
+    text = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+    return clean_inline_text(text)
+
+
+def extract_wp_rendered_body(rendered_html: str) -> str:
+    if not rendered_html.strip():
+        return ""
+    normalized_html = re.sub(r"(<br\s*/?>\s*){2,}", "</p><p>", rendered_html, flags=re.IGNORECASE)
+    normalized_html = re.sub(r"<br\s*/?>", "\n", normalized_html, flags=re.IGNORECASE)
+    fragment = BeautifulSoup(normalized_html, "html.parser")
+    drop_noise(fragment)
+    parts = collect_text_parts(fragment)
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def extract_wp_term_names(payload: dict[str, Any], *, taxonomy: str) -> list[str]:
+    embedded = payload.get("_embedded")
+    if not isinstance(embedded, dict):
+        return []
+    groups = embedded.get("wp:term")
+    if not isinstance(groups, list):
+        return []
+    terms: list[str] = []
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("taxonomy") or "") != taxonomy:
+                continue
+            name = clean_inline_text(str(item.get("name") or ""))
+            if name:
+                terms.append(name)
+    return unique_preserve_order(terms)
+
+
+def pick_tether_post_slug(url: str) -> str:
+    parts = [part for part in urlparse(url).path.split("/") if part]
+    if len(parts) < 2 or parts[0] != "news":
+        raise ValueError(f"invalid Tether news url: {url}")
+    return parts[-1]
+
+
 def extract_decrypt_author(soup: BeautifulSoup) -> str:
     author = select_meta_content(soup, "name", "author") or ""
     if " / " in author:
@@ -1432,7 +1728,10 @@ def parse_published_at(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        return None
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
