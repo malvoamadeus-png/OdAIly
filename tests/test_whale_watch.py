@@ -6,10 +6,12 @@ from typing import Any
 
 import pytest
 
-from packages.common.config import WhaleWatchSettings
+from packages.common.config import WhaleWatchHyperliquidSettings, WhaleWatchSettings
 from packages.whale_watch.chains import CHAIN_REGISTRY
 from packages.whale_watch.detector import detect_activity, normalize_evm_address
-from packages.whale_watch.models import ChainState, WhaleAddress
+from packages.whale_watch.hyperliquid_detector import detect_hyperliquid_activity
+from packages.whale_watch.models import ChainState, HyperliquidAddress, HyperliquidState, WhaleAddress
+from packages.whale_watch.hyperliquid_worker import WhaleWatchHyperliquidWorker
 from packages.whale_watch.worker import WhaleWatchWorker
 from packages.x_processing.telegram import TelegramResult
 
@@ -17,6 +19,8 @@ from packages.x_processing.telegram import TelegramResult
 WATCHED = "0xB5ebEd2830f0fd89Af32327b4cb573FaD4362b5a"
 WATCHED_LOWER = WATCHED.lower()
 TX_HASH = "0x02a8e8ebae7c89afe6711be1b12f19d5e63107039409f8ff0cd5d4f80859bb87"
+HYPER_WATCHED = "0x2fc3195efbf91ad90854bc3c02fe739895c23460"
+HYPER_WATCHED_LOWER = HYPER_WATCHED.lower()
 
 
 def test_normalize_evm_address_accepts_valid_and_rejects_invalid() -> None:
@@ -96,6 +100,65 @@ def test_worker_sends_new_activity_once_after_seed() -> None:
     assert TX_HASH in repo.telegram_results
 
 
+def test_detect_hyperliquid_open_long_activity() -> None:
+    whale = HyperliquidAddress(id=1, address=HYPER_WATCHED, address_lower=HYPER_WATCHED_LOWER, label="Hyper test")
+
+    activity = detect_hyperliquid_activity(whale=whale, fill=hyper_fill())
+
+    assert activity is not None
+    assert activity.direction == "Open Long"
+    assert activity.coin == "BTC"
+    assert activity.notional_usd == Decimal("791412.51922999987952")
+    assert "Hyperliquid" in activity.telegram_text
+    assert "开多" in activity.telegram_text
+
+
+def test_hyperliquid_worker_first_run_seeds_without_telegram() -> None:
+    repo = FakeHyperliquidRepository()
+    client = FakeHyperliquidClient([hyper_fill()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl",
+    )
+
+    result = worker.run_once()
+
+    assert result.seeded == 1
+    assert result.inserted == 0
+    assert telegram.messages == []
+    assert repo.states[1].seeded_at is not None
+    assert repo.states[1].last_seen_time == 1779704646349
+
+
+def test_hyperliquid_worker_sends_large_activity_once_and_skips_small() -> None:
+    repo = FakeHyperliquidRepository()
+    repo.states[1] = HyperliquidState(address_id=1, seeded_at=datetime.now(UTC), last_seen_time=1779701000000)
+    client = FakeHyperliquidClient([small_hyper_fill(), hyper_fill()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(min_notional_usd=50000),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl",
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.detected == 2
+    assert first.inserted == 1
+    assert first.sent == 1
+    assert first.skipped_small == 1
+    assert second.inserted == 0
+    assert len(telegram.messages) == 1
+    assert "fill:" in next(iter(repo.telegram_results))
+
+
 def base_swap_tx() -> dict[str, Any]:
     return {
         "hash": TX_HASH,
@@ -124,6 +187,38 @@ def base_pitch_transfer() -> dict[str, Any]:
             "decimals": "18",
         },
         "total": {"decimals": "18", "value": "43854232919428518820"},
+    }
+
+
+def hyper_fill() -> dict[str, Any]:
+    return {
+        "coin": "BTC",
+        "px": "77525.314272308",
+        "sz": "10.20844",
+        "side": "B",
+        "time": 1779704646349,
+        "startPosition": "120.46291",
+        "dir": "Open Long",
+        "closedPnl": "0.0",
+        "hash": "0x2aafc315d7e552302c29043c321a73018700dafb72e87102ce786e6896e92c1a",
+        "oid": 441444013037,
+        "tid": 761521047376038,
+    }
+
+
+def small_hyper_fill() -> dict[str, Any]:
+    return {
+        "coin": "ETH",
+        "px": "2500",
+        "sz": "10",
+        "side": "B",
+        "time": 1779704700000,
+        "startPosition": "0.0",
+        "dir": "Open Long",
+        "closedPnl": "0.0",
+        "hash": "0xsmall",
+        "oid": 111,
+        "tid": 222,
     }
 
 
@@ -192,6 +287,63 @@ class FakeWhaleRepository:
 
     def update_activity_telegram_result(self, *, tx_hash: str, fingerprint: str, telegram_result: dict[str, Any]) -> None:
         self.telegram_results[tx_hash] = telegram_result
+
+    def record_worker_heartbeat(self, **_kwargs) -> None:
+        return None
+
+
+class FakeHyperliquidClient:
+    def __init__(self, fills: list[dict[str, Any]]) -> None:
+        self.fills = fills
+
+    def user_fills(self, address: str) -> list[dict[str, Any]]:
+        return list(self.fills)
+
+
+class FakeHyperliquidRepository:
+    def __init__(self) -> None:
+        self.addresses = [HyperliquidAddress(id=1, address=HYPER_WATCHED, address_lower=HYPER_WATCHED_LOWER, label="Hyper test")]
+        self.states: dict[int, HyperliquidState] = {}
+        self.activities: set[tuple[int, str]] = set()
+        self.telegram_results: dict[str, dict[str, Any]] = {}
+
+    def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]:
+        return self.addresses
+
+    def get_state(self, *, address_id: int) -> HyperliquidState | None:
+        return self.states.get(address_id)
+
+    def mark_seeded(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+        self.states[address_id] = HyperliquidState(
+            address_id=address_id,
+            seeded_at=polled_at,
+            last_polled_at=polled_at,
+            last_success_at=polled_at,
+            last_seen_time=last_seen_time,
+        )
+
+    def record_success(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+        current = self.states.get(address_id) or HyperliquidState(address_id=address_id)
+        self.states[address_id] = HyperliquidState(
+            address_id=address_id,
+            seeded_at=current.seeded_at,
+            last_polled_at=polled_at,
+            last_success_at=polled_at,
+            last_seen_time=last_seen_time,
+        )
+
+    def record_error(self, *, address_id: int, error: str, polled_at: datetime) -> None:
+        raise AssertionError(error)
+
+    def save_activity(self, *, whale: HyperliquidAddress, activity) -> bool:
+        key = (whale.id, activity.fill_key)
+        if key in self.activities:
+            return False
+        self.activities.add(key)
+        return True
+
+    def update_activity_telegram_result(self, *, fill_key: str, telegram_result: dict[str, Any]) -> None:
+        self.telegram_results[f"fill:{fill_key}"] = telegram_result
 
     def record_worker_heartbeat(self, **_kwargs) -> None:
         return None

@@ -136,3 +136,92 @@ BEGIN
     END IF;
 END
 $$;
+
+CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_addresses (
+    id bigserial PRIMARY KEY,
+    address text NOT NULL,
+    address_lower text NOT NULL UNIQUE,
+    label text NOT NULL,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT whale_watch_hyperliquid_address_format CHECK (address_lower ~ '^0x[0-9a-f]{40}$')
+);
+
+CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_states (
+    address_id bigint PRIMARY KEY REFERENCES whale_watch_hyperliquid_addresses(id) ON DELETE CASCADE,
+    seeded_at timestamptz,
+    last_polled_at timestamptz,
+    last_success_at timestamptz,
+    last_error text,
+    last_seen_time bigint,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
+    id bigserial PRIMARY KEY,
+    address_id bigint NOT NULL REFERENCES whale_watch_hyperliquid_addresses(id) ON DELETE CASCADE,
+    fill_key text NOT NULL,
+    coin text NOT NULL,
+    direction text NOT NULL CHECK (direction IN ('Open Long', 'Open Short', 'Close Long', 'Close Short')),
+    side text NOT NULL,
+    price text NOT NULL,
+    size text NOT NULL,
+    notional_usd text NOT NULL,
+    closed_pnl text NOT NULL,
+    tx_hash text,
+    fill_time timestamptz NOT NULL,
+    fill_time_ms bigint NOT NULL,
+    summary text NOT NULL,
+    telegram_text text NOT NULL,
+    telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    telegram_sent_at timestamptz,
+    tx_url text NOT NULL,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (address_id, fill_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_addresses_enabled
+ON whale_watch_hyperliquid_addresses(enabled, address_lower);
+
+CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_activities_created
+ON whale_watch_hyperliquid_activities(created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_whale_watch_hyperliquid_addresses_notify ON whale_watch_hyperliquid_addresses;
+CREATE TRIGGER trg_whale_watch_hyperliquid_addresses_notify
+AFTER INSERT OR UPDATE OR DELETE ON whale_watch_hyperliquid_addresses
+FOR EACH ROW EXECUTE FUNCTION notify_whale_watch_config_changed();
+
+ALTER TABLE whale_watch_hyperliquid_addresses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whale_watch_hyperliquid_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whale_watch_hyperliquid_activities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS whale_watch_hyperliquid_addresses_console_admin_all ON whale_watch_hyperliquid_addresses;
+DROP POLICY IF EXISTS whale_watch_hyperliquid_states_console_admin_select ON whale_watch_hyperliquid_states;
+DROP POLICY IF EXISTS whale_watch_hyperliquid_activities_console_admin_select ON whale_watch_hyperliquid_activities;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON whale_watch_hyperliquid_addresses, whale_watch_hyperliquid_states, whale_watch_hyperliquid_activities FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE whale_watch_hyperliquid_addresses_id_seq, whale_watch_hyperliquid_activities_id_seq FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON whale_watch_hyperliquid_addresses TO authenticated;
+        GRANT SELECT ON whale_watch_hyperliquid_states, whale_watch_hyperliquid_activities TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE whale_watch_hyperliquid_addresses_id_seq TO authenticated;
+
+        EXECUTE 'CREATE POLICY whale_watch_hyperliquid_addresses_console_admin_all ON whale_watch_hyperliquid_addresses
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY whale_watch_hyperliquid_states_console_admin_select ON whale_watch_hyperliquid_states
+            FOR SELECT TO authenticated USING (is_console_admin())';
+        EXECUTE 'CREATE POLICY whale_watch_hyperliquid_activities_console_admin_select ON whale_watch_hyperliquid_activities
+            FOR SELECT TO authenticated USING (is_console_admin())';
+    END IF;
+END
+$$;

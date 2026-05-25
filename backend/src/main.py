@@ -16,6 +16,7 @@ from packages.common.config import (  # noqa: E402
     load_gate_settings,
     load_pipeline_supervisor_settings,
     load_settings,
+    load_whale_watch_hyperliquid_settings,
     load_whale_watch_settings,
     load_writer3_settings,
     load_x_capture_worker_settings,
@@ -153,6 +154,13 @@ def parse_args() -> argparse.Namespace:
     whale_watch_worker = subparsers.add_parser("whale-watch-worker", help="Run whale onchain activity monitor.")
     whale_watch_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_worker.add_argument("--once", action="store_true", help="Run one whale watch pass and exit.")
+
+    whale_watch_hyperliquid_worker = subparsers.add_parser(
+        "whale-watch-hyperliquid-worker",
+        help="Run whale Hyperliquid activity monitor.",
+    )
+    whale_watch_hyperliquid_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    whale_watch_hyperliquid_worker.add_argument("--once", action="store_true", help="Run one Hyperliquid whale pass and exit.")
 
     supervisor = subparsers.add_parser("pipeline-supervisor", help="Run pipeline health checks and Telegram alerts.")
     supervisor.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
@@ -543,10 +551,10 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
 
 
 def whale_watch_init_db_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import PostgresWhaleWatchRepository
+    from packages.whale_watch import PostgresWhaleWatchHyperliquidRepository, PostgresWhaleWatchRepository
 
-    repository = PostgresWhaleWatchRepository(args.database_url)
-    repository.init_schema()
+    PostgresWhaleWatchRepository(args.database_url).init_schema()
+    PostgresWhaleWatchHyperliquidRepository(args.database_url).init_schema()
     print("[odaily] whale watch database schema initialized")
     return 0
 
@@ -563,6 +571,24 @@ def whale_watch_worker_command(args: argparse.Namespace) -> int:
             f"addresses={result.addresses} chains={result.chains} pairs={result.processed_pairs} "
             f"seeded={result.seeded_pairs} detected={result.detected} inserted={result.inserted} "
             f"sent={result.sent} failed={len(result.failed)}"
+        )
+        return 0 if not result.failed else 1
+    worker.run_forever()
+    return 0
+
+
+def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
+    from packages.whale_watch import PostgresWhaleWatchHyperliquidRepository, WhaleWatchHyperliquidWorker
+
+    repository = PostgresWhaleWatchHyperliquidRepository(args.database_url)
+    worker = WhaleWatchHyperliquidWorker(repository=repository, settings=load_whale_watch_hyperliquid_settings())
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] whale watch hyperliquid once "
+            f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
+            f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
+            f"skipped_small={result.skipped_small} failed={len(result.failed)}"
         )
         return 0 if not result.failed else 1
     worker.run_forever()
@@ -810,6 +836,8 @@ def main() -> int:
             return whale_watch_init_db_command(args)
         if args.command == "whale-watch-worker":
             return whale_watch_worker_command(args)
+        if args.command == "whale-watch-hyperliquid-worker":
+            return whale_watch_hyperliquid_worker_command(args)
         if args.command == "pipeline-supervisor":
             return pipeline_supervisor_command(args)
         if args.command == "telegram-test":

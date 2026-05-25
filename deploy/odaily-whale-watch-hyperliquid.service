@@ -1,0 +1,16 @@
+[Unit]
+Description=OdAIly whale Hyperliquid activity monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py whale-watch-hyperliquid-worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

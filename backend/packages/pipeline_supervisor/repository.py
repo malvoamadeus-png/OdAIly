@@ -32,6 +32,7 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "non_mainstream_media",
     "competitor_monitor",
     "whale_watch",
+    "whale_watch_hyperliquid",
     "external_media_alert_domain_judge",
     "external_media_alert_search",
     "external_media_alert_notify",

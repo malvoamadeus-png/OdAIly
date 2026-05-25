@@ -161,3 +161,4 @@ def test_supervisor_metadata_is_json_safe() -> None:
 
 def test_supervisor_expected_heartbeats_exclude_external_media_fetcher() -> None:
     assert "external_media_alert_fetcher" not in EXPECTED_HEARTBEAT_COMPONENTS
+    assert "whale_watch_hyperliquid" in EXPECTED_HEARTBEAT_COMPONENTS

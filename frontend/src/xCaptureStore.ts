@@ -87,10 +87,38 @@ export type WhaleWatchActivity = {
   created_at: string;
 };
 
+export type WhaleWatchHyperliquidAddress = WhaleWatchAddress;
+
+export type WhaleWatchHyperliquidState = {
+  address_id: number;
+  seeded_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  last_seen_time: number | null;
+};
+
+export type WhaleWatchHyperliquidActivity = {
+  id: number;
+  address_id: number;
+  fill_key: string;
+  coin: string;
+  direction: 'Open Long' | 'Open Short' | 'Close Long' | 'Close Short';
+  notional_usd: string;
+  closed_pnl: string;
+  summary: string;
+  telegram_text: string;
+  tx_url: string;
+  created_at: string;
+};
+
 export type WhaleWatchDashboardPayload = {
   addresses: WhaleWatchAddress[];
   states: WhaleWatchChainState[];
   activities: WhaleWatchActivity[];
+  hyperliquidAddresses: WhaleWatchHyperliquidAddress[];
+  hyperliquidStates: WhaleWatchHyperliquidState[];
+  hyperliquidActivities: WhaleWatchHyperliquidActivity[];
 };
 
 export type TaskItem = {
@@ -226,10 +254,14 @@ type WhaleWatchAddressCreateInput = {
   enabled: boolean;
 };
 
+type WhaleWatchHyperliquidAddressCreateInput = WhaleWatchAddressCreateInput;
+
 export type WhaleWatchAddressPatch = {
   label?: string;
   enabled?: boolean;
 };
+
+export type WhaleWatchHyperliquidAddressPatch = WhaleWatchAddressPatch;
 
 export type CompetitorKeywordPatch = {
   enabled?: boolean;
@@ -398,12 +430,15 @@ export async function loadNonMainstreamDashboard(): Promise<NonMainstreamDashboa
 }
 
 export async function loadWhaleWatchDashboard(): Promise<WhaleWatchDashboardPayload> {
-  const [addresses, states, activities] = await Promise.all([
+  const [addresses, states, activities, hyperliquidAddresses, hyperliquidStates, hyperliquidActivities] = await Promise.all([
     listWhaleWatchAddresses(),
     listWhaleWatchChainStates(),
     listWhaleWatchActivities(30),
+    listWhaleWatchHyperliquidAddresses(),
+    listWhaleWatchHyperliquidStates(),
+    listWhaleWatchHyperliquidActivities(30),
   ]);
-  return { addresses, states, activities };
+  return { addresses, states, activities, hyperliquidAddresses, hyperliquidStates, hyperliquidActivities };
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -713,6 +748,93 @@ export async function updateWhaleWatchAddress(
 
 export async function deleteWhaleWatchAddress(addressId: number): Promise<void> {
   const { error } = await supabase().from('whale_watch_addresses').delete().eq('id', addressId);
+  raise(error);
+}
+
+export async function listWhaleWatchHyperliquidAddresses(): Promise<WhaleWatchHyperliquidAddress[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_hyperliquid_addresses')
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .order('enabled', { ascending: false })
+    .order('label', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchHyperliquidAddress[];
+}
+
+export async function listWhaleWatchHyperliquidStates(): Promise<WhaleWatchHyperliquidState[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_hyperliquid_states')
+    .select('address_id,seeded_at,last_polled_at,last_success_at,last_error,last_seen_time')
+    .order('address_id', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchHyperliquidState[];
+}
+
+export async function listWhaleWatchHyperliquidActivities(limit: number): Promise<WhaleWatchHyperliquidActivity[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_hyperliquid_activities')
+    .select('id,address_id,fill_key,coin,direction,notional_usd,closed_pnl,summary,telegram_text,tx_url,created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchHyperliquidActivity[];
+}
+
+export async function createWhaleWatchHyperliquidAddress(
+  input: WhaleWatchHyperliquidAddressCreateInput,
+): Promise<WhaleWatchHyperliquidAddress> {
+  const address = normalizeEvmAddress(input.address);
+  const label = input.label.trim();
+  if (!label) {
+    throw new Error('自定义标签不能为空');
+  }
+  const { data, error } = await supabase()
+    .from('whale_watch_hyperliquid_addresses')
+    .upsert(
+      {
+        address,
+        address_lower: address.toLowerCase(),
+        label,
+        enabled: input.enabled,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'address_lower' },
+    )
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as WhaleWatchHyperliquidAddress | null, '保存 Hyperliquid 地址失败');
+}
+
+export async function updateWhaleWatchHyperliquidAddress(
+  addressId: number,
+  patch: WhaleWatchHyperliquidAddressPatch,
+): Promise<WhaleWatchHyperliquidAddress> {
+  const payload: Record<string, string | boolean> = {
+    updated_at: nowIso(),
+  };
+  if ('label' in patch && patch.label !== undefined) {
+    const label = patch.label.trim();
+    if (!label) {
+      throw new Error('自定义标签不能为空');
+    }
+    payload.label = label;
+  }
+  if ('enabled' in patch && patch.enabled !== undefined) {
+    payload.enabled = patch.enabled;
+  }
+  const { data, error } = await supabase()
+    .from('whale_watch_hyperliquid_addresses')
+    .update(payload)
+    .eq('id', addressId)
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as WhaleWatchHyperliquidAddress | null, '更新 Hyperliquid 地址失败');
+}
+
+export async function deleteWhaleWatchHyperliquidAddress(addressId: number): Promise<void> {
+  const { error } = await supabase().from('whale_watch_hyperliquid_addresses').delete().eq('id', addressId);
   raise(error);
 }
 

@@ -486,6 +486,17 @@ class WhaleWatchSettings(BaseModel):
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
 
 
+class WhaleWatchHyperliquidSettings(BaseModel):
+    interval_seconds: int = Field(default=60, ge=10, le=3600)
+    min_notional_usd: float = Field(default=50000.0, ge=0.0)
+    request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+
+
 def load_whale_watch_settings() -> WhaleWatchSettings:
     load_dotenv()
     raw_chain_keys = os.getenv("WHALE_WATCH_CHAIN_KEYS") or "ethereum,base"
@@ -511,6 +522,32 @@ def load_whale_watch_settings() -> WhaleWatchSettings:
         return WhaleWatchSettings.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"Invalid whale watch settings: {exc}") from exc
+
+
+def load_whale_watch_hyperliquid_settings() -> WhaleWatchHyperliquidSettings:
+    load_dotenv()
+    payload = {
+        "interval_seconds": int(os.getenv("WHALE_HYPERLIQUID_INTERVAL_SECONDS") or 60),
+        "min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_MIN_NOTIONAL_USD") or 50000.0),
+        "request_timeout_seconds": float(os.getenv("WHALE_HYPERLIQUID_REQUEST_TIMEOUT_SECONDS") or 20.0),
+        "retry": {
+            "max_attempts": int(os.getenv("WHALE_HYPERLIQUID_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("WHALE_HYPERLIQUID_BACKOFF_SECONDS") or 1.0),
+        },
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": (
+            os.getenv("WHALE_HYPERLIQUID_TELEGRAM_MESSAGE_THREAD_ID")
+            or os.getenv("WHALE_TELEGRAM_MESSAGE_THREAD_ID")
+            or os.getenv("TELEGRAM_MESSAGE_THREAD_ID")
+            or None
+        ),
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+    }
+    try:
+        return WhaleWatchHyperliquidSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid whale watch Hyperliquid settings: {exc}") from exc
 
 
 class PipelineSupervisorSettings(BaseModel):
