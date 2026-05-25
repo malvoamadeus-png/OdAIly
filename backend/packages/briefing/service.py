@@ -10,10 +10,10 @@ from packages.common.paths import AppPaths, ensure_runtime_dirs
 from packages.common.storage import append_brief_result, save_market_quotes
 from packages.common.time_utils import (
     EASTERN_TZ,
-    is_weekend_in_eastern,
     now_iso,
     now_shanghai,
     today_key,
+    us_market_calendar_skip_reason,
 )
 from packages.market.models import MarketQuote, QuoteBatch
 from packages.market.providers import fetch_finnhub_quotes
@@ -242,8 +242,9 @@ def run_brief_once(
     date_key = today_key()
     dry_run = settings.dry_run if dry_run_override is None else dry_run_override
 
-    if not force and is_weekend_in_eastern():
-        message = "skipped: weekend in America/New_York"
+    skip_reason = None if force else us_market_calendar_skip_reason()
+    if skip_reason:
+        message = skip_reason
         append_brief_result(
             paths,
             date_key=date_key,

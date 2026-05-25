@@ -47,9 +47,20 @@ python backend\src\main.py run-once --task gate-tradfi --kind morning --dry-run 
 - `gate-tradfi morning`: 09:00 Asia/Shanghai.
 - `gate-tradfi open`: 09:31 America/New_York.
 
-Weekend runs are skipped unless `--force` is passed. If Yahoo returns no valid
-market data, or Gate returns no valid title candidate data, the worker records a
-skipped result and does not call the Push Data API.
+Calendar rules:
+
+- `gate-tradfi` runs on Beijing business weekdays only. `morning` and `open`
+  both skip automatically on Saturday and Sunday in `Asia/Shanghai`.
+- `us-market` follows the U.S. market calendar. Automatic `open` and
+  next-morning `close` both skip on New York weekends and NYSE market
+  holidays. This means the automatic MSX cycle starts on Monday evening
+  Beijing time and ends with the Saturday-morning Beijing close brief.
+- `us-market premarket` logic is still available for manual `run-once`, but it
+  is intentionally not part of the scheduled worker.
+- `--force` bypasses these calendar skips for one manual run.
+
+If Yahoo returns no valid market data, or Gate returns no valid title candidate
+data, the worker records a skipped result and does not call the Push Data API.
 
 ## Send Behavior
 
@@ -248,8 +259,8 @@ Production sync rules:
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-worker.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked

@@ -6,7 +6,7 @@ from uuid import uuid4
 from packages.common.config import GateBriefKind, GateTradfiSettings
 from packages.common.paths import AppPaths, ensure_runtime_dirs
 from packages.common.storage import append_brief_result, save_gate_quotes
-from packages.common.time_utils import is_weekend_in_eastern, now_iso, now_shanghai, today_key
+from packages.common.time_utils import is_weekday_in_shanghai, now_iso, now_shanghai, today_key
 from packages.publisher import PushClient, PushResult
 from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief
@@ -52,8 +52,8 @@ def run_gate_once(
     date_key = today_key()
     dry_run = settings.dry_run if dry_run_override is None else dry_run_override
 
-    if not force and is_weekend_in_eastern():
-        message = "skipped: weekend in America/New_York"
+    if not force and not is_weekday_in_shanghai():
+        message = "skipped: weekend in Asia/Shanghai"
         append_brief_result(
             paths,
             date_key=date_key,

@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     run_once.add_argument("--kind", required=True)
     run_once.add_argument("--dry-run", action="store_true", help="Do not call the Push Data API.")
     run_once.add_argument("--send", action="store_true", help="Call the Push Data API even if config uses dry_run.")
-    run_once.add_argument("--force", action="store_true", help="Run even on weekends.")
+    run_once.add_argument("--force", action="store_true", help="Run even when the schedule calendar would skip.")
 
     worker = subparsers.add_parser("run-worker", help="Run the scheduled worker.")
     add_common(worker)

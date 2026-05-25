@@ -27,7 +27,7 @@ def make_paths(root) -> AppPaths:  # noqa: ANN001
 
 
 def test_run_once_skips_without_valid_data(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("packages.briefing.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr("packages.briefing.service.us_market_calendar_skip_reason", lambda: None)
     monkeypatch.setattr(
         "packages.briefing.service.fetch_quotes",
         lambda **_: QuoteBatch(quotes=[], missing_symbols=["MSTR"], raw_response={}),
@@ -52,7 +52,7 @@ def test_run_once_skips_without_valid_data(monkeypatch, tmp_path) -> None:
 
 
 def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("packages.briefing.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr("packages.briefing.service.us_market_calendar_skip_reason", lambda: None)
     monkeypatch.setattr(
         "packages.briefing.service.fetch_quotes",
         lambda **_: QuoteBatch(
@@ -90,7 +90,7 @@ def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
 
 
 def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("packages.briefing.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr("packages.briefing.service.us_market_calendar_skip_reason", lambda: None)
     monkeypatch.setattr(
         "packages.briefing.service.fetch_quotes",
         lambda **_: QuoteBatch(
@@ -134,7 +134,7 @@ def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch,
 
 
 def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("packages.briefing.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr("packages.briefing.service.us_market_calendar_skip_reason", lambda: None)
     monkeypatch.setattr(
         "packages.briefing.service.fetch_quotes",
         lambda **_: QuoteBatch(
@@ -188,3 +188,29 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
 
     assert result.exit_code == 0
     assert result.status == "success"
+
+
+def test_run_once_skips_us_market_holiday(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "packages.briefing.service.us_market_calendar_skip_reason",
+        lambda: "skipped: market holiday in America/New_York",
+    )
+
+    result = run_brief_once(
+        kind="open",
+        settings=MarketBriefSettings(
+            watchlist=["MSTR"],
+            dry_run=True,
+            market_data_sources=["yahoo_quote"],
+            min_valid_crypto_stocks=1,
+            min_valid_indices=0,
+        ),
+        paths=make_paths(tmp_path),
+        force=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.status == "skipped"
+    records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    payload = json.loads(records[0].read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["message"] == "skipped: market holiday in America/New_York"

@@ -25,7 +25,7 @@ def make_paths(root) -> AppPaths:  # noqa: ANN001
 
 
 def test_run_gate_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("packages.gate.service.is_weekend_in_eastern", lambda: False)
+    monkeypatch.setattr("packages.gate.service.is_weekday_in_shanghai", lambda: True)
 
     class FakeGateClient:
         def __init__(self, **kwargs):  # noqa: ANN003
@@ -36,7 +36,7 @@ def test_run_gate_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
                 quotes={
                     "XAUUSD": GateAssetQuote(
                         symbol="XAUUSD",
-                        display_name="黄金",
+                        display_name="Gold",
                         price=4600,
                         change_percent=1.2,
                         source="test",
@@ -64,4 +64,21 @@ def test_run_gate_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
     records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
     assert records
     payload = json.loads(records[0].read_text(encoding="utf-8").splitlines()[-1])
-    assert payload["content"].startswith("Odaily星球日报讯 ")
+    assert payload["content"].startswith("Odaily")
+
+
+def test_run_gate_once_skips_shanghai_weekend(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("packages.gate.service.is_weekday_in_shanghai", lambda: False)
+
+    result = run_gate_once(
+        kind="morning",
+        settings=GateTradfiSettings(dry_run=True),
+        paths=make_paths(tmp_path),
+        force=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.status == "skipped"
+    records = list((tmp_path / "data" / "processed" / "briefs").glob("*.jsonl"))
+    payload = json.loads(records[0].read_text(encoding="utf-8").splitlines()[-1])
+    assert payload["message"] == "skipped: weekend in Asia/Shanghai"

@@ -26,6 +26,7 @@ def test_morning_schedules_run_at_0900_shanghai() -> None:
     assert str(gate_morning.trigger.timezone) == "Asia/Shanghai"
 
 
+
 def test_run_task_once_rejects_invalid_kind(tmp_path) -> None:
     with pytest.raises(ValueError, match="Invalid kind"):
         run_task_once(
