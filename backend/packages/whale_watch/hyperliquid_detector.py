@@ -40,7 +40,7 @@ def detect_hyperliquid_activity(
     fill_time = datetime.fromtimestamp(fill_time_ms / 1000, UTC)
     notional_usd = price * size
     fill_key = _fill_key(fill)
-    address_url = f"https://app.hyperliquid.xyz/explorer/address/{whale.address}"
+    address_url = f"https://hyperbot.network/trader/{whale.address}"
 
     action_text = _direction_text(direction)
     summary = f"{action_text} {size.normalize()} {coin} @ {format_money(price)}"

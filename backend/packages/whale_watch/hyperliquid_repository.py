@@ -157,7 +157,7 @@ class PostgresWhaleWatchHyperliquidRepository:
                     activity.fill_time_ms,
                     activity.summary,
                     activity.telegram_text,
-                    f"https://app.hyperliquid.xyz/explorer/address/{whale.address}",
+                    f"https://hyperbot.network/trader/{whale.address}",
                     self._Jsonb(activity.raw_payload),
                 ),
             ).fetchone()

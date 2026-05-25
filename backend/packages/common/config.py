@@ -528,7 +528,7 @@ def load_whale_watch_hyperliquid_settings() -> WhaleWatchHyperliquidSettings:
     load_dotenv()
     payload = {
         "interval_seconds": int(os.getenv("WHALE_HYPERLIQUID_INTERVAL_SECONDS") or 60),
-        "min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_MIN_NOTIONAL_USD") or 50000.0),
+        "min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_MIN_NOTIONAL_USD") or 200000.0),
         "request_timeout_seconds": float(os.getenv("WHALE_HYPERLIQUID_REQUEST_TIMEOUT_SECONDS") or 20.0),
         "retry": {
             "max_attempts": int(os.getenv("WHALE_HYPERLIQUID_MAX_ATTEMPTS") or 3),
