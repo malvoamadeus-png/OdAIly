@@ -214,11 +214,34 @@ h2 {
   margin-top: 18px;
 }
 
+.whaleLayout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.whaleTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 10px;
+}
+
 .settingsForm,
 .addAccount,
 .nonMainstreamSettingsForm {
   display: grid;
   grid-template-columns: repeat(3, minmax(110px, 1fr)) 112px;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.whaleAddressForm {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(180px, 1fr) 112px;
   gap: 10px;
   align-items: end;
   padding: 14px;
@@ -354,7 +377,8 @@ textarea:focus {
 
 .accountList,
 .taskList,
-.nonMainstreamList {
+.nonMainstreamList,
+.whaleAddressList {
   display: grid;
   gap: 8px;
 }
@@ -373,6 +397,10 @@ textarea:focus {
 
 .accountRow.disabled {
   opacity: 0.62;
+}
+
+.whaleAddressList .accountRow {
+  grid-template-columns: minmax(260px, 1.3fr) minmax(220px, 1fr) 96px;
 }
 
 .sourceRow {
@@ -437,6 +465,14 @@ textarea:focus {
 .sourceMeta,
 .sourceStatus {
   min-width: 0;
+}
+
+.whaleStateList {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .sourceMeta strong,
@@ -988,6 +1024,7 @@ textarea:focus {
 
   .settingsForm,
   .addAccount,
+  .whaleAddressForm,
   .nonMainstreamSettingsForm,
   .accountRow,
   .sourceRow,

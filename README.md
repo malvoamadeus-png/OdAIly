@@ -167,6 +167,36 @@ python backend\src\main.py x-process-worker --stage write
 python backend\src\main.py x-process-worker --stage format_publish
 ```
 
+## Whale Watch
+
+The `巨鲸` console tab stores EVM addresses and custom labels in Supabase.
+The browser writes only the address configuration; the backend worker polls
+Blockscout-compatible explorers every 60 seconds and sends Telegram alerts
+for new transfers and rule-detected swaps. The first poll for an address on a
+chain seeds the current head and does not alert historical activity.
+
+Initialize and run:
+
+```powershell
+python backend\src\main.py whale-watch-init-db
+python backend\src\main.py whale-watch-worker
+```
+
+Useful runtime env:
+
+```text
+WHALE_WATCH_INTERVAL_SECONDS=60
+WHALE_WATCH_CHAIN_KEYS=ethereum,base
+WHALE_WATCH_REQUEST_TIMEOUT_SECONDS=20
+WHALE_WATCH_MAX_ATTEMPTS=3
+WHALE_WATCH_BACKOFF_SECONDS=1
+WHALE_TELEGRAM_MESSAGE_THREAD_ID=
+```
+
+`WHALE_TELEGRAM_MESSAGE_THREAD_ID` falls back to
+`TELEGRAM_MESSAGE_THREAD_ID` when it is not set. The first supported chains
+are Ethereum and Base through public Blockscout v2 APIs.
+
 Required runtime env:
 
 ```text
@@ -192,6 +222,9 @@ COMPETITOR_FETCH_INTERVAL_SECONDS=60
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_MESSAGE_THREAD_ID=
+WHALE_TELEGRAM_MESSAGE_THREAD_ID=
+WHALE_WATCH_INTERVAL_SECONDS=60
+WHALE_WATCH_CHAIN_KEYS=ethereum,base
 WRITER3_START_AFTER=
 WRITER3_HISTORY_DAYS=90
 WRITER3_ANALYSIS_MODEL=gpt-5.4-mini
@@ -237,6 +270,7 @@ Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
 - `deploy/odaily-competitor-monitor.service`
 - `deploy/odaily-non-mainstream-media.service`
 - `deploy/odaily-external-media-alert@.service`
+- `deploy/odaily-whale-watch.service`
 - `deploy/odaily-pipeline-supervisor.service`
 
 Production sync rules:
@@ -259,8 +293,8 @@ Production sync rules:
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-worker.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-whale-watch.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-worker.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-whale-watch.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked

@@ -16,6 +16,7 @@ from packages.common.config import (  # noqa: E402
     load_gate_settings,
     load_pipeline_supervisor_settings,
     load_settings,
+    load_whale_watch_settings,
     load_writer3_settings,
     load_x_capture_worker_settings,
     load_x_processing_settings,
@@ -145,6 +146,13 @@ def parse_args() -> argparse.Namespace:
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
     competitor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
+
+    whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch Postgres tables.")
+    whale_watch_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    whale_watch_worker = subparsers.add_parser("whale-watch-worker", help="Run whale onchain activity monitor.")
+    whale_watch_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    whale_watch_worker.add_argument("--once", action="store_true", help="Run one whale watch pass and exit.")
 
     supervisor = subparsers.add_parser("pipeline-supervisor", help="Run pipeline health checks and Telegram alerts.")
     supervisor.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
@@ -534,6 +542,33 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def whale_watch_init_db_command(args: argparse.Namespace) -> int:
+    from packages.whale_watch import PostgresWhaleWatchRepository
+
+    repository = PostgresWhaleWatchRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] whale watch database schema initialized")
+    return 0
+
+
+def whale_watch_worker_command(args: argparse.Namespace) -> int:
+    from packages.whale_watch import PostgresWhaleWatchRepository, WhaleWatchWorker
+
+    repository = PostgresWhaleWatchRepository(args.database_url)
+    worker = WhaleWatchWorker(repository=repository, settings=load_whale_watch_settings())
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] whale watch once "
+            f"addresses={result.addresses} chains={result.chains} pairs={result.processed_pairs} "
+            f"seeded={result.seeded_pairs} detected={result.detected} inserted={result.inserted} "
+            f"sent={result.sent} failed={len(result.failed)}"
+        )
+        return 0 if not result.failed else 1
+    worker.run_forever()
+    return 0
+
+
 def pipeline_supervisor_command(args: argparse.Namespace) -> int:
     from packages.pipeline_supervisor import PipelineSupervisorWorker, PostgresPipelineSupervisorRepository
 
@@ -771,6 +806,10 @@ def main() -> int:
             return competitor_repair_newsflash_time_command(args)
         if args.command == "competitor-monitor-worker":
             return competitor_monitor_worker_command(args)
+        if args.command == "whale-watch-init-db":
+            return whale_watch_init_db_command(args)
+        if args.command == "whale-watch-worker":
+            return whale_watch_worker_command(args)
         if args.command == "pipeline-supervisor":
             return pipeline_supervisor_command(args)
         if args.command == "telegram-test":

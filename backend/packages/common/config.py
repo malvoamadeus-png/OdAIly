@@ -475,6 +475,44 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
         raise ValueError(f"Invalid competitor monitor settings: {exc}") from exc
 
 
+class WhaleWatchSettings(BaseModel):
+    interval_seconds: int = Field(default=60, ge=10, le=3600)
+    chain_keys: tuple[str, ...] = ("ethereum", "base")
+    request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
+    retry: RetrySettings = Field(default_factory=RetrySettings)
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_message_thread_id: int | None = None
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+
+
+def load_whale_watch_settings() -> WhaleWatchSettings:
+    load_dotenv()
+    raw_chain_keys = os.getenv("WHALE_WATCH_CHAIN_KEYS") or "ethereum,base"
+    chain_keys = tuple(item.strip() for item in raw_chain_keys.split(",") if item.strip())
+    payload = {
+        "interval_seconds": int(os.getenv("WHALE_WATCH_INTERVAL_SECONDS") or 60),
+        "chain_keys": chain_keys or ("ethereum", "base"),
+        "request_timeout_seconds": float(os.getenv("WHALE_WATCH_REQUEST_TIMEOUT_SECONDS") or 20.0),
+        "retry": {
+            "max_attempts": int(os.getenv("WHALE_WATCH_MAX_ATTEMPTS") or 3),
+            "backoff_seconds": float(os.getenv("WHALE_WATCH_BACKOFF_SECONDS") or 1.0),
+        },
+        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN") or None,
+        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
+        "telegram_message_thread_id": (
+            os.getenv("WHALE_TELEGRAM_MESSAGE_THREAD_ID")
+            or os.getenv("TELEGRAM_MESSAGE_THREAD_ID")
+            or None
+        ),
+        "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+    }
+    try:
+        return WhaleWatchSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid whale watch settings: {exc}") from exc
+
+
 class PipelineSupervisorSettings(BaseModel):
     interval_seconds: int = Field(default=60, ge=10, le=3600)
     heartbeat_stale_minutes: int = Field(default=10, ge=1, le=1440)

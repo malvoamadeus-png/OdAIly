@@ -13,19 +13,23 @@ import {
   Save,
   Star,
   Trash2,
+  Wallet,
   Zap,
 } from 'lucide-react';
 import {
   createCompetitorFilterKeywords,
   createAccount,
+  createWhaleWatchAddress,
   deleteCompetitorFilterKeyword,
   deleteAccount as deleteAccountFromSupabase,
+  deleteWhaleWatchAddress,
   getCurrentConsoleAdmin,
   getCurrentSession,
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
   loadDashboard,
+  loadWhaleWatchDashboard,
   listPromptTemplates,
   onConsoleAuthStateChange,
   listPromptVersions,
@@ -44,6 +48,7 @@ import {
   updateNonMainstreamSource,
   updatePromptTemplateFeatureMode,
   updateSettings,
+  updateWhaleWatchAddress,
   type Account,
   type AccountPatch,
   type Attempt,
@@ -52,6 +57,10 @@ import {
   type NonMainstreamSource,
   type Settings,
   type TaskItem,
+  type WhaleWatchActivity,
+  type WhaleWatchAddress,
+  type WhaleWatchAddressPatch,
+  type WhaleWatchChainState,
   type PromptTemplate,
   type PromptVersion,
   type CompetitorFilterKeyword,
@@ -334,9 +343,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'x' | 'non_mainstream' | 'prompts' | 'competitor' | 'events' | 'favorites'>('x');
+  const [view, setView] = useState<'x' | 'non_mainstream' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'>('x');
   const [loading, setLoading] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
+  const [loadingWhaleWatch, setLoadingWhaleWatch] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingNonMainstreamSettings, setSavingNonMainstreamSettings] = useState(false);
   const [newAccount, setNewAccount] = useState({
@@ -345,6 +355,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     interval_seconds: '',
   });
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [whaleAddresses, setWhaleAddresses] = useState<WhaleWatchAddress[]>([]);
+  const [whaleStates, setWhaleStates] = useState<WhaleWatchChainState[]>([]);
+  const [whaleActivities, setWhaleActivities] = useState<WhaleWatchActivity[]>([]);
+  const [newWhaleAddress, setNewWhaleAddress] = useState({ address: '', label: '' });
+  const [savingWhaleAddress, setSavingWhaleAddress] = useState(false);
   const [selectedPromptKey, setSelectedPromptKey] = useState('');
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [promptContent, setPromptContent] = useState('');
@@ -408,6 +423,15 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setLoadingNonMainstream(false);
   }
 
+  async function loadWhaleWatchAll() {
+    setError('');
+    const dashboard = await loadWhaleWatchDashboard();
+    setWhaleAddresses(dashboard.addresses);
+    setWhaleStates(dashboard.states);
+    setWhaleActivities(dashboard.activities);
+    setLoadingWhaleWatch(false);
+  }
+
   async function loadPrompts(nextSelectedKey?: string) {
     setError('');
     const templates = visiblePromptTemplates(await listPromptTemplates());
@@ -464,14 +488,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   useEffect(() => {
-    Promise.all([loadAll(), loadNonMainstreamAll()]).catch((err: Error) => {
+    Promise.all([loadAll(), loadNonMainstreamAll(), loadWhaleWatchAll()]).catch((err: Error) => {
       setError(err.message);
       setLoading(false);
       setLoadingNonMainstream(false);
+      setLoadingWhaleWatch(false);
     });
     const timer = window.setInterval(() => {
       loadAll().catch((err: Error) => setError(err.message));
       loadNonMainstreamAll().catch((err: Error) => setError(err.message));
+      loadWhaleWatchAll().catch((err: Error) => setError(err.message));
     }, 10000);
     return () => window.clearInterval(timer);
   }, []);
@@ -579,6 +605,42 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     try {
       await deleteAccountFromSupabase(account.id);
       await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function addWhaleAddress(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingWhaleAddress(true);
+    setError('');
+    try {
+      await createWhaleWatchAddress({ ...newWhaleAddress, enabled: true });
+      setNewWhaleAddress({ address: '', label: '' });
+      setMessage('巨鲸地址已保存');
+      await loadWhaleWatchAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingWhaleAddress(false);
+    }
+  }
+
+  async function patchWhaleAddress(address: WhaleWatchAddress, patch: WhaleWatchAddressPatch) {
+    setError('');
+    try {
+      await updateWhaleWatchAddress(address.id, patch);
+      await loadWhaleWatchAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeWhaleAddress(address: WhaleWatchAddress) {
+    setError('');
+    try {
+      await deleteWhaleWatchAddress(address.id);
+      await loadWhaleWatchAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -750,6 +812,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X Capture'
       : view === 'non_mainstream'
         ? 'External Media'
+        : view === 'whale'
+          ? 'Whale Watch'
         : view === 'prompts'
           ? 'Prompt'
           : view === 'competitor'
@@ -762,6 +826,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X 抓取控制台'
       : view === 'non_mainstream'
         ? '外媒抓取控制台'
+      : view === 'whale'
+        ? '巨鲸'
       : view === 'prompts'
         ? 'Prompt 编制'
         : view === 'competitor'
@@ -774,6 +840,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
       : view === 'non_mainstream'
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
+      : view === 'whale'
+        ? `${whaleAddresses.filter((item) => item.enabled).length} 个启用地址 · 多 EVM 链轮询`
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
         : view === 'competitor'
@@ -784,6 +852,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? loadAll()
       : view === 'non_mainstream'
         ? loadNonMainstreamAll()
+      : view === 'whale'
+        ? loadWhaleWatchAll()
       : view === 'prompts'
         ? loadPrompts(selectedPromptKey)
         : view === 'competitor'
@@ -813,6 +883,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
+          </button>
+          <button className={view === 'whale' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('whale')}>
+            <Wallet size={18} /> 巨鲸
           </button>
           <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('competitor')}>
             <Ban size={18} /> 排除词
@@ -978,6 +1051,19 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
           />
+        ) : view === 'whale' ? (
+          <WhaleWatchPanel
+            addresses={whaleAddresses}
+            states={whaleStates}
+            activities={whaleActivities}
+            loading={loadingWhaleWatch}
+            newAddress={newWhaleAddress}
+            saving={savingWhaleAddress}
+            onNewAddressChange={setNewWhaleAddress}
+            onAdd={addWhaleAddress}
+            onPatch={patchWhaleAddress}
+            onDelete={removeWhaleAddress}
+          />
         ) : view === 'prompts' ? (
           <PromptPanel
             templates={promptTemplates}
@@ -1037,6 +1123,154 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         )}
       </main>
     </div>
+  );
+}
+
+function WhaleWatchPanel({
+  addresses,
+  states,
+  activities,
+  loading,
+  newAddress,
+  saving,
+  onNewAddressChange,
+  onAdd,
+  onPatch,
+  onDelete,
+}: {
+  addresses: WhaleWatchAddress[];
+  states: WhaleWatchChainState[];
+  activities: WhaleWatchActivity[];
+  loading: boolean;
+  newAddress: { address: string; label: string };
+  saving: boolean;
+  onNewAddressChange: (value: { address: string; label: string }) => void;
+  onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onPatch: (address: WhaleWatchAddress, patch: WhaleWatchAddressPatch) => Promise<void>;
+  onDelete: (address: WhaleWatchAddress) => Promise<void>;
+}) {
+  const statesByAddress = useMemo(() => {
+    const grouped: Record<number, WhaleWatchChainState[]> = {};
+    for (const state of states) {
+      grouped[state.address_id] = [...(grouped[state.address_id] || []), state];
+    }
+    return grouped;
+  }, [states]);
+
+  return (
+    <section className="whaleLayout">
+      <div className="whaleTabs">
+        <button className="promptTab active" type="button">
+          <strong>链上</strong>
+          <span>地址活动监控</span>
+        </button>
+        <button className="promptTab" type="button" disabled>
+          <strong>Hyperliquid</strong>
+          <span>待接入</span>
+        </button>
+      </div>
+
+      <form className="whaleAddressForm" onSubmit={onAdd}>
+        <input
+          placeholder="0x..."
+          value={newAddress.address}
+          onChange={(event) => onNewAddressChange({ ...newAddress, address: event.target.value })}
+        />
+        <input
+          placeholder="自定义标签，例如 Binance 热钱包"
+          value={newAddress.label}
+          onChange={(event) => onNewAddressChange({ ...newAddress, label: event.target.value })}
+        />
+        <button className="primaryButton" type="submit" disabled={saving}>
+          <Plus size={17} /> 添加
+        </button>
+      </form>
+
+      <div className="sectionHeader">
+        <h2>链上地址</h2>
+        <span>{loading ? '加载中' : `${addresses.length} 个地址`}</span>
+      </div>
+      <div className="whaleAddressList">
+        {!loading && addresses.length === 0 && <div className="emptyState">暂无巨鲸地址，先添加一个 EVM 地址。</div>}
+        {addresses.map((address) => (
+          <WhaleAddressRow
+            key={address.id}
+            address={address}
+            states={statesByAddress[address.id] || []}
+            onPatch={onPatch}
+            onDelete={onDelete}
+          />
+        ))}
+      </div>
+
+      <div className="sectionHeader">
+        <h2>最近播报</h2>
+        <span>{activities.length} 条</span>
+      </div>
+      <div className="taskList">
+        {activities.length === 0 && <div className="emptyState">暂无播报记录。</div>}
+        {activities.map((activity) => (
+          <article className="taskItem" key={activity.id}>
+            <a href={activity.tx_url} target="_blank" rel="noreferrer">
+              {activity.activity_type === 'swap' ? 'Swap' : '转账'} · {activity.chain_key}
+            </a>
+            <p>{activity.telegram_text}</p>
+            <div>
+              <span>{activity.summary}</span>
+              <time>{fmtTime(activity.created_at)}</time>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WhaleAddressRow({
+  address,
+  states,
+  onPatch,
+  onDelete,
+}: {
+  address: WhaleWatchAddress;
+  states: WhaleWatchChainState[];
+  onPatch: (address: WhaleWatchAddress, patch: WhaleWatchAddressPatch) => Promise<void>;
+  onDelete: (address: WhaleWatchAddress) => Promise<void>;
+}) {
+  return (
+    <article className={address.enabled ? 'accountRow' : 'accountRow disabled'}>
+      <div className="accountIdentity">
+        <div className="statusDot" />
+        <div>
+          <strong>{address.label}</strong>
+          <span>{address.address}</span>
+        </div>
+      </div>
+      <div className="whaleStateList">
+        {states.length === 0 ? (
+          <span>等待 worker 初始化</span>
+        ) : (
+          states.map((state) => (
+            <span key={`${address.id}-${state.chain_key}`}>
+              {state.chain_key}: {state.last_error || `区块 ${state.last_seen_block ?? '-'}`} · {fmtTime(state.last_success_at)}
+            </span>
+          ))
+        )}
+      </div>
+      <div className="rowActions">
+        <button
+          className="iconButton"
+          type="button"
+          onClick={() => onPatch(address, { enabled: !address.enabled })}
+          title={address.enabled ? '停用' : '启用'}
+        >
+          {address.enabled ? <Pause size={17} /> : <Zap size={17} />}
+        </button>
+        <button className="iconButton danger" type="button" onClick={() => onDelete(address)} title="删除">
+          <Trash2 size={17} />
+        </button>
+      </div>
+    </article>
   );
 }
 

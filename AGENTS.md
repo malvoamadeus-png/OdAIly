@@ -29,3 +29,9 @@
 - 未经明确授权，不要在服务器上手工覆盖、创建或长期保留 repo-tracked 文件；紧急热修如果发生，必须立即回补到本地仓库并提交到 GitHub。
 - 服务器允许长期只保留本地运行资产，例如 `.env`、`.venv/`、`data/raw/`、`data/processed/`、`data/exports/`、`data/config/market_brief.json`；这些文件不纳入 Git。
 - 服务器上的 `.codex-backups/`、`.env.codex-*`、临时脚本、调试输出和历史手工副本不应长期留在工作区；完成排障或清理后应移出 repo 工作树或删除。
+
+## AI 可操作范围
+
+- 按 `docs/控制台.md` 等控制台文档说明，AI 可以操作前端。
+- 按 `docs/完整程序架构.md` 及各模块文档说明，AI 可以操作后端。
+- 按 `docs/控制台.md` 的 Supabase 控制台约定与本机 `.codex-local/README.md` 的环境访问说明，AI 可以操作 Supabase。

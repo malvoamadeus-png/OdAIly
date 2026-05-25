@@ -54,6 +54,45 @@ export type NonMainstreamSource = {
   last_error: string | null;
 };
 
+export type WhaleWatchAddress = {
+  id: number;
+  address: string;
+  address_lower: string;
+  label: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WhaleWatchChainState = {
+  address_id: number;
+  chain_key: string;
+  seeded_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  last_seen_block: number | null;
+};
+
+export type WhaleWatchActivity = {
+  id: number;
+  address_id: number;
+  chain_key: string;
+  tx_hash: string;
+  activity_type: 'transfer' | 'swap';
+  direction: 'in' | 'out' | null;
+  summary: string;
+  telegram_text: string;
+  tx_url: string;
+  created_at: string;
+};
+
+export type WhaleWatchDashboardPayload = {
+  addresses: WhaleWatchAddress[];
+  states: WhaleWatchChainState[];
+  activities: WhaleWatchActivity[];
+};
+
 export type TaskItem = {
   id: number;
   source_item_id: string;
@@ -179,6 +218,17 @@ type AccountCreateInput = {
   display_name: string | null;
   interval_seconds: number | null;
   enabled: boolean;
+};
+
+type WhaleWatchAddressCreateInput = {
+  address: string;
+  label: string;
+  enabled: boolean;
+};
+
+export type WhaleWatchAddressPatch = {
+  label?: string;
+  enabled?: boolean;
 };
 
 export type CompetitorKeywordPatch = {
@@ -345,6 +395,15 @@ export async function loadDashboard(): Promise<DashboardPayload> {
 export async function loadNonMainstreamDashboard(): Promise<NonMainstreamDashboardPayload> {
   const [settings, sources] = await Promise.all([getNonMainstreamSettings(), listNonMainstreamSources()]);
   return { settings, sources };
+}
+
+export async function loadWhaleWatchDashboard(): Promise<WhaleWatchDashboardPayload> {
+  const [addresses, states, activities] = await Promise.all([
+    listWhaleWatchAddresses(),
+    listWhaleWatchChainStates(),
+    listWhaleWatchActivities(30),
+  ]);
+  return { addresses, states, activities };
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -570,6 +629,99 @@ export async function updateNonMainstreamSource(
 export async function deleteAccount(accountId: number): Promise<void> {
   const { error } = await supabase().from('x_capture_accounts').delete().eq('id', accountId);
   raise(error);
+}
+
+export async function listWhaleWatchAddresses(): Promise<WhaleWatchAddress[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_addresses')
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .order('enabled', { ascending: false })
+    .order('label', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchAddress[];
+}
+
+export async function listWhaleWatchChainStates(): Promise<WhaleWatchChainState[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_chain_states')
+    .select('address_id,chain_key,seeded_at,last_polled_at,last_success_at,last_error,last_seen_block')
+    .order('chain_key', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchChainState[];
+}
+
+export async function listWhaleWatchActivities(limit: number): Promise<WhaleWatchActivity[]> {
+  const { data, error } = await supabase()
+    .from('whale_watch_activities')
+    .select('id,address_id,chain_key,tx_hash,activity_type,direction,summary,telegram_text,tx_url,created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  raise(error);
+  return (data ?? []) as unknown as WhaleWatchActivity[];
+}
+
+export async function createWhaleWatchAddress(input: WhaleWatchAddressCreateInput): Promise<WhaleWatchAddress> {
+  const address = normalizeEvmAddress(input.address);
+  const label = input.label.trim();
+  if (!label) {
+    throw new Error('自定义标签不能为空');
+  }
+  const { data, error } = await supabase()
+    .from('whale_watch_addresses')
+    .upsert(
+      {
+        address,
+        address_lower: address.toLowerCase(),
+        label,
+        enabled: input.enabled,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'address_lower' },
+    )
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as WhaleWatchAddress | null, '保存巨鲸地址失败');
+}
+
+export async function updateWhaleWatchAddress(
+  addressId: number,
+  patch: WhaleWatchAddressPatch,
+): Promise<WhaleWatchAddress> {
+  const payload: Record<string, string | boolean> = {
+    updated_at: nowIso(),
+  };
+  if ('label' in patch && patch.label !== undefined) {
+    const label = patch.label.trim();
+    if (!label) {
+      throw new Error('自定义标签不能为空');
+    }
+    payload.label = label;
+  }
+  if ('enabled' in patch && patch.enabled !== undefined) {
+    payload.enabled = patch.enabled;
+  }
+  const { data, error } = await supabase()
+    .from('whale_watch_addresses')
+    .update(payload)
+    .eq('id', addressId)
+    .select('id,address,address_lower,label,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as WhaleWatchAddress | null, '更新巨鲸地址失败');
+}
+
+export async function deleteWhaleWatchAddress(addressId: number): Promise<void> {
+  const { error } = await supabase().from('whale_watch_addresses').delete().eq('id', addressId);
+  raise(error);
+}
+
+export function normalizeEvmAddress(value: string): string {
+  const address = value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    throw new Error('请输入合法的 EVM 地址');
+  }
+  return address;
 }
 
 async function listRecentAttempts(limit: number): Promise<Attempt[]> {
