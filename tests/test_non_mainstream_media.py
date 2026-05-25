@@ -587,6 +587,106 @@ def test_discover_tether_pages_reads_wordpress_posts_payload() -> None:
     assert pages[0].excerpt == "25 May, 2026 – Tether today announced plans to launch GEL₮ in Georgia […]"
 
 
+def test_discover_tether_pages_keeps_published_at_metadata() -> None:
+    payload = [
+        {
+            "id": 2663,
+            "date_gmt": "2026-05-25T07:30:00",
+            "link": "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+            "title": {"rendered": "Tether Georgia stablecoin launch"},
+            "excerpt": {"rendered": "<p>Excerpt</p>"},
+        }
+    ]
+
+    pages = discover_tether_pages(payload)
+
+    assert pages[0].published_at == datetime(2026, 5, 25, 7, 30, tzinfo=UTC)
+    assert pages[0].published_at_raw == "2026-05-25T07:30:00"
+
+
+def test_fetch_discovered_pages_tether_falls_back_to_jina_payload(monkeypatch) -> None:
+    site = get_site_registry()["tether_news"]
+    wrapped = """
+Title:
+
+URL Source: https://tether.io/wp-json/wp/v2/posts?categories=3&per_page=100&_fields=id,date_gmt,date,link,title,excerpt
+
+Markdown Content:
+[{"id":2663,"date_gmt":"2026-05-25T07:30:00","link":"https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/","title":{"rendered":"Tether and the Government of Georgia to Launch GEL of Georgia"},"excerpt":{"rendered":"<p>25 May, 2026 &#8211; Tether today announced plans to launch GEL in Georgia [&hellip;]</p>"}}]
+""".strip()
+
+    def fake_fetch_json(url: str, **_: object) -> object:
+        assert url == site.list_url
+        raise RuntimeError("request failed url=https://tether.io/wp-json/wp/v2/posts: 403")
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        assert url == f"https://r.jina.ai/http://{site.list_url}"
+        return wrapped
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert [page.detail_url for page in pages] == [
+        "https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+    ]
+    assert pages[0].published_at == datetime(2026, 5, 25, 7, 30, tzinfo=UTC)
+
+
+def test_fetch_article_tether_falls_back_to_jina_markdown(monkeypatch) -> None:
+    site = get_site_registry()["tether_news"]
+    page = DiscoveredPage(
+        source_item_id="https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+        detail_url="https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/",
+        title="Tether and the Government of Georgia to Launch GEL of Georgia",
+        published_at=datetime(2026, 5, 25, 7, 30, tzinfo=UTC),
+        published_at_raw="2026-05-25T07:30:00",
+    )
+    wrapped = """
+Title: Tether and the Government of Georgia to Launch GEL of Georgia - Tether.io
+
+URL Source: https://tether.io/news/tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia/
+
+Markdown Content:
+# Tether and the Government of Georgia to Launch GEL of Georgia - Tether.io
+
+Tether and the Government of Georgia to Launch GEL of Georgia
+
+**25 May, 2026** - [Tether,](https://tether.io/) today announced plans to launch GEL in Georgia.
+
+The stablecoin is designed to support faster payments and cross-border transfers.
+
+Officials said the project will operate under a stablecoin regulatory framework.
+
+[![Image](https://tether.io/wp-content/uploads/return.svg) BACK TO NEWS](https://tether.io/news "News")
+
+## latest news
+""".strip()
+
+    def fake_fetch_json(url: str, **_: object) -> object:
+        assert "slug=tether-and-the-government-of-georgia-to-launch-gelt-the-official-stablecoin-of-georgia" in url
+        raise RuntimeError("request failed url=https://tether.io/wp-json/wp/v2/posts?slug=...: 403")
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        assert url == f"https://r.jina.ai/http://{page.detail_url}"
+        return wrapped
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_json", fake_fetch_json)
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    article = fetch_article(site, page, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert article.title == "Tether and the Government of Georgia to Launch GEL of Georgia"
+    assert article.content == (
+        "25 May, 2026 - Tether, today announced plans to launch GEL in Georgia.\n\n"
+        "The stablecoin is designed to support faster payments and cross-border transfers.\n\n"
+        "Officials said the project will operate under a stablecoin regulatory framework."
+    )
+    assert article.published_at == datetime(2026, 5, 25, 7, 30, tzinfo=UTC)
+    assert article.metadata["proxy_fallback"] == "jina_markdown"
+
+
 def test_discover_fortune_pages_reads_section_story_titles() -> None:
     html = """
     <html>

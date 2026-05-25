@@ -38,6 +38,7 @@ FORBES_BASE_URL = "https://www.forbes.com"
 FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
 FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
 HK01_BASE_URL = "https://www.hk01.com"
+JINA_PROXY_URL_PREFIX = "https://r.jina.ai/http://"
 TETHER_BASE_URL = "https://tether.io"
 TETHER_NEWS_URL = "https://tether.io/news/"
 TETHER_NEWS_API_URL = (
@@ -219,13 +220,34 @@ def fetch_discovered_pages(
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_hk01_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
-        payload = fetch_json(
-            site.list_url,
-            timeout_seconds=timeout_seconds,
-            max_attempts=max_attempts,
-            backoff_seconds=backoff_seconds,
-        )
-        return discover_tether_pages(payload, base_url=site.homepage_url)
+        try:
+            payload = fetch_json(
+                site.list_url,
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
+            return discover_tether_pages(payload, base_url=site.homepage_url)
+        except Exception:
+            try:
+                wrapped_payload = fetch_html(
+                    build_jina_proxy_url(site.list_url),
+                    timeout_seconds=timeout_seconds,
+                    max_attempts=max_attempts,
+                    backoff_seconds=backoff_seconds,
+                )
+                return discover_tether_pages(
+                    parse_jina_wrapped_json_payload(wrapped_payload),
+                    base_url=site.homepage_url,
+                )
+            except Exception:
+                markdown = fetch_html(
+                    build_jina_proxy_url(TETHER_NEWS_URL),
+                    timeout_seconds=timeout_seconds,
+                    max_attempts=max_attempts,
+                    backoff_seconds=backoff_seconds,
+                )
+                return discover_tether_pages_from_markdown(markdown, base_url=site.homepage_url)
     if site.site_key == "ft_crypto":
         xml = fetch_html(
             FT_GOOGLE_NEWS_RSS_URL,
@@ -281,13 +303,26 @@ def fetch_article(
         article = parse_hk01_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
-        payload = fetch_json(
-            f"{TETHER_BASE_URL}/wp-json/wp/v2/posts?slug={quote(slug)}&_embed=wp:term",
-            timeout_seconds=timeout_seconds,
-            max_attempts=max_attempts,
-            backoff_seconds=backoff_seconds,
-        )
-        article = parse_tether_article(payload, page_url=page.detail_url, source_item_id=page.source_item_id)
+        try:
+            payload = fetch_json(
+                f"{TETHER_BASE_URL}/wp-json/wp/v2/posts?slug={quote(slug)}&_embed=wp:term",
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
+            article = parse_tether_article(payload, page_url=page.detail_url, source_item_id=page.source_item_id)
+        except Exception:
+            markdown = fetch_html(
+                build_jina_proxy_url(page.detail_url),
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
+            article = parse_tether_markdown_article(
+                markdown,
+                page_url=page.detail_url,
+                source_item_id=page.source_item_id,
+            )
     else:
         raise ValueError(f"unsupported site registry entry: {site.site_key}")
     return apply_discovery_page_fallback(article, page)
@@ -333,6 +368,29 @@ def fetch_json(
                 break
             time.sleep(max(0.0, backoff_seconds) * attempt)
     raise RuntimeError(f"request failed url={url}: {last_error}") from last_error
+
+
+def build_jina_proxy_url(url: str) -> str:
+    return f"{JINA_PROXY_URL_PREFIX}{url}"
+
+
+def extract_jina_markdown_payload(payload: str) -> str:
+    marker = "Markdown Content:"
+    if marker not in payload:
+        raise ValueError("invalid Jina payload: missing Markdown Content marker")
+    content = payload.split(marker, 1)[1]
+    return content.lstrip("\r\n").strip()
+
+
+def parse_jina_wrapped_json_payload(payload: str) -> Any:
+    text = extract_jina_markdown_payload(payload)
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        obj, _ = decoder.raw_decode(text[index:])
+        return obj
+    raise ValueError("invalid Jina payload: missing JSON body")
 
 
 def fetch_cointelegraph_discovered_pages(
@@ -612,14 +670,67 @@ def discover_tether_pages(payload: Any, *, base_url: str = TETHER_BASE_URL) -> l
         if link in seen:
             continue
         seen.add(link)
+        published_at_raw = str(item.get("date_gmt") or item.get("date") or "").strip()
         results.append(
             DiscoveredPage(
                 source_item_id=link,
                 detail_url=link,
                 title=title,
                 excerpt=excerpt or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
             )
         )
+    return results
+
+
+def discover_tether_pages_from_markdown(payload: str, *, base_url: str = TETHER_BASE_URL) -> list[DiscoveredPage]:
+    text = extract_jina_markdown_payload(payload)
+    lines = [line.strip() for line in text.splitlines()]
+    date_pattern = re.compile(r"^[A-Z][a-z]+ \d{1,2}, \d{4}$")
+    read_more_pattern = re.compile(r"^\[Read more\]\((?P<url>[^)]+)\)$")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not date_pattern.fullmatch(line):
+            index += 1
+            continue
+        published_at_raw = line
+        cursor = next_nonempty_line(lines, index + 1)
+        if cursor is None:
+            break
+        if re.search(r"\bread\b$", lines[cursor], re.IGNORECASE):
+            cursor = next_nonempty_line(lines, cursor + 1)
+        if cursor is None:
+            break
+        title = clean_inline_text(lines[cursor])
+        excerpt_index = next_nonempty_line(lines, cursor + 1)
+        if excerpt_index is None:
+            break
+        excerpt = clean_inline_text(lines[excerpt_index])
+        read_more_index = next_nonempty_line(lines, excerpt_index + 1)
+        if read_more_index is None:
+            break
+        match = read_more_pattern.fullmatch(lines[read_more_index])
+        if not match:
+            index = read_more_index + 1
+            continue
+        detail_url = normalize_url(urljoin(base_url, match.group("url")))
+        if detail_url and title and detail_url not in seen:
+            seen.add(detail_url)
+            results.append(
+                DiscoveredPage(
+                    source_item_id=detail_url,
+                    detail_url=detail_url,
+                    title=title,
+                    excerpt=excerpt or None,
+                    published_at=parse_tether_human_date(published_at_raw),
+                    published_at_raw=published_at_raw,
+                )
+            )
+        index = read_more_index + 1
     return results
 
 
@@ -1186,6 +1297,68 @@ def parse_tether_article(payload: Any, *, page_url: str, source_item_id: str) ->
     )
 
 
+def parse_tether_markdown_article(payload: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    text = extract_jina_markdown_payload(payload)
+    lines = [line.strip() for line in text.splitlines()]
+    title = ""
+    for line in lines:
+        if not line.startswith("# "):
+            continue
+        heading = clean_inline_text(line[2:])
+        if heading.endswith(" - Tether.io"):
+            title = heading[: -len(" - Tether.io")].strip()
+            break
+    title = title or normalize_url(page_url)
+    anchor_index = -1
+    for index, line in enumerate(lines):
+        if clean_inline_text(strip_markdown_formatting(line)) == title:
+            anchor_index = index
+            break
+    body_start = next_nonempty_line(lines, anchor_index + 1 if anchor_index >= 0 else 0)
+    if body_start is None:
+        raise ValueError(f"Tether markdown article body is empty for {page_url}")
+    body_lines: list[str] = []
+    for line in lines[body_start:]:
+        if "BACK TO NEWS" in line or line.startswith("## latest news"):
+            break
+        if not line:
+            continue
+        cleaned = clean_inline_text(strip_markdown_formatting(line))
+        if not cleaned:
+            continue
+        body_lines.append(cleaned)
+    body = clean_body_text("\n\n".join(body_lines))
+    if not body:
+        raise ValueError(f"Tether markdown article body is empty for {page_url}")
+    canonical = normalize_url(page_url)
+    excerpt = body.split("\n\n", 1)[0][:240]
+    published_at_raw = None
+    if body_lines:
+        date_match = re.match(r"^(?P<date>\d{1,2}\s+[A-Z][a-z]+,\s+\d{4})", body_lines[0])
+        if date_match:
+            published_at_raw = date_match.group("date")
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "proxy_fallback": "jina_markdown",
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=None,
+        excerpt=excerpt,
+        content_format="tether_news_post",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "proxy_fallback": "jina_markdown",
+        },
+        metadata=metadata,
+    )
+
+
 def find_structured_content(soup: BeautifulSoup) -> dict[str, Any]:
     for script in soup.select("script[type='application/ld+json']"):
         raw = script.string or script.get_text() or ""
@@ -1577,6 +1750,34 @@ def pick_tether_post_slug(url: str) -> str:
     if len(parts) < 2 or parts[0] != "news":
         raise ValueError(f"invalid Tether news url: {url}")
     return parts[-1]
+
+
+def parse_tether_human_date(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    for fmt in ("%B %d, %Y", "%d %B, %Y", "%b %d, %Y", "%d %b, %Y"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
+
+
+def next_nonempty_line(lines: list[str], start_index: int) -> int | None:
+    for index in range(max(0, start_index), len(lines)):
+        if lines[index].strip():
+            return index
+    return None
+
+
+def strip_markdown_formatting(value: str) -> str:
+    text = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", value)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"^[#>\-\*\s]+", "", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = text.replace("–", " – ")
+    return text
 
 
 def extract_decrypt_author(soup: BeautifulSoup) -> str:
