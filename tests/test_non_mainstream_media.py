@@ -620,7 +620,11 @@ Markdown Content:
         raise RuntimeError("request failed url=https://tether.io/wp-json/wp/v2/posts: 403")
 
     def fake_fetch_html(url: str, **_: object) -> str:
-        assert url == f"https://r.jina.ai/http://{site.list_url}"
+        assert (
+            url
+            == "https://r.jina.ai/http://https://tether.io/wp-json/wp/v2/posts"
+            "?categories=3&per_page=100&_fields=id,date_gmt,date,link,title"
+        )
         return wrapped
 
     monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_json", fake_fetch_json)

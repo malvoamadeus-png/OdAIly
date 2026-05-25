@@ -45,6 +45,10 @@ TETHER_NEWS_API_URL = (
     "https://tether.io/wp-json/wp/v2/posts"
     "?categories=3&per_page=100&_fields=id,date_gmt,date,link,title,excerpt"
 )
+TETHER_NEWS_PROXY_API_URL = (
+    "https://tether.io/wp-json/wp/v2/posts"
+    "?categories=3&per_page=100&_fields=id,date_gmt,date,link,title"
+)
 FORTUNE_BASE_URL = "https://fortune.com"
 FT_BASE_URL = "https://www.ft.com"
 THE_BLOCK_BASE_URL = "https://www.theblock.co"
@@ -231,7 +235,7 @@ def fetch_discovered_pages(
         except Exception:
             try:
                 wrapped_payload = fetch_html(
-                    build_jina_proxy_url(site.list_url),
+                    build_jina_proxy_url(TETHER_NEWS_PROXY_API_URL),
                     timeout_seconds=timeout_seconds,
                     max_attempts=max_attempts,
                     backoff_seconds=backoff_seconds,
