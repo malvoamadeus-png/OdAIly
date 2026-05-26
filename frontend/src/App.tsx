@@ -25,6 +25,7 @@ import {
   deleteAccount as deleteAccountFromSupabase,
   deleteWhaleWatchAddress,
   deleteWhaleWatchHyperliquidAddress,
+  getWhaleWatchHyperliquidSettings,
   getCurrentConsoleAdmin,
   getCurrentSession,
   listCompetitorFilterKeywords,
@@ -52,6 +53,7 @@ import {
   updateSettings,
   updateWhaleWatchAddress,
   updateWhaleWatchHyperliquidAddress,
+  updateWhaleWatchHyperliquidSettings,
   type Account,
   type AccountPatch,
   type Attempt,
@@ -67,6 +69,7 @@ import {
   type WhaleWatchHyperliquidActivity,
   type WhaleWatchHyperliquidAddress,
   type WhaleWatchHyperliquidAddressPatch,
+  type WhaleWatchHyperliquidSettings,
   type WhaleWatchHyperliquidState,
   type PromptTemplate,
   type PromptVersion,
@@ -391,6 +394,12 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [whaleAddresses, setWhaleAddresses] = useState<WhaleWatchAddress[]>([]);
   const [whaleStates, setWhaleStates] = useState<WhaleWatchChainState[]>([]);
   const [whaleActivities, setWhaleActivities] = useState<WhaleWatchActivity[]>([]);
+  const [whaleHyperliquidSettings, setWhaleHyperliquidSettings] = useState<WhaleWatchHyperliquidSettings>({
+    single_fill_min_notional_usd: 500000,
+    aggregate_min_notional_usd: 1000000,
+    aggregate_window_seconds: 600,
+    updated_at: null,
+  });
   const [whaleHyperliquidAddresses, setWhaleHyperliquidAddresses] = useState<WhaleWatchHyperliquidAddress[]>([]);
   const [whaleHyperliquidStates, setWhaleHyperliquidStates] = useState<WhaleWatchHyperliquidState[]>([]);
   const [whaleHyperliquidActivities, setWhaleHyperliquidActivities] = useState<WhaleWatchHyperliquidActivity[]>([]);
@@ -398,6 +407,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [savingWhaleAddress, setSavingWhaleAddress] = useState(false);
   const [newWhaleHyperliquidAddress, setNewWhaleHyperliquidAddress] = useState({ address: '', label: '' });
   const [savingWhaleHyperliquidAddress, setSavingWhaleHyperliquidAddress] = useState(false);
+  const [savingWhaleHyperliquidSettings, setSavingWhaleHyperliquidSettings] = useState(false);
   const [selectedPromptKey, setSelectedPromptKey] = useState('');
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [promptContent, setPromptContent] = useState('');
@@ -467,6 +477,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setWhaleAddresses(dashboard.addresses);
     setWhaleStates(dashboard.states);
     setWhaleActivities(dashboard.activities);
+    setWhaleHyperliquidSettings(dashboard.hyperliquidSettings);
     setWhaleHyperliquidAddresses(dashboard.hyperliquidAddresses);
     setWhaleHyperliquidStates(dashboard.hyperliquidStates);
     setWhaleHyperliquidActivities(dashboard.hyperliquidActivities);
@@ -700,6 +711,26 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingWhaleHyperliquidAddress(false);
+    }
+  }
+
+  async function saveWhaleHyperliquidSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingWhaleHyperliquidSettings(true);
+    setError('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const updated = await updateWhaleWatchHyperliquidSettings({
+        single_fill_min_notional_usd: Number(form.get('single_fill_min_notional_usd')),
+        aggregate_min_notional_usd: Number(form.get('aggregate_min_notional_usd')),
+        aggregate_window_seconds: Number(form.get('aggregate_window_seconds')),
+      });
+      setWhaleHyperliquidSettings(updated);
+      setMessage('Hyperliquid 设置已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingWhaleHyperliquidSettings(false);
     }
   }
 
@@ -1136,6 +1167,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             addresses={whaleAddresses}
             states={whaleStates}
             activities={whaleActivities}
+            hyperliquidSettings={whaleHyperliquidSettings}
             hyperliquidAddresses={whaleHyperliquidAddresses}
             hyperliquidStates={whaleHyperliquidStates}
             hyperliquidActivities={whaleHyperliquidActivities}
@@ -1144,10 +1176,12 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             saving={savingWhaleAddress}
             newHyperliquidAddress={newWhaleHyperliquidAddress}
             savingHyperliquidAddress={savingWhaleHyperliquidAddress}
+            savingHyperliquidSettings={savingWhaleHyperliquidSettings}
             onNewAddressChange={setNewWhaleAddress}
             onNewHyperliquidAddressChange={setNewWhaleHyperliquidAddress}
             onAdd={addWhaleAddress}
             onAddHyperliquid={addWhaleHyperliquidAddress}
+            onSaveHyperliquidSettings={saveWhaleHyperliquidSettings}
             onPatch={patchWhaleAddress}
             onPatchHyperliquid={patchWhaleHyperliquidAddress}
             onDelete={removeWhaleAddress}
@@ -1219,6 +1253,7 @@ function WhaleWatchPanel({
   addresses,
   states,
   activities,
+  hyperliquidSettings,
   hyperliquidAddresses,
   hyperliquidStates,
   hyperliquidActivities,
@@ -1227,10 +1262,12 @@ function WhaleWatchPanel({
   saving,
   newHyperliquidAddress,
   savingHyperliquidAddress,
+  savingHyperliquidSettings,
   onNewAddressChange,
   onNewHyperliquidAddressChange,
   onAdd,
   onAddHyperliquid,
+  onSaveHyperliquidSettings,
   onPatch,
   onPatchHyperliquid,
   onDelete,
@@ -1239,6 +1276,7 @@ function WhaleWatchPanel({
   addresses: WhaleWatchAddress[];
   states: WhaleWatchChainState[];
   activities: WhaleWatchActivity[];
+  hyperliquidSettings: WhaleWatchHyperliquidSettings;
   hyperliquidAddresses: WhaleWatchHyperliquidAddress[];
   hyperliquidStates: WhaleWatchHyperliquidState[];
   hyperliquidActivities: WhaleWatchHyperliquidActivity[];
@@ -1247,10 +1285,12 @@ function WhaleWatchPanel({
   saving: boolean;
   newHyperliquidAddress: { address: string; label: string };
   savingHyperliquidAddress: boolean;
+  savingHyperliquidSettings: boolean;
   onNewAddressChange: (value: { address: string; label: string }) => void;
   onNewHyperliquidAddressChange: (value: { address: string; label: string }) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onAddHyperliquid: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onSaveHyperliquidSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onPatch: (address: WhaleWatchAddress, patch: WhaleWatchAddressPatch) => Promise<void>;
   onPatchHyperliquid: (address: WhaleWatchHyperliquidAddress, patch: WhaleWatchHyperliquidAddressPatch) => Promise<void>;
   onDelete: (address: WhaleWatchAddress) => Promise<void>;
@@ -1346,6 +1386,42 @@ function WhaleWatchPanel({
         </>
       ) : (
         <>
+          <form className="settingsForm" onSubmit={onSaveHyperliquidSettings}>
+            <label>
+              <span>单次门槛</span>
+              <input
+                name="single_fill_min_notional_usd"
+                type="number"
+                min="0"
+                step="1000"
+                defaultValue={hyperliquidSettings.single_fill_min_notional_usd}
+              />
+            </label>
+            <label>
+              <span>聚合门槛</span>
+              <input
+                name="aggregate_min_notional_usd"
+                type="number"
+                min="0"
+                step="1000"
+                defaultValue={hyperliquidSettings.aggregate_min_notional_usd}
+              />
+            </label>
+            <label>
+              <span>聚合时长（秒）</span>
+              <input
+                name="aggregate_window_seconds"
+                type="number"
+                min="60"
+                step="60"
+                defaultValue={hyperliquidSettings.aggregate_window_seconds}
+              />
+            </label>
+            <button className="primaryButton" type="submit" disabled={savingHyperliquidSettings}>
+              <Save size={17} /> 保存设置
+            </button>
+          </form>
+
           <form className="whaleAddressForm" onSubmit={onAddHyperliquid}>
             <input
               placeholder="0x..."

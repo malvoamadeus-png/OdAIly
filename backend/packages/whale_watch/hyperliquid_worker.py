@@ -5,6 +5,7 @@ import signal
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import FrameType
 from typing import Iterator
 
@@ -13,9 +14,9 @@ from packages.common.heartbeat import HeartbeatThrottle
 from packages.x_processing.telegram import TelegramClient
 
 from .hyperliquid_client import HyperliquidClient
-from .hyperliquid_detector import detect_hyperliquid_activity
+from .hyperliquid_detector import detect_hyperliquid_activity, format_money
 from .hyperliquid_repository import WhaleWatchHyperliquidRepository
-from .models import HyperliquidRunResult
+from .models import HyperliquidActivity, HyperliquidRunResult, HyperliquidWindowEntry
 
 
 class WhaleWatchHyperliquidWorker:
@@ -66,7 +67,7 @@ class WhaleWatchHyperliquidWorker:
         detected = 0
         inserted = 0
         sent = 0
-        skipped_small = 0
+        suppressed = 0
         for whale in addresses:
             processed += 1
             try:
@@ -75,7 +76,7 @@ class WhaleWatchHyperliquidWorker:
                 detected += int(stats["detected"])
                 inserted += int(stats["inserted"])
                 sent += int(stats["sent"])
-                skipped_small += int(stats["skipped_small"])
+                suppressed += int(stats["suppressed"])
             except Exception as exc:
                 failed[whale.address_lower] = str(exc)
                 self.repository.record_error(address_id=whale.id, error=str(exc), polled_at=_utc_now())
@@ -87,7 +88,7 @@ class WhaleWatchHyperliquidWorker:
             detected=detected,
             inserted=inserted,
             sent=sent,
-            skipped_small=skipped_small,
+            suppressed=suppressed,
             failed=failed,
         )
         self._record_heartbeat(result)
@@ -102,26 +103,56 @@ class WhaleWatchHyperliquidWorker:
                     "[odaily] whale watch hyperliquid round "
                     f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
                     f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
-                    f"skipped_small={result.skipped_small} failed={len(result.failed)}"
+                    f"suppressed={result.suppressed} failed={len(result.failed)}"
                 )
                 self._sleep()
 
     def _process_address(self, *, whale) -> dict[str, int | bool]:
         polled_at = _utc_now()
+        runtime = self.repository.get_runtime_settings(
+            default_single_fill_min_notional_usd=Decimal(str(self.settings.single_fill_min_notional_usd)),
+            default_aggregate_min_notional_usd=Decimal(str(self.settings.aggregate_min_notional_usd)),
+            default_aggregate_window_seconds=self.settings.aggregate_window_seconds,
+        )
         state = self.repository.get_state(address_id=whale.id)
         fills = self.client.user_fills(whale.address)
         fills.sort(key=lambda item: (_int(item.get("time")) or 0, str(item.get("tid") or ""), str(item.get("hash") or "")))
         max_seen_time = max((_int(item.get("time")) or 0 for item in fills), default=state.last_seen_time if state else None)
+        seeded_window_entries: list[HyperliquidWindowEntry] = []
+        for fill in fills:
+            activity = detect_hyperliquid_activity(whale=whale, fill=fill)
+            if activity is None:
+                continue
+            seeded_window_entries.append(self._window_entry_from_activity(activity))
+        seeded_window = self._trim_window_entries(
+            entries=seeded_window_entries,
+            now_ms=max_seen_time,
+            window_seconds=runtime.aggregate_window_seconds,
+        )
         if state is None or state.seeded_at is None:
-            self.repository.mark_seeded(address_id=whale.id, last_seen_time=max_seen_time, polled_at=polled_at)
-            return {"seeded": True, "detected": 0, "inserted": 0, "sent": 0, "skipped_small": 0}
+            self.repository.mark_seeded(
+                address_id=whale.id,
+                last_seen_time=max_seen_time,
+                polled_at=polled_at,
+                aggregate_window_entries=seeded_window,
+                aggregate_alert_active=self._sum_window_entries(seeded_window) >= runtime.aggregate_min_notional_usd,
+            )
+            return {"seeded": True, "detected": 0, "inserted": 0, "sent": 0, "suppressed": 0}
 
         detected = 0
         inserted = 0
         sent = 0
-        skipped_small = 0
+        suppressed = 0
         telegram_error: str | None = None
         cutoff = state.last_seen_time or 0
+        aggregate_window_entries = self._trim_window_entries(
+            entries=list(state.aggregate_window_entries),
+            now_ms=max_seen_time or cutoff,
+            window_seconds=runtime.aggregate_window_seconds,
+        )
+        aggregate_alert_active = state.aggregate_alert_active and (
+            self._sum_window_entries(aggregate_window_entries) >= runtime.aggregate_min_notional_usd
+        )
         for fill in fills:
             fill_time = _int(fill.get("time")) or 0
             # `mark_seeded()` stores the latest seen fill timestamp. On later polls
@@ -133,18 +164,54 @@ class WhaleWatchHyperliquidWorker:
             if activity is None:
                 continue
             detected += 1
-            if activity.notional_usd < self.settings.min_notional_usd:
-                skipped_small += 1
-                continue
-            if not self.repository.save_activity(whale=whale, activity=activity):
-                continue
-            inserted += 1
-            sent_ok = self._send_activity(activity)
-            sent += int(sent_ok)
-            if not sent_ok:
-                telegram_error = f"telegram send failed fill={activity.fill_key}"
+            aggregate_window_entries = self._append_window_entry(
+                aggregate_window_entries,
+                activity=activity,
+                window_seconds=runtime.aggregate_window_seconds,
+            )
 
-        self.repository.record_success(address_id=whale.id, last_seen_time=max_seen_time, polled_at=polled_at)
+            should_send_single = activity.notional_usd >= runtime.single_fill_min_notional_usd
+            if should_send_single:
+                if self.repository.save_activity(whale=whale, activity=activity):
+                    inserted += 1
+                    sent_ok = self._send_activity(activity)
+                    sent += int(sent_ok)
+                    if not sent_ok:
+                        telegram_error = f"telegram send failed fill={activity.fill_key}"
+                continue
+
+            aggregate_total = self._sum_window_entries(aggregate_window_entries)
+            if aggregate_total >= runtime.aggregate_min_notional_usd and not aggregate_alert_active:
+                aggregate_activity = self._build_aggregate_activity(
+                    whale=whale,
+                    entries=aggregate_window_entries,
+                    aggregate_total=aggregate_total,
+                )
+                if self.repository.save_activity(whale=whale, activity=aggregate_activity):
+                    inserted += 1
+                    sent_ok = self._send_activity(aggregate_activity)
+                    sent += int(sent_ok)
+                    if not sent_ok:
+                        telegram_error = f"telegram send failed fill={aggregate_activity.fill_key}"
+                aggregate_alert_active = True
+            else:
+                suppressed += 1
+
+        aggregate_window_entries = self._trim_window_entries(
+            entries=aggregate_window_entries,
+            now_ms=max_seen_time or cutoff,
+            window_seconds=runtime.aggregate_window_seconds,
+        )
+        if self._sum_window_entries(aggregate_window_entries) < runtime.aggregate_min_notional_usd:
+            aggregate_alert_active = False
+
+        self.repository.record_success(
+            address_id=whale.id,
+            last_seen_time=max_seen_time,
+            polled_at=polled_at,
+            aggregate_window_entries=aggregate_window_entries,
+            aggregate_alert_active=aggregate_alert_active,
+        )
         if telegram_error:
             self.repository.record_error(address_id=whale.id, error=telegram_error, polled_at=polled_at)
         return {
@@ -152,7 +219,7 @@ class WhaleWatchHyperliquidWorker:
             "detected": detected,
             "inserted": inserted,
             "sent": sent,
-            "skipped_small": skipped_small,
+            "suppressed": suppressed,
         }
 
     def _send_activity(self, activity) -> bool:
@@ -181,7 +248,7 @@ class WhaleWatchHyperliquidWorker:
                     "detected": result.detected,
                     "inserted": result.inserted,
                     "sent": result.sent,
-                    "skipped_small": result.skipped_small,
+                    "suppressed": result.suppressed,
                     "failed": result.failed,
                 },
             )
@@ -192,6 +259,103 @@ class WhaleWatchHyperliquidWorker:
         deadline = time.monotonic() + self.settings.interval_seconds
         while not self._stop and time.monotonic() < deadline:
             time.sleep(min(1.0, deadline - time.monotonic()))
+
+    def _window_entry_from_activity(self, activity: HyperliquidActivity) -> HyperliquidWindowEntry:
+        return HyperliquidWindowEntry(
+            fill_key=activity.fill_key,
+            fill_time_ms=activity.fill_time_ms,
+            notional_usd=activity.notional_usd,
+            summary=activity.summary,
+            direction=activity.direction,
+            coin=activity.coin,
+        )
+
+    def _append_window_entry(
+        self,
+        entries: list[HyperliquidWindowEntry],
+        *,
+        activity: HyperliquidActivity,
+        window_seconds: int,
+    ) -> list[HyperliquidWindowEntry]:
+        next_entries = [entry for entry in entries if entry.fill_key != activity.fill_key]
+        next_entries.append(
+            HyperliquidWindowEntry(
+                fill_key=activity.fill_key,
+                fill_time_ms=activity.fill_time_ms,
+                notional_usd=activity.notional_usd,
+                summary=activity.summary,
+                direction=activity.direction,
+                coin=activity.coin,
+            )
+        )
+        return self._trim_window_entries(entries=next_entries, now_ms=activity.fill_time_ms, window_seconds=window_seconds)
+
+    def _trim_window_entries(
+        self,
+        *,
+        entries: list[HyperliquidWindowEntry],
+        now_ms: int | None,
+        window_seconds: int,
+    ) -> list[HyperliquidWindowEntry]:
+        if now_ms is None:
+            return list(entries)
+        cutoff_ms = now_ms - (window_seconds * 1000)
+        trimmed = [entry for entry in entries if entry.fill_time_ms >= cutoff_ms]
+        trimmed.sort(key=lambda item: (item.fill_time_ms, item.fill_key))
+        return trimmed
+
+    def _sum_window_entries(self, entries: list[HyperliquidWindowEntry]) -> Decimal:
+        total = Decimal("0")
+        for entry in entries:
+            total += entry.notional_usd
+        return total
+
+    def _build_aggregate_activity(
+        self,
+        *,
+        whale,
+        entries: list[HyperliquidWindowEntry],
+        aggregate_total: Decimal,
+    ) -> HyperliquidActivity:
+        latest = entries[-1]
+        fill_time = datetime.fromtimestamp(latest.fill_time_ms / 1000, UTC)
+        window_minutes = max(1, round((entries[-1].fill_time_ms - entries[0].fill_time_ms) / 60000)) if len(entries) > 1 else 0
+        summary = f"{len(entries)} 笔累计约 {format_money(aggregate_total)} USDC"
+        text = (
+            f"「{whale.label}」在近 {max(window_minutes, 1)} 分钟内累计开平仓 {len(entries)} 笔，"
+            f"名义价值约 {format_money(aggregate_total)} USDC，已超过聚合门槛\n"
+            f"最近一笔：{latest.summary}\n"
+            f"https://hyperbot.network/trader/{whale.address}"
+        )
+        return HyperliquidActivity(
+            alert_kind="aggregate",
+            fill_key=f"aggregate:{latest.fill_time_ms}:{len(entries)}:{format_money(aggregate_total)}",
+            coin="MULTI",
+            direction="Aggregate",
+            side="-",
+            price=Decimal("0"),
+            size=Decimal(str(len(entries))),
+            notional_usd=aggregate_total,
+            closed_pnl=Decimal("0"),
+            fill_time=fill_time,
+            fill_time_ms=latest.fill_time_ms,
+            telegram_text=text,
+            summary=summary,
+            aggregate_fill_count=len(entries),
+            raw_payload={
+                "kind": "aggregate",
+                "fill_keys": [entry.fill_key for entry in entries],
+                "window_entries": [
+                    {
+                        "fill_key": entry.fill_key,
+                        "fill_time_ms": entry.fill_time_ms,
+                        "notional_usd": str(entry.notional_usd),
+                        "summary": entry.summary,
+                    }
+                    for entry in entries
+                ],
+            },
+        )
 
     @contextmanager
     def _install_signal_handlers(self) -> Iterator[None]:

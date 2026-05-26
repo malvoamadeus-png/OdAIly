@@ -53,6 +53,7 @@ def detect_hyperliquid_activity(
     text += f"\n{address_url}"
 
     return HyperliquidActivity(
+        alert_kind="single",
         fill_key=fill_key,
         coin=coin,
         direction=direction,
@@ -65,6 +66,7 @@ def detect_hyperliquid_activity(
         fill_time_ms=fill_time_ms,
         telegram_text=text,
         summary=summary,
+        aggregate_fill_count=None,
         raw_payload=fill,
     )
 

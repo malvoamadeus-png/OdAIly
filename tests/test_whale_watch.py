@@ -10,7 +10,7 @@ from packages.common.config import WhaleWatchHyperliquidSettings, WhaleWatchSett
 from packages.whale_watch.chains import CHAIN_REGISTRY
 from packages.whale_watch.detector import detect_activity, normalize_evm_address
 from packages.whale_watch.hyperliquid_detector import detect_hyperliquid_activity
-from packages.whale_watch.models import ChainState, HyperliquidAddress, HyperliquidState, WhaleAddress
+from packages.whale_watch.models import ChainState, HyperliquidAddress, HyperliquidRuntimeSettings, HyperliquidState, WhaleAddress
 from packages.whale_watch.hyperliquid_worker import WhaleWatchHyperliquidWorker
 from packages.whale_watch.worker import WhaleWatchWorker
 from packages.x_processing.telegram import TelegramResult
@@ -163,7 +163,11 @@ def test_hyperliquid_worker_sends_large_activity_once_and_skips_small() -> None:
     telegram = FakeTelegramClient()
     worker = WhaleWatchHyperliquidWorker(
         repository=repo,
-        settings=WhaleWatchHyperliquidSettings(min_notional_usd=50000),
+        settings=WhaleWatchHyperliquidSettings(
+            single_fill_min_notional_usd=50000,
+            aggregate_min_notional_usd=1000000,
+            aggregate_window_seconds=600,
+        ),
         client=client,
         telegram_client=telegram,
         worker_id="test-hl",
@@ -175,10 +179,102 @@ def test_hyperliquid_worker_sends_large_activity_once_and_skips_small() -> None:
     assert first.detected == 2
     assert first.inserted == 1
     assert first.sent == 1
-    assert first.skipped_small == 1
+    assert first.suppressed == 1
     assert second.inserted == 0
     assert len(telegram.messages) == 1
     assert "fill:" in next(iter(repo.telegram_results))
+
+
+def test_hyperliquid_worker_sends_aggregate_alert_when_small_fills_cross_window_threshold() -> None:
+    repo = FakeHyperliquidRepository()
+    repo.runtime_settings = HyperliquidRuntimeSettings(
+        single_fill_min_notional_usd=Decimal("500000"),
+        aggregate_min_notional_usd=Decimal("1000000"),
+        aggregate_window_seconds=600,
+    )
+    repo.states[1] = HyperliquidState(address_id=1, seeded_at=datetime.now(UTC), last_seen_time=1779701000000)
+    client = FakeHyperliquidClient([aggregate_small_fill_one(), aggregate_small_fill_two(), aggregate_small_fill_three()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl-aggregate",
+    )
+
+    result = worker.run_once()
+
+    assert result.detected == 3
+    assert result.inserted == 1
+    assert result.sent == 1
+    assert "累计开平仓 3 笔" in telegram.messages[0]
+    assert "已超过聚合门槛" in telegram.messages[0]
+
+
+def test_hyperliquid_worker_does_not_repeat_aggregate_alert_while_window_stays_above_threshold() -> None:
+    repo = FakeHyperliquidRepository()
+    repo.runtime_settings = HyperliquidRuntimeSettings(
+        single_fill_min_notional_usd=Decimal("500000"),
+        aggregate_min_notional_usd=Decimal("1000000"),
+        aggregate_window_seconds=600,
+    )
+    repo.states[1] = HyperliquidState(address_id=1, seeded_at=datetime.now(UTC), last_seen_time=1779701000000)
+    client = FakeHyperliquidClient([aggregate_small_fill_one(), aggregate_small_fill_two(), aggregate_small_fill_three()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl-aggregate-repeat",
+    )
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.inserted == 1
+    assert second.inserted == 0
+    assert len(telegram.messages) == 1
+
+
+def test_hyperliquid_worker_can_rearm_aggregate_alert_after_window_drops_below_threshold() -> None:
+    repo = FakeHyperliquidRepository()
+    repo.runtime_settings = HyperliquidRuntimeSettings(
+        single_fill_min_notional_usd=Decimal("500000"),
+        aggregate_min_notional_usd=Decimal("1000000"),
+        aggregate_window_seconds=600,
+    )
+    repo.states[1] = HyperliquidState(address_id=1, seeded_at=datetime.now(UTC), last_seen_time=1779701000000)
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=FakeHyperliquidClient([aggregate_small_fill_one(), aggregate_small_fill_two(), aggregate_small_fill_three()]),
+        telegram_client=telegram,
+        worker_id="test-hl-aggregate-rearm",
+    )
+
+    first = worker.run_once()
+    worker.client = FakeHyperliquidClient(
+        [aggregate_small_fill_one(), aggregate_small_fill_two(), aggregate_small_fill_three(), aggregate_far_late_fill()]
+    )
+    second = worker.run_once()
+    worker.client = FakeHyperliquidClient(
+        [
+            aggregate_small_fill_one(),
+            aggregate_small_fill_two(),
+            aggregate_small_fill_three(),
+            aggregate_far_late_fill(),
+            aggregate_far_late_fill_two(),
+        ]
+    )
+    third = worker.run_once()
+
+    assert first.inserted == 1
+    assert second.inserted == 0
+    assert third.inserted == 1
+    assert len(telegram.messages) == 2
 
 
 def base_swap_tx() -> dict[str, Any]:
@@ -241,6 +337,86 @@ def small_hyper_fill() -> dict[str, Any]:
         "hash": "0xsmall",
         "oid": 111,
         "tid": 222,
+    }
+
+
+def aggregate_small_fill_one() -> dict[str, Any]:
+    return {
+        "coin": "ETH",
+        "px": "2500",
+        "sz": "180",
+        "side": "B",
+        "time": 1779704600000,
+        "startPosition": "0.0",
+        "dir": "Open Long",
+        "closedPnl": "0.0",
+        "hash": "0xaggregate1",
+        "oid": 211,
+        "tid": 311,
+    }
+
+
+def aggregate_small_fill_two() -> dict[str, Any]:
+    return {
+        "coin": "ETH",
+        "px": "2600",
+        "sz": "170",
+        "side": "S",
+        "time": 1779704660000,
+        "startPosition": "200",
+        "dir": "Close Long",
+        "closedPnl": "1200.0",
+        "hash": "0xaggregate2",
+        "oid": 212,
+        "tid": 312,
+    }
+
+
+def aggregate_small_fill_three() -> dict[str, Any]:
+    return {
+        "coin": "SOL",
+        "px": "180",
+        "sz": "1500",
+        "side": "B",
+        "time": 1779704720000,
+        "startPosition": "0.0",
+        "dir": "Open Long",
+        "closedPnl": "0.0",
+        "hash": "0xaggregate3",
+        "oid": 213,
+        "tid": 313,
+    }
+
+
+def aggregate_far_late_fill() -> dict[str, Any]:
+    return {
+        "coin": "ARB",
+        "px": "1.2",
+        "sz": "300000",
+        "side": "B",
+        "time": 1779705600000,
+        "startPosition": "0.0",
+        "dir": "Open Long",
+        "closedPnl": "0.0",
+        "hash": "0xaggregate4",
+        "oid": 214,
+        "tid": 314,
+    }
+
+
+def aggregate_far_late_fill_two() -> dict[str, Any]:
+    return {
+        "coin": "ARB",
+        "px": "1.3",
+        "sz": "500000",
+        "side": "S",
+        "time": 1779705660000,
+        "startPosition": "300000",
+        "dir": "Close Long",
+        "closedPnl": "23000.0",
+        "hash": "0xaggregate5",
+        "oid": 215,
+        "tid": 315,
     }
 
 
@@ -328,6 +504,20 @@ class FakeHyperliquidRepository:
         self.states: dict[int, HyperliquidState] = {}
         self.activities: set[tuple[int, str]] = set()
         self.telegram_results: dict[str, dict[str, Any]] = {}
+        self.runtime_settings = HyperliquidRuntimeSettings(
+            single_fill_min_notional_usd=Decimal("500000"),
+            aggregate_min_notional_usd=Decimal("1000000"),
+            aggregate_window_seconds=600,
+        )
+
+    def get_runtime_settings(
+        self,
+        *,
+        default_single_fill_min_notional_usd: Decimal,
+        default_aggregate_min_notional_usd: Decimal,
+        default_aggregate_window_seconds: int,
+    ) -> HyperliquidRuntimeSettings:
+        return self.runtime_settings
 
     def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]:
         return self.addresses
@@ -335,16 +525,34 @@ class FakeHyperliquidRepository:
     def get_state(self, *, address_id: int) -> HyperliquidState | None:
         return self.states.get(address_id)
 
-    def mark_seeded(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+    def mark_seeded(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries=None,
+        aggregate_alert_active: bool = False,
+    ) -> None:
         self.states[address_id] = HyperliquidState(
             address_id=address_id,
             seeded_at=polled_at,
             last_polled_at=polled_at,
             last_success_at=polled_at,
             last_seen_time=last_seen_time,
+            aggregate_window_entries=tuple(aggregate_window_entries or []),
+            aggregate_alert_active=aggregate_alert_active,
         )
 
-    def record_success(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+    def record_success(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries=None,
+        aggregate_alert_active: bool | None = None,
+    ) -> None:
         current = self.states.get(address_id) or HyperliquidState(address_id=address_id)
         self.states[address_id] = HyperliquidState(
             address_id=address_id,
@@ -352,6 +560,8 @@ class FakeHyperliquidRepository:
             last_polled_at=polled_at,
             last_success_at=polled_at,
             last_seen_time=last_seen_time,
+            aggregate_window_entries=tuple(aggregate_window_entries if aggregate_window_entries is not None else current.aggregate_window_entries),
+            aggregate_alert_active=current.aggregate_alert_active if aggregate_alert_active is None else aggregate_alert_active,
         )
 
     def record_error(self, *, address_id: int, error: str, polled_at: datetime) -> None:

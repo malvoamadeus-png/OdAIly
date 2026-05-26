@@ -1,21 +1,51 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.x_processing.repository import _import_psycopg, get_database_url
 
 from .detector import normalize_evm_address
-from .models import HyperliquidActivity, HyperliquidAddress, HyperliquidState
+from .models import (
+    HyperliquidActivity,
+    HyperliquidAddress,
+    HyperliquidRuntimeSettings,
+    HyperliquidState,
+    HyperliquidWindowEntry,
+)
 
 
 class WhaleWatchHyperliquidRepository(Protocol):
     def init_schema(self) -> None: ...
+    def get_runtime_settings(
+        self,
+        *,
+        default_single_fill_min_notional_usd: Decimal,
+        default_aggregate_min_notional_usd: Decimal,
+        default_aggregate_window_seconds: int,
+    ) -> HyperliquidRuntimeSettings: ...
     def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]: ...
     def get_state(self, *, address_id: int) -> HyperliquidState | None: ...
-    def mark_seeded(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None: ...
-    def record_success(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None: ...
+    def mark_seeded(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool = False,
+    ) -> None: ...
+    def record_success(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool | None = None,
+    ) -> None: ...
     def record_error(self, *, address_id: int, error: str, polled_at: datetime) -> None: ...
     def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> bool: ...
     def update_activity_telegram_result(self, *, fill_key: str, telegram_result: dict[str, Any]) -> None: ...
@@ -44,6 +74,44 @@ class PostgresWhaleWatchHyperliquidRepository:
             conn.execute(SCHEMA_SQL)
             conn.commit()
 
+    def get_runtime_settings(
+        self,
+        *,
+        default_single_fill_min_notional_usd: Decimal,
+        default_aggregate_min_notional_usd: Decimal,
+        default_aggregate_window_seconds: int,
+    ) -> HyperliquidRuntimeSettings:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO whale_watch_hyperliquid_settings (
+                    singleton_key,
+                    single_fill_min_notional_usd,
+                    aggregate_min_notional_usd,
+                    aggregate_window_seconds
+                )
+                VALUES ('global', %s, %s, %s)
+                ON CONFLICT (singleton_key) DO UPDATE SET
+                    singleton_key = EXCLUDED.singleton_key
+                RETURNING
+                    single_fill_min_notional_usd,
+                    aggregate_min_notional_usd,
+                    aggregate_window_seconds,
+                    updated_at
+                """,
+                (
+                    str(default_single_fill_min_notional_usd),
+                    str(default_aggregate_min_notional_usd),
+                    default_aggregate_window_seconds,
+                ),
+            ).fetchone()
+        return HyperliquidRuntimeSettings(
+            single_fill_min_notional_usd=Decimal(str(row["single_fill_min_notional_usd"])),
+            aggregate_min_notional_usd=Decimal(str(row["aggregate_min_notional_usd"])),
+            aggregate_window_seconds=int(row["aggregate_window_seconds"]),
+            updated_at=row.get("updated_at"),
+        )
+
     def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]:
         where_sql = "" if include_disabled else "WHERE enabled = true"
         with self._connect() as conn:
@@ -61,7 +129,8 @@ class PostgresWhaleWatchHyperliquidRepository:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT address_id, seeded_at, last_polled_at, last_success_at, last_error, last_seen_time
+                SELECT address_id, seeded_at, last_polled_at, last_success_at, last_error, last_seen_time,
+                       aggregate_window_entries, aggregate_alert_active
                 FROM whale_watch_hyperliquid_states
                 WHERE address_id = %s
                 """,
@@ -69,14 +138,23 @@ class PostgresWhaleWatchHyperliquidRepository:
             ).fetchone()
         return _row_to_state(row) if row else None
 
-    def mark_seeded(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+    def mark_seeded(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool = False,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO whale_watch_hyperliquid_states (
-                    address_id, seeded_at, last_polled_at, last_success_at, last_error, last_seen_time
+                    address_id, seeded_at, last_polled_at, last_success_at, last_error, last_seen_time,
+                    aggregate_window_entries, aggregate_alert_active
                 )
-                VALUES (%s, %s, %s, %s, NULL, %s)
+                VALUES (%s, %s, %s, %s, NULL, %s, %s, %s)
                 ON CONFLICT (address_id) DO UPDATE SET
                     seeded_at = COALESCE(whale_watch_hyperliquid_states.seeded_at, EXCLUDED.seeded_at),
                     last_polled_at = EXCLUDED.last_polled_at,
@@ -86,20 +164,39 @@ class PostgresWhaleWatchHyperliquidRepository:
                         COALESCE(whale_watch_hyperliquid_states.last_seen_time, 0),
                         COALESCE(EXCLUDED.last_seen_time, 0)
                     ),
+                    aggregate_window_entries = EXCLUDED.aggregate_window_entries,
+                    aggregate_alert_active = EXCLUDED.aggregate_alert_active,
                     updated_at = now()
                 """,
-                (address_id, polled_at, polled_at, polled_at, last_seen_time),
+                (
+                    address_id,
+                    polled_at,
+                    polled_at,
+                    polled_at,
+                    last_seen_time,
+                    self._Jsonb(_serialize_window_entries(aggregate_window_entries or [])),
+                    aggregate_alert_active,
+                ),
             )
             conn.commit()
 
-    def record_success(self, *, address_id: int, last_seen_time: int | None, polled_at: datetime) -> None:
+    def record_success(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO whale_watch_hyperliquid_states (
-                    address_id, last_polled_at, last_success_at, last_error, last_seen_time
+                    address_id, last_polled_at, last_success_at, last_error, last_seen_time,
+                    aggregate_window_entries, aggregate_alert_active
                 )
-                VALUES (%s, %s, %s, NULL, %s)
+                VALUES (%s, %s, %s, NULL, %s, %s, %s)
                 ON CONFLICT (address_id) DO UPDATE SET
                     last_polled_at = EXCLUDED.last_polled_at,
                     last_success_at = EXCLUDED.last_success_at,
@@ -108,9 +205,18 @@ class PostgresWhaleWatchHyperliquidRepository:
                         COALESCE(whale_watch_hyperliquid_states.last_seen_time, 0),
                         COALESCE(EXCLUDED.last_seen_time, 0)
                     ),
+                    aggregate_window_entries = COALESCE(EXCLUDED.aggregate_window_entries, whale_watch_hyperliquid_states.aggregate_window_entries),
+                    aggregate_alert_active = COALESCE(EXCLUDED.aggregate_alert_active, whale_watch_hyperliquid_states.aggregate_alert_active),
                     updated_at = now()
                 """,
-                (address_id, polled_at, polled_at, last_seen_time),
+                (
+                    address_id,
+                    polled_at,
+                    polled_at,
+                    last_seen_time,
+                    self._Jsonb(_serialize_window_entries(aggregate_window_entries or [])) if aggregate_window_entries is not None else None,
+                    aggregate_alert_active,
+                ),
             )
             conn.commit()
 
@@ -136,9 +242,9 @@ class PostgresWhaleWatchHyperliquidRepository:
                 INSERT INTO whale_watch_hyperliquid_activities (
                     address_id, fill_key, coin, direction, side, price, size,
                     notional_usd, closed_pnl, tx_hash, fill_time, fill_time_ms,
-                    summary, telegram_text, tx_url, raw_payload
+                    summary, telegram_text, tx_url, raw_payload, alert_kind, aggregate_fill_count
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (address_id, fill_key) DO NOTHING
                 RETURNING id
                 """,
@@ -159,6 +265,8 @@ class PostgresWhaleWatchHyperliquidRepository:
                     activity.telegram_text,
                     f"https://hyperbot.network/trader/{whale.address}",
                     self._Jsonb(activity.raw_payload),
+                    activity.alert_kind,
+                    activity.aggregate_fill_count,
                 ),
             ).fetchone()
             conn.commit()
@@ -231,10 +339,64 @@ def _row_to_state(row: dict[str, Any]) -> HyperliquidState:
         last_success_at=row.get("last_success_at"),
         last_error=row.get("last_error"),
         last_seen_time=row.get("last_seen_time"),
+        aggregate_window_entries=tuple(_deserialize_window_entries(row.get("aggregate_window_entries"))),
+        aggregate_alert_active=bool(row.get("aggregate_alert_active") or False),
     )
 
 
+def _serialize_window_entries(entries: list[HyperliquidWindowEntry]) -> list[dict[str, Any]]:
+    return [
+        {
+            "fill_key": entry.fill_key,
+            "fill_time_ms": entry.fill_time_ms,
+            "notional_usd": str(entry.notional_usd),
+            "summary": entry.summary,
+            "direction": entry.direction,
+            "coin": entry.coin,
+        }
+        for entry in entries
+    ]
+
+
+def _deserialize_window_entries(value: Any) -> list[HyperliquidWindowEntry]:
+    if not isinstance(value, list):
+        return []
+    entries: list[HyperliquidWindowEntry] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            entries.append(
+                HyperliquidWindowEntry(
+                    fill_key=str(item.get("fill_key") or ""),
+                    fill_time_ms=int(item.get("fill_time_ms") or 0),
+                    notional_usd=Decimal(str(item.get("notional_usd") or "0")),
+                    summary=str(item.get("summary") or ""),
+                    direction=str(item.get("direction") or "Aggregate"),
+                    coin=str(item.get("coin") or ""),
+                )
+            )
+        except Exception:
+            continue
+    return [entry for entry in entries if entry.fill_key and entry.fill_time_ms > 0]
+
+
 SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + """
+CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_settings (
+    singleton_key text PRIMARY KEY,
+    single_fill_min_notional_usd numeric(30, 8) NOT NULL DEFAULT 500000,
+    aggregate_min_notional_usd numeric(30, 8) NOT NULL DEFAULT 1000000,
+    aggregate_window_seconds integer NOT NULL DEFAULT 600,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT whale_watch_hyperliquid_settings_singleton CHECK (singleton_key = 'global'),
+    CONSTRAINT whale_watch_hyperliquid_settings_non_negative CHECK (
+        single_fill_min_notional_usd >= 0 AND
+        aggregate_min_notional_usd >= 0 AND
+        aggregate_window_seconds >= 60
+    )
+);
+
 CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_addresses (
     id bigserial PRIMARY KEY,
     address text NOT NULL,
@@ -253,6 +415,8 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_states (
     last_success_at timestamptz,
     last_error text,
     last_seen_time bigint,
+    aggregate_window_entries jsonb NOT NULL DEFAULT '[]'::jsonb,
+    aggregate_alert_active boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -273,6 +437,8 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
     fill_time_ms bigint NOT NULL,
     summary text NOT NULL,
     telegram_text text NOT NULL,
+    alert_kind text NOT NULL DEFAULT 'single' CHECK (alert_kind IN ('single', 'aggregate')),
+    aggregate_fill_count integer,
     telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     telegram_sent_at timestamptz,
     tx_url text NOT NULL,
@@ -284,6 +450,9 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
 
 CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_addresses_enabled
 ON whale_watch_hyperliquid_addresses(enabled, address_lower);
+
+CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_settings_singleton
+ON whale_watch_hyperliquid_settings(singleton_key);
 
 CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_activities_created
 ON whale_watch_hyperliquid_activities(created_at DESC);
@@ -304,10 +473,17 @@ CREATE TRIGGER trg_whale_watch_hyperliquid_addresses_notify
 AFTER INSERT OR UPDATE OR DELETE ON whale_watch_hyperliquid_addresses
 FOR EACH ROW EXECUTE FUNCTION notify_whale_watch_config_changed();
 
+DROP TRIGGER IF EXISTS trg_whale_watch_hyperliquid_settings_notify ON whale_watch_hyperliquid_settings;
+CREATE TRIGGER trg_whale_watch_hyperliquid_settings_notify
+AFTER INSERT OR UPDATE OR DELETE ON whale_watch_hyperliquid_settings
+FOR EACH ROW EXECUTE FUNCTION notify_whale_watch_config_changed();
+
+ALTER TABLE whale_watch_hyperliquid_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whale_watch_hyperliquid_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whale_watch_hyperliquid_states ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whale_watch_hyperliquid_activities ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS whale_watch_hyperliquid_settings_console_admin_all ON whale_watch_hyperliquid_settings;
 DROP POLICY IF EXISTS whale_watch_hyperliquid_addresses_console_admin_all ON whale_watch_hyperliquid_addresses;
 DROP POLICY IF EXISTS whale_watch_hyperliquid_states_console_admin_select ON whale_watch_hyperliquid_states;
 DROP POLICY IF EXISTS whale_watch_hyperliquid_activities_console_admin_select ON whale_watch_hyperliquid_activities;
@@ -315,16 +491,19 @@ DROP POLICY IF EXISTS whale_watch_hyperliquid_activities_console_admin_select ON
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON whale_watch_hyperliquid_addresses, whale_watch_hyperliquid_states, whale_watch_hyperliquid_activities FROM anon;
+        REVOKE ALL PRIVILEGES ON whale_watch_hyperliquid_settings, whale_watch_hyperliquid_addresses, whale_watch_hyperliquid_states, whale_watch_hyperliquid_activities FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE whale_watch_hyperliquid_addresses_id_seq, whale_watch_hyperliquid_activities_id_seq FROM anon;
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
         GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON whale_watch_hyperliquid_settings TO authenticated;
         GRANT SELECT, INSERT, UPDATE, DELETE ON whale_watch_hyperliquid_addresses TO authenticated;
         GRANT SELECT ON whale_watch_hyperliquid_states, whale_watch_hyperliquid_activities TO authenticated;
         GRANT USAGE, SELECT ON SEQUENCE whale_watch_hyperliquid_addresses_id_seq TO authenticated;
 
+        EXECUTE 'CREATE POLICY whale_watch_hyperliquid_settings_console_admin_all ON whale_watch_hyperliquid_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY whale_watch_hyperliquid_addresses_console_admin_all ON whale_watch_hyperliquid_addresses
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY whale_watch_hyperliquid_states_console_admin_select ON whale_watch_hyperliquid_states

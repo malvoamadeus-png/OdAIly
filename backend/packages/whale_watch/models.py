@@ -7,7 +7,8 @@ from typing import Any, Literal
 
 
 ActivityKind = Literal["transfer", "swap"]
-HyperliquidDirection = Literal["Open Long", "Open Short", "Close Long", "Close Short"]
+HyperliquidAlertKind = Literal["single", "aggregate"]
+HyperliquidDirection = Literal["Open Long", "Open Short", "Close Long", "Close Short", "Aggregate"]
 Direction = Literal["in", "out"]
 
 
@@ -52,6 +53,26 @@ class HyperliquidState:
     last_success_at: datetime | None = None
     last_error: str | None = None
     last_seen_time: int | None = None
+    aggregate_window_entries: tuple["HyperliquidWindowEntry", ...] = ()
+    aggregate_alert_active: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HyperliquidWindowEntry:
+    fill_key: str
+    fill_time_ms: int
+    notional_usd: Decimal
+    summary: str
+    direction: HyperliquidDirection
+    coin: str
+
+
+@dataclass(frozen=True, slots=True)
+class HyperliquidRuntimeSettings:
+    single_fill_min_notional_usd: Decimal
+    aggregate_min_notional_usd: Decimal
+    aggregate_window_seconds: int
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +103,7 @@ class Activity:
 
 @dataclass(frozen=True, slots=True)
 class HyperliquidActivity:
+    alert_kind: HyperliquidAlertKind
     fill_key: str
     coin: str
     direction: HyperliquidDirection
@@ -94,6 +116,7 @@ class HyperliquidActivity:
     fill_time_ms: int
     telegram_text: str
     summary: str
+    aggregate_fill_count: int | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -117,5 +140,5 @@ class HyperliquidRunResult:
     detected: int
     inserted: int
     sent: int
-    skipped_small: int
+    suppressed: int
     failed: dict[str, str]

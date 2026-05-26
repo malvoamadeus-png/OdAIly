@@ -488,7 +488,9 @@ class WhaleWatchSettings(BaseModel):
 
 class WhaleWatchHyperliquidSettings(BaseModel):
     interval_seconds: int = Field(default=60, ge=10, le=3600)
-    min_notional_usd: float = Field(default=50000.0, ge=0.0)
+    single_fill_min_notional_usd: float = Field(default=500000.0, ge=0.0)
+    aggregate_min_notional_usd: float = Field(default=1000000.0, ge=0.0)
+    aggregate_window_seconds: int = Field(default=600, ge=60, le=86400)
     request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
@@ -528,7 +530,9 @@ def load_whale_watch_hyperliquid_settings() -> WhaleWatchHyperliquidSettings:
     load_dotenv()
     payload = {
         "interval_seconds": int(os.getenv("WHALE_HYPERLIQUID_INTERVAL_SECONDS") or 60),
-        "min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_MIN_NOTIONAL_USD") or 200000.0),
+        "single_fill_min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_SINGLE_FILL_MIN_NOTIONAL_USD") or 500000.0),
+        "aggregate_min_notional_usd": float(os.getenv("WHALE_HYPERLIQUID_AGGREGATE_MIN_NOTIONAL_USD") or 1000000.0),
+        "aggregate_window_seconds": int(os.getenv("WHALE_HYPERLIQUID_AGGREGATE_WINDOW_SECONDS") or 600),
         "request_timeout_seconds": float(os.getenv("WHALE_HYPERLIQUID_REQUEST_TIMEOUT_SECONDS") or 20.0),
         "retry": {
             "max_attempts": int(os.getenv("WHALE_HYPERLIQUID_MAX_ATTEMPTS") or 3),
