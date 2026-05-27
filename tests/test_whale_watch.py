@@ -10,6 +10,7 @@ from packages.common.config import WhaleWatchHyperliquidSettings, WhaleWatchSett
 from packages.whale_watch.chains import CHAIN_REGISTRY
 from packages.whale_watch.detector import detect_activity, normalize_evm_address
 from packages.whale_watch.hyperliquid_detector import detect_hyperliquid_activity
+from packages.whale_watch.hyperliquid_repository import SCHEMA_SQL as HYPERLIQUID_SCHEMA_SQL
 from packages.whale_watch.models import ChainState, HyperliquidAddress, HyperliquidRuntimeSettings, HyperliquidState, WhaleAddress
 from packages.whale_watch.hyperliquid_worker import WhaleWatchHyperliquidWorker
 from packages.whale_watch.worker import WhaleWatchWorker
@@ -275,6 +276,12 @@ def test_hyperliquid_worker_can_rearm_aggregate_alert_after_window_drops_below_t
     assert second.inserted == 0
     assert third.inserted == 1
     assert len(telegram.messages) == 2
+
+
+def test_hyperliquid_schema_backfills_aggregate_columns_for_existing_states_table() -> None:
+    assert "ALTER TABLE whale_watch_hyperliquid_states" in HYPERLIQUID_SCHEMA_SQL
+    assert "ADD COLUMN IF NOT EXISTS aggregate_window_entries" in HYPERLIQUID_SCHEMA_SQL
+    assert "ADD COLUMN IF NOT EXISTS aggregate_alert_active" in HYPERLIQUID_SCHEMA_SQL
 
 
 def base_swap_tx() -> dict[str, Any]:

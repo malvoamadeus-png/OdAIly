@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from packages.external_media_alert import ALERT_PROMPT_KEY, InMemoryExternalMediaAlertRepository, MAINSTREAM_MEDIA_TASK_SOURCE
 from packages.external_media_alert.fetcher import get_site_registry, parse_feed_items
 from packages.external_media_alert.models import ExternalMediaSourceDefinition, MediaNewsflashItem
-from packages.external_media_alert.worker import ExternalMediaAlertWorker
+from packages.external_media_alert.worker import ExternalMediaAlertWorker, parse_domain_route
 from packages.common.config import ExternalMediaAlertSettings, RetrySettings
 from packages.x_processing.searcher import SearchDocument
 from packages.x_processing.telegram import TelegramResult
@@ -346,6 +346,20 @@ def test_domain_judge_discards_mainstream_market_analysis() -> None:
     assert repo.tasks[1].status == "discarded"
     assert repo.pipelines[1].discard_reason == "market_analysis"
     assert repo.pipelines[1].domain_output["discard_reason"] == "market_analysis"
+
+
+def test_parse_domain_route_defaults_missing_discard_reason_for_discard() -> None:
+    route, discard_reason = parse_domain_route('{"route":"discard"}')
+
+    assert route == "discard"
+    assert discard_reason == "non_crypto"
+
+
+def test_parse_domain_route_defaults_missing_discard_reason_for_crypto() -> None:
+    route, discard_reason = parse_domain_route('{"route":"crypto"}')
+
+    assert route == "crypto"
+    assert discard_reason == "none"
 
 
 def test_media_newsflash_save_enqueues_mainstream_media_task() -> None:

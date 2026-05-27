@@ -176,6 +176,12 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_states (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE whale_watch_hyperliquid_states
+    ADD COLUMN IF NOT EXISTS aggregate_window_entries jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE whale_watch_hyperliquid_states
+    ADD COLUMN IF NOT EXISTS aggregate_alert_active boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
     id bigserial PRIMARY KEY,
     address_id bigint NOT NULL REFERENCES whale_watch_hyperliquid_addresses(id) ON DELETE CASCADE,

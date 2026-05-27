@@ -473,12 +473,18 @@ def parse_domain_route(value: str) -> tuple[DomainJudgeRoute, DomainDiscardReaso
     if route not in {"crypto", "discard"}:
         raise ValueError(f"invalid domain route: {route}")
     discard_reason = payload.get("discard_reason")
-    if discard_reason not in {"none", "non_crypto", "market_analysis"}:
-        raise ValueError(f"invalid discard_reason: {discard_reason}")
+    if route == "discard":
+        if discard_reason in {None, ""}:
+            discard_reason = "non_crypto"
+        if discard_reason not in {"non_crypto", "market_analysis"}:
+            raise ValueError(f"invalid discard_reason: {discard_reason}")
+    else:
+        if discard_reason in {None, ""}:
+            discard_reason = "none"
+        if discard_reason != "none":
+            raise ValueError("crypto route requires discard_reason none")
     if route == "discard" and discard_reason == "none":
         raise ValueError("discard route requires a discard_reason")
-    if route != "discard" and discard_reason != "none":
-        raise ValueError("crypto route requires discard_reason none")
     return route, discard_reason
 
 
