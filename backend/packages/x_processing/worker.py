@@ -6,9 +6,10 @@ import re
 import select
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time as dt_time, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from packages.common.config import XProcessingSettings
 from packages.common.freshness import evaluate_source_freshness, freshness_error
@@ -26,6 +27,7 @@ from .models import (
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
+    PUBLISHER_CATEGORIES,
     PROMPT_KEY_BY_NEWS_TYPE,
     DiscardType,
     JudgeRoute,
@@ -188,6 +190,64 @@ CRYPTO_CONTEXT_PATTERN = re.compile(
 )
 
 DETERMINISTIC_JUDGE_MODEL = "deterministic-precheck"
+PUBLISHER_CATEGORY_ALLOWLIST = {
+    "policy_regulation",
+    "people_view",
+    "major_project_progress",
+    "funding",
+}
+PUBLISHER_CHANNEL_BY_SOURCE = {
+    NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
+    "x": "x",
+    "blockbeats": "competitor",
+    "panews": "competitor",
+    "jinse": "competitor",
+}
+PUBLISHER_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "publisher_category",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": [
+                    "policy_regulation",
+                    "people_view",
+                    "major_project_progress",
+                    "funding",
+                    "other",
+                ],
+            },
+            "reason": {"type": "string"},
+        },
+        "required": ["category", "reason"],
+    },
+    "strict": True,
+}
+PUBLISHER_PROMPT_TEMPLATE = """你是 Odaily 的自动发布分类器。
+
+请只根据这条稿件内容判断，它是否属于以下固定分类之一：
+- policy_regulation：政策法规
+- people_view：人物观点
+- major_project_progress：项目重大进展
+- funding：融资
+- other：不属于以上四类，或信息不够明确
+
+要求：
+1. 只输出 JSON，不要输出解释性正文。
+2. 如果不确定，必须输出 other。
+3. reason 只写一句简短中文原因，便于后台记录。
+
+原始来源：{source}
+原始标题：{source_title}
+原始正文：{source_content}
+
+定稿标题：{final_title}
+定稿正文：{final_content}
+"""
+SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class XProcessingWorker:
@@ -261,6 +321,11 @@ class XProcessingWorker:
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
         )
+
+    def _get_ai_client(self) -> TextGenerationClient:
+        if self.ai_client is None:
+            self.ai_client = self._build_ai_client()
+        return self.ai_client
 
     def _build_embedding_service(self) -> CachedEmbeddingService:
         if not self.settings.dashscope_api_key:
@@ -351,6 +416,8 @@ class XProcessingWorker:
             self._run_write(task)
         elif self.stage == "format_publish":
             self._run_format_publish(task)
+        elif self.stage == "publish":
+            self._run_publish(task)
         else:
             raise ValueError(f"unknown stage: {self.stage}")
 
@@ -407,7 +474,7 @@ class XProcessingWorker:
                 content=task.content,
             )
             schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
-        raw_output = self.ai_client.generate_text(
+        raw_output = self._get_ai_client().generate_text(
             model=self.settings.judge_model,
             prompt=prompt,
             text_format=schema,
@@ -532,7 +599,7 @@ class XProcessingWorker:
             raise ValueError("missing news_type")
         prompt = self._get_prompt(template_key)
         input_prompt = build_writer_prompt(task=task, prompt=prompt)
-        raw_output = self.ai_client.generate_text(
+        raw_output = self._get_ai_client().generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
             reasoning_effort=self.settings.writer_reasoning_effort,
@@ -559,21 +626,229 @@ class XProcessingWorker:
             self.repository.fail_task(task.id, stage=self.stage, error=str(exc), status="format_failed")
             self._release_local_candidate_for_task(task.id, release_reason="format_failed")
             raise HandledStageError(str(exc)) from exc
+        self.repository.complete_format_publish(
+            task.id,
+            final_title=final.title,
+            final_content=final.content,
+        )
+
+    def _run_publish(self, task: TaskRecord) -> None:
+        pipeline = self.repository.get_pipeline(task.id)
+        decided_at = datetime.now(UTC)
+        publisher_channel = resolve_publisher_channel(task)
+        if not pipeline.final_title or not pipeline.final_content:
+            error = "missing final title or content"
+            self.repository.complete_publish(
+                task.id,
+                publisher_channel=publisher_channel,
+                publisher_model=None,
+                publisher_category=None,
+                publisher_decision="failed",
+                publisher_reason_code="format_missing",
+                publisher_output={"source": task.source},
+                push_result={},
+                telegram_result={},
+                decided_at=decided_at,
+                status="publisher_failed",
+                last_error=error,
+            )
+            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
+            raise HandledStageError(error)
+
+        publisher_settings = self.repository.get_publisher_settings()
+        publisher_channels = {item.channel_key: item for item in self.repository.list_publisher_channels()}
+        context_output = {
+            "source": task.source,
+            "publisher_channel": publisher_channel,
+            "timezone": publisher_settings.timezone,
+            "window_start_local": normalize_local_time_text(publisher_settings.window_start_local),
+            "window_end_local": normalize_local_time_text(publisher_settings.window_end_local),
+        }
+        now_local = decided_at.astimezone(resolve_publisher_timezone(publisher_settings.timezone))
+        context_output["decision_local_time"] = now_local.strftime("%Y-%m-%d %H:%M")
+
+        if not publisher_settings.enabled:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code="publisher_disabled",
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
+        if publisher_channel is None:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=None,
+                reason_code="source_not_eligible",
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
+        channel_config = publisher_channels.get(publisher_channel)
+        if channel_config is None or not channel_config.enabled:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code="channel_disabled",
+                output={**context_output, "channel_enabled": False},
+                decided_at=decided_at,
+            )
+            return
+
+        if not is_within_publish_window(
+            now_local=now_local,
+            window_start_local=publisher_settings.window_start_local,
+            window_end_local=publisher_settings.window_end_local,
+        ):
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code="outside_publish_window",
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
+        try:
+            raw_output = self._get_ai_client().generate_text(
+                model=self.settings.publisher_model,
+                prompt=build_publisher_prompt(task=task, pipeline=pipeline),
+                text_format=PUBLISHER_JSON_SCHEMA,
+                reasoning_effort=self.settings.publisher_reasoning_effort,
+            )
+            category, reason = parse_publisher_output(raw_output)
+        except Exception as exc:
+            error = str(exc)
+            self.repository.complete_publish(
+                task.id,
+                publisher_channel=publisher_channel,
+                publisher_model=self.settings.publisher_model,
+                publisher_category=None,
+                publisher_decision="failed",
+                publisher_reason_code="model_failed",
+                publisher_output={**context_output, "error": error},
+                push_result={},
+                telegram_result={},
+                decided_at=decided_at,
+                status="publisher_failed",
+                last_error=error,
+            )
+            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
+            raise HandledStageError(error) from exc
+
+        should_publish = category in PUBLISHER_CATEGORY_ALLOWLIST
         push_result = self.push_client.push(
-            title=final.title,
-            content=final.content,
+            title=pipeline.final_title,
+            content=pipeline.final_content,
             dry_run=self.settings.dry_run,
             source_url=None if hide_source_url(task) else task.source_url,
+            is_publish=should_publish,
+            is_push=False,
+        )
+        push_payload = push_result.model_dump(mode="json")
+        publisher_output = {
+            **context_output,
+            "category": category,
+            "reason": reason,
+            "raw_output": raw_output,
+        }
+        if not push_result.ok:
+            error = push_result.error or "push failed"
+            self.repository.complete_publish(
+                task.id,
+                publisher_channel=publisher_channel,
+                publisher_model=self.settings.publisher_model,
+                publisher_category=category,
+                publisher_decision="failed",
+                publisher_reason_code="push_failed",
+                publisher_output=publisher_output,
+                push_result=push_payload,
+                telegram_result={},
+                decided_at=decided_at,
+                status="publisher_failed",
+                last_error=error,
+            )
+            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
+            raise HandledStageError(error)
+
+        telegram_result = self._send_publish_notice(task=task, pipeline=pipeline)
+        self.repository.complete_publish(
+            task.id,
+            publisher_channel=publisher_channel,
+            publisher_model=self.settings.publisher_model,
+            publisher_category=category,
+            publisher_decision="auto_publish" if should_publish else "manual_review",
+            publisher_reason_code="category_allowed" if should_publish else "category_other",
+            publisher_output=publisher_output,
+            push_result=push_payload,
+            telegram_result=telegram_result.model_dump(mode="json"),
+            decided_at=decided_at,
+            status="auto_published" if should_publish else "ready_review",
+        )
+
+    def _complete_manual_review_publish(
+        self,
+        *,
+        task: TaskRecord,
+        pipeline: PipelineRecord,
+        publisher_channel: str | None,
+        reason_code: str,
+        output: dict[str, Any],
+        decided_at: datetime,
+    ) -> None:
+        push_result = self.push_client.push(
+            title=pipeline.final_title or task.title or "",
+            content=pipeline.final_content or task.content,
+            dry_run=self.settings.dry_run,
+            source_url=None if hide_source_url(task) else task.source_url,
+            is_publish=False,
+            is_push=False,
         )
         if not push_result.ok:
             error = push_result.error or "push failed"
-            self.repository.fail_task(task.id, stage=self.stage, error=error, status="publish_failed")
-            self._release_local_candidate_for_task(task.id, release_reason="publish_failed")
+            self.repository.complete_publish(
+                task.id,
+                publisher_channel=publisher_channel,
+                publisher_model=None,
+                publisher_category=None,
+                publisher_decision="failed",
+                publisher_reason_code="push_failed",
+                publisher_output=output,
+                push_result=push_result.model_dump(mode="json"),
+                telegram_result={},
+                decided_at=decided_at,
+                status="publisher_failed",
+                last_error=error,
+            )
+            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
             raise HandledStageError(error)
-        telegram_result = self.telegram_client.send_message(
+        telegram_result = self._send_publish_notice(task=task, pipeline=pipeline)
+        self.repository.complete_publish(
+            task.id,
+            publisher_channel=publisher_channel,
+            publisher_model=None,
+            publisher_category=None,
+            publisher_decision="manual_review",
+            publisher_reason_code=reason_code,
+            publisher_output=output,
+            push_result=push_result.model_dump(mode="json"),
+            telegram_result=telegram_result.model_dump(mode="json"),
+            decided_at=decided_at,
+            status="ready_review",
+        )
+
+    def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
+        return self.telegram_client.send_message(
             build_telegram_notice(
                 source=task.source,
-                title=final.title,
+                title=pipeline.final_title or task.title or "",
                 source_url=task.source_url,
                 route_label=resolve_notice_route_label(task=task, pipeline=pipeline),
                 feature_mode_enabled=pipeline.writer_feature_mode_enabled,
@@ -583,13 +858,6 @@ class XProcessingWorker:
                     else None
                 ),
             )
-        )
-        self.repository.complete_format_publish(
-            task.id,
-            final_title=final.title,
-            final_content=final.content,
-            push_result=push_result.model_dump(mode="json"),
-            telegram_result=telegram_result.model_dump(mode="json"),
         )
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
@@ -779,6 +1047,72 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
         f"原文内容：{task.content}\n\n"
         "请严格输出一行标题、空一行、正文。不要输出解释。"
     )
+
+
+def build_publisher_prompt(*, task: TaskRecord, pipeline: PipelineRecord) -> str:
+    return PUBLISHER_PROMPT_TEMPLATE.format(
+        source=task.source,
+        source_title=task.title or "",
+        source_content=task.content,
+        final_title=pipeline.final_title or "",
+        final_content=pipeline.final_content or "",
+    )
+
+
+def parse_publisher_output(value: str) -> tuple[str, str]:
+    text = value.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("publisher output must be a JSON object")
+    category = str(payload.get("category") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    if category not in PUBLISHER_CATEGORIES:
+        raise ValueError(f"invalid publisher category: {category}")
+    if not reason:
+        raise ValueError("publisher reason is required")
+    return category, reason
+
+
+def resolve_publisher_channel(task: TaskRecord) -> str | None:
+    return PUBLISHER_CHANNEL_BY_SOURCE.get(task.source)
+
+
+def resolve_publisher_timezone(value: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(value or "Asia/Shanghai")
+    except Exception:
+        return SHANGHAI_TZ
+
+
+def normalize_local_time_text(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "00:00"
+    return text[:5] if len(text) >= 5 else text
+
+
+def parse_local_time(value: str | None) -> dt_time:
+    text = normalize_local_time_text(value)
+    hour_text, minute_text = text.split(":", maxsplit=1)
+    return dt_time(hour=int(hour_text), minute=int(minute_text))
+
+
+def is_within_publish_window(*, now_local: datetime, window_start_local: str, window_end_local: str) -> bool:
+    current = now_local.time().replace(second=0, microsecond=0)
+    start = parse_local_time(window_start_local)
+    end = parse_local_time(window_end_local)
+    if start == end:
+        return True
+    if start < end:
+        return start <= current <= end
+    return current >= start or current <= end
 
 
 def parse_judge_route(value: str) -> tuple[JudgeRoute, DiscardType]:

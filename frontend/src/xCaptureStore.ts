@@ -13,6 +13,23 @@ export type NonMainstreamSettings = {
   updated_at: string | null;
 };
 
+export type PublisherChannelKey = 'external_media' | 'x' | 'competitor';
+
+export type PublisherSettings = {
+  enabled: boolean;
+  timezone: string;
+  window_start_local: string;
+  window_end_local: string;
+  updated_at: string | null;
+};
+
+export type PublisherChannel = {
+  channel_key: PublisherChannelKey;
+  display_name: string;
+  enabled: boolean;
+  updated_at: string | null;
+};
+
 export type Account = {
   id: number;
   username: string;
@@ -314,6 +331,20 @@ const defaultNonMainstreamSettings: NonMainstreamSettings = {
   updated_at: null,
 };
 
+const defaultPublisherSettings: PublisherSettings = {
+  enabled: true,
+  timezone: 'Asia/Shanghai',
+  window_start_local: '00:01',
+  window_end_local: '07:30',
+  updated_at: null,
+};
+
+const defaultPublisherChannels: PublisherChannel[] = [
+  { channel_key: 'external_media', display_name: '外媒', enabled: true, updated_at: null },
+  { channel_key: 'x', display_name: 'X', enabled: false, updated_at: null },
+  { channel_key: 'competitor', display_name: '竞品', enabled: false, updated_at: null },
+];
+
 const usernamePattern = /^[A-Za-z0-9_]{1,15}$/;
 const reservedPaths = new Set([
   'home',
@@ -379,6 +410,23 @@ export async function getCurrentConsoleAdmin(): Promise<ConsoleAdmin | null> {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function normalizeLocalTime(value: string | null | undefined, fallback: string): string {
+  const text = (value ?? '').trim();
+  if (!text) {
+    return fallback;
+  }
+  return text.slice(0, 5);
+}
+
+function normalizePublisherSettings(row: PublisherSettings): PublisherSettings {
+  return {
+    ...row,
+    timezone: row.timezone || defaultPublisherSettings.timezone,
+    window_start_local: normalizeLocalTime(row.window_start_local, defaultPublisherSettings.window_start_local),
+    window_end_local: normalizeLocalTime(row.window_end_local, defaultPublisherSettings.window_end_local),
+  };
 }
 
 function assertData<T>(data: T | null, fallbackMessage: string): T {
@@ -551,6 +599,108 @@ export async function updateNonMainstreamSettings(
     .single();
   raise(error);
   return assertData(data as NonMainstreamSettings | null, '保存非主流媒体全局配置失败');
+}
+
+export async function getPublisherSettings(): Promise<PublisherSettings> {
+  const selectFields = 'enabled,timezone,window_start_local,window_end_local,updated_at';
+  const { data, error } = await supabase()
+    .from('publisher_settings')
+    .select(selectFields)
+    .eq('singleton_key', 'global')
+    .maybeSingle();
+  raise(error);
+  if (data) {
+    return normalizePublisherSettings(data as PublisherSettings);
+  }
+
+  const created = await supabase()
+    .from('publisher_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        enabled: defaultPublisherSettings.enabled,
+        timezone: defaultPublisherSettings.timezone,
+        window_start_local: defaultPublisherSettings.window_start_local,
+        window_end_local: defaultPublisherSettings.window_end_local,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select(selectFields)
+    .single();
+  raise(created.error);
+  return normalizePublisherSettings(assertData(created.data as PublisherSettings | null, '无法初始化发布者配置'));
+}
+
+async function seedPublisherChannels(): Promise<void> {
+  const { error } = await supabase()
+    .from('publisher_channels')
+    .upsert(
+      defaultPublisherChannels.map((item) => ({
+        channel_key: item.channel_key,
+        display_name: item.display_name,
+        enabled: item.enabled,
+        updated_at: nowIso(),
+      })),
+      { onConflict: 'channel_key' },
+    );
+  raise(error);
+}
+
+export async function listPublisherChannels(): Promise<PublisherChannel[]> {
+  const selectFields = 'channel_key,display_name,enabled,updated_at';
+  const { data, error } = await supabase()
+    .from('publisher_channels')
+    .select(selectFields)
+    .order('channel_key', { ascending: true });
+  raise(error);
+  if ((data ?? []).length > 0) {
+    return (data ?? []) as PublisherChannel[];
+  }
+
+  await seedPublisherChannels();
+  const seeded = await supabase()
+    .from('publisher_channels')
+    .select(selectFields)
+    .order('channel_key', { ascending: true });
+  raise(seeded.error);
+  return (seeded.data ?? []) as PublisherChannel[];
+}
+
+export async function updatePublisherSettings(
+  payload: Pick<PublisherSettings, 'enabled' | 'window_start_local' | 'window_end_local'>,
+): Promise<PublisherSettings> {
+  const { data, error } = await supabase()
+    .from('publisher_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        enabled: payload.enabled,
+        timezone: defaultPublisherSettings.timezone,
+        window_start_local: payload.window_start_local,
+        window_end_local: payload.window_end_local,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select('enabled,timezone,window_start_local,window_end_local,updated_at')
+    .single();
+  raise(error);
+  return normalizePublisherSettings(assertData(data as PublisherSettings | null, '保存发布者配置失败'));
+}
+
+export async function updatePublisherChannel(channelKey: PublisherChannelKey, enabled: boolean): Promise<PublisherChannel> {
+  const { data, error } = await supabase()
+    .from('publisher_channels')
+    .update({
+      enabled,
+      updated_at: nowIso(),
+    })
+    .eq('channel_key', channelKey)
+    .select('channel_key,display_name,enabled,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as PublisherChannel | null, '保存发布渠道失败');
 }
 
 export async function listAccounts(): Promise<Account[]> {

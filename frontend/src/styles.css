@@ -214,6 +214,12 @@ h2 {
   margin-top: 18px;
 }
 
+.publisherLayout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
 .whaleLayout {
   display: grid;
   gap: 18px;
@@ -228,7 +234,8 @@ h2 {
 
 .settingsForm,
 .addAccount,
-.nonMainstreamSettingsForm {
+.nonMainstreamSettingsForm,
+.publisherSettingsForm {
   display: grid;
   grid-template-columns: repeat(3, minmax(110px, 1fr)) 112px;
   gap: 10px;
@@ -373,6 +380,78 @@ textarea:focus {
 
 .nonMainstreamSettingsForm {
   grid-template-columns: minmax(140px, 220px) minmax(140px, 220px) 112px;
+}
+
+.publisherSettingsForm {
+  grid-template-columns: minmax(200px, 1.3fr) minmax(150px, 180px) minmax(120px, 160px) minmax(120px, 160px) 112px;
+}
+
+.publisherSection {
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.publisherHint {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.publisherList,
+.publisherCategoryList {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.publisherRow,
+.publisherCategoryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.publisherRow strong,
+.publisherRow span,
+.publisherCategoryRow strong,
+.publisherCategoryRow span {
+  display: block;
+}
+
+.publisherRow span,
+.publisherCategoryRow span,
+.publisherCategoryRow small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.publisherRow input,
+.publisherToggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.publisherToggle {
+  gap: 8px;
+}
+
+.publisherToggle small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.readonlyInput {
+  background: #f8fafb;
+  color: #6b7280;
 }
 
 .accountList,
@@ -1026,6 +1105,7 @@ textarea:focus {
   .addAccount,
   .whaleAddressForm,
   .nonMainstreamSettingsForm,
+  .publisherSettingsForm,
   .accountRow,
   .sourceRow,
   .promptLayout,

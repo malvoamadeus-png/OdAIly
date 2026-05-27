@@ -40,6 +40,7 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "x_process_search",
     "x_process_write",
     "x_process_format_publish",
+    "x_process_publish",
 ]
 
 MONITORED_TASK_SOURCES = ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"]
@@ -135,7 +136,7 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (
                     MONITORED_TASK_SOURCES,
-                    ["pending", "judged", "searched", "classified", "deduped", "written"],
+                    ["pending", "judged", "searched", "classified", "deduped", "written", "publisher_pending"],
                     cutoff,
                 ),
             ).fetchall()
@@ -158,7 +159,7 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (
                     MONITORED_TASK_SOURCES,
-                    ["judging", "classifying", "deduping", "writing", "formatting", "notifying"],
+                    ["judging", "classifying", "deduping", "writing", "formatting", "publishing", "notifying"],
                     cutoff,
                 ),
             ).fetchall()
@@ -179,7 +180,16 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (
                     MONITORED_TASK_SOURCES,
-                    ["judge_failed", "domain_failed", "search_failed", "write_failed", "format_failed", "publish_failed", "notify_failed"],
+                    [
+                        "judge_failed",
+                        "domain_failed",
+                        "search_failed",
+                        "write_failed",
+                        "format_failed",
+                        "publish_failed",
+                        "publisher_failed",
+                        "notify_failed",
+                    ],
                     since,
                     threshold,
                 ),

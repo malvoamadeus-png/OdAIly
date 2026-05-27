@@ -8,7 +8,10 @@ from typing import Any, Literal
 NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "discard"]
 DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
-ProcessingStage = Literal["judge", "search", "write", "format_publish"]
+ProcessingStage = Literal["judge", "search", "write", "format_publish", "publish"]
+PublisherChannelKey = Literal["external_media", "x", "competitor"]
+PublisherCategory = Literal["policy_regulation", "people_view", "major_project_progress", "funding", "other"]
+PublisherDecision = Literal["auto_publish", "manual_review", "failed"]
 
 
 NON_MAINSTREAM_MEDIA_SOURCE = "non_mainstream_media"
@@ -22,6 +25,15 @@ SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOUR
 PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
 WRITE_ONLY_SOURCES: set[str] = {MAINSTREAM_MEDIA_SOURCE}
 WRITE_STAGE_SOURCES: set[str] = {*PROCESSING_SOURCES, *WRITE_ONLY_SOURCES}
+PUBLISHER_CHANNEL_KEYS: set[str] = {"external_media", "x", "competitor"}
+PUBLISHER_CATEGORIES: set[str] = {
+    "policy_regulation",
+    "people_view",
+    "major_project_progress",
+    "funding",
+    "other",
+}
+PUBLISHER_DECISIONS: set[str] = {"auto_publish", "manual_review", "failed"}
 FEATURE_MODE_PREFIX = "开启特色模式"
 ACTIVE_CANDIDATE_TTL = timedelta(hours=24)
 
@@ -47,7 +59,8 @@ STAGE_SPECS: dict[ProcessingStage, StageSpec] = {
     "judge": StageSpec("pending", "judging", "judged", "judge_failed"),
     "search": StageSpec("judged", "deduping", "deduped", "search_failed"),
     "write": StageSpec("deduped", "writing", "written", "write_failed"),
-    "format_publish": StageSpec("written", "formatting", "ready_review", "publish_failed"),
+    "format_publish": StageSpec("written", "formatting", "publisher_pending", "format_failed"),
+    "publish": StageSpec("publisher_pending", "publishing", "ready_review", "publisher_failed"),
 }
 
 
@@ -79,9 +92,33 @@ class PipelineRecord:
     draft_content: str | None = None
     final_title: str | None = None
     final_content: str | None = None
+    publisher_channel: PublisherChannelKey | None = None
+    publisher_model: str | None = None
+    publisher_category: PublisherCategory | None = None
+    publisher_decision: PublisherDecision | None = None
+    publisher_reason_code: str | None = None
+    publisher_output: dict[str, Any] = field(default_factory=dict)
+    publisher_decided_at: datetime | None = None
     push_result: dict[str, Any] = field(default_factory=dict)
     telegram_result: dict[str, Any] = field(default_factory=dict)
     last_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PublisherSettingsRecord:
+    enabled: bool
+    timezone: str
+    window_start_local: str
+    window_end_local: str
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PublisherChannelRecord:
+    channel_key: PublisherChannelKey
+    display_name: str
+    enabled: bool
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

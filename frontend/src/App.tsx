@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCcw,
   Save,
+  Send,
   Star,
   Trash2,
   Wallet,
@@ -28,9 +29,11 @@ import {
   getWhaleWatchHyperliquidSettings,
   getCurrentConsoleAdmin,
   getCurrentSession,
+  getPublisherSettings,
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
+  listPublisherChannels,
   loadDashboard,
   loadWhaleWatchDashboard,
   listPromptTemplates,
@@ -49,6 +52,8 @@ import {
   updateAccount,
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
+  updatePublisherChannel,
+  updatePublisherSettings,
   updatePromptTemplateFeatureMode,
   updateSettings,
   updateWhaleWatchAddress,
@@ -60,6 +65,8 @@ import {
   type NonMainstreamDashboardPayload,
   type NonMainstreamSettings,
   type NonMainstreamSource,
+  type PublisherChannel,
+  type PublisherSettings,
   type Settings,
   type TaskItem,
   type WhaleWatchActivity,
@@ -93,6 +100,22 @@ const emptyNonMainstreamSettings: NonMainstreamSettings = {
   jitter_seconds: 5,
   updated_at: null,
 };
+
+const emptyPublisherSettings: PublisherSettings = {
+  enabled: true,
+  timezone: 'Asia/Shanghai',
+  window_start_local: '00:01',
+  window_end_local: '07:30',
+  updated_at: null,
+};
+
+const publisherCategoryItems = [
+  { key: 'policy_regulation', label: '政策法规', description: '命中后允许自动发布' },
+  { key: 'people_view', label: '人物观点', description: '命中后允许自动发布' },
+  { key: 'major_project_progress', label: '项目重大进展', description: '命中后允许自动发布' },
+  { key: 'funding', label: '融资', description: '命中后允许自动发布' },
+  { key: 'other', label: '其他', description: '只挂后台，不自动发布' },
+] as const;
 
 function fmtTime(value: string | null | undefined): string {
   if (!value) return '-';
@@ -373,18 +396,24 @@ export function App() {
 function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
+  const [publisherSettings, setPublisherSettings] = useState<PublisherSettings>(emptyPublisherSettings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
+  const [publisherChannels, setPublisherChannels] = useState<PublisherChannel[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<'x' | 'non_mainstream' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'>('x');
+  const [view, setView] = useState<
+    'x' | 'non_mainstream' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+  >('x');
   const [loading, setLoading] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
+  const [loadingPublisher, setLoadingPublisher] = useState(true);
   const [loadingWhaleWatch, setLoadingWhaleWatch] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingNonMainstreamSettings, setSavingNonMainstreamSettings] = useState(false);
+  const [savingPublisherSettings, setSavingPublisherSettings] = useState(false);
   const [newAccount, setNewAccount] = useState({
     username_or_url: '',
     display_name: '',
@@ -433,6 +462,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     () => nonMainstreamSources.filter((source) => source.enabled).length,
     [nonMainstreamSources],
   );
+  const enabledPublisherChannelCount = useMemo(
+    () => publisherChannels.filter((channel) => channel.enabled).length,
+    [publisherChannels],
+  );
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
     value: string,
@@ -469,6 +502,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setNonMainstreamSettings(dashboard.settings);
     setNonMainstreamSources(dashboard.sources);
     setLoadingNonMainstream(false);
+  }
+
+  async function loadPublisherAll() {
+    setError('');
+    const [nextSettings, nextChannels] = await Promise.all([getPublisherSettings(), listPublisherChannels()]);
+    setPublisherSettings(nextSettings);
+    setPublisherChannels(nextChannels);
+    setLoadingPublisher(false);
   }
 
   async function loadWhaleWatchAll() {
@@ -540,15 +581,17 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   useEffect(() => {
-    Promise.all([loadAll(), loadNonMainstreamAll(), loadWhaleWatchAll()]).catch((err: Error) => {
+    Promise.all([loadAll(), loadNonMainstreamAll(), loadPublisherAll(), loadWhaleWatchAll()]).catch((err: Error) => {
       setError(err.message);
       setLoading(false);
       setLoadingNonMainstream(false);
+      setLoadingPublisher(false);
       setLoadingWhaleWatch(false);
     });
     const timer = window.setInterval(() => {
       loadAll().catch((err: Error) => setError(err.message));
       loadNonMainstreamAll().catch((err: Error) => setError(err.message));
+      loadPublisherAll().catch((err: Error) => setError(err.message));
       loadWhaleWatchAll().catch((err: Error) => setError(err.message));
     }, 10000);
     return () => window.clearInterval(timer);
@@ -605,6 +648,26 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function savePublisherSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingPublisherSettings(true);
+    setError('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const updated = await updatePublisherSettings({
+        enabled: form.get('enabled') === 'on',
+        window_start_local: String(form.get('window_start_local') || publisherSettings.window_start_local),
+        window_end_local: String(form.get('window_end_local') || publisherSettings.window_end_local),
+      });
+      setPublisherSettings(updated);
+      setMessage('发布者配置已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingPublisherSettings(false);
+    }
+  }
+
   function switchView(nextView: typeof view) {
     if (nextView === 'events' || nextView === 'favorites') {
       setEventPage(0);
@@ -647,6 +710,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     try {
       await updateNonMainstreamSource(source.id, { enabled });
       await loadNonMainstreamAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function togglePublisherChannel(channel: PublisherChannel, enabled: boolean) {
+    setError('');
+    try {
+      await updatePublisherChannel(channel.channel_key, enabled);
+      await loadPublisherAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -923,6 +996,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X Capture'
       : view === 'non_mainstream'
         ? 'External Media'
+        : view === 'publisher'
+          ? 'Publisher'
         : view === 'whale'
           ? 'Whale Watch'
         : view === 'prompts'
@@ -937,6 +1012,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X 抓取控制台'
       : view === 'non_mainstream'
         ? '外媒抓取控制台'
+      : view === 'publisher'
+        ? '发布者控制台'
       : view === 'whale'
         ? '巨鲸'
       : view === 'prompts'
@@ -951,6 +1028,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
       : view === 'non_mainstream'
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
+      : view === 'publisher'
+        ? `${enabledPublisherChannelCount} 个启用渠道 · 北京时间 ${publisherSettings.window_start_local}-${publisherSettings.window_end_local}`
       : view === 'whale'
         ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
       : view === 'prompts'
@@ -963,6 +1042,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? loadAll()
       : view === 'non_mainstream'
         ? loadNonMainstreamAll()
+      : view === 'publisher'
+        ? loadPublisherAll()
       : view === 'whale'
         ? loadWhaleWatchAll()
       : view === 'prompts'
@@ -991,6 +1072,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onClick={() => switchView('non_mainstream')}
           >
             <Globe2 size={18} /> 外媒
+          </button>
+          <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
+            <Send size={18} /> 发布者
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
@@ -1161,6 +1245,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
+          />
+        ) : view === 'publisher' ? (
+          <PublisherPanel
+            settings={publisherSettings}
+            channels={publisherChannels}
+            loading={loadingPublisher}
+            saving={savingPublisherSettings}
+            categories={publisherCategoryItems}
+            onSave={savePublisherSettings}
+            onToggleChannel={togglePublisherChannel}
           />
         ) : view === 'whale' ? (
           <WhaleWatchPanel
@@ -1654,6 +1748,96 @@ function NonMainstreamPanel({
             ))}
           </>
         )}
+      </div>
+    </section>
+  );
+}
+
+function PublisherPanel({
+  settings,
+  channels,
+  loading,
+  saving,
+  categories,
+  onSave,
+  onToggleChannel,
+}: {
+  settings: PublisherSettings;
+  channels: PublisherChannel[];
+  loading: boolean;
+  saving: boolean;
+  categories: ReadonlyArray<{ key: string; label: string; description: string }>;
+  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onToggleChannel: (channel: PublisherChannel, enabled: boolean) => Promise<void>;
+}) {
+  return (
+    <section className="publisherLayout">
+      <form
+        key={`${settings.enabled}-${settings.window_start_local}-${settings.window_end_local}-${settings.updated_at ?? 'na'}`}
+        className="publisherSettingsForm"
+        onSubmit={onSave}
+      >
+        <label className="publisherToggle">
+          <span>发布者总开关</span>
+          <input name="enabled" type="checkbox" defaultChecked={settings.enabled} />
+          <small>关闭后，所有稿件都只调用一次挂后台，不自动发布。</small>
+        </label>
+        <label>
+          <span>时区</span>
+          <input className="readonlyInput" value="Asia/Shanghai" readOnly />
+        </label>
+        <label>
+          <span>开始时间</span>
+          <input name="window_start_local" type="time" defaultValue={settings.window_start_local} />
+        </label>
+        <label>
+          <span>结束时间</span>
+          <input name="window_end_local" type="time" defaultValue={settings.window_end_local} />
+        </label>
+        <button className="primaryButton" type="submit" disabled={saving}>
+          <Save size={17} /> 保存
+        </button>
+      </form>
+
+      <div className="publisherSection">
+        <div className="sectionHeader">
+          <h2>自动发布渠道</h2>
+          <span>{loading ? '加载中' : `${channels.length} 个渠道`}</span>
+        </div>
+        <p className="publisherHint">第一版实验口径只建议开启“外媒”，其余渠道默认挂后台。</p>
+        <div className="publisherList">
+          {channels.map((channel) => (
+            <label className="publisherRow" key={channel.channel_key}>
+              <div>
+                <strong>{channel.display_name}</strong>
+                <span>{channel.channel_key}</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={channel.enabled}
+                onChange={(event) => void onToggleChannel(channel, event.target.checked)}
+              />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="publisherSection">
+        <div className="sectionHeader">
+          <h2>固定分类</h2>
+          <span>只读</span>
+        </div>
+        <div className="publisherCategoryList">
+          {categories.map((item) => (
+            <div className="publisherCategoryRow" key={item.key}>
+              <div>
+                <strong>{item.label}</strong>
+                <span>{item.key}</span>
+              </div>
+              <small>{item.description}</small>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

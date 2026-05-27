@@ -22,6 +22,9 @@ from .models import (
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
     ODAILY_REFERENCE_SOURCE,
+    PUBLISHER_CATEGORIES,
+    PUBLISHER_CHANNEL_KEYS,
+    PUBLISHER_DECISIONS,
     PROMPT_KEY_BY_NEWS_TYPE,
     PROCESSING_SOURCES,
     SEARCH_FIRST_SOURCES,
@@ -29,6 +32,8 @@ from .models import (
     WRITE_STAGE_SOURCES,
     NewsType,
     PipelineRecord,
+    PublisherChannelRecord,
+    PublisherSettingsRecord,
     ProcessingStage,
     PromptTemplateVersion,
     TaskRecord,
@@ -64,6 +69,20 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
 PROMPT_FEATURE_MODE_DEFAULTS: dict[str, bool] = {
     "x_onchain_writer": True,
 }
+
+PUBLISHER_SETTINGS_DEFAULT = {
+    "singleton_key": "global",
+    "enabled": True,
+    "timezone": "Asia/Shanghai",
+    "window_start_local": "00:01",
+    "window_end_local": "07:30",
+}
+
+PUBLISHER_CHANNEL_DEFAULTS: tuple[tuple[str, str, bool], ...] = (
+    ("external_media", "外媒", True),
+    ("x", "X", False),
+    ("competitor", "竞品", False),
+)
 
 
 class XProcessingRepository(Protocol):
@@ -109,8 +128,24 @@ class XProcessingRepository(Protocol):
         *,
         final_title: str,
         final_content: str,
+    ) -> None: ...
+    def get_publisher_settings(self) -> PublisherSettingsRecord: ...
+    def list_publisher_channels(self) -> list[PublisherChannelRecord]: ...
+    def complete_publish(
+        self,
+        task_id: int,
+        *,
+        publisher_channel: str | None,
+        publisher_model: str | None,
+        publisher_category: str | None,
+        publisher_decision: str,
+        publisher_reason_code: str,
+        publisher_output: dict[str, Any],
         push_result: dict[str, Any],
         telegram_result: dict[str, Any],
+        decided_at: datetime,
+        status: str,
+        last_error: str | None = None,
     ) -> None: ...
     def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None: ...
     def record_worker_heartbeat(
@@ -168,6 +203,15 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
     news_type = row.get("news_type")
     if news_type not in NEWS_TYPES:
         news_type = None
+    publisher_channel = row.get("publisher_channel")
+    if publisher_channel not in PUBLISHER_CHANNEL_KEYS:
+        publisher_channel = None
+    publisher_category = row.get("publisher_category")
+    if publisher_category not in PUBLISHER_CATEGORIES:
+        publisher_category = None
+    publisher_decision = row.get("publisher_decision")
+    if publisher_decision not in PUBLISHER_DECISIONS:
+        publisher_decision = None
     writer_feature_mode_enabled = row.get("writer_feature_mode_enabled")
     return PipelineRecord(
         task_id=int(row["task_id"]),
@@ -182,6 +226,13 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         draft_content=row.get("draft_content"),
         final_title=row.get("final_title"),
         final_content=row.get("final_content"),
+        publisher_channel=publisher_channel,
+        publisher_model=row.get("publisher_model"),
+        publisher_category=publisher_category,
+        publisher_decision=publisher_decision,
+        publisher_reason_code=row.get("publisher_reason_code"),
+        publisher_output=row.get("publisher_output") or {},
+        publisher_decided_at=row.get("publisher_decided_at"),
         push_result=row.get("push_result") or {},
         telegram_result=row.get("telegram_result") or {},
         last_error=row.get("last_error"),
@@ -201,6 +252,25 @@ def _row_to_prompt(row: dict[str, Any]) -> PromptTemplateVersion:
     )
 
 
+def _row_to_publisher_settings(row: dict[str, Any]) -> PublisherSettingsRecord:
+    return PublisherSettingsRecord(
+        enabled=bool(row.get("enabled", True)),
+        timezone=str(row.get("timezone") or "Asia/Shanghai"),
+        window_start_local=str(row.get("window_start_local") or "00:01:00"),
+        window_end_local=str(row.get("window_end_local") or "07:30:00"),
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _row_to_publisher_channel(row: dict[str, Any]) -> PublisherChannelRecord:
+    return PublisherChannelRecord(
+        channel_key=str(row["channel_key"]),
+        display_name=str(row["display_name"]),
+        enabled=bool(row.get("enabled", False)),
+        updated_at=row.get("updated_at"),
+    )
+
+
 class PostgresXProcessingRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
@@ -213,7 +283,41 @@ class PostgresXProcessingRepository:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
+            self._ensure_publisher_defaults(conn)
             conn.commit()
+
+    def _ensure_publisher_defaults(self, conn) -> None:
+        conn.execute(
+            """
+            INSERT INTO publisher_settings (
+                singleton_key,
+                enabled,
+                timezone,
+                window_start_local,
+                window_end_local
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (singleton_key) DO NOTHING
+            """,
+            (
+                PUBLISHER_SETTINGS_DEFAULT["singleton_key"],
+                PUBLISHER_SETTINGS_DEFAULT["enabled"],
+                PUBLISHER_SETTINGS_DEFAULT["timezone"],
+                PUBLISHER_SETTINGS_DEFAULT["window_start_local"],
+                PUBLISHER_SETTINGS_DEFAULT["window_end_local"],
+            ),
+        )
+        for channel_key, display_name, enabled in PUBLISHER_CHANNEL_DEFAULTS:
+            conn.execute(
+                """
+                INSERT INTO publisher_channels (channel_key, display_name, enabled)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (channel_key) DO UPDATE
+                SET display_name = EXCLUDED.display_name,
+                    updated_at = now()
+                """,
+                (channel_key, display_name, enabled),
+            )
 
     def clear_old_pending_x_tasks(self) -> int:
         with self._connect() as conn:
@@ -267,7 +371,7 @@ class PostgresXProcessingRepository:
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
-        sources = tuple(WRITE_STAGE_SOURCES if stage in {"write", "format_publish"} else PROCESSING_SOURCES)
+        sources = tuple(WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES)
         source_filter = "t.source = ANY(%(sources)s)"
         if stage == "judge":
             source_filter = """
@@ -350,6 +454,34 @@ class PostgresXProcessingRepository:
         if row is None:
             raise ValueError(f"active prompt not found: {template_key}")
         return _row_to_prompt(row)
+
+    def get_publisher_settings(self) -> PublisherSettingsRecord:
+        with self._connect() as conn:
+            self._ensure_publisher_defaults(conn)
+            row = conn.execute(
+                """
+                SELECT enabled, timezone, window_start_local, window_end_local, updated_at
+                FROM publisher_settings
+                WHERE singleton_key = 'global'
+                """,
+            ).fetchone()
+            conn.commit()
+        if row is None:
+            raise ValueError("publisher settings not found")
+        return _row_to_publisher_settings(row)
+
+    def list_publisher_channels(self) -> list[PublisherChannelRecord]:
+        with self._connect() as conn:
+            self._ensure_publisher_defaults(conn)
+            rows = conn.execute(
+                """
+                SELECT channel_key, display_name, enabled, updated_at
+                FROM publisher_channels
+                ORDER BY channel_key ASC
+                """,
+            ).fetchall()
+            conn.commit()
+        return [_row_to_publisher_channel(row) for row in rows]
 
     def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
         with self._connect() as conn:
@@ -618,8 +750,6 @@ class PostgresXProcessingRepository:
         *,
         final_title: str,
         final_content: str,
-        push_result: dict[str, Any],
-        telegram_result: dict[str, Any],
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -627,23 +757,69 @@ class PostgresXProcessingRepository:
                 UPDATE x_task_pipeline
                 SET final_title = %(final_title)s,
                     final_content = %(final_content)s,
-                    push_result = %(push_result)s,
-                    telegram_result = %(telegram_result)s,
-                    last_error = CASE WHEN %(telegram_ok)s THEN NULL ELSE %(telegram_error)s END,
+                    last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %(task_id)s
                 """,
                 {
                     "final_title": final_title,
                     "final_content": final_content,
-                    "push_result": self._Jsonb(push_result),
-                    "telegram_result": self._Jsonb(telegram_result),
-                    "telegram_ok": bool(telegram_result.get("ok")),
-                    "telegram_error": telegram_result.get("error"),
                     "task_id": task_id,
                 },
             )
-            self._set_task_status(conn, task_id, "ready_review")
+            self._set_task_status(conn, task_id, "publisher_pending")
+            conn.commit()
+
+    def complete_publish(
+        self,
+        task_id: int,
+        *,
+        publisher_channel: str | None,
+        publisher_model: str | None,
+        publisher_category: str | None,
+        publisher_decision: str,
+        publisher_reason_code: str,
+        publisher_output: dict[str, Any],
+        push_result: dict[str, Any],
+        telegram_result: dict[str, Any],
+        decided_at: datetime,
+        status: str,
+        last_error: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE x_task_pipeline
+                SET publisher_channel = %(publisher_channel)s,
+                    publisher_model = %(publisher_model)s,
+                    publisher_category = %(publisher_category)s,
+                    publisher_decision = %(publisher_decision)s,
+                    publisher_reason_code = %(publisher_reason_code)s,
+                    publisher_output = %(publisher_output)s,
+                    publisher_decided_at = %(publisher_decided_at)s,
+                    push_result = %(push_result)s,
+                    telegram_result = %(telegram_result)s,
+                    last_error = %(last_error)s,
+                    updated_at = now()
+                WHERE task_id = %(task_id)s
+                """,
+                {
+                    "publisher_channel": publisher_channel,
+                    "publisher_model": publisher_model,
+                    "publisher_category": publisher_category,
+                    "publisher_decision": publisher_decision,
+                    "publisher_reason_code": publisher_reason_code,
+                    "publisher_output": self._Jsonb(publisher_output),
+                    "publisher_decided_at": decided_at,
+                    "push_result": self._Jsonb(push_result),
+                    "telegram_result": self._Jsonb(telegram_result),
+                    "last_error": last_error[:2000] if last_error else None,
+                    "task_id": task_id,
+                },
+            )
+            if status == "publisher_failed":
+                self._release_primary_candidate(conn, task_id=task_id, release_reason=status)
+            self._set_task_status(conn, task_id, status)
             conn.commit()
 
     def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None:
@@ -757,6 +933,20 @@ class InMemoryXProcessingRepository:
         self.odaily_references: list[SearchDocument] = []
         self.candidates: dict[int, SearchDocument] = {}
         self.event_sources: list[dict[str, Any]] = []
+        self.publisher_settings = PublisherSettingsRecord(
+            enabled=bool(PUBLISHER_SETTINGS_DEFAULT["enabled"]),
+            timezone=str(PUBLISHER_SETTINGS_DEFAULT["timezone"]),
+            window_start_local=str(PUBLISHER_SETTINGS_DEFAULT["window_start_local"]),
+            window_end_local=str(PUBLISHER_SETTINGS_DEFAULT["window_end_local"]),
+        )
+        self.publisher_channels: dict[str, PublisherChannelRecord] = {
+            channel_key: PublisherChannelRecord(
+                channel_key=channel_key,
+                display_name=display_name,
+                enabled=enabled,
+            )
+            for channel_key, display_name, enabled in PUBLISHER_CHANNEL_DEFAULTS
+        }
         self._next_candidate_id = 1
         self.prompts: dict[str, PromptTemplateVersion] = {
             key: PromptTemplateVersion(
@@ -775,7 +965,7 @@ class InMemoryXProcessingRepository:
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
-        allowed_sources = WRITE_STAGE_SOURCES if stage in {"write", "format_publish"} else PROCESSING_SOURCES
+        allowed_sources = WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
             if task.source not in allowed_sources:
                 continue
@@ -798,6 +988,12 @@ class InMemoryXProcessingRepository:
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
         return self.prompts[template_key]
+
+    def get_publisher_settings(self) -> PublisherSettingsRecord:
+        return self.publisher_settings
+
+    def list_publisher_channels(self) -> list[PublisherChannelRecord]:
+        return [self.publisher_channels[key] for key in sorted(self.publisher_channels)]
 
     def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
@@ -908,8 +1104,6 @@ class InMemoryXProcessingRepository:
         *,
         final_title: str,
         final_content: str,
-        push_result: dict[str, Any],
-        telegram_result: dict[str, Any],
     ) -> None:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(
@@ -917,12 +1111,46 @@ class InMemoryXProcessingRepository:
                 **asdict(current),
                 "final_title": final_title,
                 "final_content": final_content,
-                "push_result": push_result,
-                "telegram_result": telegram_result,
-                "last_error": None if telegram_result.get("ok") else telegram_result.get("error"),
+                "last_error": None,
             }
         )
-        self._set_status(task_id, "ready_review")
+        self._set_status(task_id, "publisher_pending")
+
+    def complete_publish(
+        self,
+        task_id: int,
+        *,
+        publisher_channel: str | None,
+        publisher_model: str | None,
+        publisher_category: str | None,
+        publisher_decision: str,
+        publisher_reason_code: str,
+        publisher_output: dict[str, Any],
+        push_result: dict[str, Any],
+        telegram_result: dict[str, Any],
+        decided_at: datetime,
+        status: str,
+        last_error: str | None = None,
+    ) -> None:
+        current = self.pipelines[task_id]
+        self.pipelines[task_id] = PipelineRecord(
+            **{
+                **asdict(current),
+                "publisher_channel": publisher_channel,
+                "publisher_model": publisher_model,
+                "publisher_category": publisher_category,
+                "publisher_decision": publisher_decision,
+                "publisher_reason_code": publisher_reason_code,
+                "publisher_output": publisher_output,
+                "publisher_decided_at": decided_at,
+                "push_result": push_result,
+                "telegram_result": telegram_result,
+                "last_error": last_error,
+            }
+        )
+        if status == "publisher_failed":
+            self._release_primary_candidate(task_id)
+        self._set_status(task_id, status)
 
     def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None:
         current = self.pipelines.get(task_id, PipelineRecord(task_id=task_id))
@@ -1003,6 +1231,51 @@ CREATE TABLE IF NOT EXISTS prompt_template_versions (
 
 ALTER TABLE prompt_template_versions ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 
+CREATE TABLE IF NOT EXISTS publisher_settings (
+    singleton_key text PRIMARY KEY,
+    enabled boolean NOT NULL DEFAULT true,
+    timezone text NOT NULL DEFAULT 'Asia/Shanghai',
+    window_start_local time NOT NULL DEFAULT '00:01',
+    window_end_local time NOT NULL DEFAULT '07:30',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS timezone text NOT NULL DEFAULT 'Asia/Shanghai';
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_start_local time NOT NULL DEFAULT '00:01';
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_end_local time NOT NULL DEFAULT '07:30';
+
+INSERT INTO publisher_settings (
+    singleton_key,
+    enabled,
+    timezone,
+    window_start_local,
+    window_end_local
+)
+VALUES ('global', true, 'Asia/Shanghai', '00:01', '07:30')
+ON CONFLICT (singleton_key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS publisher_channels (
+    channel_key text PRIMARY KEY,
+    display_name text NOT NULL,
+    enabled boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT false;
+
+INSERT INTO publisher_channels (channel_key, display_name, enabled)
+VALUES
+    ('external_media', '外媒', true),
+    ('x', 'X', false),
+    ('competitor', '竞品', false)
+ON CONFLICT (channel_key) DO UPDATE
+SET display_name = EXCLUDED.display_name,
+    updated_at = now();
+
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'mainstream_media')),
@@ -1019,6 +1292,13 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     draft_content text,
     final_title text,
     final_content text,
+    publisher_channel text,
+    publisher_model text,
+    publisher_category text,
+    publisher_decision text,
+    publisher_reason_code text,
+    publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb,
+    publisher_decided_at timestamptz,
     push_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_error text,
@@ -1033,6 +1313,31 @@ ALTER TABLE x_task_pipeline
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS writer_feature_mode_enabled boolean;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_channel text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_model text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_category text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decision text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_reason_code text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decided_at timestamptz;
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_channel_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_channel_check
+    CHECK (publisher_channel IS NULL OR publisher_channel IN ('external_media', 'x', 'competitor'));
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_category_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_category_check
+    CHECK (
+        publisher_category IS NULL
+        OR publisher_category IN ('policy_regulation', 'people_view', 'major_project_progress', 'funding', 'other')
+    );
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_decision_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_decision_check
+    CHECK (publisher_decision IS NULL OR publisher_decision IN ('auto_publish', 'manual_review', 'failed'));
 
 CREATE TABLE IF NOT EXISTS search_event_candidates (
     id bigserial PRIMARY KEY,
@@ -1131,6 +1436,8 @@ EXECUTE FUNCTION notify_prompt_config_changed();
 
 ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prompt_template_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE publisher_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE publisher_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
 ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
@@ -1138,12 +1445,16 @@ ALTER TABLE search_event_sources ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_anon_all ON prompt_template_versions;
+DROP POLICY IF EXISTS publisher_settings_anon_all ON publisher_settings;
+DROP POLICY IF EXISTS publisher_channels_anon_all ON publisher_channels;
 DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
 DROP POLICY IF EXISTS search_event_sources_anon_select ON search_event_sources;
 DROP POLICY IF EXISTS prompt_templates_console_admin_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_console_admin_all ON prompt_template_versions;
+DROP POLICY IF EXISTS publisher_settings_console_admin_all ON publisher_settings;
+DROP POLICY IF EXISTS publisher_channels_console_admin_all ON publisher_channels;
 DROP POLICY IF EXISTS x_task_pipeline_console_admin_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_console_admin_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_console_admin_select ON search_event_candidates;
@@ -1152,7 +1463,7 @@ DROP POLICY IF EXISTS search_event_sources_console_admin_select ON search_event_
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
+        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, publisher_settings, publisher_channels, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE prompt_template_versions_id_seq FROM anon;
     END IF;
 
@@ -1160,12 +1471,18 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON publisher_settings TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON publisher_channels TO authenticated;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO authenticated;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO authenticated;
 
         EXECUTE 'CREATE POLICY prompt_templates_console_admin_all ON prompt_templates
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY prompt_template_versions_console_admin_all ON prompt_template_versions
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY publisher_settings_console_admin_all ON publisher_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY publisher_channels_console_admin_all ON publisher_channels
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY x_task_pipeline_console_admin_select ON x_task_pipeline
             FOR SELECT TO authenticated USING (is_console_admin())';

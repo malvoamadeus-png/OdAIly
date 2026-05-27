@@ -28,12 +28,21 @@ class PushClient:
         self.max_attempts = max(1, max_attempts)
         self.backoff_seconds = max(0.0, backoff_seconds)
 
-    def push(self, *, title: str, content: str, dry_run: bool, source_url: str | None = None) -> PushResult:
+    def push(
+        self,
+        *,
+        title: str,
+        content: str,
+        dry_run: bool,
+        source_url: str | None = None,
+        is_publish: bool = False,
+        is_push: bool = False,
+    ) -> PushResult:
         payload = {
             "title": title,
             "content": content,
-            "isPublish": False,
-            "isPush": False,
+            "isPublish": bool(is_publish),
+            "isPush": bool(is_push),
         }
         if source_url and source_url.strip():
             payload["sourceUrl"] = source_url.strip()
