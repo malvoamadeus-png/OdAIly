@@ -282,6 +282,9 @@ def test_hyperliquid_schema_backfills_aggregate_columns_for_existing_states_tabl
     assert "ALTER TABLE whale_watch_hyperliquid_states" in HYPERLIQUID_SCHEMA_SQL
     assert "ADD COLUMN IF NOT EXISTS aggregate_window_entries" in HYPERLIQUID_SCHEMA_SQL
     assert "ADD COLUMN IF NOT EXISTS aggregate_alert_active" in HYPERLIQUID_SCHEMA_SQL
+    assert "ADD COLUMN IF NOT EXISTS alert_kind" in HYPERLIQUID_SCHEMA_SQL
+    assert "ADD COLUMN IF NOT EXISTS aggregate_fill_count" in HYPERLIQUID_SCHEMA_SQL
+    assert "'Aggregate'" in HYPERLIQUID_SCHEMA_SQL
 
 
 def base_swap_tx() -> dict[str, Any]:

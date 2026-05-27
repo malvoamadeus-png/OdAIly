@@ -432,7 +432,7 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
     address_id bigint NOT NULL REFERENCES whale_watch_hyperliquid_addresses(id) ON DELETE CASCADE,
     fill_key text NOT NULL,
     coin text NOT NULL,
-    direction text NOT NULL CHECK (direction IN ('Open Long', 'Open Short', 'Close Long', 'Close Short')),
+    direction text NOT NULL CHECK (direction IN ('Open Long', 'Open Short', 'Close Long', 'Close Short', 'Aggregate')),
     side text NOT NULL,
     price text NOT NULL,
     size text NOT NULL,
@@ -453,6 +453,26 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_activities (
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (address_id, fill_key)
 );
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    ADD COLUMN IF NOT EXISTS alert_kind text NOT NULL DEFAULT 'single';
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    ADD COLUMN IF NOT EXISTS aggregate_fill_count integer;
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    DROP CONSTRAINT IF EXISTS whale_watch_hyperliquid_activities_direction_check;
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    DROP CONSTRAINT IF EXISTS whale_watch_hyperliquid_activities_alert_kind_check;
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    ADD CONSTRAINT whale_watch_hyperliquid_activities_direction_check
+    CHECK (direction IN ('Open Long', 'Open Short', 'Close Long', 'Close Short', 'Aggregate'));
+
+ALTER TABLE whale_watch_hyperliquid_activities
+    ADD CONSTRAINT whale_watch_hyperliquid_activities_alert_kind_check
+    CHECK (alert_kind IN ('single', 'aggregate'));
 
 CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_addresses_enabled
 ON whale_watch_hyperliquid_addresses(enabled, address_lower);
