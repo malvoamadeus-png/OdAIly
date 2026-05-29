@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +38,124 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+COMPARE_URL_SUFFIX_PATTERN = re.compile(r"[?#].*$")
+TITLE_KEY_PATTERN = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9._-]{1,}")
+NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+EMBEDDING_SOURCE_PHRASES = (
+    "odaily星球日报讯",
+    "星球日报讯",
+    "panews",
+    "blockbeats",
+    "金色财经",
+)
+STOP_IDENTIFIER_TOKENS = {
+    "a",
+    "ai",
+    "an",
+    "and",
+    "are",
+    "at",
+    "btc",
+    "daily",
+    "eth",
+    "for",
+    "from",
+    "has",
+    "have",
+    "its",
+    "jinse",
+    "news",
+    "odaily",
+    "of",
+    "on",
+    "or",
+    "panews",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "token",
+    "trade",
+    "usdc",
+    "usd",
+    "usdt",
+    "utc",
+    "with",
+}
+VENUE_ALIASES = {
+    "backpack",
+    "binance",
+    "bithumb",
+    "bitget",
+    "bybit",
+    "coinbase",
+    "gate",
+    "gateio",
+    "htx",
+    "hyperliquid",
+    "kraken",
+    "kucoin",
+    "mexc",
+    "okx",
+    "upbit",
+    "币安",
+    "欧易",
+}
+EVENT_KEYWORDS = {
+    "launch",
+    "list",
+    "listing",
+    "perpetual",
+    "futures",
+    "spot",
+    "redeem",
+    "unstake",
+    "stake",
+    "buy",
+    "sell",
+    "revenue",
+    "fee",
+    "commission",
+    "funding",
+    "raise",
+    "上线",
+    "上架",
+    "上市",
+    "挂牌",
+    "开放",
+    "支持",
+    "合约",
+    "永续",
+    "现货",
+    "交易",
+    "赎回",
+    "质押",
+    "解质押",
+    "买入",
+    "卖出",
+    "增持",
+    "减持",
+    "收入",
+    "手续费",
+    "佣金",
+    "分佣",
+    "转入",
+    "转出",
+    "充值",
+    "提现",
+    "解锁",
+    "桥接",
+    "攻击",
+    "被盗",
+    "清算",
+    "融资",
+    "投资",
+    "收购",
+}
 
 
 class EmbeddingClient(Protocol):
@@ -165,6 +285,196 @@ class SearchDecision:
             "candidate_id": self.candidate_id,
             "raw_ai_output": self.raw_ai_output,
         }
+
+
+def normalize_compare_url(value: str | None) -> str:
+    if not value:
+        return ""
+    text = unicodedata.normalize("NFKC", value).strip().lower()
+    text = COMPARE_URL_SUFFIX_PATTERN.sub("", text)
+    return text.rstrip("/")
+
+
+def normalize_title_key(value: str | None) -> str:
+    if not value:
+        return ""
+    lowered = unicodedata.normalize("NFKC", value).strip().lower()
+    normalized = TITLE_KEY_PATTERN.sub("", lowered)
+    return normalized or re.sub(r"\s+", " ", lowered)
+
+
+def exact_duplicate_decision(
+    *,
+    query: SearchDocument,
+    documents: list[SearchDocument],
+    target_type: str,
+    compare_doc_id: bool = False,
+) -> SearchDecision | None:
+    query_url = normalize_compare_url(query.source_url)
+    query_title = normalize_title_key(query.title)
+    for document in documents:
+        if query_url and normalize_compare_url(document.source_url) == query_url:
+            return _duplicate_decision_for_document(
+                document=document,
+                target_type=target_type,
+                similarity=1.0,
+            )
+        if compare_doc_id and query.doc_id and document.doc_id == query.doc_id:
+            return _duplicate_decision_for_document(
+                document=document,
+                target_type=target_type,
+                similarity=1.0,
+            )
+        if query_title and query_title == normalize_title_key(document.title):
+            return _duplicate_decision_for_document(
+                document=document,
+                target_type=target_type,
+                similarity=1.0,
+            )
+    return None
+
+
+def lexical_duplicate_decision(
+    *,
+    query: SearchDocument,
+    documents: list[SearchDocument],
+    target_type: str,
+) -> SearchDecision | None:
+    query_text = _document_text(query)
+    query_identifiers = _identifier_tokens(query_text)
+    if not query_identifiers:
+        return None
+    query_numbers = _number_tokens(query_text)
+    query_keywords = _keyword_tokens(query_text)
+    query_venues = _venue_tokens(query_text)
+    best: tuple[tuple[int, int, int, int, int], SearchDocument] | None = None
+    for document in documents:
+        document_text = _document_text(document)
+        shared_identifiers = query_identifiers & _identifier_tokens(document_text)
+        if not shared_identifiers:
+            continue
+        shared_numbers = query_numbers & _number_tokens(document_text)
+        shared_keywords = query_keywords & _keyword_tokens(document_text)
+        shared_venues = query_venues & _venue_tokens(document_text)
+        score = _lexical_duplicate_score(
+            shared_identifiers=shared_identifiers,
+            shared_numbers=shared_numbers,
+            shared_keywords=shared_keywords,
+            shared_venues=shared_venues,
+        )
+        if not _is_lexical_duplicate(
+            shared_identifiers=shared_identifiers,
+            shared_numbers=shared_numbers,
+            shared_keywords=shared_keywords,
+            shared_venues=shared_venues,
+            score=score,
+        ):
+            continue
+        rank = (
+            score,
+            len(shared_identifiers),
+            len(shared_numbers),
+            len(shared_keywords),
+            len(shared_venues),
+        )
+        if best is None or rank > best[0]:
+            best = (rank, document)
+    if best is None:
+        return None
+    score = best[0][0]
+    return _duplicate_decision_for_document(
+        document=best[1],
+        target_type=target_type,
+        similarity=min(0.97, 0.55 + score * 0.05),
+    )
+
+
+def _duplicate_decision_for_document(
+    *,
+    document: SearchDocument,
+    target_type: str,
+    similarity: float,
+) -> SearchDecision:
+    return SearchDecision(
+        is_duplicate=True,
+        duplicate_target_type=target_type,
+        duplicate_target_id=document.doc_id,
+        reason="same_event",
+        similarity=similarity,
+        candidate_id=document.candidate_id if target_type == "inflight_candidate" else None,
+    )
+
+
+def _document_text(document: SearchDocument) -> str:
+    return "\n".join(part for part in [document.title or "", document.content] if part).strip()
+
+
+def _normalize_feature_text(value: str) -> str:
+    text = unicodedata.normalize("NFKC", value).lower()
+    for phrase in EMBEDDING_SOURCE_PHRASES:
+        text = text.replace(phrase, " ")
+    return text
+
+
+def _identifier_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in IDENTIFIER_PATTERN.findall(_normalize_feature_text(value)):
+        if token in STOP_IDENTIFIER_TOKENS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _number_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in NUMBER_PATTERN.findall(unicodedata.normalize("NFKC", value).lower()):
+        compact = token.rstrip("0").rstrip(".") if "." in token else token
+        if len(compact.replace(".", "")) < 2:
+            continue
+        tokens.add(compact)
+    return tokens
+
+
+def _keyword_tokens(value: str) -> set[str]:
+    normalized = _normalize_feature_text(value)
+    return {keyword for keyword in EVENT_KEYWORDS if keyword in normalized}
+
+
+def _venue_tokens(value: str) -> set[str]:
+    normalized = _normalize_feature_text(value)
+    return {alias for alias in VENUE_ALIASES if alias in normalized}
+
+
+def _lexical_duplicate_score(
+    *,
+    shared_identifiers: set[str],
+    shared_numbers: set[str],
+    shared_keywords: set[str],
+    shared_venues: set[str],
+) -> int:
+    score = min(len(shared_identifiers), 3) * 3
+    score += min(len(shared_numbers), 2) * 2
+    score += min(len(shared_keywords), 3)
+    if shared_venues:
+        score += 2
+    return score
+
+
+def _is_lexical_duplicate(
+    *,
+    shared_identifiers: set[str],
+    shared_numbers: set[str],
+    shared_keywords: set[str],
+    shared_venues: set[str],
+    score: int,
+) -> bool:
+    if len(shared_identifiers) >= 2:
+        return score >= 7
+    if len(shared_identifiers) == 1 and shared_venues:
+        return score >= 7
+    if len(shared_identifiers) == 1 and len(shared_numbers) >= 2 and len(shared_keywords) >= 2:
+        return True
+    return False
 
 
 class SearchCache:

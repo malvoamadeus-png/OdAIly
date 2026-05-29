@@ -54,6 +54,8 @@ from .searcher import (
     SearchDecision,
     SearchDocument,
     build_ai_review_prompt,
+    exact_duplicate_decision,
+    lexical_duplicate_decision,
     parse_ai_review_output,
     top_match,
 )
@@ -513,15 +515,44 @@ class XProcessingWorker:
         cache = getattr(self.search_embedding_service, "cache", None)
         if cache is not None and hasattr(cache, "upsert_document"):
             cache.upsert_document(query)
-        query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
         since = utc_since_hours(self.settings.search_window_hours)
-        odaily_match = top_match(
-            query_vector,
-            self.search_embedding_service.embed_documents(self._load_odaily_reference_documents(since=since)),
+        odaily_documents = self._load_odaily_reference_documents(since=since)
+        decision = exact_duplicate_decision(
+            query=query,
+            documents=odaily_documents,
+            target_type="odaily_published",
         )
-        decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
+        if decision is None:
+            decision = lexical_duplicate_decision(
+                query=query,
+                documents=odaily_documents,
+                target_type="odaily_published",
+            )
+        query_vector: list[float] | None = None
         if decision is None:
             candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
+            decision = exact_duplicate_decision(
+                query=query,
+                documents=candidate_documents,
+                target_type="inflight_candidate",
+            )
+            if decision is None:
+                decision = lexical_duplicate_decision(
+                    query=query,
+                    documents=candidate_documents,
+                    target_type="inflight_candidate",
+                )
+        if decision is None:
+            query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
+            odaily_match = top_match(
+                query_vector,
+                self.search_embedding_service.embed_documents(odaily_documents),
+            )
+            decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
+        if decision is None:
+            candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
+            if query_vector is None:
+                query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
             candidate_match = top_match(
                 query_vector,
                 self.search_embedding_service.embed_documents(candidate_documents),
