@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "OdAIly 信息流",
+  "version": "0.1.0",
+  "description": "值班编辑侧边栏信息流，承接新快讯、审核者、此前消息和巨鲸通知。",
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": ["https://*/*", "http://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["src/content-x.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开 OdAIly 信息流"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "options_page": "src/options.html",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https: http:;"
+  }
+}

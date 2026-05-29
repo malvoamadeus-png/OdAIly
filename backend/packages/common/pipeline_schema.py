@@ -73,6 +73,854 @@ $$;
 """
 
 
+EDITOR_PLUGIN_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS editor_plugin_users (
+    email text PRIMARY KEY,
+    display_name text,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS editor_plugin_feedbacks (
+    id bigserial PRIMARY KEY,
+    feed_item_id text NOT NULL,
+    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
+    feedback text NOT NULL CHECK (feedback IN ('accept', 'reject')),
+    actor_user_id uuid,
+    actor_email text NOT NULL,
+    actor_display_name text,
+    acted_at timestamptz NOT NULL DEFAULT now(),
+    session_id text,
+    extra_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS editor_plugin_receipts (
+    id bigserial PRIMARY KEY,
+    feed_item_id text NOT NULL,
+    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
+    viewer_user_id uuid,
+    viewer_email text NOT NULL,
+    viewer_display_name text,
+    first_seen_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now(),
+    seen_count integer NOT NULL DEFAULT 1,
+    session_id text,
+    extra_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (feed_item_id, feed_kind, viewer_email)
+);
+
+CREATE TABLE IF NOT EXISTS editor_plugin_generation_logs (
+    id bigserial PRIMARY KEY,
+    action text NOT NULL CHECK (action IN ('search', 'generate')),
+    actor_user_id uuid,
+    actor_email text NOT NULL,
+    actor_display_name text,
+    source_type text NOT NULL,
+    platform text NOT NULL,
+    post_id text,
+    post_url text,
+    author_display_name text,
+    author_handle text,
+    posted_at timestamptz,
+    request_text text NOT NULL,
+    route text,
+    result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    status text NOT NULL CHECK (status IN ('success', 'failed')),
+    error_message text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_feedbacks_actor_created
+ON editor_plugin_feedbacks(actor_email, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_feedbacks_feed_created
+ON editor_plugin_feedbacks(feed_item_id, feed_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_receipts_viewer_updated
+ON editor_plugin_receipts(viewer_email, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_receipts_feed_updated
+ON editor_plugin_receipts(feed_item_id, feed_kind, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_generation_logs_actor_created
+ON editor_plugin_generation_logs(actor_email, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_generation_logs_action_created
+ON editor_plugin_generation_logs(action, created_at DESC);
+
+CREATE OR REPLACE FUNCTION is_editor_plugin_user()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.editor_plugin_users
+        WHERE enabled = true
+          AND lower(email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION editor_plugin_profile()
+RETURNS TABLE (
+    email text,
+    display_name text,
+    enabled boolean
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT is_editor_plugin_user() THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        u.email,
+        COALESCE(NULLIF(u.display_name, ''), split_part(u.email, '@', 1)) AS display_name,
+        u.enabled
+    FROM editor_plugin_users u
+    WHERE lower(u.email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
+      AND u.enabled = true
+    LIMIT 1;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION editor_plugin_state(p_feed_item_ids text[])
+RETURNS TABLE (
+    feed_item_id text,
+    feed_kind text,
+    first_seen_at timestamptz,
+    last_seen_at timestamptz,
+    seen_count integer,
+    latest_feedback text,
+    latest_feedback_at timestamptz
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
+BEGIN
+    IF NOT is_editor_plugin_user() OR p_feed_item_ids IS NULL OR array_length(p_feed_item_ids, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    WITH receipt_rows AS (
+        SELECT
+            r.feed_item_id,
+            r.feed_kind,
+            r.first_seen_at,
+            r.last_seen_at,
+            r.seen_count
+        FROM editor_plugin_receipts r
+        WHERE lower(r.viewer_email) = v_email
+          AND r.feed_item_id = ANY(p_feed_item_ids)
+    ),
+    latest_feedback_rows AS (
+        SELECT DISTINCT ON (f.feed_item_id, f.feed_kind)
+            f.feed_item_id,
+            f.feed_kind,
+            f.feedback,
+            f.acted_at
+        FROM editor_plugin_feedbacks f
+        WHERE lower(f.actor_email) = v_email
+          AND f.feed_item_id = ANY(p_feed_item_ids)
+        ORDER BY f.feed_item_id, f.feed_kind, f.acted_at DESC, f.id DESC
+    ),
+    keyed AS (
+        SELECT
+            receipt_rows.feed_item_id,
+            receipt_rows.feed_kind
+        FROM receipt_rows
+        UNION
+        SELECT
+            latest_feedback_rows.feed_item_id,
+            latest_feedback_rows.feed_kind
+        FROM latest_feedback_rows
+    )
+    SELECT
+        k.feed_item_id,
+        k.feed_kind,
+        r.first_seen_at,
+        r.last_seen_at,
+        r.seen_count,
+        lf.feedback AS latest_feedback,
+        lf.acted_at AS latest_feedback_at
+    FROM keyed k
+    LEFT JOIN receipt_rows r
+        ON r.feed_item_id = k.feed_item_id
+       AND r.feed_kind = k.feed_kind
+    LEFT JOIN latest_feedback_rows lf
+        ON lf.feed_item_id = k.feed_item_id
+       AND lf.feed_kind = k.feed_kind;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION editor_plugin_mark_seen(
+    p_feed_item_id text,
+    p_feed_kind text,
+    p_session_id text DEFAULT NULL,
+    p_extra_json jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
+    v_display_name text;
+BEGIN
+    IF NOT is_editor_plugin_user() THEN
+        RAISE EXCEPTION 'editor_plugin_access_denied';
+    END IF;
+
+    IF p_feed_item_id IS NULL OR btrim(p_feed_item_id) = '' THEN
+        RAISE EXCEPTION 'editor_plugin_feed_item_id_required';
+    END IF;
+
+    SELECT COALESCE(NULLIF(display_name, ''), split_part(email, '@', 1))
+    INTO v_display_name
+    FROM editor_plugin_users
+    WHERE lower(email) = v_email
+      AND enabled = true
+    LIMIT 1;
+
+    INSERT INTO editor_plugin_receipts (
+        feed_item_id,
+        feed_kind,
+        viewer_user_id,
+        viewer_email,
+        viewer_display_name,
+        first_seen_at,
+        last_seen_at,
+        seen_count,
+        session_id,
+        extra_json,
+        updated_at
+    )
+    VALUES (
+        btrim(p_feed_item_id),
+        p_feed_kind,
+        auth.uid(),
+        v_email,
+        v_display_name,
+        now(),
+        now(),
+        1,
+        p_session_id,
+        COALESCE(p_extra_json, '{}'::jsonb),
+        now()
+    )
+    ON CONFLICT (feed_item_id, feed_kind, viewer_email) DO UPDATE
+    SET viewer_user_id = COALESCE(EXCLUDED.viewer_user_id, editor_plugin_receipts.viewer_user_id),
+        viewer_display_name = COALESCE(EXCLUDED.viewer_display_name, editor_plugin_receipts.viewer_display_name),
+        last_seen_at = EXCLUDED.last_seen_at,
+        seen_count = editor_plugin_receipts.seen_count + 1,
+        session_id = COALESCE(EXCLUDED.session_id, editor_plugin_receipts.session_id),
+        extra_json = COALESCE(editor_plugin_receipts.extra_json, '{}'::jsonb) || COALESCE(EXCLUDED.extra_json, '{}'::jsonb),
+        updated_at = EXCLUDED.updated_at;
+
+    RETURN jsonb_build_object('ok', true);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION editor_plugin_submit_feedback(
+    p_feed_item_id text,
+    p_feed_kind text,
+    p_feedback text,
+    p_session_id text DEFAULT NULL,
+    p_extra_json jsonb DEFAULT '{}'::jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
+    v_display_name text;
+BEGIN
+    IF NOT is_editor_plugin_user() THEN
+        RAISE EXCEPTION 'editor_plugin_access_denied';
+    END IF;
+
+    IF p_feed_item_id IS NULL OR btrim(p_feed_item_id) = '' THEN
+        RAISE EXCEPTION 'editor_plugin_feed_item_id_required';
+    END IF;
+
+    IF p_feedback NOT IN ('accept', 'reject') THEN
+        RAISE EXCEPTION 'editor_plugin_invalid_feedback';
+    END IF;
+
+    SELECT COALESCE(NULLIF(display_name, ''), split_part(email, '@', 1))
+    INTO v_display_name
+    FROM editor_plugin_users
+    WHERE lower(email) = v_email
+      AND enabled = true
+    LIMIT 1;
+
+    INSERT INTO editor_plugin_feedbacks (
+        feed_item_id,
+        feed_kind,
+        feedback,
+        actor_user_id,
+        actor_email,
+        actor_display_name,
+        acted_at,
+        session_id,
+        extra_json
+    )
+    VALUES (
+        btrim(p_feed_item_id),
+        p_feed_kind,
+        p_feedback,
+        auth.uid(),
+        v_email,
+        v_display_name,
+        now(),
+        p_session_id,
+        COALESCE(p_extra_json, '{}'::jsonb)
+    );
+
+    RETURN jsonb_build_object('ok', true);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION editor_plugin_feed(p_limit integer DEFAULT 120)
+RETURNS TABLE (
+    feed_item_id text,
+    feed_kind text,
+    lane text,
+    priority integer,
+    title text,
+    summary text,
+    badges jsonb,
+    status_label text,
+    status_tone text,
+    occurred_at timestamptz,
+    source_url text,
+    detail_url text,
+    action_schema jsonb,
+    meta_json jsonb
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    parts text[] := ARRAY[]::text[];
+    sql text;
+    v_high_limit integer;
+    v_low_limit integer;
+    v_high_newsflash_limit integer;
+    v_high_auditor_limit integer;
+    v_low_writer3_limit integer;
+    v_low_whale_limit integer;
+BEGIN
+    IF NOT is_editor_plugin_user() THEN
+        RETURN;
+    END IF;
+
+    IF p_limit IS NULL OR p_limit < 1 THEN
+        p_limit := 120;
+    END IF;
+
+    v_high_limit := GREATEST(1, CEIL(p_limit * 0.65)::integer);
+    v_low_limit := GREATEST(1, p_limit - v_high_limit);
+    v_high_newsflash_limit := GREATEST(1, CEIL(v_high_limit * 0.45)::integer);
+    v_high_auditor_limit := GREATEST(0, v_high_limit - v_high_newsflash_limit);
+    IF v_high_limit > 1 AND v_high_auditor_limit = 0 THEN
+        v_high_auditor_limit := 1;
+        v_high_newsflash_limit := GREATEST(0, v_high_limit - 1);
+    END IF;
+
+    v_low_writer3_limit := GREATEST(1, CEIL(v_low_limit * 0.6)::integer);
+    v_low_whale_limit := GREATEST(0, v_low_limit - v_low_writer3_limit);
+    IF v_low_limit > 1 AND v_low_whale_limit = 0 THEN
+        v_low_whale_limit := 1;
+        v_low_writer3_limit := GREATEST(0, v_low_limit - 1);
+    END IF;
+
+    IF to_regclass('public.x_task_pipeline') IS NOT NULL AND to_regclass('public.tasks') IS NOT NULL THEN
+        parts := array_append(parts, $newsflash$
+            SELECT
+                'newsflash:' || p.task_id::text AS feed_item_id,
+                'newsflash'::text AS feed_kind,
+                'high'::text AS lane,
+                CASE WHEN t.status = 'ready_review' THEN 92 ELSE 88 END AS priority,
+                COALESCE(p.final_title, t.title, '未命名快讯') AS title,
+                COALESCE(p.final_content, t.content) AS summary,
+                jsonb_build_array(
+                    jsonb_build_object(
+                        'label', '来源',
+                        'value', CASE t.source
+                            WHEN 'x' THEN 'X'
+                            WHEN 'non_mainstream_media' THEN '外媒'
+                            WHEN 'blockbeats' THEN 'BlockBeats'
+                            WHEN 'panews' THEN 'PANews'
+                            WHEN 'jinse' THEN '金色财经'
+                            ELSE t.source
+                        END,
+                        'tone', 'neutral'
+                    ),
+                    CASE
+                        WHEN p.news_type IS NOT NULL THEN
+                            jsonb_build_object(
+                                'label', '领域',
+                                'value', CASE p.news_type
+                                    WHEN 'onchain' THEN '链上'
+                                    WHEN 'funding' THEN '融资'
+                                    WHEN 'non_mainstream_media' THEN '外媒'
+                                    WHEN 'mainstream_media' THEN '外媒'
+                                    ELSE '常规'
+                                END,
+                                'tone', 'neutral'
+                            )
+                        ELSE NULL
+                    END,
+                    CASE
+                        WHEN COALESCE(p.writer_feature_mode_enabled, false) THEN
+                            jsonb_build_object('label', '模式', 'value', '特色', 'tone', 'accent')
+                        ELSE NULL
+                    END
+                ) AS badges,
+                CASE WHEN t.status = 'ready_review' THEN '挂后台' ELSE '已直发' END AS status_label,
+                CASE WHEN t.status = 'ready_review' THEN 'manual' ELSE 'success' END AS status_tone,
+                COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) AS occurred_at,
+                t.source_url,
+                t.source_url AS detail_url,
+                jsonb_build_object('type', 'read') AS action_schema,
+                jsonb_build_object(
+                    'task_id', t.id,
+                    'source', t.source,
+                    'task_status', t.status,
+                    'publisher_decision', p.publisher_decision,
+                    'publisher_reason_code', p.publisher_reason_code,
+                    'publisher_category', p.publisher_category,
+                    'news_type', p.news_type,
+                    'feature_mode_enabled', COALESCE(p.writer_feature_mode_enabled, false)
+                ) AS meta_json
+            FROM x_task_pipeline p
+            JOIN tasks t
+              ON t.id = p.task_id
+            WHERE t.status IN ('auto_published', 'ready_review')
+              AND COALESCE(p.final_title, t.title) IS NOT NULL
+              AND COALESCE(p.final_content, t.content) <> ''
+              AND COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) >= now() - interval '30 minutes'
+        $newsflash$);
+    END IF;
+
+    IF to_regclass('public.auditor_checks') IS NOT NULL THEN
+        parts := array_append(parts, $auditor$
+            SELECT
+                'auditor:' || a.id::text AS feed_item_id,
+                'auditor_alert'::text AS feed_kind,
+                'high'::text AS lane,
+                100 AS priority,
+                COALESCE(a.title, '审核者提醒') AS title,
+                COALESCE(NULLIF(a.telegram_text, ''), NULLIF(a.audit_result ->> 'summary', ''), '审核者发现疑似文本问题') AS summary,
+                '[]'::jsonb AS badges,
+                '审核者'::text AS status_label,
+                'warning'::text AS status_tone,
+                COALESCE(a.alerted_at, a.updated_at, a.created_at) AS occurred_at,
+                a.source_url AS source_url,
+                CASE
+                    WHEN a.source_item_id ~ '^[0-9]+$' THEN 'https://www.odaily.news/zh-CN/newsflash/' || a.source_item_id
+                    ELSE a.source_url
+                END AS detail_url,
+                jsonb_build_object('type', 'feedback', 'actions', jsonb_build_array('accept', 'reject')) AS action_schema,
+                jsonb_build_object(
+                    'source_item_id', a.source_item_id,
+                    'severity', a.audit_result ->> 'severity',
+                    'issues', COALESCE(a.audit_result -> 'issues', '[]'::jsonb),
+                    'audit_summary', a.audit_result ->> 'summary'
+                ) AS meta_json
+            FROM auditor_checks a
+            WHERE a.status = 'flagged'
+              AND COALESCE(a.alerted_at, a.updated_at, a.created_at) >= now() - interval '30 minutes'
+        $auditor$);
+    END IF;
+
+    IF to_regclass('public.writer3_contexts') IS NOT NULL THEN
+        parts := array_append(parts, $writer3$
+            SELECT
+                'writer3:' || w.id::text AS feed_item_id,
+                'writer3_context'::text AS feed_kind,
+                'low'::text AS lane,
+                64 AS priority,
+                COALESCE(w.current_title, '此前消息') AS title,
+                CASE
+                    WHEN NULLIF(w.current_content, '') IS NOT NULL AND NULLIF(w.context_text, '') IS NOT NULL THEN
+                        '原文：' || w.current_content || E'\n\n此前消息：' || w.context_text
+                    WHEN NULLIF(w.current_content, '') IS NOT NULL THEN
+                        '原文：' || w.current_content
+                    WHEN NULLIF(w.context_text, '') IS NOT NULL THEN
+                        '此前消息：' || w.context_text
+                    ELSE COALESCE(NULLIF(w.telegram_text, ''), '此前消息暂无摘要')
+                END AS summary,
+                '[]'::jsonb AS badges,
+                '此前消息'::text AS status_label,
+                'info'::text AS status_tone,
+                COALESCE(w.sent_at, w.updated_at, w.created_at) AS occurred_at,
+                w.current_source_url AS source_url,
+                CASE
+                    WHEN w.current_source_item_id ~ '^[0-9]+$' THEN 'https://www.odaily.news/zh-CN/newsflash/' || w.current_source_item_id
+                    ELSE w.current_source_url
+                END AS detail_url,
+                jsonb_build_object('type', 'feedback', 'actions', jsonb_build_array('accept', 'reject')) AS action_schema,
+                jsonb_build_object(
+                    'context_id', w.id,
+                    'current_source', w.current_source,
+                    'current_source_item_id', w.current_source_item_id,
+                    'evidence_source_item_ids', COALESCE(to_jsonb(w.evidence_source_item_ids), '[]'::jsonb)
+                ) AS meta_json
+            FROM writer3_contexts w
+            WHERE w.status = 'sent'
+              AND COALESCE(w.sent_at, w.updated_at, w.created_at) >= now() - interval '30 minutes'
+        $writer3$);
+    END IF;
+
+    IF to_regclass('public.whale_watch_activities') IS NOT NULL AND to_regclass('public.whale_watch_addresses') IS NOT NULL THEN
+        parts := array_append(parts, $whale$
+            SELECT
+                'whale_onchain:' || a.id::text AS feed_item_id,
+                'whale_onchain'::text AS feed_kind,
+                'low'::text AS lane,
+                52 AS priority,
+                COALESCE(NULLIF(addr.label, ''), left(addr.address, 6) || '...' || right(addr.address, 4)) AS title,
+                COALESCE(NULLIF(a.summary, ''), NULLIF(a.telegram_text, ''), '链上巨鲸信号') AS summary,
+                '[]'::jsonb AS badges,
+                '新信号'::text AS status_label,
+                'info'::text AS status_tone,
+                a.created_at AS occurred_at,
+                a.tx_url AS source_url,
+                a.tx_url AS detail_url,
+                jsonb_build_object('type', 'read') AS action_schema,
+                jsonb_build_object(
+                    'address', addr.address,
+                    'address_label', addr.label,
+                    'chain_key', a.chain_key,
+                    'activity_type', a.activity_type,
+                    'direction', a.direction
+                ) AS meta_json
+            FROM whale_watch_activities a
+            JOIN whale_watch_addresses addr
+              ON addr.id = a.address_id
+            WHERE a.created_at >= now() - interval '30 minutes'
+        $whale$);
+    END IF;
+
+    IF to_regclass('public.whale_watch_hyperliquid_activities') IS NOT NULL AND to_regclass('public.whale_watch_hyperliquid_addresses') IS NOT NULL THEN
+        parts := array_append(parts, $hyper$
+            SELECT
+                'whale_hyperliquid:' || a.id::text AS feed_item_id,
+                'whale_hyperliquid'::text AS feed_kind,
+                'low'::text AS lane,
+                48 AS priority,
+                COALESCE(NULLIF(addr.label, ''), left(addr.address, 6) || '...' || right(addr.address, 4)) AS title,
+                COALESCE(NULLIF(a.summary, ''), NULLIF(a.telegram_text, ''), 'Hyperliquid 巨鲸信号') AS summary,
+                '[]'::jsonb AS badges,
+                '新信号'::text AS status_label,
+                'info'::text AS status_tone,
+                a.created_at AS occurred_at,
+                a.tx_url AS source_url,
+                a.tx_url AS detail_url,
+                jsonb_build_object('type', 'read') AS action_schema,
+                jsonb_build_object(
+                    'address', addr.address,
+                    'address_label', addr.label,
+                    'coin', a.coin,
+                    'direction', a.direction,
+                    'notional_usd', a.notional_usd,
+                    'alert_kind', a.alert_kind
+                ) AS meta_json
+            FROM whale_watch_hyperliquid_activities a
+            JOIN whale_watch_hyperliquid_addresses addr
+              ON addr.id = a.address_id
+            WHERE a.created_at >= now() - interval '30 minutes'
+        $hyper$);
+    END IF;
+
+    IF array_length(parts, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    sql := 'WITH combined AS (' || array_to_string(parts, ' UNION ALL ') || '),
+        tagged AS (
+            SELECT
+                combined.*,
+                CASE
+                    WHEN lane = ''high'' AND feed_kind = ''newsflash'' THEN ''high_newsflash''
+                    WHEN lane = ''high'' AND feed_kind = ''auditor_alert'' THEN ''high_auditor''
+                    WHEN lane = ''low'' AND feed_kind = ''writer3_context'' THEN ''low_writer3''
+                    WHEN lane = ''low'' AND feed_kind IN (''whale_onchain'', ''whale_hyperliquid'') THEN ''low_whale''
+                    ELSE lane || '':'' || feed_kind
+                END AS quota_group
+            FROM combined
+        ),
+        ranked AS (
+            SELECT
+                tagged.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lane
+                    ORDER BY priority DESC, occurred_at DESC
+                ) AS lane_rank,
+                ROW_NUMBER() OVER (
+                    PARTITION BY quota_group
+                    ORDER BY priority DESC, occurred_at DESC
+                ) AS group_rank
+            FROM tagged
+        ),
+        high_reserved AS (
+            SELECT *
+            FROM ranked
+            WHERE lane = ''high''
+              AND (
+                (quota_group = ''high_auditor'' AND group_rank <= $3)
+                OR (quota_group = ''high_newsflash'' AND group_rank <= $4)
+              )
+        ),
+        low_reserved AS (
+            SELECT *
+            FROM ranked
+            WHERE lane = ''low''
+              AND (
+                (quota_group = ''low_writer3'' AND group_rank <= $5)
+                OR (quota_group = ''low_whale'' AND group_rank <= $6)
+              )
+        ),
+        high_fill AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                quota_group,
+                lane_rank,
+                group_rank
+            FROM (
+                SELECT
+                    r.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY priority DESC, occurred_at DESC
+                    ) AS fill_rank
+                FROM ranked r
+                WHERE r.lane = ''high''
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM high_reserved h
+                    WHERE h.feed_item_id = r.feed_item_id
+                      AND h.feed_kind = r.feed_kind
+                  )
+            ) fill
+            WHERE fill_rank <= GREATEST(0, $1 - (SELECT COUNT(*) FROM high_reserved))
+        ),
+        low_fill AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                quota_group,
+                lane_rank,
+                group_rank
+            FROM (
+                SELECT
+                    r.*,
+                    ROW_NUMBER() OVER (
+                        ORDER BY priority DESC, occurred_at DESC
+                    ) AS fill_rank
+                FROM ranked r
+                WHERE r.lane = ''low''
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM low_reserved h
+                    WHERE h.feed_item_id = r.feed_item_id
+                      AND h.feed_kind = r.feed_kind
+                  )
+            ) fill
+            WHERE fill_rank <= GREATEST(0, $2 - (SELECT COUNT(*) FROM low_reserved))
+        ),
+        selected_high AS (
+            SELECT * FROM high_reserved
+            UNION ALL
+            SELECT * FROM high_fill
+        ),
+        selected_low AS (
+            SELECT * FROM low_reserved
+            UNION ALL
+            SELECT * FROM low_fill
+        ),
+        ordered_high AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                ROW_NUMBER() OVER (
+                    ORDER BY group_rank, priority DESC, occurred_at DESC
+                ) AS display_rank
+            FROM selected_high
+        ),
+        ordered_low AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                ROW_NUMBER() OVER (
+                    ORDER BY group_rank, priority DESC, occurred_at DESC
+                ) AS display_rank
+            FROM selected_low
+        ),
+        selected AS (
+            SELECT * FROM ordered_high
+            UNION ALL
+            SELECT * FROM ordered_low
+        )
+        SELECT
+            feed_item_id,
+            feed_kind,
+            lane,
+            priority,
+            title,
+            summary,
+            badges,
+            status_label,
+            status_tone,
+            occurred_at,
+            source_url,
+            detail_url,
+            action_schema,
+            meta_json
+        FROM selected
+        ORDER BY
+            CASE WHEN lane = ''high'' THEN 0 ELSE 1 END,
+            display_rank
+        LIMIT $7';
+
+    RETURN QUERY EXECUTE sql USING
+        v_high_limit,
+        v_low_limit,
+        v_high_auditor_limit,
+        v_high_newsflash_limit,
+        v_low_writer3_limit,
+        v_low_whale_limit,
+        p_limit;
+END;
+$$;
+
+ALTER TABLE editor_plugin_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE editor_plugin_feedbacks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE editor_plugin_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE editor_plugin_generation_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS editor_plugin_users_self_select ON editor_plugin_users;
+DROP POLICY IF EXISTS editor_plugin_feedbacks_self_select ON editor_plugin_feedbacks;
+DROP POLICY IF EXISTS editor_plugin_feedbacks_self_insert ON editor_plugin_feedbacks;
+DROP POLICY IF EXISTS editor_plugin_receipts_self_select ON editor_plugin_receipts;
+DROP POLICY IF EXISTS editor_plugin_receipts_self_insert ON editor_plugin_receipts;
+DROP POLICY IF EXISTS editor_plugin_receipts_self_update ON editor_plugin_receipts;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON editor_plugin_users, editor_plugin_feedbacks, editor_plugin_receipts, editor_plugin_generation_logs FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE editor_plugin_feedbacks_id_seq, editor_plugin_receipts_id_seq, editor_plugin_generation_logs_id_seq FROM anon;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+        GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT ON editor_plugin_users TO authenticated;
+        GRANT SELECT, INSERT ON editor_plugin_feedbacks TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON editor_plugin_receipts TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE editor_plugin_feedbacks_id_seq, editor_plugin_receipts_id_seq TO authenticated;
+        GRANT EXECUTE ON FUNCTION editor_plugin_profile() TO authenticated;
+        GRANT EXECUTE ON FUNCTION editor_plugin_state(text[]) TO authenticated;
+        GRANT EXECUTE ON FUNCTION editor_plugin_mark_seen(text, text, text, jsonb) TO authenticated;
+        GRANT EXECUTE ON FUNCTION editor_plugin_submit_feedback(text, text, text, text, jsonb) TO authenticated;
+        GRANT EXECUTE ON FUNCTION editor_plugin_feed(integer) TO authenticated;
+
+        EXECUTE 'CREATE POLICY editor_plugin_users_self_select ON editor_plugin_users
+            FOR SELECT TO authenticated
+            USING (lower(email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+        EXECUTE 'CREATE POLICY editor_plugin_feedbacks_self_select ON editor_plugin_feedbacks
+            FOR SELECT TO authenticated
+            USING (lower(actor_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+        EXECUTE 'CREATE POLICY editor_plugin_feedbacks_self_insert ON editor_plugin_feedbacks
+            FOR INSERT TO authenticated
+            WITH CHECK (lower(actor_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+        EXECUTE 'CREATE POLICY editor_plugin_receipts_self_select ON editor_plugin_receipts
+            FOR SELECT TO authenticated
+            USING (lower(viewer_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+        EXECUTE 'CREATE POLICY editor_plugin_receipts_self_insert ON editor_plugin_receipts
+            FOR INSERT TO authenticated
+            WITH CHECK (lower(viewer_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+        EXECUTE 'CREATE POLICY editor_plugin_receipts_self_update ON editor_plugin_receipts
+            FOR UPDATE TO authenticated
+            USING (lower(viewer_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))
+            WITH CHECK (lower(viewer_email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
+    END IF;
+END
+$$;
+"""
+
+
 COMPETITOR_FILTER_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
     id bigserial PRIMARY KEY,

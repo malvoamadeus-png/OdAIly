@@ -8,6 +8,7 @@ Push Data API with `isPublish=false` and `isPush=false`.
 ```text
 backend/   Python worker and business packages
 frontend/  Reserved for future UI
+extension/ Independent Chrome side-panel plugin for editors
 data/      Runtime data, configs, raw quotes, processed briefs, exports
 docs/      Project docs, module specs, and prompt templates
 tests/     Unit and integration tests
@@ -38,6 +39,38 @@ python backend\src\main.py doctor
 python backend\src\main.py run-once --task us-market --kind close --dry-run --force
 python backend\src\main.py run-once --task gate-tradfi --kind morning --dry-run --force
 ```
+
+## Runtime Helper
+
+This repo now includes runtime wrappers under `tools/` so local and Codex runs
+do not depend on `python`, `node`, or `pytest` already being present on `PATH`.
+
+Quick checks:
+
+```bash
+tools/dev doctor
+tools/dev python --version
+tools/dev pytest tests/test_editor_plugin_auth.py
+tools/dev node --version
+```
+
+`tools/dev pytest` also pins a repo-local temp directory and disables capture so
+pytest remains stable in this WSL/Codex runtime combination.
+
+If you want the current shell to use the repo-managed runtime paths directly:
+
+```bash
+source tools/dev-env.sh
+python --version
+node --version
+pytest tests/test_editor_plugin_auth.py
+```
+
+The helper prefers:
+
+- repo `.venv` site-packages when present
+- system `python3` / `python` / `node`
+- bundled Codex desktop runtimes as fallback
 
 ## Tasks And Schedules
 
@@ -117,6 +150,29 @@ Bootstrap a console admin after schema initialization:
 ```powershell
 python backend\src\main.py console-grant-admin --email your-admin@example.com
 ```
+
+## Editor Feed Extension
+
+The editor feed plugin lives in `extension/` as an independent Chrome
+side-panel extension. It consumes the same upstream notifications as Telegram
+and adds seen tracking, accept/reject feedback, and optional new-item sound
+alerts.
+
+Initialize the plugin schema and whitelist one editor:
+
+```powershell
+python backend\src\main.py editor-plugin-init-db
+python backend\src\main.py editor-plugin-grant-user --email editor@example.com --display-name "Night Editor"
+python backend\src\main.py editor-plugin-list-users
+```
+
+The current plugin package already embeds the Supabase URL and publishable key,
+so editors do not need to fill connection parameters manually.
+
+Then load `extension/` in `chrome://extensions` as an unpacked extension.
+Detailed setup and behavior live in
+[`docs/信息流插件.md`](docs/信息流插件.md) and
+[`extension/README-install.md`](extension/README-install.md).
 
 The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
 directly through Supabase, but only for authenticated emails present in
@@ -298,6 +354,7 @@ Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
 
 - `deploy/odaily-worker.service`
 - `deploy/odaily-competitor-monitor.service`
+- `deploy/odaily-editor-plugin-api.service`
 - `deploy/odaily-non-mainstream-media.service`
 - `deploy/odaily-external-media-alert@.service`
 - `deploy/odaily-whale-watch.service`
@@ -324,8 +381,8 @@ Production sync rules:
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-worker.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-editor-plugin-api.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-worker.service -u odaily-editor-plugin-api.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked

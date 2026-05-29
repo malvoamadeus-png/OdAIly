@@ -70,6 +70,41 @@ def parse_args() -> argparse.Namespace:
     )
     console_list_admins.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
+    editor_plugin_init = subparsers.add_parser(
+        "editor-plugin-init-db",
+        help="Initialize editor plugin Supabase tables and RPC functions.",
+    )
+    editor_plugin_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    editor_plugin_grant = subparsers.add_parser(
+        "editor-plugin-grant-user",
+        help="Grant one email access to the editor plugin.",
+    )
+    editor_plugin_grant.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    editor_plugin_grant.add_argument("--email", required=True, help="Editor email address.")
+    editor_plugin_grant.add_argument("--display-name", help="Optional display name shown in the plugin.")
+
+    editor_plugin_revoke = subparsers.add_parser(
+        "editor-plugin-revoke-user",
+        help="Revoke one email from the editor plugin whitelist.",
+    )
+    editor_plugin_revoke.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    editor_plugin_revoke.add_argument("--email", required=True, help="Editor email address.")
+
+    editor_plugin_list = subparsers.add_parser(
+        "editor-plugin-list-users",
+        help="List editor plugin whitelist emails from Supabase.",
+    )
+    editor_plugin_list.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    editor_plugin_api = subparsers.add_parser(
+        "editor-plugin-api-server",
+        help="Run the editor plugin news generation HTTP server.",
+    )
+    editor_plugin_api.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    editor_plugin_api.add_argument("--host", help="Bind host. Defaults to EDITOR_PLUGIN_API_HOST or 127.0.0.1.")
+    editor_plugin_api.add_argument("--port", type=int, help="Bind port. Defaults to EDITOR_PLUGIN_API_PORT or 8765.")
+
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
@@ -334,6 +369,63 @@ def console_list_admins_command(args: argparse.Namespace) -> int:
         print(f"{admin.email}\tcreated_at={admin.created_at}\tupdated_at={admin.updated_at}")
     print(f"[odaily] console admin count={len(admins)}")
     return 0
+
+
+def editor_plugin_init_command(args: argparse.Namespace) -> int:
+    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+
+    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository.init_schema()
+    print("[odaily] editor plugin database schema initialized")
+    return 0
+
+
+def editor_plugin_grant_user_command(args: argparse.Namespace) -> int:
+    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+
+    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository.init_schema()
+    record = repository.upsert_user(args.email, args.display_name, enabled=True)
+    print(
+        "[odaily] editor plugin user granted "
+        f"email={record.email} display_name={record.display_name or '-'} enabled={record.enabled}"
+    )
+    return 0
+
+
+def editor_plugin_revoke_user_command(args: argparse.Namespace) -> int:
+    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+
+    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository.init_schema()
+    removed = repository.delete_user(args.email)
+    print(f"[odaily] editor plugin user revoked email={args.email.strip().lower()} removed={removed}")
+    return 0 if removed else 1
+
+
+def editor_plugin_list_users_command(args: argparse.Namespace) -> int:
+    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+
+    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository.init_schema()
+    users = repository.list_users()
+    for user in users:
+        print(
+            f"{user.email}\tdisplay_name={user.display_name or '-'}\tenabled={user.enabled}"
+            f"\tcreated_at={user.created_at}\tupdated_at={user.updated_at}"
+        )
+    print(f"[odaily] editor plugin user count={len(users)}")
+    return 0
+
+
+def editor_plugin_api_server_command(args: argparse.Namespace) -> int:
+    from packages.editor_plugin_api import run_editor_plugin_api_server
+
+    return run_editor_plugin_api_server(
+        database_url=args.database_url,
+        host=args.host,
+        port=args.port,
+    )
 
 
 def x_capture_worker_command(args: argparse.Namespace) -> int:
@@ -806,6 +898,16 @@ def main() -> int:
             return console_revoke_admin_command(args)
         if args.command == "console-list-admins":
             return console_list_admins_command(args)
+        if args.command == "editor-plugin-init-db":
+            return editor_plugin_init_command(args)
+        if args.command == "editor-plugin-grant-user":
+            return editor_plugin_grant_user_command(args)
+        if args.command == "editor-plugin-revoke-user":
+            return editor_plugin_revoke_user_command(args)
+        if args.command == "editor-plugin-list-users":
+            return editor_plugin_list_users_command(args)
+        if args.command == "editor-plugin-api-server":
+            return editor_plugin_api_server_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
         if args.command == "non-mainstream-media-init-db":

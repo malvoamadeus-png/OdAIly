@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OdAIly 信息流设置</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="optionsShell">
+    <div class="optionsPage">
+      <header class="pageHeader">
+        <div>
+          <p class="eyebrow">OdAIly</p>
+          <h1>信息流插件设置</h1>
+        </div>
+      </header>
+      <form id="optionsForm" class="optionsForm">
+        <section class="panel">
+          <h2>轮询与声音</h2>
+          <label class="field">
+            <span>轮询间隔（秒）</span>
+            <input id="pollIntervalSeconds" name="pollIntervalSeconds" type="number" min="10" max="120" step="1" />
+          </label>
+          <label class="field inlineField">
+            <span>声音提醒</span>
+            <input id="soundEnabled" name="soundEnabled" type="checkbox" />
+          </label>
+          <label class="field">
+            <span>提醒范围</span>
+            <select id="soundScope" name="soundScope">
+              <option value="high">仅高频区</option>
+              <option value="all">全部消息</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>音量</span>
+            <select id="soundVolume" name="soundVolume">
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="panel">
+          <h2>布局</h2>
+          <label class="field">
+            <span>高频区默认高度（0.45 - 0.8）</span>
+            <input id="splitterRatio" name="splitterRatio" type="number" min="0.45" max="0.8" step="0.01" />
+          </label>
+        </section>
+
+        <div class="formActions">
+          <button type="submit" class="primaryButton">保存设置</button>
+          <button type="button" id="resetButton" class="secondaryButton">恢复默认</button>
+        </div>
+        <p class="hintText">Supabase 连接参数已内置在插件中，设置页只保留轮询、声音和布局选项。</p>
+        <p id="saveHint" class="hintText"></p>
+      </form>
+    </div>
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>

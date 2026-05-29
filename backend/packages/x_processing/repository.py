@@ -182,6 +182,14 @@ def _import_psycopg():
     return psycopg, dict_row, Jsonb
 
 
+def get_postgres_connect_timeout_seconds() -> int:
+    value = str(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS") or "10").strip()
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 10
+
+
 def _row_to_task(row: dict[str, Any]) -> TaskRecord:
     return TaskRecord(
         id=int(row["id"]),
@@ -275,9 +283,15 @@ class PostgresXProcessingRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        self.connect_timeout_seconds = get_postgres_connect_timeout_seconds()
 
     def _connect(self, *, autocommit: bool = False):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row, autocommit=autocommit)
+        return self._psycopg.connect(
+            self.database_url,
+            row_factory=self._dict_row,
+            autocommit=autocommit,
+            connect_timeout=self.connect_timeout_seconds,
+        )
 
     def init_schema(self) -> None:
         with self._connect() as conn:
