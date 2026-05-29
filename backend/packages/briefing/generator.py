@@ -59,7 +59,7 @@ INDICES_MAP = {
 }
 
 FOOTER_TEXT = (
-    "据悉，MSX.COM 是一个去中心化 RWA 交易平台，累计已上线数百种 RWA 代币，"
+    "据悉，MSX是一家头部RWA交易平台，累计已上线数百种 RWA 代币，"
     "涵盖 AAPL、AMZN、GOOGL、META、MSFT、NFLX、NVDA 等美股及 ETF 代币标的。"
 )
 

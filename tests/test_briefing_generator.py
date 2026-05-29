@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from packages.briefing.generator import build_brief
+from packages.briefing.generator import FOOTER_TEXT, build_brief
 from packages.market.models import MarketQuote
 
 
@@ -74,3 +74,11 @@ def test_trend_and_title_use_fixed_crypto_stock_pool() -> None:
     assert payload.title == "美股开盘加密概念股普跌，Strategy跌超3%"
     assert "Apple" not in payload.content
     assert "Coinbase 下跌 1%" in payload.content
+
+
+def test_msx_footer_uses_latest_copy() -> None:
+    assert (
+        FOOTER_TEXT
+        == "据悉，MSX是一家头部RWA交易平台，累计已上线数百种 RWA 代币，"
+        "涵盖 AAPL、AMZN、GOOGL、META、MSFT、NFLX、NVDA 等美股及 ETF 代币标的。"
+    )
