@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-import select
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +18,7 @@ from packages.common.freshness import (
 
 from .client import FXTwitterClient
 from .models import CaptureRunStats, TweetCandidate, XCaptureAccount, XCaptureSettings
-from .repository import CONFIG_NOTIFY_CHANNEL, PostgresXCaptureRepository, XCaptureRepository, utc_now
+from .repository import XCaptureRepository, utc_now
 
 
 @dataclass(slots=True)
@@ -34,8 +33,7 @@ class XCaptureWorker:
         *,
         repository: XCaptureRepository,
         client: FXTwitterClient | None = None,
-        notify_wait_seconds: float = 5.0,
-        notify_retry_seconds: float = 5.0,
+        config_reload_interval_seconds: float = 300.0,
         timeline_count: int = 20,
         attempt_retention_days: int = 3,
         attempt_prune_interval_seconds: float = 3600.0,
@@ -43,8 +41,7 @@ class XCaptureWorker:
     ) -> None:
         self.repository = repository
         self.client = client or FXTwitterClient()
-        self.notify_wait_seconds = notify_wait_seconds
-        self.notify_retry_seconds = notify_retry_seconds
+        self.config_reload_interval_seconds = max(30.0, float(config_reload_interval_seconds))
         self.timeline_count = timeline_count
         self.attempt_retention_days = max(1, int(attempt_retention_days))
         self.attempt_prune_interval_seconds = max(60.0, float(attempt_prune_interval_seconds))
@@ -55,6 +52,7 @@ class XCaptureWorker:
         self._next_due: dict[str, float] = {}
         self._snapshot = WorkerSnapshot(XCaptureSettings(), [])
         self._last_attempt_prune_monotonic: float | None = None
+        self._last_snapshot_loaded_monotonic: float | None = None
         self.worker_id = f"x_capture-{os.getpid()}"
         self._heartbeat = HeartbeatThrottle(
             component="x_capture",
@@ -84,6 +82,7 @@ class XCaptureWorker:
         settings = self.repository.get_settings()
         accounts = self.repository.list_accounts(include_disabled=False)
         self._snapshot = WorkerSnapshot(settings, accounts)
+        self._last_snapshot_loaded_monotonic = time.monotonic()
         known = {account.username_lower for account in accounts}
         for username in list(self._next_due):
             if username not in known:
@@ -116,17 +115,17 @@ class XCaptureWorker:
 
     def run_forever(self) -> None:
         snapshot = self.load_snapshot()
-        notify_thread = self._start_notify_listener()
         self._prune_attempts_if_due(force=True)
         print(
             "[odaily] x-capture worker started. "
-            f"accounts={len(snapshot.accounts)} interval={snapshot.settings.global_interval_seconds}s"
+            f"accounts={len(snapshot.accounts)} interval={snapshot.settings.global_interval_seconds}s "
+            f"config_reload_interval={int(self.config_reload_interval_seconds)}s"
         )
 
         try:
             while not self._stop_event.is_set():
                 now = time.monotonic()
-                if self._config_changed.is_set():
+                if self._config_changed.is_set() or self._snapshot_reload_due(now):
                     self._config_changed.clear()
                     snapshot = self.load_snapshot()
                     print(f"[odaily] x-capture config loaded. accounts={len(snapshot.accounts)}")
@@ -168,8 +167,6 @@ class XCaptureWorker:
                 self._wake_event.clear()
         finally:
             self.stop()
-            if notify_thread:
-                notify_thread.join(timeout=2)
 
     def _record_heartbeat(self, *, success: bool, error: str | None, metadata: dict[str, Any]) -> None:
         if not hasattr(self.repository, "record_worker_heartbeat"):
@@ -207,11 +204,21 @@ class XCaptureWorker:
         return removed
 
     def _sleep_seconds(self, snapshot: WorkerSnapshot) -> float:
-        if not snapshot.accounts:
-            return 3600.0
         now = time.monotonic()
+        reload_due = self._seconds_until_snapshot_reload(now)
+        if not snapshot.accounts:
+            return max(0.5, min(60.0, reload_due))
         next_due = min(self._next_due.get(account.username_lower, now + 5.0) for account in snapshot.accounts)
-        return max(0.5, min(60.0, next_due - now))
+        return max(0.5, min(60.0, next_due - now, reload_due))
+
+    def _snapshot_reload_due(self, now: float) -> bool:
+        return self._seconds_until_snapshot_reload(now) <= 0.0
+
+    def _seconds_until_snapshot_reload(self, now: float) -> float:
+        if self._last_snapshot_loaded_monotonic is None:
+            return 0.0
+        deadline = self._last_snapshot_loaded_monotonic + self.config_reload_interval_seconds
+        return deadline - now
 
     def _process_accounts(
         self,
@@ -330,39 +337,6 @@ class XCaptureWorker:
             detail_error = str(exc)
             detail_errors[candidate.tweet_id] = detail_error
         return self.client.build_record(account.username, candidate, detail=detail, detail_error=detail_error)
-
-    def _start_notify_listener(self) -> threading.Thread | None:
-        if not isinstance(self.repository, PostgresXCaptureRepository):
-            return None
-        thread = threading.Thread(target=self._listen_for_config_changes, name="x-capture-config-listener", daemon=True)
-        thread.start()
-        return thread
-
-    def _listen_for_config_changes(self) -> None:
-        repository = self.repository
-        if not isinstance(repository, PostgresXCaptureRepository):
-            return
-        while not self._stop_event.is_set():
-            try:
-                with repository._connect() as conn:
-                    conn.autocommit = True
-                    conn.execute(f"LISTEN {CONFIG_NOTIFY_CHANNEL}")
-                    self._signal_config_changed()
-                    print(f"[odaily] x-capture listening for {CONFIG_NOTIFY_CHANNEL}")
-                    while not self._stop_event.is_set():
-                        if select.select([conn], [], [], self.notify_wait_seconds)[0]:
-                            for _notify in conn.notifies(timeout=0, stop_after=100):
-                                self._signal_config_changed()
-            except Exception as exc:
-                if self._stop_event.is_set():
-                    break
-                self._signal_config_changed()
-                print(
-                    "[odaily] x-capture config listener reconnecting "
-                    f"in {self.notify_retry_seconds:g}s: {exc}"
-                )
-                self._stop_event.wait(self.notify_retry_seconds)
-
 
 def parse_record_created_at(value: str | None) -> datetime | None:
     if not value:

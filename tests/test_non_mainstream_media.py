@@ -1260,6 +1260,24 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
     }
 
 
+def test_non_mainstream_media_config_reload_interval_caps_idle_sleep_without_sources(monkeypatch) -> None:
+    worker = NonMainstreamMediaWorker(repository=InMemoryNonMainstreamMediaRepository(), site_registry={}, config_reload_interval_seconds=300)
+    worker._last_snapshot_loaded_monotonic = 100.0
+    monkeypatch.setattr("packages.non_mainstream_media.worker.time.monotonic", lambda: 160.0)
+
+    sleep_seconds = worker._sleep_seconds(worker._snapshot)
+
+    assert sleep_seconds == 60.0
+
+
+def test_non_mainstream_media_config_reload_interval_due_after_five_minutes() -> None:
+    worker = NonMainstreamMediaWorker(repository=InMemoryNonMainstreamMediaRepository(), site_registry={}, config_reload_interval_seconds=300)
+    worker._last_snapshot_loaded_monotonic = 100.0
+
+    assert worker._snapshot_reload_due(399.0) is False
+    assert worker._snapshot_reload_due(400.0) is True
+
+
 def test_worker_new_write_flow_site_saves_external_media_article(monkeypatch) -> None:
     repository = InMemoryNonMainstreamMediaRepository()
     registry = {

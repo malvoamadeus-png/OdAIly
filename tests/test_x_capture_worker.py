@@ -8,7 +8,7 @@ import pytest
 from packages.common.config import load_x_capture_worker_settings
 from packages.x_capture.client import FXTwitterClient
 from packages.x_capture.models import TimelineAttempt, TweetCandidate
-from packages.x_capture.repository import CONFIG_NOTIFY_CHANNEL, InMemoryXCaptureRepository, PostgresXCaptureRepository
+from packages.x_capture.repository import InMemoryXCaptureRepository
 from packages.x_capture.worker import XCaptureWorker
 
 
@@ -330,46 +330,22 @@ def test_attempt_retention_env_validates_range(monkeypatch) -> None:
         load_x_capture_worker_settings()
 
 
-def test_postgres_notify_listener_uses_psycopg3_notifies(monkeypatch) -> None:
-    class FakeNotifyConnection:
-        def __init__(self, on_notify) -> None:
-            self.autocommit = False
-            self.on_notify = on_notify
-            self.executed: list[str] = []
-            self.notify_calls = 0
+def test_config_reload_interval_caps_idle_sleep_without_accounts(monkeypatch) -> None:
+    worker = XCaptureWorker(repository=InMemoryXCaptureRepository(), client=FakeClient([]), config_reload_interval_seconds=300)
+    worker._last_snapshot_loaded_monotonic = 100.0
+    monkeypatch.setattr("packages.x_capture.worker.time.monotonic", lambda: 160.0)
 
-        def __enter__(self):
-            return self
+    sleep_seconds = worker._sleep_seconds(worker._snapshot)
 
-        def __exit__(self, exc_type, exc, traceback) -> None:
-            return None
+    assert sleep_seconds == 60.0
 
-        def execute(self, sql: str) -> None:
-            self.executed.append(sql)
 
-        def notifies(self, *, timeout: float | None = None, stop_after: int | None = None):
-            self.notify_calls += 1
-            self.on_notify()
-            yield object()
+def test_config_reload_interval_due_after_five_minutes() -> None:
+    worker = XCaptureWorker(repository=InMemoryXCaptureRepository(), client=FakeClient([]), config_reload_interval_seconds=300)
+    worker._last_snapshot_loaded_monotonic = 100.0
 
-    class FakePostgresRepository(PostgresXCaptureRepository):
-        def __init__(self, conn: FakeNotifyConnection) -> None:
-            self.conn = conn
-
-        def _connect(self):
-            return self.conn
-
-    worker: XCaptureWorker
-    conn = FakeNotifyConnection(lambda: worker.stop())
-    repo = FakePostgresRepository(conn)
-    worker = XCaptureWorker(repository=repo, client=FakeClient([]), notify_wait_seconds=0.01)
-    monkeypatch.setattr("packages.x_capture.worker.select.select", lambda read, write, error, timeout: (read, [], []))
-
-    worker._listen_for_config_changes()
-
-    assert conn.executed == [f"LISTEN {CONFIG_NOTIFY_CHANNEL}"]
-    assert conn.notify_calls == 1
-    assert worker._config_changed.is_set()
+    assert worker._snapshot_reload_due(399.0) is False
+    assert worker._snapshot_reload_due(400.0) is True
 
 
 def repo_stats(account, status: str):

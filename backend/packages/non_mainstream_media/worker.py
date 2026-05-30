@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-import select
 import threading
 import time
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Any
 from packages.common.heartbeat import HeartbeatThrottle
 from .fetcher import fetch_article, fetch_discovered_pages, get_site_registry
 from .models import NonMainstreamMediaSettings, NonMainstreamMediaSource, SiteDefinition, SourceRunStats
-from .repository import CONFIG_NOTIFY_CHANNEL, NonMainstreamMediaRepository, PostgresNonMainstreamMediaRepository, utc_now
+from .repository import NonMainstreamMediaRepository, utc_now
 
 
 @dataclass(slots=True)
@@ -27,16 +26,14 @@ class NonMainstreamMediaWorker:
         *,
         repository: NonMainstreamMediaRepository,
         site_registry: dict[str, SiteDefinition] | None = None,
-        notify_wait_seconds: float = 5.0,
-        notify_retry_seconds: float = 5.0,
+        config_reload_interval_seconds: float = 300.0,
         request_timeout_seconds: float = 20.0,
         max_attempts: int = 3,
         backoff_seconds: float = 1.0,
     ) -> None:
         self.repository = repository
         self.site_registry = site_registry or get_site_registry()
-        self.notify_wait_seconds = notify_wait_seconds
-        self.notify_retry_seconds = notify_retry_seconds
+        self.config_reload_interval_seconds = max(30.0, float(config_reload_interval_seconds))
         self.request_timeout_seconds = request_timeout_seconds
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
@@ -46,6 +43,7 @@ class NonMainstreamMediaWorker:
         self._wake_event = threading.Event()
         self._next_due: dict[str, float] = {}
         self._snapshot = WorkerSnapshot(NonMainstreamMediaSettings(), [])
+        self._last_snapshot_loaded_monotonic: float | None = None
         self._heartbeat = HeartbeatThrottle(
             component="non_mainstream_media",
             worker_id=self.worker_id,
@@ -75,6 +73,7 @@ class NonMainstreamMediaWorker:
         settings = self.repository.get_settings()
         sources = self.repository.list_sources(include_disabled=False)
         self._snapshot = WorkerSnapshot(settings=settings, sources=sources)
+        self._last_snapshot_loaded_monotonic = time.monotonic()
         known = {source.site_key for source in sources}
         for site_key in list(self._next_due):
             if site_key not in known:
@@ -96,15 +95,15 @@ class NonMainstreamMediaWorker:
 
     def run_forever(self) -> None:
         snapshot = self.load_snapshot()
-        notify_thread = self._start_notify_listener()
         print(
             "[odaily] non-mainstream media worker started. "
-            f"sources={len(snapshot.sources)} interval={snapshot.settings.global_interval_seconds}s"
+            f"sources={len(snapshot.sources)} interval={snapshot.settings.global_interval_seconds}s "
+            f"config_reload_interval={int(self.config_reload_interval_seconds)}s"
         )
         try:
             while not self._stop_event.is_set():
                 now = time.monotonic()
-                if self._config_changed.is_set():
+                if self._config_changed.is_set() or self._snapshot_reload_due(now):
                     self._config_changed.clear()
                     snapshot = self.load_snapshot()
                     print(f"[odaily] non-mainstream media config loaded. sources={len(snapshot.sources)}")
@@ -130,15 +129,23 @@ class NonMainstreamMediaWorker:
                 self._wake_event.clear()
         finally:
             self.stop()
-            if notify_thread:
-                notify_thread.join(timeout=2)
 
     def _sleep_seconds(self, snapshot: WorkerSnapshot) -> float:
-        if not snapshot.sources:
-            return 3600.0
         now = time.monotonic()
+        reload_due = self._seconds_until_snapshot_reload(now)
+        if not snapshot.sources:
+            return max(0.5, min(60.0, reload_due))
         next_due = min(self._next_due.get(source.site_key, now + 5.0) for source in snapshot.sources)
-        return max(0.5, min(60.0, next_due - now))
+        return max(0.5, min(60.0, next_due - now, reload_due))
+
+    def _snapshot_reload_due(self, now: float) -> bool:
+        return self._seconds_until_snapshot_reload(now) <= 0.0
+
+    def _seconds_until_snapshot_reload(self, now: float) -> float:
+        if self._last_snapshot_loaded_monotonic is None:
+            return 0.0
+        deadline = self._last_snapshot_loaded_monotonic + self.config_reload_interval_seconds
+        return deadline - now
 
     def _process_sources(self, sources: list[NonMainstreamMediaSource]) -> list[SourceRunStats]:
         return [self.process_source(source) for source in sources]
@@ -277,39 +284,3 @@ class NonMainstreamMediaWorker:
             )
         except Exception as exc:
             print(f"[odaily] non-mainstream media heartbeat failed: {exc}")
-
-    def _start_notify_listener(self) -> threading.Thread | None:
-        if not isinstance(self.repository, PostgresNonMainstreamMediaRepository):
-            return None
-        thread = threading.Thread(
-            target=self._listen_for_config_changes,
-            name="non-mainstream-media-config-listener",
-            daemon=True,
-        )
-        thread.start()
-        return thread
-
-    def _listen_for_config_changes(self) -> None:
-        repository = self.repository
-        if not isinstance(repository, PostgresNonMainstreamMediaRepository):
-            return
-        while not self._stop_event.is_set():
-            try:
-                with repository._connect() as conn:
-                    conn.autocommit = True
-                    conn.execute(f"LISTEN {CONFIG_NOTIFY_CHANNEL}")
-                    self._signal_config_changed()
-                    print(f"[odaily] non-mainstream media listening for {CONFIG_NOTIFY_CHANNEL}")
-                    while not self._stop_event.is_set():
-                        if select.select([conn], [], [], self.notify_wait_seconds)[0]:
-                            for _notify in conn.notifies(timeout=0, stop_after=100):
-                                self._signal_config_changed()
-            except Exception as exc:
-                if self._stop_event.is_set():
-                    break
-                self._signal_config_changed()
-                print(
-                    "[odaily] non-mainstream media config listener reconnecting "
-                    f"in {self.notify_retry_seconds:g}s: {exc}"
-                )
-                self._stop_event.wait(self.notify_retry_seconds)
