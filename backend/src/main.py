@@ -680,7 +680,7 @@ def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
             "[odaily] whale watch hyperliquid once "
             f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
             f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
-            f"skipped_small={result.skipped_small} failed={len(result.failed)}"
+            f"suppressed={result.suppressed} failed={len(result.failed)}"
         )
         return 0 if not result.failed else 1
     worker.run_forever()

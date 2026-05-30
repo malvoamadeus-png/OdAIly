@@ -661,3 +661,24 @@ def test_hyperliquid_repository_reads_existing_runtime_settings_without_upsert(m
     assert runtime.aggregate_window_seconds == 789
     assert len(executed) == 1
     assert executed[0].lstrip().startswith("SELECT")
+
+
+def test_hyperliquid_repository_uses_autocommit_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = PostgresWhaleWatchHyperliquidRepository(database_url="postgresql://example")
+    captured: dict[str, Any] = {}
+
+    class FakePsycopg:
+        def connect(self, database_url: str, **kwargs):
+            captured["database_url"] = database_url
+            captured.update(kwargs)
+            return object()
+
+    monkeypatch.setattr(repo, "_psycopg", FakePsycopg())
+
+    repo._connect()
+
+    assert captured["database_url"] == "postgresql://example"
+    assert captured["row_factory"] is repo._dict_row
+    assert captured["connect_timeout"] == repo.connect_timeout_seconds
+    assert captured["autocommit"] is True
+    assert captured["application_name"] == "odaily-whale-watch-hyperliquid"

@@ -66,12 +66,15 @@ class PostgresWhaleWatchHyperliquidRepository:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
         self.connect_timeout_seconds = get_postgres_connect_timeout_seconds()
+        self.application_name = "odaily-whale-watch-hyperliquid"
 
     def _connect(self):
         return self._psycopg.connect(
             self.database_url,
             row_factory=self._dict_row,
             connect_timeout=self.connect_timeout_seconds,
+            autocommit=True,
+            application_name=self.application_name,
         )
 
     def init_schema(self) -> None:
