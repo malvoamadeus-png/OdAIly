@@ -16,7 +16,7 @@ from packages.x_processing.telegram import TelegramClient
 from .hyperliquid_client import HyperliquidClient
 from .hyperliquid_detector import detect_hyperliquid_activity, format_money
 from .hyperliquid_repository import WhaleWatchHyperliquidRepository
-from .models import HyperliquidActivity, HyperliquidRunResult, HyperliquidWindowEntry
+from .models import HyperliquidActivity, HyperliquidRunResult, HyperliquidRuntimeSettings, HyperliquidWindowEntry
 
 
 class WhaleWatchHyperliquidWorker:
@@ -61,6 +61,13 @@ class WhaleWatchHyperliquidWorker:
 
     def run_once(self) -> HyperliquidRunResult:
         addresses = self.repository.list_addresses(include_disabled=False)
+        runtime = None
+        if addresses:
+            runtime = self.repository.get_runtime_settings(
+                default_single_fill_min_notional_usd=Decimal(str(self.settings.single_fill_min_notional_usd)),
+                default_aggregate_min_notional_usd=Decimal(str(self.settings.aggregate_min_notional_usd)),
+                default_aggregate_window_seconds=self.settings.aggregate_window_seconds,
+            )
         failed: dict[str, str] = {}
         processed = 0
         seeded = 0
@@ -71,7 +78,7 @@ class WhaleWatchHyperliquidWorker:
         for whale in addresses:
             processed += 1
             try:
-                stats = self._process_address(whale=whale)
+                stats = self._process_address(whale=whale, runtime=runtime)
                 seeded += int(stats["seeded"])
                 detected += int(stats["detected"])
                 inserted += int(stats["inserted"])
@@ -107,13 +114,8 @@ class WhaleWatchHyperliquidWorker:
                 )
                 self._sleep()
 
-    def _process_address(self, *, whale) -> dict[str, int | bool]:
+    def _process_address(self, *, whale, runtime: HyperliquidRuntimeSettings) -> dict[str, int | bool]:
         polled_at = _utc_now()
-        runtime = self.repository.get_runtime_settings(
-            default_single_fill_min_notional_usd=Decimal(str(self.settings.single_fill_min_notional_usd)),
-            default_aggregate_min_notional_usd=Decimal(str(self.settings.aggregate_min_notional_usd)),
-            default_aggregate_window_seconds=self.settings.aggregate_window_seconds,
-        )
         state = self.repository.get_state(address_id=whale.id)
         fills = self.client.user_fills(whale.address)
         fills.sort(key=lambda item: (_int(item.get("time")) or 0, str(item.get("tid") or ""), str(item.get("hash") or "")))

@@ -10,7 +10,7 @@ from packages.common.config import WhaleWatchHyperliquidSettings, WhaleWatchSett
 from packages.whale_watch.chains import CHAIN_REGISTRY
 from packages.whale_watch.detector import detect_activity, normalize_evm_address
 from packages.whale_watch.hyperliquid_detector import detect_hyperliquid_activity
-from packages.whale_watch.hyperliquid_repository import SCHEMA_SQL as HYPERLIQUID_SCHEMA_SQL
+from packages.whale_watch.hyperliquid_repository import PostgresWhaleWatchHyperliquidRepository, SCHEMA_SQL as HYPERLIQUID_SCHEMA_SQL
 from packages.whale_watch.models import ChainState, HyperliquidAddress, HyperliquidRuntimeSettings, HyperliquidState, WhaleAddress
 from packages.whale_watch.hyperliquid_worker import WhaleWatchHyperliquidWorker
 from packages.whale_watch.worker import WhaleWatchWorker
@@ -133,6 +133,27 @@ def test_hyperliquid_worker_first_run_seeds_without_telegram() -> None:
     assert telegram.messages == []
     assert repo.states[1].seeded_at is not None
     assert repo.states[1].last_seen_time == 1779704646349
+
+
+def test_hyperliquid_worker_reads_runtime_settings_once_per_round() -> None:
+    repo = FakeHyperliquidRepository()
+    repo.addresses = [
+        HyperliquidAddress(id=1, address=HYPER_WATCHED, address_lower=HYPER_WATCHED_LOWER, label="Hyper test"),
+        HyperliquidAddress(id=2, address="0x1111111111111111111111111111111111111111", address_lower="0x1111111111111111111111111111111111111111", label="Hyper test 2"),
+    ]
+    client = FakeHyperliquidClient([hyper_fill()])
+    telegram = FakeTelegramClient()
+    worker = WhaleWatchHyperliquidWorker(
+        repository=repo,
+        settings=WhaleWatchHyperliquidSettings(),
+        client=client,
+        telegram_client=telegram,
+        worker_id="test-hl-runtime-once",
+    )
+
+    worker.run_once()
+
+    assert repo.runtime_settings_calls == 1
 
 
 def test_hyperliquid_worker_does_not_replay_latest_historical_fill_after_seed() -> None:
@@ -514,6 +535,7 @@ class FakeHyperliquidRepository:
         self.states: dict[int, HyperliquidState] = {}
         self.activities: set[tuple[int, str]] = set()
         self.telegram_results: dict[str, dict[str, Any]] = {}
+        self.runtime_settings_calls = 0
         self.runtime_settings = HyperliquidRuntimeSettings(
             single_fill_min_notional_usd=Decimal("500000"),
             aggregate_min_notional_usd=Decimal("1000000"),
@@ -527,6 +549,7 @@ class FakeHyperliquidRepository:
         default_aggregate_min_notional_usd: Decimal,
         default_aggregate_window_seconds: int,
     ) -> HyperliquidRuntimeSettings:
+        self.runtime_settings_calls += 1
         return self.runtime_settings
 
     def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]:
@@ -589,3 +612,52 @@ class FakeHyperliquidRepository:
 
     def record_worker_heartbeat(self, **_kwargs) -> None:
         return None
+
+
+def test_hyperliquid_repository_reads_existing_runtime_settings_without_upsert(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = PostgresWhaleWatchHyperliquidRepository(database_url="postgresql://example")
+    executed: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str, params: tuple[Any, ...] | None = None):
+            executed.append(sql)
+            if sql.lstrip().startswith("SELECT"):
+                return FakeCursor(
+                    {
+                        "single_fill_min_notional_usd": "123",
+                        "aggregate_min_notional_usd": "456",
+                        "aggregate_window_seconds": 789,
+                        "updated_at": None,
+                    }
+                )
+            return FakeCursor(None)
+
+        def commit(self) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeCursor:
+        def __init__(self, row: dict[str, Any] | None) -> None:
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    monkeypatch.setattr(repo, "_connect", lambda: FakeConn())
+
+    runtime = repo.get_runtime_settings(
+        default_single_fill_min_notional_usd=Decimal("1"),
+        default_aggregate_min_notional_usd=Decimal("2"),
+        default_aggregate_window_seconds=3,
+    )
+
+    assert runtime.single_fill_min_notional_usd == Decimal("123")
+    assert runtime.aggregate_min_notional_usd == Decimal("456")
+    assert runtime.aggregate_window_seconds == 789
+    assert len(executed) == 1
+    assert executed[0].lstrip().startswith("SELECT")

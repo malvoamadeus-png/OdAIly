@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.x_processing.repository import _import_psycopg, get_database_url, get_postgres_connect_timeout_seconds
 
 from .detector import normalize_evm_address
 from .models import (
@@ -65,9 +65,14 @@ class PostgresWhaleWatchHyperliquidRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        self.connect_timeout_seconds = get_postgres_connect_timeout_seconds()
 
     def _connect(self):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+        return self._psycopg.connect(
+            self.database_url,
+            row_factory=self._dict_row,
+            connect_timeout=self.connect_timeout_seconds,
+        )
 
     def init_schema(self) -> None:
         with self._connect() as conn:
@@ -84,27 +89,47 @@ class PostgresWhaleWatchHyperliquidRepository:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                INSERT INTO whale_watch_hyperliquid_settings (
-                    singleton_key,
-                    single_fill_min_notional_usd,
-                    aggregate_min_notional_usd,
-                    aggregate_window_seconds
-                )
-                VALUES ('global', %s, %s, %s)
-                ON CONFLICT (singleton_key) DO UPDATE SET
-                    singleton_key = EXCLUDED.singleton_key
-                RETURNING
+                SELECT
                     single_fill_min_notional_usd,
                     aggregate_min_notional_usd,
                     aggregate_window_seconds,
                     updated_at
-                """,
-                (
-                    str(default_single_fill_min_notional_usd),
-                    str(default_aggregate_min_notional_usd),
-                    default_aggregate_window_seconds,
-                ),
+                FROM whale_watch_hyperliquid_settings
+                WHERE singleton_key = 'global'
+                """
             ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO whale_watch_hyperliquid_settings (
+                        singleton_key,
+                        single_fill_min_notional_usd,
+                        aggregate_min_notional_usd,
+                        aggregate_window_seconds
+                    )
+                    VALUES ('global', %s, %s, %s)
+                    ON CONFLICT (singleton_key) DO NOTHING
+                    """,
+                    (
+                        str(default_single_fill_min_notional_usd),
+                        str(default_aggregate_min_notional_usd),
+                        default_aggregate_window_seconds,
+                    ),
+                )
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT
+                        single_fill_min_notional_usd,
+                        aggregate_min_notional_usd,
+                        aggregate_window_seconds,
+                        updated_at
+                    FROM whale_watch_hyperliquid_settings
+                    WHERE singleton_key = 'global'
+                    """
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("whale_watch_hyperliquid_settings row not found after initialization")
         return HyperliquidRuntimeSettings(
             single_fill_min_notional_usd=Decimal(str(row["single_fill_min_notional_usd"])),
             aggregate_min_notional_usd=Decimal(str(row["aggregate_min_notional_usd"])),
