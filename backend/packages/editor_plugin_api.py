@@ -34,7 +34,6 @@ from packages.x_processing.searcher import (
     build_ai_review_prompt,
     cosine_similarity,
     exact_duplicate_decision,
-    lexical_duplicate_decision,
     parse_ai_review_output,
 )
 from packages.x_processing.worker import (
@@ -283,19 +282,7 @@ class EditorPluginNewsGenService:
                 target_type="odaily_published",
             )
             if decision is None:
-                decision = lexical_duplicate_decision(
-                    query=query,
-                    documents=odaily_documents,
-                    target_type="odaily_published",
-                )
-            if decision is None:
                 decision = exact_duplicate_decision(
-                    query=query,
-                    documents=active_documents,
-                    target_type="inflight_candidate",
-                )
-            if decision is None:
-                decision = lexical_duplicate_decision(
                     query=query,
                     documents=active_documents,
                     target_type="inflight_candidate",

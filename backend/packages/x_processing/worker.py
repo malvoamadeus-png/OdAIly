@@ -55,7 +55,6 @@ from .searcher import (
     SearchDocument,
     build_ai_review_prompt,
     exact_duplicate_decision,
-    lexical_duplicate_decision,
     parse_ai_review_output,
     top_match,
 )
@@ -522,12 +521,6 @@ class XProcessingWorker:
             documents=odaily_documents,
             target_type="odaily_published",
         )
-        if decision is None:
-            decision = lexical_duplicate_decision(
-                query=query,
-                documents=odaily_documents,
-                target_type="odaily_published",
-            )
         query_vector: list[float] | None = None
         if decision is None:
             candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
@@ -536,12 +529,6 @@ class XProcessingWorker:
                 documents=candidate_documents,
                 target_type="inflight_candidate",
             )
-            if decision is None:
-                decision = lexical_duplicate_decision(
-                    query=query,
-                    documents=candidate_documents,
-                    target_type="inflight_candidate",
-                )
         if decision is None:
             query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
             odaily_match = top_match(
