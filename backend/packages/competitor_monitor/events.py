@@ -310,12 +310,20 @@ class NewsflashEventAggregator:
             return {"similarity": similarity, "method": "embedding_high", "ai_result": {}}
         if similarity < self.settings.event_ai_review_threshold or self.ai_client is None:
             return None
-        raw_output = self.ai_client.generate_text(
-            model=self.settings.event_review_model,
-            prompt=build_event_review_prompt(left=left, right=right, similarity=similarity),
-            text_format=EVENT_REVIEW_SCHEMA,
-        )
-        payload = parse_ai_review_output(raw_output)
+        try:
+            raw_output = self.ai_client.generate_text(
+                model=self.settings.event_review_model,
+                prompt=build_event_review_prompt(left=left, right=right, similarity=similarity),
+                text_format=EVENT_REVIEW_SCHEMA,
+            )
+            payload = parse_ai_review_output(raw_output)
+        except Exception as exc:
+            print(
+                "[odaily] competitor event ai review skipped "
+                f"left={left.source}:{left.source_item_id} right={right.source}:{right.source_item_id} "
+                f"similarity={similarity:.4f} error={exc}"
+            )
+            return None
         is_same = bool(payload.get("is_same_event"))
         if not is_same:
             return None

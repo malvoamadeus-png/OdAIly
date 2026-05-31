@@ -475,12 +475,33 @@ class XProcessingWorker:
                 content=task.content,
             )
             schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
-        raw_output = self._get_ai_client().generate_text(
-            model=self.settings.judge_model,
-            prompt=prompt,
-            text_format=schema,
-        )
-        route, discard_type = parse_judge_route(raw_output)
+        try:
+            raw_output = self._get_ai_client().generate_text(
+                model=self.settings.judge_model,
+                prompt=prompt,
+                text_format=schema,
+            )
+            route, discard_type = parse_judge_route(raw_output)
+        except Exception as exc:
+            fallback_route = competitor_judge_fallback_route(task) if is_competitor_task(task) else None
+            if fallback_route is None:
+                raise
+            route = fallback_route
+            discard_type = "none"
+            raw_output = json.dumps(
+                {
+                    "route": route,
+                    "discard_type": discard_type,
+                    "fallback": "competitor_judge_ai_failed",
+                    "error": str(exc)[:500],
+                },
+                ensure_ascii=False,
+            )
+            print(
+                "[odaily] x-processing judge fallback "
+                f"task_id={task.id} source={task.source} source_item_id={task.source_item_id} "
+                f"route={route} error={exc}"
+            )
         if route == "discard":
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
             self.repository.complete_judge_discard(
@@ -1018,6 +1039,20 @@ def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
     if AI_TOPIC_PATTERN.search(text) and not CRYPTO_CONTEXT_PATTERN.search(text):
         return "non_crypto_ai"
     return None
+
+
+def competitor_judge_fallback_route(task: TaskRecord) -> JudgeRoute:
+    text = f"{task.title or ''}\n{task.content}"
+    if re.search(r"融资|募资|投资|领投|参投|估值|收购|并购|基金|战略轮|种子轮|A\s*轮|B\s*轮", text, re.IGNORECASE):
+        return "funding"
+    if re.search(
+        r"链上|地址|钱包|巨鲸|转入|转出|转账|被盗|攻击|漏洞|合约|冻结|黑客|助记词|跨链桥|清算|爆仓|"
+        r"USDT|USDC|BTC|ETH|SOL|BNB|Bitcoin|Ethereum",
+        text,
+        re.IGNORECASE,
+    ):
+        return "onchain"
+    return "regular"
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
