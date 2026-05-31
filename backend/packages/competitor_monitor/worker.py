@@ -36,6 +36,7 @@ class CompetitorRunResult:
     events_updated: int
     filtered: int
     event_elapsed_seconds: float
+    event_error: str | None
     expired_for_tasks: int
     expired_for_tasks_by_source: dict[str, int]
     failed_sources: dict[str, str]
@@ -93,11 +94,12 @@ class CompetitorMonitorWorker:
             exclude_terms = self._load_exclude_terms()
             filtered_items, filtered_count, filtered_by_source = exclude_newsflash_items(items, exclude_terms)
             event_elapsed_seconds = 0.0
+            event_error = None
             event_started = time.monotonic()
             try:
                 event_ids = self._assign_events(filtered_items)
             except Exception as exc:
-                failed["event_aggregator"] = str(exc)
+                event_error = str(exc)
                 event_ids = set()
                 print(f"[odaily] competitor event aggregation failed error={exc}")
             finally:
@@ -112,6 +114,7 @@ class CompetitorMonitorWorker:
                 events_updated=len(event_ids),
                 filtered=filtered_count,
                 event_elapsed_seconds=event_elapsed_seconds,
+                event_error=event_error,
                 expired_for_tasks=expired_for_tasks,
                 expired_for_tasks_by_source=expired_for_tasks_by_source,
                 failed_sources=failed,
@@ -127,6 +130,7 @@ class CompetitorMonitorWorker:
                 events_updated=0,
                 filtered=0,
                 event_elapsed_seconds=0.0,
+                event_error=None,
                 expired_for_tasks=0,
                 expired_for_tasks_by_source={source: 0 for source in NEWSFLASH_SOURCES},
                 failed_sources={"worker": str(exc)},
@@ -150,6 +154,7 @@ class CompetitorMonitorWorker:
                 f"filtered={result.filtered} "
                 f"expired_for_tasks={result.expired_for_tasks} "
                 f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
+                f"event_error={result.event_error or '-'} "
                 f"fetched_by_source={result.fetched_by_source} "
                 f"filtered_by_source={result.filtered_by_source} "
                 f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
@@ -213,6 +218,7 @@ class CompetitorMonitorWorker:
                     "filtered": result.filtered,
                     "expired_for_tasks": result.expired_for_tasks,
                     "event_elapsed_seconds": round(result.event_elapsed_seconds, 3),
+                    "event_error": result.event_error,
                     "fetched_by_source": result.fetched_by_source,
                     "filtered_by_source": result.filtered_by_source,
                     "expired_for_tasks_by_source": result.expired_for_tasks_by_source,
