@@ -365,14 +365,15 @@ Production sync rules:
 
 1. Develop and test in the local checkout first.
 2. Commit and push repo-tracked changes to GitHub.
-3. Update the server from `/opt/OdAIly` with:
+3. Prefer the stable operations paths in `docs/agent-operations-runbook.md`: GitHub over `ssh.github.com:443`, and Linux access through Windows OpenSSH from WSL.
+4. Update the server from `/opt/OdAIly` with:
 
    ```bash
    git fetch origin
    git pull --ff-only origin main
    ```
 
-4. Verify the worktree is clean:
+5. Verify the worktree is clean:
 
    ```bash
    git status --short
