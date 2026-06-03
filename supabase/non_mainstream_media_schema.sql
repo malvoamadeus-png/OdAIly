@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     display_name text NOT NULL,
     homepage_url text NOT NULL,
     capture_method text NOT NULL CHECK (capture_method IN ('html_request', 'browser_render')),
+    pipeline_mode text NOT NULL DEFAULT 'write_flow',
+    source_group text NOT NULL DEFAULT 'external_media',
+    interval_seconds integer,
     enabled boolean NOT NULL DEFAULT true,
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -99,6 +102,33 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS pipeline_mode text NOT NULL DEFAULT 'write_flow';
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS source_group text NOT NULL DEFAULT 'external_media';
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS interval_seconds integer;
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_pipeline_mode_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_pipeline_mode_check
+    CHECK (pipeline_mode IN ('write_flow', 'alert_only'));
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_source_group_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_source_group_check
+    CHECK (source_group IN ('external_media', 'ai_source'));
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_interval_seconds_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_interval_seconds_check
+    CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600);
 
 CREATE TABLE IF NOT EXISTS non_mainstream_media_seen_items (
     id bigserial PRIMARY KEY,
@@ -136,7 +166,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 DROP TRIGGER IF EXISTS trg_non_mainstream_media_sources_notify ON non_mainstream_media_sources;
 CREATE TRIGGER trg_non_mainstream_media_sources_notify
-AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, enabled ON non_mainstream_media_sources
+AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, source_group, interval_seconds, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;

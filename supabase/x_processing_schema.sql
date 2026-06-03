@@ -89,7 +89,7 @@ ALTER TABLE prompt_template_versions ADD COLUMN IF NOT EXISTS deleted_at timesta
 
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media')),
+    news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'ai_source', 'mainstream_media')),
     candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -513,7 +513,7 @@ DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_x_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media'))
+WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media', 'ai_source', 'mainstream_media'))
 EXECUTE FUNCTION notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()

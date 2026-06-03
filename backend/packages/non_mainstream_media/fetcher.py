@@ -5,15 +5,15 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from .models import DiscoveredPage, ParsedArticle, SiteDefinition
+from .models import DiscoveredPage, ParsedArticle, SOURCE_GROUP_AI_SOURCE, SiteDefinition
 
 
 REQUEST_HEADERS = {
@@ -54,6 +54,13 @@ FT_BASE_URL = "https://www.ft.com"
 THE_BLOCK_BASE_URL = "https://www.theblock.co"
 THE_BLOCK_OFFICIAL_RSS_URL = "https://www.theblock.co/rss.xml"
 THE_BLOCK_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:theblock.co&hl=en-US&gl=US&ceid=US:en"
+THELEC_BASE_URL = "https://www.thelec.net"
+THELEC_CHINA_LIST_URL = "https://www.thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm"
+THELEC_TIMEZONE = timezone(timedelta(hours=9))
+ETNEWS_BASE_URL = "https://www.etnews.com"
+ETNEWS_ELECTRONICS_LIST_URL = "https://www.etnews.com/news/section.html?id1=06"
+ETNEWS_SW_LIST_URL = "https://www.etnews.com/news/section.html?id1=04"
+ETNEWS_TIMEZONE = timezone(timedelta(hours=9))
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -140,6 +147,36 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         capture_method="html_request",
         pipeline_mode="write_flow",
     ),
+    "thelec_china": SiteDefinition(
+        site_key="thelec_china",
+        display_name="TheElec CHINA",
+        homepage_url=THELEC_BASE_URL,
+        list_url=THELEC_CHINA_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
+    "etnews_electronics": SiteDefinition(
+        site_key="etnews_electronics",
+        display_name="ETNews Electronics",
+        homepage_url=ETNEWS_BASE_URL,
+        list_url=ETNEWS_ELECTRONICS_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
+    "etnews_sw": SiteDefinition(
+        site_key="etnews_sw",
+        display_name="ETNews SW",
+        homepage_url=ETNEWS_BASE_URL,
+        list_url=ETNEWS_SW_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -224,6 +261,16 @@ def fetch_discovered_pages(
     if site.site_key == "hk01_virtual_assets":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_hk01_pages(html, base_url=site.homepage_url)
+    if site.site_key == "thelec_china":
+        return fetch_thelec_discovered_pages(
+            site,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+    if site.site_key in {"etnews_electronics", "etnews_sw"}:
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_etnews_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -310,6 +357,18 @@ def fetch_article(
     elif site.site_key == "hk01_virtual_assets":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_hk01_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "thelec_china":
+        html = fetch_html_with_fallbacks(
+            page.detail_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+            fallback_urls=build_thelec_fallback_urls(page.detail_url),
+        )
+        article = parse_thelec_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key in {"etnews_electronics", "etnews_sw"}:
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_etnews_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -377,6 +436,29 @@ def fetch_json(
                 break
             time.sleep(max(0.0, backoff_seconds) * attempt)
     raise RuntimeError(f"request failed url={url}: {last_error}") from last_error
+
+
+def fetch_html_with_fallbacks(
+    url: str,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+    fallback_urls: list[str] | None = None,
+) -> str:
+    candidates = [url, *(fallback_urls or [])]
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            return fetch_html(
+                candidate,
+                timeout_seconds=timeout_seconds,
+                max_attempts=max_attempts,
+                backoff_seconds=backoff_seconds,
+            )
+        except Exception as exc:
+            errors.append(f"{candidate}: {exc}")
+    raise RuntimeError("; ".join(errors))
 
 
 def build_jina_proxy_url(url: str) -> str:
@@ -491,6 +573,23 @@ def fetch_the_block_discovered_pages(
     if message_parts:
         raise RuntimeError("; ".join(message_parts))
     return []
+
+
+def fetch_thelec_discovered_pages(
+    site: SiteDefinition,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    html = fetch_html_with_fallbacks(
+        site.list_url,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        fallback_urls=build_thelec_fallback_urls(site.list_url),
+    )
+    return discover_thelec_pages(html, base_url=site.homepage_url)
 
 
 def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[DiscoveredPage]:
@@ -757,6 +856,58 @@ def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[Dis
             seen.add(detail_url)
             title = clean_inline_text(str(article_data.get("title") or article_data.get("name") or ""))
             results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title or None))
+    return results
+
+
+def discover_thelec_pages(html: str, *, base_url: str = THELEC_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    containers = [
+        node
+        for node in soup.select("article, li, div, section, tr")
+        if node.select("a[href*='articleView.html?idxno=']")
+        and re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", node.get_text(" ", strip=True))
+    ]
+    if not containers:
+        containers = [anchor.parent for anchor in soup.select("a[href*='articleView.html?idxno=']")]
+    for container in containers:
+        if not isinstance(container, Tag):
+            continue
+        page = extract_thelec_discovered_page(container, base_url=base_url)
+        if page is None or page.detail_url in seen:
+            continue
+        seen.add(page.detail_url)
+        results.append(page)
+    return results
+
+
+def discover_etnews_pages(html: str, *, base_url: str = ETNEWS_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = str(anchor.get("href") or "").strip()
+        detail_url = normalize_etnews_url(urljoin(base_url, href))
+        if not is_etnews_article_url(detail_url) or detail_url in seen:
+            continue
+        seen.add(detail_url)
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        container = nearest_article_container(anchor)
+        if not title and container is not None:
+            title = extract_etnews_listing_title(container, detail_url=detail_url)
+        excerpt = extract_etnews_listing_excerpt(container, title=title) if container is not None else ""
+        published_at_raw = extract_first_datetime_text(container.get_text(" ", strip=True)) if container is not None else ""
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=excerpt or None,
+                published_at=parse_etnews_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
     return results
 
 
@@ -1364,6 +1515,118 @@ def parse_hk01_article(html: str, *, page_url: str, source_item_id: str) -> Pars
     )
 
 
+def parse_thelec_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    canonical = normalize_thelec_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at_raw = (
+        select_meta_content(soup, "property", "article:published_time")
+        or select_meta_content(soup, "name", "article:published_time")
+        or extract_thelec_published_at_text(soup)
+    )
+    author_names = extract_thelec_author_names(soup)
+    categories = extract_thelec_categories(soup)
+    body = clean_body_text(extract_thelec_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or extract_thelec_subtitle(soup)
+            or body.split("\n\n", 1)[0][:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_thelec_published_at(published_at_raw),
+        author_names=author_names,
+        tags=[],
+        categories=categories,
+        excerpt=excerpt,
+        content_format="thelec_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
+def parse_etnews_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    canonical = normalize_etnews_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or select_text(soup, "#article_title_h2")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at_raw = (
+        select_meta_content(soup, "property", "article:published_time")
+        or select_meta_content(soup, "name", "article:published_time")
+        or extract_etnews_published_at_text(soup)
+    )
+    author_names = extract_etnews_author_names(soup)
+    categories = extract_etnews_categories(soup)
+    body = clean_body_text(extract_etnews_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body.split("\n\n", 1)[0][:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_etnews_published_at(published_at_raw),
+        author_names=author_names,
+        tags=[],
+        categories=categories,
+        excerpt=excerpt,
+        content_format="etnews_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
 def parse_tether_article(payload: Any, *, page_url: str, source_item_id: str) -> ParsedArticle:
     if isinstance(payload, list):
         if not payload:
@@ -1785,6 +2048,120 @@ def extract_hk01_body(blocks: list[dict[str, Any]]) -> str:
     return "\n\n".join(unique_preserve_order(parts)).strip()
 
 
+def extract_thelec_body(soup: BeautifulSoup) -> str:
+    best_text = ""
+    for selector in (
+        "#article-view-content-div",
+        ".article-view-content-div",
+        "#article-view-content",
+        ".article-view-content",
+        ".view-content",
+        ".article_txt",
+        ".article-body",
+        "article",
+    ):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        fragment = BeautifulSoup(str(node), "html.parser")
+        for drop_selector in ("h1", ".article-sub-title", ".article-meta", ".article-head-title-list"):
+            for drop_node in fragment.select(drop_selector):
+                drop_node.decompose()
+        text = extract_body_from_node(fragment)
+        if len(text) > len(best_text):
+            best_text = text
+    return best_text
+
+
+def extract_thelec_author_names(soup: BeautifulSoup) -> list[str]:
+    candidates: list[str] = []
+    for selector in (
+        "meta[name='author']",
+        "[itemprop='author']",
+        ".article-meta .name",
+        ".article-head .name",
+        ".article_writer",
+        ".article-byline .name",
+        ".byline .name",
+    ):
+        if selector.startswith("meta"):
+            text = clean_inline_text(select_meta_content(soup, "name", "author") or "")
+        else:
+            node = soup.select_one(selector)
+            text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        text = re.sub(r"^(?:By|기사\s*입력)\s+", "", text, flags=re.IGNORECASE).strip()
+        if text and not re.search(r"승인|입력|댓글", text):
+            candidates.append(text)
+    if candidates:
+        return unique_preserve_order(candidates)
+    page_text = clean_inline_text(soup.get_text(" ", strip=True))
+    match = re.search(r"(?P<author>[A-Za-z][A-Za-z\s,.'-]{1,80})\s*승인\s*\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", page_text)
+    if match:
+        return [clean_inline_text(match.group("author"))]
+    return []
+
+
+def extract_thelec_categories(soup: BeautifulSoup) -> list[str]:
+    candidates: list[str] = []
+    for selector in (
+        ".article-head-title-list a",
+        ".breadcrumb a",
+        ".location a",
+        ".article-category",
+    ):
+        for node in soup.select(selector):
+            text = clean_inline_text(node.get_text(" ", strip=True))
+            if text and text.upper() != "HOME":
+                candidates.append(text)
+    return unique_preserve_order(candidates)
+
+
+def extract_thelec_subtitle(soup: BeautifulSoup) -> str:
+    for selector in (
+        ".article-sub-title",
+        ".article-summary",
+        ".summary",
+        ".view-subtitle",
+        "article h2",
+    ):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        if text:
+            return text
+    return ""
+
+
+def extract_thelec_published_at_text(soup: BeautifulSoup) -> str | None:
+    for selector in (".article-meta", ".article-head", ".view-side", "article"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = extract_first_datetime_text(node.get_text(" ", strip=True))
+        if text:
+            return text
+    fallback = extract_first_datetime_text(soup.get_text(" ", strip=True))
+    return fallback or None
+
+
+def extract_first_datetime_text(value: str) -> str:
+    match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}(?::\d{2})?", value)
+    return match.group(0) if match else ""
+
+
+def parse_thelec_published_at(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=THELEC_TIMEZONE).astimezone(UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
+
+
 def extract_hk01_text_nodes(value: Any) -> list[str]:
     parts: list[str] = []
     if isinstance(value, str):
@@ -1805,6 +2182,57 @@ def extract_hk01_text_nodes(value: Any) -> list[str]:
                 parts.extend(extract_hk01_text_nodes(nested))
         return parts
     return parts
+
+
+def extract_thelec_discovered_page(container: Tag, *, base_url: str) -> DiscoveredPage | None:
+    anchors: list[tuple[int, str, str]] = []
+    for anchor in container.select("a[href*='articleView.html?idxno=']"):
+        href = anchor.get("href")
+        if not href:
+            continue
+        detail_url = normalize_thelec_url(urljoin(base_url, href))
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        anchors.append((len(title), title, detail_url))
+    if not anchors:
+        return None
+    _, title, detail_url = sorted(anchors, key=lambda item: (item[0], item[1]), reverse=True)[0]
+    if not detail_url or not title:
+        return None
+    metadata_text = clean_inline_text(container.get_text(" ", strip=True))
+    published_at_raw = extract_first_datetime_text(metadata_text)
+    excerpt = extract_thelec_listing_excerpt(container, title=title, published_at_raw=published_at_raw)
+    return DiscoveredPage(
+        source_item_id=detail_url,
+        detail_url=detail_url,
+        title=title,
+        excerpt=excerpt or None,
+        published_at=parse_thelec_published_at(published_at_raw),
+        published_at_raw=published_at_raw or None,
+    )
+
+
+def extract_thelec_listing_excerpt(container: Tag, *, title: str, published_at_raw: str) -> str:
+    for selector in (".lead", ".summary", ".description", "p"):
+        node = container.select_one(selector)
+        if node is None:
+            continue
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        if text and text != title and text != published_at_raw:
+            return text
+    candidates: list[str] = []
+    for node in container.select("p, span, div"):
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        if not text or text == title or text == published_at_raw:
+            continue
+        if re.fullmatch(r"[A-Za-z][A-Za-z\s,.'-]+\s*\|\s*\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", text):
+            continue
+        if re.fullmatch(r"[A-Z][A-Z\s]+\s*\|\s*[A-Za-z][A-Za-z\s,.'-]+\s*\|\s*\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", text):
+            continue
+        candidates.append(text)
+    for candidate in candidates:
+        if len(candidate) >= 30 and candidate != title:
+            return candidate
+    return ""
 
 
 def extract_wp_rendered_text(value: Any) -> str:
@@ -1886,6 +2314,39 @@ def strip_markdown_formatting(value: str) -> str:
     return text
 
 
+def build_thelec_fallback_urls(url: str) -> list[str]:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("thelec.net"):
+        return []
+    host = parsed.netloc.lower()
+    alternate_host = "thelec.net" if host.startswith("www.") else "www.thelec.net"
+    alternate_url = urlunparse(parsed._replace(netloc=alternate_host))
+    return unique_preserve_order([alternate_url, build_jina_proxy_url(alternate_url)])
+
+
+def normalize_thelec_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("thelec.net"):
+        return url.strip()
+    idxno = parse_qs(parsed.query).get("idxno", [])
+    query = f"idxno={idxno[0]}" if idxno and idxno[0] else parsed.query
+    path = parsed.path or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", query, ""))
+
+
+def normalize_etnews_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.netloc.lower().endswith("etnews.com"):
+        return url.strip()
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", "", ""))
+
+
+def is_etnews_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().endswith("etnews.com") and re.fullmatch(r"/\d{12,}", parsed.path.rstrip("/") or "")
+
+
 def normalize_the_block_discovery_url(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.netloc.lower().endswith("theblock.co"):
@@ -1903,6 +2364,113 @@ def extract_decrypt_author(soup: BeautifulSoup) -> str:
     if " / " in author:
         return author.split(" / ", 1)[1].strip()
     return author.strip()
+
+
+def nearest_article_container(anchor: Tag) -> Tag | None:
+    for parent in anchor.parents:
+        if not isinstance(parent, Tag):
+            continue
+        if parent.name in {"li", "article", "section", "tr"}:
+            return parent
+        if parent.name == "div" and parent.select("a[href]"):
+            text = clean_inline_text(parent.get_text(" ", strip=True))
+            if len(text) >= 20:
+                return parent
+    return anchor.parent if isinstance(anchor.parent, Tag) else None
+
+
+def extract_etnews_listing_title(container: Tag, *, detail_url: str) -> str:
+    for anchor in container.select("a[href]"):
+        href = str(anchor.get("href") or "")
+        if normalize_etnews_url(urljoin(ETNEWS_BASE_URL, href)) != detail_url:
+            continue
+        text = clean_inline_text(anchor.get_text(" ", strip=True))
+        if text:
+            return text
+    for selector in ("h1", "h2", "h3", "strong", ".tit", ".title", ".subject"):
+        node = container.select_one(selector)
+        text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        if text:
+            return text
+    return ""
+
+
+def extract_etnews_listing_excerpt(container: Tag, *, title: str) -> str:
+    text = clean_inline_text(container.get_text(" ", strip=True))
+    if title and title in text:
+        text = text.replace(title, " ", 1)
+    text = re.sub(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}(?::\d{2})?", " ", text)
+    text = clean_inline_text(text)
+    return text[:240]
+
+
+def extract_etnews_body(soup: BeautifulSoup) -> str:
+    node = soup.select_one("#articleBody") or soup.select_one(".article_body")
+    if node is None:
+        return ""
+    fragment = BeautifulSoup(str(node), "html.parser")
+    drop_noise(fragment)
+    for selector in (".article_image", ".reporter_info", ".copyright", ".ad", ".advertisement"):
+        for item in fragment.select(selector):
+            item.decompose()
+    parts = collect_text_parts(fragment)
+    if parts:
+        return "\n\n".join(parts)
+    return fragment.get_text("\n\n", strip=True)
+
+
+def extract_etnews_author_names(soup: BeautifulSoup) -> list[str]:
+    candidates: list[str] = []
+    for selector in ("meta[name='author']", ".reporter_info", ".byline", ".reporter"):
+        if selector.startswith("meta"):
+            text = clean_inline_text(select_meta_content(soup, "name", "author") or "")
+        else:
+            node = soup.select_one(selector)
+            text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        text = re.sub(r"\s*기자\s*기사\s*더보기.*$", "", text).strip()
+        match = re.search(r"([가-힣A-Za-z][가-힣A-Za-z\s.'-]{1,40})\s*기자", text)
+        if match:
+            text = clean_inline_text(match.group(1))
+        if text and not re.search(r"기사\s*더보기|공유하기|발행일", text):
+            candidates.append(text)
+    return unique_preserve_order(candidates)
+
+
+def extract_etnews_categories(soup: BeautifulSoup) -> list[str]:
+    header = soup.select_one(".article_header")
+    if header is None:
+        return []
+    title = select_text(soup, "#article_title_h2")
+    text = clean_inline_text(header.get_text(" ", strip=True))
+    if title and title in text:
+        text = text.split(title, 1)[0]
+    categories = [part for part in re.split(r"\s+", text) if part and part not in {"뉴스"}]
+    return unique_preserve_order(categories[:3])
+
+
+def extract_etnews_published_at_text(soup: BeautifulSoup) -> str | None:
+    for selector in (".article_header", "#articleBody", "article"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = extract_first_datetime_text(node.get_text(" ", strip=True))
+        if text:
+            return text
+    return extract_first_datetime_text(soup.get_text(" ", strip=True)) or None
+
+
+def parse_etnews_published_at(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    if re.search(r"[+-]\d{2}:?\d{2}|Z$", text):
+        return parse_published_at(text)
+    for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=ETNEWS_TIMEZONE).astimezone(UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
 
 
 def extract_body_from_node(node: Tag) -> str:
@@ -2022,6 +2590,8 @@ def infer_content_format(url: str) -> str | None:
         return "forbes_digital_assets"
     if parsed.netloc.lower().endswith("hk01.com"):
         return "hk01_issue_article"
+    if parsed.netloc.lower().endswith("thelec.net") and parsed.path == "/news/articleView.html":
+        return "thelec_article"
     parts = [part for part in urlparse(url).path.split("/") if part]
     if len(parts) >= 2 and parts[0] == "posts":
         return parts[1]
@@ -2047,6 +2617,11 @@ def parse_published_at(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
+        for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt).replace(tzinfo=UTC)
+            except ValueError:
+                continue
         try:
             parsed = parsedate_to_datetime(text)
         except (TypeError, ValueError, IndexError):
@@ -2084,6 +2659,11 @@ def select_attr(soup: BeautifulSoup, selector: str, attr: str) -> str | None:
         return None
     value = node.get(attr)
     return str(value).strip() if value else None
+
+
+def select_text(soup: BeautifulSoup, selector: str) -> str:
+    node = soup.select_one(selector)
+    return clean_inline_text(node.get_text(" ", strip=True)) if node else ""
 
 
 def select_meta_content(soup: BeautifulSoup, attr_name: str, attr_value: str) -> str | None:

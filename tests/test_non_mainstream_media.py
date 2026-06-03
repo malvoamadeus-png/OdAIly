@@ -10,12 +10,14 @@ from packages.non_mainstream_media.fetcher import (
     discover_coindesk_pages,
     discover_cointelegraph_pages,
     discover_decrypt_pages,
+    discover_etnews_pages,
     discover_ft_pages,
     discover_fortune_pages,
     discover_forbes_pages,
     fetch_discovered_pages,
     fetch_article,
     discover_hk01_pages,
+    discover_thelec_pages,
     discover_tether_pages,
     discover_the_block_pages,
     discover_wsj_pages,
@@ -24,11 +26,18 @@ from packages.non_mainstream_media.fetcher import (
     parse_coindesk_article,
     parse_cointelegraph_article,
     parse_decrypt_article,
+    parse_etnews_article,
     parse_forbes_article,
     parse_hk01_article,
+    parse_thelec_article,
     parse_tether_article,
 )
-from packages.non_mainstream_media.models import DiscoveredPage, ParsedArticle, SiteDefinition
+from packages.non_mainstream_media.models import (
+    SOURCE_GROUP_AI_SOURCE,
+    DiscoveredPage,
+    ParsedArticle,
+    SiteDefinition,
+)
 from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
 from packages.non_mainstream_media.worker import NonMainstreamMediaWorker
 
@@ -613,6 +622,228 @@ def test_discover_hk01_pages_reads_issue_blocks() -> None:
     assert [page.title for page in pages] == ["HK01 sample story"]
 
 
+def test_discover_thelec_pages_reads_list_titles_and_keeps_idxno() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="list-container">
+          <div class="article-list-item">
+            <span class="category">CHINA</span>
+            <a href="/news/articleView.html?idxno=10961">Nvidia to source HBM3E from Samsung by end-June, likely for China market</a>
+            <p class="lead">Samsung's HBM3E products are likely headed to China-bound accelerators.</p>
+            <span class="writer">Kim Min-su</span>
+            <span class="date">2024.05.17 14:03</span>
+          </div>
+          <div class="article-list-item">
+            <span class="category">CHINA</span>
+            <a href="https://www.thelec.net/news/articleView.html?idxno=10961&utm_source=test">Duplicate story</a>
+            <p class="lead">Duplicate excerpt should not create another item.</p>
+            <span class="writer">Kim Min-su</span>
+            <span class="date">2024.05.17 14:03</span>
+          </div>
+          <div class="article-list-item">
+            <span class="category">CHINA</span>
+            <a href="/news/articleView.html?idxno=10962">China smartphone OLED shipments rebound in April</a>
+            <p class="lead">Shipment growth returned as domestic demand stabilized.</p>
+            <span class="writer">Park Jae-hyuk</span>
+            <span class="date">2024.05.18 09:10</span>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    pages = discover_thelec_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.thelec.net/news/articleView.html?idxno=10961",
+        "https://www.thelec.net/news/articleView.html?idxno=10962",
+    ]
+    assert pages[0].title == "Nvidia to source HBM3E from Samsung by end-June, likely for China market"
+    assert pages[0].excerpt == "Samsung's HBM3E products are likely headed to China-bound accelerators."
+    assert pages[0].published_at == datetime(2024, 5, 17, 5, 3, tzinfo=UTC)
+    assert pages[0].published_at_raw == "2024.05.17 14:03"
+
+
+def test_parse_thelec_article_extracts_title_author_time_and_body() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.thelec.net/news/articleView.html?idxno=10961" />
+        <meta property="og:title" content="Nvidia to source HBM3E from Samsung by end-June, likely for China market" />
+        <meta property="og:description" content="Samsung's HBM3E output is expected to support Nvidia accelerators for China." />
+      </head>
+      <body>
+        <article>
+          <div class="article-head-title-list"><a href="/news/articleList.html?sc_section_code=S1N2">CHINA</a></div>
+          <h1>Nvidia to source HBM3E from Samsung by end-June, likely for China market</h1>
+          <div class="article-sub-title">Samsung's HBM3E output is expected to support Nvidia accelerators for China.</div>
+          <div class="article-meta">
+            <span class="name">Kim Min-su</span>
+            <span class="time">승인 2024.05.17 14:03</span>
+          </div>
+          <div id="article-view-content-div">
+            <p>Nvidia is expected to qualify Samsung Electronics' HBM3E by the end of June.</p>
+            <p>The chips are likely to be used in AI accelerators bound for the China market, TheElec has learned.</p>
+            <p>Sources said volume shipments could begin in the second half of the year.</p>
+          </div>
+        </article>
+      </body>
+    </html>
+    """
+
+    article = parse_thelec_article(
+        html,
+        page_url="https://www.thelec.net/news/articleView.html?idxno=10961",
+        source_item_id="https://www.thelec.net/news/articleView.html?idxno=10961",
+    )
+
+    assert article.canonical_url == "https://www.thelec.net/news/articleView.html?idxno=10961"
+    assert article.title == "Nvidia to source HBM3E from Samsung by end-June, likely for China market"
+    assert article.author_names == ["Kim Min-su"]
+    assert article.categories == ["CHINA"]
+    assert article.published_at == datetime(2024, 5, 17, 5, 3, tzinfo=UTC)
+    assert article.content == (
+        "Nvidia is expected to qualify Samsung Electronics' HBM3E by the end of June.\n\n"
+        "The chips are likely to be used in AI accelerators bound for the China market, TheElec has learned.\n\n"
+        "Sources said volume shipments could begin in the second half of the year."
+    )
+    assert article.excerpt == "Samsung's HBM3E output is expected to support Nvidia accelerators for China."
+    assert article.content_format == "thelec_article"
+
+
+def test_fetch_discovered_pages_thelec_uses_host_fallback(monkeypatch) -> None:
+    site = get_site_registry()["thelec_china"]
+    html = """
+    <html>
+      <body>
+        <div class="article-list-item">
+          <a href="/news/articleView.html?idxno=10961">Sample TheElec story</a>
+          <p>Sample excerpt line for TheElec fallback.</p>
+          <span>2024.05.17 14:03</span>
+        </div>
+      </body>
+    </html>
+    """
+    calls: list[str] = []
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url == site.list_url:
+            raise RuntimeError("primary host timeout")
+        if url == "https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm":
+            return html
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert calls[:2] == [
+        site.list_url,
+        "https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm",
+    ]
+    assert [page.detail_url for page in pages] == ["https://www.thelec.net/news/articleView.html?idxno=10961"]
+
+
+def test_thelec_registered_as_ai_source_with_five_minute_interval() -> None:
+    site = get_site_registry()["thelec_china"]
+
+    assert site.source_group == SOURCE_GROUP_AI_SOURCE
+    assert site.pipeline_mode == "write_flow"
+    assert site.interval_seconds == 300
+
+
+def test_etnews_sections_registered_as_ai_sources_with_five_minute_interval() -> None:
+    registry = get_site_registry()
+
+    assert registry["etnews_electronics"].source_group == SOURCE_GROUP_AI_SOURCE
+    assert registry["etnews_electronics"].pipeline_mode == "write_flow"
+    assert registry["etnews_electronics"].interval_seconds == 300
+    assert registry["etnews_electronics"].list_url == "https://www.etnews.com/news/section.html?id1=06"
+
+    assert registry["etnews_sw"].source_group == SOURCE_GROUP_AI_SOURCE
+    assert registry["etnews_sw"].pipeline_mode == "write_flow"
+    assert registry["etnews_sw"].interval_seconds == 300
+    assert registry["etnews_sw"].list_url == "https://www.etnews.com/news/section.html?id1=04"
+
+
+def test_discover_etnews_pages_reads_section_article_ids() -> None:
+    html = """
+    <html>
+      <body>
+        <ul>
+          <li>
+            <a href="/20260603000046">BOE OLED production ceremony</a>
+            <p>Display panel update</p>
+          </li>
+          <li>
+            <a href="https://www.etnews.com/20260602000291?utm_source=test"></a>
+            <strong>AI legaltech survey</strong>
+            <span>2026-06-03 12:00</span>
+          </li>
+          <li><a href="/news/section.html?id1=04">Ignore section</a></li>
+          <li><a href="/20260603000046">Duplicate story</a></li>
+        </ul>
+      </body>
+    </html>
+    """
+
+    pages = discover_etnews_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.etnews.com/20260603000046",
+        "https://www.etnews.com/20260602000291",
+    ]
+    assert pages[0].title == "BOE OLED production ceremony"
+    assert pages[1].title == "AI legaltech survey"
+    assert pages[1].published_at == datetime(2026, 6, 3, 3, 0, tzinfo=UTC)
+
+
+def test_parse_etnews_article_extracts_title_time_author_and_body() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.etnews.com/20260602000291" />
+        <meta property="og:title" content="10명 중 6명이 AI로 법률 분야 활용" />
+        <meta property="og:description" content="국내 성인 설문조사 결과" />
+        <meta property="article:published_time" content="2026-06-03T12:00:00+09:00" />
+      </head>
+      <body>
+        <div class="article_header">
+          <span>플랫폼/유통</span>
+          <h2 id="article_title_h2">10명 중 6명이 AI로 법률 분야 활용</h2>
+          <span>발행일 : 2026-06-03 12:00</span>
+        </div>
+        <div id="articleBody" class="article_body">
+          <figure class="article_image">기사 이해를 돕기 위한 AI 생성 이미지</figure>
+          <p>국내 성인 10명 중 6명은 생성형 AI를 법률분야에 활용하고 있다.</p>
+          <p>토종 리걸테크는 변호사법 때문에 서비스를 제공하기 어렵다.</p>
+        </div>
+        <div class="reporter_info">현대인 기자 기사 더보기</div>
+      </body>
+    </html>
+    """
+
+    article = parse_etnews_article(
+        html,
+        page_url="https://www.etnews.com/20260602000291",
+        source_item_id="https://www.etnews.com/20260602000291",
+    )
+
+    assert article.canonical_url == "https://www.etnews.com/20260602000291"
+    assert article.title == "10명 중 6명이 AI로 법률 분야 활용"
+    assert article.published_at == datetime(2026, 6, 3, 3, 0, tzinfo=UTC)
+    assert article.author_names == ["현대인"]
+    assert article.categories == ["플랫폼/유통"]
+    assert article.content == (
+        "국내 성인 10명 중 6명은 생성형 AI를 법률분야에 활용하고 있다.\n\n"
+        "토종 리걸테크는 변호사법 때문에 서비스를 제공하기 어렵다."
+    )
+    assert article.excerpt == "국내 성인 설문조사 결과"
+    assert article.content_format == "etnews_article"
+
+
 def test_discover_tether_pages_reads_wordpress_posts_payload() -> None:
     payload = [
         {
@@ -1182,6 +1413,8 @@ def test_worker_seeds_first_run_then_creates_task_for_new_url(monkeypatch) -> No
         "site_display_name": "a16z crypto Posts",
         "capture_method": "html_request",
         "pipeline_mode": "write_flow",
+        "source_group": "external_media",
+        "source_label": "外媒",
         "content_format": "article",
         "author_names": ["Alice"],
         "tags": ["DeFi"],
@@ -1254,10 +1487,124 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "site_display_name": "WSJ Business",
         "capture_method": "html_request",
         "pipeline_mode": "alert_only",
+        "source_group": "external_media",
+        "source_label": "外媒",
         "excerpt": "Fresh alert item",
         "published_at_raw": None,
         "source_kind": "external_media_alert",
     }
+
+
+def test_worker_ai_source_write_flow_saves_ai_source_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "thelec_china": SiteDefinition(
+            site_key="thelec_china",
+            display_name="TheElec CHINA",
+            homepage_url="https://www.thelec.net",
+            list_url="https://www.thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+            source_group="ai_source",
+            interval_seconds=300,
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.thelec.net/news/articleView.html?idxno=10961",
+            detail_url="https://www.thelec.net/news/articleView.html?idxno=10961",
+            title="Seed AI story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.thelec.net/news/articleView.html?idxno=10962",
+            detail_url="https://www.thelec.net/news/articleView.html?idxno=10962",
+            title="Fresh AI story",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "thelec_china"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "Fresh AI story",
+            content="AI chip supply chain update.",
+            published_at=datetime(2026, 5, 24, 11, 0, tzinfo=UTC),
+            author_names=["TheElec"],
+            excerpt="AI chip supply chain update.",
+            content_format="thelec_article",
+            raw_payload={"page_url": page.detail_url},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    task = repository.tasks[0]
+    assert task["source"] == "ai_source"
+    assert task["metadata"]["source_group"] == "ai_source"
+    assert task["metadata"]["source_label"] == "AI信源"
+    assert task["metadata"]["source_kind"] == "ai_source"
+
+
+def test_worker_ai_source_alert_only_saves_ai_source_alert_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "ai_alert_site": SiteDefinition(
+            site_key="ai_alert_site",
+            display_name="AI Alert Site",
+            homepage_url="https://example.com",
+            list_url="https://example.com/news",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+            source_group="ai_source",
+            interval_seconds=300,
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://example.com/news/seed",
+            detail_url="https://example.com/news/seed",
+            title="Seed AI alert",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://example.com/news/fresh",
+            detail_url="https://example.com/news/fresh",
+            title="Fresh AI alert",
+            excerpt="Fresh AI alert excerpt",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        raise AssertionError("alert_only AI source should not fetch detail pages")
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    task = repository.tasks[0]
+    assert task["source"] == "ai_source_alert"
+    assert task["metadata"]["source_group"] == "ai_source"
+    assert task["metadata"]["source_label"] == "AI信源"
+    assert task["metadata"]["source_kind"] == "ai_source_alert"
 
 
 def test_non_mainstream_media_config_reload_interval_caps_idle_sleep_without_sources(monkeypatch) -> None:

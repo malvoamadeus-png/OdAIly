@@ -21,6 +21,7 @@ from .ai_client import OpenAIResponsesClient, TextGenerationClient
 from .formatter import format_brief, parse_draft_output
 from .models import (
     ACTIVE_CANDIDATE_TTL,
+    AI_SOURCE,
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
     JUDGE_ROUTES,
@@ -170,6 +171,37 @@ NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的
 """
 
 
+AI_SOURCE_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是判断一条AI信源原文，是否值得进入后续快讯写作。
+
+请严格分两步判断：
+1. 先判断它是否属于可丢弃内容。
+2. 如果不属于可丢弃内容，统一输出 ai_source。
+
+可丢弃内容只有四类：
+- pure_emotion：纯情绪表达，没有可报道事实。
+- baseless_trading_call：无逻辑的纯粹喊单、价格口号或无事实支撑的涨跌判断。
+- daily_chatter：寒暄、日常状态、meme、节日祝福、无新闻事实的社区闲聊。
+- non_crypto_ai：明显无新闻事实、纯闲聊或营销化的 AI 泛科技内容；不要仅因内容不属于 Crypto 就丢弃 AI信源。
+
+不要因为内容有主观语气、营销语气或表达不规范就直接丢弃；只要有明确主体、明确动作和可报道结果，就保留。
+
+只允许两种 route：
+- ai_source：保留并进入AI信源写作模板。
+- discard：只用于上面四类可丢弃内容。
+
+只输出 JSON，不输出解释文本。格式必须为：
+{{"route":"ai_source|discard","discard_type":"none|pure_emotion|baseless_trading_call|daily_chatter|non_crypto_ai"}}
+
+如果 route 不是 discard，discard_type 必须是 none。
+
+来源媒体：{site_display_name}
+作者：{author_names}
+标题：{title}
+来源链接：{source_url}
+正文：{content}
+"""
+
+
 AI_TOPIC_PATTERN = re.compile(
     r"人工智能|生成式\s*AI|AIGC|大模型|机器学习|深度学习|智能体|"
     r"OpenAI|ChatGPT|DeepSeek|Claude|Gemini|Sora|"
@@ -199,6 +231,7 @@ PUBLISHER_CATEGORY_ALLOWLIST = {
 }
 PUBLISHER_CHANNEL_BY_SOURCE = {
     NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
+    AI_SOURCE: "external_media",
     "x": "x",
     "blockbeats": "competitor",
     "panews": "competitor",
@@ -224,6 +257,28 @@ PUBLISHER_JSON_SCHEMA = {
             "reason": {"type": "string"},
         },
         "required": ["category", "reason"],
+    },
+    "strict": True,
+}
+
+
+AI_SOURCE_JUDGE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "ai_source_judge_route",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "route": {
+                "type": "string",
+                "enum": ["ai_source", "discard"],
+            },
+            "discard_type": {
+                "type": "string",
+                "enum": ["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"],
+            },
+        },
+        "required": ["route", "discard_type"],
     },
     "strict": True,
 }
@@ -443,6 +498,21 @@ class XProcessingWorker:
         return True
 
     def _run_judge(self, task: TaskRecord) -> None:
+        if is_ai_source_task(task):
+            self.repository.complete_judge(
+                task.id,
+                news_type=AI_SOURCE,
+                model=DETERMINISTIC_JUDGE_MODEL,
+                raw_output=json.dumps(
+                    {
+                        "route": AI_SOURCE,
+                        "discard_type": "none",
+                        "auto_pass": "ai_source",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            return
         deterministic_discard_type = deterministic_judge_discard_type(task)
         if deterministic_discard_type is not None:
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
@@ -466,15 +536,17 @@ class XProcessingWorker:
             content=task.content,
         )
         schema = X_JUDGE_JSON_SCHEMA
-        if is_non_mainstream_media_task(task):
-            prompt = NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE.format(
-                site_display_name=task.metadata.get("site_display_name") or "外媒",
+        if is_non_mainstream_media_task(task) or is_ai_source_task(task):
+            is_ai_source = is_ai_source_task(task)
+            prompt_template = AI_SOURCE_JUDGE_PROMPT_TEMPLATE if is_ai_source else NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE
+            prompt = prompt_template.format(
+                site_display_name=task.metadata.get("site_display_name") or ("AI信源" if is_ai_source else "外媒"),
                 author_names="、".join(task.metadata.get("author_names") or []),
                 title=task.title or "",
                 source_url=task.source_url or "",
                 content=task.content,
             )
-            schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
+            schema = AI_SOURCE_JUDGE_JSON_SCHEMA if is_ai_source else NON_MAINSTREAM_JUDGE_JSON_SCHEMA
         try:
             raw_output = self._get_ai_client().generate_text(
                 model=self.settings.judge_model,
@@ -893,7 +965,7 @@ class XProcessingWorker:
                 feature_mode_enabled=pipeline.writer_feature_mode_enabled,
                 site_display_name=(
                     task.metadata.get("site_display_name")
-                    if is_mainstream_media_task(task) or is_non_mainstream_media_task(task)
+                    if is_mainstream_media_task(task) or is_non_mainstream_media_task(task) or is_ai_source_task(task)
                     else None
                 ),
             )
@@ -1022,6 +1094,10 @@ def is_non_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == NON_MAINSTREAM_MEDIA_SOURCE
 
 
+def is_ai_source_task(task: TaskRecord) -> bool:
+    return task.source == AI_SOURCE
+
+
 def is_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == MAINSTREAM_MEDIA_SOURCE
 
@@ -1035,6 +1111,8 @@ def utc_since_hours(hours: int) -> datetime:
 
 
 def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
+    if is_ai_source_task(task):
+        return None
     text = f"{task.title or ''}\n{task.content}"
     if AI_TOPIC_PATTERN.search(text) and not CRYPTO_CONTEXT_PATTERN.search(text):
         return "non_crypto_ai"
@@ -1056,12 +1134,14 @@ def competitor_judge_fallback_route(task: TaskRecord) -> JudgeRoute:
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
-    if is_non_mainstream_media_task(task):
+    if is_non_mainstream_media_task(task) or is_ai_source_task(task):
         author_names = "、".join(task.metadata.get("author_names") or []) or "未知"
-        site_display_name = task.metadata.get("site_display_name") or "外媒"
+        is_ai_source = is_ai_source_task(task)
+        site_display_name = task.metadata.get("site_display_name") or ("AI信源" if is_ai_source else "外媒")
+        block_label = "待处理AI信源原文" if is_ai_source else "待处理外媒原文"
         return (
             f"{render_prompt_content(prompt)}\n\n"
-            "【待处理外媒原文】\n"
+            f"【{block_label}】\n"
             f"来源媒体：{site_display_name}\n"
             f"作者：{author_names}\n"
             f"原标题：{task.title or ''}\n"
@@ -1206,6 +1286,7 @@ SOURCE_DISPLAY_NAMES = {
     "panews": "PANews",
     "jinse": "金色财经",
     "non_mainstream_media": "外媒",
+    "ai_source": "AI信源",
     "mainstream_media": "外媒",
 }
 
@@ -1219,6 +1300,7 @@ ROUTE_DISPLAY_NAMES = {
     "onchain": "链上",
     "funding": "融资",
     "non_mainstream_media": "外媒",
+    "ai_source": "AI信源",
     "mainstream_media": "外媒",
 }
 
@@ -1226,6 +1308,8 @@ ROUTE_DISPLAY_NAMES = {
 def resolve_notice_route_label(*, task: TaskRecord, pipeline: PipelineRecord) -> str:
     if is_mainstream_media_task(task):
         return ROUTE_DISPLAY_NAMES["mainstream_media"]
+    if is_ai_source_task(task):
+        return ROUTE_DISPLAY_NAMES["ai_source"]
     if pipeline.news_type is None:
         return "未分类"
     return ROUTE_DISPLAY_NAMES.get(pipeline.news_type, "未分类")

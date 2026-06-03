@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 
-NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "mainstream_media"]
-JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "discard"]
+NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"]
+JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"]
 DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
 ProcessingStage = Literal["judge", "search", "write", "format_publish", "publish"]
 PublisherChannelKey = Literal["external_media", "x", "competitor"]
@@ -15,13 +15,14 @@ PublisherDecision = Literal["auto_publish", "manual_review", "failed"]
 
 
 NON_MAINSTREAM_MEDIA_SOURCE = "non_mainstream_media"
+AI_SOURCE = "ai_source"
 MAINSTREAM_MEDIA_SOURCE = "mainstream_media"
-NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "mainstream_media"}
-JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "discard"}
+NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"}
+JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"}
 DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"}
 COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
 ODAILY_REFERENCE_SOURCE = "odaily"
-SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE}
+SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE, AI_SOURCE}
 PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
 WRITE_ONLY_SOURCES: set[str] = {MAINSTREAM_MEDIA_SOURCE}
 WRITE_STAGE_SOURCES: set[str] = {*PROCESSING_SOURCES, *WRITE_ONLY_SOURCES}
@@ -43,6 +44,7 @@ PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
     "onchain": "x_onchain_writer",
     "funding": "x_funding_writer",
     "non_mainstream_media": "mainstream_media_writer",
+    "ai_source": "mainstream_media_writer",
     "mainstream_media": "mainstream_media_writer",
 }
 

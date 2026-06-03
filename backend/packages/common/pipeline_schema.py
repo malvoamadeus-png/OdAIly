@@ -471,6 +471,7 @@ BEGIN
                         'value', CASE t.source
                             WHEN 'x' THEN 'X'
                             WHEN 'non_mainstream_media' THEN '外媒'
+                            WHEN 'ai_source' THEN 'AI信源'
                             WHEN 'blockbeats' THEN 'BlockBeats'
                             WHEN 'panews' THEN 'PANews'
                             WHEN 'jinse' THEN '金色财经'
@@ -486,6 +487,7 @@ BEGIN
                                     WHEN 'onchain' THEN '链上'
                                     WHEN 'funding' THEN '融资'
                                     WHEN 'non_mainstream_media' THEN '外媒'
+                                    WHEN 'ai_source' THEN 'AI信源'
                                     WHEN 'mainstream_media' THEN '外媒'
                                     ELSE '常规'
                                 END,

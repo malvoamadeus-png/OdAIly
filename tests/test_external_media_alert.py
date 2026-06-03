@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from packages.external_media_alert import ALERT_PROMPT_KEY, InMemoryExternalMediaAlertRepository, MAINSTREAM_MEDIA_TASK_SOURCE
+from packages.external_media_alert import (
+    AI_SOURCE_ALERT_TASK_SOURCE,
+    ALERT_PROMPT_KEY,
+    InMemoryExternalMediaAlertRepository,
+    MAINSTREAM_MEDIA_TASK_SOURCE,
+)
 from packages.external_media_alert.fetcher import get_site_registry, parse_feed_items
 from packages.external_media_alert.models import ExternalMediaSourceDefinition, MediaNewsflashItem
 from packages.external_media_alert.worker import ExternalMediaAlertWorker, parse_domain_route
@@ -194,6 +199,36 @@ def test_domain_judge_sends_strong_crypto_title_to_model() -> None:
     assert repo.pipelines[1].domain_route == "crypto"
     assert repo.pipelines[1].domain_model == "gpt-5.4-mini"
     assert len(ai_client.calls) == 1
+
+
+def test_ai_source_alert_domain_judge_uses_ai_source_prompt_label() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="pending",
+            site_key="thelec_china",
+            site_display_name="TheElec CHINA",
+            title="AI chip supplier expands packaging capacity",
+            excerpt="AI chip supply chain update",
+            source_url="https://www.thelec.net/news/articleView.html?idxno=10961",
+            source=AI_SOURCE_ALERT_TASK_SOURCE,
+        )
+    )
+    ai_client = FakeAIClient(['{"route":"crypto","discard_reason":"none"}'])
+    worker = ExternalMediaAlertWorker(
+        stage="domain_judge",
+        repository=repo,
+        settings=settings(),
+        ai_client=ai_client,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "classified"
+    assert "任务类型：AI信源标题提醒" in ai_client.calls[0]["prompt"]
+    assert "来源媒体：TheElec CHINA" in ai_client.calls[0]["prompt"]
 
 
 def test_domain_judge_sends_fortune_non_crypto_title_to_model() -> None:
@@ -578,6 +613,36 @@ def test_notify_sends_separate_telegram_notice() -> None:
     assert repo.tasks[1].status == "notified"
     assert telegram.calls == [
         "外媒标题提醒：FT Crypto｜Token market makers face tighter oversight\nhttps://www.ft.com/content/notice/"
+    ]
+
+
+def test_ai_source_alert_notify_uses_ai_source_notice_label() -> None:
+    repo = InMemoryExternalMediaAlertRepository()
+    repo.add_task(
+        build_task(
+            task_id=1,
+            status="deduped",
+            site_key="thelec_china",
+            site_display_name="TheElec CHINA",
+            title="AI chip supplier expands packaging capacity",
+            excerpt="AI chip supply chain update",
+            source_url="https://www.thelec.net/news/articleView.html?idxno=10961",
+            source=AI_SOURCE_ALERT_TASK_SOURCE,
+        )
+    )
+    telegram = FakeTelegramClient(ok=True)
+    worker = ExternalMediaAlertWorker(
+        stage="notify",
+        repository=repo,
+        settings=settings(),
+        telegram_client=telegram,
+    )
+
+    worker.run_once()
+
+    assert repo.tasks[1].status == "notified"
+    assert telegram.calls == [
+        "AI信源标题提醒：TheElec CHINA｜AI chip supplier expands packaging capacity\nhttps://www.thelec.net/news/articleView.html?idxno=10961"
     ]
 
 

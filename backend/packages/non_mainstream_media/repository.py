@@ -7,10 +7,35 @@ from typing import Any, Protocol
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
 
-from .models import DiscoveredPage, NonMainstreamMediaSettings, NonMainstreamMediaSource, ParsedArticle, SiteDefinition, SourceRunStats
+from .models import (
+    SOURCE_GROUP_AI_SOURCE,
+    SOURCE_GROUP_EXTERNAL_MEDIA,
+    TASK_SOURCE_AI_SOURCE,
+    TASK_SOURCE_AI_SOURCE_ALERT,
+    TASK_SOURCE_EXTERNAL_MEDIA,
+    TASK_SOURCE_EXTERNAL_MEDIA_ALERT,
+    DiscoveredPage,
+    NonMainstreamMediaSettings,
+    NonMainstreamMediaSource,
+    ParsedArticle,
+    SiteDefinition,
+    SourceRunStats,
+)
 
 
 CONFIG_NOTIFY_CHANNEL = "non_mainstream_media_config_changed"
+
+
+def source_group_label(source_group: str) -> str:
+    return "AI信源" if source_group == SOURCE_GROUP_AI_SOURCE else "外媒"
+
+
+def write_flow_task_source(source: NonMainstreamMediaSource) -> str:
+    return TASK_SOURCE_AI_SOURCE if source.source_group == SOURCE_GROUP_AI_SOURCE else TASK_SOURCE_EXTERNAL_MEDIA
+
+
+def alert_only_task_source(source: NonMainstreamMediaSource) -> str:
+    return TASK_SOURCE_AI_SOURCE_ALERT if source.source_group == SOURCE_GROUP_AI_SOURCE else TASK_SOURCE_EXTERNAL_MEDIA_ALERT
 
 
 class NonMainstreamMediaRepository(Protocol):
@@ -59,6 +84,8 @@ def _row_to_source(row: dict[str, Any]) -> NonMainstreamMediaSource:
         homepage_url=str(row["homepage_url"]),
         capture_method=str(row["capture_method"]),
         pipeline_mode=str(row.get("pipeline_mode") or "write_flow"),
+        source_group=str(row.get("source_group") or SOURCE_GROUP_EXTERNAL_MEDIA),
+        interval_seconds=row.get("interval_seconds"),
         enabled=bool(row["enabled"]),
         seeded_at=row.get("seeded_at"),
         last_polled_at=row.get("last_polled_at"),
@@ -90,21 +117,34 @@ class PostgresNonMainstreamMediaRepository:
                 conn.execute(
                     """
                     INSERT INTO non_mainstream_media_sources (
-                        site_key, display_name, homepage_url, capture_method, pipeline_mode, enabled
+                        site_key, display_name, homepage_url, capture_method,
+                        pipeline_mode, source_group, interval_seconds, enabled
                     )
-                    VALUES (%s, %s, %s, %s, %s, true)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, true)
                     ON CONFLICT (site_key) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         homepage_url = EXCLUDED.homepage_url,
                         capture_method = EXCLUDED.capture_method,
                         pipeline_mode = EXCLUDED.pipeline_mode,
+                        source_group = EXCLUDED.source_group,
+                        interval_seconds = EXCLUDED.interval_seconds,
                         updated_at = now()
                     WHERE non_mainstream_media_sources.display_name IS DISTINCT FROM EXCLUDED.display_name
                        OR non_mainstream_media_sources.homepage_url IS DISTINCT FROM EXCLUDED.homepage_url
                        OR non_mainstream_media_sources.capture_method IS DISTINCT FROM EXCLUDED.capture_method
                        OR non_mainstream_media_sources.pipeline_mode IS DISTINCT FROM EXCLUDED.pipeline_mode
+                       OR non_mainstream_media_sources.source_group IS DISTINCT FROM EXCLUDED.source_group
+                       OR non_mainstream_media_sources.interval_seconds IS DISTINCT FROM EXCLUDED.interval_seconds
                     """,
-                    (site.site_key, site.display_name, site.homepage_url, site.capture_method, site.pipeline_mode),
+                    (
+                        site.site_key,
+                        site.display_name,
+                        site.homepage_url,
+                        site.capture_method,
+                        site.pipeline_mode,
+                        site.source_group,
+                        site.interval_seconds,
+                    ),
                 )
             conn.commit()
 
@@ -245,19 +285,23 @@ class PostgresNonMainstreamMediaRepository:
         return set(source_item_ids) - seen
 
     def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool:
+        task_source = write_flow_task_source(source)
+        source_label = source_group_label(source.source_group)
         metadata = {
             **article.metadata,
             "site_key": source.site_key,
             "site_display_name": source.display_name,
             "capture_method": source.capture_method,
             "pipeline_mode": source.pipeline_mode,
+            "source_group": source.source_group,
+            "source_label": source_label,
             "content_format": article.content_format,
             "author_names": article.author_names,
             "tags": article.tags,
             "categories": article.categories,
             "excerpt": article.excerpt,
             "canonical_url": article.canonical_url,
-            "source_kind": "non_mainstream_media",
+            "source_kind": task_source,
         }
         with self._connect() as conn:
             row = conn.execute(
@@ -266,7 +310,7 @@ class PostgresNonMainstreamMediaRepository:
                     source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
                 )
                 VALUES (
-                    'non_mainstream_media',
+                    %(task_source)s,
                     %(source_item_id)s,
                     %(source_url)s,
                     %(title)s,
@@ -281,6 +325,7 @@ class PostgresNonMainstreamMediaRepository:
                 """,
                 {
                     "source_item_id": article.canonical_url,
+                    "task_source": task_source,
                     "source_url": article.canonical_url,
                     "title": article.title,
                     "content": article.content,
@@ -293,15 +338,19 @@ class PostgresNonMainstreamMediaRepository:
             return row is not None
 
     def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+        task_source = alert_only_task_source(source)
+        source_label = source_group_label(source.source_group)
         content = (page.excerpt or page.title or page.detail_url).strip()
         metadata = {
             "site_key": source.site_key,
             "site_display_name": source.display_name,
             "capture_method": source.capture_method,
             "pipeline_mode": source.pipeline_mode,
+            "source_group": source.source_group,
+            "source_label": source_label,
             "excerpt": page.excerpt,
             "published_at_raw": page.published_at_raw,
-            "source_kind": "external_media_alert",
+            "source_kind": task_source,
         }
         with self._connect() as conn:
             row = conn.execute(
@@ -310,7 +359,7 @@ class PostgresNonMainstreamMediaRepository:
                     source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
                 )
                 VALUES (
-                    'external_media_alert',
+                    %(task_source)s,
                     %(source_item_id)s,
                     %(source_url)s,
                     %(title)s,
@@ -325,6 +374,7 @@ class PostgresNonMainstreamMediaRepository:
                 """,
                 {
                     "source_item_id": page.source_item_id,
+                    "task_source": task_source,
                     "source_url": page.detail_url,
                     "title": page.title,
                     "content": content,
@@ -429,6 +479,8 @@ class InMemoryNonMainstreamMediaRepository:
                     homepage_url=site.homepage_url,
                     capture_method=site.capture_method,
                     pipeline_mode=site.pipeline_mode,
+                    source_group=site.source_group,
+                    interval_seconds=site.interval_seconds,
                 )
                 self.sources[self._source_id] = source
                 self._source_id += 1
@@ -440,6 +492,8 @@ class InMemoryNonMainstreamMediaRepository:
                     "homepage_url": site.homepage_url,
                     "capture_method": site.capture_method,
                     "pipeline_mode": site.pipeline_mode,
+                    "source_group": site.source_group,
+                    "interval_seconds": site.interval_seconds,
                     "updated_at": utc_now(),
                 }
             )
@@ -507,14 +561,16 @@ class InMemoryNonMainstreamMediaRepository:
         }
 
     def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool:
+        task_source = write_flow_task_source(source)
+        source_label = source_group_label(source.source_group)
         if any(
-            item["source"] == "non_mainstream_media" and item["source_item_id"] == article.canonical_url
+            item["source"] == task_source and item["source_item_id"] == article.canonical_url
             for item in self.tasks
         ):
             return False
         self.tasks.append(
             {
-                "source": "non_mainstream_media",
+                "source": task_source,
                 "source_item_id": article.canonical_url,
                 "source_url": article.canonical_url,
                 "title": article.title,
@@ -526,13 +582,15 @@ class InMemoryNonMainstreamMediaRepository:
                     "site_display_name": source.display_name,
                     "capture_method": source.capture_method,
                     "pipeline_mode": source.pipeline_mode,
+                    "source_group": source.source_group,
+                    "source_label": source_label,
                     "content_format": article.content_format,
                     "author_names": article.author_names,
                     "tags": article.tags,
                     "categories": article.categories,
                     "excerpt": article.excerpt,
                     "canonical_url": article.canonical_url,
-                    "source_kind": "non_mainstream_media",
+                    "source_kind": task_source,
                 },
                 "raw_payload": article.raw_payload,
                 "status": "pending",
@@ -541,14 +599,16 @@ class InMemoryNonMainstreamMediaRepository:
         return True
 
     def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+        task_source = alert_only_task_source(source)
+        source_label = source_group_label(source.source_group)
         if any(
-            item["source"] == "external_media_alert" and item["source_item_id"] == page.source_item_id
+            item["source"] == task_source and item["source_item_id"] == page.source_item_id
             for item in self.tasks
         ):
             return False
         self.tasks.append(
             {
-                "source": "external_media_alert",
+                "source": task_source,
                 "source_item_id": page.source_item_id,
                 "source_url": page.detail_url,
                 "title": page.title,
@@ -559,9 +619,11 @@ class InMemoryNonMainstreamMediaRepository:
                     "site_display_name": source.display_name,
                     "capture_method": source.capture_method,
                     "pipeline_mode": source.pipeline_mode,
+                    "source_group": source.source_group,
+                    "source_label": source_label,
                     "excerpt": page.excerpt,
                     "published_at_raw": page.published_at_raw,
-                    "source_kind": "external_media_alert",
+                    "source_kind": task_source,
                 },
                 "raw_payload": {
                     "detail_url": page.detail_url,
@@ -645,6 +707,8 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     homepage_url text NOT NULL,
     capture_method text NOT NULL CHECK (capture_method IN ('html_request', 'browser_render')),
     pipeline_mode text NOT NULL DEFAULT 'write_flow',
+    source_group text NOT NULL DEFAULT 'external_media',
+    interval_seconds integer,
     enabled boolean NOT NULL DEFAULT true,
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -656,6 +720,12 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
 
 ALTER TABLE non_mainstream_media_sources
 ADD COLUMN IF NOT EXISTS pipeline_mode text NOT NULL DEFAULT 'write_flow';
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS source_group text NOT NULL DEFAULT 'external_media';
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS interval_seconds integer;
 
 DO $$
 BEGIN
@@ -670,6 +740,18 @@ BEGIN
     END IF;
 END
 $$;
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_source_group_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_source_group_check
+    CHECK (source_group IN ('external_media', 'ai_source'));
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_interval_seconds_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_interval_seconds_check
+    CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600);
 
 CREATE TABLE IF NOT EXISTS non_mainstream_media_seen_items (
     id bigserial PRIMARY KEY,
@@ -707,7 +789,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 DROP TRIGGER IF EXISTS trg_non_mainstream_media_sources_notify ON non_mainstream_media_sources;
 CREATE TRIGGER trg_non_mainstream_media_sources_notify
-AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, enabled ON non_mainstream_media_sources
+AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, source_group, interval_seconds, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;

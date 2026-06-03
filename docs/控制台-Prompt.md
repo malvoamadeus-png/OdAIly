@@ -8,12 +8,13 @@
 - `mainstream_media_writer`
 - `external_media_alert_domain_judge`
 
-## 外媒模板口径
+## 外媒与 AI信源模板口径
 
-- `mainstream_media_writer` 是当前唯一在用的外媒写作模板
+- `mainstream_media_writer` 是当前唯一在用的外媒和 AI信源写作模板
 - 控制台应显示为“外媒快讯”
 - 它同时服务：
   - `non_mainstream_media` 的统一外媒全文写作
+  - `ai_source` 的 AI信源全文写作
   - 历史兼容 `mainstream_media`
 
 ## 隐藏但保留的历史模板

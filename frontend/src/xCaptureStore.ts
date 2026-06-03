@@ -64,6 +64,8 @@ export type NonMainstreamSource = {
   homepage_url: string;
   capture_method: 'html_request' | 'browser_render';
   pipeline_mode: 'write_flow' | 'alert_only';
+  source_group: 'external_media' | 'ai_source';
+  interval_seconds: number | null;
   enabled: boolean;
   seeded_at: string | null;
   last_polled_at: string | null;
@@ -738,6 +740,8 @@ export async function listNonMainstreamSources(): Promise<NonMainstreamSource[]>
         'homepage_url',
         'capture_method',
         'pipeline_mode',
+        'source_group',
+        'interval_seconds',
         'enabled',
         'seeded_at',
         'last_polled_at',
@@ -815,6 +819,8 @@ export async function updateNonMainstreamSource(
         'homepage_url',
         'capture_method',
         'pipeline_mode',
+        'source_group',
+        'interval_seconds',
         'enabled',
         'seeded_at',
         'last_polled_at',

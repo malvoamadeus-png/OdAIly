@@ -11,6 +11,7 @@ from packages.x_processing.searcher import SearchDocument
 
 from .models import (
     ALERT_PROMPT_KEY,
+    ALERT_NOTIFY_TASK_SOURCES,
     ALERT_TASK_SOURCE,
     AlertStage,
     DOMAIN_WORKER_TASK_SOURCES,
@@ -160,7 +161,7 @@ class PostgresExternalMediaAlertRepository:
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
-        sources = [ALERT_TASK_SOURCE] if stage == "notify" else list(DOMAIN_WORKER_TASK_SOURCES)
+        sources = list(ALERT_NOTIFY_TASK_SOURCES if stage == "notify" else DOMAIN_WORKER_TASK_SOURCES)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -489,11 +490,11 @@ class PostgresExternalMediaAlertRepository:
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
         where = """
             (
-                (t.source = %s AND t.status = 'notified')
+                (t.source = ANY(%s) AND t.status = 'notified')
                 OR (t.source = %s AND t.status IN ('ready_review', 'notified'))
             )
         """
-        params: list[Any] = [ALERT_TASK_SOURCE, MAINSTREAM_MEDIA_TASK_SOURCE]
+        params: list[Any] = [list(ALERT_NOTIFY_TASK_SOURCES), MAINSTREAM_MEDIA_TASK_SOURCE]
         if since is not None:
             where += " AND t.created_at >= %s"
             params.append(since)
@@ -672,7 +673,7 @@ class InMemoryExternalMediaAlertRepository:
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         del worker_id, lock_seconds
         spec = STAGE_SPECS[stage]
-        claim_sources = {ALERT_TASK_SOURCE} if stage == "notify" else set(DOMAIN_WORKER_TASK_SOURCES)
+        claim_sources = set(ALERT_NOTIFY_TASK_SOURCES if stage == "notify" else DOMAIN_WORKER_TASK_SOURCES)
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
             if task.source not in claim_sources:
                 continue
@@ -775,7 +776,7 @@ class InMemoryExternalMediaAlertRepository:
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
         results: list[SearchDocument] = []
         for task in self.tasks.values():
-            is_alert_history = task.source == ALERT_TASK_SOURCE and task.status == "notified"
+            is_alert_history = task.source in ALERT_NOTIFY_TASK_SOURCES and task.status == "notified"
             is_mainstream_history = task.source == MAINSTREAM_MEDIA_TASK_SOURCE and task.status in {"ready_review", "notified"}
             if not is_alert_history and not is_mainstream_history:
                 continue
@@ -892,7 +893,7 @@ DROP TRIGGER IF EXISTS trg_tasks_external_media_alert_queue_notify ON tasks;
 CREATE TRIGGER trg_tasks_external_media_alert_queue_notify
 AFTER INSERT OR UPDATE OF status ON tasks
 FOR EACH ROW
-WHEN (NEW.source IN ('external_media_alert', 'mainstream_media'))
+WHEN (NEW.source IN ('external_media_alert', 'ai_source_alert', 'mainstream_media'))
 EXECUTE FUNCTION notify_external_media_alert_task_queue_changed();
 
 CREATE TABLE IF NOT EXISTS media_newsflash (

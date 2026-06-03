@@ -190,6 +190,26 @@ def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
     )
 
 
+def ai_source_task(task_id: int, status: str = "pending") -> TaskRecord:
+    return TaskRecord(
+        id=task_id,
+        source="ai_source",
+        source_item_id=f"ai-{task_id}",
+        source_url="https://www.thelec.net/news/articleView.html?idxno=10961",
+        title="TheElec reports new AI chip packaging capacity",
+        content="TheElec reports new AI chip packaging capacity from a major supplier.",
+        published_at=datetime.now(UTC),
+        status=status,
+        metadata={
+            "site_key": "thelec_china",
+            "site_display_name": "TheElec CHINA",
+            "source_group": "ai_source",
+            "source_label": "AI信源",
+            "author_names": ["TheElec"],
+        },
+    )
+
+
 def mainstream_task(task_id: int, status: str = "deduped") -> TaskRecord:
     return TaskRecord(
         id=task_id,
@@ -213,6 +233,7 @@ def test_parse_news_type_accepts_only_known_values() -> None:
     assert parse_news_type('{"route":"regular","discard_type":"none"}') == "regular"
     assert parse_news_type('```json\n{"news_type":"onchain"}\n```') == "onchain"
     assert parse_news_type('{"route":"non_mainstream_media","discard_type":"none"}') == "non_mainstream_media"
+    assert parse_news_type('{"route":"ai_source","discard_type":"none"}') == "ai_source"
     try:
         parse_news_type('{"news_type":"market"}')
     except ValueError as exc:
@@ -754,6 +775,49 @@ def test_non_mainstream_flows_search_then_judge() -> None:
     assert "标题：A16z crypto posts new token launch thesis" in fake_ai.calls[0]["prompt"]
 
 
+def test_ai_source_flows_search_then_judge_without_model_call() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(ai_source_task(1, status="pending"))
+    search_worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        ai_client=None,
+        search_embedding_service=FakeEmbeddingService({"task:1": [0.0, 1.0]}),
+    )
+
+    assert search_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "searched"
+
+    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
+    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "deduped"
+    assert repo.pipelines[1].news_type == "ai_source"
+    assert fake_ai.calls == []
+
+
+def test_ai_source_judge_passes_non_crypto_ai_content() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            **{
+                **asdict(ai_source_task(1, status="searched")),
+                "title": "Claude launches a new coding feature",
+                "content": "Anthropic released a new Claude feature for software developers.",
+            }
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
+    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "deduped"
+    assert repo.pipelines[1].news_type == "ai_source"
+    assert fake_ai.calls == []
+
+
 def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="deduped"))
@@ -825,6 +889,26 @@ def test_non_mainstream_writer_uses_dedicated_prompt_template() -> None:
     assert "原标题：A16z crypto posts new token launch thesis" in prompt
     assert "来源链接：https://a16zcrypto.com/posts/article/token-launch/" in prompt
     assert "禁止提及采集媒体名称" not in prompt
+
+
+def test_ai_source_writer_reuses_mainstream_template_with_ai_source_label() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(ai_source_task(1, status="deduped"))
+    repo.pipelines[1] = PipelineRecord(task_id=1, news_type="ai_source")
+    fake_ai = FakeAiClient(["标题\n\n正文"])
+    worker = XProcessingWorker(stage="write", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "written"
+    assert repo.pipelines[1].prompt_template_key == "mainstream_media_writer"
+    prompt = fake_ai.calls[0]["prompt"]
+    assert "【待处理AI信源原文】" in prompt
+    assert "来源媒体：TheElec CHINA" in prompt
+    assert "作者：TheElec" in prompt
+    assert "原标题：TheElec reports new AI chip packaging capacity" in prompt
+    assert "来源链接：https://www.thelec.net/news/articleView.html?idxno=10961" in prompt
 
 
 def test_mainstream_media_writer_uses_dedicated_prompt_template() -> None:
@@ -989,6 +1073,41 @@ def test_publish_ineligible_mainstream_media_keeps_source_url_and_site_name() ->
     assert push.calls[0]["source_url"] == "https://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"
     assert push.calls[0]["is_publish"] is False
     assert telegram.calls == ["CoinDesk有新快讯-外媒-标准模式：标题\nhttps://www.coindesk.com/markets/2026/05/24/bitcoin-etfs-add-to-inflow-streak"]
+
+
+def test_publish_ai_source_uses_ai_source_notice_label_and_external_media_channel() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.publisher_settings = repo.publisher_settings.__class__(
+        enabled=True,
+        timezone="Asia/Shanghai",
+        window_start_local="00:00",
+        window_end_local="23:59",
+    )
+    repo.add_task(ai_source_task(1, status="publisher_pending"))
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="ai_source",
+        writer_feature_mode_enabled=False,
+        final_title="标题",
+        final_content="正文",
+    )
+    fake_ai = FakeAiClient(['{"category":"other","reason":"非自动发布分类"}'])
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=fake_ai,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.pipelines[1].publisher_channel == "external_media"
+    assert telegram.calls == ["TheElec CHINA有新快讯-AI信源-标准模式：标题\nhttps://www.thelec.net/news/articleView.html?idxno=10961"]
 
 
 def test_publish_non_mainstream_auto_publishes_allowed_category() -> None:

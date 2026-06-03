@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import {
   Activity,
   Ban,
+  Bot,
   Database,
   FileText,
   Globe2,
@@ -405,7 +406,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<
-    'x' | 'non_mainstream' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+    'x' | 'non_mainstream' | 'ai_source' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
   >('x');
   const [loading, setLoading] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
@@ -459,7 +460,19 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const enabledNonMainstreamCount = useMemo(
-    () => nonMainstreamSources.filter((source) => source.enabled).length,
+    () => nonMainstreamSources.filter((source) => source.enabled && source.source_group !== 'ai_source').length,
+    [nonMainstreamSources],
+  );
+  const enabledAiSourceCount = useMemo(
+    () => nonMainstreamSources.filter((source) => source.enabled && source.source_group === 'ai_source').length,
+    [nonMainstreamSources],
+  );
+  const externalMediaSources = useMemo(
+    () => nonMainstreamSources.filter((source) => source.source_group !== 'ai_source'),
+    [nonMainstreamSources],
+  );
+  const aiSources = useMemo(
+    () => nonMainstreamSources.filter((source) => source.source_group === 'ai_source'),
     [nonMainstreamSources],
   );
   const enabledPublisherChannelCount = useMemo(
@@ -996,6 +1009,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X Capture'
       : view === 'non_mainstream'
         ? 'External Media'
+      : view === 'ai_source'
+        ? 'AI Sources'
         : view === 'publisher'
           ? 'Publisher'
         : view === 'whale'
@@ -1012,6 +1027,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'X 抓取控制台'
       : view === 'non_mainstream'
         ? '外媒抓取控制台'
+      : view === 'ai_source'
+        ? 'AI信源抓取控制台'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'whale'
@@ -1028,6 +1045,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
       : view === 'non_mainstream'
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
+      : view === 'ai_source'
+        ? `${enabledAiSourceCount} 个启用站点 · 默认 300s`
       : view === 'publisher'
         ? `${enabledPublisherChannelCount} 个启用渠道 · 北京时间 ${publisherSettings.window_start_local}-${publisherSettings.window_end_local}`
       : view === 'whale'
@@ -1040,7 +1059,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
-      : view === 'non_mainstream'
+      : view === 'non_mainstream' || view === 'ai_source'
         ? loadNonMainstreamAll()
       : view === 'publisher'
         ? loadPublisherAll()
@@ -1072,6 +1091,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onClick={() => switchView('non_mainstream')}
           >
             <Globe2 size={18} /> 外媒
+          </button>
+          <button
+            className={view === 'ai_source' ? 'navItem active' : 'navItem'}
+            type="button"
+            onClick={() => switchView('ai_source')}
+          >
+            <Bot size={18} /> AI信源
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1239,9 +1265,23 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}
-            sources={nonMainstreamSources}
+            sources={externalMediaSources}
             loading={loadingNonMainstream}
             saving={savingNonMainstreamSettings}
+            title="已接入外媒"
+            emptyText="暂无已接入外媒，请先运行初始化命令。"
+            onSettingChange={updateNonMainstreamSetting}
+            onSave={saveNonMainstreamSettings}
+            onToggleSource={patchNonMainstreamSource}
+          />
+        ) : view === 'ai_source' ? (
+          <NonMainstreamPanel
+            settings={nonMainstreamSettings}
+            sources={aiSources}
+            loading={loadingNonMainstream}
+            saving={savingNonMainstreamSettings}
+            title="已接入AI信源"
+            emptyText="暂无已接入AI信源，请先运行初始化命令。"
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
@@ -1675,6 +1715,8 @@ function NonMainstreamPanel({
   sources,
   loading,
   saving,
+  title,
+  emptyText,
   onSettingChange,
   onSave,
   onToggleSource,
@@ -1683,6 +1725,8 @@ function NonMainstreamPanel({
   sources: NonMainstreamSource[];
   loading: boolean;
   saving: boolean;
+  title: string;
+  emptyText: string;
   onSettingChange: (key: 'global_interval_seconds' | 'jitter_seconds', value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
@@ -1722,10 +1766,10 @@ function NonMainstreamPanel({
 
       <div className="nonMainstreamList">
         <div className="sectionHeader">
-          <h2>已接入外媒</h2>
+          <h2>{title}</h2>
           <span>{loading ? '加载中' : `${sources.length} 个站点`}</span>
         </div>
-        {sources.length === 0 && <div className="emptyState">暂无已接入外媒，请先运行初始化命令。</div>}
+        {sources.length === 0 && <div className="emptyState">{emptyText}</div>}
         {writeFlowSources.length > 0 && (
           <>
             <div className="sectionHeader">
@@ -1733,7 +1777,7 @@ function NonMainstreamPanel({
               <span>{writeFlowSources.length} 个站点</span>
             </div>
             {writeFlowSources.map((source) => (
-              <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
+              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} />
             ))}
           </>
         )}
@@ -1744,7 +1788,7 @@ function NonMainstreamPanel({
               <span>{alertOnlySources.length} 个站点</span>
             </div>
             {alertOnlySources.map((source) => (
-              <NonMainstreamSourceRow key={source.id} source={source} onToggleSource={onToggleSource} />
+              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} />
             ))}
           </>
         )}
@@ -1845,11 +1889,15 @@ function PublisherPanel({
 
 function NonMainstreamSourceRow({
   source,
+  settings,
   onToggleSource,
 }: {
   source: NonMainstreamSource;
+  settings: NonMainstreamSettings;
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
 }) {
+  const effectiveInterval = source.interval_seconds ?? settings.global_interval_seconds;
+
   return (
     <article className={source.enabled ? 'sourceRow' : 'sourceRow disabled'}>
       <div className="sourceIdentity">
@@ -1861,7 +1909,7 @@ function NonMainstreamSourceRow({
       </div>
       <div className="sourceMeta">
         <strong>{source.capture_method === 'html_request' ? 'HTML 直抓' : '浏览器模拟'}</strong>
-        <span>{source.seeded_at ? '已 seed' : '待 seed'}</span>
+        <span>{source.seeded_at ? '已 seed' : '待 seed'} · {effectiveInterval}s</span>
       </div>
       <a className="sourceLink" href={source.homepage_url} target="_blank" rel="noreferrer">
         {source.homepage_url}

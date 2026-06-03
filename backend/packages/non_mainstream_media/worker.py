@@ -114,7 +114,7 @@ class NonMainstreamMediaWorker:
                     for item in stats:
                         self._next_due[item.source.site_key] = (
                             time.monotonic()
-                            + snapshot.settings.global_interval_seconds
+                            + source_interval_seconds(item.source, snapshot.settings)
                             + random.uniform(0, snapshot.settings.jitter_seconds)
                         )
                         print(
@@ -284,3 +284,7 @@ class NonMainstreamMediaWorker:
             )
         except Exception as exc:
             print(f"[odaily] non-mainstream media heartbeat failed: {exc}")
+
+
+def source_interval_seconds(source: NonMainstreamMediaSource, settings: NonMainstreamMediaSettings) -> int:
+    return source.interval_seconds or settings.global_interval_seconds

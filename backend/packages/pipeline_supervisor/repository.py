@@ -43,7 +43,17 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "x_process_publish",
 ]
 
-MONITORED_TASK_SOURCES = ["x", "blockbeats", "panews", "jinse", "non_mainstream_media", "mainstream_media", "external_media_alert"]
+MONITORED_TASK_SOURCES = [
+    "x",
+    "blockbeats",
+    "panews",
+    "jinse",
+    "non_mainstream_media",
+    "ai_source",
+    "mainstream_media",
+    "external_media_alert",
+    "ai_source_alert",
+]
 
 
 class PipelineSupervisorRepository(Protocol):

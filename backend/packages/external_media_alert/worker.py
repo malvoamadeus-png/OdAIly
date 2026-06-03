@@ -21,6 +21,7 @@ from packages.x_processing.telegram import TelegramClient
 
 from .models import (
     ALERT_PROMPT_KEY,
+    AI_SOURCE_ALERT_TASK_SOURCE,
     ALERT_TASK_SOURCE,
     AlertStage,
     DomainDiscardReason,
@@ -346,6 +347,7 @@ class ExternalMediaAlertWorker:
             site_display_name=str(task.metadata.get("site_display_name") or "外媒"),
             title=task.title or task.source_item_id,
             source_url=task.source_url,
+            source_label=alert_source_label(task),
         )
         result = self.telegram_client.send_message(notice)
         if not result.ok:
@@ -451,12 +453,12 @@ def utc_since_hours(hours: int) -> datetime:
 
 def build_domain_prompt(*, task, prompt: PromptTemplateVersion) -> str:
     excerpt = str(task.metadata.get("excerpt") or task.content or "").strip()
-    source_kind = "主流外媒快讯" if task.source == MAINSTREAM_MEDIA_TASK_SOURCE else "外媒标题提醒"
+    source_kind = alert_source_kind_label(task)
     return (
         f"{render_prompt_content(prompt)}\n\n"
         f"【待判断内容】\n"
         f"任务类型：{source_kind}\n"
-        f"来源媒体：{task.metadata.get('site_display_name') or '外媒'}\n"
+        f"来源媒体：{task.metadata.get('site_display_name') or alert_source_label(task)}\n"
         f"站点标识：{task.metadata.get('site_key') or ''}\n"
         f"标题：{task.title or ''}\n"
         f"内容摘要：{excerpt}\n"
@@ -566,8 +568,28 @@ def parse_alert_ai_review_output(value: str) -> dict[str, Any]:
     return payload
 
 
-def build_alert_notice(*, site_display_name: str, title: str, source_url: str | None) -> str:
-    text = f"外媒标题提醒：{site_display_name}｜{title}"
+def alert_source_label(task) -> str:
+    if task.source == AI_SOURCE_ALERT_TASK_SOURCE:
+        return "AI信源"
+    return "外媒"
+
+
+def alert_source_kind_label(task) -> str:
+    if task.source == MAINSTREAM_MEDIA_TASK_SOURCE:
+        return "主流外媒快讯"
+    if task.source == AI_SOURCE_ALERT_TASK_SOURCE:
+        return "AI信源标题提醒"
+    return "外媒标题提醒"
+
+
+def build_alert_notice(
+    *,
+    site_display_name: str,
+    title: str,
+    source_url: str | None,
+    source_label: str = "外媒",
+) -> str:
+    text = f"{source_label}标题提醒：{site_display_name}｜{title}"
     if source_url and source_url.strip():
         text += f"\n{source_url.strip()}"
     return text
