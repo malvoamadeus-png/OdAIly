@@ -60,6 +60,19 @@ systemctl is-active odaily-non-mainstream-media.service odaily-x-process@judge.s
 '
 ```
 
+市场快讯相关改动额外重启：
+
+```bash
+/mnt/c/Windows/System32/OpenSSH/ssh.exe jibai-prod '
+set -e
+cd /opt/OdAIly
+systemctl restart odaily-worker.service
+systemctl is-active odaily-worker.service
+'
+```
+
+原因：`odaily-worker.service` 是长驻调度进程，`git pull` 后不会自动加载新的 Python 代码或新的任务常量；涉及 `us-market`、`gate-tradfi`、`market_brief.json` 解释逻辑时，部署后必须重启该服务。
+
 ## Frontend Verification
 
 控制台前端由 Vercel 托管，GitHub `main` 更新后通常自动部署。上线核验：

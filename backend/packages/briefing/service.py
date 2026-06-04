@@ -99,7 +99,7 @@ def _quality_error(
             f"{valid_ai_count}/{settings.min_valid_ai_stocks}"
         )
 
-    if kind in {"close", "open"}:
+    if kind in {"close", "open"} and settings.min_valid_indices > 0:
         valid_index_count = sum(1 for quote in quality_quotes if quote.symbol in {"SPX", "IXIC", "DJI"})
         if valid_index_count < settings.min_valid_indices:
             return f"insufficient valid index quotes: {valid_index_count}/{settings.min_valid_indices}"

@@ -190,6 +190,46 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
     assert result.status == "success"
 
 
+def test_run_once_open_allows_missing_indices_when_threshold_zero(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("packages.briefing.service.us_market_calendar_skip_reason", lambda: None)
+    monkeypatch.setattr(
+        "packages.briefing.service.fetch_quotes",
+        lambda **_: QuoteBatch(
+            quotes=[
+                MarketQuote(
+                    symbol="NVDA",
+                    yahoo_symbol="NVDA",
+                    display_name="NVDA",
+                    regular_market_change_percent=2.3,
+                    regular_market_time="2026-05-06T13:31:00+00:00",
+                )
+            ],
+            missing_symbols=["SPX", "IXIC", "DJI"],
+            raw_response={"provider": "yahoo_quote"},
+        ),
+    )
+    monkeypatch.setattr(
+        "packages.briefing.service.now_shanghai",
+        lambda: datetime(2026, 5, 6, 21, 32, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    result = run_brief_once(
+        kind="open",
+        settings=MarketBriefSettings(
+            watchlist=["NVDA", "SPX", "IXIC", "DJI"],
+            dry_run=True,
+            market_data_sources=["yahoo_quote"],
+            min_valid_ai_stocks=1,
+            min_valid_indices=0,
+        ),
+        paths=make_paths(tmp_path),
+        force=False,
+    )
+
+    assert result.exit_code == 0
+    assert result.status == "success"
+
+
 def test_run_once_skips_us_market_holiday(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         "packages.briefing.service.us_market_calendar_skip_reason",

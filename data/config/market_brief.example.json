@@ -74,7 +74,7 @@
     "DJI": "^DJI"
   },
   "min_valid_ai_stocks": 10,
-  "min_valid_indices": 2,
+  "min_valid_indices": 0,
   "max_quote_age_minutes": 10,
   "push_endpoint": "http://47.113.217.70:8501/push/data",
   "dry_run": true,

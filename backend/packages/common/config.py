@@ -127,7 +127,7 @@ class MarketBriefSettings(BaseModel):
         validation_alias=AliasChoices("min_valid_ai_stocks", "min_valid_crypto_stocks"),
         serialization_alias="min_valid_ai_stocks",
     )
-    min_valid_indices: int = Field(default=2, ge=0, le=4)
+    min_valid_indices: int = Field(default=0, ge=0, le=4)
     max_quote_age_minutes: int = Field(default=10, ge=1, le=1440)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = True
