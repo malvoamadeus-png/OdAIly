@@ -61,6 +61,9 @@ ETNEWS_BASE_URL = "https://www.etnews.com"
 ETNEWS_ELECTRONICS_LIST_URL = "https://www.etnews.com/news/section.html?id1=06"
 ETNEWS_SW_LIST_URL = "https://www.etnews.com/news/section.html?id1=04"
 ETNEWS_TIMEZONE = timezone(timedelta(hours=9))
+ZDNET_KOREA_BASE_URL = "https://zdnet.co.kr"
+ZDNET_KOREA_SEMICONDUCTOR_LIST_URL = "https://zdnet.co.kr/newskey/?lstcode=%EB%B0%98%EB%8F%84%EC%B2%B4"
+ZDNET_KOREA_TIMEZONE = timezone(timedelta(hours=9))
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -177,6 +180,16 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         source_group=SOURCE_GROUP_AI_SOURCE,
         interval_seconds=300,
     ),
+    "zdnet_korea_semiconductor": SiteDefinition(
+        site_key="zdnet_korea_semiconductor",
+        display_name="ZDNet Korea Semiconductor",
+        homepage_url=ZDNET_KOREA_BASE_URL,
+        list_url=ZDNET_KOREA_SEMICONDUCTOR_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -271,6 +284,9 @@ def fetch_discovered_pages(
     if site.site_key in {"etnews_electronics", "etnews_sw"}:
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_etnews_pages(html, base_url=site.homepage_url)
+    if site.site_key == "zdnet_korea_semiconductor":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_zdnet_korea_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -369,6 +385,9 @@ def fetch_article(
     elif site.site_key in {"etnews_electronics", "etnews_sw"}:
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_etnews_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "zdnet_korea_semiconductor":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_zdnet_korea_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -864,13 +883,9 @@ def discover_thelec_pages(html: str, *, base_url: str = THELEC_BASE_URL) -> list
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
     containers = [
-        node
-        for node in soup.select("article, li, div, section, tr")
-        if node.select("a[href*='articleView.html?idxno=']")
-        and re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", node.get_text(" ", strip=True))
+        nearest_article_container(anchor) or anchor.parent
+        for anchor in soup.select("a[href*='articleView.html?idxno=']")
     ]
-    if not containers:
-        containers = [anchor.parent for anchor in soup.select("a[href*='articleView.html?idxno=']")]
     for container in containers:
         if not isinstance(container, Tag):
             continue
@@ -879,6 +894,40 @@ def discover_thelec_pages(html: str, *, base_url: str = THELEC_BASE_URL) -> list
             continue
         seen.add(page.detail_url)
         results.append(page)
+    return results or discover_thelec_pages_from_markdown(html, base_url=base_url)
+
+
+def discover_thelec_pages_from_markdown(payload: str, *, base_url: str = THELEC_BASE_URL) -> list[DiscoveredPage]:
+    text = payload
+    if "Markdown Content:" in text:
+        text = text.split("Markdown Content:", 1)[1]
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    link_pattern = re.compile(
+        r"(?:^|\n)\s*(?:#{1,6}\s*)?\[([^\]\n]+)\]\((https?://(?:www\.)?thelec\.net/news/articleView\.html\?idxno=\d+)[^)]*\)",
+        re.IGNORECASE,
+    )
+    for match in link_pattern.finditer(text):
+        raw_title = clean_inline_text(strip_markdown_formatting(match.group(1)))
+        if not raw_title or raw_title.startswith("!["):
+            continue
+        detail_url = normalize_thelec_url(urljoin(base_url, match.group(2)))
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        following_text = text[match.end() : match.end() + 500]
+        published_at_raw = extract_first_datetime_text(following_text)
+        excerpt = extract_thelec_markdown_excerpt(following_text)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=raw_title,
+                excerpt=excerpt or None,
+                published_at=parse_thelec_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
     return results
 
 
@@ -905,6 +954,37 @@ def discover_etnews_pages(html: str, *, base_url: str = ETNEWS_BASE_URL) -> list
                 title=title or None,
                 excerpt=excerpt or None,
                 published_at=parse_etnews_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
+
+
+def discover_zdnet_korea_pages(html: str, *, base_url: str = ZDNET_KOREA_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = str(anchor.get("href") or "").strip()
+        detail_url = normalize_zdnet_korea_url(urljoin(base_url, href))
+        if not is_zdnet_korea_article_url(detail_url) or detail_url in seen:
+            continue
+        seen.add(detail_url)
+        container = nearest_article_container(anchor)
+        title = ""
+        if container is not None:
+            title = extract_zdnet_korea_listing_title(container, detail_url=detail_url)
+        if not title:
+            title = clean_inline_text(anchor.get_text(" ", strip=True))
+        excerpt = extract_zdnet_korea_listing_excerpt(container, title=title) if container is not None else ""
+        published_at_raw = extract_zdnet_korea_listing_published_at_text(container) if container is not None else ""
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=excerpt or None,
+                published_at=parse_zdnet_korea_published_at(published_at_raw),
                 published_at_raw=published_at_raw or None,
             )
         )
@@ -1627,6 +1707,64 @@ def parse_etnews_article(html: str, *, page_url: str, source_item_id: str) -> Pa
     )
 
 
+def parse_zdnet_korea_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    canonical = normalize_zdnet_korea_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or select_meta_content(soup, "property", "dd:title")
+            or select_text(soup, ".news_head h1")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at_raw = (
+        select_meta_content(soup, "property", "article:published_time")
+        or select_meta_content(soup, "property", "dd:published_time")
+        or extract_zdnet_korea_published_at_text(soup)
+    )
+    author_names = extract_zdnet_korea_author_names(soup)
+    categories = extract_zdnet_korea_categories(soup)
+    body = clean_body_text(extract_zdnet_korea_body(soup) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or select_text(soup, ".news_head .summary")
+            or body.split("\n\n", 1)[0][:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_zdnet_korea_published_at(published_at_raw),
+        author_names=author_names,
+        tags=[],
+        categories=categories,
+        excerpt=excerpt,
+        content_format="zdnet_korea_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
 def parse_tether_article(payload: Any, *, page_url: str, source_item_id: str) -> ParsedArticle:
     if isinstance(payload, list):
         if not payload:
@@ -2235,6 +2373,23 @@ def extract_thelec_listing_excerpt(container: Tag, *, title: str, published_at_r
     return ""
 
 
+def extract_thelec_markdown_excerpt(value: str) -> str:
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", value)
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", cleaned)
+    cleaned = re.sub(r"(?:^|\n)\s*#{1,6}\s+", "\n", cleaned)
+    candidates: list[str] = []
+    for line in cleaned.splitlines():
+        text = clean_inline_text(strip_markdown_formatting(line))
+        if not text:
+            continue
+        if re.fullmatch(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}(?::\d{2})?", text):
+            continue
+        if re.fullmatch(r"\d{2}[./-]\d{2}\s+\d{2}:\d{2}", text):
+            continue
+        candidates.append(text)
+    return candidates[0][:240] if candidates else ""
+
+
 def extract_wp_rendered_text(value: Any) -> str:
     if isinstance(value, dict):
         rendered = value.get("rendered")
@@ -2347,6 +2502,22 @@ def is_etnews_article_url(url: str) -> bool:
     return parsed.netloc.lower().endswith("etnews.com") and re.fullmatch(r"/\d{12,}", parsed.path.rstrip("/") or "")
 
 
+def normalize_zdnet_korea_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.netloc.lower().endswith("zdnet.co.kr"):
+        return url.strip()
+    no_value = parse_qs(parsed.query).get("no", [])
+    query = f"no={no_value[0]}" if no_value and no_value[0] else parsed.query
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", query, ""))
+
+
+def is_zdnet_korea_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    no_value = parse_qs(parsed.query).get("no", [])
+    return parsed.netloc.lower().endswith("zdnet.co.kr") and parsed.path.rstrip("/") == "/view" and bool(no_value and re.fullmatch(r"\d{8,}", no_value[0]))
+
+
 def normalize_the_block_discovery_url(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.netloc.lower().endswith("theblock.co"):
@@ -2404,6 +2575,50 @@ def extract_etnews_listing_excerpt(container: Tag, *, title: str) -> str:
     return text[:240]
 
 
+def extract_zdnet_korea_listing_title(container: Tag, *, detail_url: str) -> str:
+    for selector in ("h1", "h2", "h3", "strong", ".title", ".subject", ".tit"):
+        node = container.select_one(selector)
+        text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        if text:
+            return text
+    for anchor in container.select("a[href]"):
+        href = str(anchor.get("href") or "")
+        if normalize_zdnet_korea_url(urljoin(ZDNET_KOREA_BASE_URL, href)) != detail_url:
+            continue
+        text = clean_inline_text(anchor.get_text(" ", strip=True))
+        if text:
+            return text
+    return ""
+
+
+def extract_zdnet_korea_listing_excerpt(container: Tag, *, title: str) -> str:
+    for selector in (".assetText p:not(.byline)", ".top_summary", "p:not(.byline)"):
+        for node in container.select(selector):
+            text = clean_inline_text(node.get_text(" ", strip=True))
+            if text and text != title:
+                return text[:240]
+    text = clean_inline_text(container.get_text(" ", strip=True))
+    if title and title in text:
+        text = text.replace(title, " ", 1)
+    text = re.sub(r"\d{4}[./-]\d{2}[./-]\d{2}\s*(?:AM|PM)?\s*\d{2}:\d{2}", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[가-힣A-Za-z][가-힣A-Za-z\s.'-]{1,40}\s*기자", " ", text)
+    return clean_inline_text(text)[:240]
+
+
+def extract_zdnet_korea_listing_published_at_text(container: Tag) -> str | None:
+    for selector in (".byline span", ".meta span", ".top_reporter"):
+        node = container.select_one(selector)
+        if node is None:
+            continue
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s*(?:AM|PM)?\s*\d{2}:\d{2}", text, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    text = clean_inline_text(container.get_text(" ", strip=True))
+    match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s*(?:AM|PM)?\s*\d{2}:\d{2}", text, re.IGNORECASE)
+    return match.group(0) if match else None
+
+
 def extract_etnews_body(soup: BeautifulSoup) -> str:
     node = soup.select_one("#articleBody") or soup.select_one(".article_body")
     if node is None:
@@ -2413,6 +2628,25 @@ def extract_etnews_body(soup: BeautifulSoup) -> str:
     for selector in (".article_image", ".reporter_info", ".copyright", ".ad", ".advertisement"):
         for item in fragment.select(selector):
             item.decompose()
+    parts = collect_text_parts(fragment)
+    if parts:
+        return "\n\n".join(parts)
+    return fragment.get_text("\n\n", strip=True)
+
+
+def extract_zdnet_korea_body(soup: BeautifulSoup) -> str:
+    node = soup.select_one("#articleBody > div[id^='content-']") or soup.select_one("#articleBody") or soup.select_one(".view_cont")
+    if node is None:
+        return ""
+    fragment = BeautifulSoup(str(node), "html.parser")
+    drop_noise(fragment)
+    for selector in (".view_ad", ".news_box.connect", ".mt_bn_box", ".reporter_list2", ".like_box", ".like_under_box", ".reporter_naver_box", ".tags"):
+        for item in fragment.select(selector):
+            item.decompose()
+    for heading in fragment.select("h1, h2, h3, h4"):
+        text = clean_inline_text(heading.get_text(" ", strip=True))
+        if text == "관련기사":
+            heading.decompose()
     parts = collect_text_parts(fragment)
     if parts:
         return "\n\n".join(parts)
@@ -2436,6 +2670,21 @@ def extract_etnews_author_names(soup: BeautifulSoup) -> list[str]:
     return unique_preserve_order(candidates)
 
 
+def extract_zdnet_korea_author_names(soup: BeautifulSoup) -> list[str]:
+    candidates: list[str] = []
+    for value in (
+        select_meta_content(soup, "property", "dd:author"),
+        select_meta_content(soup, "property", "dable:author"),
+        select_text(soup, ".reporter_info strong"),
+        select_text(soup, ".reporter_name strong"),
+    ):
+        text = clean_inline_text(str(value or ""))
+        text = re.sub(r"\s*기자$", "", text).strip()
+        if text:
+            candidates.append(text)
+    return unique_preserve_order(candidates)
+
+
 def extract_etnews_categories(soup: BeautifulSoup) -> list[str]:
     header = soup.select_one(".article_header")
     if header is None:
@@ -2446,6 +2695,17 @@ def extract_etnews_categories(soup: BeautifulSoup) -> list[str]:
         text = text.split(title, 1)[0]
     categories = [part for part in re.split(r"\s+", text) if part and part not in {"뉴스"}]
     return unique_preserve_order(categories[:3])
+
+
+def extract_zdnet_korea_categories(soup: BeautifulSoup) -> list[str]:
+    candidates = normalize_string_list(
+        select_meta_content(soup, "property", "article:section")
+        or select_meta_content(soup, "property", "dd:category")
+    )
+    if candidates:
+        return candidates
+    text = select_text(soup, ".news_head .meta a")
+    return [text] if text else []
 
 
 def extract_etnews_published_at_text(soup: BeautifulSoup) -> str | None:
@@ -2459,6 +2719,18 @@ def extract_etnews_published_at_text(soup: BeautifulSoup) -> str | None:
     return extract_first_datetime_text(soup.get_text(" ", strip=True)) or None
 
 
+def extract_zdnet_korea_published_at_text(soup: BeautifulSoup) -> str | None:
+    for selector in (".news_head .meta", "#articleBody", "article"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", text)
+        if match:
+            return match.group(0)
+    return extract_first_datetime_text(soup.get_text(" ", strip=True)) or None
+
+
 def parse_etnews_published_at(value: Any) -> datetime | None:
     text = clean_inline_text(str(value or ""))
     if not text:
@@ -2468,6 +2740,27 @@ def parse_etnews_published_at(value: Any) -> datetime | None:
     for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=ETNEWS_TIMEZONE).astimezone(UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
+
+
+def parse_zdnet_korea_published_at(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    if re.search(r"[+-]\d{2}:?\d{2}|Z$", text):
+        return parse_published_at(text)
+    match = re.fullmatch(r"(\d{4})[./-](\d{2})[./-](\d{2})\s+(AM|PM)\s+(\d{2}):(\d{2})", text, re.IGNORECASE)
+    if match:
+        year, month, day, meridiem, hour, minute = match.groups()
+        hour_value = int(hour) % 12
+        if meridiem.upper() == "PM":
+            hour_value += 12
+        return datetime(int(year), int(month), int(day), hour_value, int(minute), tzinfo=ZDNET_KOREA_TIMEZONE).astimezone(UTC)
+    for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=ZDNET_KOREA_TIMEZONE).astimezone(UTC)
         except ValueError:
             continue
     return parse_published_at(text)

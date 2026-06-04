@@ -18,6 +18,7 @@ from packages.non_mainstream_media.fetcher import (
     fetch_article,
     discover_hk01_pages,
     discover_thelec_pages,
+    discover_zdnet_korea_pages,
     discover_tether_pages,
     discover_the_block_pages,
     discover_wsj_pages,
@@ -30,6 +31,7 @@ from packages.non_mainstream_media.fetcher import (
     parse_forbes_article,
     parse_hk01_article,
     parse_thelec_article,
+    parse_zdnet_korea_article,
     parse_tether_article,
 )
 from packages.non_mainstream_media.models import (
@@ -665,6 +667,36 @@ def test_discover_thelec_pages_reads_list_titles_and_keeps_idxno() -> None:
     assert pages[0].published_at_raw == "2024.05.17 14:03"
 
 
+def test_discover_thelec_pages_reads_jina_markdown_links() -> None:
+    payload = """
+    Title: Semiconductor - The Elec Inc.
+
+    URL Source: https://www.thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm
+
+    Markdown Content:
+    * [![Image 1: Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://cdn.thelec.net/news/thumbnail/202606/10998_10986_2935_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10998)
+    ## [Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://www.thelec.net/news/articleView.html?idxno=10998)
+
+    Intel expressed confidence that x86 architecture-based central processing units will regain leadership.
+
+    * [![Image 2: Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://cdn.thelec.net/news/thumbnail/202606/10996_10984_2235_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10996)
+    ## [Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://www.thelec.net/news/articleView.html?idxno=10996)
+
+    Samsung Electronics quietly displayed an HBM5 mock-up at Computex.
+    """
+
+    pages = discover_thelec_pages(payload)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.thelec.net/news/articleView.html?idxno=10998",
+        "https://www.thelec.net/news/articleView.html?idxno=10996",
+    ]
+    assert pages[0].title == "Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift"
+    assert pages[0].excerpt == (
+        "Intel expressed confidence that x86 architecture-based central processing units will regain leadership."
+    )
+
+
 def test_parse_thelec_article_extracts_title_author_time_and_body() -> None:
     html = """
     <html>
@@ -746,6 +778,39 @@ def test_fetch_discovered_pages_thelec_uses_host_fallback(monkeypatch) -> None:
     assert [page.detail_url for page in pages] == ["https://www.thelec.net/news/articleView.html?idxno=10961"]
 
 
+def test_fetch_discovered_pages_thelec_uses_jina_fallback_when_hosts_block(monkeypatch) -> None:
+    site = get_site_registry()["thelec_china"]
+    payload = """
+    Markdown Content:
+    ## [Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://www.thelec.net/news/articleView.html?idxno=10998)
+
+    Intel expressed confidence that x86 architecture-based central processing units will regain leadership.
+    """
+    calls: list[str] = []
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url in {
+            site.list_url,
+            "https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm",
+        }:
+            raise RuntimeError("403 forbidden")
+        if url == "https://r.jina.ai/http://https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm":
+            return payload
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert calls == [
+        site.list_url,
+        "https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm",
+        "https://r.jina.ai/http://https://thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm",
+    ]
+    assert [page.detail_url for page in pages] == ["https://www.thelec.net/news/articleView.html?idxno=10998"]
+
+
 def test_thelec_registered_as_ai_source_with_five_minute_interval() -> None:
     site = get_site_registry()["thelec_china"]
 
@@ -766,6 +831,15 @@ def test_etnews_sections_registered_as_ai_sources_with_five_minute_interval() ->
     assert registry["etnews_sw"].pipeline_mode == "write_flow"
     assert registry["etnews_sw"].interval_seconds == 300
     assert registry["etnews_sw"].list_url == "https://www.etnews.com/news/section.html?id1=04"
+
+
+def test_zdnet_korea_semiconductor_registered_as_ai_source_with_five_minute_interval() -> None:
+    site = get_site_registry()["zdnet_korea_semiconductor"]
+
+    assert site.source_group == SOURCE_GROUP_AI_SOURCE
+    assert site.pipeline_mode == "write_flow"
+    assert site.interval_seconds == 300
+    assert site.list_url == "https://zdnet.co.kr/newskey/?lstcode=%EB%B0%98%EB%8F%84%EC%B2%B4"
 
 
 def test_discover_etnews_pages_reads_section_article_ids() -> None:
@@ -842,6 +916,109 @@ def test_parse_etnews_article_extracts_title_time_author_and_body() -> None:
     )
     assert article.excerpt == "국내 성인 설문조사 결과"
     assert article.content_format == "etnews_article"
+
+
+def test_discover_zdnet_korea_pages_reads_newskey_articles() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="newsPost">
+          <div class="assetThumb">
+            <a href="/view/?no=20260604082845" title=""></a>
+          </div>
+          <div class="assetText">
+            <a href="/view/?no=20260604082845">
+              <h3>최태원 SK-웨이저자 TSMC 회장 "차세대 HBM 개발 협력 강화"</h3>
+              <p>2년 만에 대만서 회동..."커스텀 HBM 등 AI 메모리 시장 선점 속도"</p>
+            </a>
+            <p class="byline"><span>2026.06.04 AM 09:44</span><a href="/reporter/?lstcode=jkyoon">장경윤 기자</a></p>
+          </div>
+        </div>
+        <div class="newsPost">
+          <div class="assetText">
+            <a href="https://zdnet.co.kr/view/?no=20260602110030&utm_source=test"></a>
+            <strong>엔비디아가 한국에 손을 내민 이유</strong>
+            <p>AI 시대의 핵심 파트너로 다시 마주하게 된 사연.</p>
+            <p class="byline"><span>2026.06.02 PM 10:08</span><a href="/reporter/?lstcode=ameet">AMEET</a></p>
+          </div>
+        </div>
+        <a href="/newskey/?lstcode=반도체">ignore section</a>
+        <a href="/view/?no=20260604082845">duplicate story</a>
+      </body>
+    </html>
+    """
+
+    pages = discover_zdnet_korea_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://zdnet.co.kr/view?no=20260604082845",
+        "https://zdnet.co.kr/view?no=20260602110030",
+    ]
+    assert pages[0].title == '최태원 SK-웨이저자 TSMC 회장 "차세대 HBM 개발 협력 강화"'
+    assert pages[0].excerpt == '2년 만에 대만서 회동..."커스텀 HBM 등 AI 메모리 시장 선점 속도"'
+    assert pages[0].published_at == datetime(2026, 6, 4, 0, 44, tzinfo=UTC)
+    assert pages[1].title == "엔비디아가 한국에 손을 내민 이유"
+    assert pages[1].published_at == datetime(2026, 6, 2, 13, 8, tzinfo=UTC)
+
+
+def test_parse_zdnet_korea_article_extracts_title_time_author_category_and_body() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://zdnet.co.kr/view/?no=20260604082845" />
+        <meta property="og:title" content="최태원 SK-웨이저자 TSMC 회장 &quot;차세대 HBM 개발 협력 강화&quot;" />
+        <meta property="og:description" content="최태원 SK그룹 회장과 웨이저자 TSMC 회장이 만났다." />
+        <meta property="dd:author" content="장경윤 기자" />
+        <meta property="article:section" content="반도체ㆍ디스플레이" />
+        <meta property="article:published_time" content="2026-06-04T09:44:14+09:00" />
+      </head>
+      <body>
+        <div class="news_head">
+          <h1>최태원 SK-웨이저자 TSMC 회장 "차세대 HBM 개발 협력 강화"</h1>
+          <p class="summary">2년 만에 대만서 회동..."커스텀 HBM 등 AI 메모리 시장 선점 속도"</p>
+          <p class="meta"><a href="/news/?lstcode=0050&page=1">반도체ㆍ디스플레이</a><span>입력 :2026/06/04 09:44 수정: 2026/06/04 09:54</span></p>
+        </div>
+        <div class="reporter_info">
+          <strong>장경윤 기자</strong>
+        </div>
+        <div class="view_cont" id="articleBody" itemprop="articleBody">
+          <div id="content-20260604082845" style="font-size: 16px;">
+            <div class="view_ad">광고</div>
+            <p>최태원 SK그룹 회장과 웨이저자 TSMC 회장이 지난 3일 대만에서 만났다.</p>
+            <p>양사는 차세대 고대역폭메모리(HBM) 개발 협력을 강화하기로 했다.</p>
+            <h2><span>관련기사</span></h2>
+            <div class="news_box connect">
+              <ul>
+                <li><a href="/view/?no=20260602180849">젠슨 황, SK하이닉스 부스 깜짝 방문</a><span>2026.06.02</span></li>
+              </ul>
+            </div>
+            <p>향후 양사는 고객 맞춤형 AI 메모리 시장 선점에 속도를 낼 계획이다.</p>
+            <div class="mt_bn_box">배너</div>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    article = parse_zdnet_korea_article(
+        html,
+        page_url="https://zdnet.co.kr/view/?no=20260604082845",
+        source_item_id="https://zdnet.co.kr/view/?no=20260604082845",
+    )
+
+    assert article.canonical_url == "https://zdnet.co.kr/view?no=20260604082845"
+    assert article.title == '최태원 SK-웨이저자 TSMC 회장 "차세대 HBM 개발 협력 강화"'
+    assert article.published_at == datetime(2026, 6, 4, 0, 44, 14, tzinfo=UTC)
+    assert article.author_names == ["장경윤"]
+    assert article.categories == ["반도체ㆍ디스플레이"]
+    assert article.content == (
+        "최태원 SK그룹 회장과 웨이저자 TSMC 회장이 지난 3일 대만에서 만났다.\n\n"
+        "양사는 차세대 고대역폭메모리(HBM) 개발 협력을 강화하기로 했다.\n\n"
+        "향후 양사는 고객 맞춤형 AI 메모리 시장 선점에 속도를 낼 계획이다."
+    )
+    assert "관련기사" not in article.content
+    assert article.excerpt == "최태원 SK그룹 회장과 웨이저자 TSMC 회장이 만났다."
+    assert article.content_format == "zdnet_korea_article"
 
 
 def test_discover_tether_pages_reads_wordpress_posts_payload() -> None:
