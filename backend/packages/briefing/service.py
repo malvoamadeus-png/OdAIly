@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from packages.briefing.generator import CRYPTO_STOCK_SYMBOLS, BriefPayload, build_brief
+from packages.briefing.generator import AI_STOCK_SYMBOLS, BriefPayload, build_brief
 from packages.common.config import BriefKind, MarketBriefSettings
 from packages.common.paths import AppPaths, ensure_runtime_dirs
 from packages.common.storage import append_brief_result, save_market_quotes
@@ -92,11 +92,11 @@ def _quality_error(
             if age_seconds <= max_age_seconds:
                 quality_quotes.append(quote)
 
-    valid_crypto_count = sum(1 for quote in quality_quotes if quote.symbol in CRYPTO_STOCK_SYMBOLS)
-    if valid_crypto_count < settings.min_valid_crypto_stocks:
+    valid_ai_count = sum(1 for quote in quality_quotes if quote.symbol in AI_STOCK_SYMBOLS)
+    if valid_ai_count < settings.min_valid_ai_stocks:
         return (
-            "insufficient valid crypto stock quotes: "
-            f"{valid_crypto_count}/{settings.min_valid_crypto_stocks}"
+            "insufficient valid AI stock quotes: "
+            f"{valid_ai_count}/{settings.min_valid_ai_stocks}"
         )
 
     if kind in {"close", "open"}:

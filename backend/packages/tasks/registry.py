@@ -77,7 +77,7 @@ def _run_gate_tradfi(
 TASKS: dict[str, TaskDefinition] = {
     "us-market": TaskDefinition(
         task_id="us-market",
-        display_name="US market crypto stock brief",
+        display_name="US market AI stock brief",
         kinds=("close", "premarket", "open"),
         config_help="data/config/market_brief.json",
         load_config=load_settings,

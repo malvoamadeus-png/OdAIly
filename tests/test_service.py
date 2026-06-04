@@ -36,10 +36,10 @@ def test_run_once_skips_without_valid_data(monkeypatch, tmp_path) -> None:
     result = run_brief_once(
         kind="close",
         settings=MarketBriefSettings(
-            watchlist=["MSTR"],
+            watchlist=["NVDA"],
             dry_run=True,
             market_data_sources=["yahoo_quote"],
-            min_valid_crypto_stocks=1,
+            min_valid_ai_stocks=1,
             min_valid_indices=0,
         ),
         paths=make_paths(tmp_path),
@@ -58,9 +58,9 @@ def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
         lambda **_: QuoteBatch(
             quotes=[
                 MarketQuote(
-                    symbol="MSTR",
-                    yahoo_symbol="MSTR",
-                    display_name="MSTR",
+                    symbol="NVDA",
+                    yahoo_symbol="NVDA",
+                    display_name="NVDA",
                     regular_market_change_percent=2.3,
                 )
             ],
@@ -72,9 +72,9 @@ def test_run_once_dry_run_writes_success(monkeypatch, tmp_path) -> None:
     result = run_brief_once(
         kind="close",
         settings=MarketBriefSettings(
-            watchlist=["MSTR"],
+            watchlist=["NVDA"],
             dry_run=True,
-            min_valid_crypto_stocks=1,
+            min_valid_ai_stocks=1,
             min_valid_indices=0,
         ),
         paths=make_paths(tmp_path),
@@ -96,9 +96,9 @@ def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch,
         lambda **_: QuoteBatch(
             quotes=[
                 MarketQuote(
-                    symbol="MSTR",
-                    yahoo_symbol="MSTR",
-                    display_name="MSTR",
+                    symbol="NVDA",
+                    yahoo_symbol="NVDA",
+                    display_name="NVDA",
                     regular_market_change_percent=2.3,
                 )
             ],
@@ -116,10 +116,10 @@ def test_run_once_records_error_without_push_when_yahoo_quote_fails(monkeypatch,
     result = run_brief_once(
         kind="open",
         settings=MarketBriefSettings(
-            watchlist=["MSTR"],
+            watchlist=["NVDA"],
             dry_run=False,
             market_data_sources=["yahoo_quote"],
-            min_valid_crypto_stocks=1,
+            min_valid_ai_stocks=1,
             min_valid_indices=0,
         ),
         paths=make_paths(tmp_path),
@@ -139,7 +139,7 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
         "packages.briefing.service.fetch_quotes",
         lambda **_: QuoteBatch(
             quotes=[],
-            missing_symbols=["MSTR"],
+            missing_symbols=["NVDA"],
             raw_response={"quote_error": "401 Client Error: Unauthorized", "quote_attempts": 3},
         ),
     )
@@ -147,7 +147,7 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
         "packages.briefing.service.fetch_chart_quotes",
         lambda **_: QuoteBatch(
             quotes=[],
-            missing_symbols=["MSTR"],
+            missing_symbols=["NVDA"],
             raw_response={"provider": "yahoo_chart"},
         ),
     )
@@ -156,9 +156,9 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
         lambda **_: QuoteBatch(
             quotes=[
                 MarketQuote(
-                    symbol="MSTR",
-                    yahoo_symbol="MSTR",
-                    display_name="MSTR",
+                    symbol="NVDA",
+                    yahoo_symbol="NVDA",
+                    display_name="NVDA",
                     regular_market_change_percent=2.3,
                     regular_market_time="2026-05-06T13:31:00+00:00",
                 )
@@ -175,11 +175,11 @@ def test_run_once_uses_finnhub_fallback_when_yahoo_quote_fails(monkeypatch, tmp_
     result = run_brief_once(
         kind="open",
         settings=MarketBriefSettings(
-            watchlist=["MSTR"],
+            watchlist=["NVDA"],
             dry_run=True,
             finnhub_api_key="test-key",
             market_data_sources=["yahoo_quote", "yahoo_chart", "finnhub"],
-            min_valid_crypto_stocks=1,
+            min_valid_ai_stocks=1,
             min_valid_indices=0,
         ),
         paths=make_paths(tmp_path),
@@ -199,10 +199,10 @@ def test_run_once_skips_us_market_holiday(monkeypatch, tmp_path) -> None:
     result = run_brief_once(
         kind="open",
         settings=MarketBriefSettings(
-            watchlist=["MSTR"],
+            watchlist=["NVDA"],
             dry_run=True,
             market_data_sources=["yahoo_quote"],
-            min_valid_crypto_stocks=1,
+            min_valid_ai_stocks=1,
             min_valid_indices=0,
         ),
         paths=make_paths(tmp_path),

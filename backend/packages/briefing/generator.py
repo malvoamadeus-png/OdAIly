@@ -7,48 +7,109 @@ from packages.market.models import MarketQuote
 
 
 NAME_MAP = {
-    "FRMM": "FRMM",
-    "MSTR": "Strategy",
-    "COIN": "Coinbase",
-    "SBET": "Sharplink Gaming",
-    "BMNR": "BitMine",
-    "CRCL": "Circle",
-    "ALTS": "ALT5 Sigma",
-    "HUT": "Hut 8",
-    "BNC": "BNB Network",
-    "ABTC": "American Bitcoin",
-    "ETHZ": "ETHZilla",
-    "HODL": "Sol Strategies",
-    "BTBT": "Bit Digital",
-    "HOOD": "Robinhood",
-    "DFDV": "DeFi Development",
-    "TRON": "Tron Inc.",
-    "BLSH": "Bullish",
-    "RIOT": "Riot Platforms",
-    "MARA": "MARA Holdings",
-    "UPXI": "Upexi",
-    "BTCS": "BTCS",
+    "NVDA": "NVIDIA",
+    "GOOGL": "Alphabet",
+    "MSFT": "Microsoft",
+    "AMZN": "Amazon",
+    "AVGO": "Broadcom",
+    "TSM": "台积电",
+    "META": "Meta",
+    "MU": "Micron",
+    "AMD": "AMD",
+    "ASML": "ASML",
+    "ORCL": "Oracle",
+    "ARM": "Arm",
+    "PLTR": "Palantir",
+    "IBM": "IBM",
+    "KLAC": "KLA",
+    "DELL": "Dell",
+    "MRVL": "Marvell",
+    "PANW": "Palo Alto Networks",
+    "ANET": "Arista Networks",
+    "SAP": "SAP",
+    "CRWD": "CrowdStrike",
+    "ISRG": "Intuitive Surgical",
+    "NOW": "ServiceNow",
+    "CDNS": "Cadence",
+    "ACN": "Accenture",
+    "ADBE": "Adobe",
+    "SNPS": "Synopsys",
+    "SNOW": "Snowflake",
+    "NXPI": "恩智浦",
+    "TER": "Teradyne",
+    "ALAB": "Astera Labs",
+    "CRWV": "CoreWeave",
+    "ON": "onsemi",
+    "ROK": "Rockwell Automation",
+    "BIDU": "百度",
+    "IRM": "Iron Mountain",
+    "WDAY": "Workday",
+    "TWLO": "Twilio",
+    "SMCI": "超微电脑",
+    "SYM": "Symbotic",
+    "TEAM": "Atlassian",
+    "CGNX": "Cognex",
+    "TTD": "The Trade Desk",
+    "AVAV": "AeroVironment",
+    "TEM": "Tempus AI",
+    "TTEK": "Tetra Tech",
+    "PATH": "UiPath",
+    "EPAM": "EPAM",
+    "SOUN": "SoundHound AI",
+    "AMBA": "Ambarella",
 }
 
-CRYPTO_STOCK_SYMBOLS = {
-    "FRMM",
-    "CRCL",
-    "BTBT",
-    "HOOD",
-    "HUT",
-    "COIN",
-    "DFDV",
-    "TRON",
-    "BLSH",
-    "RIOT",
-    "MARA",
-    "ABTC",
-    "MSTR",
-    "SBET",
-    "UPXI",
-    "BTCS",
-    "BNC",
-    "HODL",
+AI_STOCK_SYMBOLS = {
+    "NVDA",
+    "GOOGL",
+    "MSFT",
+    "AMZN",
+    "AVGO",
+    "TSM",
+    "META",
+    "MU",
+    "AMD",
+    "ASML",
+    "ORCL",
+    "ARM",
+    "PLTR",
+    "IBM",
+    "KLAC",
+    "DELL",
+    "MRVL",
+    "PANW",
+    "ANET",
+    "SAP",
+    "CRWD",
+    "ISRG",
+    "NOW",
+    "CDNS",
+    "ACN",
+    "ADBE",
+    "SNPS",
+    "SNOW",
+    "NXPI",
+    "TER",
+    "ALAB",
+    "CRWV",
+    "ON",
+    "ROK",
+    "BIDU",
+    "IRM",
+    "WDAY",
+    "TWLO",
+    "SMCI",
+    "SYM",
+    "TEAM",
+    "CGNX",
+    "TTD",
+    "AVAV",
+    "TEM",
+    "TTEK",
+    "PATH",
+    "EPAM",
+    "SOUN",
+    "AMBA",
 }
 
 INDICES_MAP = {
@@ -60,7 +121,7 @@ INDICES_MAP = {
 
 FOOTER_TEXT = (
     "据悉，MSX是一家头部RWA交易平台，累计已上线数百种 RWA 代币，"
-    "涵盖 AAPL、AMZN、GOOGL、META、MSFT、NFLX、NVDA 等美股及 ETF 代币标的。"
+    "涵盖 NVDA、GOOGL、MSFT、AMZN、META、TSM、AMD 等热门美股及 ETF 代币标的。"
 )
 
 
@@ -90,7 +151,7 @@ def _stock_moves(quotes: list[MarketQuote], *, kind: BriefKind) -> list[tuple[Ma
     return [
         (quote, value)
         for quote in quotes
-        if quote.symbol in CRYPTO_STOCK_SYMBOLS
+        if quote.symbol in AI_STOCK_SYMBOLS
         for value in [_value_for_kind(quote, kind)]
         if value is not None
     ]
@@ -122,7 +183,7 @@ def _top5_sentence(moves: list[tuple[MarketQuote, float]], *, kind: BriefKind, t
         else:
             action = "上涨" if value >= 0 else "下跌"
         parts.append(f"{_display_name(quote)} {action} {_format_percent(value)}")
-    return f"加密概念股{trend}，{'，'.join(parts)}"
+    return f"AI概念股{trend}，{'，'.join(parts)}"
 
 
 def _brief_prefix(kind: BriefKind) -> str:
@@ -136,7 +197,7 @@ def _brief_prefix(kind: BriefKind) -> str:
 def _title_for_stock_moves(kind: BriefKind, moves: list[tuple[MarketQuote, float]], trend: str) -> str:
     quote, value = _sorted_moves_for_trend(moves, trend=trend)[0]
     action = "涨超" if value >= 0 else "跌超"
-    return f"{_brief_prefix(kind)}加密概念股{trend}，{_display_name(quote)}{action}{_format_percent(value)}"
+    return f"{_brief_prefix(kind)}AI概念股{trend}，{_display_name(quote)}{action}{_format_percent(value)}"
 
 
 def _index_sentence(quotes: list[MarketQuote], *, kind: BriefKind) -> str:

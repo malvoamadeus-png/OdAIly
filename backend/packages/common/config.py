@@ -6,31 +6,63 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, Field, HttpUrl, ValidationError, field_validator
 
 from .freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
 from .paths import get_paths
 
 
 DEFAULT_WATCHLIST = [
-    "FRMM",
-    "CRCL",
-    "BTBT",
-    "HOOD",
-    "HUT",
-    "COIN",
-    "DFDV",
-    "TRON",
-    "BLSH",
-    "RIOT",
-    "MARA",
-    "ABTC",
-    "MSTR",
-    "SBET",
-    "UPXI",
-    "BTCS",
-    "BNC",
-    "HODL",
+    "NVDA",
+    "GOOGL",
+    "MSFT",
+    "AMZN",
+    "AVGO",
+    "TSM",
+    "META",
+    "MU",
+    "AMD",
+    "ASML",
+    "ORCL",
+    "ARM",
+    "PLTR",
+    "IBM",
+    "KLAC",
+    "DELL",
+    "MRVL",
+    "PANW",
+    "ANET",
+    "SAP",
+    "CRWD",
+    "ISRG",
+    "NOW",
+    "CDNS",
+    "ACN",
+    "ADBE",
+    "SNPS",
+    "SNOW",
+    "NXPI",
+    "TER",
+    "ALAB",
+    "CRWV",
+    "ON",
+    "ROK",
+    "BIDU",
+    "IRM",
+    "WDAY",
+    "TWLO",
+    "SMCI",
+    "SYM",
+    "TEAM",
+    "CGNX",
+    "TTD",
+    "AVAV",
+    "TEM",
+    "TTEK",
+    "PATH",
+    "EPAM",
+    "SOUN",
+    "AMBA",
     "SPX",
     "VIX",
     "IXIC",
@@ -88,7 +120,13 @@ class MarketBriefSettings(BaseModel):
             "DJI": "^DJI",
         }
     )
-    min_valid_crypto_stocks: int = Field(default=10, ge=1, le=100)
+    min_valid_ai_stocks: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices("min_valid_ai_stocks", "min_valid_crypto_stocks"),
+        serialization_alias="min_valid_ai_stocks",
+    )
     min_valid_indices: int = Field(default=2, ge=0, le=4)
     max_quote_age_minutes: int = Field(default=10, ge=1, le=1440)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
