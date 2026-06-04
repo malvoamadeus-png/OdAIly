@@ -379,7 +379,7 @@ def test_judge_discards_garbage_expression() -> None:
     assert repo.pipelines[1].news_type is None
 
 
-def test_judge_precheck_discards_non_crypto_ai_without_model_call() -> None:
+def test_judge_sends_non_crypto_ai_to_model() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(
         TaskRecord(
@@ -400,9 +400,9 @@ def test_judge_precheck_discards_non_crypto_ai_without_model_call() -> None:
     result = worker.run_once()
 
     assert result.processed == 1
-    assert repo.tasks[1].status == "discarded"
-    assert repo.pipelines[1].news_type is None
-    assert fake_ai.calls == []
+    assert repo.tasks[1].status == "deduped"
+    assert repo.pipelines[1].news_type == "regular"
+    assert len(fake_ai.calls) == 1
 
 
 def test_judge_precheck_keeps_crypto_ai_news_for_model() -> None:

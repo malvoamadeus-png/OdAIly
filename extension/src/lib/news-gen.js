@@ -77,3 +77,7 @@ export async function searchNewsGeneration(config, session, payload) {
 export async function generateNewsflash(config, session, payload) {
   return await postWithSession(config, session, "/plugin/news-gen/generate", payload);
 }
+
+export async function quickGenerateNewsflash(config, session, payload) {
+  return await postWithSession(config, session, "/plugin/news-gen/quick-generate", payload);
+}

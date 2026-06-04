@@ -18,6 +18,7 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+extension.zip
 
 frontend/node_modules/
 frontend/.next/

@@ -37,13 +37,15 @@ from packages.x_processing.searcher import (
     parse_ai_review_output,
 )
 from packages.x_processing.worker import (
-    DETERMINISTIC_JUDGE_MODEL,
     X_JUDGE_JSON_SCHEMA,
     X_JUDGE_PROMPT_TEMPLATE,
     build_writer_prompt,
     deterministic_judge_discard_type,
     parse_judge_route,
 )
+
+
+QUICK_GENERATE_WRITER_MODEL = "gpt-5.4-mini"
 
 
 class EditorPluginApiError(RuntimeError):
@@ -335,6 +337,19 @@ class EditorPluginNewsGenService:
             raise
 
     def run_generate(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
+        return self._run_generate(actor, request, action="generate", writer_model=self.x_settings.writer_model)
+
+    def run_quick_generate(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
+        return self._run_generate(actor, request, action="quick_generate", writer_model=QUICK_GENERATE_WRITER_MODEL)
+
+    def _run_generate(
+        self,
+        actor: AuthenticatedEditor,
+        request: EditorPluginRequestModel,
+        *,
+        action: str,
+        writer_model: str,
+    ) -> dict[str, Any]:
         task = self._build_task_record(request)
         route: str | None = None
         result_payload: dict[str, Any] | None = None
@@ -343,7 +358,7 @@ class EditorPluginNewsGenService:
             prompt = self._get_prompt(PROMPT_KEY_BY_NEWS_TYPE[route])
             writer_prompt = build_writer_prompt(task=task, prompt=prompt)
             raw_output = self.ai_client.generate_text(
-                model=self.x_settings.writer_model,
+                model=writer_model,
                 prompt=writer_prompt,
                 reasoning_effort=self.x_settings.writer_reasoning_effort,
             )
@@ -358,7 +373,7 @@ class EditorPluginNewsGenService:
             self._log_request(
                 actor=actor,
                 request=request,
-                action="generate",
+                action=action,
                 status="success",
                 route=route,
                 result_json=result_payload,
@@ -369,7 +384,7 @@ class EditorPluginNewsGenService:
             self._log_request(
                 actor=actor,
                 request=request,
-                action="generate",
+                action=action,
                 status="failed",
                 route=route,
                 result_json=result_payload or {},
@@ -580,7 +595,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/plugin/news-gen/search", "/plugin/news-gen/generate"}:
+        if self.path not in {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
             return
 
@@ -590,6 +605,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
             request = EditorPluginRequestModel.model_validate(payload)
             if self.path == "/plugin/news-gen/search":
                 data = self.server.service.run_search(actor, request)
+            elif self.path == "/plugin/news-gen/quick-generate":
+                data = self.server.service.run_quick_generate(actor, request)
             else:
                 data = self.server.service.run_generate(actor, request)
             self._send_json(HTTPStatus.OK, {"ok": True, "data": data})

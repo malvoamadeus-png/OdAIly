@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=runtime.sh
+source "$SCRIPT_DIR/runtime.sh"
+
+ROOT="$(odaily_repo_root)"
+odaily_setup_runtime_env "$ROOT"
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  tools/dev doctor
+  tools/dev python <args...>
+  tools/dev pytest <args...>
+  tools/dev node <args...>
+  tools/dev npm <args...>
+  tools/dev npx <args...>
+  tools/dev env
+
+Examples:
+  tools/dev doctor
+  tools/dev python --version
+  tools/dev pytest tests/test_editor_plugin_auth.py
+  tools/dev node --version
+  eval "$(tools/dev env)"
+EOF
+}
+
+print_env_exports() {
+  cat <<EOF
+export ODAILY_REPO_ROOT=$(printf '%q' "$ODAILY_REPO_ROOT")
+export ODAILY_PYTHON=$(printf '%q' "$ODAILY_PYTHON")
+export ODAILY_NODE=$(printf '%q' "${ODAILY_NODE:-}")
+export ODAILY_VENV_SITE_PACKAGES=$(printf '%q' "${ODAILY_VENV_SITE_PACKAGES:-}")
+export ODAILY_NODE_MODULES=$(printf '%q' "${ODAILY_NODE_MODULES:-}")
+export PATH=$(printf '%q' "$PATH")
+export PYTHONPATH=$(printf '%q' "${PYTHONPATH:-}")
+EOF
+  if [ -n "${NODE_PATH:-}" ]; then
+    echo "export NODE_PATH=$(printf '%q' "$NODE_PATH")"
+  fi
+}
+
+print_doctor() {
+  echo "repo_root: $ODAILY_REPO_ROOT"
+  echo "python: $ODAILY_PYTHON"
+  "$ODAILY_PYTHON" --version
+  if [ -n "${ODAILY_NODE:-}" ]; then
+    echo "node: $ODAILY_NODE"
+    "$ODAILY_NODE" --version
+  else
+    echo "node: <not found>"
+  fi
+  echo "venv_site_packages: ${ODAILY_VENV_SITE_PACKAGES:-<not found>}"
+  echo "node_modules: ${ODAILY_NODE_MODULES:-<not found>}"
+  echo "PATH: $PATH"
+  echo "PYTHONPATH: ${PYTHONPATH:-}"
+  if [ -n "${NODE_PATH:-}" ]; then
+    echo "NODE_PATH: $NODE_PATH"
+  fi
+}
+
+if [ "$#" -lt 1 ]; then
+  print_usage
+  exit 1
+fi
+
+command_name="$1"
+shift
+
+case "$command_name" in
+  doctor)
+    print_doctor
+    ;;
+  env)
+    print_env_exports
+    ;;
+  python)
+    exec "$ODAILY_PYTHON" "$@"
+    ;;
+  pytest)
+    mkdir -p "$ODAILY_REPO_ROOT/.pytest-tmp"
+    export TMPDIR="$ODAILY_REPO_ROOT/.pytest-tmp"
+    exec "$ODAILY_PYTHON" -m pytest -s "--basetemp=$ODAILY_REPO_ROOT/.pytest-tmp" "$@"
+    ;;
+  node)
+    if [ -z "${ODAILY_NODE:-}" ]; then
+      odaily_die "unable to find Node.js runtime"
+    fi
+    exec "$ODAILY_NODE" "$@"
+    ;;
+  npm)
+    exec "$(odaily_resolve_npm)" "$@"
+    ;;
+  npx)
+    exec "$(odaily_resolve_npx)" "$@"
+    ;;
+  *)
+    print_usage
+    exit 1
+    ;;
+esac

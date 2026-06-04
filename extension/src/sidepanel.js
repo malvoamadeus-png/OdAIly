@@ -7,6 +7,7 @@ import {
 } from "./lib/feed.js";
 import {
   generateNewsflash,
+  quickGenerateNewsflash,
   searchNewsGeneration
 } from "./lib/news-gen.js";
 import { playNotificationBeep } from "./lib/sound.js";
@@ -350,13 +351,19 @@ function renderSearchCandidates(candidates) {
 function renderNewsGenResult() {
   const requestState = state.newsGenRequestState;
   if (requestState.loading) {
-    return `<div class="emptyState">正在${escapeHtml(requestState.mode === "generate" ? "生成快讯" : "执行 AI 查重")}...</div>`;
+    const loadingText =
+      requestState.mode === "search"
+        ? "执行 AI 查重"
+        : requestState.mode === "quick_generate"
+          ? "快速生成"
+          : "生成快讯";
+    return `<div class="emptyState">正在${escapeHtml(loadingText)}...</div>`;
   }
   if (requestState.error) {
     return `<div class="inlineError">${escapeHtml(requestState.error)}</div>`;
   }
   if (!state.newsGenResult) {
-    return `<div class="emptyState">点击上方按钮开始 AI 查重或生成快讯</div>`;
+    return `<div class="emptyState">点击上方按钮开始 AI 查重、快速生成或生成快讯</div>`;
   }
 
   if (state.newsGenResult.kind === "search") {
@@ -424,6 +431,7 @@ function renderNewsGenSection() {
           </div>
           <div class="formActions">
             <button id="newsGenSearchButton" class="secondaryButton" ${hasDraft ? "" : "disabled"}>AI查重</button>
+            <button id="newsGenQuickGenerateButton" class="secondaryButton" ${hasDraft ? "" : "disabled"}>快速生成</button>
             <button id="newsGenGenerateButton" class="primaryButton" ${hasDraft ? "" : "disabled"}>生成快讯</button>
           </div>
         </div>
@@ -872,6 +880,9 @@ async function runNewsGenAction(mode) {
       if (mode === "generate") {
         return await generateNewsflash(state.settings, state.session, payload);
       }
+      if (mode === "quick_generate") {
+        return await quickGenerateNewsflash(state.settings, state.session, payload);
+      }
       return await searchNewsGeneration(state.settings, state.session, payload);
     });
     state.newsGenResult = result;
@@ -894,6 +905,9 @@ function wireNewsGenInteractions() {
   });
   document.getElementById("newsGenGenerateButton")?.addEventListener("click", async () => {
     await runNewsGenAction("generate");
+  });
+  document.getElementById("newsGenQuickGenerateButton")?.addEventListener("click", async () => {
+    await runNewsGenAction("quick_generate");
   });
   document.getElementById("copyGeneratedButton")?.addEventListener("click", async () => {
     if (!state.newsGenResult?.content) {
