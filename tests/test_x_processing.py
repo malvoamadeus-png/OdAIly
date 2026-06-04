@@ -13,7 +13,14 @@ from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
 from packages.x_processing.searcher import SearchDocument, document_cache_key
 from packages.x_processing.telegram import TelegramClient, TelegramResult
-from packages.x_processing.worker import XProcessingWorker, build_telegram_notice, parse_judge_route, parse_news_type
+from packages.x_processing.worker import (
+    X_JUDGE_JSON_SCHEMA,
+    X_JUDGE_PROMPT_TEMPLATE,
+    XProcessingWorker,
+    build_telegram_notice,
+    parse_judge_route,
+    parse_news_type,
+)
 
 
 class FakeAiClient:
@@ -362,7 +369,7 @@ def test_judge_routes_news_to_judged() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "judged"
     assert repo.pipelines[1].news_type == "funding"
-    assert "可丢弃内容只有四类" in fake_ai.calls[0]["prompt"]
+    assert "可丢弃内容只有三类" in fake_ai.calls[0]["prompt"]
     assert fake_ai.calls[0]["text_format"]["name"] == "x_judge_route"
 
 
@@ -377,6 +384,16 @@ def test_judge_discards_garbage_expression() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "discarded"
     assert repo.pipelines[1].news_type is None
+
+
+def test_x_judge_prompt_does_not_offer_non_crypto_ai_discard() -> None:
+    assert X_JUDGE_JSON_SCHEMA["schema"]["properties"]["discard_type"]["enum"] == [
+        "none",
+        "pure_emotion",
+        "baseless_trading_call",
+        "daily_chatter",
+    ]
+    assert "non_crypto_ai" not in X_JUDGE_PROMPT_TEMPLATE
 
 
 def test_judge_sends_non_crypto_ai_to_model() -> None:
