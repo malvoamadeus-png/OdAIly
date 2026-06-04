@@ -32,6 +32,11 @@ import {
 const app = document.getElementById("app");
 const FEED_TAB = "feed";
 const NEWS_GEN_TAB = "news_gen";
+const NEWS_GEN_TYPES = [
+  { value: "regular", label: "常规" },
+  { value: "funding", label: "融资" },
+  { value: "onchain", label: "链上" }
+];
 
 const state = {
   settings: null,
@@ -148,6 +153,10 @@ function renderBadges(item) {
         )}">${escapeHtml(badge.value)}</span>`
     )
     .join("");
+}
+
+function newsGenTypeLabel(newsType) {
+  return NEWS_GEN_TYPES.find((item) => item.value === newsType)?.label || "常规";
 }
 
 function splitFeedItems() {
@@ -351,12 +360,13 @@ function renderSearchCandidates(candidates) {
 function renderNewsGenResult() {
   const requestState = state.newsGenRequestState;
   if (requestState.loading) {
+    const typeText = requestState.newsType ? `-${newsGenTypeLabel(requestState.newsType)}` : "";
     const loadingText =
       requestState.mode === "search"
         ? "执行 AI 查重"
         : requestState.mode === "quick_generate"
-          ? "快速生成"
-          : "生成快讯";
+          ? `快速生成${typeText}`
+          : `生成快讯${typeText}`;
     return `<div class="emptyState">正在${escapeHtml(loadingText)}...</div>`;
   }
   if (requestState.error) {
@@ -394,13 +404,7 @@ function renderNewsGenResult() {
     <section class="panel newsGenResultPanel">
       <div class="newsGenResultPanel__head">
         <h3>生成快讯</h3>
-        <span class="statusChip statusChip--info">${escapeHtml(
-          state.newsGenResult.route === "onchain"
-            ? "链上"
-            : state.newsGenResult.route === "funding"
-              ? "融资"
-              : "常规"
-        )}</span>
+        <span class="statusChip statusChip--info">${escapeHtml(newsGenTypeLabel(state.newsGenResult.route))}</span>
       </div>
       <div class="newsGenGenerated">
         <h4>${escapeHtml(state.newsGenResult.title || "未命名快讯")}</h4>
@@ -413,9 +417,38 @@ function renderNewsGenResult() {
   `;
 }
 
+function renderNewsGenTypeMenu({ id, label, mode, primary, disabled }) {
+  const optionButtons = NEWS_GEN_TYPES.map(
+    (item) => `
+      <button
+        type="button"
+        class="newsGenTypeOption"
+        data-news-gen-action="${escapeHtml(mode)}"
+        data-news-type="${escapeHtml(item.value)}"
+        ${disabled ? "disabled" : ""}
+      >${escapeHtml(item.label)}</button>
+    `
+  ).join("");
+  return `
+    <div class="newsGenActionMenu">
+      <button
+        id="${escapeHtml(id)}"
+        type="button"
+        class="${primary ? "primaryButton" : "secondaryButton"} newsGenMenuButton"
+        aria-haspopup="true"
+        ${disabled ? "disabled" : ""}
+      >${escapeHtml(label)}</button>
+      <div class="newsGenActionMenu__options">
+        ${optionButtons}
+      </div>
+    </div>
+  `;
+}
+
 function renderNewsGenSection() {
   const draft = state.newsGenDraft;
   const hasDraft = Boolean(draft?.post_text);
+  const actionDisabled = !hasDraft || state.newsGenRequestState.loading;
   return `
     ${
       state.error
@@ -430,9 +463,21 @@ function renderNewsGenSection() {
             <p class="helperText">来自 X 平台按钮抽取</p>
           </div>
           <div class="formActions">
-            <button id="newsGenSearchButton" class="secondaryButton" ${hasDraft ? "" : "disabled"}>AI查重</button>
-            <button id="newsGenQuickGenerateButton" class="secondaryButton" ${hasDraft ? "" : "disabled"}>快速生成</button>
-            <button id="newsGenGenerateButton" class="primaryButton" ${hasDraft ? "" : "disabled"}>生成快讯</button>
+            <button id="newsGenSearchButton" class="secondaryButton" ${actionDisabled ? "disabled" : ""}>AI查重</button>
+            ${renderNewsGenTypeMenu({
+              id: "newsGenQuickGenerateButton",
+              label: "快速生成",
+              mode: "quick_generate",
+              primary: false,
+              disabled: actionDisabled
+            })}
+            ${renderNewsGenTypeMenu({
+              id: "newsGenGenerateButton",
+              label: "生成快讯",
+              mode: "generate",
+              primary: true,
+              disabled: actionDisabled
+            })}
           </div>
         </div>
         ${
@@ -866,16 +911,19 @@ function wireFeedInteractions() {
   wireSeenTracking();
 }
 
-async function runNewsGenAction(mode) {
+async function runNewsGenAction(mode, newsType = null) {
   const draft = state.newsGenDraft;
   if (!draft?.post_text || state.newsGenRequestState.loading) {
     return;
   }
-  state.newsGenRequestState = { mode, loading: true, error: "" };
+  state.newsGenRequestState = { mode, newsType, loading: true, error: "" };
   state.error = "";
   renderAuthedShell();
   try {
     const payload = sanitizeNewsGenDraft(draft);
+    if (mode === "generate" || mode === "quick_generate") {
+      payload.news_type = newsType;
+    }
     const result = await withSessionRetry(async () => {
       if (mode === "generate") {
         return await generateNewsflash(state.settings, state.session, payload);
@@ -887,11 +935,12 @@ async function runNewsGenAction(mode) {
     });
     state.newsGenResult = result;
     await saveNewsGenResult(result);
-    state.newsGenRequestState = { mode, loading: false, error: "" };
+    state.newsGenRequestState = { mode, newsType, loading: false, error: "" };
     renderAuthedShell();
   } catch (error) {
     state.newsGenRequestState = {
       mode,
+      newsType,
       loading: false,
       error: error instanceof Error ? error.message : "请求失败"
     };
@@ -903,12 +952,11 @@ function wireNewsGenInteractions() {
   document.getElementById("newsGenSearchButton")?.addEventListener("click", async () => {
     await runNewsGenAction("search");
   });
-  document.getElementById("newsGenGenerateButton")?.addEventListener("click", async () => {
-    await runNewsGenAction("generate");
-  });
-  document.getElementById("newsGenQuickGenerateButton")?.addEventListener("click", async () => {
-    await runNewsGenAction("quick_generate");
-  });
+  for (const button of app.querySelectorAll("[data-news-gen-action][data-news-type]")) {
+    button.addEventListener("click", async () => {
+      await runNewsGenAction(button.dataset.newsGenAction, button.dataset.newsType);
+    });
+  }
   document.getElementById("copyGeneratedButton")?.addEventListener("click", async () => {
     if (!state.newsGenResult?.content) {
       return;
@@ -922,6 +970,7 @@ function wireNewsGenInteractions() {
     } catch (error) {
       state.newsGenRequestState = {
         mode: "generate",
+        newsType: state.newsGenResult.route || null,
         loading: false,
         error: error instanceof Error ? error.message : "复制失败"
       };

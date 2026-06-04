@@ -147,6 +147,58 @@ body {
   background: #1e293b;
 }
 
+.newsGenActionMenu {
+  position: relative;
+  display: inline-flex;
+}
+
+.newsGenMenuButton {
+  min-width: 76px;
+}
+
+.newsGenActionMenu__options {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  z-index: 20;
+  display: none;
+  grid-template-columns: repeat(3, minmax(42px, 1fr));
+  gap: 4px;
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.13);
+  transform: translateX(-50%);
+}
+
+.newsGenActionMenu:hover .newsGenActionMenu__options,
+.newsGenActionMenu:focus-within .newsGenActionMenu__options {
+  display: grid;
+}
+
+.newsGenTypeOption {
+  min-height: 30px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.newsGenTypeOption:hover {
+  background: #e0f2fe;
+  border-color: rgba(14, 165, 233, 0.35);
+}
+
+.newsGenTypeOption:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .userStrip {
   display: flex;
   justify-content: space-between;

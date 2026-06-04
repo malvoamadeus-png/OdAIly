@@ -530,6 +530,7 @@ class XProcessingWorker:
                 model=self.settings.judge_model,
                 prompt=prompt,
                 text_format=schema,
+                reasoning_effort=self.settings.judge_reasoning_effort,
             )
             route, discard_type = parse_judge_route(raw_output)
         except Exception as exc:
@@ -663,6 +664,7 @@ class XProcessingWorker:
             model=self.settings.judge_model,
             prompt=build_ai_review_prompt(query=query, match=match),
             text_format=AI_REVIEW_SCHEMA,
+            reasoning_effort=self.settings.judge_reasoning_effort,
         )
         payload = parse_ai_review_output(raw_output)
         is_duplicate = bool(payload.get("is_duplicate"))

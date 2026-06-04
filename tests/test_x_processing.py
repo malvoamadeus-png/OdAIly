@@ -371,6 +371,7 @@ def test_judge_routes_news_to_judged() -> None:
     assert repo.pipelines[1].news_type == "funding"
     assert "可丢弃内容只有三类" in fake_ai.calls[0]["prompt"]
     assert fake_ai.calls[0]["text_format"]["name"] == "x_judge_route"
+    assert fake_ai.calls[0]["reasoning_effort"] == "low"
 
 
 def test_judge_discards_garbage_expression() -> None:
@@ -681,6 +682,45 @@ def test_searcher_uses_local_mirrored_candidates_after_warmup() -> None:
     assert repo.candidate_reads == 0
 
 
+def test_searcher_ai_review_uses_judge_low_reasoning() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(task(1, status="judged"))
+    repo.odaily_references = [
+        SearchDocument(
+            doc_type="odaily_reference",
+            doc_id="od-1",
+            title="某项目合作",
+            content="某项目宣布重要合作",
+            source="odaily",
+            source_url="https://www.odaily.news/post/1",
+            published_at=datetime.now(UTC),
+        )
+    ]
+    review_ai = FakeAiClient(
+        ['{"is_duplicate":true,"duplicate_target_type":"odaily_published","duplicate_target_id":"od-1","reason":"same_event"}']
+    )
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repo,
+        settings=settings().model_copy(update={"search_duplicate_threshold": 0.99, "search_ai_review_threshold": 0.5}),
+        ai_client=None,
+        search_ai_client=review_ai,
+        search_embedding_service=FakeEmbeddingService(
+            {
+                "task:1": [1.0, 0.0],
+                "odaily_reference:odaily:od-1": [0.8, 0.6],
+            }
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "duplicate"
+    assert review_ai.calls[0]["model"] == "gpt-5.4-mini"
+    assert review_ai.calls[0]["reasoning_effort"] == "low"
+
+
 def test_search_retry_ignores_own_existing_candidate() -> None:
     repo = InMemoryXProcessingRepository()
     retry_task = competitor_task(1, status="deduping")
@@ -853,6 +893,7 @@ def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
     assert pipeline.draft_title == "融资标题"
     assert pipeline.draft_content == "融资正文"
     assert fake_ai.calls[0]["model"] == "gpt-5.5"
+    assert fake_ai.calls[0]["reasoning_effort"] == "medium"
 
 
 def test_writer_persists_feature_mode_state_to_pipeline() -> None:

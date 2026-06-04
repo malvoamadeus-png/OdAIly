@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Literal
 
 import requests
 from dotenv import load_dotenv
@@ -36,16 +36,12 @@ from packages.x_processing.searcher import (
     exact_duplicate_decision,
     parse_ai_review_output,
 )
-from packages.x_processing.worker import (
-    X_JUDGE_JSON_SCHEMA,
-    X_JUDGE_PROMPT_TEMPLATE,
-    build_writer_prompt,
-    deterministic_judge_discard_type,
-    parse_judge_route,
-)
+from packages.x_processing.worker import build_writer_prompt
 
 
 QUICK_GENERATE_WRITER_MODEL = "gpt-5.4-mini"
+QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
+PluginNewsType = Literal["regular", "funding", "onchain"]
 
 
 class EditorPluginApiError(RuntimeError):
@@ -73,6 +69,7 @@ class EditorPluginRequestModel(BaseModel):
     author_display_name: str | None = None
     author_handle: str | None = None
     posted_at: datetime | None = None
+    news_type: PluginNewsType | None = None
 
     @field_validator("source_type")
     @classmethod
@@ -337,10 +334,22 @@ class EditorPluginNewsGenService:
             raise
 
     def run_generate(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
-        return self._run_generate(actor, request, action="generate", writer_model=self.x_settings.writer_model)
+        return self._run_generate(
+            actor,
+            request,
+            action="generate",
+            writer_model=self.x_settings.writer_model,
+            writer_reasoning_effort=self.x_settings.writer_reasoning_effort,
+        )
 
     def run_quick_generate(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
-        return self._run_generate(actor, request, action="quick_generate", writer_model=QUICK_GENERATE_WRITER_MODEL)
+        return self._run_generate(
+            actor,
+            request,
+            action="quick_generate",
+            writer_model=QUICK_GENERATE_WRITER_MODEL,
+            writer_reasoning_effort=QUICK_GENERATE_WRITER_REASONING_EFFORT,
+        )
 
     def _run_generate(
         self,
@@ -349,18 +358,19 @@ class EditorPluginNewsGenService:
         *,
         action: str,
         writer_model: str,
+        writer_reasoning_effort: str,
     ) -> dict[str, Any]:
         task = self._build_task_record(request)
         route: str | None = None
         result_payload: dict[str, Any] | None = None
         try:
-            route = self._select_route(task)
+            route = self._require_news_type(request)
             prompt = self._get_prompt(PROMPT_KEY_BY_NEWS_TYPE[route])
             writer_prompt = build_writer_prompt(task=task, prompt=prompt)
             raw_output = self.ai_client.generate_text(
                 model=writer_model,
                 prompt=writer_prompt,
-                reasoning_effort=self.x_settings.writer_reasoning_effort,
+                reasoning_effort=writer_reasoning_effort,
             )
             final = format_brief(parse_draft_output(raw_output))
             result_payload = {
@@ -424,23 +434,10 @@ class EditorPluginNewsGenService:
             },
         )
 
-    def _select_route(self, task: TaskRecord) -> str:
-        deterministic_discard = deterministic_judge_discard_type(task)
-        if deterministic_discard is not None:
-            raise EditorPluginApiError("当前内容不适合生成快讯")
-        raw_output = self.ai_client.generate_text(
-            model=self.x_settings.judge_model,
-            prompt=X_JUDGE_PROMPT_TEMPLATE.format(
-                author=task.metadata.get("author_display_name") or task.metadata.get("author_username") or "",
-                source_kind="X",
-                content=task.content,
-            ),
-            text_format=X_JUDGE_JSON_SCHEMA,
-        )
-        route, discard_type = parse_judge_route(raw_output)
-        if route == "discard":
-            raise EditorPluginApiError(f"当前内容不适合生成快讯：{discard_type}")
-        return route
+    def _require_news_type(self, request: EditorPluginRequestModel) -> PluginNewsType:
+        if request.news_type is None:
+            raise EditorPluginApiError("请选择生成类型：常规、融资或链上")
+        return request.news_type
 
     def _get_prompt(self, template_key: str) -> PromptTemplateVersion:
         return self.x_repository.get_active_prompt(template_key)

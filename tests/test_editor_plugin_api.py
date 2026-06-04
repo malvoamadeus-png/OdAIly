@@ -5,10 +5,12 @@ from pydantic import ValidationError
 
 from packages.editor_plugin_api import (
     AuthenticatedEditor,
+    EditorPluginApiError,
     EditorPluginRequestModel,
     EditorPluginNewsGenService,
     EditorPluginUnauthorizedError,
     QUICK_GENERATE_WRITER_MODEL,
+    QUICK_GENERATE_WRITER_REASONING_EFFORT,
     format_validation_error,
     parse_bearer_token,
 )
@@ -34,7 +36,19 @@ class FakePromptRepository:
                 template_key="x_regular_writer",
                 version_number=1,
                 content="常规写作模板",
-            )
+            ),
+            "x_funding_writer": PromptTemplateVersion(
+                id=2,
+                template_key="x_funding_writer",
+                version_number=1,
+                content="融资写作模板",
+            ),
+            "x_onchain_writer": PromptTemplateVersion(
+                id=3,
+                template_key="x_onchain_writer",
+                version_number=1,
+                content="链上写作模板",
+            ),
         }
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
@@ -67,18 +81,19 @@ def editor_actor() -> AuthenticatedEditor:
     return AuthenticatedEditor(user_id="user-1", email="editor@example.com", display_name="Editor")
 
 
-def editor_request() -> EditorPluginRequestModel:
-    return EditorPluginRequestModel.model_validate(
-        {
-            "source_type": "x_post",
-            "platform": "x",
-            "post_text": "OpenAI 发布新的 AI 产品更新。",
-            "post_url": "https://x.com/openai/status/1",
-            "post_id": "1",
-            "author_display_name": "OpenAI",
-            "author_handle": "@OpenAI",
-        }
-    )
+def editor_request(*, news_type: str | None = "regular") -> EditorPluginRequestModel:
+    payload = {
+        "source_type": "x_post",
+        "platform": "x",
+        "post_text": "OpenAI 发布新的 AI 产品更新。",
+        "post_url": "https://x.com/openai/status/1",
+        "post_id": "1",
+        "author_display_name": "OpenAI",
+        "author_handle": "@OpenAI",
+    }
+    if news_type is not None:
+        payload["news_type"] = news_type
+    return EditorPluginRequestModel.model_validate(payload)
 
 
 def test_parse_bearer_token_accepts_valid_header() -> None:
@@ -132,29 +147,64 @@ def test_format_validation_error_returns_first_field_message() -> None:
 
 
 def test_editor_plugin_generate_uses_configured_writer_model_and_reasoning() -> None:
-    ai = FakeAiClient(['{"route":"regular","discard_type":"none"}', "标题\n\n正文"])
+    ai = FakeAiClient(["标题\n\n正文"])
     service = editor_plugin_service(ai_client=ai, writer_reasoning_effort="medium")
 
-    result = service.run_generate(editor_actor(), editor_request())
+    result = service.run_generate(editor_actor(), editor_request(news_type="regular"))
 
     assert result["kind"] == "generate"
     assert result["route"] == "regular"
-    assert ai.calls[0]["model"] == "gpt-5.4-mini"
-    assert ai.calls[1]["model"] == "gpt-5.5"
-    assert ai.calls[1]["reasoning_effort"] == "medium"
+    assert len(ai.calls) == 1
+    assert ai.calls[0]["model"] == "gpt-5.5"
+    assert ai.calls[0]["reasoning_effort"] == "medium"
     assert service.auth_repository.logs[0]["action"] == "generate"
 
 
-def test_editor_plugin_quick_generate_uses_gpt_5_4_mini_for_writer_only() -> None:
-    ai = FakeAiClient(['{"route":"regular","discard_type":"none"}', "标题\n\n正文"])
+def test_editor_plugin_quick_generate_uses_gpt_5_4_mini_with_low_reasoning() -> None:
+    ai = FakeAiClient(["标题\n\n正文"])
     service = editor_plugin_service(ai_client=ai, writer_reasoning_effort="medium")
 
-    result = service.run_quick_generate(editor_actor(), editor_request())
+    result = service.run_quick_generate(editor_actor(), editor_request(news_type="regular"))
 
     assert result["kind"] == "generate"
     assert result["route"] == "regular"
-    assert ai.calls[0]["model"] == "gpt-5.4-mini"
-    assert ai.calls[1]["model"] == QUICK_GENERATE_WRITER_MODEL
+    assert len(ai.calls) == 1
+    assert ai.calls[0]["model"] == QUICK_GENERATE_WRITER_MODEL
     assert QUICK_GENERATE_WRITER_MODEL == "gpt-5.4-mini"
-    assert ai.calls[1]["reasoning_effort"] == "medium"
+    assert ai.calls[0]["reasoning_effort"] == QUICK_GENERATE_WRITER_REASONING_EFFORT
+    assert QUICK_GENERATE_WRITER_REASONING_EFFORT == "low"
     assert service.auth_repository.logs[0]["action"] == "quick_generate"
+
+
+@pytest.mark.parametrize(
+    ("news_type", "prompt_text"),
+    [
+        ("regular", "常规写作模板"),
+        ("funding", "融资写作模板"),
+        ("onchain", "链上写作模板"),
+    ],
+)
+def test_editor_plugin_generate_uses_selected_news_type_template(news_type: str, prompt_text: str) -> None:
+    ai = FakeAiClient(["标题\n\n正文"])
+    service = editor_plugin_service(ai_client=ai)
+
+    result = service.run_generate(editor_actor(), editor_request(news_type=news_type))
+
+    assert result["route"] == news_type
+    assert prompt_text in ai.calls[0]["prompt"]
+
+
+def test_editor_plugin_generate_requires_news_type() -> None:
+    ai = FakeAiClient(["标题\n\n正文"])
+    service = editor_plugin_service(ai_client=ai)
+
+    with pytest.raises(EditorPluginApiError) as excinfo:
+        service.run_generate(editor_actor(), editor_request(news_type=None))
+
+    assert "请选择生成类型" in str(excinfo.value)
+    assert ai.calls == []
+
+
+def test_editor_plugin_request_model_rejects_unknown_news_type() -> None:
+    with pytest.raises(ValidationError):
+        editor_request(news_type="market")

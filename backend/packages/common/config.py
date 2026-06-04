@@ -250,8 +250,9 @@ class XProcessingSettings(BaseModel):
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     judge_model: str = "gpt-5.4-mini"
+    judge_reasoning_effort: str = "low"
     writer_model: str = "gpt-5.5"
-    writer_reasoning_effort: str = "high"
+    writer_reasoning_effort: str = "medium"
     publisher_model: str = "gpt-5.5"
     publisher_reasoning_effort: str = "low"
     dashscope_api_key: str | None = None
@@ -293,8 +294,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         ),
         "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
         "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
+        "judge_reasoning_effort": os.getenv("X_PROCESS_JUDGE_REASONING_EFFORT") or "low",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
-        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "high",
+        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "medium",
         "publisher_model": os.getenv("X_PROCESS_PUBLISHER_MODEL") or "gpt-5.5",
         "publisher_reasoning_effort": os.getenv("X_PROCESS_PUBLISHER_REASONING_EFFORT") or "low",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
