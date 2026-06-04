@@ -14,7 +14,6 @@ function fillForm(settings) {
   document.getElementById("soundEnabled").checked = Boolean(settings.soundEnabled);
   document.getElementById("soundScope").value = settings.soundScope;
   document.getElementById("soundVolume").value = settings.soundVolume;
-  document.getElementById("splitterRatio").value = String(settings.splitterRatio);
 }
 
 async function boot() {
@@ -28,8 +27,7 @@ form.addEventListener("submit", async (event) => {
     pollIntervalSeconds: Math.max(10, Math.min(120, Number(formData.get("pollIntervalSeconds") || DEFAULT_SETTINGS.pollIntervalSeconds))),
     soundEnabled: document.getElementById("soundEnabled").checked,
     soundScope: String(formData.get("soundScope") || DEFAULT_SETTINGS.soundScope),
-    soundVolume: String(formData.get("soundVolume") || DEFAULT_SETTINGS.soundVolume),
-    splitterRatio: Math.max(0.45, Math.min(0.8, Number(formData.get("splitterRatio") || DEFAULT_SETTINGS.splitterRatio)))
+    soundVolume: String(formData.get("soundVolume") || DEFAULT_SETTINGS.soundVolume)
   };
   await saveSettings(values);
   saveHint.textContent = "设置已保存。返回侧边栏后会自动生效。";

@@ -9,7 +9,6 @@ export const DEFAULT_SETTINGS = {
   supabaseAnonKey: BUILTIN_SUPABASE_PUBLISHABLE_KEY,
   pluginApiBaseUrl: BUILTIN_EDITOR_PLUGIN_API_BASE_URL,
   pollIntervalSeconds: 15,
-  splitterRatio: 0.65,
   soundEnabled: true,
   soundScope: "high",
   soundVolume: "medium"

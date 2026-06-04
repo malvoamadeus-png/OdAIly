@@ -288,7 +288,6 @@ function renderFeedCard(item) {
 
 function renderFeedSection() {
   const { high, low } = splitFeedItems();
-  const ratio = Math.max(0.45, Math.min(0.8, Number(state.settings?.splitterRatio || 0.65)));
 
   return `
     ${
@@ -296,7 +295,7 @@ function renderFeedSection() {
         ? `<div class="inlineError">${escapeHtml(state.error)}</div>`
         : ""
     }
-    <div class="splitLayout" id="splitLayout" style="--top-ratio:${ratio}">
+    <div class="feedScrollLayout">
       <section class="lanePanel lanePanel--high">
         <div class="laneHeader">
           <div>
@@ -309,8 +308,6 @@ function renderFeedSection() {
           ${high.length ? high.map(renderFeedCard).join("") : `<div class="emptyState">暂无高频消息</div>`}
         </div>
       </section>
-
-      <div class="splitter" id="splitter" title="拖动调整上下分区高度"></div>
 
       <section class="lanePanel lanePanel--low">
         <div class="laneHeader">
@@ -831,38 +828,6 @@ function wireFeedbackButtons() {
   }
 }
 
-function wireSplitter() {
-  const splitter = document.getElementById("splitter");
-  const layout = document.getElementById("splitLayout");
-  if (!splitter || !layout) {
-    return;
-  }
-  let dragging = false;
-
-  const onMove = async (event) => {
-    if (!dragging) {
-      return;
-    }
-    const rect = layout.getBoundingClientRect();
-    const ratio = Math.max(0.45, Math.min(0.8, (event.clientY - rect.top) / rect.height));
-    layout.style.setProperty("--top-ratio", String(ratio));
-    state.settings.splitterRatio = ratio;
-    await saveSettings({ splitterRatio: ratio });
-  };
-
-  splitter.addEventListener("pointerdown", (event) => {
-    dragging = true;
-    splitter.setPointerCapture(event.pointerId);
-  });
-  splitter.addEventListener("pointerup", () => {
-    dragging = false;
-  });
-  splitter.addEventListener("pointercancel", () => {
-    dragging = false;
-  });
-  splitter.addEventListener("pointermove", onMove);
-}
-
 function wireSeenTracking() {
   const observer = new IntersectionObserver(
     async (entries) => {
@@ -907,7 +872,6 @@ function wireFeedInteractions() {
   wireFeedbackButtons();
   wireCardToolButtons();
   wireHighFrequencyToggles();
-  wireSplitter();
   wireSeenTracking();
 }
 
@@ -1144,7 +1108,6 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
   if (
     authConfigChanged ||
     changes.pollIntervalSeconds ||
-    changes.splitterRatio ||
     changes.soundEnabled ||
     changes.soundScope ||
     changes.soundVolume
