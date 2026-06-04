@@ -904,7 +904,7 @@ def discover_thelec_pages_from_markdown(payload: str, *, base_url: str = THELEC_
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
     link_pattern = re.compile(
-        r"(?:^|\n)\s*(?:#{1,6}\s*)?\[([^\]\n]+)\]\((https?://(?:www\.)?thelec\.net/news/articleView\.html\?idxno=\d+)[^)]*\)",
+        r"(?<!!)\[([^\]\n]+)\]\((https?://(?:www\.)?thelec\.net/news/articleView\.html\?idxno=\d+)[^)]*\)",
         re.IGNORECASE,
     )
     for match in link_pattern.finditer(text):

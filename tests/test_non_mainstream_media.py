@@ -674,13 +674,11 @@ def test_discover_thelec_pages_reads_jina_markdown_links() -> None:
     URL Source: https://www.thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm
 
     Markdown Content:
-    * [![Image 1: Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://cdn.thelec.net/news/thumbnail/202606/10998_10986_2935_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10998)
-    ## [Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://www.thelec.net/news/articleView.html?idxno=10998)
+    * [![Image 1: Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://cdn.thelec.net/news/thumbnail/202606/10998_10986_2935_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10998)## [Intel Says x86 to Power 80% of Data Centers by 2030 Amid Agentic AI Shift](https://www.thelec.net/news/articleView.html?idxno=10998)
 
     Intel expressed confidence that x86 architecture-based central processing units will regain leadership.
 
-    * [![Image 2: Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://cdn.thelec.net/news/thumbnail/202606/10996_10984_2235_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10996)
-    ## [Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://www.thelec.net/news/articleView.html?idxno=10996)
+    * [![Image 2: Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://cdn.thelec.net/news/thumbnail/202606/10996_10984_2235_v150.jpg)](https://www.thelec.net/news/articleView.html?idxno=10996)## [Samsung Quietly Unveils HBM5 Mock-Up at Computex 2026](https://www.thelec.net/news/articleView.html?idxno=10996)
 
     Samsung Electronics quietly displayed an HBM5 mock-up at Computex.
     """
