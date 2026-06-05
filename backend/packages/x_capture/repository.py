@@ -16,6 +16,7 @@ from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MO
 
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
+from .naming import choose_effective_author_name, normalize_lookup_username, normalize_write_name
 
 
 CONFIG_NOTIFY_CHANNEL = "x_capture_config_changed"
@@ -36,6 +37,7 @@ class XCaptureRepository(Protocol):
         *,
         username_or_url: str,
         display_name: str | None = None,
+        write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
     ) -> XCaptureAccount: ...
@@ -44,9 +46,17 @@ class XCaptureRepository(Protocol):
         account_id: int,
         *,
         display_name: str | None | _Unset = None,
+        write_name: str | None | _Unset = None,
         interval_seconds: int | None | _Unset = None,
         enabled: bool | None = None,
     ) -> XCaptureAccount: ...
+    def get_account_by_username(self, username_or_url: str) -> XCaptureAccount | None: ...
+    def resolve_effective_author_name(
+        self,
+        *,
+        author_username: str | None,
+        author_display_name: str | None,
+    ) -> str | None: ...
     def delete_account(self, account_id: int) -> None: ...
     def mark_account_seeded(self, account: XCaptureAccount, tweet_ids: list[str]) -> None: ...
     def mark_seen(self, account: XCaptureAccount, tweet_id: str, *, seeded: bool) -> bool: ...
@@ -112,6 +122,7 @@ def _row_to_account(row: dict[str, Any]) -> XCaptureAccount:
         username=str(row["username"]),
         username_lower=str(row["username_lower"]),
         display_name=row.get("display_name"),
+        write_name=row.get("write_name"),
         profile_url=row.get("profile_url"),
         enabled=bool(row["enabled"]),
         interval_seconds=row.get("interval_seconds"),
@@ -206,6 +217,7 @@ class PostgresXCaptureRepository:
         *,
         username_or_url: str,
         display_name: str | None = None,
+        write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
     ) -> XCaptureAccount:
@@ -214,12 +226,13 @@ class PostgresXCaptureRepository:
             row = conn.execute(
                 """
                 INSERT INTO x_capture_accounts (
-                    username, username_lower, display_name, profile_url, enabled, interval_seconds
+                    username, username_lower, display_name, write_name, profile_url, enabled, interval_seconds
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (username_lower) DO UPDATE
                 SET username = EXCLUDED.username,
                     display_name = COALESCE(EXCLUDED.display_name, x_capture_accounts.display_name),
+                    write_name = COALESCE(EXCLUDED.write_name, x_capture_accounts.write_name),
                     profile_url = EXCLUDED.profile_url,
                     enabled = EXCLUDED.enabled,
                     interval_seconds = EXCLUDED.interval_seconds,
@@ -230,6 +243,7 @@ class PostgresXCaptureRepository:
                     username,
                     username.lower(),
                     display_name.strip() if display_name else None,
+                    normalize_write_name(write_name),
                     f"https://x.com/{username}",
                     enabled,
                     interval_seconds,
@@ -243,6 +257,7 @@ class PostgresXCaptureRepository:
         account_id: int,
         *,
         display_name: str | None | _Unset = UNSET,
+        write_name: str | None | _Unset = UNSET,
         interval_seconds: int | None | _Unset = UNSET,
         enabled: bool | None = None,
     ) -> XCaptureAccount:
@@ -251,6 +266,9 @@ class PostgresXCaptureRepository:
         if not isinstance(display_name, _Unset):
             fields.append("display_name = %(display_name)s")
             params["display_name"] = display_name.strip() if display_name else None
+        if not isinstance(write_name, _Unset):
+            fields.append("write_name = %(write_name)s")
+            params["write_name"] = normalize_write_name(write_name)
         if not isinstance(interval_seconds, _Unset):
             fields.append("interval_seconds = %(interval_seconds)s")
             params["interval_seconds"] = interval_seconds
@@ -271,6 +289,35 @@ class PostgresXCaptureRepository:
                 raise ValueError(f"X capture account not found: {account_id}")
             conn.commit()
             return _row_to_account(row)
+
+    def get_account_by_username(self, username_or_url: str) -> XCaptureAccount | None:
+        username = normalize_lookup_username(username_or_url)
+        if not username:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM x_capture_accounts
+                WHERE username_lower = %s
+                LIMIT 1
+                """,
+                (username.lower(),),
+            ).fetchone()
+        return _row_to_account(row) if row else None
+
+    def resolve_effective_author_name(
+        self,
+        *,
+        author_username: str | None,
+        author_display_name: str | None,
+    ) -> str | None:
+        account = self.get_account_by_username(author_username or "")
+        return choose_effective_author_name(
+            write_name=account.write_name if account else None,
+            author_display_name=author_display_name,
+            author_username=author_username,
+        )
 
     def delete_account(self, account_id: int) -> None:
         with self._connect() as conn:
@@ -319,6 +366,11 @@ class PostgresXCaptureRepository:
         return set(tweet_ids) - seen
 
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool:
+        effective_author_name = choose_effective_author_name(
+            write_name=account.write_name,
+            author_display_name=record.author_display_name,
+            author_username=record.author_username,
+        )
         metadata = {
             **record.metadata,
             "platform": record.platform,
@@ -326,6 +378,7 @@ class PostgresXCaptureRepository:
             "account_username": account.username,
             "author_username": record.author_username,
             "author_display_name": record.author_display_name,
+            "effective_author_name": effective_author_name,
             "created_at": record.created_at,
             "reply_count": record.reply_count,
             "retweet_count": record.retweet_count,
@@ -576,6 +629,7 @@ class InMemoryXCaptureRepository:
         *,
         username_or_url: str,
         display_name: str | None = None,
+        write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
     ) -> XCaptureAccount:
@@ -586,6 +640,7 @@ class InMemoryXCaptureRepository:
                     **{
                         **asdict(account),
                         "display_name": display_name or account.display_name,
+                        "write_name": normalize_write_name(write_name) or account.write_name,
                         "interval_seconds": interval_seconds,
                         "enabled": enabled,
                         "updated_at": utc_now(),
@@ -598,6 +653,7 @@ class InMemoryXCaptureRepository:
             username=username,
             username_lower=username.lower(),
             display_name=display_name,
+            write_name=normalize_write_name(write_name),
             profile_url=f"https://x.com/{username}",
             enabled=enabled,
             interval_seconds=interval_seconds,
@@ -613,6 +669,7 @@ class InMemoryXCaptureRepository:
         account_id: int,
         *,
         display_name: str | None | _Unset = UNSET,
+        write_name: str | None | _Unset = UNSET,
         interval_seconds: int | None | _Unset = UNSET,
         enabled: bool | None = None,
     ) -> XCaptureAccount:
@@ -622,6 +679,8 @@ class InMemoryXCaptureRepository:
         payload = asdict(account)
         if not isinstance(display_name, _Unset):
             payload["display_name"] = display_name
+        if not isinstance(write_name, _Unset):
+            payload["write_name"] = normalize_write_name(write_name)
         if not isinstance(interval_seconds, _Unset):
             payload["interval_seconds"] = interval_seconds
         if enabled is not None:
@@ -630,6 +689,28 @@ class InMemoryXCaptureRepository:
         updated = XCaptureAccount(**payload)
         self.accounts[account_id] = updated
         return updated
+
+    def get_account_by_username(self, username_or_url: str) -> XCaptureAccount | None:
+        username = normalize_lookup_username(username_or_url)
+        if not username:
+            return None
+        for account in self.accounts.values():
+            if account.username_lower == username.lower():
+                return account
+        return None
+
+    def resolve_effective_author_name(
+        self,
+        *,
+        author_username: str | None,
+        author_display_name: str | None,
+    ) -> str | None:
+        account = self.get_account_by_username(author_username or "")
+        return choose_effective_author_name(
+            write_name=account.write_name if account else None,
+            author_display_name=author_display_name,
+            author_username=author_username,
+        )
 
     def delete_account(self, account_id: int) -> None:
         if account_id not in self.accounts:
@@ -656,6 +737,11 @@ class InMemoryXCaptureRepository:
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool:
         if any(item["source_item_id"] == record.tweet_id for item in self.tasks):
             return False
+        effective_author_name = choose_effective_author_name(
+            write_name=account.write_name,
+            author_display_name=record.author_display_name,
+            author_username=record.author_username,
+        )
         self.tasks.append(
             {
                 "id": len(self.tasks) + 1,
@@ -665,7 +751,14 @@ class InMemoryXCaptureRepository:
                 "title": f"@{record.author_username}: {record.text[:80]}",
                 "content": record.text,
                 "published_at": record.created_at,
-                "metadata": {**record.metadata, "account_id": account.id},
+                "metadata": {
+                    **record.metadata,
+                    "account_id": account.id,
+                    "account_username": account.username,
+                    "author_username": record.author_username,
+                    "author_display_name": record.author_display_name,
+                    "effective_author_name": effective_author_name,
+                },
                 "status": "pending",
                 "created_at": utc_now(),
                 "updated_at": utc_now(),
@@ -791,6 +884,7 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     username text NOT NULL,
     username_lower text NOT NULL UNIQUE,
     display_name text,
+    write_name text,
     profile_url text,
     enabled boolean NOT NULL DEFAULT true,
     interval_seconds integer CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600),
@@ -801,6 +895,8 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE x_capture_accounts ADD COLUMN IF NOT EXISTS write_name text;
 
 CREATE TABLE IF NOT EXISTS x_seen_tweets (
     tweet_id text PRIMARY KEY,

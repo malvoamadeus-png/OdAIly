@@ -418,6 +418,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [newAccount, setNewAccount] = useState({
     username_or_url: '',
     display_name: '',
+    write_name: '',
     interval_seconds: '',
   });
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
@@ -695,12 +696,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     const body = {
       username_or_url: newAccount.username_or_url,
       display_name: newAccount.display_name || null,
+      write_name: newAccount.write_name || null,
       interval_seconds: newAccount.interval_seconds ? Number(newAccount.interval_seconds) : null,
       enabled: true,
     };
     try {
       await createAccount(body);
-      setNewAccount({ username_or_url: '', display_name: '', interval_seconds: '' });
+      setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '' });
       setMessage('账号已保存');
       await loadAll();
     } catch (err) {
@@ -1212,6 +1214,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
               placeholder="显示名"
               value={newAccount.display_name}
               onChange={(event) => setNewAccount({ ...newAccount, display_name: event.target.value })}
+            />
+            <input
+              placeholder="写作名"
+              value={newAccount.write_name}
+              onChange={(event) => setNewAccount({ ...newAccount, write_name: event.target.value })}
             />
             <input
               placeholder="频率秒"
@@ -2374,12 +2381,14 @@ function AccountRow({
   onDelete: (account: Account) => Promise<void>;
 }) {
   const [displayName, setDisplayName] = useState(account.display_name ?? '');
+  const [writeName, setWriteName] = useState(account.write_name ?? '');
   const [interval, setIntervalValue] = useState(account.interval_seconds?.toString() ?? '');
 
   useEffect(() => {
     setDisplayName(account.display_name ?? '');
+    setWriteName(account.write_name ?? '');
     setIntervalValue(account.interval_seconds?.toString() ?? '');
-  }, [account.display_name, account.interval_seconds]);
+  }, [account.display_name, account.write_name, account.interval_seconds]);
 
   const effectiveInterval = account.interval_seconds ?? settings.global_interval_seconds;
 
@@ -2397,6 +2406,12 @@ function AccountRow({
         placeholder="显示名"
         onChange={(event) => setDisplayName(event.target.value)}
         onBlur={() => onPatch(account, { display_name: displayName || null })}
+      />
+      <input
+        value={writeName}
+        placeholder="写作名"
+        onChange={(event) => setWriteName(event.target.value)}
+        onBlur={() => onPatch(account, { write_name: writeName || null })}
       />
       <input
         value={interval}

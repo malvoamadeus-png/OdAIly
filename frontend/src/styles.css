@@ -233,7 +233,6 @@ h2 {
 }
 
 .settingsForm,
-.addAccount,
 .nonMainstreamSettingsForm,
 .publisherSettingsForm {
   display: grid;
@@ -244,6 +243,21 @@ h2 {
   border: 1px solid #e1e5e9;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.addAccount {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr)) 112px;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.publisherSettingsForm {
+  grid-template-columns: repeat(4, minmax(110px, 1fr)) 112px;
 }
 
 .whaleAddressForm {
@@ -464,7 +478,7 @@ textarea:focus {
 
 .accountRow {
   display: grid;
-  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, 0.9fr) 110px 96px 82px;
+  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, 0.9fr) minmax(140px, 1fr) 110px 96px 82px;
   gap: 10px;
   align-items: center;
   min-height: 58px;

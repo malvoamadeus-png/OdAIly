@@ -22,6 +22,7 @@ class XCaptureAccount:
     username: str
     username_lower: str
     display_name: str | None = None
+    write_name: str | None = None
     profile_url: str | None = None
     enabled: bool = True
     interval_seconds: int | None = None

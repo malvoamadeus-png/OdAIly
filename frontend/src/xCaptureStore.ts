@@ -35,6 +35,7 @@ export type Account = {
   username: string;
   username_lower: string;
   display_name: string | null;
+  write_name: string | null;
   profile_url: string | null;
   enabled: boolean;
   interval_seconds: number | null;
@@ -260,6 +261,7 @@ export type NonMainstreamDashboardPayload = {
 
 export type AccountPatch = {
   display_name?: string | null;
+  write_name?: string | null;
   interval_seconds?: number | null;
   enabled?: boolean;
 };
@@ -271,6 +273,7 @@ export type NonMainstreamSourcePatch = {
 type AccountCreateInput = {
   username_or_url: string;
   display_name: string | null;
+  write_name: string | null;
   interval_seconds: number | null;
   enabled: boolean;
 };
@@ -714,6 +717,7 @@ export async function listAccounts(): Promise<Account[]> {
         'username',
         'username_lower',
         'display_name',
+        'write_name',
         'profile_url',
         'enabled',
         'interval_seconds',
@@ -758,6 +762,7 @@ export async function listNonMainstreamSources(): Promise<NonMainstreamSource[]>
 export async function createAccount(input: AccountCreateInput): Promise<Account> {
   const username = normalizeUsername(input.username_or_url);
   const displayName = input.display_name?.trim() || null;
+  const writeName = input.write_name?.trim() || null;
   const { data, error } = await supabase()
     .from('x_capture_accounts')
     .upsert(
@@ -765,6 +770,7 @@ export async function createAccount(input: AccountCreateInput): Promise<Account>
         username,
         username_lower: username.toLowerCase(),
         display_name: displayName,
+        write_name: writeName,
         profile_url: `https://x.com/${username}`,
         enabled: input.enabled,
         interval_seconds: input.interval_seconds,
@@ -784,6 +790,9 @@ export async function updateAccount(accountId: number, patch: AccountPatch): Pro
   };
   if ('display_name' in patch) {
     payload.display_name = patch.display_name?.trim() || null;
+  }
+  if ('write_name' in patch) {
+    payload.write_name = patch.write_name?.trim() || null;
   }
   if ('interval_seconds' in patch) {
     payload.interval_seconds = patch.interval_seconds ?? null;

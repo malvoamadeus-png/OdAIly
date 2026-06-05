@@ -19,6 +19,7 @@ from packages.common.editor_plugin_auth import (
     PostgresEditorPluginAuthRepository,
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
+from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord
@@ -224,8 +225,10 @@ class EditorPluginNewsGenService:
         ensure_runtime_dirs(self.paths)
 
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
+        self.x_capture_repository = PostgresXCaptureRepository(database_url)
         self.x_repository = PostgresXProcessingRepository(database_url)
         self.auth_repository.init_schema()
+        self.x_capture_repository.init_schema()
         self.x_repository.init_schema()
         self.x_repository.seed_prompt_templates(root_dir=self.paths.root_dir)
 
@@ -420,6 +423,10 @@ class EditorPluginNewsGenService:
 
     def _build_task_record(self, request: EditorPluginRequestModel) -> TaskRecord:
         source_item_id = request.post_id or hashlib.sha1(request.post_text.encode("utf-8")).hexdigest()[:16]
+        effective_author_name = self.x_capture_repository.resolve_effective_author_name(
+            author_username=request.author_handle,
+            author_display_name=request.author_display_name,
+        )
         return TaskRecord(
             id=0,
             source="x",
@@ -431,6 +438,7 @@ class EditorPluginNewsGenService:
             metadata={
                 "author_display_name": request.author_display_name,
                 "author_username": request.author_handle,
+                "effective_author_name": effective_author_name,
             },
         )
 

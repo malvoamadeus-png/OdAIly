@@ -6,6 +6,7 @@ import re
 import select
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
 from packages.publisher import PushClient
+from packages.x_capture.repository import XCaptureRepository
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
 from .formatter import format_brief, parse_draft_output
@@ -299,10 +301,12 @@ class XProcessingWorker:
         worker_id: str | None = None,
         idle_sleep_seconds: float = 5.0,
         notify_wait_seconds: float = 5.0,
+        x_capture_repository: XCaptureRepository | None = None,
     ) -> None:
         self.stage = stage
         self.repository = repository
         self.settings = settings
+        self.x_capture_repository = x_capture_repository
         self.worker_id = worker_id or f"{stage}-{os.getpid()}-{uuid4().hex[:8]}"
         self.idle_sleep_seconds = idle_sleep_seconds
         self.notify_wait_seconds = notify_wait_seconds
@@ -386,6 +390,7 @@ class XProcessingWorker:
                 result = StageRunResult(0, self.stage, 0, 0, "no task")
                 self._record_heartbeat(result)
                 return result
+            task = self._resolve_task_author_name(task)
             if self._expire_task_if_stale(task):
                 result = StageRunResult(0, self.stage, 1, 0, f"expired task {task.id}")
                 self._record_heartbeat(result)
@@ -455,6 +460,25 @@ class XProcessingWorker:
         else:
             raise ValueError(f"unknown stage: {self.stage}")
 
+    def _resolve_task_author_name(self, task: TaskRecord) -> TaskRecord:
+        if task.source != "x":
+            return task
+        metadata = dict(task.metadata or {})
+        effective_author_name = metadata.get("effective_author_name")
+        if self.x_capture_repository is not None:
+            resolved = self.x_capture_repository.resolve_effective_author_name(
+                author_username=str(metadata.get("author_username") or ""),
+                author_display_name=str(metadata.get("author_display_name") or ""),
+            )
+            if resolved:
+                effective_author_name = resolved
+        if not effective_author_name:
+            effective_author_name = metadata.get("author_display_name") or metadata.get("author_username")
+        if not effective_author_name:
+            return task
+        metadata["effective_author_name"] = str(effective_author_name).strip()
+        return replace(task, metadata=metadata)
+
     def _expire_task_if_stale(self, task: TaskRecord) -> bool:
         check = evaluate_source_freshness(
             task.published_at,
@@ -509,7 +533,10 @@ class XProcessingWorker:
             )
             return
         prompt = X_JUDGE_PROMPT_TEMPLATE.format(
-            author=task.metadata.get("author_display_name") or task.metadata.get("author_username") or "",
+            author=task.metadata.get("effective_author_name")
+            or task.metadata.get("author_display_name")
+            or task.metadata.get("author_username")
+            or "",
             source_kind="信源" if is_competitor_task(task) else "X",
             content=task.content,
         )
@@ -1148,7 +1175,13 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
             "请严格输出一行标题、空一行、正文。"
         )
-    author = task.metadata.get("author_display_name") or task.metadata.get("author_username") or task.title or "Odaily"
+    author = (
+        task.metadata.get("effective_author_name")
+        or task.metadata.get("author_display_name")
+        or task.metadata.get("author_username")
+        or task.title
+        or "Odaily"
+    )
     return (
         f"{render_prompt_content(prompt)}\n\n"
         "【待处理原文】\n"

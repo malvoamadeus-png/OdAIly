@@ -13,12 +13,26 @@
 
 worker 启动时加载配置。运行中不再保留专门的数据库监听连接，而是按固定窗口轮询重载配置，默认最多 5 分钟生效一次，不需要重启服务。
 
+其中 `x_capture_accounts` 里的 `写作名` 用于后续 X 写作链路的发言人名称标准化：
+
+- 收集者-X 继续抓取并保留真实 `author_display_name`、`author_username`
+- `写作名` 不回写原始抓取正文，不覆盖原始作者字段
+- 收集者-X 入库时会把当时可得的统一作者名缓存为 `tasks.metadata.effective_author_name`
+- 后续 `判断者`、`编写者1` 和插件 `快讯生成` 仍会按当前账号配置重新计算 `effective_author_name`，不依赖入库时缓存值固定不变
+
 ## 入库规则
 
 每条抓到的 X 内容在通过基础去重与时效检查后，写入：
 
 - `tasks.source = 'x'`
 - `tasks.status = 'pending'`
+
+与作者命名相关的入库约束：
+
+- `tasks.metadata` 继续保留原始 `author_display_name`
+- `tasks.metadata` 继续保留原始 `author_username`
+- `tasks.metadata` 可缓存派生后的 `effective_author_name`
+- `写作名` 作为账号配置存在，不要求在任务入库时覆盖原始作者字段
 
 判断时效使用来源原始发布时间，而不是任务入库时间。
 

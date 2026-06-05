@@ -373,9 +373,11 @@ def console_list_admins_command(args: argparse.Namespace) -> int:
 
 def editor_plugin_init_command(args: argparse.Namespace) -> int:
     from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+    from packages.x_capture.repository import PostgresXCaptureRepository
 
     repository = PostgresEditorPluginAuthRepository(args.database_url)
     repository.init_schema()
+    PostgresXCaptureRepository(args.database_url).init_schema()
     print("[odaily] editor plugin database schema initialized")
     return 0
 
@@ -434,6 +436,7 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
 
     settings = load_x_capture_worker_settings()
     repository = PostgresXCaptureRepository(args.database_url)
+    repository.init_schema()
     worker = XCaptureWorker(
         repository=repository,
         client=FXTwitterClient(),
@@ -530,9 +533,11 @@ def external_media_alert_fetcher_command(args: argparse.Namespace) -> int:
 
 
 def x_process_init_db_command(args: argparse.Namespace) -> int:
+    from packages.x_capture.repository import PostgresXCaptureRepository
     from packages.x_processing.repository import PostgresXProcessingRepository
 
     paths = get_paths()
+    PostgresXCaptureRepository(args.database_url).init_schema()
     repository = PostgresXProcessingRepository(args.database_url)
     repository.init_schema()
     repository.seed_prompt_templates(root_dir=paths.root_dir)
@@ -542,14 +547,18 @@ def x_process_init_db_command(args: argparse.Namespace) -> int:
 
 
 def x_process_worker_command(args: argparse.Namespace) -> int:
+    from packages.x_capture.repository import PostgresXCaptureRepository
     from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
 
     ensure_runtime_dirs(get_paths())
+    x_capture_repository = PostgresXCaptureRepository(args.database_url)
+    x_capture_repository.init_schema()
     repository = PostgresXProcessingRepository(args.database_url)
     worker = XProcessingWorker(
         stage=args.stage,
         repository=repository,
         settings=load_x_processing_settings(),
+        x_capture_repository=x_capture_repository,
     )
     if args.once:
         result = worker.run_once()
