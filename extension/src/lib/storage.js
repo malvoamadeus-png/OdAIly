@@ -11,7 +11,8 @@ export const DEFAULT_SETTINGS = {
   pollIntervalSeconds: 15,
   soundEnabled: true,
   soundScope: "high",
-  soundVolume: "medium"
+  soundVolume: "medium",
+  feedLaneRatios: { high: 60, ai: 20, low: 20 }
 };
 
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
@@ -20,6 +21,7 @@ const PANEL_SESSION_KEY = "panelSessionId";
 const ACTIVE_TOP_TAB_KEY = "activeTopTab";
 const NEWS_GEN_DRAFT_KEY = "newsGenDraft";
 const NEWS_GEN_RESULT_KEY = "newsGenResult";
+const FEED_LANE_RATIOS_KEY = "feedLaneRatios";
 
 export async function getSettings() {
   const data = await chrome.storage.local.get(SETTINGS_KEYS);
@@ -96,4 +98,35 @@ export async function saveNewsGenResult(value) {
 
 export async function clearNewsGenResult() {
   await chrome.storage.local.remove(NEWS_GEN_RESULT_KEY);
+}
+
+export function sanitizeFeedLaneRatios(value) {
+  const fallback = DEFAULT_SETTINGS.feedLaneRatios;
+  if (!value || typeof value !== "object") {
+    return { ...fallback };
+  }
+  const high = Number(value.high);
+  const ai = Number(value.ai);
+  const low = Number(value.low);
+  if (![high, ai, low].every((item) => Number.isFinite(item) && item >= 10)) {
+    return { ...fallback };
+  }
+  const total = high + ai + low;
+  if (total <= 0) {
+    return { ...fallback };
+  }
+  return {
+    high: Math.round((high / total) * 100),
+    ai: Math.round((ai / total) * 100),
+    low: Math.max(10, 100 - Math.round((high / total) * 100) - Math.round((ai / total) * 100))
+  };
+}
+
+export async function getFeedLaneRatios() {
+  const data = await chrome.storage.local.get(FEED_LANE_RATIOS_KEY);
+  return sanitizeFeedLaneRatios(data[FEED_LANE_RATIOS_KEY]);
+}
+
+export async function saveFeedLaneRatios(value) {
+  await chrome.storage.local.set({ [FEED_LANE_RATIOS_KEY]: sanitizeFeedLaneRatios(value) });
 }

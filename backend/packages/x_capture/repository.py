@@ -40,6 +40,7 @@ class XCaptureRepository(Protocol):
         write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
+        is_ai_source: bool = False,
     ) -> XCaptureAccount: ...
     def update_account(
         self,
@@ -49,6 +50,7 @@ class XCaptureRepository(Protocol):
         write_name: str | None | _Unset = None,
         interval_seconds: int | None | _Unset = None,
         enabled: bool | None = None,
+        is_ai_source: bool | None = None,
     ) -> XCaptureAccount: ...
     def get_account_by_username(self, username_or_url: str) -> XCaptureAccount | None: ...
     def resolve_effective_author_name(
@@ -125,6 +127,7 @@ def _row_to_account(row: dict[str, Any]) -> XCaptureAccount:
         write_name=row.get("write_name"),
         profile_url=row.get("profile_url"),
         enabled=bool(row["enabled"]),
+        is_ai_source=bool(row.get("is_ai_source", False)),
         interval_seconds=row.get("interval_seconds"),
         seeded_at=row.get("seeded_at"),
         last_polled_at=row.get("last_polled_at"),
@@ -220,21 +223,23 @@ class PostgresXCaptureRepository:
         write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
+        is_ai_source: bool = False,
     ) -> XCaptureAccount:
         username = normalize_username(username_or_url)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 INSERT INTO x_capture_accounts (
-                    username, username_lower, display_name, write_name, profile_url, enabled, interval_seconds
+                    username, username_lower, display_name, write_name, profile_url, enabled, is_ai_source, interval_seconds
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (username_lower) DO UPDATE
                 SET username = EXCLUDED.username,
                     display_name = COALESCE(EXCLUDED.display_name, x_capture_accounts.display_name),
                     write_name = COALESCE(EXCLUDED.write_name, x_capture_accounts.write_name),
                     profile_url = EXCLUDED.profile_url,
                     enabled = EXCLUDED.enabled,
+                    is_ai_source = EXCLUDED.is_ai_source,
                     interval_seconds = EXCLUDED.interval_seconds,
                     updated_at = now()
                 RETURNING *
@@ -246,6 +251,7 @@ class PostgresXCaptureRepository:
                     normalize_write_name(write_name),
                     f"https://x.com/{username}",
                     enabled,
+                    is_ai_source,
                     interval_seconds,
                 ),
             ).fetchone()
@@ -260,6 +266,7 @@ class PostgresXCaptureRepository:
         write_name: str | None | _Unset = UNSET,
         interval_seconds: int | None | _Unset = UNSET,
         enabled: bool | None = None,
+        is_ai_source: bool | None = None,
     ) -> XCaptureAccount:
         fields: list[str] = ["updated_at = now()"]
         params: dict[str, Any] = {"id": account_id}
@@ -275,6 +282,9 @@ class PostgresXCaptureRepository:
         if enabled is not None:
             fields.append("enabled = %(enabled)s")
             params["enabled"] = enabled
+        if is_ai_source is not None:
+            fields.append("is_ai_source = %(is_ai_source)s")
+            params["is_ai_source"] = is_ai_source
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -632,6 +642,7 @@ class InMemoryXCaptureRepository:
         write_name: str | None = None,
         interval_seconds: int | None = None,
         enabled: bool = True,
+        is_ai_source: bool = False,
     ) -> XCaptureAccount:
         username = normalize_username(username_or_url)
         for account in self.accounts.values():
@@ -643,6 +654,7 @@ class InMemoryXCaptureRepository:
                         "write_name": normalize_write_name(write_name) or account.write_name,
                         "interval_seconds": interval_seconds,
                         "enabled": enabled,
+                        "is_ai_source": is_ai_source,
                         "updated_at": utc_now(),
                     }
                 )
@@ -656,6 +668,7 @@ class InMemoryXCaptureRepository:
             write_name=normalize_write_name(write_name),
             profile_url=f"https://x.com/{username}",
             enabled=enabled,
+            is_ai_source=is_ai_source,
             interval_seconds=interval_seconds,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -672,6 +685,7 @@ class InMemoryXCaptureRepository:
         write_name: str | None | _Unset = UNSET,
         interval_seconds: int | None | _Unset = UNSET,
         enabled: bool | None = None,
+        is_ai_source: bool | None = None,
     ) -> XCaptureAccount:
         account = self.accounts.get(account_id)
         if not account:
@@ -685,6 +699,8 @@ class InMemoryXCaptureRepository:
             payload["interval_seconds"] = interval_seconds
         if enabled is not None:
             payload["enabled"] = enabled
+        if is_ai_source is not None:
+            payload["is_ai_source"] = is_ai_source
         payload["updated_at"] = utc_now()
         updated = XCaptureAccount(**payload)
         self.accounts[account_id] = updated
@@ -887,6 +903,7 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     write_name text,
     profile_url text,
     enabled boolean NOT NULL DEFAULT true,
+    is_ai_source boolean NOT NULL DEFAULT false,
     interval_seconds integer CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600),
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -897,6 +914,7 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
 );
 
 ALTER TABLE x_capture_accounts ADD COLUMN IF NOT EXISTS write_name text;
+ALTER TABLE x_capture_accounts ADD COLUMN IF NOT EXISTS is_ai_source boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS x_seen_tweets (
     tweet_id text PRIMARY KEY,

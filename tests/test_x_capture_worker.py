@@ -100,6 +100,23 @@ def test_second_run_saves_only_new_tweets_once() -> None:
     assert repo.tasks[0]["source_item_id"] == "3"
 
 
+def test_ai_source_account_label_does_not_change_x_task_source() -> None:
+    repo = InMemoryXCaptureRepository()
+    account = repo.create_account(username_or_url="ai_9684xtpa", is_ai_source=True)
+    worker = XCaptureWorker(
+        repository=repo,
+        client=FakeClient([[candidate("1")], [candidate("1"), candidate("2")]]),
+    )
+
+    worker.run_once()
+    worker.run_once()
+
+    saved = repo.tasks[0]
+    assert account.is_ai_source is True
+    assert saved["source"] == "x"
+    assert saved["metadata"]["account_username"] == "ai_9684xtpa"
+
+
 def test_detail_failure_still_saves_timeline_record() -> None:
     repo = InMemoryXCaptureRepository()
     repo.create_account(username_or_url="ai_9684xtpa")

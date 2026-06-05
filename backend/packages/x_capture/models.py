@@ -25,6 +25,7 @@ class XCaptureAccount:
     write_name: str | None = None
     profile_url: str | None = None
     enabled: bool = True
+    is_ai_source: bool = False
     interval_seconds: int | None = None
     seeded_at: datetime | None = None
     last_polled_at: datetime | None = None

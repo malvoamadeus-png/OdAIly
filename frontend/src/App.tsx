@@ -420,6 +420,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     display_name: '',
     write_name: '',
     interval_seconds: '',
+    is_ai_source: false,
   });
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [whaleAddresses, setWhaleAddresses] = useState<WhaleWatchAddress[]>([]);
@@ -699,10 +700,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       write_name: newAccount.write_name || null,
       interval_seconds: newAccount.interval_seconds ? Number(newAccount.interval_seconds) : null,
       enabled: true,
+      is_ai_source: newAccount.is_ai_source,
     };
     try {
       await createAccount(body);
-      setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '' });
+      setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '', is_ai_source: false });
       setMessage('账号已保存');
       await loadAll();
     } catch (err) {
@@ -1228,6 +1230,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
               value={newAccount.interval_seconds}
               onChange={(event) => setNewAccount({ ...newAccount, interval_seconds: event.target.value })}
             />
+            <label className="inlineToggle">
+              <input
+                type="checkbox"
+                checked={newAccount.is_ai_source}
+                onChange={(event) => setNewAccount({ ...newAccount, is_ai_source: event.target.checked })}
+              />
+              <span>AI信源</span>
+            </label>
             <button className="primaryButton" type="submit">
               <Plus size={17} /> 添加
             </button>
@@ -2398,7 +2408,10 @@ function AccountRow({
         <div className="statusDot" />
         <div>
           <strong>@{account.username}</strong>
-          <span>{account.seeded_at ? '已 seed' : '待 seed'} · {effectiveInterval}s</span>
+          <span>
+            {account.seeded_at ? '已 seed' : '待 seed'} · {effectiveInterval}s
+            {account.is_ai_source ? ' · AI信源' : ''}
+          </span>
         </div>
       </div>
       <input
@@ -2424,6 +2437,14 @@ function AccountRow({
       />
       <span className="lastPoll">{fmtTime(account.last_polled_at)}</span>
       <div className="rowActions">
+        <button
+          className={account.is_ai_source ? 'textIconButton active' : 'textIconButton'}
+          type="button"
+          onClick={() => onPatch(account, { is_ai_source: !account.is_ai_source })}
+          title={account.is_ai_source ? '取消 AI信源标记' : '标记为 AI信源'}
+        >
+          AI
+        </button>
         <button
           className="iconButton"
           type="button"

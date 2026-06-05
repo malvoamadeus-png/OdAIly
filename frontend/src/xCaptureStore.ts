@@ -38,6 +38,7 @@ export type Account = {
   write_name: string | null;
   profile_url: string | null;
   enabled: boolean;
+  is_ai_source: boolean;
   interval_seconds: number | null;
   seeded_at: string | null;
   last_polled_at: string | null;
@@ -264,6 +265,7 @@ export type AccountPatch = {
   write_name?: string | null;
   interval_seconds?: number | null;
   enabled?: boolean;
+  is_ai_source?: boolean;
 };
 
 export type NonMainstreamSourcePatch = {
@@ -276,6 +278,7 @@ type AccountCreateInput = {
   write_name: string | null;
   interval_seconds: number | null;
   enabled: boolean;
+  is_ai_source?: boolean;
 };
 
 type WhaleWatchAddressCreateInput = {
@@ -720,6 +723,7 @@ export async function listAccounts(): Promise<Account[]> {
         'write_name',
         'profile_url',
         'enabled',
+        'is_ai_source',
         'interval_seconds',
         'seeded_at',
         'last_polled_at',
@@ -773,6 +777,7 @@ export async function createAccount(input: AccountCreateInput): Promise<Account>
         write_name: writeName,
         profile_url: `https://x.com/${username}`,
         enabled: input.enabled,
+        is_ai_source: Boolean(input.is_ai_source),
         interval_seconds: input.interval_seconds,
         updated_at: nowIso(),
       },
@@ -799,6 +804,9 @@ export async function updateAccount(accountId: number, patch: AccountPatch): Pro
   }
   if ('enabled' in patch && patch.enabled !== undefined) {
     payload.enabled = patch.enabled;
+  }
+  if ('is_ai_source' in patch && patch.is_ai_source !== undefined) {
+    payload.is_ai_source = patch.is_ai_source;
   }
 
   const { data, error } = await supabase().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();

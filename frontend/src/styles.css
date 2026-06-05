@@ -247,7 +247,7 @@ h2 {
 
 .addAccount {
   display: grid;
-  grid-template-columns: repeat(4, minmax(110px, 1fr)) 112px;
+  grid-template-columns: repeat(4, minmax(110px, 1fr)) 86px 112px;
   gap: 10px;
   align-items: end;
   padding: 14px;
@@ -276,6 +276,27 @@ label {
   gap: 6px;
   color: #4b5563;
   font-size: 12px;
+}
+
+.inlineToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d6dbe1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #394150;
+  white-space: nowrap;
+}
+
+.inlineToggle input {
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  padding: 0;
 }
 
 input,
@@ -346,6 +367,28 @@ textarea:focus {
   background: #ffffff;
   border-color: #d8dde3;
   color: #394150;
+}
+
+.textIconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0 8px;
+  border: 1px solid #d8dde3;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #394150;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.textIconButton.active {
+  border-color: #c4b5fd;
+  background: #f5f3ff;
+  color: #6d28d9;
 }
 
 .iconButton.danger {
@@ -478,7 +521,7 @@ textarea:focus {
 
 .accountRow {
   display: grid;
-  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, 0.9fr) minmax(140px, 1fr) 110px 96px 82px;
+  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, 0.9fr) minmax(140px, 1fr) 110px 96px 126px;
   gap: 10px;
   align-items: center;
   min-height: 58px;

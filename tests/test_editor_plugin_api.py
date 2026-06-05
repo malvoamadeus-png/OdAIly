@@ -63,6 +63,11 @@ class FakeLogRepository:
         self.logs.append(payload.__dict__)
 
 
+class FakeXCaptureRepository:
+    def resolve_effective_author_name(self, *, author_username: str | None, author_display_name: str | None) -> str | None:
+        return author_display_name or author_username
+
+
 def editor_plugin_service(*, ai_client: FakeAiClient, writer_reasoning_effort: str = "medium") -> EditorPluginNewsGenService:
     service = EditorPluginNewsGenService.__new__(EditorPluginNewsGenService)
     service.x_settings = XProcessingSettings(
@@ -73,6 +78,7 @@ def editor_plugin_service(*, ai_client: FakeAiClient, writer_reasoning_effort: s
     )
     service.ai_client = ai_client
     service.x_repository = FakePromptRepository()
+    service.x_capture_repository = FakeXCaptureRepository()
     service.auth_repository = FakeLogRepository()
     return service
 

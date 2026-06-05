@@ -61,8 +61,10 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     username text NOT NULL,
     username_lower text NOT NULL UNIQUE,
     display_name text,
+    write_name text,
     profile_url text,
     enabled boolean NOT NULL DEFAULT true,
+    is_ai_source boolean NOT NULL DEFAULT false,
     interval_seconds integer CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600),
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -71,6 +73,9 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE x_capture_accounts ADD COLUMN IF NOT EXISTS write_name text;
+ALTER TABLE x_capture_accounts ADD COLUMN IF NOT EXISTS is_ai_source boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS x_seen_tweets (
     tweet_id text PRIMARY KEY,

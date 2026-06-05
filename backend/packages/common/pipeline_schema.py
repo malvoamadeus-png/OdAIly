@@ -426,6 +426,7 @@ DECLARE
     parts text[] := ARRAY[]::text[];
     sql text;
     v_high_limit integer;
+    v_ai_limit integer;
     v_low_limit integer;
     v_high_newsflash_limit integer;
     v_high_auditor_limit integer;
@@ -440,8 +441,9 @@ BEGIN
         p_limit := 120;
     END IF;
 
-    v_high_limit := GREATEST(1, CEIL(p_limit * 0.65)::integer);
-    v_low_limit := GREATEST(1, p_limit - v_high_limit);
+    v_high_limit := GREATEST(1, CEIL(p_limit * 0.6)::integer);
+    v_ai_limit := GREATEST(1, CEIL(p_limit * 0.2)::integer);
+    v_low_limit := GREATEST(1, p_limit - v_high_limit - v_ai_limit);
     v_high_newsflash_limit := GREATEST(1, CEIL(v_high_limit * 0.45)::integer);
     v_high_auditor_limit := GREATEST(0, v_high_limit - v_high_newsflash_limit);
     IF v_high_limit > 1 AND v_high_auditor_limit = 0 THEN
@@ -461,7 +463,10 @@ BEGIN
             SELECT
                 'newsflash:' || p.task_id::text AS feed_item_id,
                 'newsflash'::text AS feed_kind,
-                'high'::text AS lane,
+                CASE
+                    WHEN t.source = 'ai_source' OR COALESCE(xa.is_ai_source, false) THEN 'ai'
+                    ELSE 'high'
+                END AS lane,
                 CASE WHEN t.status = 'ready_review' THEN 92 ELSE 88 END AS priority,
                 COALESCE(p.final_title, t.title, '未命名快讯') AS title,
                 COALESCE(p.final_content, t.content) AS summary,
@@ -515,11 +520,15 @@ BEGIN
                     'publisher_reason_code', p.publisher_reason_code,
                     'publisher_category', p.publisher_category,
                     'news_type', p.news_type,
+                    'x_account_is_ai_source', COALESCE(xa.is_ai_source, false),
                     'feature_mode_enabled', COALESCE(p.writer_feature_mode_enabled, false)
                 ) AS meta_json
             FROM x_task_pipeline p
             JOIN tasks t
               ON t.id = p.task_id
+            LEFT JOIN x_capture_accounts xa
+              ON t.source = 'x'
+             AND xa.username_lower = lower(COALESCE(t.metadata ->> 'account_username', t.metadata ->> 'author_username', ''))
             WHERE t.status IN ('auto_published', 'ready_review')
               AND COALESCE(p.final_title, t.title) IS NOT NULL
               AND COALESCE(p.final_content, t.content) <> ''
@@ -669,6 +678,7 @@ BEGIN
                 CASE
                     WHEN lane = ''high'' AND feed_kind = ''newsflash'' THEN ''high_newsflash''
                     WHEN lane = ''high'' AND feed_kind = ''auditor_alert'' THEN ''high_auditor''
+                    WHEN lane = ''ai'' AND feed_kind = ''newsflash'' THEN ''ai_newsflash''
                     WHEN lane = ''low'' AND feed_kind = ''writer3_context'' THEN ''low_writer3''
                     WHEN lane = ''low'' AND feed_kind IN (''whale_onchain'', ''whale_hyperliquid'') THEN ''low_whale''
                     ELSE lane || '':'' || feed_kind
@@ -693,8 +703,8 @@ BEGIN
             FROM ranked
             WHERE lane = ''high''
               AND (
-                (quota_group = ''high_auditor'' AND group_rank <= $3)
-                OR (quota_group = ''high_newsflash'' AND group_rank <= $4)
+                (quota_group = ''high_auditor'' AND group_rank <= $4)
+                OR (quota_group = ''high_newsflash'' AND group_rank <= $5)
               )
         ),
         low_reserved AS (
@@ -702,8 +712,8 @@ BEGIN
             FROM ranked
             WHERE lane = ''low''
               AND (
-                (quota_group = ''low_writer3'' AND group_rank <= $5)
-                OR (quota_group = ''low_whale'' AND group_rank <= $6)
+                (quota_group = ''low_writer3'' AND group_rank <= $6)
+                OR (quota_group = ''low_whale'' AND group_rank <= $7)
               )
         ),
         high_fill AS (
@@ -776,7 +786,30 @@ BEGIN
                       AND h.feed_kind = r.feed_kind
                   )
             ) fill
-            WHERE fill_rank <= GREATEST(0, $2 - (SELECT COUNT(*) FROM low_reserved))
+            WHERE fill_rank <= GREATEST(0, $3 - (SELECT COUNT(*) FROM low_reserved))
+        ),
+        selected_ai AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                quota_group,
+                lane_rank,
+                group_rank
+            FROM ranked
+            WHERE lane = ''ai''
+              AND lane_rank <= $2
         ),
         selected_high AS (
             SELECT * FROM high_reserved
@@ -809,6 +842,27 @@ BEGIN
                 ) AS display_rank
             FROM selected_high
         ),
+        ordered_ai AS (
+            SELECT
+                feed_item_id,
+                feed_kind,
+                lane,
+                priority,
+                title,
+                summary,
+                badges,
+                status_label,
+                status_tone,
+                occurred_at,
+                source_url,
+                detail_url,
+                action_schema,
+                meta_json,
+                ROW_NUMBER() OVER (
+                    ORDER BY priority DESC, occurred_at DESC
+                ) AS display_rank
+            FROM selected_ai
+        ),
         ordered_low AS (
             SELECT
                 feed_item_id,
@@ -833,6 +887,8 @@ BEGIN
         selected AS (
             SELECT * FROM ordered_high
             UNION ALL
+            SELECT * FROM ordered_ai
+            UNION ALL
             SELECT * FROM ordered_low
         )
         SELECT
@@ -852,12 +908,17 @@ BEGIN
             meta_json
         FROM selected
         ORDER BY
-            CASE WHEN lane = ''high'' THEN 0 ELSE 1 END,
+            CASE
+                WHEN lane = ''high'' THEN 0
+                WHEN lane = ''ai'' THEN 1
+                ELSE 2
+            END,
             display_rank
-        LIMIT $7';
+        LIMIT $8';
 
     RETURN QUERY EXECUTE sql USING
         v_high_limit,
+        v_ai_limit,
         v_low_limit,
         v_high_auditor_limit,
         v_high_newsflash_limit,

@@ -10,17 +10,18 @@ import {
   quickGenerateNewsflash,
   searchNewsGeneration
 } from "./lib/news-gen.js";
-import { playNotificationBeep } from "./lib/sound.js";
+import { playNotificationBeep, unlockNotificationSound } from "./lib/sound.js";
 import {
   clearAuthSession,
   getActiveTopTab,
+  getFeedLaneRatios,
   getNewsGenDraft,
   getNewsGenResult,
   getPanelSessionId,
   getSettings,
   saveActiveTopTab,
-  saveNewsGenResult,
-  saveSettings
+  saveFeedLaneRatios,
+  saveNewsGenResult
 } from "./lib/storage.js";
 import {
   ensureAuthSession,
@@ -37,6 +38,12 @@ const NEWS_GEN_TYPES = [
   { value: "funding", label: "融资" },
   { value: "onchain", label: "链上" }
 ];
+const DEFAULT_FEED_LANE_RATIOS = { high: 60, ai: 20, low: 20 };
+const FEED_LANES = [
+  { key: "high", title: "高频区", subtitle: "新快讯 / 审核者", empty: "暂无高频消息" },
+  { key: "ai", title: "AI区", subtitle: "AI信源", empty: "暂无 AI 信源消息" },
+  { key: "low", title: "低频区", subtitle: "此前消息 / 巨鲸", empty: "暂无低频消息" }
+];
 
 const state = {
   settings: null,
@@ -51,6 +58,7 @@ const state = {
   soundCooldownUntil: 0,
   lastFeedIds: new Set(),
   feedItems: [],
+  feedLaneRatios: { ...DEFAULT_FEED_LANE_RATIOS },
   feedState: new Map(),
   seenFeedKeys: new Set(),
   expandedFeedKeys: new Set(),
@@ -161,15 +169,18 @@ function newsGenTypeLabel(newsType) {
 
 function splitFeedItems() {
   const high = [];
+  const ai = [];
   const low = [];
   for (const item of state.feedItems) {
     if (item.lane === "low") {
       low.push(item);
+    } else if (item.lane === "ai") {
+      ai.push(item);
     } else {
       high.push(item);
     }
   }
-  return { high, low };
+  return { high, ai, low };
 }
 
 function feedKeyOf(feedKind, feedItemId) {
@@ -178,6 +189,29 @@ function feedKeyOf(feedKind, feedItemId) {
 
 function feedKey(item) {
   return feedKeyOf(item.feed_kind, item.feed_item_id);
+}
+
+function feedIdentity(item) {
+  return feedKey(item);
+}
+
+function isFreshFeedItem(item) {
+  if (!item.occurred_at) {
+    return false;
+  }
+  const occurredAt = new Date(item.occurred_at).getTime();
+  return Number.isFinite(occurredAt) && Date.now() - occurredAt < 120000;
+}
+
+function feedLaneGridStyle() {
+  const ratios = state.feedLaneRatios || DEFAULT_FEED_LANE_RATIOS;
+  return [
+    `minmax(0, ${Number(ratios.high) || DEFAULT_FEED_LANE_RATIOS.high}fr)`,
+    "7px",
+    `minmax(0, ${Number(ratios.ai) || DEFAULT_FEED_LANE_RATIOS.ai}fr)`,
+    "7px",
+    `minmax(0, ${Number(ratios.low) || DEFAULT_FEED_LANE_RATIOS.low}fr)`
+  ].join(" ");
 }
 
 function feedbackKindLabel(item) {
@@ -206,8 +240,9 @@ function renderFeedCard(item) {
   const feedbackStatus = cardFeedbackStatus(item);
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
-  const isHighLane = item.lane !== "low";
+  const isFastLane = item.lane !== "low";
   const isExpanded = state.expandedFeedKeys.has(itemKey);
+  const isFresh = isFreshFeedItem(item);
   const safeTitle = String(item.title || item.summary || `${item.feed_kind} 消息`);
   const safeSummary = String(item.summary || item.title || "暂无摘要");
   const statusChipLabel = isFeedback
@@ -241,7 +276,7 @@ function renderFeedCard(item) {
     : "";
 
   return `
-    <article class="feedCard feedCard--${escapeHtml(item.feed_kind)}${
+    <article class="feedCard feedCard--${escapeHtml(item.feed_kind)} feedCard--lane-${escapeHtml(item.lane || "high")}${
       isExpanded ? " feedCard--expanded" : ""
     }" data-feed-id="${escapeHtml(item.feed_item_id)}" data-feed-kind="${escapeHtml(
       item.feed_kind
@@ -262,14 +297,16 @@ function renderFeedCard(item) {
             ${feedbackActionsHtml}
           </div>
         </div>
-        <h3 class="feedCard__title${isHighLane ? " feedCard__title--toggle" : ""}">
+        <h3 class="feedCard__title${isFastLane ? " feedCard__title--toggle" : ""}${
+          isFresh ? " feedCard__title--fresh" : ""
+        }">
           ${
-            detailUrl && !isHighLane
+            detailUrl && !isFastLane
               ? `<a href="${escapeHtml(detailUrl)}" target="_blank" rel="noreferrer">${escapeHtml(safeTitle)}</a>`
               : escapeHtml(safeTitle)
           }
         </h3>
-        <p class="feedCard__summary${isHighLane ? " feedCard__summary--toggle" : ""}${
+        <p class="feedCard__summary${isFastLane ? " feedCard__summary--toggle" : ""}${
           isExpanded ? " feedCard__summary--expanded" : ""
         }">${linkifyText(safeSummary)}</p>
         ${
@@ -286,8 +323,21 @@ function renderFeedCard(item) {
   `;
 }
 
+function renderLanePanel(config, items) {
+  return `
+    <section class="lanePanel lanePanel--${escapeHtml(config.key)}">
+      <div class="laneHeader">
+        <h2>${escapeHtml(config.title)} · ${escapeHtml(config.subtitle)} · ${items.length}</h2>
+      </div>
+      <div class="laneList" id="${escapeHtml(config.key)}Lane">
+        ${items.length ? items.map(renderFeedCard).join("") : `<div class="emptyState">${escapeHtml(config.empty)}</div>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderFeedSection() {
-  const { high, low } = splitFeedItems();
+  const lanes = splitFeedItems();
 
   return `
     ${
@@ -295,32 +345,12 @@ function renderFeedSection() {
         ? `<div class="inlineError">${escapeHtml(state.error)}</div>`
         : ""
     }
-    <div class="feedScrollLayout">
-      <section class="lanePanel lanePanel--high">
-        <div class="laneHeader">
-          <div>
-            <h2>高频区</h2>
-            <p>新快讯 · 审核者</p>
-          </div>
-          <span class="laneCount">${high.length}</span>
-        </div>
-        <div class="laneList" id="highLane">
-          ${high.length ? high.map(renderFeedCard).join("") : `<div class="emptyState">暂无高频消息</div>`}
-        </div>
-      </section>
-
-      <section class="lanePanel lanePanel--low">
-        <div class="laneHeader">
-          <div>
-            <h2>低频区</h2>
-            <p>此前消息 · 巨鲸</p>
-          </div>
-          <span class="laneCount">${low.length}</span>
-        </div>
-        <div class="laneList" id="lowLane">
-          ${low.length ? low.map(renderFeedCard).join("") : `<div class="emptyState">暂无低频消息</div>`}
-        </div>
-      </section>
+    <div class="feedScrollLayout" style="grid-template-rows: ${escapeHtml(feedLaneGridStyle())}">
+      ${renderLanePanel(FEED_LANES[0], lanes.high)}
+      <div class="laneResizeHandle" data-resize-before="high" data-resize-after="ai" title="拖拽调整分区高度"></div>
+      ${renderLanePanel(FEED_LANES[1], lanes.ai)}
+      <div class="laneResizeHandle" data-resize-before="ai" data-resize-after="low" title="拖拽调整分区高度"></div>
+      ${renderLanePanel(FEED_LANES[2], lanes.low)}
     </div>
   `;
 }
@@ -515,30 +545,26 @@ function renderAuthedShell() {
   app.innerHTML = `
     <div class="appShell appShell--tabs">
       <header class="toolbar">
-        <div>
+        <div class="toolbar__brand">
           <p class="eyebrow">OdAIly</p>
           <h1>${escapeHtml(currentTitle)}</h1>
         </div>
-        <div class="toolbar__actions">
+        <div class="toolbar__cluster">
+          <section class="tabBar">
+            <button class="tabButton ${state.activeTopTab === FEED_TAB ? "tabButton--active" : ""}" data-top-tab="${FEED_TAB}">信息流</button>
+            <button class="tabButton ${state.activeTopTab === NEWS_GEN_TAB ? "tabButton--active" : ""}" data-top-tab="${NEWS_GEN_TAB}">快讯生成</button>
+          </section>
+          <div class="toolbar__actions">
           ${
             state.activeTopTab === FEED_TAB
               ? `<button id="refreshButton" class="iconButton" title="刷新">刷新</button>`
               : ""
           }
-          <button id="openOptionsButton" class="iconButton" title="设置">设置</button>
-          <button id="logoutButton" class="iconButton" title="退出">退出</button>
+            <button id="openOptionsButton" class="iconButton" title="设置">设置</button>
+            <button id="logoutButton" class="iconButton" title="退出">退出</button>
+          </div>
         </div>
       </header>
-
-      <section class="tabBar">
-        <button class="tabButton ${state.activeTopTab === FEED_TAB ? "tabButton--active" : ""}" data-top-tab="${FEED_TAB}">信息流</button>
-        <button class="tabButton ${state.activeTopTab === NEWS_GEN_TAB ? "tabButton--active" : ""}" data-top-tab="${NEWS_GEN_TAB}">快讯生成</button>
-      </section>
-
-      <section class="userStrip">
-        <span>${escapeHtml(state.profile?.display_name || state.profile?.email || "")}</span>
-        <span class="subtleText">${escapeHtml(state.profile?.email || "")}</span>
-      </section>
 
       <main class="mainView">
         ${state.activeTopTab === NEWS_GEN_TAB ? renderNewsGenSection() : renderFeedSection()}
@@ -622,12 +648,15 @@ function renderLoading() {
 
 function wireToolbar() {
   document.getElementById("openOptionsButton")?.addEventListener("click", () => {
+    unlockNotificationSound();
     chrome.runtime.openOptionsPage();
   });
   document.getElementById("refreshButton")?.addEventListener("click", async () => {
+    unlockNotificationSound();
     await refreshFeed(true);
   });
   document.getElementById("logoutButton")?.addEventListener("click", async () => {
+    unlockNotificationSound();
     await signOut(state.settings);
     await resetAuthState("");
   });
@@ -636,6 +665,7 @@ function wireToolbar() {
 function wireTopTabs() {
   for (const button of app.querySelectorAll(".tabButton")) {
     button.addEventListener("click", async () => {
+      unlockNotificationSound();
       const nextTab = sanitizeTopTab(button.dataset.topTab);
       if (nextTab === state.activeTopTab) {
         return;
@@ -673,6 +703,7 @@ async function copyText(value) {
 function wireCardToolButtons() {
   for (const button of app.querySelectorAll(".cardToolButton")) {
     button.addEventListener("click", async () => {
+      unlockNotificationSound();
       const feedItemId = button.dataset.feedId;
       const feedKind = button.dataset.feedKind;
       const action = button.dataset.action;
@@ -722,15 +753,16 @@ function wireCardToolButtons() {
   }
 }
 
-function wireHighFrequencyToggles() {
-  const highLane = document.getElementById("highLane");
-  if (!highLane) {
+function wireFastLaneToggles() {
+  const feedLayout = app.querySelector(".feedScrollLayout");
+  if (!feedLayout) {
     return;
   }
-  for (const card of highLane.querySelectorAll(".feedCard")) {
+  for (const card of feedLayout.querySelectorAll(".lanePanel--high .feedCard, .lanePanel--ai .feedCard")) {
     const toggleTargets = card.querySelectorAll(".feedCard__title--toggle, .feedCard__summary--toggle");
     for (const target of toggleTargets) {
       target.addEventListener("click", () => {
+        unlockNotificationSound();
         const feedItemId = card.getAttribute("data-feed-id");
         const feedKind = card.getAttribute("data-feed-kind");
         if (!feedItemId || !feedKind) {
@@ -800,6 +832,7 @@ async function withSessionRetry(task) {
 function wireFeedbackButtons() {
   for (const button of app.querySelectorAll(".actionButton")) {
     button.addEventListener("click", async () => {
+      unlockNotificationSound();
       const feedItemId = button.dataset.feedId;
       const feedKind = button.dataset.feedKind;
       const action = button.dataset.action;
@@ -824,6 +857,68 @@ function wireFeedbackButtons() {
       } finally {
         button.disabled = false;
       }
+    });
+  }
+}
+
+function normalizeLaneRatios(value) {
+  const high = Math.max(10, Number(value.high) || DEFAULT_FEED_LANE_RATIOS.high);
+  const ai = Math.max(10, Number(value.ai) || DEFAULT_FEED_LANE_RATIOS.ai);
+  const low = Math.max(10, Number(value.low) || DEFAULT_FEED_LANE_RATIOS.low);
+  const total = high + ai + low;
+  return {
+    high: Math.round((high / total) * 100),
+    ai: Math.round((ai / total) * 100),
+    low: Math.max(10, 100 - Math.round((high / total) * 100) - Math.round((ai / total) * 100))
+  };
+}
+
+function applyFeedLaneRatios(layout) {
+  if (!layout) {
+    return;
+  }
+  layout.style.gridTemplateRows = feedLaneGridStyle();
+}
+
+function wireLaneResizers() {
+  const layout = app.querySelector(".feedScrollLayout");
+  if (!layout) {
+    return;
+  }
+  for (const handle of layout.querySelectorAll(".laneResizeHandle")) {
+    handle.addEventListener("pointerdown", (event) => {
+      unlockNotificationSound();
+      event.preventDefault();
+      const before = handle.dataset.resizeBefore;
+      const after = handle.dataset.resizeAfter;
+      if (!before || !after) {
+        return;
+      }
+      const panels = [...layout.querySelectorAll(".lanePanel")];
+      const totalHeight = panels.reduce((sum, panel) => sum + panel.getBoundingClientRect().height, 0);
+      if (totalHeight <= 0) {
+        return;
+      }
+      const startY = event.clientY;
+      const startRatios = { ...state.feedLaneRatios };
+      const pairTotal = startRatios[before] + startRatios[after];
+      const onMove = (moveEvent) => {
+        const deltaRatio = ((moveEvent.clientY - startY) / totalHeight) * 100;
+        const nextBefore = Math.min(pairTotal - 10, Math.max(10, startRatios[before] + deltaRatio));
+        state.feedLaneRatios = normalizeLaneRatios({
+          ...startRatios,
+          [before]: nextBefore,
+          [after]: pairTotal - nextBefore
+        });
+        applyFeedLaneRatios(layout);
+      };
+      const onUp = async () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        await saveFeedLaneRatios(state.feedLaneRatios);
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp, { once: true });
     });
   }
 }
@@ -871,7 +966,8 @@ function wireSeenTracking() {
 function wireFeedInteractions() {
   wireFeedbackButtons();
   wireCardToolButtons();
-  wireHighFrequencyToggles();
+  wireFastLaneToggles();
+  wireLaneResizers();
   wireSeenTracking();
 }
 
@@ -914,14 +1010,17 @@ async function runNewsGenAction(mode, newsType = null) {
 
 function wireNewsGenInteractions() {
   document.getElementById("newsGenSearchButton")?.addEventListener("click", async () => {
+    unlockNotificationSound();
     await runNewsGenAction("search");
   });
   for (const button of app.querySelectorAll("[data-news-gen-action][data-news-type]")) {
     button.addEventListener("click", async () => {
+      unlockNotificationSound();
       await runNewsGenAction(button.dataset.newsGenAction, button.dataset.newsType);
     });
   }
   document.getElementById("copyGeneratedButton")?.addEventListener("click", async () => {
+    unlockNotificationSound();
     if (!state.newsGenResult?.content) {
       return;
     }
@@ -945,6 +1044,7 @@ function wireNewsGenInteractions() {
 
 async function handleLogin(event) {
   event.preventDefault();
+  unlockNotificationSound();
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
   state.loginError = "";
@@ -968,7 +1068,7 @@ function maybePlaySound(nextItems) {
   }
   const scope = state.settings.soundScope || "high";
   const previousIds = state.lastFeedIds;
-  const newItems = nextItems.filter((item) => !previousIds.has(item.feed_item_id));
+  const newItems = nextItems.filter((item) => !previousIds.has(feedIdentity(item)));
   const hit = newItems.some((item) => (scope === "all" ? true : item.lane === "high"));
   if (!hit) {
     return;
@@ -991,7 +1091,7 @@ async function refreshFeed(shouldSound) {
       );
       return { items: nextItems, feedState: nextFeedState };
     });
-    const nextIds = new Set(items.map((item) => item.feed_item_id));
+    const nextIds = new Set(items.map(feedIdentity));
     const validKeys = new Set(items.map(feedKey));
     if (shouldSound) {
       maybePlaySound(items);
@@ -1068,6 +1168,7 @@ function render() {
 
 async function boot() {
   state.settings = await getSettings();
+  state.feedLaneRatios = await getFeedLaneRatios();
   state.panelSessionId = await getPanelSessionId();
   state.activeTopTab = sanitizeTopTab(await getActiveTopTab());
   state.newsGenDraft = sanitizeNewsGenDraft(await getNewsGenDraft());
@@ -1103,6 +1204,9 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
   }
   if (changes.newsGenResult) {
     state.newsGenResult = changes.newsGenResult.newValue ?? null;
+  }
+  if (changes.feedLaneRatios) {
+    state.feedLaneRatios = await getFeedLaneRatios();
   }
   const authConfigChanged = Boolean(changes.supabaseUrl || changes.supabaseAnonKey || changes.pluginApiBaseUrl);
   if (

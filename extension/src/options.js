@@ -4,10 +4,12 @@ import {
   resetSettings,
   saveSettings
 } from "./lib/storage.js";
+import { playNotificationBeep, unlockNotificationSound } from "./lib/sound.js";
 
 const form = document.getElementById("optionsForm");
 const saveHint = document.getElementById("saveHint");
 const resetButton = document.getElementById("resetButton");
+const testSoundButton = document.getElementById("testSoundButton");
 
 function fillForm(settings) {
   document.getElementById("pollIntervalSeconds").value = String(settings.pollIntervalSeconds);
@@ -37,6 +39,12 @@ resetButton.addEventListener("click", async () => {
   await resetSettings();
   fillForm(await getSettings());
   saveHint.textContent = "已恢复默认设置。";
+});
+
+testSoundButton.addEventListener("click", () => {
+  unlockNotificationSound();
+  playNotificationBeep(document.getElementById("soundVolume").value || DEFAULT_SETTINGS.soundVolume);
+  saveHint.textContent = "已播放测试声音。";
 });
 
 boot().catch((error) => {
