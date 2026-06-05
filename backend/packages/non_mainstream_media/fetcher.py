@@ -64,6 +64,9 @@ ETNEWS_TIMEZONE = timezone(timedelta(hours=9))
 ZDNET_KOREA_BASE_URL = "https://zdnet.co.kr"
 ZDNET_KOREA_SEMICONDUCTOR_LIST_URL = "https://zdnet.co.kr/newskey/?lstcode=%EB%B0%98%EB%8F%84%EC%B2%B4"
 ZDNET_KOREA_TIMEZONE = timezone(timedelta(hours=9))
+CTEE_BASE_URL = "https://www.ctee.com.tw"
+CTEE_SEMICONDUCTOR_LIST_URL = "https://www.ctee.com.tw/industry/semi"
+CTEE_TIMEZONE = timezone(timedelta(hours=8))
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -190,6 +193,16 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         source_group=SOURCE_GROUP_AI_SOURCE,
         interval_seconds=300,
     ),
+    "ctee_semiconductor": SiteDefinition(
+        site_key="ctee_semiconductor",
+        display_name="CTEE Semiconductor",
+        homepage_url=CTEE_BASE_URL,
+        list_url=CTEE_SEMICONDUCTOR_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -287,6 +300,13 @@ def fetch_discovered_pages(
     if site.site_key == "zdnet_korea_semiconductor":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_zdnet_korea_pages(html, base_url=site.homepage_url)
+    if site.site_key == "ctee_semiconductor":
+        return fetch_ctee_discovered_pages(
+            site,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -388,6 +408,14 @@ def fetch_article(
     elif site.site_key == "zdnet_korea_semiconductor":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_zdnet_korea_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "ctee_semiconductor":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_ctee_article(
+            html,
+            page_url=page.detail_url,
+            source_item_id=page.source_item_id,
+            default_category="半導體",
+        )
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -609,6 +637,23 @@ def fetch_thelec_discovered_pages(
         fallback_urls=build_thelec_fallback_urls(site.list_url),
     )
     return discover_thelec_pages(html, base_url=site.homepage_url)
+
+
+def fetch_ctee_discovered_pages(
+    site: SiteDefinition,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    html = fetch_html_with_fallbacks(
+        site.list_url,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        fallback_urls=[build_jina_proxy_url(site.list_url)],
+    )
+    return discover_ctee_pages(html, base_url=site.homepage_url)
 
 
 def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[DiscoveredPage]:
@@ -985,6 +1030,69 @@ def discover_zdnet_korea_pages(html: str, *, base_url: str = ZDNET_KOREA_BASE_UR
                 title=title or None,
                 excerpt=excerpt or None,
                 published_at=parse_zdnet_korea_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
+
+
+def discover_ctee_pages(html: str, *, base_url: str = CTEE_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for container in soup.select(".newslist__card"):
+        anchor = container.select_one("a[href]")
+        if anchor is None:
+            continue
+        href = str(anchor.get("href") or "").strip()
+        detail_url = normalize_ctee_url(urljoin(base_url, href))
+        if not is_ctee_article_url(detail_url) or detail_url in seen:
+            continue
+        seen.add(detail_url)
+        title = extract_ctee_listing_title(container, detail_url=detail_url)
+        excerpt = extract_ctee_listing_excerpt(container, title=title)
+        published_at_raw = extract_ctee_listing_published_at_text(container) or ""
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=excerpt or None,
+                published_at=parse_ctee_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results or discover_ctee_pages_from_markdown(html, base_url=base_url)
+
+
+def discover_ctee_pages_from_markdown(payload: str, *, base_url: str = CTEE_BASE_URL) -> list[DiscoveredPage]:
+    text = payload
+    if "Markdown Content:" in text:
+        text = text.split("Markdown Content:", 1)[1]
+    link_pattern = re.compile(
+        r"(?<!!)\[([^\]\n]+)\]\((https?://(?:www\.)?ctee\.com\.tw/news/\d{12,}-\d+)[^)]*\)",
+        re.IGNORECASE,
+    )
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for match in link_pattern.finditer(text):
+        raw_title = clean_inline_text(strip_markdown_formatting(match.group(1)))
+        if not raw_title or raw_title.startswith("!["):
+            continue
+        detail_url = normalize_ctee_url(urljoin(base_url, match.group(2)))
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        following_text = text[match.end() : match.end() + 500]
+        published_at_raw = extract_ctee_markdown_published_at_text(following_text) or ""
+        excerpt = extract_ctee_markdown_excerpt(following_text)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=raw_title,
+                excerpt=excerpt or None,
+                published_at=parse_ctee_published_at(published_at_raw),
                 published_at_raw=published_at_raw or None,
             )
         )
@@ -1596,6 +1704,8 @@ def parse_hk01_article(html: str, *, page_url: str, source_item_id: str) -> Pars
 
 
 def parse_thelec_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    if "Markdown Content:" in html:
+        return parse_thelec_markdown_article(html, page_url=page_url, source_item_id=source_item_id)
     soup = BeautifulSoup(html, "html.parser")
     canonical = normalize_thelec_url(
         select_attr(soup, "link[rel='canonical']", "href")
@@ -1646,6 +1756,53 @@ def parse_thelec_article(html: str, *, page_url: str, source_item_id: str) -> Pa
         raw_payload={
             "page_url": page_url,
             "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
+def parse_thelec_markdown_article(payload: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    text = extract_jina_markdown_payload(payload)
+    lines = [line.rstrip() for line in text.splitlines()]
+    title = clean_inline_text(extract_line_value(payload, prefix="Title:")) or normalize_thelec_url(page_url)
+    title = strip_thelec_markdown_title_suffix(title)
+    published_at_raw = clean_inline_text(extract_line_value(payload, prefix="Published Time:"))
+    title_anchor = find_last_markdown_title_index(lines, title=title)
+    subtitle = extract_markdown_subtitle(lines, start_index=title_anchor + 1 if title_anchor >= 0 else 0)
+    categories = extract_thelec_markdown_categories(lines, title_anchor=title_anchor)
+    author_names = extract_thelec_markdown_author_names(lines)
+    body = clean_body_text(
+        extract_thelec_markdown_body(
+            lines,
+            title=title,
+            subtitle=subtitle,
+            start_index=title_anchor + 1 if title_anchor >= 0 else 0,
+        )
+    )
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    canonical = normalize_thelec_url(page_url)
+    excerpt = subtitle or body.split("\n\n", 1)[0][:240]
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw or None,
+        "proxy_fallback": "jina_markdown",
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_thelec_published_at(published_at_raw),
+        author_names=author_names,
+        tags=[],
+        categories=categories or ["Semiconductor"],
+        excerpt=excerpt,
+        content_format="thelec_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "proxy_fallback": "jina_markdown",
         },
         metadata=metadata,
     )
@@ -1757,6 +1914,77 @@ def parse_zdnet_korea_article(html: str, *, page_url: str, source_item_id: str) 
         categories=categories,
         excerpt=excerpt,
         content_format="zdnet_korea_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
+def parse_ctee_article(
+    html: str,
+    *,
+    page_url: str,
+    source_item_id: str,
+    default_category: str = "半導體",
+) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    canonical = normalize_ctee_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or str(structured.get("@id") or page_url)
+    )
+    title = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:title")
+            or structured.get("headline")
+            or select_text(soup, ".content__header .main-title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at_raw = clean_inline_text(
+        str(
+            structured.get("datePublished")
+            or select_meta_content(soup, "property", "article:published_time")
+            or extract_ctee_published_at_text(soup)
+            or ""
+        )
+    )
+    author_names = extract_ctee_author_names(soup, structured=structured)
+    categories = extract_ctee_categories(soup, structured=structured, default_category=default_category)
+    tags = extract_ctee_tags(soup, structured=structured, category_name=default_category)
+    body = clean_body_text(
+        str(structured.get("articleBody") or "") or extract_ctee_body(soup) or extract_body_text(soup)
+    )
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or select_text(soup, ".content__header .sub-title")
+            or structured.get("description")
+            or body.split("\n\n", 1)[0][:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw or None,
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_ctee_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="ctee_article",
         raw_payload={
             "page_url": page_url,
             "canonical_url": canonical,
@@ -2390,6 +2618,24 @@ def extract_thelec_markdown_excerpt(value: str) -> str:
     return candidates[0][:240] if candidates else ""
 
 
+def extract_ctee_markdown_excerpt(value: str) -> str:
+    for line in value.splitlines():
+        text = clean_inline_text(strip_markdown_formatting(line))
+        if not text:
+            continue
+        if text in {"首頁", "產業", "半導體"}:
+            continue
+        if re.fullmatch(r"\d{4}[./-]\d{2}[./-]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", text):
+            continue
+        return text[:240]
+    return ""
+
+
+def extract_ctee_markdown_published_at_text(value: str) -> str | None:
+    match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", value)
+    return match.group(0) if match else None
+
+
 def extract_wp_rendered_text(value: Any) -> str:
     if isinstance(value, dict):
         rendered = value.get("rendered")
@@ -2460,6 +2706,12 @@ def next_nonempty_line(lines: list[str], start_index: int) -> int | None:
     return None
 
 
+def extract_line_value(value: str, *, prefix: str) -> str:
+    pattern = re.compile(rf"(?m)^\s*{re.escape(prefix)}\s*(.+)$")
+    match = pattern.search(value)
+    return match.group(1).strip() if match else ""
+
+
 def strip_markdown_formatting(value: str) -> str:
     text = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", value)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
@@ -2467,6 +2719,143 @@ def strip_markdown_formatting(value: str) -> str:
     text = text.replace("**", "").replace("__", "").replace("`", "")
     text = text.replace("–", " – ")
     return text
+
+
+def strip_thelec_markdown_title_suffix(value: str) -> str:
+    text = clean_inline_text(value)
+    if " < " in text and text.endswith("The Elec Inc."):
+        return clean_inline_text(text.split(" < ", 1)[0])
+    return text
+
+
+def find_last_markdown_title_index(lines: list[str], *, title: str) -> int:
+    normalized_title = clean_inline_text(title)
+    matches: list[int] = []
+    for index, line in enumerate(lines):
+        cleaned = strip_thelec_markdown_title_suffix(clean_inline_text(strip_markdown_formatting(line)))
+        if cleaned == normalized_title:
+            matches.append(index)
+    return matches[-1] if matches else -1
+
+
+def extract_markdown_subtitle(lines: list[str], *, start_index: int) -> str:
+    for line in lines[max(0, start_index) : max(0, start_index) + 8]:
+        stripped = line.strip()
+        if not stripped.startswith("## "):
+            continue
+        text = clean_inline_text(strip_markdown_formatting(stripped))
+        if text:
+            return text
+    return ""
+
+
+def extract_thelec_markdown_categories(lines: list[str], *, title_anchor: int) -> list[str]:
+    if title_anchor >= 0:
+        for line in reversed(lines[max(0, title_anchor - 5) : title_anchor + 1]):
+            match = re.search(
+                r"\[(?P<category>[^\]]+)\]\(https?://(?:www\.)?thelec\.net/news/articleList\.html\?[^)]*\)",
+                line,
+                re.IGNORECASE,
+            )
+            if not match:
+                continue
+            category = clean_inline_text(match.group("category"))
+            if category:
+                return [category]
+    return []
+
+
+def extract_thelec_markdown_author_names(lines: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        match = re.fullmatch(r"\*\s+([A-Z][A-Z\s.'-]{2,})\s*", stripped)
+        if match:
+            candidates.append(clean_inline_text(match.group(1)))
+            continue
+        match = re.fullmatch(r"\[([A-Z][A-Z\s.'-]{2,})\]\([^)]+\).*", stripped)
+        if match:
+            candidates.append(clean_inline_text(match.group(1)))
+    return unique_preserve_order(candidates)
+
+
+def looks_like_image_caption(text: str) -> bool:
+    if "(Photo:" in text or text.startswith("Photo:"):
+        return True
+    return len(text) < 240 and text.count(".") <= 1 and text.count(":") <= 2
+
+
+def is_thelec_markdown_noise(text: str) -> bool:
+    normalized = clean_inline_text(text)
+    lower = normalized.lower()
+    if not normalized:
+        return True
+    if normalized in {
+        "Character Size Settings",
+        "스크롤 이동 상태바",
+        "기사검색",
+        "이 기사를 공유합니다",
+        "Comments",
+        "Delete comments",
+        "Modify the comments",
+        "Best comment",
+        "더보기",
+        "가",
+    }:
+        return True
+    if lower.startswith(
+        (
+            "the body content of the article will be changed",
+            "name password enter comments",
+            "sort the comments",
+            "deleted comments cannot be recovered",
+            "do you still want to delete it",
+            "view other news",
+            "copyright ©",
+            "reply ",
+            "published ",
+            "login",
+            "join",
+            "mobile",
+        )
+    ):
+        return True
+    if normalized in {"Semiconductor", "Display Panel", "Battery", "Supply Chain", "Defense·Energy", "Biotech", "IT·Gaming"}:
+        return True
+    return False
+
+
+def extract_thelec_markdown_body(lines: list[str], *, title: str, subtitle: str, start_index: int) -> str:
+    body_lines: list[str] = []
+    image_pending_caption = False
+    for line in lines[max(0, start_index) :]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("## "):
+            candidate = clean_inline_text(strip_markdown_formatting(stripped))
+            if candidate == subtitle:
+                continue
+        if stripped.startswith("!["):
+            image_pending_caption = True
+            continue
+        cleaned = clean_inline_text(strip_markdown_formatting(stripped))
+        if not cleaned or cleaned == title or cleaned == subtitle:
+            continue
+        if re.fullmatch(r"[A-Z][A-Z\s.'-]{2,}", cleaned):
+            continue
+        if cleaned.startswith(("View other news", "Copyright ©", "Comments", "Delete comments", "Modify the comments")):
+            break
+        if is_thelec_markdown_noise(cleaned):
+            continue
+        if image_pending_caption and looks_like_image_caption(cleaned):
+            image_pending_caption = False
+            continue
+        image_pending_caption = False
+        if not body_lines and len(cleaned) < 40 and not re.search(r"[.!?\"”]$", cleaned):
+            continue
+        body_lines.append(cleaned)
+    return "\n\n".join(body_lines)
 
 
 def build_thelec_fallback_urls(url: str) -> list[str]:
@@ -2516,6 +2905,21 @@ def is_zdnet_korea_article_url(url: str) -> bool:
     parsed = urlparse(url)
     no_value = parse_qs(parsed.query).get("no", [])
     return parsed.netloc.lower().endswith("zdnet.co.kr") and parsed.path.rstrip("/") == "/view" and bool(no_value and re.fullmatch(r"\d{8,}", no_value[0]))
+
+
+def normalize_ctee_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.netloc.lower().endswith("ctee.com.tw"):
+        return url.strip()
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", "", ""))
+
+
+def is_ctee_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().endswith("ctee.com.tw") and bool(
+        re.fullmatch(r"/news/\d{12,}-\d+", parsed.path.rstrip("/") or "")
+    )
 
 
 def normalize_the_block_discovery_url(url: str) -> str:
@@ -2619,6 +3023,44 @@ def extract_zdnet_korea_listing_published_at_text(container: Tag) -> str | None:
     return match.group(0) if match else None
 
 
+def extract_ctee_listing_title(container: Tag, *, detail_url: str) -> str:
+    for selector in ("h1", "h2", "h3", "h4", ".news-title", ".list-title", ".title", ".subject", "strong"):
+        node = container.select_one(selector)
+        text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        if text:
+            return text
+    for anchor in container.select("a[href]"):
+        href = str(anchor.get("href") or "")
+        if normalize_ctee_url(urljoin(CTEE_BASE_URL, href)) != detail_url:
+            continue
+        text = clean_inline_text(anchor.get_text(" ", strip=True))
+        if text:
+            return text
+    return ""
+
+
+def extract_ctee_listing_excerpt(container: Tag, *, title: str) -> str:
+    for node in container.select("p"):
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        if not text or text == title:
+            continue
+        if re.fullmatch(r"\d{4}[./-]\d{2}[./-]\d{2}", text):
+            continue
+        return text[:240]
+    text = clean_inline_text(container.get_text(" ", strip=True))
+    if title and title in text:
+        text = text.replace(title, " ", 1)
+    text = re.sub(r"\d{4}[./-]\d{2}[./-]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", " ", text)
+    text = re.sub(r"^\s*產業\s+", " ", text)
+    return clean_inline_text(text)[:240]
+
+
+def extract_ctee_listing_published_at_text(container: Tag) -> str | None:
+    text = clean_inline_text(container.get_text(" ", strip=True))
+    match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", text)
+    return match.group(0) if match else None
+
+
 def extract_etnews_body(soup: BeautifulSoup) -> str:
     node = soup.select_one("#articleBody") or soup.select_one(".article_body")
     if node is None:
@@ -2647,6 +3089,30 @@ def extract_zdnet_korea_body(soup: BeautifulSoup) -> str:
         text = clean_inline_text(heading.get_text(" ", strip=True))
         if text == "관련기사":
             heading.decompose()
+    parts = collect_text_parts(fragment)
+    if parts:
+        return "\n\n".join(parts)
+    return fragment.get_text("\n\n", strip=True)
+
+
+def extract_ctee_body(soup: BeautifulSoup) -> str:
+    node = soup.select_one(".content__body article") or soup.select_one(".content__body .article-wrap") or soup.select_one("article")
+    if node is None:
+        return ""
+    fragment = BeautifulSoup(str(node), "html.parser")
+    drop_noise(fragment)
+    for selector in (
+        ".related-inline",
+        ".article-social",
+        ".social-btn__fixed",
+        ".list-box",
+        ".ad",
+        ".ad-box",
+        ".video-js",
+        "#copied",
+    ):
+        for item in fragment.select(selector):
+            item.decompose()
     parts = collect_text_parts(fragment)
     if parts:
         return "\n\n".join(parts)
@@ -2685,6 +3151,20 @@ def extract_zdnet_korea_author_names(soup: BeautifulSoup) -> list[str]:
     return unique_preserve_order(candidates)
 
 
+def extract_ctee_author_names(soup: BeautifulSoup, *, structured: dict[str, Any] | None = None) -> list[str]:
+    candidates: list[str] = []
+    if structured:
+        candidates.extend(normalize_string_list(structured.get("author"), field_name="name"))
+    for selector in (".news-credit .publish-author .name", ".news-credit .publish-author a", ".content__header .publish-author"):
+        node = soup.select_one(selector)
+        text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        if text.startswith("工商時報 "):
+            text = text.split(" ", 1)[1].strip()
+        if text:
+            candidates.append(text)
+    return unique_preserve_order(candidates)
+
+
 def extract_etnews_categories(soup: BeautifulSoup) -> list[str]:
     header = soup.select_one(".article_header")
     if header is None:
@@ -2708,6 +3188,44 @@ def extract_zdnet_korea_categories(soup: BeautifulSoup) -> list[str]:
     return [text] if text else []
 
 
+def extract_ctee_tags(
+    soup: BeautifulSoup,
+    *,
+    structured: dict[str, Any] | None = None,
+    category_name: str | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    if structured:
+        candidates.extend(normalize_keywords(structured.get("keywords")))
+        candidates.extend(normalize_string_list(structured.get("about"), field_name="name"))
+    for node in soup.select(".taglist__item a"):
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        if text:
+            candidates.append(text)
+    tags = unique_preserve_order(candidates)
+    if category_name:
+        tags = [tag for tag in tags if tag != category_name]
+    return tags
+
+
+def extract_ctee_categories(
+    soup: BeautifulSoup,
+    *,
+    structured: dict[str, Any] | None = None,
+    default_category: str = "半導體",
+) -> list[str]:
+    candidates = normalize_string_list(
+        select_meta_content(soup, "property", "article:section")
+        or (structured or {}).get("articleSection")
+    )
+    if candidates:
+        return candidates
+    tags = extract_ctee_tags(soup, structured=structured)
+    if default_category and default_category in tags:
+        return [default_category]
+    return [default_category] if default_category else []
+
+
 def extract_etnews_published_at_text(soup: BeautifulSoup) -> str | None:
     for selector in (".article_header", "#articleBody", "article"):
         node = soup.select_one(selector)
@@ -2729,6 +3247,22 @@ def extract_zdnet_korea_published_at_text(soup: BeautifulSoup) -> str | None:
         if match:
             return match.group(0)
     return extract_first_datetime_text(soup.get_text(" ", strip=True)) or None
+
+
+def extract_ctee_published_at_text(soup: BeautifulSoup) -> str | None:
+    date_text = select_text(soup, ".news-credit .publish-date time")
+    time_text = select_text(soup, ".news-credit .publish-time time")
+    if date_text and time_text:
+        return f"{date_text} {time_text}"
+    for selector in (".content__header .news-credit", ".content__header", "article"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = clean_inline_text(node.get_text(" ", strip=True))
+        match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", text)
+        if match:
+            return match.group(0)
+    return None
 
 
 def parse_etnews_published_at(value: Any) -> datetime | None:
@@ -2761,6 +3295,30 @@ def parse_zdnet_korea_published_at(value: Any) -> datetime | None:
     for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=ZDNET_KOREA_TIMEZONE).astimezone(UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
+
+
+def parse_ctee_published_at(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    if re.search(r"[+-]\d{2}:?\d{2}|Z$", text):
+        return parse_published_at(text)
+    for fmt in (
+        "%Y.%m.%d %H:%M:%S",
+        "%Y.%m.%d %H:%M",
+        "%Y.%m.%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=CTEE_TIMEZONE).astimezone(UTC)
         except ValueError:
             continue
     return parse_published_at(text)
@@ -2885,6 +3443,8 @@ def infer_content_format(url: str) -> str | None:
         return "hk01_issue_article"
     if parsed.netloc.lower().endswith("thelec.net") and parsed.path == "/news/articleView.html":
         return "thelec_article"
+    if parsed.netloc.lower().endswith("ctee.com.tw") and parsed.path.startswith("/news/"):
+        return "ctee_article"
     parts = [part for part in urlparse(url).path.split("/") if part]
     if len(parts) >= 2 and parts[0] == "posts":
         return parts[1]

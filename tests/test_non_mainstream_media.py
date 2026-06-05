@@ -9,6 +9,7 @@ from packages.non_mainstream_media.fetcher import (
     discover_bloomberg_pages,
     discover_coindesk_pages,
     discover_cointelegraph_pages,
+    discover_ctee_pages,
     discover_decrypt_pages,
     discover_etnews_pages,
     discover_ft_pages,
@@ -26,6 +27,7 @@ from packages.non_mainstream_media.fetcher import (
     parse_a16z_article,
     parse_coindesk_article,
     parse_cointelegraph_article,
+    parse_ctee_article,
     parse_decrypt_article,
     parse_etnews_article,
     parse_forbes_article,
@@ -809,6 +811,78 @@ def test_fetch_discovered_pages_thelec_uses_jina_fallback_when_hosts_block(monke
     assert [page.detail_url for page in pages] == ["https://www.thelec.net/news/articleView.html?idxno=10998"]
 
 
+def test_fetch_article_thelec_parses_jina_markdown_detail_fallback(monkeypatch) -> None:
+    site = get_site_registry()["thelec_china"]
+    page = DiscoveredPage(
+        source_item_id="https://www.thelec.net/news/articleView.html?idxno=11043",
+        detail_url="https://www.thelec.net/news/articleView.html?idxno=11043",
+        title="Chey Tae-won Meets Young Liu in Taiwan to Discuss AI Infrastructure Cooperation",
+    )
+    payload = """
+    Title: Chey Tae-won Meets Young Liu in Taiwan to Discuss AI Infrastructure Cooperation
+
+    URL Source: https://thelec.net/news/articleView.html?idxno=11043
+
+    Published Time: 2026-06-05T07:33:24+09:00
+
+    Markdown Content:
+    # Chey Tae-won Meets Young Liu in Taiwan to Discuss AI Infrastructure Cooperation < Semiconductor < 기사본문 - The Elec Inc.
+
+    [Semiconductor](https://www.thelec.net/news/articleList.html?sc_section_code=S1N2&view_type=sm)
+
+    # Chey Tae-won Meets Young Liu in Taiwan to Discuss AI Infrastructure Cooperation
+
+    ## Third major AI partnership meeting following Nvidia and TSMC
+
+    *    JEONG IL JOO
+    *   Published 2026.06.05 07:33
+
+    ![Image 1: SK Group Chairman Chey Tae-won meets with Foxconn executives in Taiwan to discuss cooperation.](https://cdn.thelec.net/news/photo/202606/11043_11033_241.jpg)
+
+    SK Group Chairman Chey Tae-won meets with Foxconn executives in Taiwan to discuss cooperation.
+
+    Chey Tae-won met with Young Liu and Foxconn executives in Taiwan to discuss cooperation in next-generation artificial intelligence (AI) infrastructure.
+
+    SK hynix said the meeting took place in Taipei on June 3. The two sides discussed ways to strengthen competitiveness in next-generation AI infrastructure.
+
+    [JEONG IL JOO](https://www.thelec.net/news/articleList.html?sc_area=I&sc_word=1week&view_type=sm)
+    [View other news](https://www.thelec.net/news/articleList.html?sc_area=I&sc_word=1week&view_type=sm)
+    """
+    calls: list[str] = []
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url in {
+            page.detail_url,
+            "https://thelec.net/news/articleView.html?idxno=11043",
+        }:
+            raise RuntimeError("403 forbidden")
+        if url == "https://r.jina.ai/http://https://thelec.net/news/articleView.html?idxno=11043":
+            return payload
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    article = fetch_article(site, page, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert calls == [
+        page.detail_url,
+        "https://thelec.net/news/articleView.html?idxno=11043",
+        "https://r.jina.ai/http://https://thelec.net/news/articleView.html?idxno=11043",
+    ]
+    assert article.title == "Chey Tae-won Meets Young Liu in Taiwan to Discuss AI Infrastructure Cooperation"
+    assert article.author_names == ["JEONG IL JOO"]
+    assert article.categories == ["Semiconductor"]
+    assert article.published_at == datetime(2026, 6, 4, 22, 33, 24, tzinfo=UTC)
+    assert article.content == (
+        "Chey Tae-won met with Young Liu and Foxconn executives in Taiwan to discuss cooperation in next-generation "
+        "artificial intelligence (AI) infrastructure.\n\n"
+        "SK hynix said the meeting took place in Taipei on June 3. The two sides discussed ways to strengthen "
+        "competitiveness in next-generation AI infrastructure."
+    )
+    assert article.metadata["proxy_fallback"] == "jina_markdown"
+
+
 def test_thelec_registered_as_ai_source_with_five_minute_interval() -> None:
     site = get_site_registry()["thelec_china"]
 
@@ -838,6 +912,15 @@ def test_zdnet_korea_semiconductor_registered_as_ai_source_with_five_minute_inte
     assert site.pipeline_mode == "write_flow"
     assert site.interval_seconds == 300
     assert site.list_url == "https://zdnet.co.kr/newskey/?lstcode=%EB%B0%98%EB%8F%84%EC%B2%B4"
+
+
+def test_ctee_semiconductor_registered_as_ai_source_with_five_minute_interval() -> None:
+    site = get_site_registry()["ctee_semiconductor"]
+
+    assert site.source_group == SOURCE_GROUP_AI_SOURCE
+    assert site.pipeline_mode == "write_flow"
+    assert site.interval_seconds == 300
+    assert site.list_url == "https://www.ctee.com.tw/industry/semi"
 
 
 def test_discover_etnews_pages_reads_section_article_ids() -> None:
@@ -914,6 +997,85 @@ def test_parse_etnews_article_extracts_title_time_author_and_body() -> None:
     )
     assert article.excerpt == "국내 성인 설문조사 결과"
     assert article.content_format == "etnews_article"
+
+
+def test_fetch_discovered_pages_ctee_uses_jina_fallback_when_direct_unavailable(monkeypatch) -> None:
+    site = get_site_registry()["ctee_semiconductor"]
+    payload = """
+    Markdown Content:
+    [![Image 1: 魏哲家：未來幾年都很好 買台積股票「請繼續」](https://images.ctee.com.tw/newsphoto/2026-06-05/330/A01AA1_PictureItem_Clipping_01_5.jpg)](https://www.ctee.com.tw/news/20260605700040-430501)
+    [產業](https://www.ctee.com.tw/industry)
+
+    ### [魏哲家：未來幾年都很好 買台積股票「請繼續」](https://www.ctee.com.tw/news/20260605700040-430501)
+
+    AI浪潮持續推升全球半導體需求。
+
+    2026.06.05
+    """
+    calls: list[str] = []
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url == site.list_url:
+            raise RuntimeError("connect timeout")
+        if url == "https://r.jina.ai/http://https://www.ctee.com.tw/industry/semi":
+            return payload
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    pages = fetch_discovered_pages(site, timeout_seconds=20, max_attempts=2, backoff_seconds=1)
+
+    assert calls == [
+        site.list_url,
+        "https://r.jina.ai/http://https://www.ctee.com.tw/industry/semi",
+    ]
+    assert [page.detail_url for page in pages] == ["https://www.ctee.com.tw/news/20260605700040-430501"]
+    assert pages[0].title == "魏哲家：未來幾年都很好 買台積股票「請繼續」"
+    assert pages[0].excerpt == "AI浪潮持續推升全球半導體需求。"
+    assert pages[0].published_at == datetime(2026, 6, 4, 16, 0, tzinfo=UTC)
+
+
+def test_discover_ctee_pages_reads_news_cards_and_ignores_sidebar() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="content__body">
+          <div class="newslist">
+            <div class="newslist__card">
+              <figure class="picture--thumb">
+                <a href="/news/20260605700040-430501"></a>
+              </figure>
+              <h3 class="news-title">魏哲家：未來幾年都很好 買台積股票「請繼續」</h3>
+              <p>AI浪潮持續推升全球半導體需求。</p>
+              <span>2026.06.05</span>
+            </div>
+            <div class="newslist__card">
+              <a href="https://www.ctee.com.tw/news/20260605700071-430501?utm_source=test"></a>
+              <h3 class="news-title">台積電世界2成股權 持股不再降</h3>
+              <p>台積電仍將持有世界先進約2成股權。</p>
+              <span>2026.06.05</span>
+            </div>
+          </div>
+        </div>
+        <div class="list-box editor-select">
+          <ul>
+            <li><h4 class="list-title"><a href="/news/20260529700050-430501">黃仁勳兆元宴 台鏈大點兵</a></h4></li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    pages = discover_ctee_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.ctee.com.tw/news/20260605700040-430501",
+        "https://www.ctee.com.tw/news/20260605700071-430501",
+    ]
+    assert pages[0].title == "魏哲家：未來幾年都很好 買台積股票「請繼續」"
+    assert pages[0].excerpt == "AI浪潮持續推升全球半導體需求。"
+    assert pages[0].published_at == datetime(2026, 6, 4, 16, 0, tzinfo=UTC)
 
 
 def test_discover_zdnet_korea_pages_reads_newskey_articles() -> None:
@@ -1017,6 +1179,80 @@ def test_parse_zdnet_korea_article_extracts_title_time_author_category_and_body(
     assert "관련기사" not in article.content
     assert article.excerpt == "최태원 SK그룹 회장과 웨이저자 TSMC 회장이 만났다."
     assert article.content_format == "zdnet_korea_article"
+
+
+def test_parse_ctee_article_extracts_structured_fields_and_body() -> None:
+    structured = {
+        "@context": "https://schema.org",
+        "@type": "NewsArticle",
+        "@id": "https://www.ctee.com.tw/news/20260605700040-439901",
+        "headline": "魏哲家：未來幾年都很好 買台積股票「請繼續」",
+        "description": "AI浪潮持續推升全球半導體需求。",
+        "datePublished": "2026-06-05T03:00:00+0800",
+        "author": {"@type": "Person", "name": "張珈睿"},
+        "keywords": "台積電股東會,鴻海,華碩,緯創,半導體,台積電",
+        "about": [{"@type": "Thing", "name": "台積電股東會"}, {"@type": "Thing", "name": "半導體"}],
+        "articleBody": (
+            "AI浪潮持續推升全球半導體需求。 "
+            "魏哲家指出，台積電過去一年營運表現亮眼。 "
+            "台積電將持續與股東分享經營成果。"
+        ),
+    }
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.ctee.com.tw/news/20260605700040-439901" />
+        <meta property="og:title" content="魏哲家：未來幾年都很好 買台積股票「請繼續」" />
+        <meta property="og:description" content="AI浪潮持續推升全球半導體需求。" />
+        <meta property="article:published_time" content="2026-06-05 03:00:00" />
+        <script type="application/ld+json">""" + json.dumps(structured, ensure_ascii=False) + """</script>
+      </head>
+      <body>
+        <div class="content__header">
+          <h1 class="main-title">魏哲家：未來幾年都很好 買台積股票「請繼續」</h1>
+          <h2 class="sub-title">股東會喊話，AI需求強，今年營收仍將增逾30％</h2>
+          <ul class="news-credit">
+            <li class="publish-date"><time>2026.06.05</time></li>
+            <li class="publish-time"><time>03:00</time></li>
+            <li class="publish-author"><span class="organization">工商時報</span><span class="name"><a href="/reporter/60173">張珈睿</a></span></li>
+          </ul>
+          <div class="list-box taglist">
+            <ul>
+              <li class="taglist__item"><a href="/search/台積電股東會">台積電股東會</a></li>
+              <li class="taglist__item"><a href="/search/半導體">半導體</a></li>
+              <li class="taglist__item"><a href="/search/台積電">台積電</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="content__body">
+          <article>
+            <p>AI浪潮持續推升全球半導體需求。</p>
+            <p>魏哲家指出，台積電過去一年營運表現亮眼。</p>
+            <p>台積電將持續與股東分享經營成果。</p>
+          </article>
+        </div>
+      </body>
+    </html>
+    """
+
+    article = parse_ctee_article(
+        html,
+        page_url="https://www.ctee.com.tw/news/20260605700040-430501",
+        source_item_id="https://www.ctee.com.tw/news/20260605700040-430501",
+    )
+
+    assert article.canonical_url == "https://www.ctee.com.tw/news/20260605700040-439901"
+    assert article.title == "魏哲家：未來幾年都很好 買台積股票「請繼續」"
+    assert article.published_at == datetime(2026, 6, 4, 19, 0, tzinfo=UTC)
+    assert article.author_names == ["張珈睿"]
+    assert article.categories == ["半導體"]
+    assert article.tags == ["台積電股東會", "鴻海", "華碩", "緯創", "台積電"]
+    assert article.content == (
+        "AI浪潮持續推升全球半導體需求。 魏哲家指出，台積電過去一年營運表現亮眼。 "
+        "台積電將持續與股東分享經營成果。"
+    )
+    assert article.excerpt == "AI浪潮持續推升全球半導體需求。"
+    assert article.content_format == "ctee_article"
 
 
 def test_discover_tether_pages_reads_wordpress_posts_payload() -> None:
