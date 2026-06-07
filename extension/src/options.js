@@ -41,10 +41,11 @@ resetButton.addEventListener("click", async () => {
   saveHint.textContent = "已恢复默认设置。";
 });
 
-testSoundButton.addEventListener("click", () => {
-  unlockNotificationSound();
-  playNotificationBeep(document.getElementById("soundVolume").value || DEFAULT_SETTINGS.soundVolume);
-  saveHint.textContent = "已播放测试声音。";
+testSoundButton.addEventListener("click", async () => {
+  const unlockResult = await unlockNotificationSound();
+  const playResult = await playNotificationBeep(document.getElementById("soundVolume").value || DEFAULT_SETTINGS.soundVolume);
+  const result = playResult?.ok ? playResult : unlockResult || playResult;
+  saveHint.textContent = result?.message || "已尝试播放测试声音。";
 });
 
 boot().catch((error) => {

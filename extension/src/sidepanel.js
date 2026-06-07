@@ -214,6 +214,48 @@ function feedLaneGridStyle() {
   ].join(" ");
 }
 
+function feedSourceClass(item) {
+  const source = String(item.meta_json?.source || "").toLowerCase();
+  if (source === "x") {
+    return "feedCard--source-x";
+  }
+  if (source === "ai_source") {
+    return "feedCard--source-ai-media";
+  }
+  if (["non_mainstream_media", "mainstream_media", "external_media_alert"].includes(source)) {
+    return "feedCard--source-media";
+  }
+  if (["blockbeats", "panews", "jinse"].includes(source)) {
+    return "feedCard--source-competitor";
+  }
+  return "feedCard--source-other";
+}
+
+function setExpandedFeedKey(itemKey) {
+  state.expandedFeedKeys.clear();
+  state.expandedFeedKeys.add(itemKey);
+}
+
+function toggleExpandedFeedKey(itemKey) {
+  if (state.expandedFeedKeys.has(itemKey)) {
+    state.expandedFeedKeys.delete(itemKey);
+  } else {
+    setExpandedFeedKey(itemKey);
+  }
+}
+
+function renderPreservingLaneScroll(laneList) {
+  const laneId = laneList?.id || null;
+  const scrollTop = laneList?.scrollTop || 0;
+  renderAuthedShell();
+  if (laneId) {
+    const nextLane = document.getElementById(laneId);
+    if (nextLane) {
+      nextLane.scrollTop = scrollTop;
+    }
+  }
+}
+
 function feedbackKindLabel(item) {
   if (item.feed_kind === "auditor_alert") {
     return "审核者";
@@ -237,6 +279,7 @@ function cardFeedbackStatus(item) {
 
 function renderFeedCard(item) {
   const itemKey = feedKey(item);
+  const sourceClass = feedSourceClass(item);
   const feedbackStatus = cardFeedbackStatus(item);
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
@@ -276,7 +319,7 @@ function renderFeedCard(item) {
     : "";
 
   return `
-    <article class="feedCard feedCard--${escapeHtml(item.feed_kind)} feedCard--lane-${escapeHtml(item.lane || "high")}${
+    <article class="feedCard feedCard--${escapeHtml(item.feed_kind)} feedCard--lane-${escapeHtml(item.lane || "high")} ${escapeHtml(sourceClass)}${
       isExpanded ? " feedCard--expanded" : ""
     }" data-feed-id="${escapeHtml(item.feed_item_id)}" data-feed-kind="${escapeHtml(
       item.feed_kind
@@ -545,9 +588,13 @@ function renderAuthedShell() {
   app.innerHTML = `
     <div class="appShell appShell--tabs">
       <header class="toolbar">
-        <div class="toolbar__brand">
-          <p class="eyebrow">OdAIly</p>
-          <h1>${escapeHtml(currentTitle)}</h1>
+        <div class="toolbar__leading">
+          <div class="toolbar__brand">
+            <button id="openOdailyNewsflashButton" class="toolbarBrandButton" title="打开 Odaily 快讯页并点击重置">
+              <p class="eyebrow">OdAIly</p>
+            </button>
+            <h1>${escapeHtml(currentTitle)}</h1>
+          </div>
         </div>
         <div class="toolbar__cluster">
           <section class="tabBar">
@@ -647,6 +694,22 @@ function renderLoading() {
 }
 
 function wireToolbar() {
+  document.getElementById("openOdailyNewsflashButton")?.addEventListener("click", async () => {
+    unlockNotificationSound();
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "ODAILY_OPEN_NEWSFLASH_AND_RESET" });
+      if (!response?.ok) {
+        throw new Error(response?.error || "Odaily 快讯页操作失败");
+      }
+      state.error = "";
+      if (state.session) {
+        renderAuthedShell();
+      }
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "Odaily 快讯页操作失败";
+      renderAuthedShell();
+    }
+  });
   document.getElementById("openOptionsButton")?.addEventListener("click", () => {
     unlockNotificationSound();
     chrome.runtime.openOptionsPage();
@@ -700,6 +763,15 @@ async function copyText(value) {
   input.remove();
 }
 
+function buildNewsGenCopyText(result) {
+  if (!result?.content) {
+    return "";
+  }
+  const title = String(result.title || "").trim();
+  const content = String(result.content || "").trim();
+  return title ? `${title}\n${content}` : content;
+}
+
 function wireCardToolButtons() {
   for (const button of app.querySelectorAll(".cardToolButton")) {
     button.addEventListener("click", async () => {
@@ -716,15 +788,8 @@ function wireCardToolButtons() {
         if (!summary) {
           return;
         }
-        if (state.expandedFeedKeys.has(itemKey)) {
-          state.expandedFeedKeys.delete(itemKey);
-          summary.classList.remove("feedCard__summary--expanded");
-          button.textContent = "展开全文";
-        } else {
-          state.expandedFeedKeys.add(itemKey);
-          summary.classList.add("feedCard__summary--expanded");
-          button.textContent = "收起";
-        }
+        toggleExpandedFeedKey(itemKey);
+        renderPreservingLaneScroll(button.closest(".laneList"));
         return;
       }
 
@@ -769,16 +834,8 @@ function wireFastLaneToggles() {
           return;
         }
         const itemKey = feedKeyOf(feedKind, feedItemId);
-        const summary = card.querySelector(".feedCard__summary");
-        if (state.expandedFeedKeys.has(itemKey)) {
-          state.expandedFeedKeys.delete(itemKey);
-          card.classList.remove("feedCard--expanded");
-          summary?.classList.remove("feedCard__summary--expanded");
-        } else {
-          state.expandedFeedKeys.add(itemKey);
-          card.classList.add("feedCard--expanded");
-          summary?.classList.add("feedCard__summary--expanded");
-        }
+        toggleExpandedFeedKey(itemKey);
+        renderPreservingLaneScroll(card.closest(".laneList"));
       });
     }
   }
@@ -1025,7 +1082,7 @@ function wireNewsGenInteractions() {
       return;
     }
     try {
-      await copyText(state.newsGenResult.content);
+      await copyText(buildNewsGenCopyText(state.newsGenResult));
       state.activeTopTab = FEED_TAB;
       state.newsGenRequestState = { mode: null, loading: false, error: "" };
       await saveActiveTopTab(FEED_TAB);
@@ -1059,7 +1116,7 @@ async function handleLogin(event) {
   }
 }
 
-function maybePlaySound(nextItems) {
+async function maybePlaySound(nextItems) {
   if (!state.settings?.soundEnabled) {
     return;
   }
@@ -1077,7 +1134,7 @@ function maybePlaySound(nextItems) {
     return;
   }
   state.soundCooldownUntil = Date.now() + 4000;
-  playNotificationBeep(state.settings.soundVolume || "medium");
+  await playNotificationBeep(state.settings.soundVolume || "medium");
 }
 
 async function refreshFeed(shouldSound) {
@@ -1094,7 +1151,7 @@ async function refreshFeed(shouldSound) {
     const nextIds = new Set(items.map(feedIdentity));
     const validKeys = new Set(items.map(feedKey));
     if (shouldSound) {
-      maybePlaySound(items);
+      await maybePlaySound(items);
     }
     state.feedItems = items;
     state.lastFeedIds = nextIds;

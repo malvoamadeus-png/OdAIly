@@ -111,6 +111,7 @@ class EditorPluginApiSettings(BaseModel):
     supabase_url: HttpUrl
     supabase_key: str
     auth_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
+    generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
 
 
@@ -129,6 +130,7 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "supabase_url": os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL"),
         "supabase_key": os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY"),
         "auth_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_AUTH_TIMEOUT_SECONDS") or 15.0),
+        "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
     }
     try:
@@ -247,7 +249,7 @@ class EditorPluginNewsGenService:
             api_key=self.x_settings.openai_api_key,
             base_url=str(self.x_settings.openai_base_url),
             api_style=self.x_settings.openai_api_style,
-            timeout_seconds=self.x_settings.request_timeout_seconds,
+            timeout_seconds=self.api_settings.generation_timeout_seconds,
             max_attempts=self.x_settings.retry.max_attempts,
             backoff_seconds=self.x_settings.retry.backoff_seconds,
         )
@@ -667,7 +669,8 @@ def run_editor_plugin_api_server(
     server = EditorPluginApiServer((api_settings.host, api_settings.port), service)
     print(
         "[odaily] editor plugin api server started "
-        f"host={api_settings.host} port={api_settings.port}"
+        f"host={api_settings.host} port={api_settings.port} "
+        f"generation_timeout_seconds={api_settings.generation_timeout_seconds:g}"
     )
     try:
         server.serve_forever()

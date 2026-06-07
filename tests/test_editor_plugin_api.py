@@ -12,6 +12,7 @@ from packages.editor_plugin_api import (
     QUICK_GENERATE_WRITER_MODEL,
     QUICK_GENERATE_WRITER_REASONING_EFFORT,
     format_validation_error,
+    load_editor_plugin_api_settings,
     parse_bearer_token,
 )
 from packages.common.config import XProcessingSettings
@@ -150,6 +151,18 @@ def test_format_validation_error_returns_first_field_message() -> None:
             }
         )
     assert format_validation_error(excinfo.value) == "post_text: Value error, post_text is required"
+
+
+def test_editor_plugin_api_settings_uses_generation_timeout_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setenv("VITE_SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("VITE_SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS", "150")
+
+    settings = load_editor_plugin_api_settings()
+
+    assert settings.generation_timeout_seconds == 150.0
 
 
 def test_editor_plugin_generate_uses_configured_writer_model_and_reasoning() -> None:

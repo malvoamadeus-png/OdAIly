@@ -9,32 +9,59 @@
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 .feedShell,
 .optionsShell {
-  min-height: 100vh;
   background:
     linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
 }
 
-.feedApp,
-.centerPage,
-.optionsPage {
+.feedShell {
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.optionsShell {
   min-height: 100vh;
+  overflow: auto;
+}
+
+.feedApp {
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.centerPage {
+  height: 100%;
+}
+
+.optionsPage {
+  min-height: 100%;
 }
 
 .appShell {
   display: grid;
   grid-template-rows: auto 1fr;
-  min-height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
   gap: 6px;
   padding: 6px;
+  overflow: hidden;
 }
 
 .mainView {
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -54,6 +81,13 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px;
+}
+
+.toolbar__leading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .tabBar {
@@ -93,6 +127,17 @@ body {
   align-items: baseline;
   gap: 6px;
   min-width: 62px;
+}
+
+.toolbarBrandButton {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.toolbarBrandButton .eyebrow {
+  line-height: 1;
 }
 
 .toolbar__cluster {
@@ -244,6 +289,7 @@ body {
 
 .feedScrollLayout {
   height: 100%;
+  max-height: 100%;
   min-height: 0;
   overflow: hidden;
   display: grid;
@@ -254,6 +300,8 @@ body {
 .lanePanel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  max-height: 100%;
   overflow: hidden;
   border-radius: 6px;
 }
@@ -282,13 +330,19 @@ body {
 }
 
 .laneList {
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
   padding: 6px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
-  align-content: start;
-  overflow-y: auto;
+  align-items: stretch;
+  overflow-x: hidden;
+  overflow-y: scroll;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
 }
 
 .laneResizeHandle {
@@ -306,6 +360,7 @@ body {
 }
 
 .feedCard {
+  flex: 0 0 auto;
   position: relative;
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 8px;
@@ -328,6 +383,30 @@ body {
   background: #ef4444;
 }
 
+.feedCard--source-x .feedCard__rail--newsflash {
+  background: #ef4444;
+}
+
+.feedCard--source-competitor .feedCard__rail--newsflash {
+  background: #0ea5e9;
+}
+
+.feedCard--source-media .feedCard__rail--newsflash {
+  background: #14b8a6;
+}
+
+.feedCard--source-ai-media .feedCard__rail--newsflash {
+  background: #8b5cf6;
+}
+
+.feedCard--lane-ai.feedCard--source-x .feedCard__rail--newsflash {
+  background: #a855f7;
+}
+
+.feedCard--lane-ai.feedCard--source-ai-media .feedCard__rail--newsflash {
+  background: #06b6d4;
+}
+
 .feedCard__rail--auditor_alert {
   background: #d97706;
 }
@@ -343,6 +422,15 @@ body {
 
 .feedCard--lane-ai .feedCard__rail {
   background: #8b5cf6;
+}
+
+.feedCard--lane-ai.feedCard--source-x .feedCard__rail {
+  background: #a855f7;
+}
+
+.feedCard--lane-ai.feedCard--source-ai-media .feedCard__rail,
+.feedCard--lane-ai.feedCard--source-media .feedCard__rail {
+  background: #06b6d4;
 }
 
 .feedCard__body {
@@ -507,8 +595,8 @@ body {
 
 .feedCard__summary--expanded {
   display: block;
-  -webkit-box-orient: initial;
-  -webkit-line-clamp: initial;
+  -webkit-box-orient: unset;
+  -webkit-line-clamp: unset;
   white-space: pre-wrap;
   max-height: none;
   overflow: visible;

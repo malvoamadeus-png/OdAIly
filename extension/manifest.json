@@ -3,7 +3,7 @@
   "name": "OdAIly 信息流",
   "version": "0.1.0",
   "description": "值班编辑侧边栏信息流，承接新快讯、审核者、此前消息和巨鲸通知。",
-  "permissions": ["storage", "sidePanel"],
+  "permissions": ["storage", "sidePanel", "tabs", "scripting"],
   "host_permissions": ["https://*/*", "http://*/*"],
   "content_scripts": [
     {

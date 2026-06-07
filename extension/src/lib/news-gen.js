@@ -1,4 +1,5 @@
-const NEWS_GEN_REQUEST_TIMEOUT_MS = 30000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const GENERATE_REQUEST_TIMEOUT_MS = 120000;
 
 function ensureApiConfig(config) {
   if (!config.pluginApiBaseUrl) {
@@ -25,9 +26,9 @@ async function parseError(response) {
   throw new Error(message);
 }
 
-async function requestJson(url, init) {
+async function requestJson(url, init, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), NEWS_GEN_REQUEST_TIMEOUT_MS);
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
     response = await fetch(url, {
@@ -51,19 +52,23 @@ async function requestJson(url, init) {
   return await response.json();
 }
 
-async function postWithSession(config, session, path, payload) {
+async function postWithSession(config, session, path, payload, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   ensureApiConfig(config);
   if (!session?.accessToken) {
     throw new Error("登录状态已失效，请重新登录");
   }
-  const response = await requestJson(buildUrl(config, path), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.accessToken}`
+  const response = await requestJson(
+    buildUrl(config, path),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.accessToken}`
+      },
+      body: JSON.stringify(payload)
     },
-    body: JSON.stringify(payload)
-  });
+    timeoutMs
+  );
   if (!response?.ok) {
     throw new Error(response?.message || "请求失败");
   }
@@ -75,9 +80,9 @@ export async function searchNewsGeneration(config, session, payload) {
 }
 
 export async function generateNewsflash(config, session, payload) {
-  return await postWithSession(config, session, "/plugin/news-gen/generate", payload);
+  return await postWithSession(config, session, "/plugin/news-gen/generate", payload, GENERATE_REQUEST_TIMEOUT_MS);
 }
 
 export async function quickGenerateNewsflash(config, session, payload) {
-  return await postWithSession(config, session, "/plugin/news-gen/quick-generate", payload);
+  return await postWithSession(config, session, "/plugin/news-gen/quick-generate", payload, GENERATE_REQUEST_TIMEOUT_MS);
 }
