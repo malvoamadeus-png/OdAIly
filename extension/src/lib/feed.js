@@ -1,8 +1,11 @@
 import { rpc } from "./supabase.js";
 
 export async function fetchEditorProfile(config, session) {
-  const rows = await rpc(config, session, "editor_plugin_profile");
-  return Array.isArray(rows) ? rows[0] ?? null : null;
+  const profile = await rpc(config, session, "editor_plugin_profile");
+  if (Array.isArray(profile)) {
+    return profile[0] ?? null;
+  }
+  return profile && typeof profile === "object" ? profile : null;
 }
 
 export async function fetchFeedItems(config, session, limit = 120) {
