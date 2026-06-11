@@ -54,6 +54,17 @@ def normalize_editor_plugin_display_name(display_name: str | None) -> str | None
     return normalized[:80]
 
 
+def verify_supabase_bcrypt_password(password: str, encrypted_password: str) -> bool:
+    try:
+        import bcrypt
+    except ImportError as exc:  # pragma: no cover - import error is environment-specific
+        raise RuntimeError("bcrypt is required for editor plugin password login") from exc
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), encrypted_password.encode("utf-8"))
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class EditorPluginUserRecord:
     email: str
@@ -205,10 +216,6 @@ class PostgresEditorPluginAuthRepository:
         normalized_email = normalize_editor_plugin_email(email)
         if not password:
             raise ValueError("Password is required")
-        try:
-            from passlib.hash import bcrypt
-        except ImportError as exc:  # pragma: no cover - import error is environment-specific
-            raise RuntimeError("passlib[bcrypt] is required for editor plugin password login") from exc
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -223,7 +230,7 @@ class PostgresEditorPluginAuthRepository:
                 row = cur.fetchone()
         if not row or not row["encrypted_password"]:
             raise ValueError("Invalid email or password")
-        if not bcrypt.verify(password, str(row["encrypted_password"])):
+        if not verify_supabase_bcrypt_password(password, str(row["encrypted_password"])):
             raise ValueError("Invalid email or password")
         return str(row["id"]) if row["id"] is not None else None, normalize_editor_plugin_email(str(row["email"]))
 
