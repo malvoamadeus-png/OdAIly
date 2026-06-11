@@ -76,7 +76,7 @@ class RetrySettings(BaseModel):
 
 
 class XCaptureWorkerSettings(BaseModel):
-    attempt_retention_days: int = Field(default=3, ge=1, le=3650)
+    attempt_retention_days: int = Field(default=7, ge=1, le=3650)
     processing_freshness_window_seconds: int = Field(
         default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
         ge=1,
@@ -87,7 +87,7 @@ class XCaptureWorkerSettings(BaseModel):
 def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
     load_dotenv()
     payload = {
-        "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 3,
+        "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 7,
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         ),
@@ -290,7 +290,7 @@ class XProcessingSettings(BaseModel):
     judge_model: str = "gpt-5.4-mini"
     judge_reasoning_effort: str = "low"
     writer_model: str = "gpt-5.5"
-    writer_reasoning_effort: str = "medium"
+    writer_reasoning_effort: str = "low"
     publisher_model: str = "gpt-5.5"
     publisher_reasoning_effort: str = "low"
     dashscope_api_key: str | None = None
@@ -334,7 +334,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
         "judge_reasoning_effort": os.getenv("X_PROCESS_JUDGE_REASONING_EFFORT") or "low",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
-        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "medium",
+        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "low",
         "publisher_model": os.getenv("X_PROCESS_PUBLISHER_MODEL") or "gpt-5.5",
         "publisher_reasoning_effort": os.getenv("X_PROCESS_PUBLISHER_REASONING_EFFORT") or "low",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,

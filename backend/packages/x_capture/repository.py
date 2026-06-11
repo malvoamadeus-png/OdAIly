@@ -962,6 +962,9 @@ CREATE INDEX IF NOT EXISTS idx_x_capture_accounts_enabled ON x_capture_accounts(
 CREATE INDEX IF NOT EXISTS idx_x_seen_tweets_username ON x_seen_tweets(username_lower);
 CREATE INDEX IF NOT EXISTS idx_tasks_source_status_created ON tasks(source, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_x_capture_attempts_started ON x_capture_attempts(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_x_capture_attempts_noop_recent
+ON x_capture_attempts(account_id, finished_at DESC, id DESC)
+WHERE status = 'success' AND new_count = 0 AND saved_count = 0;
 
 CREATE OR REPLACE FUNCTION notify_x_capture_config_changed()
 RETURNS trigger AS $$

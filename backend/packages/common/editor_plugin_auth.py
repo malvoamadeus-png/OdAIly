@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -62,6 +64,17 @@ class EditorPluginUserRecord:
 
 
 @dataclass(frozen=True)
+class EditorPluginSessionRecord:
+    token_hash: str
+    user_id: str | None
+    email: str
+    display_name: str | None
+    expires_at: datetime
+    created_at: datetime
+    last_seen_at: datetime
+
+
+@dataclass(frozen=True)
 class EditorPluginGenerationLogInput:
     action: str
     actor_user_id: str | None
@@ -82,6 +95,14 @@ class EditorPluginGenerationLogInput:
 
 
 class PostgresEditorPluginAuthRepository:
+    PLUGIN_FUNCTIONS = {
+        "editor_plugin_profile",
+        "editor_plugin_feed",
+        "editor_plugin_state",
+        "editor_plugin_mark_seen",
+        "editor_plugin_submit_feedback",
+    }
+
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = get_database_url(database_url)
         self._psycopg, self._dict_row = _import_psycopg()
@@ -179,6 +200,130 @@ class PostgresEditorPluginAuthRepository:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+
+    def verify_supabase_password(self, email: str, password: str) -> tuple[str | None, str]:
+        normalized_email = normalize_editor_plugin_email(email)
+        if not password:
+            raise ValueError("Password is required")
+        try:
+            from passlib.hash import bcrypt
+        except ImportError as exc:  # pragma: no cover - import error is environment-specific
+            raise RuntimeError("passlib[bcrypt] is required for editor plugin password login") from exc
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text AS id, email, encrypted_password
+                    FROM auth.users
+                    WHERE lower(email) = %s
+                    LIMIT 1
+                    """,
+                    (normalized_email,),
+                )
+                row = cur.fetchone()
+        if not row or not row["encrypted_password"]:
+            raise ValueError("Invalid email or password")
+        if not bcrypt.verify(password, str(row["encrypted_password"])):
+            raise ValueError("Invalid email or password")
+        return str(row["id"]) if row["id"] is not None else None, normalize_editor_plugin_email(str(row["email"]))
+
+    def create_session(
+        self,
+        *,
+        token_hash: str,
+        user_id: str | None,
+        email: str,
+        display_name: str | None,
+        expires_at: datetime,
+    ) -> None:
+        normalized_email = normalize_editor_plugin_email(email)
+        normalized_display_name = normalize_editor_plugin_display_name(display_name)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM editor_plugin_sessions WHERE expires_at <= now()")
+                cur.execute(
+                    """
+                    INSERT INTO editor_plugin_sessions (
+                        token_hash,
+                        user_id,
+                        email,
+                        display_name,
+                        expires_at,
+                        created_at,
+                        last_seen_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, now(), now())
+                    """,
+                    (token_hash, user_id, normalized_email, normalized_display_name, expires_at),
+                )
+
+    def get_session(self, token_hash: str) -> EditorPluginSessionRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE editor_plugin_sessions
+                    SET last_seen_at = now()
+                    WHERE token_hash = %s
+                      AND expires_at > now()
+                    RETURNING token_hash, user_id::text AS user_id, email, display_name, expires_at, created_at, last_seen_at
+                    """,
+                    (token_hash,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return EditorPluginSessionRecord(
+            token_hash=str(row["token_hash"]),
+            user_id=str(row["user_id"]) if row["user_id"] is not None else None,
+            email=str(row["email"]),
+            display_name=str(row["display_name"]) if row["display_name"] is not None else None,
+            expires_at=row["expires_at"],
+            created_at=row["created_at"],
+            last_seen_at=row["last_seen_at"],
+        )
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM editor_plugin_sessions WHERE token_hash = %s", (token_hash,))
+
+    def call_plugin_function(self, *, email: str, function_name: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        if function_name not in self.PLUGIN_FUNCTIONS:
+            raise ValueError("Unsupported editor plugin function")
+        normalized_email = normalize_editor_plugin_email(email)
+        placeholders = ", ".join(["%s"] * len(args))
+        sql = f"SELECT * FROM {function_name}({placeholders})" if placeholders else f"SELECT * FROM {function_name}()"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_config('request.jwt.claims', %s, true)",
+                    (json.dumps({"email": normalized_email}),),
+                )
+                cur.execute(sql, args)
+                rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def call_plugin_json_function(self, *, email: str, function_name: str, args: tuple[Any, ...]) -> Any:
+        if function_name not in {"editor_plugin_mark_seen", "editor_plugin_submit_feedback"}:
+            raise ValueError("Unsupported editor plugin json function")
+        normalized_email = normalize_editor_plugin_email(email)
+        if len(args) != 4:
+            raise ValueError("Editor plugin json function requires four arguments")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_config('request.jwt.claims', %s, true)",
+                    (json.dumps({"email": normalized_email}),),
+                )
+                cur.execute(
+                    f"SELECT * FROM {function_name}(%s, %s, %s, %s::jsonb)",
+                    args,
+                )
+                rows = cur.fetchall()
+        if not rows:
+            return None
+        return next(iter(rows[0].values()))
 
     def insert_generation_log(self, payload: EditorPluginGenerationLogInput) -> None:
         with self._connect() as conn:

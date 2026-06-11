@@ -16,7 +16,7 @@
 ./tools/dev python backend/src/main.py editor-plugin-init-db
 ```
 
-如果要启用 `快讯生成` 一级模块，还需要启动轻接口服务：
+插件登录、信息流和 `快讯生成` 都需要启动轻接口服务：
 
 ```bash
 ./tools/dev python backend/src/main.py editor-plugin-api-server --host 0.0.0.0 --port 8765
@@ -51,11 +51,9 @@
 
 这一版插件已经内置：
 
-- `Supabase URL`
-- 公开可分发的 `publishable key`
-- `快讯生成` 服务地址
+- 插件轻服务地址
 
-当前内置 `快讯生成` 服务地址为：
+当前内置插件轻服务地址为：
 
 - `http://47.76.243.147:8765`
 
@@ -70,7 +68,7 @@
 
 ## 5. 登录
 
-值班编辑使用各自的 Supabase Auth 邮箱密码登录。
+值班编辑使用各自的 Supabase Auth 邮箱密码登录。浏览器会把邮箱密码提交给插件轻服务，由轻服务校验 Supabase Auth 用户和插件白名单后签发插件专用 session；浏览器不再直接调用 Supabase Auth token 接口。
 
 只有加入 `editor_plugin_users` 白名单且 `enabled=true` 的用户可以读取信息流并提交反馈。
 

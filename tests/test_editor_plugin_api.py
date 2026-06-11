@@ -6,12 +6,18 @@ from pydantic import ValidationError
 from packages.editor_plugin_api import (
     AuthenticatedEditor,
     EditorPluginApiError,
+    EditorPluginForbiddenError,
+    EditorPluginLoginRequestModel,
     EditorPluginRequestModel,
     EditorPluginNewsGenService,
+    SupabaseEditorPluginAuthenticator,
     EditorPluginUnauthorizedError,
+    GENERATE_WRITER_REASONING_EFFORT,
     QUICK_GENERATE_WRITER_MODEL,
     QUICK_GENERATE_WRITER_REASONING_EFFORT,
+    EditorPluginApiSettings,
     format_validation_error,
+    hash_plugin_token,
     load_editor_plugin_api_settings,
     parse_bearer_token,
 )
@@ -62,6 +68,49 @@ class FakeLogRepository:
 
     def insert_generation_log(self, payload) -> None:
         self.logs.append(payload.__dict__)
+
+
+class FakeAuthRepository:
+    def __init__(self) -> None:
+        self.enabled_user = True
+        self.sessions = {}
+
+    def verify_supabase_password(self, email: str, password: str):
+        if password != "correct":
+            raise ValueError("bad password")
+        return "user-1", email.strip().lower()
+
+    def get_enabled_user(self, email: str):
+        if not self.enabled_user:
+            return None
+        return type(
+            "User",
+            (),
+            {
+                "email": email.strip().lower(),
+                "display_name": "Editor",
+                "enabled": True,
+            },
+        )()
+
+    def create_session(self, *, token_hash, user_id, email, display_name, expires_at):
+        self.sessions[token_hash] = type(
+            "Session",
+            (),
+            {
+                "token_hash": token_hash,
+                "user_id": user_id,
+                "email": email,
+                "display_name": display_name,
+                "expires_at": expires_at,
+            },
+        )()
+
+    def get_session(self, token_hash):
+        return self.sessions.get(token_hash)
+
+    def delete_session(self, token_hash):
+        self.sessions.pop(token_hash, None)
 
 
 class FakeXCaptureRepository:
@@ -165,7 +214,62 @@ def test_editor_plugin_api_settings_uses_generation_timeout_env(monkeypatch: pyt
     assert settings.generation_timeout_seconds == 150.0
 
 
-def test_editor_plugin_generate_uses_configured_writer_model_and_reasoning() -> None:
+def test_editor_plugin_api_settings_uses_session_ttl_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setenv("VITE_SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("VITE_SUPABASE_ANON_KEY", "anon-key")
+    monkeypatch.setenv("EDITOR_PLUGIN_API_SESSION_TTL_HOURS", "24")
+
+    settings = load_editor_plugin_api_settings()
+
+    assert settings.session_ttl_hours == 24.0
+
+
+def test_plugin_login_creates_session_and_authenticates_with_token() -> None:
+    repository = FakeAuthRepository()
+    authenticator = SupabaseEditorPluginAuthenticator(
+        settings=EditorPluginApiSettings(
+            supabase_url="https://example.supabase.co",
+            supabase_key="key",
+            session_ttl_hours=1,
+        ),
+        repository=repository,
+    )
+
+    token, expires_at, actor = authenticator.login(
+        EditorPluginLoginRequestModel(email=" Editor@Example.com ", password="correct")
+    )
+
+    assert actor.email == "editor@example.com"
+    assert expires_at.timestamp() > 0
+    assert hash_plugin_token(token) in repository.sessions
+    assert authenticator.authenticate(f"Bearer {token}").email == "editor@example.com"
+
+
+def test_plugin_login_rejects_disabled_user() -> None:
+    repository = FakeAuthRepository()
+    repository.enabled_user = False
+    authenticator = SupabaseEditorPluginAuthenticator(
+        settings=EditorPluginApiSettings(supabase_url="https://example.supabase.co", supabase_key="key"),
+        repository=repository,
+    )
+
+    with pytest.raises(EditorPluginForbiddenError):
+        authenticator.login(EditorPluginLoginRequestModel(email="editor@example.com", password="correct"))
+
+
+def test_plugin_login_rejects_wrong_password() -> None:
+    authenticator = SupabaseEditorPluginAuthenticator(
+        settings=EditorPluginApiSettings(supabase_url="https://example.supabase.co", supabase_key="key"),
+        repository=FakeAuthRepository(),
+    )
+
+    with pytest.raises(EditorPluginUnauthorizedError):
+        authenticator.login(EditorPluginLoginRequestModel(email="editor@example.com", password="wrong"))
+
+
+def test_editor_plugin_generate_uses_configured_writer_model_with_low_reasoning() -> None:
     ai = FakeAiClient(["标题\n\n正文"])
     service = editor_plugin_service(ai_client=ai, writer_reasoning_effort="medium")
 
@@ -175,7 +279,8 @@ def test_editor_plugin_generate_uses_configured_writer_model_and_reasoning() -> 
     assert result["route"] == "regular"
     assert len(ai.calls) == 1
     assert ai.calls[0]["model"] == "gpt-5.5"
-    assert ai.calls[0]["reasoning_effort"] == "medium"
+    assert ai.calls[0]["reasoning_effort"] == GENERATE_WRITER_REASONING_EFFORT
+    assert GENERATE_WRITER_REASONING_EFFORT == "low"
     assert service.auth_repository.logs[0]["action"] == "generate"
 
 

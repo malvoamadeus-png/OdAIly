@@ -28,10 +28,6 @@ export async function fetchFeedState(config, session, feedItemIds) {
   return map;
 }
 
-export async function markSeen(config, session, payload) {
-  return await rpc(config, session, "editor_plugin_mark_seen", payload);
-}
-
 export async function submitFeedback(config, session, payload) {
   return await rpc(config, session, "editor_plugin_submit_feedback", payload);
 }

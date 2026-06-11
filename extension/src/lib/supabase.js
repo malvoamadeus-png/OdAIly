@@ -5,13 +5,21 @@ import {
 } from "./storage.js";
 
 function ensureConfig(config) {
-  if (!config.supabaseUrl || !config.supabaseAnonKey) {
+  if (!config.pluginApiBaseUrl) {
     throw new Error("插件内置连接参数缺失，请联系管理员重新打包插件");
   }
 }
 
 function buildUrl(config, path) {
-  return `${config.supabaseUrl.replace(/\/+$/, "")}${path}`;
+  return `${config.pluginApiBaseUrl.replace(/\/+$/, "")}${path}`;
+}
+
+function ensureSecureLoginUrl(config) {
+  const url = new URL(config.pluginApiBaseUrl);
+  if (url.protocol === "https:" || ["localhost", "127.0.0.1"].includes(url.hostname)) {
+    return;
+  }
+  throw new Error("插件登录服务必须使用 HTTPS，请联系管理员更新插件服务地址");
 }
 
 async function parseError(response) {
@@ -30,21 +38,32 @@ async function parseError(response) {
   throw new Error(message);
 }
 
-async function requestJson(url, init) {
-  const response = await fetch(url, init);
-  if (!response.ok) {
-    await parseError(response);
+async function requestJson(url, init, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      await parseError(response);
+    }
+    if (response.status === 204) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-  if (response.status === 204) {
-    return null;
-  }
-  return await response.json();
 }
 
 function sessionFromPayload(payload) {
   return {
     accessToken: payload.access_token,
-    refreshToken: payload.refresh_token,
+    refreshToken: payload.refresh_token || null,
     expiresAt: Number(payload.expires_at || Math.floor(Date.now() / 1000) + Number(payload.expires_in || 3600)),
     user: {
       id: payload.user?.id || null,
@@ -55,17 +74,21 @@ function sessionFromPayload(payload) {
 
 export async function signInWithPassword(config, email, password) {
   ensureConfig(config);
-  const payload = await requestJson(buildUrl(config, "/auth/v1/token?grant_type=password"), {
+  ensureSecureLoginUrl(config);
+  const response = await requestJson(buildUrl(config, "/plugin/auth/login"), {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      apikey: config.supabaseAnonKey
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
       email: email.trim().toLowerCase(),
       password
     })
-  });
+  }, 20000);
+  if (!response?.ok) {
+    throw new Error(response?.message || "登录失败");
+  }
+  const payload = response.data;
   const session = sessionFromPayload(payload);
   await saveAuthSession(session);
   return session;
@@ -75,10 +98,9 @@ export async function signOut(config) {
   const session = await getAuthSession();
   if (session?.accessToken) {
     try {
-      await requestJson(buildUrl(config, "/auth/v1/logout"), {
+      await requestJson(buildUrl(config, "/plugin/auth/logout"), {
         method: "POST",
         headers: {
-          apikey: config.supabaseAnonKey,
           Authorization: `Bearer ${session.accessToken}`
         }
       });
@@ -91,24 +113,22 @@ export async function signOut(config) {
 
 export async function refreshAuthSession(config, session) {
   ensureConfig(config);
-  if (!session?.refreshToken) {
+  if (!session?.accessToken) {
     await clearAuthSession();
     return null;
   }
   try {
-    const payload = await requestJson(buildUrl(config, "/auth/v1/token?grant_type=refresh_token"), {
+    const response = await requestJson(buildUrl(config, "/plugin/auth/profile"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        apikey: config.supabaseAnonKey
-      },
-      body: JSON.stringify({
-        refresh_token: session.refreshToken
-      })
+        Authorization: `Bearer ${session.accessToken}`
+      }
     });
-    const nextSession = sessionFromPayload(payload);
-    await saveAuthSession(nextSession);
-    return nextSession;
+    if (!response?.ok) {
+      throw new Error(response?.message || "登录状态已失效，请重新登录");
+    }
+    return session;
   } catch {
     await clearAuthSession();
     return null;
@@ -131,13 +151,33 @@ export async function rpc(config, session, name, body = {}) {
   if (!session?.accessToken) {
     throw new Error("登录状态已失效，请重新登录");
   }
-  return await requestJson(buildUrl(config, `/rest/v1/rpc/${name}`), {
+  const pathByName = {
+    editor_plugin_profile: "/plugin/auth/profile",
+    editor_plugin_feed: "/plugin/feed/items",
+    editor_plugin_state: "/plugin/feed/state",
+    editor_plugin_mark_seen: "/plugin/feed/mark-seen",
+    editor_plugin_submit_feedback: "/plugin/feed/feedback"
+  };
+  const path = pathByName[name];
+  if (!path) {
+    throw new Error(`Unsupported plugin RPC: ${name}`);
+  }
+  const payloadByName = {
+    editor_plugin_feed: { limit: body.p_limit },
+    editor_plugin_state: { feed_item_ids: body.p_feed_item_ids },
+    editor_plugin_mark_seen: body,
+    editor_plugin_submit_feedback: body
+  };
+  const response = await requestJson(buildUrl(config, path), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      apikey: config.supabaseAnonKey,
       Authorization: `Bearer ${session.accessToken}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(payloadByName[name] || {})
   });
+  if (!response?.ok) {
+    throw new Error(response?.message || "请求失败");
+  }
+  return response.data ?? null;
 }

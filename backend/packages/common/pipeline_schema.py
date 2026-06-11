@@ -113,6 +113,16 @@ CREATE TABLE IF NOT EXISTS editor_plugin_receipts (
     UNIQUE (feed_item_id, feed_kind, viewer_email)
 );
 
+CREATE TABLE IF NOT EXISTS editor_plugin_sessions (
+    token_hash text PRIMARY KEY,
+    user_id uuid,
+    email text NOT NULL,
+    display_name text,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_seen_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS editor_plugin_generation_logs (
     id bigserial PRIMARY KEY,
     action text NOT NULL CHECK (action IN ('search', 'generate')),
@@ -145,6 +155,9 @@ ON editor_plugin_receipts(viewer_email, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_editor_plugin_receipts_feed_updated
 ON editor_plugin_receipts(feed_item_id, feed_kind, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_sessions_email_expires
+ON editor_plugin_sessions(email, expires_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_editor_plugin_generation_logs_actor_created
 ON editor_plugin_generation_logs(actor_email, created_at DESC);
@@ -218,18 +231,7 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    WITH receipt_rows AS (
-        SELECT
-            r.feed_item_id,
-            r.feed_kind,
-            r.first_seen_at,
-            r.last_seen_at,
-            r.seen_count
-        FROM editor_plugin_receipts r
-        WHERE lower(r.viewer_email) = v_email
-          AND r.feed_item_id = ANY(p_feed_item_ids)
-    ),
-    latest_feedback_rows AS (
+    WITH latest_feedback_rows AS (
         SELECT DISTINCT ON (f.feed_item_id, f.feed_kind)
             f.feed_item_id,
             f.feed_kind,
@@ -239,33 +241,16 @@ BEGIN
         WHERE lower(f.actor_email) = v_email
           AND f.feed_item_id = ANY(p_feed_item_ids)
         ORDER BY f.feed_item_id, f.feed_kind, f.acted_at DESC, f.id DESC
-    ),
-    keyed AS (
-        SELECT
-            receipt_rows.feed_item_id,
-            receipt_rows.feed_kind
-        FROM receipt_rows
-        UNION
-        SELECT
-            latest_feedback_rows.feed_item_id,
-            latest_feedback_rows.feed_kind
-        FROM latest_feedback_rows
     )
     SELECT
-        k.feed_item_id,
-        k.feed_kind,
-        r.first_seen_at,
-        r.last_seen_at,
-        r.seen_count,
+        lf.feed_item_id,
+        lf.feed_kind,
+        NULL::timestamptz AS first_seen_at,
+        NULL::timestamptz AS last_seen_at,
+        NULL::integer AS seen_count,
         lf.feedback AS latest_feedback,
         lf.acted_at AS latest_feedback_at
-    FROM keyed k
-    LEFT JOIN receipt_rows r
-        ON r.feed_item_id = k.feed_item_id
-       AND r.feed_kind = k.feed_kind
-    LEFT JOIN latest_feedback_rows lf
-        ON lf.feed_item_id = k.feed_item_id
-       AND lf.feed_kind = k.feed_kind;
+    FROM latest_feedback_rows lf;
 END;
 $$;
 
@@ -292,49 +277,7 @@ BEGIN
         RAISE EXCEPTION 'editor_plugin_feed_item_id_required';
     END IF;
 
-    SELECT COALESCE(NULLIF(display_name, ''), split_part(email, '@', 1))
-    INTO v_display_name
-    FROM editor_plugin_users
-    WHERE lower(email) = v_email
-      AND enabled = true
-    LIMIT 1;
-
-    INSERT INTO editor_plugin_receipts (
-        feed_item_id,
-        feed_kind,
-        viewer_user_id,
-        viewer_email,
-        viewer_display_name,
-        first_seen_at,
-        last_seen_at,
-        seen_count,
-        session_id,
-        extra_json,
-        updated_at
-    )
-    VALUES (
-        btrim(p_feed_item_id),
-        p_feed_kind,
-        auth.uid(),
-        v_email,
-        v_display_name,
-        now(),
-        now(),
-        1,
-        p_session_id,
-        COALESCE(p_extra_json, '{}'::jsonb),
-        now()
-    )
-    ON CONFLICT (feed_item_id, feed_kind, viewer_email) DO UPDATE
-    SET viewer_user_id = COALESCE(EXCLUDED.viewer_user_id, editor_plugin_receipts.viewer_user_id),
-        viewer_display_name = COALESCE(EXCLUDED.viewer_display_name, editor_plugin_receipts.viewer_display_name),
-        last_seen_at = EXCLUDED.last_seen_at,
-        seen_count = editor_plugin_receipts.seen_count + 1,
-        session_id = COALESCE(EXCLUDED.session_id, editor_plugin_receipts.session_id),
-        extra_json = COALESCE(editor_plugin_receipts.extra_json, '{}'::jsonb) || COALESCE(EXCLUDED.extra_json, '{}'::jsonb),
-        updated_at = EXCLUDED.updated_at;
-
-    RETURN jsonb_build_object('ok', true);
+    RETURN jsonb_build_object('ok', true, 'recorded', false);
 END;
 $$;
 
@@ -432,6 +375,7 @@ DECLARE
     v_high_auditor_limit integer;
     v_low_writer3_limit integer;
     v_low_whale_limit integer;
+    v_source_candidate_limit integer;
 BEGIN
     IF NOT is_editor_plugin_user() THEN
         RETURN;
@@ -457,9 +401,12 @@ BEGIN
         v_low_whale_limit := 1;
         v_low_writer3_limit := GREATEST(0, v_low_limit - 1);
     END IF;
+    v_source_candidate_limit := GREATEST(p_limit, 40);
 
     IF to_regclass('public.x_task_pipeline') IS NOT NULL AND to_regclass('public.tasks') IS NOT NULL THEN
         parts := array_append(parts, $newsflash$
+            SELECT *
+            FROM (
             SELECT
                 'newsflash:' || p.task_id::text AS feed_item_id,
                 'newsflash'::text AS feed_kind,
@@ -533,11 +480,16 @@ BEGIN
               AND COALESCE(p.final_title, t.title) IS NOT NULL
               AND COALESCE(p.final_content, t.content) <> ''
               AND COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) >= now() - interval '30 minutes'
+            ORDER BY COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) DESC, p.task_id DESC
+            LIMIT $9
+            ) newsflash_candidates
         $newsflash$);
     END IF;
 
     IF to_regclass('public.auditor_checks') IS NOT NULL THEN
         parts := array_append(parts, $auditor$
+            SELECT *
+            FROM (
             SELECT
                 'auditor:' || a.id::text AS feed_item_id,
                 'auditor_alert'::text AS feed_kind,
@@ -564,11 +516,16 @@ BEGIN
             FROM auditor_checks a
             WHERE a.status = 'flagged'
               AND COALESCE(a.alerted_at, a.updated_at, a.created_at) >= now() - interval '30 minutes'
+            ORDER BY COALESCE(a.alerted_at, a.updated_at, a.created_at) DESC, a.id DESC
+            LIMIT $9
+            ) auditor_candidates
         $auditor$);
     END IF;
 
     IF to_regclass('public.writer3_contexts') IS NOT NULL THEN
         parts := array_append(parts, $writer3$
+            SELECT *
+            FROM (
             SELECT
                 'writer3:' || w.id::text AS feed_item_id,
                 'writer3_context'::text AS feed_kind,
@@ -603,11 +560,16 @@ BEGIN
             FROM writer3_contexts w
             WHERE w.status = 'sent'
               AND COALESCE(w.sent_at, w.updated_at, w.created_at) >= now() - interval '30 minutes'
+            ORDER BY COALESCE(w.sent_at, w.updated_at, w.created_at) DESC, w.id DESC
+            LIMIT $9
+            ) writer3_candidates
         $writer3$);
     END IF;
 
     IF to_regclass('public.whale_watch_activities') IS NOT NULL AND to_regclass('public.whale_watch_addresses') IS NOT NULL THEN
         parts := array_append(parts, $whale$
+            SELECT *
+            FROM (
             SELECT
                 'whale_onchain:' || a.id::text AS feed_item_id,
                 'whale_onchain'::text AS feed_kind,
@@ -633,11 +595,16 @@ BEGIN
             JOIN whale_watch_addresses addr
               ON addr.id = a.address_id
             WHERE a.created_at >= now() - interval '30 minutes'
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT $9
+            ) whale_candidates
         $whale$);
     END IF;
 
     IF to_regclass('public.whale_watch_hyperliquid_activities') IS NOT NULL AND to_regclass('public.whale_watch_hyperliquid_addresses') IS NOT NULL THEN
         parts := array_append(parts, $hyper$
+            SELECT *
+            FROM (
             SELECT
                 'whale_hyperliquid:' || a.id::text AS feed_item_id,
                 'whale_hyperliquid'::text AS feed_kind,
@@ -664,6 +631,9 @@ BEGIN
             JOIN whale_watch_hyperliquid_addresses addr
               ON addr.id = a.address_id
             WHERE a.created_at >= now() - interval '30 minutes'
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT $9
+            ) hyper_candidates
         $hyper$);
     END IF;
 
@@ -924,7 +894,8 @@ BEGIN
         v_high_newsflash_limit,
         v_low_writer3_limit,
         v_low_whale_limit,
-        p_limit;
+        p_limit,
+        v_source_candidate_limit;
 END;
 $$;
 
@@ -943,7 +914,7 @@ DROP POLICY IF EXISTS editor_plugin_receipts_self_update ON editor_plugin_receip
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON editor_plugin_users, editor_plugin_feedbacks, editor_plugin_receipts, editor_plugin_generation_logs FROM anon;
+        REVOKE ALL PRIVILEGES ON editor_plugin_users, editor_plugin_feedbacks, editor_plugin_receipts, editor_plugin_sessions, editor_plugin_generation_logs FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE editor_plugin_feedbacks_id_seq, editor_plugin_receipts_id_seq, editor_plugin_generation_logs_id_seq FROM anon;
     END IF;
 

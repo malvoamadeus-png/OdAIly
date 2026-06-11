@@ -893,7 +893,7 @@ def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
     assert pipeline.draft_title == "融资标题"
     assert pipeline.draft_content == "融资正文"
     assert fake_ai.calls[0]["model"] == "gpt-5.5"
-    assert fake_ai.calls[0]["reasoning_effort"] == "medium"
+    assert fake_ai.calls[0]["reasoning_effort"] == "low"
 
 
 def test_writer_persists_feature_mode_state_to_pipeline() -> None:

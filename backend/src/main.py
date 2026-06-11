@@ -238,6 +238,21 @@ def parse_args() -> argparse.Namespace:
     auditor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     auditor_worker.add_argument("--once", action="store_true", help="Process one auditor task and exit.")
 
+    maintenance_cleanup = subparsers.add_parser(
+        "maintenance-cleanup",
+        help="Clean old runtime logs and trim completed payload fields. Defaults to dry-run.",
+    )
+    maintenance_cleanup.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    maintenance_cleanup.add_argument("--execute", action="store_true", help="Actually delete/update rows. Omit for dry-run.")
+    maintenance_cleanup.add_argument("--retention-days", type=int, default=7, help="Runtime log retention in days.")
+    maintenance_cleanup.add_argument("--feedback-retention-days", type=int, default=90, help="Editor feedback retention in days.")
+    maintenance_cleanup.add_argument(
+        "--completed-field-retention-days",
+        type=int,
+        default=7,
+        help="Age in days before trimming payload fields from completed records.",
+    )
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -892,6 +907,32 @@ def auditor_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def maintenance_cleanup_command(args: argparse.Namespace) -> int:
+    from packages.maintenance import PostgresMaintenanceRepository
+
+    if args.retention_days < 1 or args.feedback_retention_days < 1 or args.completed_field_retention_days < 1:
+        raise ValueError("retention day values must be >= 1")
+    repository = PostgresMaintenanceRepository(args.database_url)
+    result = repository.cleanup(
+        dry_run=not args.execute,
+        retention_days=args.retention_days,
+        feedback_retention_days=args.feedback_retention_days,
+        completed_field_retention_days=args.completed_field_retention_days,
+    )
+    mode = "execute" if args.execute else "dry-run"
+    print(
+        "[odaily] maintenance cleanup "
+        f"mode={mode} retention_days={result.retention_days} "
+        f"feedback_retention_days={result.feedback_retention_days} "
+        f"completed_field_retention_days={result.completed_field_retention_days}"
+    )
+    for name, count in sorted(result.deleted.items()):
+        print(f"delete\t{name}\t{count}")
+    for name, count in sorted(result.cleared.items()):
+        print(f"clear\t{name}\t{count}")
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -971,6 +1012,8 @@ def main() -> int:
             return auditor_init_db_command(args)
         if args.command == "auditor-worker":
             return auditor_worker_command(args)
+        if args.command == "maintenance-cleanup":
+            return maintenance_cleanup_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:

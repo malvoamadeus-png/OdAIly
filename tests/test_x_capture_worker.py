@@ -332,12 +332,12 @@ def test_inmemory_repository_keeps_interesting_success_attempts() -> None:
     assert len(repo.attempts) == 2
 
 
-def test_attempt_retention_env_defaults_to_three_days(monkeypatch) -> None:
+def test_attempt_retention_env_defaults_to_seven_days(monkeypatch) -> None:
     monkeypatch.delenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS", raising=False)
 
     settings = load_x_capture_worker_settings()
 
-    assert settings.attempt_retention_days == 3
+    assert settings.attempt_retention_days == 7
 
 
 def test_attempt_retention_env_validates_range(monkeypatch) -> None:

@@ -2,7 +2,6 @@ import {
   fetchEditorProfile,
   fetchFeedItems,
   fetchFeedState,
-  markSeen,
   submitFeedback
 } from "./lib/feed.js";
 import {
@@ -52,6 +51,8 @@ const state = {
   activeTopTab: FEED_TAB,
   panelSessionId: null,
   loading: true,
+  loginLoading: false,
+  loginEmail: "",
   error: "",
   loginError: "",
   pollTimer: null,
@@ -646,6 +647,7 @@ function renderConfigGate() {
 }
 
 function renderLogin() {
+  const disabledAttr = state.loginLoading ? "disabled" : "";
   app.innerHTML = `
     <div class="centerPage">
       <section class="panel loginPanel">
@@ -655,20 +657,25 @@ function renderLogin() {
         <form id="loginForm" class="loginForm">
           <label class="field">
             <span>邮箱</span>
-            <input id="email" type="email" autocomplete="username" required />
+            <input id="email" type="email" autocomplete="username" value="${escapeHtml(
+              state.loginEmail
+            )}" required ${disabledAttr} />
           </label>
           <label class="field">
             <span>密码</span>
-            <input id="password" type="password" autocomplete="current-password" required />
+            <input id="password" type="password" autocomplete="current-password" required ${disabledAttr} />
           </label>
+          ${state.loginLoading ? `<div id="loginStatus" class="inlineStatus">正在登录...</div>` : ""}
           ${
             state.loginError || state.error
               ? `<div class="inlineError">${escapeHtml(state.loginError || state.error)}</div>`
               : ""
           }
           <div class="formActions">
-            <button type="submit" class="primaryButton">登录</button>
-            <button type="button" id="openOptionsButton" class="secondaryButton">设置</button>
+            <button id="loginSubmitButton" type="submit" class="primaryButton" ${disabledAttr}>${
+              state.loginLoading ? "登录中..." : "登录"
+            }</button>
+            <button type="button" id="openOptionsButton" class="secondaryButton" ${disabledAttr}>设置</button>
           </div>
         </form>
       </section>
@@ -679,6 +686,28 @@ function renderLogin() {
     chrome.runtime.openOptionsPage();
   });
   document.getElementById("loginForm").addEventListener("submit", handleLogin);
+}
+
+function updateLoginFormLoading(loading) {
+  document.getElementById("email")?.toggleAttribute("disabled", loading);
+  document.getElementById("password")?.toggleAttribute("disabled", loading);
+  document.getElementById("openOptionsButton")?.toggleAttribute("disabled", loading);
+  const submitButton = document.getElementById("loginSubmitButton");
+  if (submitButton) {
+    submitButton.toggleAttribute("disabled", loading);
+    submitButton.textContent = loading ? "登录中..." : "登录";
+  }
+  const form = document.getElementById("loginForm");
+  const status = document.getElementById("loginStatus");
+  if (loading && form && !status) {
+    const node = document.createElement("div");
+    node.id = "loginStatus";
+    node.className = "inlineStatus";
+    node.textContent = "正在登录...";
+    form.insertBefore(node, form.querySelector(".inlineError") || form.querySelector(".formActions"));
+  } else if (!loading) {
+    status?.remove();
+  }
 }
 
 function renderLoading() {
@@ -850,6 +879,7 @@ async function resetAuthState(message = "") {
   await clearAuthSession();
   state.session = null;
   state.profile = null;
+  state.loginLoading = false;
   state.feedItems = [];
   state.feedState = new Map();
   state.lastFeedIds = new Set();
@@ -981,43 +1011,7 @@ function wireLaneResizers() {
 }
 
 function wireSeenTracking() {
-  const observer = new IntersectionObserver(
-    async (entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting || entry.intersectionRatio < 0.45) {
-          continue;
-        }
-        const feedItemId = entry.target.getAttribute("data-feed-id");
-        const feedKind = entry.target.getAttribute("data-feed-kind");
-        if (!feedItemId || !feedKind) {
-          continue;
-        }
-        const key = feedKeyOf(feedKind, feedItemId);
-        if (state.seenFeedKeys.has(key)) {
-          continue;
-        }
-        state.seenFeedKeys.add(key);
-        observer.unobserve(entry.target);
-        try {
-          await withSessionRetry(async () => {
-            await markSeen(state.settings, state.session, {
-              p_feed_item_id: feedItemId,
-              p_feed_kind: feedKind,
-              p_session_id: state.panelSessionId,
-              p_extra_json: {}
-            });
-          });
-        } catch {
-          state.seenFeedKeys.delete(key);
-        }
-      }
-    },
-    { threshold: [0.45] }
-  );
-
-  for (const card of app.querySelectorAll(".feedCard")) {
-    observer.observe(card);
-  }
+  state.seenFeedKeys.clear();
 }
 
 function wireFeedInteractions() {
@@ -1101,16 +1095,24 @@ function wireNewsGenInteractions() {
 
 async function handleLogin(event) {
   event.preventDefault();
+  if (state.loginLoading) {
+    return;
+  }
   unlockNotificationSound();
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
+  state.loginEmail = email;
   state.loginError = "";
   state.error = "";
-  render();
+  state.loginLoading = true;
+  document.querySelector(".inlineError")?.remove();
+  updateLoginFormLoading(true);
   try {
     state.session = await signInWithPassword(state.settings, email, password);
+    state.loginLoading = false;
     await loadProfileAndFeed();
   } catch (error) {
+    state.loginLoading = false;
     state.loginError = error instanceof Error ? error.message : "登录失败";
     render();
   }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
@@ -42,6 +43,7 @@ from packages.x_processing.worker import build_writer_prompt
 
 QUICK_GENERATE_WRITER_MODEL = "gpt-5.4-mini"
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
+GENERATE_WRITER_REASONING_EFFORT = "low"
 PluginNewsType = Literal["regular", "funding", "onchain"]
 
 
@@ -105,12 +107,33 @@ class EditorPluginRequestModel(BaseModel):
         return text or None
 
 
+class EditorPluginLoginRequestModel(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        text = value.strip().lower()
+        if not text or "@" not in text:
+            raise ValueError("email is required")
+        return text
+
+    @field_validator("password")
+    @classmethod
+    def require_password(cls, value: str) -> str:
+        if not value:
+            raise ValueError("password is required")
+        return value
+
+
 class EditorPluginApiSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     supabase_url: HttpUrl
     supabase_key: str
     auth_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
+    session_ttl_hours: float = Field(default=168.0, gt=0.0, le=720.0)
     generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
 
@@ -130,6 +153,7 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "supabase_url": os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL"),
         "supabase_key": os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY"),
         "auth_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_AUTH_TIMEOUT_SECONDS") or 15.0),
+        "session_ttl_hours": float(os.getenv("EDITOR_PLUGIN_API_SESSION_TTL_HOURS") or 168.0),
         "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
     }
@@ -147,6 +171,10 @@ def parse_bearer_token(value: str | None) -> str:
     if not token:
         raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
     return token
+
+
+def hash_plugin_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def format_validation_error(error: ValidationError) -> str:
@@ -171,8 +199,43 @@ class SupabaseEditorPluginAuthenticator:
         self.settings = settings
         self.repository = repository
 
+    def login(self, request: EditorPluginLoginRequestModel) -> tuple[str, datetime, AuthenticatedEditor]:
+        try:
+            user_id, email = self.repository.verify_supabase_password(request.email, request.password)
+        except ValueError as exc:
+            raise EditorPluginUnauthorizedError("邮箱或密码错误") from exc
+        record = self.repository.get_enabled_user(email)
+        if record is None:
+            raise EditorPluginForbiddenError("当前账号未加入插件白名单或已被停用")
+        display_name = record.display_name or email.split("@", 1)[0]
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + timedelta(hours=self.settings.session_ttl_hours)
+        self.repository.create_session(
+            token_hash=hash_plugin_token(token),
+            user_id=user_id,
+            email=record.email,
+            display_name=display_name,
+            expires_at=expires_at,
+        )
+        return token, expires_at, AuthenticatedEditor(user_id=user_id, email=record.email, display_name=display_name)
+
+    def logout(self, authorization_header: str | None) -> None:
+        token = parse_bearer_token(authorization_header)
+        self.repository.delete_session(hash_plugin_token(token))
+
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         token = parse_bearer_token(authorization_header)
+        session = self.repository.get_session(hash_plugin_token(token))
+        if session is not None:
+            record = self.repository.get_enabled_user(session.email)
+            if record is None:
+                raise EditorPluginForbiddenError("当前账号未加入插件白名单或已被停用")
+            return AuthenticatedEditor(
+                user_id=session.user_id,
+                email=record.email,
+                display_name=record.display_name or session.display_name or record.email.split("@", 1)[0],
+            )
+
         try:
             response = requests.get(
                 f"{str(self.settings.supabase_url).rstrip('/')}/auth/v1/user",
@@ -272,6 +335,76 @@ class EditorPluginNewsGenService:
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         return self.authenticator.authenticate(authorization_header)
 
+    def login(self, request: EditorPluginLoginRequestModel) -> dict[str, Any]:
+        token, expires_at, actor = self.authenticator.login(request)
+        return {
+            "access_token": token,
+            "expires_at": int(expires_at.timestamp()),
+            "user": {
+                "id": actor.user_id,
+                "email": actor.email,
+                "display_name": actor.display_name,
+            },
+        }
+
+    def logout(self, authorization_header: str | None) -> None:
+        self.authenticator.logout(authorization_header)
+
+    def profile(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        return {
+            "email": actor.email,
+            "display_name": actor.display_name or actor.email.split("@", 1)[0],
+            "enabled": True,
+        }
+
+    def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
+        rows = self.auth_repository.call_plugin_function(
+            email=actor.email,
+            function_name="editor_plugin_feed",
+            args=(limit,),
+        )
+        return [self._normalize_feed_row(row) for row in rows]
+
+    def feed_state(self, actor: AuthenticatedEditor, feed_item_ids: list[str]) -> list[dict[str, Any]]:
+        return self.auth_repository.call_plugin_function(
+            email=actor.email,
+            function_name="editor_plugin_state",
+            args=(feed_item_ids,),
+        )
+
+    def mark_seen(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        return self.auth_repository.call_plugin_json_function(
+            email=actor.email,
+            function_name="editor_plugin_mark_seen",
+            args=(
+                str(payload.get("p_feed_item_id") or ""),
+                str(payload.get("p_feed_kind") or ""),
+                payload.get("p_session_id"),
+                json.dumps(payload.get("p_extra_json") or {}, ensure_ascii=False),
+            ),
+        )
+
+    def submit_feedback(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        return self.auth_repository.call_plugin_json_function(
+            email=actor.email,
+            function_name="editor_plugin_submit_feedback",
+            args=(
+                str(payload.get("p_feed_item_id") or ""),
+                str(payload.get("p_feed_kind") or ""),
+                str(payload.get("p_feedback") or ""),
+                payload.get("p_session_id"),
+                json.dumps(payload.get("p_extra_json") or {}, ensure_ascii=False),
+            ),
+        )
+
+    def _normalize_feed_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "badges": row.get("badges") or [],
+            "action_schema": row.get("action_schema") or {"type": "read"},
+            "meta_json": row.get("meta_json") or {},
+        }
+
     def run_search(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
         query = self._build_query_document(request)
         result_payload: dict[str, Any] | None = None
@@ -344,7 +477,7 @@ class EditorPluginNewsGenService:
             request,
             action="generate",
             writer_model=self.x_settings.writer_model,
-            writer_reasoning_effort=self.x_settings.writer_reasoning_effort,
+            writer_reasoning_effort=GENERATE_WRITER_REASONING_EFFORT,
         )
 
     def run_quick_generate(self, actor: AuthenticatedEditor, request: EditorPluginRequestModel) -> dict[str, Any]:
@@ -595,6 +728,9 @@ class EditorPluginApiServer(ThreadingHTTPServer):
 
 class EditorPluginApiHandler(BaseHTTPRequestHandler):
     server_version = "OdAIlyEditorPluginAPI/0.1"
+    AUTH_PATHS = {"/plugin/auth/login", "/plugin/auth/logout", "/plugin/auth/profile"}
+    FEED_PATHS = {"/plugin/feed/items", "/plugin/feed/state", "/plugin/feed/mark-seen", "/plugin/feed/feedback"}
+    NEWS_GEN_PATHS = {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -602,12 +738,47 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}:
+        if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
             return
 
         try:
+            if self.path == "/plugin/auth/login":
+                request = EditorPluginLoginRequestModel.model_validate(self._read_json())
+                data = self.server.service.login(request)
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": data})
+                return
+
             actor = self.server.service.authenticate(self.headers.get("Authorization"))
+            if self.path == "/plugin/auth/logout":
+                self.server.service.logout(self.headers.get("Authorization"))
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": None})
+                return
+            if self.path == "/plugin/auth/profile":
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.profile(actor)})
+                return
+            if self.path == "/plugin/feed/items":
+                payload = self._read_json()
+                limit = int(payload.get("limit") or 120)
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.feed(actor, limit)})
+                return
+            if self.path == "/plugin/feed/state":
+                payload = self._read_json()
+                feed_item_ids = payload.get("feed_item_ids") or []
+                if not isinstance(feed_item_ids, list):
+                    raise EditorPluginApiError("feed_item_ids must be an array")
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.feed_state(actor, feed_item_ids)})
+                return
+            if self.path == "/plugin/feed/mark-seen":
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.mark_seen(actor, self._read_json())})
+                return
+            if self.path == "/plugin/feed/feedback":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.submit_feedback(actor, self._read_json())},
+                )
+                return
+
             payload = self._read_json()
             request = EditorPluginRequestModel.model_validate(payload)
             if self.path == "/plugin/news-gen/search":
@@ -646,12 +817,17 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
         self.send_response(status)
         self._send_common_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _json_default(self, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
 
 
 def run_editor_plugin_api_server(
