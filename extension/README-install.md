@@ -19,12 +19,26 @@
 插件登录、信息流和 `快讯生成` 都需要启动轻接口服务：
 
 ```bash
-./tools/dev python backend/src/main.py editor-plugin-api-server --host 0.0.0.0 --port 8765
+./tools/dev python backend/src/main.py editor-plugin-api-server --host 127.0.0.1 --port 8765
 ```
 
-生产环境建议直接安装并启用：
+生产环境由 systemd 在本机端口启动轻服务，再由 Caddy 提供 HTTPS 反向代理：
 
 - `deploy/odaily-editor-plugin-api.service`
+- `deploy/odaily-editor-plugin-api.Caddyfile`
+
+部署时云安全组需要放行公网 TCP `80/443` 供 Caddy 签发和续期证书；`8765` 不作为公网入口，应只由本机反代访问。
+
+首次部署 HTTPS 入口：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y caddy
+sudo install -m 0644 deploy/odaily-editor-plugin-api.Caddyfile /etc/caddy/Caddyfile
+sudo systemctl enable --now caddy
+sudo systemctl restart odaily-editor-plugin-api.service caddy
+curl -i https://47.76.243.147.sslip.io/plugin/auth/profile -X POST
+```
 
 ## 2. 加入值班编辑白名单
 
@@ -55,7 +69,7 @@
 
 当前内置插件轻服务地址为：
 
-- `http://47.76.243.147:8765`
+- `https://47.76.243.147.sslip.io`
 
 值班编辑不需要手填连接参数。
 

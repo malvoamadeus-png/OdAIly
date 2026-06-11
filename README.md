@@ -357,6 +357,7 @@ Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
 - `deploy/odaily-worker.service`
 - `deploy/odaily-competitor-monitor.service`
 - `deploy/odaily-editor-plugin-api.service`
+- `deploy/odaily-editor-plugin-api.Caddyfile`
 - `deploy/odaily-non-mainstream-media.service`
 - `deploy/odaily-external-media-alert@.service`
 - `deploy/odaily-whale-watch.service`

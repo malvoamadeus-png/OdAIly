@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py editor-plugin-api-server --host 0.0.0.0 --port 8765
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py editor-plugin-api-server --host 127.0.0.1 --port 8765
 Restart=always
 RestartSec=10
 
