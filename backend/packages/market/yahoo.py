@@ -117,6 +117,17 @@ def _change_percent(price: float | None, previous_close: float | None) -> float 
     return ((price - previous_close) / previous_close) * 100
 
 
+def _close_reference(meta: dict[str, Any]) -> float | None:
+    return _to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose"))
+
+
+def _is_suspicious_reference(price: float | None, previous_close: float | None) -> bool:
+    if price is None or previous_close in (None, 0):
+        return False
+    ratio = price / previous_close
+    return ratio >= 5 or ratio <= 0.2
+
+
 def _quote_from_chart_result(
     *,
     source_symbol: str,
@@ -136,23 +147,31 @@ def _quote_from_chart_result(
     previous_close: float | None = None
 
     if kind == "close":
+        latest_price = _to_float(meta.get("regularMarketPrice"))
+        latest_timestamp = meta.get("regularMarketTime")
+        previous_close = _close_reference(meta)
         valid_points = [
             (timestamps[index] if index < len(timestamps) else None, price)
             for index, price in enumerate(closes)
             if price is not None
         ]
-        if len(valid_points) >= 2:
+        if latest_price is None and valid_points:
             latest_timestamp, latest_price = valid_points[-1]
+        if previous_close is None and len(valid_points) >= 2:
             previous_close = valid_points[-2][1]
+        if latest_price is None:
+            source_error = "Yahoo chart daily data missing valid close."
+        elif previous_close is None:
+            source_error = "Yahoo chart data missing previous close."
         else:
-            source_error = "Yahoo chart daily data missing at least two valid closes."
+            source_error = None
     elif kind == "premarket":
         latest_timestamp, latest_price = _latest_valid_point(
             timestamps=timestamps,
             closes=quote.get("close") or [],
             premarket_only=True,
         )
-        previous_close = _to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose"))
+        previous_close = _close_reference(meta)
         if latest_price is None:
             source_error = "Yahoo chart premarket data missing valid 1m close."
     elif kind == "open":
@@ -161,7 +180,7 @@ def _quote_from_chart_result(
             closes=quote.get("close") or [],
             premarket_only=False,
         )
-        previous_close = _to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose"))
+        previous_close = _close_reference(meta)
         if latest_price is None:
             source_error = "Yahoo chart intraday data missing valid 1m close."
     else:
@@ -170,6 +189,8 @@ def _quote_from_chart_result(
     change_percent = _change_percent(latest_price, previous_close)
     if source_error is None and change_percent is None:
         source_error = "Yahoo chart data missing previous close."
+    elif source_error is None and _is_suspicious_reference(latest_price, previous_close):
+        source_error = "Yahoo chart previous close appears inconsistent with latest price."
 
     payload: dict[str, Any] = {
         "symbol": source_symbol,
@@ -218,7 +239,7 @@ def _chart_summary(quote: MarketQuote, previous_close: float | None = None) -> d
 
 def _chart_request_params(kind: str) -> dict[str, str]:
     if kind == "close":
-        return {"range": "5d", "interval": "1d", "includePrePost": "false"}
+        return {"range": "1d", "interval": "1m", "includePrePost": "false"}
     return {"range": "1d", "interval": "1m", "includePrePost": "true"}
 
 
@@ -249,7 +270,7 @@ def _chart_quote(
     meta = result.get("meta") or {}
     summary = _chart_summary(
         quote,
-        previous_close=_to_float(meta.get("previousClose")) or _to_float(meta.get("chartPreviousClose")),
+        previous_close=_close_reference(meta),
     )
     return quote, summary
 

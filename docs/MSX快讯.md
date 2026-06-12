@@ -35,6 +35,10 @@
   - 配置项 `min_valid_ai_stocks` 控制至少需要多少只有效 AI 概念股行情才能成稿，默认 `10`。
   - 配置项 `min_valid_indices` 默认为 `0`，即指数数据缺失不再阻断 `open / close` 成稿；如需恢复强校验，可显式设为 `1` 到 `4`。
   - 为兼容旧配置，worker 仍接受 `min_valid_crypto_stocks` 作为同一阈值的旧字段名，但文档与新配置统一使用 `min_valid_ai_stocks`。
+- 行情源 fallback：
+  - 默认按 `yahoo_quote`、`yahoo_chart`、`finnhub` 顺序尝试。
+  - `close` 使用 `yahoo_chart` fallback 时请求 `1d/1m` intraday chart，并使用 `meta.regularMarketPrice` 与 `meta.previousClose/chartPreviousClose` 计算收盘涨跌幅，避免日线数据在拆股或复权异常时把前收与最新价放在不同价格口径下。
+  - 若 `yahoo_chart` 中最新价与前收相差超过 5 倍或低于 0.2 倍，该标的视为异常并跳过，防止异常涨跌幅进入标题和正文。
 
 ## 边界说明
 

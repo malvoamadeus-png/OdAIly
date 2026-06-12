@@ -44,7 +44,7 @@ def test_fetch_quotes_records_quote_error_without_chart_fallback(monkeypatch) ->
     assert batch.raw_response["quote_error"] == "forbidden"
 
 
-def test_fetch_chart_quotes_close_uses_last_daily_close_vs_previous_daily_close(monkeypatch) -> None:
+def test_fetch_chart_quotes_close_uses_intraday_meta_regular_price(monkeypatch) -> None:
     class Response:
         def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
             self.status_code = status_code
@@ -59,8 +59,9 @@ def test_fetch_chart_quotes_close_uses_last_daily_close_vs_previous_daily_close(
 
     def fake_get(url, params, headers, timeout):  # noqa: ANN001
         assert "v8/finance/chart" in url
-        assert params["range"] == "5d"
-        assert params["interval"] == "1d"
+        assert params["range"] == "1d"
+        assert params["interval"] == "1m"
+        assert params["includePrePost"] == "false"
         return Response(
             status_code=200,
             payload={
@@ -68,11 +69,13 @@ def test_fetch_chart_quotes_close_uses_last_daily_close_vs_previous_daily_close(
                     "result": [
                         {
                             "meta": {
-                                "chartPreviousClose": 50,
+                                "regularMarketPrice": 126,
+                                "previousClose": 120,
+                                "regularMarketTime": 1778025600,
                                 "currency": "USD",
                             },
-                            "timestamp": [1777852800, 1777939200, 1778025600],
-                            "indicators": {"quote": [{"close": [100, 120, 126]}]},
+                            "timestamp": [1778022000, 1778025600],
+                            "indicators": {"quote": [{"close": [125, 127]}]},
                         }
                     ]
                 }
@@ -92,6 +95,54 @@ def test_fetch_chart_quotes_close_uses_last_daily_close_vs_previous_daily_close(
     assert quote.regular_market_price == 126
     assert quote.regular_market_change_percent == 5
     assert batch.raw_response["provider"] == "yahoo_chart"
+
+
+def test_fetch_chart_quotes_close_rejects_suspicious_previous_close(monkeypatch) -> None:
+    class Response:
+        def __init__(self, *, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self.payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError("forbidden")
+
+        def json(self) -> dict:
+            return self.payload
+
+    def fake_get(url, params, headers, timeout):  # noqa: ANN001
+        assert "v8/finance/chart" in url
+        return Response(
+            status_code=200,
+            payload={
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 2411.64,
+                                "previousClose": 213.11,
+                                "regularMarketTime": 1781208001,
+                                "currency": "USD",
+                            },
+                            "timestamp": [1781208001],
+                            "indicators": {"quote": [{"close": [2411.64]}]},
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr("packages.market.yahoo.requests.get", fake_get)
+    batch = fetch_chart_quotes(
+        symbols=["KLAC"],
+        kind="close",
+        timeout_seconds=1,
+        max_attempts=1,
+    )
+
+    quote = batch.quotes[0]
+    assert quote.source_error == "Yahoo chart previous close appears inconsistent with latest price."
+    assert "KLAC" in batch.missing_symbols
 
 
 def test_fetch_chart_quotes_open_uses_latest_minute_vs_previous_close(monkeypatch) -> None:
