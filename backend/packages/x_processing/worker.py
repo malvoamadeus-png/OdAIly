@@ -17,6 +17,7 @@ from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
 from packages.publisher import PushClient
+from packages.x_capture.naming import choose_effective_author_name
 from packages.x_capture.repository import XCaptureRepository
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
@@ -171,29 +172,39 @@ NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的
 """
 
 
-AI_SOURCE_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是判断一条AI信源原文，是否值得进入后续快讯写作。
+AI_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的判断者-AI。你的任务是判断一条 AI/半导体产业候选内容，是否足够重要，值得进入后续快讯写作。
 
-请严格分两步判断：
-1. 先判断它是否属于可丢弃内容。
-2. 如果不属于可丢弃内容，统一输出 ai_source。
+请先判断内容是否明确命中“可以发布”类别；只有明确命中时才保留。重要性不清、只是泛泛行业动态或营销表述时，默认丢弃。
 
-可丢弃内容只有四类：
-- pure_emotion：纯情绪表达，没有可报道事实。
-- baseless_trading_call：无逻辑的纯粹喊单、价格口号或无事实支撑的涨跌判断。
-- daily_chatter：寒暄、日常状态、meme、节日祝福、无新闻事实的社区闲聊。
-- non_crypto_ai：明显无新闻事实、纯闲聊或营销化的 AI 泛科技内容；不要仅因内容不属于 Crypto 就丢弃 AI信源。
+【直接屏蔽，不发布】
+- 非 AI 相关的新品发布、消费电子、家电新品发布类。
+- 人事、组织调整、招聘、活动、ESG 类。
+- 终端品牌营销、渠道活动、促销、赞助类。
+- 泛 AI、软件、机器人、非半导体科技类。
+- 地缘、宏观、名人互动、行业花边类。
+- 无明确主体、明确动作和可报道结果的内容。
 
-不要因为内容有主观语气、营销语气或表达不规范就直接丢弃；只要有明确主体、明确动作和可报道结果，就保留。
+【可以发布】
+- 财报、营收、股价、评级类。
+- 重大产能扩张、建厂、资本开支类。
+- 关键技术突破、国产替代、先进工艺、材料、设备类。
+- 量产、头部客户导入、关键供应链变化类。
+- 产业政策、补贴、出口管制、监管类。
+- 并购、融资、IPO、重大资本运作类。
 
-只允许两种 route：
-- ai_source：保留并进入AI信源写作模板。
-- discard：只用于上面四类可丢弃内容。
+只允许三种 route：
+- ai_source：仅当来源类型是“AI信源全文”且内容应保留时输出。
+- regular：仅当来源类型是“X-AI信源”且内容应保留时输出。
+- discard：内容不应发布时输出。
+
+丢弃时 discard_type 统一输出 non_crypto_ai，不要输出更细原因。
 
 只输出 JSON，不输出解释文本。格式必须为：
-{{"route":"ai_source|discard","discard_type":"none|pure_emotion|baseless_trading_call|daily_chatter|non_crypto_ai"}}
+{{"route":"ai_source|regular|discard","discard_type":"none|non_crypto_ai"}}
 
 如果 route 不是 discard，discard_type 必须是 none。
 
+来源类型：{source_kind}
 来源媒体：{site_display_name}
 作者：{author_names}
 标题：{title}
@@ -242,20 +253,20 @@ PUBLISHER_JSON_SCHEMA = {
 }
 
 
-AI_SOURCE_JUDGE_JSON_SCHEMA = {
+AI_JUDGE_JSON_SCHEMA = {
     "type": "json_schema",
-    "name": "ai_source_judge_route",
+    "name": "ai_judge_route",
     "schema": {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "route": {
                 "type": "string",
-                "enum": ["ai_source", "discard"],
+                "enum": ["ai_source", "regular", "discard"],
             },
             "discard_type": {
                 "type": "string",
-                "enum": ["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"],
+                "enum": ["none", "non_crypto_ai"],
             },
         },
         "required": ["route", "discard_type"],
@@ -447,7 +458,7 @@ class XProcessingWorker:
             print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
     def _process_task(self, task: TaskRecord) -> None:
-        if self.stage == "judge":
+        if self.stage in {"judge", "judge_crypto", "judge_ai"}:
             self._run_judge(task)
         elif self.stage == "search":
             self._run_search(task)
@@ -466,9 +477,14 @@ class XProcessingWorker:
         metadata = dict(task.metadata or {})
         effective_author_name = metadata.get("effective_author_name")
         if self.x_capture_repository is not None:
-            resolved = self.x_capture_repository.resolve_effective_author_name(
-                author_username=str(metadata.get("author_username") or ""),
+            account_username = str(metadata.get("account_username") or metadata.get("author_username") or "")
+            account = self.x_capture_repository.get_account_by_username(account_username)
+            if account is not None:
+                metadata["x_account_is_ai_source"] = bool(account.is_ai_source)
+            resolved = choose_effective_author_name(
+                write_name=account.write_name if account else None,
                 author_display_name=str(metadata.get("author_display_name") or ""),
+                author_username=str(metadata.get("author_username") or ""),
             )
             if resolved:
                 effective_author_name = resolved
@@ -500,21 +516,6 @@ class XProcessingWorker:
         return True
 
     def _run_judge(self, task: TaskRecord) -> None:
-        if is_ai_source_task(task):
-            self.repository.complete_judge(
-                task.id,
-                news_type=AI_SOURCE,
-                model=DETERMINISTIC_JUDGE_MODEL,
-                raw_output=json.dumps(
-                    {
-                        "route": AI_SOURCE,
-                        "discard_type": "none",
-                        "auto_pass": "ai_source",
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            return
         deterministic_discard_type = deterministic_judge_discard_type(task)
         if deterministic_discard_type is not None:
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
@@ -532,6 +533,7 @@ class XProcessingWorker:
                 raw_output=raw_output,
             )
             return
+        is_ai_judge = is_ai_judge_task(task)
         prompt = X_JUDGE_PROMPT_TEMPLATE.format(
             author=task.metadata.get("effective_author_name")
             or task.metadata.get("author_display_name")
@@ -541,17 +543,31 @@ class XProcessingWorker:
             content=task.content,
         )
         schema = X_JUDGE_JSON_SCHEMA
-        if is_non_mainstream_media_task(task) or is_ai_source_task(task):
+        if is_ai_judge:
             is_ai_source = is_ai_source_task(task)
-            prompt_template = AI_SOURCE_JUDGE_PROMPT_TEMPLATE if is_ai_source else NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE
+            prompt = AI_JUDGE_PROMPT_TEMPLATE.format(
+                source_kind="AI信源全文" if is_ai_source else "X-AI信源",
+                site_display_name=task.metadata.get("site_display_name") or ("AI信源" if is_ai_source else "X平台"),
+                author_names="、".join(task.metadata.get("author_names") or [])
+                or task.metadata.get("effective_author_name")
+                or task.metadata.get("author_display_name")
+                or task.metadata.get("author_username")
+                or "",
+                title=task.title or "",
+                source_url=task.source_url or "",
+                content=task.content,
+            )
+            schema = AI_JUDGE_JSON_SCHEMA
+        elif is_non_mainstream_media_task(task):
+            prompt_template = NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE
             prompt = prompt_template.format(
-                site_display_name=task.metadata.get("site_display_name") or ("AI信源" if is_ai_source else "外媒"),
+                site_display_name=task.metadata.get("site_display_name") or "外媒",
                 author_names="、".join(task.metadata.get("author_names") or []),
                 title=task.title or "",
                 source_url=task.source_url or "",
                 content=task.content,
             )
-            schema = AI_SOURCE_JUDGE_JSON_SCHEMA if is_ai_source else NON_MAINSTREAM_JUDGE_JSON_SCHEMA
+            schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
         try:
             raw_output = self._get_ai_client().generate_text(
                 model=self.settings.judge_model,
@@ -589,6 +605,8 @@ class XProcessingWorker:
                 raw_output=raw_output,
             )
         else:
+            if is_ai_judge:
+                route = AI_SOURCE if is_ai_source_task(task) else "regular"
             self.repository.complete_judge(
                 task.id,
                 news_type=route,
@@ -1105,6 +1123,14 @@ def is_ai_source_task(task: TaskRecord) -> bool:
     return task.source == AI_SOURCE
 
 
+def is_x_ai_source_task(task: TaskRecord) -> bool:
+    return task.source == "x" and bool((task.metadata or {}).get("x_account_is_ai_source"))
+
+
+def is_ai_judge_task(task: TaskRecord) -> bool:
+    return is_ai_source_task(task) or is_x_ai_source_task(task)
+
+
 def is_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == MAINSTREAM_MEDIA_SOURCE
 
@@ -1118,7 +1144,7 @@ def utc_since_hours(hours: int) -> datetime:
 
 
 def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
-    if is_ai_source_task(task):
+    if is_ai_judge_task(task):
         return None
     return None
 

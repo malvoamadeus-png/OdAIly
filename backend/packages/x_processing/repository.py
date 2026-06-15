@@ -17,6 +17,7 @@ from packages.common.pipeline_schema import (
 
 from .models import (
     ACTIVE_CANDIDATE_TTL,
+    AI_SOURCE,
     COMPETITOR_SOURCES,
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
@@ -39,6 +40,12 @@ from .models import (
     TaskRecord,
 )
 from .searcher import SearchDocument, content_hash
+
+CRYPTO_SEARCH_FIRST_SOURCES = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE}
+
+
+def _task_has_x_ai_source_label(task: TaskRecord) -> bool:
+    return task.source == "x" and bool((task.metadata or {}).get("x_account_is_ai_source"))
 
 
 TASK_NOTIFY_CHANNEL = "x_task_queue_changed"
@@ -387,12 +394,40 @@ class PostgresXProcessingRepository:
         spec = STAGE_SPECS[stage]
         sources = tuple(WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES)
         source_filter = "t.source = ANY(%(sources)s)"
-        if stage == "judge":
+        if stage in {"judge", "judge_crypto"}:
             source_filter = """
                 (
-                    (t.source = 'x' AND t.status = %(claim_status)s)
-                    OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'searched')
-                    OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                    (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false) AND t.status = %(claim_status)s)
+                    OR (t.source = ANY(%(crypto_search_first_sources)s) AND t.status = 'searched')
+                    OR (
+                        (
+                            (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false))
+                            OR t.source = ANY(%(crypto_search_first_sources)s)
+                        )
+                        AND t.status = %(processing_status)s
+                    )
+                )
+            """
+            if stage == "judge":
+                source_filter = """
+                    (
+                        (t.source = 'x' AND t.status = %(claim_status)s)
+                        OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'searched')
+                        OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                    )
+                """
+        elif stage == "judge_ai":
+            source_filter = """
+                (
+                    (t.source = 'x' AND COALESCE(xa.is_ai_source, false) AND t.status = %(claim_status)s)
+                    OR (t.source = %(ai_source)s AND t.status = 'searched')
+                    OR (
+                        (
+                            (t.source = 'x' AND COALESCE(xa.is_ai_source, false))
+                            OR t.source = %(ai_source)s
+                        )
+                        AND t.status = %(processing_status)s
+                    )
                 )
             """
         elif stage == "search":
@@ -411,6 +446,9 @@ class PostgresXProcessingRepository:
                 WITH candidate AS (
                     SELECT id
                     FROM tasks t
+                    LEFT JOIN x_capture_accounts xa
+                      ON t.source = 'x'
+                     AND xa.username_lower = lower(COALESCE(t.metadata ->> 'account_username', t.metadata ->> 'author_username', ''))
                     WHERE {source_filter}
                       AND (locked_until IS NULL OR locked_until < now())
                     ORDER BY created_at ASC, id ASC
@@ -434,6 +472,8 @@ class PostgresXProcessingRepository:
                     "lock_seconds": lock_seconds,
                     "sources": list(sources),
                     "search_first_sources": list(SEARCH_FIRST_SOURCES),
+                    "crypto_search_first_sources": list(CRYPTO_SEARCH_FIRST_SOURCES),
+                    "ai_source": AI_SOURCE,
                 },
             ).fetchone()
             if row is None:
@@ -986,8 +1026,12 @@ class InMemoryXProcessingRepository:
             claim_status = spec.claim_status
             if stage == "search" and task.source in SEARCH_FIRST_SOURCES:
                 claim_status = "pending"
-            elif stage == "judge" and task.source in SEARCH_FIRST_SOURCES:
+            elif stage in {"judge", "judge_crypto", "judge_ai"} and task.source in SEARCH_FIRST_SOURCES:
                 claim_status = "searched"
+            if stage == "judge_crypto" and (task.source == AI_SOURCE or _task_has_x_ai_source_label(task)):
+                continue
+            if stage == "judge_ai" and not (task.source == AI_SOURCE or _task_has_x_ai_source_label(task)):
+                continue
             if task.status not in {claim_status, spec.processing_status} or task.id in self._locks:
                 continue
             self._locks.add(task.id)

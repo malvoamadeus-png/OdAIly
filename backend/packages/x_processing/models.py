@@ -8,7 +8,7 @@ from typing import Any, Literal
 NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"]
 DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
-ProcessingStage = Literal["judge", "search", "write", "format_publish", "publish"]
+ProcessingStage = Literal["judge", "judge_crypto", "judge_ai", "search", "write", "format_publish", "publish"]
 PublisherChannelKey = Literal["external_media", "x", "competitor"]
 PublisherCategory = Literal["policy_regulation", "people_view", "major_project_progress", "funding", "other"]
 PublisherDecision = Literal["auto_publish", "manual_review", "failed"]
@@ -59,6 +59,8 @@ class StageSpec:
 
 STAGE_SPECS: dict[ProcessingStage, StageSpec] = {
     "judge": StageSpec("pending", "judging", "judged", "judge_failed"),
+    "judge_crypto": StageSpec("pending", "judging", "judged", "judge_failed"),
+    "judge_ai": StageSpec("pending", "judging", "judged", "judge_failed"),
     "search": StageSpec("judged", "deduping", "deduped", "search_failed"),
     "write": StageSpec("deduped", "writing", "written", "write_failed"),
     "format_publish": StageSpec("written", "formatting", "publisher_pending", "format_failed"),

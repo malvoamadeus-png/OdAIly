@@ -53,10 +53,11 @@ python backend/src/main.py non-mainstream-media-init-db
 python backend/src/main.py x-process-init-db
 python backend/src/main.py external-media-alert-init-db
 systemctl restart odaily-non-mainstream-media.service
-systemctl restart odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-x-process@publish.service
+systemctl stop odaily-x-process@judge.service || true
+systemctl restart odaily-x-process@judge_crypto.service odaily-x-process@judge_ai.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-x-process@publish.service
 systemctl restart odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service
 systemctl restart odaily-pipeline-supervisor.service
-systemctl is-active odaily-non-mainstream-media.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-x-process@publish.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
+systemctl is-active odaily-non-mainstream-media.service odaily-x-process@judge_crypto.service odaily-x-process@judge_ai.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-x-process@publish.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-pipeline-supervisor.service
 '
 ```
 

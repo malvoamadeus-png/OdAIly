@@ -43,7 +43,7 @@ def test_competitor_judge_falls_back_when_ai_returns_empty_json() -> None:
         )
     )
     worker = XProcessingWorker(
-        stage="judge",
+        stage="judge_crypto",
         repository=repo,
         settings=XProcessingSettings(openai_api_key="key"),
         ai_client=FailingAiClient(),

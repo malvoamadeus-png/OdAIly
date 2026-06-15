@@ -115,6 +115,7 @@ def test_ai_source_account_label_does_not_change_x_task_source() -> None:
     assert account.is_ai_source is True
     assert saved["source"] == "x"
     assert saved["metadata"]["account_username"] == "ai_9684xtpa"
+    assert saved["metadata"]["x_account_is_ai_source"] is True
 
 
 def test_detail_failure_still_saves_timeline_record() -> None:

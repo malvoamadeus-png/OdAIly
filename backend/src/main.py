@@ -159,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     x_process_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_worker.add_argument(
         "--stage",
-        choices=["judge", "search", "write", "format_publish", "publish"],
+        choices=["judge", "judge_crypto", "judge_ai", "search", "write", "format_publish", "publish"],
         required=True,
     )
     x_process_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")

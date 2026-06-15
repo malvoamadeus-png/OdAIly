@@ -197,6 +197,22 @@ def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
     )
 
 
+def x_ai_task(task_id: int, status: str = "pending") -> TaskRecord:
+    base = task(task_id, status=status)
+    return TaskRecord(
+        **{
+            **asdict(base),
+            "content": "A major semiconductor supplier will expand AI chip packaging capacity for NVIDIA.",
+            "metadata": {
+                **base.metadata,
+                "account_username": "ai_semis",
+                "author_username": "ai_semis",
+                "x_account_is_ai_source": True,
+            },
+        }
+    )
+
+
 def ai_source_task(task_id: int, status: str = "pending") -> TaskRecord:
     return TaskRecord(
         id=task_id,
@@ -362,7 +378,7 @@ def test_judge_routes_news_to_judged() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="pending"))
     fake_ai = FakeAiClient(['{"route":"funding","discard_type":"none"}'])
-    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    worker = XProcessingWorker(stage="judge_crypto", repository=repo, settings=settings(), ai_client=fake_ai)
 
     result = worker.run_once()
 
@@ -374,11 +390,53 @@ def test_judge_routes_news_to_judged() -> None:
     assert fake_ai.calls[0]["reasoning_effort"] == "low"
 
 
+def test_judge_ai_routes_x_ai_source_to_regular() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(x_ai_task(1, status="pending"))
+    fake_ai = FakeAiClient(['{"route":"ai_source","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "judged"
+    assert repo.pipelines[1].news_type == "regular"
+    assert fake_ai.calls[0]["text_format"]["name"] == "ai_judge_route"
+    assert "来源类型：X-AI信源" in fake_ai.calls[0]["prompt"]
+    assert "明确命中“可以发布”类别" in fake_ai.calls[0]["prompt"]
+
+
+def test_judge_crypto_skips_x_ai_source_task() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(x_ai_task(1, status="pending"))
+    fake_ai = FakeAiClient(['{"route":"regular","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge_crypto", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 0
+    assert repo.tasks[1].status == "pending"
+    assert fake_ai.calls == []
+
+
+def test_judge_ai_skips_regular_x_task() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(task(1, status="pending"))
+    fake_ai = FakeAiClient(['{"route":"regular","discard_type":"none"}'])
+    worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    result = worker.run_once()
+
+    assert result.processed == 0
+    assert repo.tasks[1].status == "pending"
+    assert fake_ai.calls == []
+
+
 def test_judge_discards_garbage_expression() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(task(1, status="pending"))
     fake_ai = FakeAiClient(['{"route":"discard","discard_type":"baseless_trading_call"}'])
-    worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    worker = XProcessingWorker(stage="judge_crypto", repository=repo, settings=settings(), ai_client=fake_ai)
 
     result = worker.run_once()
 
@@ -802,7 +860,7 @@ def test_competitor_flows_search_then_judge() -> None:
     assert repo.tasks[1].status == "searched"
 
     fake_ai = FakeAiClient(['{"route":"regular","discard_type":"none"}'])
-    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    judge_worker = XProcessingWorker(stage="judge_crypto", repository=repo, settings=settings(), ai_client=fake_ai)
     assert judge_worker.run_once().processed == 1
     assert repo.tasks[1].status == "deduped"
 
@@ -822,7 +880,7 @@ def test_non_mainstream_flows_search_then_judge() -> None:
     assert repo.tasks[1].status == "searched"
 
     fake_ai = FakeAiClient(['{"route":"non_mainstream_media","discard_type":"none"}'])
-    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    judge_worker = XProcessingWorker(stage="judge_crypto", repository=repo, settings=settings(), ai_client=fake_ai)
 
     assert judge_worker.run_once().processed == 1
     assert repo.tasks[1].status == "deduped"
@@ -832,7 +890,7 @@ def test_non_mainstream_flows_search_then_judge() -> None:
     assert "标题：A16z crypto posts new token launch thesis" in fake_ai.calls[0]["prompt"]
 
 
-def test_ai_source_flows_search_then_judge_without_model_call() -> None:
+def test_ai_source_flows_search_then_judge_ai_with_model_call() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(ai_source_task(1, status="pending"))
     search_worker = XProcessingWorker(
@@ -846,16 +904,18 @@ def test_ai_source_flows_search_then_judge_without_model_call() -> None:
     assert search_worker.run_once().processed == 1
     assert repo.tasks[1].status == "searched"
 
-    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
-    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    fake_ai = FakeAiClient(['{"route":"ai_source","discard_type":"none"}'])
+    judge_worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
 
     assert judge_worker.run_once().processed == 1
     assert repo.tasks[1].status == "deduped"
     assert repo.pipelines[1].news_type == "ai_source"
-    assert fake_ai.calls == []
+    assert fake_ai.calls[0]["text_format"]["name"] == "ai_judge_route"
+    assert "来源类型：AI信源全文" in fake_ai.calls[0]["prompt"]
+    assert "财报、营收、股价、评级类" in fake_ai.calls[0]["prompt"]
 
 
-def test_ai_source_judge_passes_non_crypto_ai_content() -> None:
+def test_ai_source_judge_discards_unimportant_non_crypto_ai_content() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(
         TaskRecord(
@@ -867,12 +927,53 @@ def test_ai_source_judge_passes_non_crypto_ai_content() -> None:
         )
     )
     fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
-    judge_worker = XProcessingWorker(stage="judge", repository=repo, settings=settings(), ai_client=fake_ai)
+    judge_worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "discarded"
+    assert repo.pipelines[1].news_type is None
+    assert "泛 AI、软件、机器人、非半导体科技类" in fake_ai.calls[0]["prompt"]
+
+
+def test_judge_ai_discards_consumer_electronics_marketing_news() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            **{
+                **asdict(ai_source_task(1, status="searched")),
+                "title": "Consumer electronics brand launches AI refrigerator campaign",
+                "content": "A home appliance brand announced a promotional roadshow for its new refrigerator.",
+            }
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
+    judge_worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "discarded"
+    assert "非 AI 相关的新品发布、消费电子、家电新品发布类" in fake_ai.calls[0]["prompt"]
+    assert "终端品牌营销、渠道活动、促销、赞助类" in fake_ai.calls[0]["prompt"]
+
+
+def test_judge_ai_keeps_major_capacity_policy_and_capital_news() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            **{
+                **asdict(ai_source_task(1, status="searched")),
+                "title": "AI chip supplier plans new advanced packaging fab after subsidy approval",
+                "content": "The supplier will invest $2 billion in advanced packaging capacity after receiving government subsidies.",
+            }
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"ai_source","discard_type":"none"}'])
+    judge_worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
 
     assert judge_worker.run_once().processed == 1
     assert repo.tasks[1].status == "deduped"
     assert repo.pipelines[1].news_type == "ai_source"
-    assert fake_ai.calls == []
+    assert "重大产能扩张、建厂、资本开支类" in fake_ai.calls[0]["prompt"]
+    assert "产业政策、补贴、出口管制、监管类" in fake_ai.calls[0]["prompt"]
 
 
 def test_writer_uses_prompt_for_news_type_and_records_draft() -> None:
