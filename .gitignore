@@ -42,6 +42,7 @@ data/config/*.json
 data/raw/**
 data/processed/**
 data/exports/**
+data/runtime/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/exports/.gitkeep
