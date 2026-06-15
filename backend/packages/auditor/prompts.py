@@ -7,7 +7,10 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v2"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v3"
+
+
+FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
 
 
 AUDITOR_SCHEMA = {
@@ -54,6 +57,8 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 中英文之间、数字与中文单位之间、数字与币种之间、英文缩写与括号之间、中文与括号之间的空格风格。
 - 千分位逗号、钱包地址展示、省略号、半角/全角括号、数量表达是否统一。
 - Odaily 固定前缀、媒体称谓、常见术语格式是否统一。
+- 正文尾部固定标语，例如“在定价之前，看见变化”。
+- 可省略的结构助词“的”，例如“14.25%消费税”“应 Shielded Labs 请求”这类表达不要提示补“的”。
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
@@ -98,6 +103,8 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
         if not original or original not in (source_text or ""):
             continue
         if not suggested or suggested == original:
+            continue
+        if _should_ignore_issue(location=location, original=original, suggested=suggested, reason=reason, task=task):
             continue
         issues.append(
             AuditorIssue(
@@ -148,3 +155,36 @@ def _loads_json_object(raw_output: str) -> dict[str, Any]:
 
 def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _should_ignore_issue(*, location: str, original: str, suggested: str, reason: str, task: AuditorTask) -> bool:
+    if _is_fixed_trailing_slogan_issue(location=location, original=original, task=task):
+        return True
+    if _is_missing_de_issue(original=original, suggested=suggested, reason=reason):
+        return True
+    return False
+
+
+def _is_fixed_trailing_slogan_issue(*, location: str, original: str, task: AuditorTask) -> bool:
+    if location != "content":
+        return False
+    content = (task.content or "").rstrip()
+    for slogan in FIXED_TRAILING_SLOGANS:
+        if original in slogan and content.endswith(slogan):
+            return True
+    return False
+
+
+def _is_missing_de_issue(*, original: str, suggested: str, reason: str) -> bool:
+    reason_text = _normalize_for_de_check(reason)
+    if "结构助词的" in reason_text:
+        return True
+    if any(phrase in reason_text for phrase in ("缺少的", "补的", "补充的", "补上的", "补加的")):
+        return True
+    original_text = _normalize_for_de_check(original)
+    suggested_text = _normalize_for_de_check(suggested)
+    return suggested_text.replace("的", "") == original_text
+
+
+def _normalize_for_de_check(value: str) -> str:
+    return re.sub(r"\s+", "", value).replace("“", "").replace("”", "").replace('"', "")

@@ -128,10 +128,12 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "Odaily 固定前缀" in prompt
     assert "媒体称谓" in prompt
     assert "空格风格" in prompt
+    assert "在定价之前，看见变化" in prompt
+    assert "结构助词“的”" in prompt
 
 
-def test_auditor_prompt_version_is_v2() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v2"
+def test_auditor_prompt_version_is_v3() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v3"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -280,3 +282,111 @@ def test_parse_auditor_output_ignores_spacing_issue_type() -> None:
 
     assert parsed.has_issue is False
     assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_fixed_trailing_slogan_issue() -> None:
+    current = task(content="Odaily星球日报讯 项目完成融资。\n在定价之前，看见变化")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "在定价之前，看见变化",
+                        "suggested": "在定价之前，先看见变化",
+                        "reason": "正文末句语序不通。",
+                    }
+                ],
+                "summary": "固定标语被误报。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_missing_de_issue() -> None:
+    current = task(content="Odaily星球日报讯 应 Shielded Labs 请求，项目更新参数。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "grammar",
+                        "location": "content",
+                        "original": "应 Shielded Labs 请求",
+                        "suggested": "应 Shielded Labs 的请求",
+                        "reason": "缺少结构助词“的”。",
+                    }
+                ],
+                "summary": "误报缺少的。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_missing_de_reason_even_with_extra_suggestion() -> None:
+    current = task(title="Mag8中25%已在资产负债表持有比特币")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "grammar",
+                        "location": "title",
+                        "original": "Mag8中25%已在资产负债表持有比特币",
+                        "suggested": "Mag8中25%的公司已在资产负债表上持有比特币",
+                        "reason": "“25%”后缺少“的公司”等修饰成分，且“在资产负债表持有”语序不通。",
+                    }
+                ],
+                "summary": "误报缺少的。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_keeps_non_de_grammar_issue() -> None:
+    current = task(content="Odaily星球日报讯 宣布完成融资。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "grammar",
+                        "location": "content",
+                        "original": "宣布完成融资。",
+                        "suggested": "该项目宣布完成融资。",
+                        "reason": "缺少必要的主语。",
+                    }
+                ],
+                "summary": "正文存在成分缺失。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is True
+    assert len(parsed.issues) == 1
