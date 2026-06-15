@@ -10,6 +10,7 @@ AI信源是独立业务来源，底层暂时复用 `non_mainstream_media` 实现
 - `write_flow` 入库为 `tasks.source = 'ai_source'`
 - `alert_only` 入库为 `tasks.source = 'ai_source_alert'`
 - 入库 metadata 固定写入 `source_group = 'ai_source'`、`source_label = 'AI信源'`
+- 入库成功后由 `non_mainstream_media` worker 提交本地流水线 job
 
 ## 当前站点
 
@@ -23,12 +24,27 @@ AI信源是独立业务来源，底层暂时复用 `non_mainstream_media` 实现
 
 这些站点抓标题、来源链接、正文、作者、栏目和发布时间，并进入搜索查重、判断者-AI、编写者1、编写者2、发布者链路。
 
+本地执行顺序为：
+
+```text
+search -> judge_ai -> write -> format_publish -> publish
+```
+
 ### `alert_only`
 
 当前没有生产站点。链路合同已保留：
 
 - `tasks.source = 'ai_source_alert'`
-- 进入 `external_media_alert(domain_judge -> search -> notify)`
+- 进入本地流水线 `alert_only`
+- 执行 `domain_judge -> search -> notify`
+
+## 本地流水线交接
+
+- AI信源全文提交 `write_flow` job。
+- AI信源标题提醒提交 `alert_only` job。
+- `tasks` 只作为原始记录、观察状态和最终结果档案。
+- 阶段结果仍分别写入 `x_task_pipeline` 或 `external_media_alert_pipeline`。
+- 本地流水线入队失败时不 mark seen，下一轮继续重试。
 
 ## 抓取频率
 

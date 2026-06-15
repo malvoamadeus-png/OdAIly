@@ -15,6 +15,7 @@ from packages.common.freshness import (
     ensure_utc,
     evaluate_source_freshness,
 )
+from packages.local_pipeline.client import LocalPipelineClient
 
 from .client import FXTwitterClient
 from .models import CaptureRunStats, TweetCandidate, XCaptureAccount, XCaptureSettings
@@ -38,6 +39,7 @@ class XCaptureWorker:
         attempt_retention_days: int = 3,
         attempt_prune_interval_seconds: float = 3600.0,
         freshness_window_seconds: int = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
+        pipeline_client: LocalPipelineClient | None = None,
     ) -> None:
         self.repository = repository
         self.client = client or FXTwitterClient()
@@ -46,6 +48,7 @@ class XCaptureWorker:
         self.attempt_retention_days = max(1, int(attempt_retention_days))
         self.attempt_prune_interval_seconds = max(60.0, float(attempt_prune_interval_seconds))
         self.freshness_window_seconds = max(1, int(freshness_window_seconds))
+        self.pipeline_client = pipeline_client
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
         self._wake_event = threading.Event()
@@ -302,10 +305,18 @@ class XCaptureWorker:
                     ignored_stale_count += 1
                     ignored_stale_tweet_ids.append(candidate.tweet_id)
                 continue
-            saved = self.repository.save_task(account, record)
+            task_id = self.repository.save_task(account, record)
+            if task_id is None:
+                if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
+                    new_count += 1
+                continue
+            try:
+                self._submit_pipeline_job(task_id=task_id, source="x", source_item_id=record.tweet_id)
+            except Exception as exc:
+                detail_errors[f"pipeline:{candidate.tweet_id}"] = str(exc)
+                continue
             if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
                 new_count += 1
-            if saved:
                 saved_count += 1
 
         return CaptureRunStats(
@@ -321,6 +332,16 @@ class XCaptureWorker:
                 "ignored_stale_count": ignored_stale_count,
                 "ignored_stale_tweet_ids": ignored_stale_tweet_ids,
             },
+        )
+
+    def _submit_pipeline_job(self, *, task_id: int, source: str, source_item_id: str) -> None:
+        if self.pipeline_client is None:
+            return
+        self.pipeline_client.submit_job(
+            job_type="write_flow",
+            task_id=task_id,
+            source=source,
+            source_item_id=source_item_id,
         )
 
     def _record_from_candidate(

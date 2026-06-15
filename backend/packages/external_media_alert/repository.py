@@ -213,6 +213,21 @@ class PostgresExternalMediaAlertRepository:
             raise ValueError(f"external media alert pipeline row not found for task {task_id}")
         return _row_to_pipeline(row)
 
+    def get_task(self, task_id: int) -> TaskRecord:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"task not found: {task_id}")
+        return _row_to_task(row)
+
+    def ensure_pipeline(self, task_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO external_media_alert_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING",
+                (task_id,),
+            )
+            conn.commit()
+
     def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]:
         if not items:
             return 0, 0
@@ -878,23 +893,8 @@ ALTER TABLE external_media_alert_pipeline
 CREATE INDEX IF NOT EXISTS idx_external_media_alert_pipeline_route
 ON external_media_alert_pipeline(domain_route);
 
-CREATE OR REPLACE FUNCTION notify_external_media_alert_task_queue_changed()
-RETURNS trigger AS $$
-BEGIN
-    PERFORM pg_notify(
-        'external_media_alert_task_queue_changed',
-        json_build_object('table', TG_TABLE_NAME, 'op', TG_OP, 'status', NEW.status)::text
-    );
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 DROP TRIGGER IF EXISTS trg_tasks_external_media_alert_queue_notify ON tasks;
-CREATE TRIGGER trg_tasks_external_media_alert_queue_notify
-AFTER INSERT OR UPDATE OF status ON tasks
-FOR EACH ROW
-WHEN (NEW.source IN ('external_media_alert', 'ai_source_alert', 'mainstream_media'))
-EXECUTE FUNCTION notify_external_media_alert_task_queue_changed();
+DROP FUNCTION IF EXISTS notify_external_media_alert_task_queue_changed();
 
 CREATE TABLE IF NOT EXISTS media_newsflash (
     id bigserial PRIMARY KEY,

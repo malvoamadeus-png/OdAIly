@@ -72,7 +72,7 @@ def test_supervisor_detects_stale_heartbeat_and_deduplicates_alert() -> None:
     repo = FakeSupervisorRepository()
     repo.stale_heartbeats = [
         {
-            "component": "x_process_search",
+            "component": "local_pipeline",
             "worker_id": "worker-1",
             "status": "ok",
             "last_seen_at": datetime.now(UTC) - timedelta(minutes=20),
@@ -90,13 +90,13 @@ def test_supervisor_detects_stale_heartbeat_and_deduplicates_alert() -> None:
     assert second.suppressed == 1
     assert len(telegram.calls) == 1
     assert "worker 心跳超时" in telegram.calls[0]
-    assert "x_process_search" in telegram.calls[0]
+    assert "local_pipeline" in telegram.calls[0]
 
 
 def test_supervisor_detects_task_backlog_stuck_failed_and_x_attempt_gap() -> None:
     repo = FakeSupervisorRepository()
-    repo.old_tasks = [{"source": "x", "status": "judged", "count": 2, "oldest_updated_at": "old"}]
-    repo.stuck_tasks = [{"source": "blockbeats", "status": "deduping", "count": 1, "oldest_updated_at": "old"}]
+    repo.old_tasks = [{"source": "x", "status": "pending", "count": 2, "oldest_updated_at": "old"}]
+    repo.stuck_tasks = [{"source": "blockbeats", "status": "running", "count": 1, "oldest_updated_at": "old"}]
     repo.failed_tasks = [{"source": "panews", "status": "search_failed", "count": 3}]
     repo.x_success_count = 0
     telegram = FakeTelegramClient()
@@ -106,8 +106,8 @@ def test_supervisor_detects_task_backlog_stuck_failed_and_x_attempt_gap() -> Non
 
     assert result.checked == 4
     assert result.sent == 4
-    assert any("任务积压" in call and "x/judged" in call for call in telegram.calls)
-    assert any("处理中任务卡住" in call and "blockbeats/deduping" in call for call in telegram.calls)
+    assert any("任务积压" in call and "x/pending" in call for call in telegram.calls)
+    assert any("处理中任务卡住" in call and "blockbeats/running" in call for call in telegram.calls)
     assert any("失败任务异常" in call and "panews/search_failed" in call for call in telegram.calls)
     assert any("X 抓取无成功记录" in call for call in telegram.calls)
 
@@ -162,7 +162,8 @@ def test_supervisor_metadata_is_json_safe() -> None:
 def test_supervisor_expected_heartbeats_exclude_external_media_fetcher() -> None:
     assert "external_media_alert_fetcher" not in EXPECTED_HEARTBEAT_COMPONENTS
     assert "whale_watch_hyperliquid" in EXPECTED_HEARTBEAT_COMPONENTS
+    assert "local_pipeline" in EXPECTED_HEARTBEAT_COMPONENTS
     assert "x_process_judge" not in EXPECTED_HEARTBEAT_COMPONENTS
-    assert "x_process_judge_crypto" in EXPECTED_HEARTBEAT_COMPONENTS
-    assert "x_process_judge_ai" in EXPECTED_HEARTBEAT_COMPONENTS
-    assert "x_process_publish" in EXPECTED_HEARTBEAT_COMPONENTS
+    assert "x_process_judge_crypto" not in EXPECTED_HEARTBEAT_COMPONENTS
+    assert "x_process_judge_ai" not in EXPECTED_HEARTBEAT_COMPONENTS
+    assert "x_process_publish" not in EXPECTED_HEARTBEAT_COMPONENTS

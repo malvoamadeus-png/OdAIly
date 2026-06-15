@@ -307,6 +307,7 @@ class XProcessingSettings(BaseModel):
     telegram_chat_id: str | None = None
     telegram_message_thread_id: int | None = None
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    enable_notify_listener: bool = False
     processing_freshness_window_seconds: int = Field(
         default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
         ge=1,
@@ -354,6 +355,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID") or None,
         "telegram_message_thread_id": os.getenv("TELEGRAM_MESSAGE_THREAD_ID") or None,
         "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "enable_notify_listener": _env_bool("X_PROCESS_ENABLE_NOTIFY_LISTENER", False),
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         ),
@@ -381,6 +383,7 @@ class ExternalMediaAlertSettings(BaseModel):
     telegram_chat_id: str | None = None
     telegram_message_thread_id: int | None = None
     telegram_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    enable_notify_listener: bool = False
 
 
 def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
@@ -446,6 +449,7 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
             or None
         ),
         "telegram_timeout_seconds": float(os.getenv("TELEGRAM_TIMEOUT_SECONDS") or 10.0),
+        "enable_notify_listener": _env_bool("EXTERNAL_MEDIA_ALERT_ENABLE_NOTIFY_LISTENER", False),
     }
     try:
         return ExternalMediaAlertSettings.model_validate(payload)

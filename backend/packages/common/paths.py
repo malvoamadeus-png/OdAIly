@@ -22,6 +22,7 @@ class AppPaths:
     competitor_monitor_db_path: Path | None = None
     writer3_dir: Path | None = None
     writer3_index_path: Path | None = None
+    runtime_dir: Path | None = None
 
     def __post_init__(self) -> None:
         searcher_dir = self.searcher_dir or self.processed_dir / "searcher"
@@ -30,12 +31,14 @@ class AppPaths:
         competitor_monitor_db_path = self.competitor_monitor_db_path or competitor_monitor_dir / "competitor_monitor.sqlite"
         writer3_dir = self.writer3_dir or self.processed_dir / "writer3"
         writer3_index_path = self.writer3_index_path or writer3_dir / "writer3.sqlite"
+        runtime_dir = self.runtime_dir or self.data_dir / "runtime"
         object.__setattr__(self, "searcher_dir", searcher_dir)
         object.__setattr__(self, "searcher_cache_path", searcher_cache_path)
         object.__setattr__(self, "competitor_monitor_dir", competitor_monitor_dir)
         object.__setattr__(self, "competitor_monitor_db_path", competitor_monitor_db_path)
         object.__setattr__(self, "writer3_dir", writer3_dir)
         object.__setattr__(self, "writer3_index_path", writer3_index_path)
+        object.__setattr__(self, "runtime_dir", runtime_dir)
 
 
 def get_paths() -> AppPaths:
@@ -51,6 +54,7 @@ def get_paths() -> AppPaths:
         processed_dir=data_dir / "processed",
         exports_dir=data_dir / "exports",
         config_dir=config_dir,
+        runtime_dir=data_dir / "runtime",
         market_brief_config_path=config_dir / "market_brief.json",
         gate_tradfi_config_path=config_dir / "gate_tradfi.json",
         searcher_dir=data_dir / "processed" / "searcher",
@@ -70,6 +74,7 @@ def ensure_runtime_dirs(paths: AppPaths) -> None:
         paths.raw_dir,
         paths.processed_dir,
         paths.exports_dir,
+        paths.runtime_dir,
         paths.config_dir,
         paths.raw_dir / "market_quotes",
         paths.raw_dir / "gate_quotes",

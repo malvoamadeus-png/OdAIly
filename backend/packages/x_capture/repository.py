@@ -63,7 +63,7 @@ class XCaptureRepository(Protocol):
     def mark_account_seeded(self, account: XCaptureAccount, tweet_ids: list[str]) -> None: ...
     def mark_seen(self, account: XCaptureAccount, tweet_id: str, *, seeded: bool) -> bool: ...
     def unseen_tweet_ids(self, tweet_ids: list[str]) -> set[str]: ...
-    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool: ...
+    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None: ...
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None: ...
     def prune_attempts_before(self, cutoff: datetime) -> int: ...
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]: ...
@@ -375,7 +375,7 @@ class PostgresXCaptureRepository:
         seen = {str(row["tweet_id"]) for row in rows}
         return set(tweet_ids) - seen
 
-    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool:
+    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None:
         effective_author_name = choose_effective_author_name(
             write_name=account.write_name,
             author_display_name=record.author_display_name,
@@ -413,7 +413,8 @@ class PostgresXCaptureRepository:
                     source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
                 )
                 VALUES ('x', %(tweet_id)s, %(url)s, %(title)s, %(content)s, %(published_at)s, %(raw_payload)s, %(metadata)s, 'pending')
-                ON CONFLICT (source, source_item_id) DO NOTHING
+                ON CONFLICT (source, source_item_id) DO UPDATE SET
+                    updated_at = tasks.updated_at
                 RETURNING id
                 """,
                 {
@@ -427,7 +428,7 @@ class PostgresXCaptureRepository:
                 },
             ).fetchone()
             conn.commit()
-            return row is not None
+            return int(row["id"]) if row is not None else None
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
         metadata = dict(stats.metadata)
@@ -751,9 +752,9 @@ class InMemoryXCaptureRepository:
     def unseen_tweet_ids(self, tweet_ids: list[str]) -> set[str]:
         return {tweet_id for tweet_id in tweet_ids if tweet_id not in self.seen}
 
-    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> bool:
+    def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None:
         if any(item["source_item_id"] == record.tweet_id for item in self.tasks):
-            return False
+            return None
         effective_author_name = choose_effective_author_name(
             write_name=account.write_name,
             author_display_name=record.author_display_name,
@@ -782,7 +783,7 @@ class InMemoryXCaptureRepository:
                 "updated_at": utc_now(),
             }
         )
-        return True
+        return int(self.tasks[-1]["id"])
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
         metadata = {

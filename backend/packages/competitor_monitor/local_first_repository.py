@@ -28,6 +28,9 @@ class LocalFirstCompetitorMonitorRepository:
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
         return self.remote.save_items(items)
 
+    def save_items_for_pipeline(self, items: list[NewsflashItem]) -> tuple[list[tuple[NewsflashItem, int]], int]:
+        return self.remote.save_items_for_pipeline(items)
+
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]:
         records = self.remote.upsert_newsflash_items(items)
         self.state_store.upsert_items(records)

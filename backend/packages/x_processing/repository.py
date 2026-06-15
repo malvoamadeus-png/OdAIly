@@ -51,6 +51,35 @@ def _task_has_x_ai_source_label(task: TaskRecord) -> bool:
 TASK_NOTIFY_CHANNEL = "x_task_queue_changed"
 PROMPT_NOTIFY_CHANNEL = "prompt_config_changed"
 
+LEGACY_SKIP_UNFINISHED_STATUSES = [
+    "pending",
+    "judged",
+    "searched",
+    "classified",
+    "deduped",
+    "written",
+    "publisher_pending",
+    "judging",
+    "classifying",
+    "deduping",
+    "writing",
+    "formatting",
+    "publishing",
+    "notifying",
+]
+
+LEGACY_SKIP_SOURCES = [
+    "x",
+    "blockbeats",
+    "panews",
+    "jinse",
+    "non_mainstream_media",
+    "ai_source",
+    "mainstream_media",
+    "external_media_alert",
+    "ai_source_alert",
+]
+
 
 PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
     "x_regular_writer": ("X 常规快讯", "docs/常规快讯模板.txt", "initial regular writer template"),
@@ -492,6 +521,49 @@ class PostgresXProcessingRepository:
         if row is None:
             raise ValueError(f"pipeline row not found for task {task_id}")
         return _row_to_pipeline(row)
+
+    def get_task(self, task_id: int) -> TaskRecord:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"task not found: {task_id}")
+        return _row_to_task(row)
+
+    def ensure_pipeline(self, task_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT INTO x_task_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING", (task_id,))
+            conn.commit()
+
+    def count_legacy_unfinished_tasks(self) -> int:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute(
+                """
+                SELECT count(*)::int AS count
+                FROM tasks
+                WHERE source = ANY(%s)
+                  AND status = ANY(%s)
+                """,
+                (LEGACY_SKIP_SOURCES, LEGACY_SKIP_UNFINISHED_STATUSES),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def mark_legacy_unfinished_tasks_skipped(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'legacy_skipped',
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    updated_at = now()
+                WHERE source = ANY(%s)
+                  AND status = ANY(%s)
+                RETURNING id
+                """,
+                (LEGACY_SKIP_SOURCES, LEGACY_SKIP_UNFINISHED_STATUSES),
+            ).fetchall()
+            conn.commit()
+        return len(row)
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
         with self._connect(autocommit=True) as conn:
@@ -1446,23 +1518,8 @@ CREATE INDEX IF NOT EXISTS idx_search_candidates_hash ON search_event_candidates
 CREATE INDEX IF NOT EXISTS idx_search_sources_candidate ON search_event_sources(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_prompt_versions_template ON prompt_template_versions(template_key, version_number DESC);
 
-CREATE OR REPLACE FUNCTION notify_x_task_queue_changed()
-RETURNS trigger AS $$
-BEGIN
-    PERFORM pg_notify(
-        'x_task_queue_changed',
-        json_build_object('table', TG_TABLE_NAME, 'op', TG_OP, 'status', NEW.status)::text
-    );
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
-CREATE TRIGGER trg_tasks_x_queue_notify
-AFTER INSERT OR UPDATE OF status ON tasks
-FOR EACH ROW
-WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media', 'ai_source', 'mainstream_media'))
-EXECUTE FUNCTION notify_x_task_queue_changed();
+DROP FUNCTION IF EXISTS notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()
 RETURNS trigger AS $$

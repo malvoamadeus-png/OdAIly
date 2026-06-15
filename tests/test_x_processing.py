@@ -5,12 +5,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from packages.common.config import RetrySettings, XProcessingSettings
+from packages.common.config import RetrySettings, XProcessingSettings, load_x_processing_settings
 from packages.publisher import PushResult
 from packages.x_processing.ai_client import OpenAIResponsesClient, to_chat_response_format
 from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief, PipelineRecord, TaskRecord
-from packages.x_processing.repository import InMemoryXProcessingRepository
+from packages.x_processing.repository import (
+    SCHEMA_SQL as X_PROCESSING_SCHEMA_SQL,
+    InMemoryXProcessingRepository,
+    PostgresXProcessingRepository,
+)
 from packages.x_processing.searcher import SearchDocument, document_cache_key
 from packages.x_processing.telegram import TelegramClient, TelegramResult
 from packages.x_processing.worker import (
@@ -195,6 +199,42 @@ def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
             "author_names": ["Alice", "Bob"],
         },
     )
+
+
+def test_x_processing_settings_can_disable_notify_listener(monkeypatch) -> None:
+    monkeypatch.setenv("X_PROCESS_ENABLE_NOTIFY_LISTENER", "false")
+
+    loaded = load_x_processing_settings()
+
+    assert loaded.enable_notify_listener is False
+
+
+def test_x_processing_notify_listener_defaults_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("X_PROCESS_ENABLE_NOTIFY_LISTENER", raising=False)
+
+    loaded = load_x_processing_settings()
+
+    assert loaded.enable_notify_listener is False
+
+
+def test_x_processing_schema_drops_task_notify_trigger() -> None:
+    assert "DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks" in X_PROCESSING_SCHEMA_SQL
+    assert "DROP FUNCTION IF EXISTS notify_x_task_queue_changed()" in X_PROCESSING_SCHEMA_SQL
+    assert "CREATE TRIGGER trg_tasks_x_queue_notify" not in X_PROCESSING_SCHEMA_SQL
+
+
+def test_x_processing_worker_skips_notify_listener_when_disabled(capsys) -> None:
+    repo = PostgresXProcessingRepository(database_url="postgresql://example")
+    worker = XProcessingWorker(
+        stage="publish",
+        repository=repo,
+        settings=XProcessingSettings(enable_notify_listener=False),
+    )
+
+    thread = worker._start_notify_listener()
+
+    assert thread is None
+    assert "notify listener disabled" in capsys.readouterr().out
 
 
 def x_ai_task(task_id: int, status: str = "pending") -> TaskRecord:

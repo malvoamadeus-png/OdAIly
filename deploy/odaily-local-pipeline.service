@@ -1,0 +1,16 @@
+[Unit]
+Description=OdAIly local content pipeline server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py local-pipeline-server --host 127.0.0.1 --port 8776
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -62,6 +62,11 @@ class FakeClient(FXTwitterClient):
         }
 
 
+class FailingPipelineClient:
+    def submit_job(self, **kwargs) -> None:  # noqa: ANN003
+        raise RuntimeError("pipeline down")
+
+
 def test_first_run_seeds_seen_without_tasks() -> None:
     repo = InMemoryXCaptureRepository()
     repo.create_account(username_or_url="https://x.com/ai_9684xtpa")
@@ -158,6 +163,23 @@ def test_stale_tweets_are_marked_seen_without_tasks() -> None:
     assert stats[0].metadata["ignored_stale_tweet_ids"] == ["2"]
     assert "2" in repo.seen
     assert repo.tasks == []
+
+
+def test_pipeline_submit_failure_does_not_mark_tweet_seen() -> None:
+    repo = InMemoryXCaptureRepository()
+    repo.create_account(username_or_url="ai_9684xtpa")
+    worker = XCaptureWorker(
+        repository=repo,
+        client=FakeClient([[candidate("1")], [candidate("2")]]),
+        pipeline_client=FailingPipelineClient(),
+    )
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 0
+    assert "2" not in repo.seen
+    assert repo.tasks[0]["source_item_id"] == "2"
 
 
 def test_x_capture_freshness_window_uses_processing_env(monkeypatch) -> None:

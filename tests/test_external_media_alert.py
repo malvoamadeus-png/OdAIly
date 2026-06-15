@@ -8,11 +8,13 @@ from packages.external_media_alert import (
     ALERT_PROMPT_KEY,
     InMemoryExternalMediaAlertRepository,
     MAINSTREAM_MEDIA_TASK_SOURCE,
+    PostgresExternalMediaAlertRepository,
 )
 from packages.external_media_alert.fetcher import get_site_registry, parse_feed_items
 from packages.external_media_alert.models import ExternalMediaSourceDefinition, MediaNewsflashItem
+from packages.external_media_alert.repository import SCHEMA_SQL as EXTERNAL_MEDIA_ALERT_SCHEMA_SQL
 from packages.external_media_alert.worker import ExternalMediaAlertWorker, parse_domain_route
-from packages.common.config import ExternalMediaAlertSettings, RetrySettings
+from packages.common.config import ExternalMediaAlertSettings, RetrySettings, load_external_media_alert_settings
 from packages.x_processing.searcher import SearchDocument
 from packages.x_processing.telegram import TelegramResult
 from packages.x_processing.models import TaskRecord
@@ -127,6 +129,42 @@ def build_task(
             "source_kind": source,
         },
     )
+
+
+def test_external_media_alert_settings_can_disable_notify_listener(monkeypatch) -> None:
+    monkeypatch.setenv("EXTERNAL_MEDIA_ALERT_ENABLE_NOTIFY_LISTENER", "false")
+
+    loaded = load_external_media_alert_settings()
+
+    assert loaded.enable_notify_listener is False
+
+
+def test_external_media_alert_notify_listener_defaults_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("EXTERNAL_MEDIA_ALERT_ENABLE_NOTIFY_LISTENER", raising=False)
+
+    loaded = load_external_media_alert_settings()
+
+    assert loaded.enable_notify_listener is False
+
+
+def test_external_media_alert_schema_drops_task_notify_trigger() -> None:
+    assert "DROP TRIGGER IF EXISTS trg_tasks_external_media_alert_queue_notify ON tasks" in EXTERNAL_MEDIA_ALERT_SCHEMA_SQL
+    assert "DROP FUNCTION IF EXISTS notify_external_media_alert_task_queue_changed()" in EXTERNAL_MEDIA_ALERT_SCHEMA_SQL
+    assert "CREATE TRIGGER trg_tasks_external_media_alert_queue_notify" not in EXTERNAL_MEDIA_ALERT_SCHEMA_SQL
+
+
+def test_external_media_alert_worker_skips_notify_listener_when_disabled(capsys) -> None:
+    repo = PostgresExternalMediaAlertRepository(database_url="postgresql://example")
+    worker = ExternalMediaAlertWorker(
+        stage="notify",
+        repository=repo,
+        settings=ExternalMediaAlertSettings(enable_notify_listener=False),
+    )
+
+    thread = worker._start_notify_listener()
+
+    assert thread is None
+    assert "notify listener disabled" in capsys.readouterr().out
 
 
 def test_the_block_uses_official_rss_feed() -> None:

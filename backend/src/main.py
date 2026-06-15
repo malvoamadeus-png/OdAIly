@@ -105,6 +105,21 @@ def parse_args() -> argparse.Namespace:
     editor_plugin_api.add_argument("--host", help="Bind host. Defaults to EDITOR_PLUGIN_API_HOST or 127.0.0.1.")
     editor_plugin_api.add_argument("--port", type=int, help="Bind port. Defaults to EDITOR_PLUGIN_API_PORT or 8765.")
 
+    local_pipeline = subparsers.add_parser(
+        "local-pipeline-server",
+        help="Run the local SQLite-backed content pipeline server.",
+    )
+    local_pipeline.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    local_pipeline.add_argument("--host", default="127.0.0.1", help="Bind host. Defaults to 127.0.0.1.")
+    local_pipeline.add_argument("--port", type=int, default=8776, help="Bind port. Defaults to 8776.")
+
+    local_pipeline_skip = subparsers.add_parser(
+        "local-pipeline-skip-legacy",
+        help="Mark pre-cutover unfinished DB tasks as legacy_skipped.",
+    )
+    local_pipeline_skip.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    local_pipeline_skip.add_argument("--execute", action="store_true", help="Actually update tasks. Defaults to dry-run.")
+
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
@@ -445,7 +460,35 @@ def editor_plugin_api_server_command(args: argparse.Namespace) -> int:
     )
 
 
+def local_pipeline_server_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import run_local_pipeline_server
+
+    run_local_pipeline_server(
+        database_url=args.database_url,
+        host=args.host,
+        port=args.port,
+    )
+    return 0
+
+
+def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.repository import PostgresXProcessingRepository
+
+    repository = PostgresXProcessingRepository(args.database_url)
+    if not args.execute:
+        count = repository.count_legacy_unfinished_tasks()
+        print(
+            "[odaily] local pipeline legacy skip dry-run "
+            f"count={count}. Re-run with --execute to update tasks."
+        )
+        return 0
+    count = repository.mark_legacy_unfinished_tasks_skipped()
+    print(f"[odaily] local pipeline legacy tasks skipped count={count}")
+    return 0
+
+
 def x_capture_worker_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import LocalPipelineClient
     from packages.x_capture import FXTwitterClient, XCaptureWorker
     from packages.x_capture.repository import PostgresXCaptureRepository
 
@@ -457,6 +500,7 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
         client=FXTwitterClient(),
         attempt_retention_days=settings.attempt_retention_days,
         freshness_window_seconds=settings.processing_freshness_window_seconds,
+        pipeline_client=LocalPipelineClient(),
     )
     if args.once:
         stats = worker.run_once()
@@ -477,10 +521,11 @@ def non_mainstream_media_init_db_command(args: argparse.Namespace) -> int:
 
 
 def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import LocalPipelineClient
     from packages.non_mainstream_media import NonMainstreamMediaWorker, PostgresNonMainstreamMediaRepository
 
     repository = PostgresNonMainstreamMediaRepository(args.database_url)
-    worker = NonMainstreamMediaWorker(repository=repository)
+    worker = NonMainstreamMediaWorker(repository=repository, pipeline_client=LocalPipelineClient())
     if args.once:
         stats = worker.run_once()
         print(f"[odaily] non-mainstream media once completed. sources={len(stats)}")
@@ -633,6 +678,7 @@ def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
 
 
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import LocalPipelineClient
     from packages.competitor_monitor import (
         CompetitorMonitorWorker,
         LocalFirstCompetitorMonitorRepository,
@@ -647,7 +693,11 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
         remote=remote_repository,
         state_store=CompetitorEventStateStore(paths.competitor_monitor_db_path),
     )
-    worker = CompetitorMonitorWorker(repository=repository, settings=load_competitor_monitor_settings())
+    worker = CompetitorMonitorWorker(
+        repository=repository,
+        settings=load_competitor_monitor_settings(),
+        pipeline_client=LocalPipelineClient(),
+    )
     if args.once:
         result = worker.run_once()
         print(
@@ -958,6 +1008,10 @@ def main() -> int:
             return editor_plugin_list_users_command(args)
         if args.command == "editor-plugin-api-server":
             return editor_plugin_api_server_command(args)
+        if args.command == "local-pipeline-server":
+            return local_pipeline_server_command(args)
+        if args.command == "local-pipeline-skip-legacy":
+            return local_pipeline_skip_legacy_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
         if args.command == "non-mainstream-media-init-db":

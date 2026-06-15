@@ -53,8 +53,8 @@ class NonMainstreamMediaRepository(Protocol):
     def mark_source_seeded(self, source: NonMainstreamMediaSource, source_item_ids: list[str]) -> None: ...
     def mark_seen(self, source: NonMainstreamMediaSource, source_item_id: str, *, seeded: bool) -> bool: ...
     def unseen_source_item_ids(self, site_key: str, source_item_ids: list[str]) -> set[str]: ...
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool: ...
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool: ...
+    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None: ...
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None: ...
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None: ...
     def record_worker_heartbeat(
         self,
@@ -284,7 +284,7 @@ class PostgresNonMainstreamMediaRepository:
         seen = {str(row["source_item_id"]) for row in rows}
         return set(source_item_ids) - seen
 
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool:
+    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None:
         task_source = write_flow_task_source(source)
         source_label = source_group_label(source.source_group)
         metadata = {
@@ -320,7 +320,8 @@ class PostgresNonMainstreamMediaRepository:
                     %(metadata)s,
                     'pending'
                 )
-                ON CONFLICT (source, source_item_id) DO NOTHING
+                ON CONFLICT (source, source_item_id) DO UPDATE SET
+                    updated_at = tasks.updated_at
                 RETURNING id
                 """,
                 {
@@ -335,9 +336,9 @@ class PostgresNonMainstreamMediaRepository:
                 },
             ).fetchone()
             conn.commit()
-            return row is not None
+            return int(row["id"]) if row is not None else None
 
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None:
         task_source = alert_only_task_source(source)
         source_label = source_group_label(source.source_group)
         content = (page.excerpt or page.title or page.detail_url).strip()
@@ -369,7 +370,8 @@ class PostgresNonMainstreamMediaRepository:
                     %(metadata)s,
                     'pending'
                 )
-                ON CONFLICT (source, source_item_id) DO NOTHING
+                ON CONFLICT (source, source_item_id) DO UPDATE SET
+                    updated_at = tasks.updated_at
                 RETURNING id
                 """,
                 {
@@ -391,7 +393,7 @@ class PostgresNonMainstreamMediaRepository:
                 },
             ).fetchone()
             conn.commit()
-            return row is not None
+            return int(row["id"]) if row is not None else None
 
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None:
         del started_at
@@ -560,16 +562,17 @@ class InMemoryNonMainstreamMediaRepository:
             if (site_key, source_item_id) not in self.seen
         }
 
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> bool:
+    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None:
         task_source = write_flow_task_source(source)
         source_label = source_group_label(source.source_group)
         if any(
             item["source"] == task_source and item["source_item_id"] == article.canonical_url
             for item in self.tasks
         ):
-            return False
+            return None
         self.tasks.append(
             {
+                "id": len(self.tasks) + 1,
                 "source": task_source,
                 "source_item_id": article.canonical_url,
                 "source_url": article.canonical_url,
@@ -596,18 +599,19 @@ class InMemoryNonMainstreamMediaRepository:
                 "status": "pending",
             }
         )
-        return True
+        return int(self.tasks[-1]["id"])
 
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> bool:
+    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None:
         task_source = alert_only_task_source(source)
         source_label = source_group_label(source.source_group)
         if any(
             item["source"] == task_source and item["source_item_id"] == page.source_item_id
             for item in self.tasks
         ):
-            return False
+            return None
         self.tasks.append(
             {
+                "id": len(self.tasks) + 1,
                 "source": task_source,
                 "source_item_id": page.source_item_id,
                 "source_url": page.detail_url,
@@ -634,7 +638,7 @@ class InMemoryNonMainstreamMediaRepository:
                 "status": "pending",
             }
         )
-        return True
+        return int(self.tasks[-1]["id"])
 
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None:
         del started_at

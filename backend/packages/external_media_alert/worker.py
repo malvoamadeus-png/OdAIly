@@ -385,6 +385,9 @@ class ExternalMediaAlertWorker:
     def _start_notify_listener(self) -> threading.Thread | None:
         if not isinstance(self.repository, PostgresExternalMediaAlertRepository):
             return None
+        if not self.settings.enable_notify_listener:
+            print(f"[odaily] external media alert stage={self.stage} notify listener disabled; using polling only")
+            return None
         thread = threading.Thread(
             target=self._listen_for_changes,
             name=f"external-media-alert-{self.stage}-listener",

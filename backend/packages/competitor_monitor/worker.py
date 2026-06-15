@@ -13,6 +13,7 @@ from packages.common.config import CompetitorMonitorSettings
 from packages.common.freshness import evaluate_source_freshness
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
+from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.searcher import SearchCache, SearchDocument
 
 from .fetchers import NewsflashItem
@@ -46,9 +47,16 @@ class CompetitorRunResult:
 
 
 class CompetitorMonitorWorker:
-    def __init__(self, *, repository: CompetitorMonitorRepository, settings: CompetitorMonitorSettings) -> None:
+    def __init__(
+        self,
+        *,
+        repository: CompetitorMonitorRepository,
+        settings: CompetitorMonitorSettings,
+        pipeline_client: LocalPipelineClient | None = None,
+    ) -> None:
         self.repository = repository
         self.settings = settings
+        self.pipeline_client = pipeline_client
         self.worker_id = f"competitor_monitor-{os.getpid()}"
         self._event_aggregator: NewsflashEventAggregator | None = None
         self._search_cache = SearchCache(_search_cache_path_for_repository(self.repository))
@@ -105,7 +113,18 @@ class CompetitorMonitorWorker:
             finally:
                 event_elapsed_seconds = time.monotonic() - event_started
             task_items, expired_for_tasks, expired_for_tasks_by_source = self._filter_items_for_tasks(filtered_items)
-            task_count, reference_count = self.repository.save_items(task_items)
+            if self.pipeline_client is None:
+                task_count, reference_count = self.repository.save_items(task_items)
+            else:
+                task_records, reference_count = self.repository.save_items_for_pipeline(task_items)
+                for item, task_id in task_records:
+                    self.pipeline_client.submit_job(
+                        job_type="write_flow",
+                        task_id=task_id,
+                        source=item.source,
+                        source_item_id=item.source_item_id,
+                    )
+                task_count = len(task_records)
             self._mirror_odaily_references(task_items)
             result = CompetitorRunResult(
                 fetched=len(items),

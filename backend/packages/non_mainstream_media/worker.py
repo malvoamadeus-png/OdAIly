@@ -9,9 +9,10 @@ from datetime import datetime
 from typing import Any
 
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.local_pipeline.client import LocalPipelineClient
 from .fetcher import fetch_article, fetch_discovered_pages, get_site_registry
 from .models import NonMainstreamMediaSettings, NonMainstreamMediaSource, SiteDefinition, SourceRunStats
-from .repository import NonMainstreamMediaRepository, utc_now
+from .repository import NonMainstreamMediaRepository, alert_only_task_source, utc_now, write_flow_task_source
 
 
 @dataclass(slots=True)
@@ -30,6 +31,7 @@ class NonMainstreamMediaWorker:
         request_timeout_seconds: float = 20.0,
         max_attempts: int = 3,
         backoff_seconds: float = 1.0,
+        pipeline_client: LocalPipelineClient | None = None,
     ) -> None:
         self.repository = repository
         self.site_registry = site_registry or get_site_registry()
@@ -37,6 +39,7 @@ class NonMainstreamMediaWorker:
         self.request_timeout_seconds = request_timeout_seconds
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
+        self.pipeline_client = pipeline_client
         self.worker_id = f"non_mainstream_media-{os.getpid()}"
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
@@ -208,9 +211,23 @@ class NonMainstreamMediaWorker:
             except Exception as exc:
                 detail_errors[page.detail_url] = str(exc)
                 continue
+            task_id = self.repository.save_task(source, article)
+            if task_id is None:
+                if self.repository.mark_seen(source, article.canonical_url, seeded=False):
+                    new_count += 1
+                continue
+            try:
+                self._submit_pipeline_job(
+                    job_type="write_flow",
+                    task_id=task_id,
+                    source=write_flow_task_source(source),
+                    source_item_id=article.canonical_url,
+                )
+            except Exception as exc:
+                detail_errors[article.canonical_url] = f"local pipeline enqueue failed: {exc}"
+                continue
             if self.repository.mark_seen(source, article.canonical_url, seeded=False):
                 new_count += 1
-            if self.repository.save_task(source, article):
                 saved_count += 1
         status = "success" if not detail_errors else "parse_failed"
         return SourceRunStats(
@@ -227,19 +244,47 @@ class NonMainstreamMediaWorker:
         unseen = self.repository.unseen_source_item_ids(source.site_key, [page.source_item_id for page in pages])
         new_count = 0
         saved_count = 0
+        enqueue_errors: dict[str, str] = {}
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
+            task_id = self.repository.save_alert_task(source, page)
+            if task_id is None:
+                if self.repository.mark_seen(source, page.source_item_id, seeded=False):
+                    new_count += 1
+                continue
+            try:
+                self._submit_pipeline_job(
+                    job_type="alert_only",
+                    task_id=task_id,
+                    source=alert_only_task_source(source),
+                    source_item_id=page.source_item_id,
+                )
+            except Exception as exc:
+                enqueue_errors[page.source_item_id] = str(exc)
+                continue
             if self.repository.mark_seen(source, page.source_item_id, seeded=False):
                 new_count += 1
-            if self.repository.save_alert_task(source, page):
                 saved_count += 1
+        status = "success" if not enqueue_errors else "parse_failed"
         return SourceRunStats(
             source=source,
-            status="success",
+            status=status,
             candidate_count=len(pages),
             new_count=new_count,
             saved_count=saved_count,
+            error=f"{len(enqueue_errors)} local pipeline enqueue(s) failed" if enqueue_errors else None,
+            metadata={"enqueue_errors": enqueue_errors},
+        )
+
+    def _submit_pipeline_job(self, *, job_type: str, task_id: int, source: str, source_item_id: str) -> None:
+        if self.pipeline_client is None:
+            return
+        self.pipeline_client.submit_job(
+            job_type=job_type,  # type: ignore[arg-type]
+            task_id=task_id,
+            source=source,
+            source_item_id=source_item_id,
         )
 
     def _record_heartbeat(

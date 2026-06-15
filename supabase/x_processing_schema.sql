@@ -498,23 +498,8 @@ BEGIN
 END
 $$;
 
-CREATE OR REPLACE FUNCTION notify_x_task_queue_changed()
-RETURNS trigger AS $$
-BEGIN
-    PERFORM pg_notify(
-        'x_task_queue_changed',
-        json_build_object('table', TG_TABLE_NAME, 'op', TG_OP, 'status', NEW.status)::text
-    );
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 DROP TRIGGER IF EXISTS trg_tasks_x_queue_notify ON tasks;
-CREATE TRIGGER trg_tasks_x_queue_notify
-AFTER INSERT OR UPDATE OF status ON tasks
-FOR EACH ROW
-WHEN (NEW.source IN ('x', 'blockbeats', 'panews', 'jinse', 'non_mainstream_media', 'ai_source', 'mainstream_media'))
-EXECUTE FUNCTION notify_x_task_queue_changed();
+DROP FUNCTION IF EXISTS notify_x_task_queue_changed();
 
 CREATE OR REPLACE FUNCTION notify_prompt_config_changed()
 RETURNS trigger AS $$

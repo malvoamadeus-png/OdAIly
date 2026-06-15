@@ -33,15 +33,7 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "competitor_monitor",
     "whale_watch",
     "whale_watch_hyperliquid",
-    "external_media_alert_domain_judge",
-    "external_media_alert_search",
-    "external_media_alert_notify",
-    "x_process_judge_crypto",
-    "x_process_judge_ai",
-    "x_process_search",
-    "x_process_write",
-    "x_process_format_publish",
-    "x_process_publish",
+    "local_pipeline",
 ]
 
 MONITORED_TASK_SOURCES = [
@@ -147,7 +139,7 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (
                     MONITORED_TASK_SOURCES,
-                    ["pending", "judged", "searched", "classified", "deduped", "written", "publisher_pending"],
+                    ["pending"],
                     cutoff,
                 ),
             ).fetchall()
@@ -170,7 +162,7 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (
                     MONITORED_TASK_SOURCES,
-                    ["judging", "classifying", "deduping", "writing", "formatting", "publishing", "notifying"],
+                    ["running"],
                     cutoff,
                 ),
             ).fetchall()

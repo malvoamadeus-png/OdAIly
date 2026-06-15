@@ -15,6 +15,7 @@ class CompetitorMonitorRepository(Protocol):
     def init_schema(self) -> None: ...
     def list_enabled_filter_keywords(self) -> list[str]: ...
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]: ...
+    def save_items_for_pipeline(self, items: list[NewsflashItem]) -> tuple[list[tuple[NewsflashItem, int]], int]: ...
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
     def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
@@ -62,6 +63,75 @@ class PostgresCompetitorMonitorRepository:
         return [str(row["term"]) for row in rows if str(row["term"]).strip()]
 
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
+        task_records, reference_count = self.save_items_for_pipeline(items)
+        return len(task_records), reference_count
+
+    def save_items_for_pipeline(self, items: list[NewsflashItem]) -> tuple[list[tuple[NewsflashItem, int]], int]:
+        task_records: list[tuple[NewsflashItem, int]] = []
+        reference_count = 0
+        with self._connect() as conn:
+            for item in items:
+                published_at = parse_datetime(item.published_at)
+                if item.source == "odaily":
+                    previous = conn.execute(
+                        "SELECT 1 FROM odaily_reference_items WHERE source_item_id = %s",
+                        (item.source_item_id,),
+                    ).fetchone()
+                    conn.execute(
+                        """
+                        INSERT INTO odaily_reference_items (
+                            source_item_id, source_url, title, content, published_at, raw_payload, metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (source_item_id) DO UPDATE SET
+                            source_url = EXCLUDED.source_url,
+                            title = EXCLUDED.title,
+                            content = EXCLUDED.content,
+                            published_at = EXCLUDED.published_at,
+                            raw_payload = EXCLUDED.raw_payload,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = now()
+                        """,
+                        (
+                            item.source_item_id,
+                            item.source_url,
+                            item.title,
+                            item.content,
+                            published_at,
+                            self._Jsonb(item.raw_payload),
+                            self._Jsonb(item.metadata),
+                        ),
+                    )
+                    if previous is None:
+                        reference_count += 1
+                    continue
+                row = conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        source, source_item_id, source_url, title, content, published_at, raw_payload, metadata, status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                    ON CONFLICT (source, source_item_id) DO UPDATE SET
+                        updated_at = tasks.updated_at
+                    RETURNING id
+                    """,
+                    (
+                        item.source,
+                        item.source_item_id,
+                        item.source_url,
+                        item.title,
+                        item.content,
+                        published_at,
+                        self._Jsonb(item.raw_payload),
+                        self._Jsonb({**item.metadata, "source_kind": "competitor"}),
+                    ),
+                ).fetchone()
+                if row:
+                    task_records.append((item, int(row["id"])))
+            conn.commit()
+        return task_records, reference_count
+
+    def _legacy_save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
         task_count = 0
         reference_count = 0
         with self._connect() as conn:
