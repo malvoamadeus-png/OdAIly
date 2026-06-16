@@ -3572,11 +3572,11 @@ def extract_hankyung_markdown_author_names(lines: list[str], *, start_index: int
         cleaned = clean_inline_text(strip_markdown_formatting(line))
         if not cleaned:
             continue
-        match = re.fullmatch(r"([가-힣A-Za-z][^\\[]*?)기자\s*구독하기", cleaned)
+        match = re.fullmatch(r"([가-힣A-Za-z][가-힣A-Za-z\s.'-]{0,40})기자\s*구독하기", cleaned)
         if match:
             candidates.append(clean_inline_text(match.group(1)))
             continue
-        match = re.fullmatch(r"([가-힣A-Za-z][^\\[]*?)기자", cleaned)
+        match = re.fullmatch(r"([가-힣A-Za-z][가-힣A-Za-z\s.'-]{0,40})기자", cleaned)
         if match:
             candidates.append(clean_inline_text(match.group(1)))
     return unique_preserve_order(candidates)
@@ -3595,20 +3595,48 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
     body_lines: list[str] = []
     start = max(0, start_index)
     in_body = False
+    after_summary = False
     for line in lines[start:]:
         cleaned = clean_inline_text(strip_markdown_formatting(line))
         if not cleaned:
             continue
+        if cleaned == title or cleaned == f"{title} | 한국경제":
+            continue
+        if cleaned.startswith("입력 ") or cleaned.startswith("수정 "):
+            continue
+        if cleaned in {
+            "기사 스크랩 기사 스크랩",
+            "댓글 댓글",
+            "기사 공유 공유",
+            "글자크기 조절 글자크기",
+            "프린트 프린트",
+            "구글 검색 선호 출처로 추가",
+            "Google 검색에서 한국경제 기사를 더 자주 볼 수 있습니다.",
+        }:
+            continue
+        if cleaned.endswith("기자 구독하기") or cleaned.endswith("기자"):
+            continue
+        if cleaned.startswith("AI 기사요약"):
+            after_summary = True
+            continue
         if not in_body:
-            if cleaned == title or cleaned == f"{title} | 한국경제":
+            if cleaned.startswith("한경 프리미엄9의 모든 콘텐츠는"):
+                break
+            if cleaned.startswith("무료 열람 혜택으로 기사를 읽으셨습니다."):
+                break
+            if cleaned.startswith("AI 뉴스 Q&A"):
+                break
+            if cleaned.startswith("AI 포인트 뷰"):
+                break
+            if cleaned.startswith("좋아요 싫어요"):
+                break
+            if cleaned.startswith("내달 중순") or cleaned.startswith("4분기에"):
                 continue
-            if cleaned.startswith("입력 ") or cleaned.startswith("수정 "):
+            if cleaned.startswith("SK하이닉스 본사 모습.") or cleaned.endswith("연합뉴스"):
                 continue
-            if cleaned.endswith("기자 구독하기") or cleaned.endswith("기자"):
-                continue
-            if cleaned.startswith("AI 기사요약"):
-                continue
-            if len(cleaned) >= 40:
+            if after_summary and len(cleaned) >= 40:
+                in_body = True
+            elif len(cleaned) >= 60 and not _looks_like_hankyung_ui_text(cleaned):
                 in_body = True
             else:
                 continue
@@ -3622,12 +3650,25 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
             break
         if cleaned.startswith("좋아요 싫어요"):
             break
-        if cleaned.startswith("구글 검색 선호 출처로 추가"):
+        if cleaned.startswith("구독하기"):
             continue
         if cleaned in {"PREMIUM9", "기사 스크랩 기사 스크랩", "댓글 댓글"}:
             continue
         body_lines.append(cleaned)
     return "\n\n".join(body_lines)
+
+
+def _looks_like_hankyung_ui_text(value: str) -> bool:
+    markers = (
+        "모바일 전체메뉴",
+        "통합검색",
+        "검색창 닫기",
+        "전체메뉴 닫기",
+        "개인회원 기업회원",
+        "메뉴 접기/펼치기",
+        "AI를 넘어서는 성공투자",
+    )
+    return any(marker in value for marker in markers)
 
 
 def is_hankyung_article_url(url: str) -> bool:

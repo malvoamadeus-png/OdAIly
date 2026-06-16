@@ -1747,6 +1747,50 @@ def test_parse_hankyung_article_extracts_body_and_metadata() -> None:
     assert article.content_format == "hankyung_premium9_article"
 
 
+def test_parse_hankyung_markdown_article_skips_ui_blocks_and_ai_summary() -> None:
+    payload = """
+Title: 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진
+
+URL Source: http://www.hankyung.com/article/202606169905i
+
+Published Time: 2026-06-16T17:30:04+09:00
+
+Markdown Content:
+# 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진 | 한국경제
+
+입력 2026.06.16 17:30 수정 2026.06.16 17:35
+
+김채연기자 구독하기
+
+이선아기자 구독하기
+
+**AI 기사요약**
+
+SK하이닉스가 미국 주식예탁증서(ADR) 상장을 마무리한 후 주주가치 제고를 위해 올해 4분기 중 최대 100조 원 규모의 주주환원 정책을 추진한다.
+
+SK하이닉스 본사 모습. 연합뉴스
+
+SK하이닉스가 미국 주식예탁증서(ADR) 상장을 마무리 한 뒤 올해 4분기 중 최대 100조원 규모의 초대형 주주환원 정책을 추진한다.
+
+16일 투자은행(IB) 및 반도체 업계에 따르면 SK하이닉스는 오는 4분기 중 자사주 매입, 현금 배당 등을 포함해 100조원 규모의 주주환원책을 추진 중이다.
+
+한경 프리미엄9의 모든 콘텐츠는 한국경제신문의 저작물로 저작권법의 보호를 받습니다.
+"""
+
+    article = parse_hankyung_article(
+        payload,
+        page_url="https://www.hankyung.com/article/202606169905i",
+        source_item_id="https://www.hankyung.com/article/202606169905i",
+    )
+
+    assert article.title == "최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진"
+    assert article.author_names == ["김채연", "이선아"]
+    assert "AI 기사요약" not in article.content
+    assert "김채연기자 구독하기" not in article.content
+    assert article.content.startswith("SK하이닉스가 미국 주식예탁증서(ADR) 상장을 마무리 한 뒤")
+    assert "16일 투자은행(IB) 및 반도체 업계에 따르면" in article.content
+
+
 def test_parse_tether_article_extracts_wp_body_and_terms() -> None:
     payload = [
         {
