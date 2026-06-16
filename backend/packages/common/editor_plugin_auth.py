@@ -322,16 +322,15 @@ class PostgresEditorPluginAuthRepository:
         expected_args = expected_args_by_function[function_name]
         if len(args) != expected_args:
             raise ValueError(f"Editor plugin json function requires {expected_args} arguments")
+        placeholders = ", ".join(["%s"] * (expected_args - 1))
+        sql = f"SELECT * FROM {function_name}({placeholders}, %s::jsonb)"
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT set_config('request.jwt.claims', %s, true)",
                     (json.dumps({"email": normalized_email}),),
                 )
-                cur.execute(
-                    f"SELECT * FROM {function_name}(%s, %s, %s, %s::jsonb)",
-                    args,
-                )
+                cur.execute(sql, args)
                 rows = cur.fetchall()
         if not rows:
             return None
