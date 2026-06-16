@@ -2173,7 +2173,8 @@ def parse_hankyung_article(html: str, *, page_url: str, source_item_id: str) -> 
 def parse_hankyung_markdown_article(payload: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
     text = extract_jina_markdown_payload(payload)
     lines = [line.rstrip() for line in text.splitlines()]
-    title = clean_inline_text(extract_line_value(payload, prefix="Title:")) or normalize_hankyung_url(page_url)
+    heading_title = extract_hankyung_markdown_heading_title(lines)
+    title = heading_title or clean_inline_text(extract_line_value(payload, prefix="Title:")) or normalize_hankyung_url(page_url)
     title = strip_hankyung_title_suffix(title)
     published_at_raw = clean_inline_text(extract_line_value(payload, prefix="Published Time:"))
     title_anchor = find_last_hankyung_markdown_title_index(lines, title=title)
@@ -2952,6 +2953,16 @@ def strip_hankyung_title_suffix(value: str) -> str:
     return text
 
 
+def extract_hankyung_markdown_heading_title(lines: list[str]) -> str:
+    for line in lines:
+        if not line.startswith("# "):
+            continue
+        cleaned = strip_hankyung_title_suffix(clean_inline_text(strip_markdown_formatting(line[2:])))
+        if cleaned and cleaned not in {"한경프리미엄9", "한경 단독 | 한국경제"}:
+            return cleaned
+    return ""
+
+
 def find_last_markdown_title_index(lines: list[str], *, title: str) -> int:
     normalized_title = clean_inline_text(title)
     matches: list[int] = []
@@ -3596,6 +3607,7 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
     start = max(0, start_index)
     in_body = False
     after_summary = False
+    skipping_summary_details = False
     for line in lines[start:]:
         cleaned = clean_inline_text(strip_markdown_formatting(line))
         if not cleaned:
@@ -3618,6 +3630,7 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
             continue
         if cleaned.startswith("AI 기사요약"):
             after_summary = True
+            skipping_summary_details = True
             continue
         if not in_body:
             if cleaned.startswith("한경 프리미엄9의 모든 콘텐츠는"):
@@ -3630,6 +3643,14 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
                 break
             if cleaned.startswith("좋아요 싫어요"):
                 break
+            if skipping_summary_details:
+                if cleaned.startswith("내달 중순") or cleaned.startswith("4분기에"):
+                    continue
+                if "원 규모의 주주환원 정책" in cleaned or "AI 인프라 구축" in cleaned:
+                    continue
+                if cleaned.startswith("SK하이닉스 본사 모습.") or cleaned.endswith("연합뉴스"):
+                    skipping_summary_details = False
+                    continue
             if cleaned.startswith("내달 중순") or cleaned.startswith("4분기에"):
                 continue
             if cleaned.startswith("SK하이닉스 본사 모습.") or cleaned.endswith("연합뉴스"):
