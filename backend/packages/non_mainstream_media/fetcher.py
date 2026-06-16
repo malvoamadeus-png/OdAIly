@@ -69,6 +69,7 @@ CTEE_SEMICONDUCTOR_LIST_URL = "https://www.ctee.com.tw/industry/semi"
 CTEE_TIMEZONE = timezone(timedelta(hours=8))
 HANKYUNG_BASE_URL = "https://www.hankyung.com"
 HANKYUNG_PREMIUM_LIST_URL = "https://www.hankyung.com/premium9/0100001"
+HANKYUNG_TIMEZONE = timezone(timedelta(hours=9))
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -320,13 +321,12 @@ def fetch_discovered_pages(
             backoff_seconds=backoff_seconds,
         )
     if site.site_key == "hankyung_premium9":
-        html = fetch_html(
-            site.list_url,
+        return fetch_hankyung_discovered_pages(
+            site,
             timeout_seconds=timeout_seconds,
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
         )
-        return discover_hankyung_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -437,11 +437,12 @@ def fetch_article(
             default_category="半導體",
         )
     elif site.site_key == "hankyung_premium9":
-        html = fetch_html(
+        html = fetch_html_with_fallbacks(
             page.detail_url,
             timeout_seconds=timeout_seconds,
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
+            fallback_urls=[build_jina_proxy_url(page.detail_url)],
         )
         article = parse_hankyung_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
@@ -682,6 +683,23 @@ def fetch_ctee_discovered_pages(
         fallback_urls=[build_jina_proxy_url(site.list_url)],
     )
     return discover_ctee_pages(html, base_url=site.homepage_url)
+
+
+def fetch_hankyung_discovered_pages(
+    site: SiteDefinition,
+    *,
+    timeout_seconds: float,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    html = fetch_html_with_fallbacks(
+        site.list_url,
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        fallback_urls=[build_jina_proxy_url(site.list_url)],
+    )
+    return discover_hankyung_pages(html, base_url=site.homepage_url)
 
 
 def discover_a16z_pages(html: str, *, base_url: str = A16Z_BASE_URL) -> list[DiscoveredPage]:
@@ -1128,6 +1146,8 @@ def discover_ctee_pages_from_markdown(payload: str, *, base_url: str = CTEE_BASE
 
 
 def discover_hankyung_pages(html: str, *, base_url: str = HANKYUNG_BASE_URL) -> list[DiscoveredPage]:
+    if "Markdown Content:" in html:
+        return discover_hankyung_pages_from_markdown(html, base_url=base_url)
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     results: list[DiscoveredPage] = []
@@ -1150,6 +1170,36 @@ def discover_hankyung_pages(html: str, *, base_url: str = HANKYUNG_BASE_URL) -> 
                 detail_url=detail_url,
                 title=title,
                 excerpt=extract_hankyung_listing_excerpt(anchor, title=title) or None,
+            )
+        )
+    return results
+
+
+def discover_hankyung_pages_from_markdown(payload: str, *, base_url: str = HANKYUNG_BASE_URL) -> list[DiscoveredPage]:
+    text = extract_jina_markdown_payload(payload)
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    link_pattern = re.compile(
+        r"##\s+\[(?P<title>.+?)\]\((?P<link>https?://(?:www\.)?hankyung\.com/article/[^\)]+)\)",
+        re.IGNORECASE,
+    )
+    for match in link_pattern.finditer(text):
+        detail_url = normalize_hankyung_url(urljoin(base_url, match.group("link")))
+        if not is_hankyung_article_url(detail_url) or detail_url in seen:
+            continue
+        seen.add(detail_url)
+        raw_title = clean_inline_text(strip_markdown_formatting(match.group("title")))
+        following_text = text[match.end() : match.end() + 500]
+        published_at_raw = extract_hankyung_markdown_published_at_text(following_text) or ""
+        excerpt = extract_hankyung_markdown_excerpt(following_text)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=strip_hankyung_title_suffix(raw_title),
+                excerpt=excerpt or None,
+                published_at=parse_hankyung_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
             )
         )
     return results
@@ -1467,7 +1517,7 @@ def parse_coindesk_article(html: str, *, page_url: str, source_item_id: str) -> 
         canonical_url=canonical,
         title=title,
         content=body,
-        published_at=parse_published_at(published_at_raw),
+        published_at=parse_hankyung_published_at(published_at_raw),
         author_names=author_names,
         tags=tags,
         categories=categories,
@@ -2050,6 +2100,8 @@ def parse_ctee_article(
 
 
 def parse_hankyung_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    if "Markdown Content:" in html:
+        return parse_hankyung_markdown_article(html, page_url=page_url, source_item_id=source_item_id)
     soup = BeautifulSoup(html, "html.parser")
     structured = find_structured_content(soup)
     canonical = normalize_hankyung_url(
@@ -2113,6 +2165,45 @@ def parse_hankyung_article(html: str, *, page_url: str, source_item_id: str) -> 
             "canonical_url": canonical,
             "structured_type": structured.get("@type"),
             "structured_headline": structured.get("headline") or structured.get("name"),
+        },
+        metadata=metadata,
+    )
+
+
+def parse_hankyung_markdown_article(payload: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    text = extract_jina_markdown_payload(payload)
+    lines = [line.rstrip() for line in text.splitlines()]
+    title = clean_inline_text(extract_line_value(payload, prefix="Title:")) or normalize_hankyung_url(page_url)
+    title = strip_hankyung_title_suffix(title)
+    published_at_raw = clean_inline_text(extract_line_value(payload, prefix="Published Time:"))
+    title_anchor = find_last_hankyung_markdown_title_index(lines, title=title)
+    author_names = extract_hankyung_markdown_author_names(lines, start_index=title_anchor)
+    categories = extract_hankyung_markdown_categories(lines, start_index=title_anchor)
+    body = clean_body_text(extract_hankyung_markdown_body(lines, title=title, start_index=title_anchor))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    canonical = normalize_hankyung_url(page_url)
+    excerpt = body.split("\n\n", 1)[0][:240]
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw or None,
+        "proxy_fallback": "jina_markdown",
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_hankyung_published_at(published_at_raw),
+        author_names=author_names,
+        tags=[],
+        categories=categories,
+        excerpt=excerpt,
+        content_format="hankyung_premium9_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "proxy_fallback": "jina_markdown",
         },
         metadata=metadata,
     )
@@ -2853,11 +2944,29 @@ def strip_thelec_markdown_title_suffix(value: str) -> str:
     return text
 
 
+def strip_hankyung_title_suffix(value: str) -> str:
+    text = clean_inline_text(value)
+    for suffix in (" | 한국경제", " - 한국경제"):
+        if text.endswith(suffix):
+            return clean_inline_text(text[: -len(suffix)])
+    return text
+
+
 def find_last_markdown_title_index(lines: list[str], *, title: str) -> int:
     normalized_title = clean_inline_text(title)
     matches: list[int] = []
     for index, line in enumerate(lines):
         cleaned = strip_thelec_markdown_title_suffix(clean_inline_text(strip_markdown_formatting(line)))
+        if cleaned == normalized_title:
+            matches.append(index)
+    return matches[-1] if matches else -1
+
+
+def find_last_hankyung_markdown_title_index(lines: list[str], *, title: str) -> int:
+    normalized_title = strip_hankyung_title_suffix(clean_inline_text(title))
+    matches: list[int] = []
+    for index, line in enumerate(lines):
+        cleaned = strip_hankyung_title_suffix(clean_inline_text(strip_markdown_formatting(line)))
         if cleaned == normalized_title:
             matches.append(index)
     return matches[-1] if matches else -1
@@ -3438,6 +3547,89 @@ def extract_hankyung_body(soup: BeautifulSoup, *, structured: dict[str, Any] | N
     return ""
 
 
+def extract_hankyung_markdown_excerpt(value: str) -> str:
+    for line in value.splitlines():
+        text = clean_inline_text(strip_markdown_formatting(line))
+        if not text:
+            continue
+        if re.fullmatch(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", text):
+            continue
+        if text in {"PREMIUM9", "입력", "수정"}:
+            continue
+        return text[:240]
+    return ""
+
+
+def extract_hankyung_markdown_published_at_text(value: str) -> str | None:
+    match = re.search(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", value)
+    return match.group(0) if match else None
+
+
+def extract_hankyung_markdown_author_names(lines: list[str], *, start_index: int) -> list[str]:
+    candidates: list[str] = []
+    start = max(0, start_index)
+    for line in lines[start : min(len(lines), start + 80)]:
+        cleaned = clean_inline_text(strip_markdown_formatting(line))
+        if not cleaned:
+            continue
+        match = re.fullmatch(r"([가-힣A-Za-z][^\\[]*?)기자\s*구독하기", cleaned)
+        if match:
+            candidates.append(clean_inline_text(match.group(1)))
+            continue
+        match = re.fullmatch(r"([가-힣A-Za-z][^\\[]*?)기자", cleaned)
+        if match:
+            candidates.append(clean_inline_text(match.group(1)))
+    return unique_preserve_order(candidates)
+
+
+def extract_hankyung_markdown_categories(lines: list[str], *, start_index: int) -> list[str]:
+    start = max(0, start_index - 20)
+    for line in lines[start : max(start, start_index + 5)]:
+        cleaned = clean_inline_text(strip_markdown_formatting(line))
+        if cleaned in {"한경 단독", "반도체인사이트", "방산인사이트", "바이오인사이트 lite", "데이터는 말한다", "딥인사이트"}:
+            return [cleaned]
+    return []
+
+
+def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index: int) -> str:
+    body_lines: list[str] = []
+    start = max(0, start_index)
+    in_body = False
+    for line in lines[start:]:
+        cleaned = clean_inline_text(strip_markdown_formatting(line))
+        if not cleaned:
+            continue
+        if not in_body:
+            if cleaned == title or cleaned == f"{title} | 한국경제":
+                continue
+            if cleaned.startswith("입력 ") or cleaned.startswith("수정 "):
+                continue
+            if cleaned.endswith("기자 구독하기") or cleaned.endswith("기자"):
+                continue
+            if cleaned.startswith("AI 기사요약"):
+                continue
+            if len(cleaned) >= 40:
+                in_body = True
+            else:
+                continue
+        if cleaned.startswith("한경 프리미엄9의 모든 콘텐츠는"):
+            break
+        if cleaned.startswith("무료 열람 혜택으로 기사를 읽으셨습니다."):
+            break
+        if cleaned.startswith("AI 뉴스 Q&A"):
+            break
+        if cleaned.startswith("AI 포인트 뷰"):
+            break
+        if cleaned.startswith("좋아요 싫어요"):
+            break
+        if cleaned.startswith("구글 검색 선호 출처로 추가"):
+            continue
+        if cleaned in {"PREMIUM9", "기사 스크랩 기사 스크랩", "댓글 댓글"}:
+            continue
+        body_lines.append(cleaned)
+    return "\n\n".join(body_lines)
+
+
 def is_hankyung_article_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.netloc.lower().endswith("hankyung.com") and parsed.path.rstrip("/").startswith("/article/")
@@ -3497,6 +3689,20 @@ def parse_ctee_published_at(value: Any) -> datetime | None:
     ):
         try:
             return datetime.strptime(text, fmt).replace(tzinfo=CTEE_TIMEZONE).astimezone(UTC)
+        except ValueError:
+            continue
+    return parse_published_at(text)
+
+
+def parse_hankyung_published_at(value: Any) -> datetime | None:
+    text = clean_inline_text(str(value or ""))
+    if not text:
+        return None
+    if re.search(r"[+-]\d{2}:?\d{2}|Z$", text):
+        return parse_published_at(text)
+    for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=HANKYUNG_TIMEZONE).astimezone(UTC)
         except ValueError:
             continue
     return parse_published_at(text)
