@@ -315,8 +315,13 @@ class PostgresEditorPluginAuthRepository:
         if function_name not in {"editor_plugin_mark_seen", "editor_plugin_submit_feedback"}:
             raise ValueError("Unsupported editor plugin json function")
         normalized_email = normalize_editor_plugin_email(email)
-        if len(args) != 4:
-            raise ValueError("Editor plugin json function requires four arguments")
+        expected_args_by_function = {
+            "editor_plugin_mark_seen": 4,
+            "editor_plugin_submit_feedback": 5,
+        }
+        expected_args = expected_args_by_function[function_name]
+        if len(args) != expected_args:
+            raise ValueError(f"Editor plugin json function requires {expected_args} arguments")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
