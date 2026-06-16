@@ -15,6 +15,7 @@ from packages.non_mainstream_media.fetcher import (
     discover_ft_pages,
     discover_fortune_pages,
     discover_forbes_pages,
+    discover_hankyung_pages,
     fetch_discovered_pages,
     fetch_article,
     discover_hk01_pages,
@@ -31,6 +32,7 @@ from packages.non_mainstream_media.fetcher import (
     parse_decrypt_article,
     parse_etnews_article,
     parse_forbes_article,
+    parse_hankyung_article,
     parse_hk01_article,
     parse_thelec_article,
     parse_zdnet_korea_article,
@@ -1671,6 +1673,78 @@ def test_parse_hk01_article_extracts_text_blocks_and_metadata() -> None:
     )
     assert article.excerpt == "Hong Kong stablecoin regulation moves closer."
     assert article.content_format == "hk01_issue_article"
+
+
+def test_discover_hankyung_pages_reads_article_links() -> None:
+    html = """
+    <html>
+      <body>
+        <section class="premium-list">
+          <a href="/article/202606169905i">[단독] 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진</a>
+          <a href="/article/202606169905i?utm_source=test">duplicate</a>
+          <a href="/premium9/other">ignore</a>
+        </section>
+      </body>
+    </html>
+    """
+
+    pages = discover_hankyung_pages(html)
+
+    assert [page.detail_url for page in pages] == ["https://www.hankyung.com/article/202606169905i"]
+    assert pages[0].title == "[단독] 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진"
+
+
+def test_parse_hankyung_article_extracts_body_and_metadata() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://www.hankyung.com/article/202606169905i" />
+        <meta property="og:title" content="[단독] 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진" />
+        <meta property="og:description" content="SK하이닉스가 미국 ADR 상장을 마무리 한 뒤 주주환원책을 추진한다." />
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "NewsArticle",
+          "headline": "[단독] 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진",
+          "datePublished": "2026-06-16T17:30:04+09:00",
+          "dateModified": "2026-06-16T17:35:00+09:00",
+          "author": [
+            {"@type": "Person", "name": "김채연"},
+            {"@type": "Person", "name": "이선아"}
+          ],
+          "articleSection": "한경단독",
+          "keywords": ["SK하이닉스", "주주환원"]
+        }
+        </script>
+      </head>
+      <body>
+        <div class="article-body-wrap">
+          <div class="article-body" id="articletxt">
+            <figure class="article-figure">
+              <figcaption>SK하이닉스 본사 모습. 연합뉴스</figcaption>
+            </figure>
+            SK하이닉스가 미국 주식예탁증서(ADR) 상장을 마무리 한 뒤 올해 4분기 중 최대 100조원 규모의 초대형 주주환원 정책을 추진한다.<br/><br/>
+            16일 투자은행(IB) 및 반도체 업계에 따르면 SK하이닉스는 오는 4분기 중 자사주 매입, 현금 배당 등을 포함해 100조원 규모의 주주환원책을 추진 중이다.
+          </div>
+          <div class="article-license">license text</div>
+        </div>
+      </body>
+    </html>
+    """
+
+    article = parse_hankyung_article(
+        html,
+        page_url="https://www.hankyung.com/article/202606169905i",
+        source_item_id="https://www.hankyung.com/article/202606169905i",
+    )
+
+    assert article.canonical_url == "https://www.hankyung.com/article/202606169905i"
+    assert article.title == "[단독] 최태원의 승부수…SK하이닉스, 100조 초대형 주주환원 추진"
+    assert article.author_names == ["김채연", "이선아"]
+    assert article.categories == ["한경단독"]
+    assert article.tags == ["SK하이닉스", "주주환원"]
+    assert "100조원 규모의 초대형 주주환원 정책" in article.content
+    assert article.content_format == "hankyung_premium9_article"
 
 
 def test_parse_tether_article_extracts_wp_body_and_terms() -> None:

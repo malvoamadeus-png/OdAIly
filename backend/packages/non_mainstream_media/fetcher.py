@@ -67,6 +67,8 @@ ZDNET_KOREA_TIMEZONE = timezone(timedelta(hours=9))
 CTEE_BASE_URL = "https://www.ctee.com.tw"
 CTEE_SEMICONDUCTOR_LIST_URL = "https://www.ctee.com.tw/industry/semi"
 CTEE_TIMEZONE = timezone(timedelta(hours=8))
+HANKYUNG_BASE_URL = "https://www.hankyung.com"
+HANKYUNG_PREMIUM_LIST_URL = "https://www.hankyung.com/premium9/0100001"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -203,6 +205,16 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         source_group=SOURCE_GROUP_AI_SOURCE,
         interval_seconds=300,
     ),
+    "hankyung_premium9": SiteDefinition(
+        site_key="hankyung_premium9",
+        display_name="Hankyung Premium9",
+        homepage_url=HANKYUNG_BASE_URL,
+        list_url=HANKYUNG_PREMIUM_LIST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_AI_SOURCE,
+        interval_seconds=300,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -307,6 +319,14 @@ def fetch_discovered_pages(
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
         )
+    if site.site_key == "hankyung_premium9":
+        html = fetch_html(
+            site.list_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        return discover_hankyung_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -416,6 +436,14 @@ def fetch_article(
             source_item_id=page.source_item_id,
             default_category="半導體",
         )
+    elif site.site_key == "hankyung_premium9":
+        html = fetch_html(
+            page.detail_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        article = parse_hankyung_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -1094,6 +1122,34 @@ def discover_ctee_pages_from_markdown(payload: str, *, base_url: str = CTEE_BASE
                 excerpt=excerpt or None,
                 published_at=parse_ctee_published_at(published_at_raw),
                 published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
+
+
+def discover_hankyung_pages(html: str, *, base_url: str = HANKYUNG_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href^='/article/'], a[href*='hankyung.com/article/']"):
+        href = str(anchor.get("href") or "").strip()
+        if not href:
+            continue
+        detail_url = normalize_hankyung_url(urljoin(base_url, href))
+        if not is_hankyung_article_url(detail_url) or detail_url in seen:
+            continue
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        if not title:
+            title = extract_hankyung_listing_title(anchor)
+        if not title:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title,
+                excerpt=extract_hankyung_listing_excerpt(anchor, title=title) or None,
             )
         )
     return results
@@ -1988,6 +2044,75 @@ def parse_ctee_article(
         raw_payload={
             "page_url": page_url,
             "canonical_url": canonical,
+        },
+        metadata=metadata,
+    )
+
+
+def parse_hankyung_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    canonical = normalize_hankyung_url(
+        select_attr(soup, "link[rel='canonical']", "href")
+        or select_meta_content(soup, "property", "og:url")
+        or page_url
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    published_at_raw = (
+        structured.get("datePublished")
+        or structured.get("dateModified")
+        or select_meta_content(soup, "property", "article:published_time")
+        or extract_first_datetime_text(soup.get_text(" ", strip=True))
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    categories = normalize_string_list(
+        structured.get("articleSection")
+        or select_meta_content(soup, "property", "article:section")
+        or select_meta_content(soup, "name", "article:section")
+    )
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(extract_hankyung_body(soup, structured=structured) or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+        "premium_only": bool(select_meta_content(soup, "property", "og:title")),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="hankyung_premium9_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "structured_type": structured.get("@type"),
+            "structured_headline": structured.get("headline") or structured.get("name"),
         },
         metadata=metadata,
     )
@@ -2915,6 +3040,14 @@ def normalize_ctee_url(url: str) -> str:
     return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", "", ""))
 
 
+def normalize_hankyung_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.netloc.lower().endswith("hankyung.com"):
+        return url.strip()
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((parsed.scheme or "https", parsed.netloc.lower(), path, "", "", ""))
+
+
 def is_ctee_article_url(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.netloc.lower().endswith("ctee.com.tw") and bool(
@@ -3265,6 +3398,51 @@ def extract_ctee_published_at_text(soup: BeautifulSoup) -> str | None:
     return None
 
 
+def extract_hankyung_listing_title(anchor: Tag) -> str:
+    for selector in ("h1", "h2", "h3", "strong", ".title", ".tit", ".headline"):
+        node = anchor.select_one(selector)
+        text = clean_inline_text(node.get_text(" ", strip=True)) if node else ""
+        if text:
+            return text
+    return clean_inline_text(anchor.get_text(" ", strip=True))
+
+
+def extract_hankyung_listing_excerpt(anchor: Tag, *, title: str) -> str:
+    text = clean_inline_text(anchor.get_text(" ", strip=True))
+    if title and text.startswith(title):
+        text = text[len(title) :].strip()
+    text = re.sub(r"\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2}", " ", text)
+    return clean_inline_text(text).strip(" -")[:240]
+
+
+def extract_hankyung_body(soup: BeautifulSoup, *, structured: dict[str, Any] | None = None) -> str:
+    for selector in ("#articletxt", ".article-body", ".article-body-wrap .article-body"):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        fragment = BeautifulSoup(str(node), "html.parser")
+        drop_noise(fragment)
+        for selector_name in (".article-license", ".view-limit-notice", ".ai-module-wrap", ".article-figure"):
+            for item in fragment.select(selector_name):
+                item.decompose()
+        parts = collect_text_parts(fragment)
+        if parts:
+            return "\n\n".join(parts)
+        text = fragment.get_text("\n\n", strip=True)
+        if text:
+            return text
+    if structured:
+        body = structured.get("articleBody")
+        if isinstance(body, str):
+            return clean_inline_text(body)
+    return ""
+
+
+def is_hankyung_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().endswith("hankyung.com") and parsed.path.rstrip("/").startswith("/article/")
+
+
 def parse_etnews_published_at(value: Any) -> datetime | None:
     text = clean_inline_text(str(value or ""))
     if not text:
@@ -3441,6 +3619,8 @@ def infer_content_format(url: str) -> str | None:
         return "forbes_digital_assets"
     if parsed.netloc.lower().endswith("hk01.com"):
         return "hk01_issue_article"
+    if parsed.netloc.lower().endswith("hankyung.com") and parsed.path.startswith("/article/"):
+        return "hankyung_premium9_article"
     if parsed.netloc.lower().endswith("thelec.net") and parsed.path == "/news/articleView.html":
         return "thelec_article"
     if parsed.netloc.lower().endswith("ctee.com.tw") and parsed.path.startswith("/news/"):
