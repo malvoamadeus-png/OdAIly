@@ -70,6 +70,7 @@ class OpenAIResponsesClient:
 
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
+            response: requests.Response | None = None
             try:
                 response = requests.post(
                     url,
@@ -81,8 +82,21 @@ class OpenAIResponsesClient:
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
-                payload = parse_openai_response_payload(response)
-                return extractor(payload)
+                try:
+                    payload = parse_openai_response_payload(response)
+                    return extractor(payload)
+                except Exception as exc:
+                    fallback_text = self._try_chat_responses_fallback(
+                        model=model,
+                        prompt=prompt,
+                        text_format=text_format,
+                        reasoning_effort=reasoning_effort,
+                        cause=exc,
+                        response=response,
+                    )
+                    if fallback_text is not None:
+                        return fallback_text
+                    raise
             except Exception as exc:
                 last_error = RuntimeError(
                     build_ai_error_message(
@@ -142,6 +156,55 @@ class OpenAIResponsesClient:
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         return payload
+
+    def _try_chat_responses_fallback(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        text_format: dict[str, Any] | None,
+        reasoning_effort: str | None,
+        cause: Exception,
+        response: requests.Response,
+    ) -> str | None:
+        if self.api_style != "chat_completions":
+            return None
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "text/event-stream" not in content_type:
+            return None
+        responses_url = self._responses_url()
+        responses_payload = self._responses_payload(
+            model=model,
+            prompt=prompt,
+            text_format=text_format,
+            reasoning_effort=reasoning_effort,
+        )
+        fallback_response = requests.post(
+            responses_url,
+            json=responses_payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=self.timeout_seconds,
+        )
+        fallback_response.raise_for_status()
+        fallback_payload = parse_openai_response_payload(fallback_response)
+        try:
+            return extract_response_text(fallback_payload)
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                build_ai_fallback_error_message(
+                    cause,
+                    fallback_exc,
+                    model=model,
+                    api_style=self.api_style,
+                    chat_url=self._chat_completions_url(),
+                    responses_url=responses_url,
+                    chat_response=response,
+                    responses_response=fallback_response,
+                )
+            ) from fallback_exc
 
 
 def extract_response_text(payload: dict[str, Any]) -> str:
@@ -260,6 +323,31 @@ def build_ai_error_message(
             ]
         )
     return "OpenAI request failed: " + " ".join(details)
+
+
+def build_ai_fallback_error_message(
+    primary_exc: Exception,
+    fallback_exc: Exception,
+    *,
+    model: str,
+    api_style: OpenAIApiStyle,
+    chat_url: str,
+    responses_url: str,
+    chat_response: requests.Response,
+    responses_response: requests.Response,
+) -> str:
+    return (
+        "OpenAI request failed after responses fallback: "
+        f"model={model} api_style={api_style} "
+        f"chat_url={chat_url} chat_error={primary_exc} "
+        f"chat_status_code={chat_response.status_code} "
+        f"chat_content_type={str(chat_response.headers.get('content-type') or '-').strip() or '-'} "
+        f"chat_body_prefix={chat_response.text[:200].replace(chr(10), '\\n').replace(chr(13), '\\r')} "
+        f"responses_url={responses_url} responses_error={fallback_exc} "
+        f"responses_status_code={responses_response.status_code} "
+        f"responses_content_type={str(responses_response.headers.get('content-type') or '-').strip() or '-'} "
+        f"responses_body_prefix={responses_response.text[:200].replace(chr(10), '\\n').replace(chr(13), '\\r')}"
+    )
 
 
 def to_chat_response_format(text_format: dict[str, Any]) -> dict[str, Any]:
