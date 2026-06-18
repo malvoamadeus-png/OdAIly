@@ -179,6 +179,16 @@ def test_normalize_content_removes_title_prefix() -> None:
     assert normalize_item_content(title, content) == "该项目完成融资。"
 
 
+def test_normalize_content_keeps_semantic_words_like_bullish_bearish() -> None:
+    title = "分析：美国芯片产能转向或将间接压缩加密矿机供应能力"
+    content = (
+        "Odaily星球日报讯 KobeissiLetter 分析，英特尔股价在特朗普宣布美国将在本土设计与制造芯片后单日上涨约 9%，"
+        "这一进展对整个半导体行业构成政策层面利好，市场预期美国本土晶圆制造与先进制程投资将持续获得支持。"
+    )
+
+    assert normalize_item_content(title, content).endswith("构成政策层面利好，市场预期美国本土晶圆制造与先进制程投资将持续获得支持。")
+
+
 def test_competitor_api_style_can_override_x_process_style(monkeypatch) -> None:
     from packages.common.config import load_competitor_monitor_settings
 

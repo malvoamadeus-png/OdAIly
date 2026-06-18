@@ -40,7 +40,7 @@ def strip_html(text: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    junk = ["原文链接", "微信扫码", "分享划过弹出", "复制链接", "转发到微博", "重要快讯", "点赞", "收藏", "利好", "利空"]
+    junk = ["原文链接", "微信扫码", "分享划过弹出", "复制链接", "转发到微博", "重要快讯", "点赞", "收藏"]
     for item in junk:
         text = text.replace(item, "")
     return re.sub(r"\s+", " ", text).strip()
