@@ -292,10 +292,6 @@ class EditorPluginNewsGenService:
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
         self.x_capture_repository = PostgresXCaptureRepository(database_url)
         self.x_repository = PostgresXProcessingRepository(database_url)
-        self.auth_repository.init_schema()
-        self.x_capture_repository.init_schema()
-        self.x_repository.init_schema()
-        self.x_repository.seed_prompt_templates(root_dir=self.paths.root_dir)
 
         self.authenticator = SupabaseEditorPluginAuthenticator(
             settings=api_settings,

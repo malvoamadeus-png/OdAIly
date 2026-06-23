@@ -494,7 +494,6 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
 
     settings = load_x_capture_worker_settings()
     repository = PostgresXCaptureRepository(args.database_url)
-    repository.init_schema()
     worker = XCaptureWorker(
         repository=repository,
         client=FXTwitterClient(),
@@ -765,7 +764,6 @@ def pipeline_supervisor_command(args: argparse.Namespace) -> int:
     from packages.pipeline_supervisor import PipelineSupervisorWorker, PostgresPipelineSupervisorRepository
 
     repository = PostgresPipelineSupervisorRepository(args.database_url)
-    repository.init_schema()
     worker = PipelineSupervisorWorker(repository=repository, settings=load_pipeline_supervisor_settings())
     if args.once:
         result = worker.run_once()

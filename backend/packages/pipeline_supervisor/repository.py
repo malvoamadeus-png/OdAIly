@@ -206,27 +206,33 @@ class PostgresPipelineSupervisorRepository:
                 return 0
             row = conn.execute(
                 """
-                SELECT count(*)::int AS count
-                FROM x_capture_attempts
-                WHERE status = 'success'
-                  AND finished_at >= %s
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM x_capture_attempts
+                    WHERE status = 'success'
+                      AND finished_at >= %s
+                    LIMIT 1
+                ) AS has_recent_success
                 """,
                 (since,),
             ).fetchone()
-        return int(row["count"]) if row else 0
+        return 1 if row and row.get("has_recent_success") else 0
 
     def count_recent_x_capture_success_heartbeats(self, *, since: datetime) -> int:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT count(*)::int AS count
-                FROM pipeline_worker_heartbeats
-                WHERE component = 'x_capture'
-                  AND last_success_at >= %s
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pipeline_worker_heartbeats
+                    WHERE component = 'x_capture'
+                      AND last_success_at >= %s
+                    LIMIT 1
+                ) AS has_recent_success
                 """,
                 (since,),
             ).fetchone()
-        return int(row["count"]) if row else 0
+        return 1 if row and row.get("has_recent_success") else 0
 
     def claim_alert(self, *, alert_key: str, message: str, dedup_cutoff: datetime, metadata: dict[str, Any] | None = None) -> bool:
         with self._connect() as conn:
