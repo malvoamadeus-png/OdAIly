@@ -23,7 +23,6 @@ class LocalPipelineService:
         self._worker_thread = threading.Thread(target=self._run_worker, name="local-pipeline-worker", daemon=True)
 
     def start(self) -> None:
-        self.processor.init_remote_schema()
         self._worker_thread.start()
 
     def stop(self) -> None:
