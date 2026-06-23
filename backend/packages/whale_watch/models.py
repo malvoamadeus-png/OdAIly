@@ -19,6 +19,8 @@ class WhaleAddress:
     address_lower: str
     label: str
     enabled: bool = True
+    created_by: str | None = None
+    updated_by: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -30,6 +32,8 @@ class HyperliquidAddress:
     address_lower: str
     label: str
     enabled: bool = True
+    created_by: str | None = None
+    updated_by: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

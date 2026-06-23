@@ -205,6 +205,44 @@ def parse_args() -> argparse.Namespace:
     whale_watch_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_worker.add_argument("--once", action="store_true", help="Run one whale watch pass and exit.")
 
+    whale_watch_list_addresses = subparsers.add_parser(
+        "whale-watch-list-addresses",
+        help="List whale onchain addresses for audit or cleanup.",
+    )
+    whale_watch_list_addresses.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    whale_watch_list_addresses.add_argument(
+        "--created-since-hours",
+        type=int,
+        help="Only show addresses created within the last N hours.",
+    )
+    whale_watch_list_addresses.add_argument(
+        "--include-disabled",
+        action="store_true",
+        help="Include disabled addresses. Default only shows enabled rows when no time filter is given.",
+    )
+
+    whale_watch_delete_addresses = subparsers.add_parser(
+        "whale-watch-delete-addresses",
+        help="Delete whale onchain addresses by id or recent creation window. Defaults to dry-run.",
+    )
+    whale_watch_delete_addresses.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    whale_watch_delete_addresses.add_argument(
+        "--ids",
+        nargs="+",
+        type=int,
+        help="Explicit address ids to delete.",
+    )
+    whale_watch_delete_addresses.add_argument(
+        "--created-since-hours",
+        type=int,
+        help="Delete addresses created within the last N hours.",
+    )
+    whale_watch_delete_addresses.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually delete rows. Omit for dry-run.",
+    )
+
     whale_watch_hyperliquid_worker = subparsers.add_parser(
         "whale-watch-hyperliquid-worker",
         help="Run whale Hyperliquid activity monitor.",
@@ -742,6 +780,57 @@ def whale_watch_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def whale_watch_list_addresses_command(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    from packages.whale_watch import PostgresWhaleWatchRepository
+
+    repository = PostgresWhaleWatchRepository(args.database_url)
+    if args.created_since_hours is not None:
+        since = datetime.now(UTC) - timedelta(hours=args.created_since_hours)
+        addresses = repository.list_addresses_created_since(since=since)
+    else:
+        addresses = repository.list_addresses(include_disabled=args.include_disabled)
+    for address in addresses:
+        print(
+            f"id={address.id}\taddress={address.address}\tlabel={address.label}\tenabled={address.enabled}"
+            f"\tcreated_by={address.created_by or '-'}\tupdated_by={address.updated_by or '-'}"
+            f"\tcreated_at={address.created_at}\tupdated_at={address.updated_at}"
+        )
+    print(f"[odaily] whale watch address count={len(addresses)}")
+    return 0
+
+
+def whale_watch_delete_addresses_command(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime, timedelta
+
+    from packages.whale_watch import PostgresWhaleWatchRepository
+
+    repository = PostgresWhaleWatchRepository(args.database_url)
+    selected_ids: list[int] = []
+    if args.ids:
+        selected_ids.extend(args.ids)
+    if args.created_since_hours is not None:
+        since = datetime.now(UTC) - timedelta(hours=args.created_since_hours)
+        selected_ids.extend(address.id for address in repository.list_addresses_created_since(since=since))
+
+    unique_ids = sorted(set(selected_ids))
+    if not unique_ids:
+        print("[odaily] whale watch delete skipped: no matched address ids")
+        return 1
+
+    if not args.execute:
+        print(
+            "[odaily] whale watch delete dry-run "
+            f"matched_ids={','.join(str(item) for item in unique_ids)} count={len(unique_ids)}"
+        )
+        return 0
+
+    deleted = repository.delete_addresses(ids=unique_ids)
+    print(f"[odaily] whale watch delete completed deleted={deleted} requested={len(unique_ids)}")
+    return 0 if deleted == len(unique_ids) else 1
+
+
 def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
     from packages.whale_watch import PostgresWhaleWatchHyperliquidRepository, WhaleWatchHyperliquidWorker
 
@@ -1040,6 +1129,10 @@ def main() -> int:
             return whale_watch_init_db_command(args)
         if args.command == "whale-watch-worker":
             return whale_watch_worker_command(args)
+        if args.command == "whale-watch-list-addresses":
+            return whale_watch_list_addresses_command(args)
+        if args.command == "whale-watch-delete-addresses":
+            return whale_watch_delete_addresses_command(args)
         if args.command == "whale-watch-hyperliquid-worker":
             return whale_watch_hyperliquid_worker_command(args)
         if args.command == "pipeline-supervisor":

@@ -145,7 +145,7 @@ class PostgresWhaleWatchHyperliquidRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, address, address_lower, label, enabled, created_at, updated_at
+                SELECT id, address, address_lower, label, enabled, created_by, updated_by, created_at, updated_at
                 FROM whale_watch_hyperliquid_addresses
                 {where_sql}
                 ORDER BY enabled DESC, label ASC, address_lower ASC
@@ -354,6 +354,8 @@ def _row_to_address(row: dict[str, Any]) -> HyperliquidAddress:
         address_lower=str(row["address_lower"]),
         label=str(row["label"]),
         enabled=bool(row["enabled"]),
+        created_by=row.get("created_by"),
+        updated_by=row.get("updated_by"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -431,10 +433,18 @@ CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_addresses (
     address_lower text NOT NULL UNIQUE,
     label text NOT NULL,
     enabled boolean NOT NULL DEFAULT true,
+    created_by text,
+    updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT whale_watch_hyperliquid_address_format CHECK (address_lower ~ '^0x[0-9a-f]{40}$')
 );
+
+ALTER TABLE whale_watch_hyperliquid_addresses
+    ADD COLUMN IF NOT EXISTS created_by text;
+
+ALTER TABLE whale_watch_hyperliquid_addresses
+    ADD COLUMN IF NOT EXISTS updated_by text;
 
 CREATE TABLE IF NOT EXISTS whale_watch_hyperliquid_states (
     address_id bigint PRIMARY KEY REFERENCES whale_watch_hyperliquid_addresses(id) ON DELETE CASCADE,
@@ -511,6 +521,30 @@ ON whale_watch_hyperliquid_settings(singleton_key);
 CREATE INDEX IF NOT EXISTS idx_whale_watch_hl_activities_created
 ON whale_watch_hyperliquid_activities(created_at DESC);
 
+CREATE OR REPLACE FUNCTION whale_watch_actor_email()
+RETURNS text
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT NULLIF(lower(COALESCE(auth.jwt() ->> 'email', '')), '');
+$$;
+
+CREATE OR REPLACE FUNCTION whale_watch_hyperliquid_addresses_set_audit_fields()
+RETURNS trigger AS $$
+DECLARE
+    v_actor text := whale_watch_actor_email();
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.created_by := COALESCE(NULLIF(NEW.created_by, ''), v_actor, NEW.created_by);
+        NEW.updated_by := COALESCE(NULLIF(NEW.updated_by, ''), v_actor, NEW.updated_by, NEW.created_by);
+    ELSE
+        NEW.created_by := COALESCE(OLD.created_by, NEW.created_by);
+        NEW.updated_by := COALESCE(v_actor, NEW.updated_by, OLD.updated_by, OLD.created_by);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION notify_whale_watch_config_changed()
 RETURNS trigger AS $$
 BEGIN
@@ -526,6 +560,11 @@ DROP TRIGGER IF EXISTS trg_whale_watch_hyperliquid_addresses_notify ON whale_wat
 CREATE TRIGGER trg_whale_watch_hyperliquid_addresses_notify
 AFTER INSERT OR UPDATE OR DELETE ON whale_watch_hyperliquid_addresses
 FOR EACH ROW EXECUTE FUNCTION notify_whale_watch_config_changed();
+
+DROP TRIGGER IF EXISTS trg_whale_watch_hyperliquid_addresses_set_audit_fields ON whale_watch_hyperliquid_addresses;
+CREATE TRIGGER trg_whale_watch_hyperliquid_addresses_set_audit_fields
+BEFORE INSERT OR UPDATE ON whale_watch_hyperliquid_addresses
+FOR EACH ROW EXECUTE FUNCTION whale_watch_hyperliquid_addresses_set_audit_fields();
 
 DROP TRIGGER IF EXISTS trg_whale_watch_hyperliquid_settings_notify ON whale_watch_hyperliquid_settings;
 CREATE TRIGGER trg_whale_watch_hyperliquid_settings_notify

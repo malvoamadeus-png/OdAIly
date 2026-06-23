@@ -16,6 +16,8 @@ CONFIG_NOTIFY_CHANNEL = "whale_watch_config_changed"
 class WhaleWatchRepository(Protocol):
     def init_schema(self) -> None: ...
     def list_addresses(self, *, include_disabled: bool = False) -> list[WhaleAddress]: ...
+    def list_addresses_created_since(self, *, since: datetime) -> list[WhaleAddress]: ...
+    def delete_addresses(self, *, ids: list[int]) -> int: ...
     def get_chain_state(self, *, address_id: int, chain_key: str) -> ChainState | None: ...
     def mark_chain_seeded(self, *, address_id: int, chain_key: str, block_number: int | None, polled_at: datetime) -> None: ...
     def record_chain_success(self, *, address_id: int, chain_key: str, block_number: int | None, polled_at: datetime) -> None: ...
@@ -52,13 +54,41 @@ class PostgresWhaleWatchRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, address, address_lower, label, enabled, created_at, updated_at
+                SELECT id, address, address_lower, label, enabled, created_by, updated_by, created_at, updated_at
                 FROM whale_watch_addresses
                 {where_sql}
                 ORDER BY enabled DESC, label ASC, address_lower ASC
                 """
             ).fetchall()
         return [_row_to_address(row) for row in rows]
+
+    def list_addresses_created_since(self, *, since: datetime) -> list[WhaleAddress]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, address, address_lower, label, enabled, created_by, updated_by, created_at, updated_at
+                FROM whale_watch_addresses
+                WHERE created_at >= %s
+                ORDER BY created_at DESC, id DESC
+                """,
+                (since,),
+            ).fetchall()
+        return [_row_to_address(row) for row in rows]
+
+    def delete_addresses(self, *, ids: list[int]) -> int:
+        if not ids:
+            return 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                DELETE FROM whale_watch_addresses
+                WHERE id = ANY(%s)
+                RETURNING id
+                """,
+                (ids,),
+            ).fetchall()
+            conn.commit()
+        return len(rows)
 
     def get_chain_state(self, *, address_id: int, chain_key: str) -> ChainState | None:
         with self._connect() as conn:
@@ -218,6 +248,8 @@ def _row_to_address(row: dict[str, Any]) -> WhaleAddress:
         address_lower=str(row["address_lower"]),
         label=str(row["label"]),
         enabled=bool(row["enabled"]),
+        created_by=row.get("created_by"),
+        updated_by=row.get("updated_by"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
@@ -242,10 +274,18 @@ CREATE TABLE IF NOT EXISTS whale_watch_addresses (
     address_lower text NOT NULL UNIQUE,
     label text NOT NULL,
     enabled boolean NOT NULL DEFAULT true,
+    created_by text,
+    updated_by text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT whale_watch_address_format CHECK (address_lower ~ '^0x[0-9a-f]{40}$')
 );
+
+ALTER TABLE whale_watch_addresses
+    ADD COLUMN IF NOT EXISTS created_by text;
+
+ALTER TABLE whale_watch_addresses
+    ADD COLUMN IF NOT EXISTS updated_by text;
 
 CREATE TABLE IF NOT EXISTS whale_watch_chain_states (
     address_id bigint NOT NULL REFERENCES whale_watch_addresses(id) ON DELETE CASCADE,
@@ -288,6 +328,55 @@ ON whale_watch_addresses(enabled, address_lower);
 CREATE INDEX IF NOT EXISTS idx_whale_watch_activities_created
 ON whale_watch_activities(created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_whale_watch_addresses_created_at
+ON whale_watch_addresses(created_at DESC);
+
+CREATE OR REPLACE FUNCTION whale_watch_actor_email()
+RETURNS text
+LANGUAGE sql
+STABLE
+AS $$
+    SELECT NULLIF(lower(COALESCE(auth.jwt() ->> 'email', '')), '');
+$$;
+
+CREATE OR REPLACE FUNCTION whale_watch_addresses_set_audit_fields()
+RETURNS trigger AS $$
+DECLARE
+    v_actor text := whale_watch_actor_email();
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        NEW.created_by := COALESCE(NULLIF(NEW.created_by, ''), v_actor, NEW.created_by);
+        NEW.updated_by := COALESCE(NULLIF(NEW.updated_by, ''), v_actor, NEW.updated_by, NEW.created_by);
+    ELSE
+        NEW.created_by := COALESCE(OLD.created_by, NEW.created_by);
+        NEW.updated_by := COALESCE(v_actor, NEW.updated_by, OLD.updated_by, OLD.created_by);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION whale_watch_addresses_guard_insert()
+RETURNS trigger AS $$
+DECLARE
+    v_existing_count bigint;
+    v_threshold bigint := 500;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM whale_watch_addresses
+        WHERE address_lower = NEW.address_lower
+    ) THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT COUNT(*) INTO v_existing_count FROM whale_watch_addresses;
+    IF v_existing_count >= v_threshold THEN
+        RAISE EXCEPTION '链上巨鲸地址数量已达 % 条，已阻止继续新增，请先排查异常地址批量写入。', v_threshold;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION notify_whale_watch_config_changed()
 RETURNS trigger AS $$
 BEGIN
@@ -303,6 +392,16 @@ DROP TRIGGER IF EXISTS trg_whale_watch_addresses_notify ON whale_watch_addresses
 CREATE TRIGGER trg_whale_watch_addresses_notify
 AFTER INSERT OR UPDATE OR DELETE ON whale_watch_addresses
 FOR EACH ROW EXECUTE FUNCTION notify_whale_watch_config_changed();
+
+DROP TRIGGER IF EXISTS trg_whale_watch_addresses_set_audit_fields ON whale_watch_addresses;
+CREATE TRIGGER trg_whale_watch_addresses_set_audit_fields
+BEFORE INSERT OR UPDATE ON whale_watch_addresses
+FOR EACH ROW EXECUTE FUNCTION whale_watch_addresses_set_audit_fields();
+
+DROP TRIGGER IF EXISTS trg_whale_watch_addresses_guard_insert ON whale_watch_addresses;
+CREATE TRIGGER trg_whale_watch_addresses_guard_insert
+BEFORE INSERT ON whale_watch_addresses
+FOR EACH ROW EXECUTE FUNCTION whale_watch_addresses_guard_insert();
 
 ALTER TABLE whale_watch_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whale_watch_chain_states ENABLE ROW LEVEL SECURITY;

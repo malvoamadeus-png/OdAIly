@@ -6,6 +6,7 @@
 
 - 如果修改整体流程、任务状态、worker 边界、跨模块契约或来源链路，更新 `docs/完整程序架构.md`。
 - 如果修改单个模块的输入、输出、Prompt、状态、环境变量、命令或失败处理，更新对应细节文档。
+- 如果问题、改动或排障涉及 Supabase 连接池、session、连接槽、`EMAXCONNSESSION`、`ECHECKOUTTIMEOUT`、`max clients reached`、`pool_size`、`idle in transaction` 或数据库长连接，必须先阅读并遵守 `docs/Supabase连接槽与Session排障.md`。
 - `docs/完整程序架构.md` 只写系统级契约和文档索引，不重复模块细节。
 - 模块细节以对应 `docs/*.md` 和实际代码为准。
 - 不要在文档中保留已经废弃的 JSON 示例、状态名或分类名。
@@ -17,6 +18,7 @@
 - 处理阶段文档：`docs/判断者.md`、`docs/搜索者.md`、`docs/编写者1.md`、`docs/编写者2.md`、`docs/编写者3.md`。
 - 发布后异步文档：`docs/审核者.md`。
 - 监控文档：`docs/监督者.md`。
+- Supabase session / 连接槽排障文档：`docs/Supabase连接槽与Session排障.md`。
 
 ## 命名说明
 

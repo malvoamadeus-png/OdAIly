@@ -754,6 +754,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function addWhaleAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingWhaleAddress) {
+      return;
+    }
     setSavingWhaleAddress(true);
     setError('');
     try {
@@ -790,6 +793,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function addWhaleHyperliquidAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingWhaleHyperliquidAddress) {
+      return;
+    }
     setSavingWhaleHyperliquidAddress(true);
     setError('');
     try {
