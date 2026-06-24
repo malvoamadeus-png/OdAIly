@@ -7,9 +7,18 @@ from typing import Any, Literal
 
 NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"]
-DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"]
-ProcessingStage = Literal["judge", "judge_crypto", "judge_ai", "search", "write", "format_publish", "publish"]
-PublisherChannelKey = Literal["external_media", "x", "competitor"]
+DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai", "off_topic"]
+ProcessingStage = Literal[
+    "judge",
+    "judge_crypto",
+    "judge_ai",
+    "judge_jin10",
+    "search",
+    "write",
+    "format_publish",
+    "publish",
+]
+PublisherChannelKey = Literal["external_media", "x", "competitor", "jin10"]
 PublisherCategory = Literal["policy_regulation", "people_view", "major_project_progress", "funding", "other"]
 PublisherDecision = Literal["auto_publish", "manual_review", "failed"]
 
@@ -17,16 +26,17 @@ PublisherDecision = Literal["auto_publish", "manual_review", "failed"]
 NON_MAINSTREAM_MEDIA_SOURCE = "non_mainstream_media"
 AI_SOURCE = "ai_source"
 MAINSTREAM_MEDIA_SOURCE = "mainstream_media"
+JIN10_SOURCE = "jin10"
 NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"}
 JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"}
-DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai"}
+DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai", "off_topic"}
 COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
 ODAILY_REFERENCE_SOURCE = "odaily"
 SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE, AI_SOURCE}
-PROCESSING_SOURCES: set[str] = {"x", *SEARCH_FIRST_SOURCES}
+PROCESSING_SOURCES: set[str] = {"x", JIN10_SOURCE, *SEARCH_FIRST_SOURCES}
 WRITE_ONLY_SOURCES: set[str] = {MAINSTREAM_MEDIA_SOURCE}
 WRITE_STAGE_SOURCES: set[str] = {*PROCESSING_SOURCES, *WRITE_ONLY_SOURCES}
-PUBLISHER_CHANNEL_KEYS: set[str] = {"external_media", "x", "competitor"}
+PUBLISHER_CHANNEL_KEYS: set[str] = {"external_media", "x", "competitor", "jin10"}
 PUBLISHER_CATEGORIES: set[str] = {
     "policy_regulation",
     "people_view",
@@ -61,6 +71,7 @@ STAGE_SPECS: dict[ProcessingStage, StageSpec] = {
     "judge": StageSpec("pending", "judging", "judged", "judge_failed"),
     "judge_crypto": StageSpec("pending", "judging", "judged", "judge_failed"),
     "judge_ai": StageSpec("pending", "judging", "judged", "judge_failed"),
+    "judge_jin10": StageSpec("pending", "judging", "judged", "judge_failed"),
     "search": StageSpec("judged", "deduping", "deduped", "search_failed"),
     "write": StageSpec("deduped", "writing", "written", "write_failed"),
     "format_publish": StageSpec("written", "formatting", "publisher_pending", "format_failed"),

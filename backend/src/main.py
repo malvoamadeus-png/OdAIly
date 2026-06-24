@@ -162,6 +162,13 @@ def parse_args() -> argparse.Namespace:
     external_alert_fetcher.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     external_alert_fetcher.add_argument("--once", action="store_true", help="Run one fetch pass and exit.")
 
+    jin10_init = subparsers.add_parser("jin10-init-db", help="Initialize Jin10 monitor Postgres tables.")
+    jin10_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+
+    jin10_worker = subparsers.add_parser("jin10-monitor-worker", help="Run Jin10 newsflash monitor.")
+    jin10_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    jin10_worker.add_argument("--once", action="store_true", help="Run one Jin10 monitor pass and exit.")
+
     x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
     x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_init.add_argument(
@@ -174,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     x_process_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_worker.add_argument(
         "--stage",
-        choices=["judge", "judge_crypto", "judge_ai", "search", "write", "format_publish", "publish"],
+        choices=["judge", "judge_crypto", "judge_ai", "judge_jin10", "search", "write", "format_publish", "publish"],
         required=True,
     )
     x_process_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
@@ -626,6 +633,39 @@ def external_media_alert_fetcher_command(args: argparse.Namespace) -> int:
         )
         return 0 if all(item.status == "success" for item in stats) else 1
     fetcher.run_forever()
+    return 0
+
+
+def jin10_init_db_command(args: argparse.Namespace) -> int:
+    from packages.jin10_monitor import PostgresJin10MonitorRepository
+    from packages.x_capture.repository import PostgresXCaptureRepository
+    from packages.x_processing.repository import PostgresXProcessingRepository
+
+    paths = get_paths()
+    PostgresXCaptureRepository(args.database_url).init_schema()
+    x_repository = PostgresXProcessingRepository(args.database_url)
+    x_repository.init_schema()
+    x_repository.seed_prompt_templates(root_dir=paths.root_dir)
+    PostgresJin10MonitorRepository(args.database_url).init_schema()
+    print("[odaily] Jin10 monitor database schema initialized")
+    return 0
+
+
+def jin10_monitor_worker_command(args: argparse.Namespace) -> int:
+    from packages.jin10_monitor import Jin10MonitorWorker, PostgresJin10MonitorRepository
+    from packages.local_pipeline import LocalPipelineClient
+
+    repository = PostgresJin10MonitorRepository(args.database_url)
+    worker = Jin10MonitorWorker(repository=repository, pipeline_client=LocalPipelineClient())
+    if args.once:
+        result = worker.run_once()
+        print(
+            "[odaily] jin10 monitor once "
+            f"status={result.status} fetched={result.fetched} seeded={result.seeded} "
+            f"new={result.new} saved={result.saved} error={result.error or '-'}"
+        )
+        return 0 if result.status in {"success", "disabled"} else 1
+    worker.run_forever()
     return 0
 
 
@@ -1111,6 +1151,10 @@ def main() -> int:
             return external_media_alert_worker_command(args)
         if args.command == "external-media-alert-fetcher":
             return external_media_alert_fetcher_command(args)
+        if args.command == "jin10-init-db":
+            return jin10_init_db_command(args)
+        if args.command == "jin10-monitor-worker":
+            return jin10_monitor_worker_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
         if args.command == "x-process-worker":

@@ -208,7 +208,8 @@ h2 {
   margin-top: 18px;
 }
 
-.nonMainstreamLayout {
+.nonMainstreamLayout,
+.jin10Layout {
   display: grid;
   gap: 18px;
   margin-top: 18px;
@@ -258,6 +259,43 @@ h2 {
 
 .publisherSettingsForm {
   grid-template-columns: repeat(4, minmax(110px, 1fr)) 112px;
+}
+
+.jin10SettingsForm {
+  grid-template-columns: 100px minmax(110px, 0.5fr) minmax(120px, 0.5fr) minmax(260px, 2fr) 112px;
+}
+
+.jin10SettingsForm .wideField {
+  grid-column: span 2;
+}
+
+.jin10SettingsForm textarea {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.statusGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.statusGrid div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.statusGrid span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .whaleAddressForm {
@@ -1163,10 +1201,17 @@ textarea:focus {
   .whaleAddressForm,
   .nonMainstreamSettingsForm,
   .publisherSettingsForm,
+  .jin10SettingsForm,
   .accountRow,
   .sourceRow,
   .promptLayout,
   .competitorLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .jin10SettingsForm .wideField,
+  .statusGrid {
+    grid-column: auto;
     grid-template-columns: 1fr;
   }
 

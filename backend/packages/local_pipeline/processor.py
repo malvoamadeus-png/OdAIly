@@ -19,6 +19,7 @@ from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.models import (
     AI_SOURCE,
     COMPETITOR_SOURCES,
+    JIN10_SOURCE,
     NON_MAINSTREAM_MEDIA_SOURCE,
     SEARCH_FIRST_SOURCES,
     TaskRecord,
@@ -169,6 +170,8 @@ class LocalPipelineProcessor:
             return [judge_stage, "search", "write", "format_publish", "publish"]
         if task.source == AI_SOURCE:
             return ["search", "judge_ai", "write", "format_publish", "publish"]
+        if task.source == JIN10_SOURCE:
+            return ["judge_jin10", "search", "write", "format_publish", "publish"]
         if task.source == NON_MAINSTREAM_MEDIA_SOURCE or task.source in COMPETITOR_SOURCES or task.source in SEARCH_FIRST_SOURCES:
             return ["search", "judge_crypto", "write", "format_publish", "publish"]
         return ["judge_crypto", "search", "write", "format_publish", "publish"]
@@ -187,7 +190,7 @@ class LocalPipelineProcessor:
         if status == "pending":
             return sequence[0]
         if status == "judging":
-            for judge_stage in ("judge_crypto", "judge_ai", "judge"):
+            for judge_stage in ("judge_crypto", "judge_ai", "judge_jin10", "judge"):
                 if judge_stage in sequence:
                     return judge_stage
             return sequence[0]
@@ -197,7 +200,7 @@ class LocalPipelineProcessor:
             return "search"
         if status == "searched":
             search_index = sequence.index("search") if "search" in sequence else -1
-            for judge_stage in ("judge_crypto", "judge_ai", "judge"):
+            for judge_stage in ("judge_crypto", "judge_ai", "judge_jin10", "judge"):
                 if judge_stage in sequence and sequence.index(judge_stage) > search_index:
                     return judge_stage
             return "write"

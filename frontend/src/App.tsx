@@ -10,6 +10,7 @@ import {
   Inbox,
   Pause,
   Plus,
+  Radio,
   RefreshCcw,
   Save,
   Send,
@@ -28,6 +29,7 @@ import {
   deleteWhaleWatchAddress,
   deleteWhaleWatchHyperliquidAddress,
   getWhaleWatchHyperliquidSettings,
+  getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
   getPublisherSettings,
@@ -35,6 +37,7 @@ import {
   listNewsflashEventSources,
   listNewsflashEvents,
   listPublisherChannels,
+  listRecentJin10Tasks,
   loadDashboard,
   loadWhaleWatchDashboard,
   listPromptTemplates,
@@ -53,6 +56,7 @@ import {
   updateAccount,
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
+  updateJin10Settings,
   updatePublisherChannel,
   updatePublisherSettings,
   updatePromptTemplateFeatureMode,
@@ -64,6 +68,7 @@ import {
   type AccountPatch,
   type Attempt,
   type NonMainstreamDashboardPayload,
+  type Jin10Settings,
   type NonMainstreamSettings,
   type NonMainstreamSource,
   type PublisherChannel,
@@ -107,6 +112,18 @@ const emptyPublisherSettings: PublisherSettings = {
   timezone: 'Asia/Shanghai',
   window_start_local: '00:01',
   window_end_local: '07:30',
+  updated_at: null,
+};
+
+const emptyJin10Settings: Jin10Settings = {
+  enabled: false,
+  interval_seconds: 60,
+  endpoint_url: 'https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash',
+  channel: null,
+  request_headers: {},
+  last_polled_at: null,
+  last_success_at: null,
+  last_error: null,
   updated_at: null,
 };
 
@@ -398,23 +415,28 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
   const [publisherSettings, setPublisherSettings] = useState<PublisherSettings>(emptyPublisherSettings);
+  const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
   const [publisherChannels, setPublisherChannels] = useState<PublisherChannel[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<
     'x' | 'non_mainstream' | 'ai_source' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+    | 'jin10'
   >('x');
   const [loading, setLoading] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [loadingPublisher, setLoadingPublisher] = useState(true);
+  const [loadingJin10, setLoadingJin10] = useState(true);
   const [loadingWhaleWatch, setLoadingWhaleWatch] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingNonMainstreamSettings, setSavingNonMainstreamSettings] = useState(false);
   const [savingPublisherSettings, setSavingPublisherSettings] = useState(false);
+  const [savingJin10Settings, setSavingJin10Settings] = useState(false);
   const [newAccount, setNewAccount] = useState({
     username_or_url: '',
     display_name: '',
@@ -527,6 +549,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setLoadingPublisher(false);
   }
 
+  async function loadJin10All() {
+    setError('');
+    const [nextSettings, nextTasks] = await Promise.all([getJin10Settings(), listRecentJin10Tasks(30)]);
+    setJin10Settings(nextSettings);
+    setJin10Tasks(nextTasks);
+    setLoadingJin10(false);
+  }
+
   async function loadWhaleWatchAll() {
     setError('');
     const dashboard = await loadWhaleWatchDashboard();
@@ -596,17 +626,19 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   useEffect(() => {
-    Promise.all([loadAll(), loadNonMainstreamAll(), loadPublisherAll(), loadWhaleWatchAll()]).catch((err: Error) => {
+    Promise.all([loadAll(), loadNonMainstreamAll(), loadPublisherAll(), loadJin10All(), loadWhaleWatchAll()]).catch((err: Error) => {
       setError(err.message);
       setLoading(false);
       setLoadingNonMainstream(false);
       setLoadingPublisher(false);
+      setLoadingJin10(false);
       setLoadingWhaleWatch(false);
     });
     const timer = window.setInterval(() => {
       loadAll().catch((err: Error) => setError(err.message));
       loadNonMainstreamAll().catch((err: Error) => setError(err.message));
       loadPublisherAll().catch((err: Error) => setError(err.message));
+      loadJin10All().catch((err: Error) => setError(err.message));
       loadWhaleWatchAll().catch((err: Error) => setError(err.message));
     }, 10000);
     return () => window.clearInterval(timer);
@@ -680,6 +712,34 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingPublisherSettings(false);
+    }
+  }
+
+  async function saveJin10Settings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingJin10Settings(true);
+    setError('');
+    const form = new FormData(event.currentTarget);
+    try {
+      const headersText = String(form.get('request_headers') || '{}');
+      const parsedHeaders = JSON.parse(headersText) as Record<string, string>;
+      if (!parsedHeaders || typeof parsedHeaders !== 'object' || Array.isArray(parsedHeaders)) {
+        throw new Error('headers 必须是 JSON 对象');
+      }
+      const updated = await updateJin10Settings({
+        enabled: form.get('enabled') === 'on',
+        interval_seconds: Number(form.get('interval_seconds')),
+        endpoint_url: String(form.get('endpoint_url') || jin10Settings.endpoint_url).trim(),
+        channel: String(form.get('channel') || '').trim() || null,
+        request_headers: parsedHeaders,
+      });
+      setJin10Settings(updated);
+      setMessage('金十配置已保存');
+      await loadJin10All();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingJin10Settings(false);
     }
   }
 
@@ -1021,8 +1081,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'External Media'
       : view === 'ai_source'
         ? 'AI Sources'
-        : view === 'publisher'
-          ? 'Publisher'
+      : view === 'publisher'
+        ? 'Publisher'
+      : view === 'jin10'
+        ? 'Jin10'
         : view === 'whale'
           ? 'Whale Watch'
         : view === 'prompts'
@@ -1041,7 +1103,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'AI信源抓取控制台'
       : view === 'publisher'
         ? '发布者控制台'
-      : view === 'whale'
+      : view === 'jin10'
+        ? '金十监控'
+        : view === 'whale'
         ? '巨鲸'
       : view === 'prompts'
         ? 'Prompt 编制'
@@ -1059,6 +1123,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${enabledAiSourceCount} 个启用站点 · 默认 300s`
       : view === 'publisher'
         ? `${enabledPublisherChannelCount} 个启用渠道 · 北京时间 ${publisherSettings.window_start_local}-${publisherSettings.window_end_local}`
+      : view === 'jin10'
+        ? `${jin10Settings.enabled ? '已开启' : '已关闭'} · ${jin10Settings.interval_seconds}s`
       : view === 'whale'
         ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
       : view === 'prompts'
@@ -1073,6 +1139,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadNonMainstreamAll()
       : view === 'publisher'
         ? loadPublisherAll()
+      : view === 'jin10'
+        ? loadJin10All()
       : view === 'whale'
         ? loadWhaleWatchAll()
       : view === 'prompts'
@@ -1111,6 +1179,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
+          </button>
+          <button className={view === 'jin10' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('jin10')}>
+            <Radio size={18} /> 金十
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
@@ -1319,6 +1390,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSave={savePublisherSettings}
             onToggleChannel={togglePublisherChannel}
           />
+        ) : view === 'jin10' ? (
+          <Jin10Panel
+            settings={jin10Settings}
+            tasks={jin10Tasks}
+            loading={loadingJin10}
+            saving={savingJin10Settings}
+            onSave={saveJin10Settings}
+          />
         ) : view === 'whale' ? (
           <WhaleWatchPanel
             addresses={whaleAddresses}
@@ -1403,6 +1482,93 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         )}
       </main>
     </div>
+  );
+}
+
+function Jin10Panel({
+  settings,
+  tasks,
+  loading,
+  saving,
+  onSave,
+}: {
+  settings: Jin10Settings;
+  tasks: TaskItem[];
+  loading: boolean;
+  saving: boolean;
+  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+  return (
+    <section className="jin10Layout">
+      <form className="settingsForm jin10SettingsForm" onSubmit={onSave} key={settings.updated_at ?? 'initial'}>
+        <label className="inlineToggle">
+          <input name="enabled" type="checkbox" defaultChecked={settings.enabled} />
+          <span>{settings.enabled ? '开启' : '关闭'}</span>
+        </label>
+        <label>
+          <span>频率秒</span>
+          <input name="interval_seconds" type="number" min="10" max="3600" defaultValue={settings.interval_seconds} />
+        </label>
+        <label>
+          <span>Channel</span>
+          <input name="channel" placeholder="默认空" defaultValue={settings.channel ?? ''} />
+        </label>
+        <label className="wideField">
+          <span>Endpoint</span>
+          <input name="endpoint_url" defaultValue={settings.endpoint_url} />
+        </label>
+        <label className="wideField">
+          <span>Headers</span>
+          <textarea name="request_headers" rows={7} defaultValue={JSON.stringify(settings.request_headers || {}, null, 2)} />
+        </label>
+        <button className="primaryButton" type="submit" disabled={saving}>
+          <Save size={17} /> 保存
+        </button>
+      </form>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <h2>运行状态</h2>
+          <span>{loading ? '加载中' : settings.enabled ? '已开启' : '已关闭'}</span>
+        </div>
+        <div className="statusGrid">
+          <div>
+            <strong>最近轮询</strong>
+            <span>{fmtTime(settings.last_polled_at)}</span>
+          </div>
+          <div>
+            <strong>最近成功</strong>
+            <span>{fmtTime(settings.last_success_at)}</span>
+          </div>
+          <div>
+            <strong>最近错误</strong>
+            <span>{settings.last_error || '-'}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <h2>最近入库</h2>
+          <span>{tasks.length} 条</span>
+        </div>
+        <div className="taskList">
+          {tasks.length === 0 && <div className="emptyState">暂无金十入库任务。</div>}
+          {tasks.map((task) => (
+            <article className="taskItem" key={task.id}>
+              <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
+                {task.title || task.source_item_id}
+              </a>
+              <p>{task.content}</p>
+              <div>
+                <span>{task.status}</span>
+                <time>{fmtTime(task.created_at)}</time>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+    </section>
   );
 }
 

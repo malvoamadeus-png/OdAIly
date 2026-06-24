@@ -87,6 +87,52 @@ CREATE TABLE IF NOT EXISTS prompt_template_versions (
 
 ALTER TABLE prompt_template_versions ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 
+CREATE TABLE IF NOT EXISTS publisher_settings (
+    singleton_key text PRIMARY KEY,
+    enabled boolean NOT NULL DEFAULT true,
+    timezone text NOT NULL DEFAULT 'Asia/Shanghai',
+    window_start_local time NOT NULL DEFAULT '00:01',
+    window_end_local time NOT NULL DEFAULT '07:30',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS timezone text NOT NULL DEFAULT 'Asia/Shanghai';
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_start_local time NOT NULL DEFAULT '00:01';
+ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_end_local time NOT NULL DEFAULT '07:30';
+
+INSERT INTO publisher_settings (
+    singleton_key,
+    enabled,
+    timezone,
+    window_start_local,
+    window_end_local
+)
+VALUES ('global', true, 'Asia/Shanghai', '00:01', '07:30')
+ON CONFLICT (singleton_key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS publisher_channels (
+    channel_key text PRIMARY KEY,
+    display_name text NOT NULL,
+    enabled boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT false;
+
+INSERT INTO publisher_channels (channel_key, display_name, enabled)
+VALUES
+    ('external_media', '外媒', true),
+    ('x', 'X', false),
+    ('competitor', '竞品', false),
+    ('jin10', '金十', false)
+ON CONFLICT (channel_key) DO UPDATE
+SET display_name = EXCLUDED.display_name,
+    updated_at = now();
+
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'ai_source', 'mainstream_media')),
@@ -96,12 +142,20 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     search_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
+    writer_feature_mode_enabled boolean,
     writer_model text,
     writer_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     draft_title text,
     draft_content text,
     final_title text,
     final_content text,
+    publisher_channel text,
+    publisher_model text,
+    publisher_category text,
+    publisher_decision text,
+    publisher_reason_code text,
+    publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb,
+    publisher_decided_at timestamptz,
     push_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_error text,
@@ -110,6 +164,32 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
 );
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS writer_feature_mode_enabled boolean;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_channel text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_model text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_category text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decision text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_reason_code text;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decided_at timestamptz;
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_channel_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_channel_check
+    CHECK (publisher_channel IS NULL OR publisher_channel IN ('external_media', 'x', 'competitor', 'jin10'));
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_category_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_category_check
+    CHECK (
+        publisher_category IS NULL
+        OR publisher_category IN ('policy_regulation', 'people_view', 'major_project_progress', 'funding', 'other')
+    );
+
+ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_decision_check;
+ALTER TABLE x_task_pipeline
+    ADD CONSTRAINT x_task_pipeline_publisher_decision_check
+    CHECK (publisher_decision IS NULL OR publisher_decision IN ('auto_publish', 'manual_review', 'failed'));
 
 CREATE TABLE IF NOT EXISTS search_event_candidates (
     id bigserial PRIMARY KEY,
@@ -531,6 +611,8 @@ EXECUTE FUNCTION notify_prompt_config_changed();
 
 ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prompt_template_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE publisher_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE publisher_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
 ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
@@ -546,6 +628,8 @@ ALTER TABLE newsflash_item_notes ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_anon_all ON prompt_template_versions;
+DROP POLICY IF EXISTS publisher_settings_anon_all ON publisher_settings;
+DROP POLICY IF EXISTS publisher_channels_anon_all ON publisher_channels;
 DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
@@ -560,6 +644,8 @@ DROP POLICY IF EXISTS newsflash_event_notes_anon_all ON newsflash_event_notes;
 DROP POLICY IF EXISTS newsflash_item_notes_anon_all ON newsflash_item_notes;
 DROP POLICY IF EXISTS prompt_templates_console_admin_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_console_admin_all ON prompt_template_versions;
+DROP POLICY IF EXISTS publisher_settings_console_admin_all ON publisher_settings;
+DROP POLICY IF EXISTS publisher_channels_console_admin_all ON publisher_channels;
 DROP POLICY IF EXISTS x_task_pipeline_console_admin_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_console_admin_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_console_admin_select ON search_event_candidates;
@@ -576,7 +662,7 @@ DROP POLICY IF EXISTS newsflash_item_notes_console_admin_all ON newsflash_item_n
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources, auditor_checks FROM anon;
+        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, publisher_settings, publisher_channels, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources, auditor_checks FROM anon;
         REVOKE ALL PRIVILEGES ON writer3_contexts FROM anon;
         REVOKE ALL PRIVILEGES ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary FROM anon;
         REVOKE ALL PRIVILEGES ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes FROM anon;
@@ -587,6 +673,8 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON prompt_templates TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON publisher_settings TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON publisher_channels TO authenticated;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources, auditor_checks TO authenticated;
         GRANT SELECT ON writer3_contexts TO authenticated;
         GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO authenticated;
@@ -596,6 +684,10 @@ BEGIN
         EXECUTE 'CREATE POLICY prompt_templates_console_admin_all ON prompt_templates
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY prompt_template_versions_console_admin_all ON prompt_template_versions
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY publisher_settings_console_admin_all ON publisher_settings
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY publisher_channels_console_admin_all ON publisher_channels
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY x_task_pipeline_console_admin_select ON x_task_pipeline
             FOR SELECT TO authenticated USING (is_console_admin())';

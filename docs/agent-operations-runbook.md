@@ -54,8 +54,10 @@ cd /opt/OdAIly
 python backend/src/main.py non-mainstream-media-init-db
 python backend/src/main.py x-process-init-db --skip-clear-pending
 python backend/src/main.py external-media-alert-init-db
+python backend/src/main.py jin10-init-db
 python backend/src/main.py local-pipeline-skip-legacy --execute
 install -m 0644 deploy/odaily-local-pipeline.service /etc/systemd/system/odaily-local-pipeline.service
+install -m 0644 deploy/odaily-jin10-monitor.service /etc/systemd/system/odaily-jin10-monitor.service
 systemctl daemon-reload
 systemctl disable --now odaily-x-process@judge.service odaily-x-process@judge_crypto.service odaily-x-process@judge_ai.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-x-process@publish.service || true
 systemctl disable --now odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service || true
@@ -63,8 +65,9 @@ systemctl enable --now odaily-local-pipeline.service
 systemctl restart odaily-non-mainstream-media.service
 systemctl restart odaily-x-capture.service || true
 systemctl restart odaily-competitor-monitor.service || true
+systemctl enable --now odaily-jin10-monitor.service
 systemctl restart odaily-pipeline-supervisor.service
-systemctl is-active odaily-local-pipeline.service odaily-non-mainstream-media.service odaily-pipeline-supervisor.service
+systemctl is-active odaily-local-pipeline.service odaily-non-mainstream-media.service odaily-jin10-monitor.service odaily-pipeline-supervisor.service
 curl -fsS http://127.0.0.1:8776/health
 '
 ```
@@ -73,6 +76,7 @@ curl -fsS http://127.0.0.1:8776/health
 
 - `local-pipeline-skip-legacy --execute` 只标记切换前未完成旧任务为 `legacy_skipped`，不导入本地队列。
 - `x-process-init-db --skip-clear-pending` 会初始化/迁移 schema 并删除旧 notify trigger，但不会清掉待处理任务。
+- `jin10-init-db` 会初始化金十配置表、去重表、Prompt seed 和默认关闭的 `jin10` 发布渠道；`odaily-jin10-monitor.service` 启动后如果开关关闭，只写 disabled heartbeat。
 - 旧分阶段服务保留代码和 unit 名用于紧急回滚，但生产默认停用。
 
 市场快讯相关改动额外重启：

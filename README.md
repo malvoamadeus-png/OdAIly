@@ -360,6 +360,7 @@ Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
 - `deploy/odaily-editor-plugin-api.Caddyfile`
 - `deploy/odaily-non-mainstream-media.service`
 - `deploy/odaily-external-media-alert@.service`
+- `deploy/odaily-jin10-monitor.service`
 - `deploy/odaily-whale-watch.service`
 - `deploy/odaily-whale-watch-hyperliquid.service`
 - `deploy/odaily-pipeline-supervisor.service`
@@ -385,8 +386,8 @@ Production sync rules:
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-editor-plugin-api.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-worker.service -u odaily-editor-plugin-api.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-worker.service odaily-x-process@judge.service odaily-x-process@search.service odaily-x-process@write.service odaily-x-process@format_publish.service odaily-competitor-monitor.service odaily-editor-plugin-api.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-external-media-alert@domain_judge.service odaily-external-media-alert@search.service odaily-external-media-alert@notify.service odaily-jin10-monitor.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-worker.service -u odaily-editor-plugin-api.service -u odaily-non-mainstream-media.service -u odaily-external-media-alert@domain_judge.service -u odaily-external-media-alert@search.service -u odaily-external-media-alert@notify.service -u odaily-jin10-monitor.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked

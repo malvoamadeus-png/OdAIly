@@ -19,6 +19,7 @@ from .models import (
     ACTIVE_CANDIDATE_TTL,
     AI_SOURCE,
     COMPETITOR_SOURCES,
+    JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
@@ -78,6 +79,7 @@ LEGACY_SKIP_SOURCES = [
     "mainstream_media",
     "external_media_alert",
     "ai_source_alert",
+    "jin10",
 ]
 
 
@@ -100,6 +102,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "docs/外媒标题领域判断模板.txt",
         "initial external media alert domain judge template",
     ),
+    "jin10_judge": (
+        "判断者-金十",
+        "docs/判断者-金十模板.txt",
+        "initial Jin10 judge template",
+    ),
 }
 
 PROMPT_FEATURE_MODE_DEFAULTS: dict[str, bool] = {
@@ -118,6 +125,7 @@ PUBLISHER_CHANNEL_DEFAULTS: tuple[tuple[str, str, bool], ...] = (
     ("external_media", "外媒", True),
     ("x", "X", False),
     ("competitor", "竞品", False),
+    ("jin10", "金十", False),
 )
 
 
@@ -459,10 +467,18 @@ class PostgresXProcessingRepository:
                     )
                 )
             """
+        elif stage == "judge_jin10":
+            source_filter = """
+                (
+                    (t.source = %(jin10_source)s AND t.status = %(claim_status)s)
+                    OR (t.source = %(jin10_source)s AND t.status = %(processing_status)s)
+                )
+            """
         elif stage == "search":
             source_filter = """
                 (
                     (t.source = 'x' AND t.status = %(claim_status)s)
+                    OR (t.source = %(jin10_source)s AND t.status = %(claim_status)s)
                     OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'pending')
                     OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
                 )
@@ -503,6 +519,7 @@ class PostgresXProcessingRepository:
                     "search_first_sources": list(SEARCH_FIRST_SOURCES),
                     "crypto_search_first_sources": list(CRYPTO_SEARCH_FIRST_SOURCES),
                     "ai_source": AI_SOURCE,
+                    "jin10_source": JIN10_SOURCE,
                 },
             ).fetchone()
             if row is None:
@@ -1082,7 +1099,7 @@ class InMemoryXProcessingRepository:
                 content=f"prompt {key}",
                 feature_mode_enabled=PROMPT_FEATURE_MODE_DEFAULTS.get(key, False),
             )
-            for index, key in enumerate(PROMPT_KEY_BY_NEWS_TYPE.values(), start=1)
+            for index, key in enumerate({*PROMPT_KEY_BY_NEWS_TYPE.values(), *PROMPT_SEEDS.keys()}, start=1)
         }
         self._locks: set[int] = set()
 
@@ -1103,6 +1120,8 @@ class InMemoryXProcessingRepository:
             if stage == "judge_crypto" and (task.source == AI_SOURCE or _task_has_x_ai_source_label(task)):
                 continue
             if stage == "judge_ai" and not (task.source == AI_SOURCE or _task_has_x_ai_source_label(task)):
+                continue
+            if stage == "judge_jin10" and task.source != JIN10_SOURCE:
                 continue
             if task.status not in {claim_status, spec.processing_status} or task.id in self._locks:
                 continue
@@ -1401,7 +1420,8 @@ INSERT INTO publisher_channels (channel_key, display_name, enabled)
 VALUES
     ('external_media', '外媒', true),
     ('x', 'X', false),
-    ('competitor', '竞品', false)
+    ('competitor', '竞品', false),
+    ('jin10', '金十', false)
 ON CONFLICT (channel_key) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     updated_at = now();
@@ -1454,7 +1474,7 @@ ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decided_at timest
 ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_channel_check;
 ALTER TABLE x_task_pipeline
     ADD CONSTRAINT x_task_pipeline_publisher_channel_check
-    CHECK (publisher_channel IS NULL OR publisher_channel IN ('external_media', 'x', 'competitor'));
+    CHECK (publisher_channel IS NULL OR publisher_channel IN ('external_media', 'x', 'competitor', 'jin10'));
 
 ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_category_check;
 ALTER TABLE x_task_pipeline

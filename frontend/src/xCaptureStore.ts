@@ -13,7 +13,7 @@ export type NonMainstreamSettings = {
   updated_at: string | null;
 };
 
-export type PublisherChannelKey = 'external_media' | 'x' | 'competitor';
+export type PublisherChannelKey = 'external_media' | 'x' | 'competitor' | 'jin10';
 
 export type PublisherSettings = {
   enabled: boolean;
@@ -27,6 +27,18 @@ export type PublisherChannel = {
   channel_key: PublisherChannelKey;
   display_name: string;
   enabled: boolean;
+  updated_at: string | null;
+};
+
+export type Jin10Settings = {
+  enabled: boolean;
+  interval_seconds: number;
+  endpoint_url: string;
+  channel: string | null;
+  request_headers: Record<string, string>;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
   updated_at: string | null;
 };
 
@@ -351,7 +363,27 @@ const defaultPublisherChannels: PublisherChannel[] = [
   { channel_key: 'external_media', display_name: '外媒', enabled: true, updated_at: null },
   { channel_key: 'x', display_name: 'X', enabled: false, updated_at: null },
   { channel_key: 'competitor', display_name: '竞品', enabled: false, updated_at: null },
+  { channel_key: 'jin10', display_name: '金十', enabled: false, updated_at: null },
 ];
+
+const defaultJin10Settings: Jin10Settings = {
+  enabled: false,
+  interval_seconds: 60,
+  endpoint_url: 'https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash',
+  channel: null,
+  request_headers: {
+    'x-app-id': 'bVBF4FyRTn5NJF5n',
+    'x-version': '1.0.0',
+    referer: 'https://www.jin10.com/',
+    origin: 'https://www.jin10.com',
+    'user-agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  },
+  last_polled_at: null,
+  last_success_at: null,
+  last_error: null,
+  updated_at: null,
+};
 
 const usernamePattern = /^[A-Za-z0-9_]{1,15}$/;
 const reservedPaths = new Set([
@@ -709,6 +741,86 @@ export async function updatePublisherChannel(channelKey: PublisherChannelKey, en
     .single();
   raise(error);
   return assertData(data as PublisherChannel | null, '保存发布渠道失败');
+}
+
+function normalizeJin10Settings(row: Jin10Settings): Jin10Settings {
+  return {
+    ...defaultJin10Settings,
+    ...row,
+    request_headers: row.request_headers && typeof row.request_headers === 'object' ? row.request_headers : defaultJin10Settings.request_headers,
+  };
+}
+
+export async function getJin10Settings(): Promise<Jin10Settings> {
+  const selectFields = [
+    'enabled',
+    'interval_seconds',
+    'endpoint_url',
+    'channel',
+    'request_headers',
+    'last_polled_at',
+    'last_success_at',
+    'last_error',
+    'updated_at',
+  ].join(',');
+  const { data, error } = await supabase().from('jin10_settings').select(selectFields).eq('singleton_key', 'global').maybeSingle();
+  raise(error);
+  if (data) {
+    return normalizeJin10Settings(data as unknown as Jin10Settings);
+  }
+  const created = await supabase()
+    .from('jin10_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        enabled: defaultJin10Settings.enabled,
+        interval_seconds: defaultJin10Settings.interval_seconds,
+        endpoint_url: defaultJin10Settings.endpoint_url,
+        channel: defaultJin10Settings.channel,
+        request_headers: defaultJin10Settings.request_headers,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select(selectFields)
+    .single();
+  raise(created.error);
+  return normalizeJin10Settings(assertData(created.data as Jin10Settings | null, '无法初始化金十配置'));
+}
+
+export async function updateJin10Settings(
+  patch: Pick<Jin10Settings, 'enabled' | 'interval_seconds' | 'endpoint_url' | 'channel' | 'request_headers'>,
+): Promise<Jin10Settings> {
+  const { data, error } = await supabase()
+    .from('jin10_settings')
+    .upsert(
+      {
+        singleton_key: 'global',
+        enabled: patch.enabled,
+        interval_seconds: patch.interval_seconds,
+        endpoint_url: patch.endpoint_url,
+        channel: patch.channel?.trim() || null,
+        request_headers: patch.request_headers,
+        updated_at: nowIso(),
+      },
+      { onConflict: 'singleton_key' },
+    )
+    .select(
+      [
+        'enabled',
+        'interval_seconds',
+        'endpoint_url',
+        'channel',
+        'request_headers',
+        'last_polled_at',
+        'last_success_at',
+        'last_error',
+        'updated_at',
+      ].join(','),
+    )
+    .single();
+  raise(error);
+  return normalizeJin10Settings(assertData(data as Jin10Settings | null, '保存金十配置失败'));
 }
 
 export async function listAccounts(): Promise<Account[]> {
@@ -1113,6 +1225,17 @@ async function listRecentTasks(limit: number): Promise<TaskItem[]> {
     .from('tasks')
     .select('id,source_item_id,source_url,title,content,status,created_at')
     .eq('source', 'x')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  raise(error);
+  return (data ?? []) as TaskItem[];
+}
+
+export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
+  const { data, error } = await supabase()
+    .from('tasks')
+    .select('id,source_item_id,source_url,title,content,status,created_at')
+    .eq('source', 'jin10')
     .order('created_at', { ascending: false })
     .limit(limit);
   raise(error);

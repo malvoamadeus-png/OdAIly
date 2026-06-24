@@ -28,6 +28,7 @@ from .models import (
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
     JUDGE_ROUTES,
+    JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
@@ -227,6 +228,7 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     "blockbeats": "competitor",
     "panews": "competitor",
     "jinse": "competitor",
+    JIN10_SOURCE: "jin10",
 }
 PUBLISHER_JSON_SCHEMA = {
     "type": "json_schema",
@@ -270,6 +272,23 @@ AI_JUDGE_JSON_SCHEMA = {
             },
         },
         "required": ["route", "discard_type"],
+    },
+    "strict": True,
+}
+
+
+JIN10_JUDGE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "jin10_judge_decision",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "decision": {"type": "string", "enum": ["publish", "discard"]},
+            "reason": {"type": "string"},
+            "matched_topic": {"type": "string"},
+        },
+        "required": ["decision", "reason", "matched_topic"],
     },
     "strict": True,
 }
@@ -458,7 +477,7 @@ class XProcessingWorker:
             print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
     def _process_task(self, task: TaskRecord) -> None:
-        if self.stage in {"judge", "judge_crypto", "judge_ai"}:
+        if self.stage in {"judge", "judge_crypto", "judge_ai", "judge_jin10"}:
             self._run_judge(task)
         elif self.stage == "search":
             self._run_search(task)
@@ -516,6 +535,9 @@ class XProcessingWorker:
         return True
 
     def _run_judge(self, task: TaskRecord) -> None:
+        if is_jin10_task(task):
+            self._run_jin10_judge(task)
+            return
         deterministic_discard_type = deterministic_judge_discard_type(task)
         if deterministic_discard_type is not None:
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
@@ -613,6 +635,40 @@ class XProcessingWorker:
                 model=self.settings.judge_model,
                 raw_output=raw_output,
             )
+
+    def _run_jin10_judge(self, task: TaskRecord) -> None:
+        prompt = self._get_prompt("jin10_judge")
+        input_prompt = build_jin10_judge_prompt(task=task, prompt=prompt)
+        raw_output = self._get_ai_client().generate_text(
+            model=self.settings.judge_model,
+            prompt=input_prompt,
+            text_format=JIN10_JUDGE_JSON_SCHEMA,
+            reasoning_effort=self.settings.judge_reasoning_effort,
+        )
+        decision, reason, matched_topic = parse_jin10_judge_output(raw_output)
+        if decision == "discard":
+            self._release_local_candidate_for_task(task.id, release_reason="discarded")
+            self.repository.complete_judge_discard(
+                task.id,
+                discard_type="off_topic",
+                model=self.settings.judge_model,
+                raw_output=raw_output,
+            )
+            return
+        self.repository.complete_judge(
+            task.id,
+            news_type="regular",
+            model=self.settings.judge_model,
+            raw_output=json.dumps(
+                {
+                    "decision": decision,
+                    "reason": reason,
+                    "matched_topic": matched_topic,
+                    "raw_output": raw_output,
+                },
+                ensure_ascii=False,
+            ),
+        )
 
     def _run_search(self, task: TaskRecord) -> None:
         if self.search_embedding_service is None:
@@ -1138,8 +1194,12 @@ def is_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == MAINSTREAM_MEDIA_SOURCE
 
 
+def is_jin10_task(task: TaskRecord) -> bool:
+    return task.source == JIN10_SOURCE
+
+
 def hide_source_url(task: TaskRecord) -> bool:
-    return is_competitor_task(task)
+    return is_competitor_task(task) or is_jin10_task(task)
 
 
 def utc_since_hours(hours: int) -> datetime:
@@ -1167,6 +1227,15 @@ def competitor_judge_fallback_route(task: TaskRecord) -> JudgeRoute:
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
+    if is_jin10_task(task):
+        return (
+            f"{render_prompt_content(prompt)}\n\n"
+            "【快讯材料】\n"
+            f"标题：{task.title or ''}\n"
+            f"正文：{task.content}\n\n"
+            "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
+            "请严格输出一行标题、空一行、正文。"
+        )
     if is_non_mainstream_media_task(task) or is_ai_source_task(task):
         author_names = "、".join(task.metadata.get("author_names") or []) or "未知"
         is_ai_source = is_ai_source_task(task)
@@ -1231,6 +1300,17 @@ def build_publisher_prompt(*, task: TaskRecord, pipeline: PipelineRecord) -> str
     )
 
 
+def build_jin10_judge_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
+    return (
+        f"{render_prompt_content(prompt)}\n\n"
+        "【待判断金十快讯】\n"
+        f"标题：{task.title or ''}\n"
+        f"正文：{task.content}\n"
+        f"发布时间：{task.published_at.isoformat() if task.published_at else ''}\n\n"
+        "请只输出 JSON。"
+    )
+
+
 def parse_publisher_output(value: str) -> tuple[str, str]:
     text = value.strip()
     if text.startswith("```"):
@@ -1250,6 +1330,28 @@ def parse_publisher_output(value: str) -> tuple[str, str]:
     if not reason:
         raise ValueError("publisher reason is required")
     return category, reason
+
+
+def parse_jin10_judge_output(value: str) -> tuple[str, str, str]:
+    text = value.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("jin10 judge output must be a JSON object")
+    decision = str(payload.get("decision") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    matched_topic = str(payload.get("matched_topic") or "").strip()
+    if decision not in {"publish", "discard"}:
+        raise ValueError(f"invalid jin10 judge decision: {decision}")
+    if not reason:
+        raise ValueError("jin10 judge reason is required")
+    return decision, reason, matched_topic
 
 
 def resolve_publisher_channel(task: TaskRecord) -> str | None:
@@ -1327,6 +1429,7 @@ SOURCE_DISPLAY_NAMES = {
     "non_mainstream_media": "外媒",
     "ai_source": "AI信源",
     "mainstream_media": "外媒",
+    JIN10_SOURCE: "金十",
 }
 
 
