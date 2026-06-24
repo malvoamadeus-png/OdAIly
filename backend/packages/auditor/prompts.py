@@ -7,10 +7,13 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v3"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v4"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
+HEADLINE_QUANTIFIER_PREFIXES = ("一个", "一名", "一位", "一家", "一则", "一笔", "一处", "一项")
+CHAIN_TRANSFER_ACTION_WORDS = ("提出", "转出", "转入", "提取", "存入")
+TRADING_ACTION_WORDS = ("购入", "买入", "加仓")
 
 
 AUDITOR_SCHEMA = {
@@ -59,6 +62,8 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - Odaily 固定前缀、媒体称谓、常见术语格式是否统一。
 - 正文尾部固定标语，例如“在定价之前，看见变化”。
 - 可省略的结构助词“的”，例如“14.25%消费税”“应 Shielded Labs 请求”这类表达不要提示补“的”。
+- 新闻标题中的常见省略式表达，例如“一男子”“一女子”“一地址”“一新创建地址”等标题体量词省略，不按语法残缺处理。
+- 链上、钱包、地址、交易所资金流转语境中的动作词误判；对“提出 / 转出 / 转入 / 提取 / 存入”等表述，若上下文可解释为 transfer、withdraw、deposit 等链上动作，不要擅自改成“买入 / 购入 / 加仓”。
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
@@ -162,6 +167,10 @@ def _should_ignore_issue(*, location: str, original: str, suggested: str, reason
         return True
     if _is_missing_de_issue(original=original, suggested=suggested, reason=reason):
         return True
+    if _is_headline_quantifier_expansion_issue(location=location, original=original, suggested=suggested, task=task):
+        return True
+    if _is_chain_transfer_action_issue(original=original, suggested=suggested):
+        return True
     return False
 
 
@@ -188,3 +197,31 @@ def _is_missing_de_issue(*, original: str, suggested: str, reason: str) -> bool:
 
 def _normalize_for_de_check(value: str) -> str:
     return re.sub(r"\s+", "", value).replace("“", "").replace("”", "").replace('"', "")
+
+
+def _is_headline_quantifier_expansion_issue(*, location: str, original: str, suggested: str, task: AuditorTask) -> bool:
+    if location != "title":
+        return False
+    title = _normalize_for_de_check(task.title or "")
+    if not title or _normalize_for_de_check(original) not in title:
+        return False
+    original_text = _normalize_for_de_check(original)
+    suggested_text = _normalize_for_de_check(suggested)
+    if not original_text.startswith("一") or len(original_text) < 2:
+        return False
+    original_tail = original_text[1:].replace("的", "")
+    for prefix in HEADLINE_QUANTIFIER_PREFIXES:
+        if not suggested_text.startswith(prefix):
+            continue
+        suggested_tail = suggested_text[len(prefix) :].replace("的", "")
+        if suggested_tail == original_tail:
+            return True
+    return False
+
+
+def _is_chain_transfer_action_issue(*, original: str, suggested: str) -> bool:
+    original_text = _normalize_for_de_check(original)
+    suggested_text = _normalize_for_de_check(suggested)
+    if not any(original_text.startswith(word) for word in CHAIN_TRANSFER_ACTION_WORDS):
+        return False
+    return any(suggested_text.startswith(word) for word in TRADING_ACTION_WORDS)

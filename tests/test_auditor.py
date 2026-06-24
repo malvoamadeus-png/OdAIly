@@ -130,10 +130,12 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "空格风格" in prompt
     assert "在定价之前，看见变化" in prompt
     assert "结构助词“的”" in prompt
+    assert "一新创建地址" in prompt
+    assert "提出 / 转出 / 转入 / 提取 / 存入" in prompt
 
 
-def test_auditor_prompt_version_is_v3() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v3"
+def test_auditor_prompt_version_is_v4() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v4"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -390,3 +392,64 @@ def test_parse_auditor_output_keeps_non_de_grammar_issue() -> None:
 
     assert parsed.has_issue is True
     assert len(parsed.issues) == 1
+
+
+def test_parse_auditor_output_ignores_headline_quantifier_expansion_issue() -> None:
+    current = task(title="一新创建地址从币安提取1683枚BTC，价值1.05亿美元")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "grammar",
+                        "location": "title",
+                        "original": "一新创建地址",
+                        "suggested": "一个新创建的地址",
+                        "reason": "缺少量词，且语序不完整。",
+                    }
+                ],
+                "summary": "标题疑似缺少量词。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_chain_transfer_action_issue() -> None:
+    current = task(content="某地址提出 50 WBTC，并提出 822.51 枚 ETH 至新地址。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "typo",
+                        "location": "content",
+                        "original": "提出 50 WBTC",
+                        "suggested": "购入 50 WBTC",
+                        "reason": "“提出”在此语境不通，应为买入。",
+                    },
+                    {
+                        "type": "typo",
+                        "location": "content",
+                        "original": "提出 822.51 枚 ETH",
+                        "suggested": "购入 822.51 枚 ETH",
+                        "reason": "“提出”在此语境不通，应为买入。",
+                    }
+                ],
+                "summary": "正文动作词疑似错误。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
