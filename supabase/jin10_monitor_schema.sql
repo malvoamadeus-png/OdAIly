@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS jin10_settings (
     singleton_key text PRIMARY KEY DEFAULT 'global',
     enabled boolean NOT NULL DEFAULT false,
     interval_seconds integer NOT NULL DEFAULT 60,
-    endpoint_url text NOT NULL DEFAULT 'https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash',
+    endpoint_url text NOT NULL DEFAULT 'https://www.jin10.com/flash_newest.js',
     channel text,
     request_headers jsonb NOT NULL DEFAULT '{
         "x-app-id": "bVBF4FyRTn5NJF5n",
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS jin10_settings (
 
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT false;
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS interval_seconds integer NOT NULL DEFAULT 60;
-ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS endpoint_url text NOT NULL DEFAULT 'https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash';
+ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS endpoint_url text NOT NULL DEFAULT 'https://www.jin10.com/flash_newest.js';
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS channel text;
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS request_headers jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS last_polled_at timestamptz;

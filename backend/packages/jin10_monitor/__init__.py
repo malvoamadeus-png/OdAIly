@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .fetcher import fetch_jin10_items, parse_jin10_payload
+from .fetcher import fetch_jin10_items, parse_jin10_payload, parse_jin10_response_body
 from .models import JIN10_SOURCE, Jin10Item, Jin10RunResult, Jin10Settings
 from .repository import InMemoryJin10MonitorRepository, PostgresJin10MonitorRepository
 from .worker import Jin10MonitorWorker
@@ -15,4 +15,5 @@ __all__ = [
     "PostgresJin10MonitorRepository",
     "fetch_jin10_items",
     "parse_jin10_payload",
+    "parse_jin10_response_body",
 ]

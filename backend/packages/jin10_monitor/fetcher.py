@@ -23,7 +23,7 @@ def fetch_jin10_items(
         params["channel"] = channel
     response = requests.get(endpoint_url, params=params, headers=headers, timeout=timeout_seconds)
     response.raise_for_status()
-    payload = response.json()
+    payload = parse_jin10_response_body(response.text)
     return parse_jin10_payload(payload)
 
 
@@ -34,6 +34,20 @@ def parse_jin10_payload(payload: Any) -> list[Jin10Item]:
         if item is not None:
             items.append(item)
     return _dedupe_items(items)
+
+
+def parse_jin10_response_body(text: str) -> Any:
+    stripped = (text or "").strip()
+    if not stripped:
+        return []
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"(?:var\s+)?newest\s*=\s*(\[.*?\])\s*;?\s*$", stripped, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    raise ValueError("unsupported Jin10 response body")
 
 
 def _extract_items(payload: Any) -> list[dict[str, Any]]:

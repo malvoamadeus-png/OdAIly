@@ -369,7 +369,7 @@ const defaultPublisherChannels: PublisherChannel[] = [
 const defaultJin10Settings: Jin10Settings = {
   enabled: false,
   interval_seconds: 60,
-  endpoint_url: 'https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash',
+  endpoint_url: 'https://www.jin10.com/flash_newest.js',
   channel: null,
   request_headers: {
     'x-app-id': 'bVBF4FyRTn5NJF5n',

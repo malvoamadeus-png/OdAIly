@@ -6,7 +6,7 @@ from typing import Any
 
 
 JIN10_SOURCE = "jin10"
-DEFAULT_JIN10_ENDPOINT_URL = "https://4a735ea38f8146198dc205d2e2d1bd28.z3c.jin10.com/flash"
+DEFAULT_JIN10_ENDPOINT_URL = "https://www.jin10.com/flash_newest.js"
 DEFAULT_JIN10_HEADERS = {
     "x-app-id": "bVBF4FyRTn5NJF5n",
     "x-version": "1.0.0",

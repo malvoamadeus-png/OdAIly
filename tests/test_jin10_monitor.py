@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from packages.common.config import XProcessingSettings
-from packages.jin10_monitor import InMemoryJin10MonitorRepository, Jin10Item, Jin10MonitorWorker, parse_jin10_payload
+from packages.jin10_monitor import InMemoryJin10MonitorRepository, Jin10Item, Jin10MonitorWorker, parse_jin10_payload, parse_jin10_response_body
 from packages.local_pipeline.processor import LocalPipelineProcessor
 from packages.x_processing.models import JIN10_SOURCE, PromptTemplateVersion, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
@@ -59,6 +59,17 @@ def test_parse_jin10_payload_uses_stable_id_when_missing_id() -> None:
     assert len(items) == 1
     assert items[0].source_item_id
     assert items[0].title == "标题"
+
+
+def test_parse_jin10_response_body_supports_static_newest_js() -> None:
+    payload = parse_jin10_response_body(
+        'var newest = [{"id":"20260624173740781800","time":"2026-06-24 17:37:40","data":{"content":"美国副总统万斯：确保霍尔木兹通道保持开放。"}}];'
+    )
+    items = parse_jin10_payload(payload)
+
+    assert len(items) == 1
+    assert items[0].source_item_id == "20260624173740781800"
+    assert "霍尔木兹" in items[0].content
 
 
 def test_jin10_worker_disabled_does_not_fetch() -> None:
