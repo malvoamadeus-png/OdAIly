@@ -76,7 +76,9 @@ def parse_odaily_item(news: dict[str, Any]) -> OdailyReference | None:
     source_id = str(news.get("id") or news.get("newsflashId") or "").strip()
     if not source_id:
         source_id = str(abs(hash(title)))
-    content = remove_odaily_prefix(normalize_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title)))
+    content = remove_odaily_prefix(
+        normalize_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title))
+    )
     published_at = parse_datetime(news.get("publishTimestamp") or news.get("publishDate") or news.get("publishedAt") or news.get("createdAt") or news.get("createTime"))
     source_url = f"https://www.odaily.news/zh-CN/newsflash/{source_id}"
     return OdailyReference(
@@ -136,12 +138,17 @@ def parse_datetime(value: Any) -> datetime | None:
 
 
 def normalize_content(title: str, content: str) -> str:
-    value = clean_text(strip_html(content))
-    return value or clean_text(strip_html(title))
+    value = clean_text(strip_html(content), preserve_paragraph_breaks=True)
+    return value or clean_text(strip_html(title), preserve_paragraph_breaks=True)
 
 
 def remove_odaily_prefix(text: str) -> str:
-    return re.sub(r"^Odaily\s*星球日报讯\s*", "", clean_text(strip_html(text)), flags=re.IGNORECASE).strip()
+    return re.sub(
+        r"^Odaily\s*星球日报讯\s*",
+        "",
+        clean_text(strip_html(text), preserve_paragraph_breaks=True),
+        flags=re.IGNORECASE,
+    ).strip()
 
 
 def strip_html(value: str) -> str:
@@ -151,5 +158,8 @@ def strip_html(value: str) -> str:
     return html.unescape(text)
 
 
-def clean_text(value: str) -> str:
+def clean_text(value: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    if preserve_paragraph_breaks:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in (value or "").splitlines()]
+        return "\n".join(line for line in lines if line).strip()
     return re.sub(r"\s+", " ", value or "").strip()

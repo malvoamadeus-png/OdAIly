@@ -189,6 +189,21 @@ def test_normalize_content_keeps_semantic_words_like_bullish_bearish() -> None:
     assert normalize_item_content(title, content).endswith("构成政策层面利好，市场预期美国本土晶圆制造与先进制程投资将持续获得支持。")
 
 
+def test_normalize_odaily_content_preserves_paragraph_breaks() -> None:
+    title = "MGBX 将上线永续合约交易对"
+    content = (
+        "<p>Odaily星球日报讯 据官方消息，MGBX 将上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对</p>"
+        "<p>交易开放时间：2026 年 6 月 26 日 18:00（SGT）</p>"
+        "<p>杠杆倍数：RE 最大支持 50 倍。</p>"
+    )
+
+    assert normalize_item_content(title, content, preserve_paragraph_breaks=True) == (
+        "MGBX 将上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对\n"
+        "交易开放时间：2026 年 6 月 26 日 18:00（SGT）\n"
+        "杠杆倍数：RE 最大支持 50 倍。"
+    )
+
+
 def test_competitor_api_style_can_override_x_process_style(monkeypatch) -> None:
     from packages.common.config import load_competitor_monitor_settings
 
@@ -383,6 +398,40 @@ def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
     assert "金色财经报道" not in items[0].content
     assert items[0].source_url == "https://www.jinse2.com/lives/512327.html"
     assert items[0].published_at == "1778563741"
+
+
+def test_fetch_odaily_preserves_paragraph_breaks_between_html_blocks(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": 494733,
+                        "title": "MGBX将上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对",
+                        "content": (
+                            "<p>Odaily星球日报讯 据官方消息，MGBX 将于 2026 年 6 月 26 日 18:00（SGT） "
+                            "上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对</p>"
+                            "<p>交易开放时间：2026 年 6 月 26 日 18:00（SGT）</p>"
+                            "<p>杠杆倍数： RE 最大支持 50 倍。</p>"
+                        ),
+                        "publishDate": "2026-06-26T07:22:39+00:00",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", lambda *args, **kwargs: Response())
+
+    items = fetch_odaily(timeout_seconds=3)
+
+    assert len(items) == 1
+    assert items[0].content == (
+        "MGBX 将于 2026 年 6 月 26 日 18:00（SGT） 上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对\n"
+        "交易开放时间：2026 年 6 月 26 日 18:00（SGT）\n"
+        "杠杆倍数： RE 最大支持 50 倍。"
+    )
 
 
 def test_parse_datetime_treats_naive_newsflash_time_as_shanghai() -> None:

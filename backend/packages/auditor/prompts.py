@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v4"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v5"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
@@ -60,6 +60,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 中英文之间、数字与中文单位之间、数字与币种之间、英文缩写与括号之间、中文与括号之间的空格风格。
 - 千分位逗号、钱包地址展示、省略号、半角/全角括号、数量表达是否统一。
 - Odaily 固定前缀、媒体称谓、常见术语格式是否统一。
+- 正文里已经存在的分行、段落换行或列表换行；不要仅因上一行末尾没有句号、下一行以“交易开放时间：”“杠杆倍数：”等标签开头就报警。
 - 正文尾部固定标语，例如“在定价之前，看见变化”。
 - 可省略的结构助词“的”，例如“14.25%消费税”“应 Shielded Labs 请求”这类表达不要提示补“的”。
 - 新闻标题中的常见省略式表达，例如“一男子”“一女子”“一地址”“一新创建地址”等标题体量词省略，不按语法残缺处理。
@@ -101,8 +102,8 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
         location = str(raw_issue.get("location") or "content")
         if location not in {"title", "content"}:
             location = "content"
-        original = _clean(str(raw_issue.get("original") or ""))
-        suggested = _clean(str(raw_issue.get("suggested") or ""))
+        original = _clean_excerpt(str(raw_issue.get("original") or ""))
+        suggested = _clean_excerpt(str(raw_issue.get("suggested") or ""))
         reason = _clean(str(raw_issue.get("reason") or ""))
         source_text = task.title if location == "title" else task.content
         if not original or original not in (source_text or ""):
@@ -162,8 +163,15 @@ def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _clean_excerpt(value: str) -> str:
+    lines = [re.sub(r"[^\S\n]+", " ", line).strip() for line in value.strip().splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
 def _should_ignore_issue(*, location: str, original: str, suggested: str, reason: str, task: AuditorTask) -> bool:
     if _is_fixed_trailing_slogan_issue(location=location, original=original, task=task):
+        return True
+    if _is_line_break_boundary_punctuation_issue(location=location, original=original, suggested=suggested):
         return True
     if _is_missing_de_issue(original=original, suggested=suggested, reason=reason):
         return True
@@ -182,6 +190,13 @@ def _is_fixed_trailing_slogan_issue(*, location: str, original: str, task: Audit
         if original in slogan and content.endswith(slogan):
             return True
     return False
+
+
+def _is_line_break_boundary_punctuation_issue(*, location: str, original: str, suggested: str) -> bool:
+    if location != "content" or "\n" not in original:
+        return False
+    normalized_suggested = re.sub(r"[。！？；]+\n", "\n", suggested)
+    return normalized_suggested == original
 
 
 def _is_missing_de_issue(*, original: str, suggested: str, reason: str) -> bool:

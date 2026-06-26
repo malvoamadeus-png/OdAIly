@@ -132,10 +132,11 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "结构助词“的”" in prompt
     assert "一新创建地址" in prompt
     assert "提出 / 转出 / 转入 / 提取 / 存入" in prompt
+    assert "交易开放时间：" in prompt
 
 
-def test_auditor_prompt_version_is_v4() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v4"
+def test_auditor_prompt_version_is_v5() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v5"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -303,6 +304,38 @@ def test_parse_auditor_output_ignores_fixed_trailing_slogan_issue() -> None:
                     }
                 ],
                 "summary": "固定标语被误报。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_punctuation_inserted_before_existing_line_break() -> None:
+    current = task(
+        content=(
+            "Odaily星球日报讯 据官方消息，MGBX 将上线 REUSDT、ARXUSDT、ALABUSDT 永续合约交易对\n"
+            "交易开放时间：2026 年 6 月 26 日 18:00（SGT）"
+        )
+    )
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "punctuation",
+                        "location": "content",
+                        "original": "永续合约交易对\n交易开放时间：2026 年 6 月 26 日 18:00（SGT）",
+                        "suggested": "永续合约交易对。\n交易开放时间：2026 年 6 月 26 日 18:00（SGT）",
+                        "reason": "上一句句末缺少标点。",
+                    }
+                ],
+                "summary": "跨行误报缺少句号。",
             },
             ensure_ascii=False,
         ),

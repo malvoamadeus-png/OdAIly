@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,40 +36,48 @@ class NewsflashItem:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text or "").strip()
+def strip_html(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    value = html.unescape(text or "")
+    if preserve_paragraph_breaks:
+        value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+        value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
+        value = re.sub(r"<p\b[^>]*>", "", value, flags=re.IGNORECASE)
+    return re.sub(r"<[^>]+>", "", value).strip()
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
     junk = ["原文链接", "微信扫码", "分享划过弹出", "复制链接", "转发到微博", "重要快讯", "点赞", "收藏"]
     for item in junk:
         text = text.replace(item, "")
+    if preserve_paragraph_breaks:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        return "\n".join(line for line in lines if line).strip()
     return re.sub(r"\s+", " ", text).strip()
 
 
-def remove_media_prefix(text: str) -> str:
-    value = clean_text(strip_html(text))
+def remove_media_prefix(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    value = clean_text(strip_html(text, preserve_paragraph_breaks=preserve_paragraph_breaks), preserve_paragraph_breaks=preserve_paragraph_breaks)
     for pattern in BRAND_PATTERNS:
         value = re.sub(rf"^{pattern}", "", value, flags=re.IGNORECASE).strip()
     value = re.sub(r"^据[^，,]{2,20}(报道|监测|数据|消息)[，,]\s*", "", value).strip()
     return value
 
 
-def scrub_competitor_brands(text: str) -> str:
-    value = remove_media_prefix(text)
+def scrub_competitor_brands(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    value = remove_media_prefix(text, preserve_paragraph_breaks=preserve_paragraph_breaks)
     for word in COMPETITOR_BRAND_WORDS:
         value = value.replace(word, "")
-    return clean_text(value)
+    return clean_text(value, preserve_paragraph_breaks=preserve_paragraph_breaks)
 
 
-def normalize_item_content(title: str, content: str) -> str:
-    value = clean_text(strip_html(content))
+def normalize_item_content(title: str, content: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    value = clean_text(strip_html(content, preserve_paragraph_breaks=preserve_paragraph_breaks), preserve_paragraph_breaks=preserve_paragraph_breaks)
     if title and value.startswith(title):
         value = value[len(title):].strip()
     if title and value.startswith(f"【{title}】"):
         value = value[len(title) + 2:].strip()
-    value = scrub_competitor_brands(value)
-    return value or scrub_competitor_brands(title)
+    value = scrub_competitor_brands(value, preserve_paragraph_breaks=preserve_paragraph_breaks)
+    return value or scrub_competitor_brands(title, preserve_paragraph_breaks=preserve_paragraph_breaks)
 
 
 def stable_id(*parts: str) -> str:
@@ -185,7 +194,14 @@ def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:
         if not title:
             continue
         source_id = str(news.get("id") or news.get("newsflashId") or stable_id("odaily", title))
-        content = remove_odaily_prefix(normalize_item_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title)))
+        content = remove_odaily_prefix(
+            normalize_item_content(
+                title,
+                str(news.get("content") or news.get("description") or news.get("summary") or title),
+                preserve_paragraph_breaks=True,
+            ),
+            preserve_paragraph_breaks=True,
+        )
         published_at = str(news.get("publishDate") or news.get("publishedAt") or news.get("createdAt") or news.get("createTime") or "")
         source_url = str(news.get("sourceUrl") or news.get("link") or news.get("url") or f"https://www.odaily.news/zh-CN/newsflash/{source_id}")
         items.append(NewsflashItem("odaily", source_id, title, content, source_url, published_at, news))
@@ -221,5 +237,10 @@ def _extract_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def remove_odaily_prefix(text: str) -> str:
-    return re.sub(r"^Odaily\s*星球日报讯\s*", "", clean_text(strip_html(text)), flags=re.IGNORECASE).strip()
+def remove_odaily_prefix(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
+    return re.sub(
+        r"^Odaily\s*星球日报讯\s*",
+        "",
+        clean_text(strip_html(text, preserve_paragraph_breaks=preserve_paragraph_breaks), preserve_paragraph_breaks=preserve_paragraph_breaks),
+        flags=re.IGNORECASE,
+    ).strip()
