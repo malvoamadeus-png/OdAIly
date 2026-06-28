@@ -293,7 +293,7 @@ def test_filter_keywords_match_title_body_and_bitget_case_insensitive() -> None:
     assert match_filter_terms(case_hit, ["Bitget"]) == ["Bitget"]
 
 
-def test_worker_excludes_all_sources_from_tasks_references_and_events(monkeypatch) -> None:
+def test_worker_keeps_odaily_references_even_when_filter_terms_match(monkeypatch) -> None:
     from packages.common.config import CompetitorMonitorSettings
     from packages.competitor_monitor.fetchers import NewsflashItem
 
@@ -321,14 +321,14 @@ def test_worker_excludes_all_sources_from_tasks_references_and_events(monkeypatc
     result = worker.run_once()
 
     assert result.task_inserted == 0
-    assert result.reference_inserted == 0
-    assert result.events_updated == 0
-    assert result.filtered == 2
+    assert result.reference_inserted == 1
+    assert result.events_updated == 1
+    assert result.filtered == 1
     assert result.filtered_by_source["blockbeats"] == 1
-    assert result.filtered_by_source["odaily"] == 1
-    assert assigned_batches == [[]]
-    assert repo.saved == []
-    assert repo.heartbeats[-1]["metadata"]["filtered_by_source"]["odaily"] == 1
+    assert result.filtered_by_source["odaily"] == 0
+    assert [item.source_item_id for item in assigned_batches[0]] == ["o1"]
+    assert [item.source_item_id for item in repo.saved] == ["o1"]
+    assert repo.heartbeats[-1]["metadata"]["filtered_by_source"]["odaily"] == 0
 
 
 def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:

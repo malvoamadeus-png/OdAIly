@@ -316,6 +316,8 @@ def normalize_exclude_term(value: str) -> str:
 
 
 def match_exclude_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
+    if item.source == "odaily":
+        return []
     haystack = normalize_exclude_term(f"{item.title}\n{item.content}")
     matches: list[str] = []
     for term in terms:
