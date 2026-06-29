@@ -636,6 +636,11 @@ class PostgresXProcessingRepository:
 
     def get_publisher_rule_config_snapshot(self) -> dict[str, Any] | None:
         with self._connect(autocommit=True) as conn:
+            exists = conn.execute(
+                "SELECT to_regclass('public.publisher_rule_config') AS reg"
+            ).fetchone()
+            if exists is None or exists.get("reg") is None:
+                return None
             row = conn.execute(
                 """
                 SELECT config_json
@@ -656,6 +661,12 @@ class PostgresXProcessingRepository:
         updated_by: str | None,
     ) -> None:
         with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT to_regclass('public.publisher_rule_config') AS reg"
+            ).fetchone()
+            if exists is None or exists.get("reg") is None:
+                conn.rollback()
+                return
             conn.execute(
                 """
                 INSERT INTO publisher_rule_config (

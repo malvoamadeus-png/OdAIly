@@ -402,7 +402,11 @@ class EditorPluginNewsGenService:
     def get_publisher_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         config = load_publisher_rule_config()
         if config.updated_at is None:
-            snapshot = self.x_repository.get_publisher_rule_config_snapshot()
+            try:
+                snapshot = self.x_repository.get_publisher_rule_config_snapshot()
+            except Exception as exc:
+                print(f"[odaily] publisher rules snapshot load skipped error={exc}")
+                snapshot = None
             if snapshot:
                 try:
                     config = PublisherRuleConfig.model_validate(snapshot)
@@ -418,11 +422,14 @@ class EditorPluginNewsGenService:
         config = PublisherRuleConfig.model_validate(raw_config)
         saved_config = save_publisher_rule_config(config, updated_by=actor.email)
         snapshot = publisher_rule_config_payload(saved_config)
-        self.x_repository.upsert_publisher_rule_config_snapshot(
-            config_json=snapshot["config"],
-            prompt_text=str(snapshot["prompt_text"]),
-            updated_by=actor.email,
-        )
+        try:
+            self.x_repository.upsert_publisher_rule_config_snapshot(
+                config_json=snapshot["config"],
+                prompt_text=str(snapshot["prompt_text"]),
+                updated_by=actor.email,
+            )
+        except Exception as exc:
+            print(f"[odaily] publisher rules snapshot save skipped error={exc}")
         return snapshot
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
