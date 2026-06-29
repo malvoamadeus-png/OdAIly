@@ -816,17 +816,6 @@ class XProcessingWorker:
         now_local = decided_at.astimezone(resolve_publisher_timezone(publisher_settings.timezone))
         context_output["decision_local_time"] = now_local.strftime("%Y-%m-%d %H:%M")
 
-        if not publisher_settings.enabled:
-            self._complete_manual_review_publish(
-                task=task,
-                pipeline=pipeline,
-                publisher_channel=publisher_channel,
-                reason_code="publisher_disabled",
-                output=context_output,
-                decided_at=decided_at,
-            )
-            return
-
         if publisher_channel is None:
             self._complete_manual_review_publish(
                 task=task,

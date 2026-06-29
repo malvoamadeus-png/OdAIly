@@ -1176,9 +1176,9 @@ def test_publish_keeps_ready_review_when_telegram_fails() -> None:
     repo = InMemoryXProcessingRepository()
     repo.publisher_settings = repo.publisher_settings.__class__(
         enabled=False,
-        timezone=repo.publisher_settings.timezone,
-        window_start_local=repo.publisher_settings.window_start_local,
-        window_end_local=repo.publisher_settings.window_end_local,
+        timezone="Asia/Shanghai",
+        window_start_local="00:00",
+        window_end_local="23:59",
     )
     repo.add_task(task(1, status="publisher_pending"))
     repo.pipelines[1] = PipelineRecord(
@@ -1188,13 +1188,14 @@ def test_publish_keeps_ready_review_when_telegram_fails() -> None:
         final_title="标题",
         final_content="正文",
     )
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=False, error="telegram failed"))
     worker = XProcessingWorker(
         stage="publish",
         repository=repo,
         settings=settings(),
-        ai_client=None,
+        ai_client=fake_ai,
         push_client=push,
         telegram_client=telegram,
     )
@@ -1204,7 +1205,7 @@ def test_publish_keeps_ready_review_when_telegram_fails() -> None:
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
     assert repo.pipelines[1].publisher_decision == "manual_review"
-    assert repo.pipelines[1].publisher_reason_code == "publisher_disabled"
+    assert repo.pipelines[1].publisher_reason_code == "rule_rejected"
     assert repo.pipelines[1].telegram_result["ok"] is False
     assert push.calls[0]["dry_run"] is False
     assert push.calls[0]["source_url"] == "https://x.com/a/status/1"
@@ -1213,8 +1214,52 @@ def test_publish_keeps_ready_review_when_telegram_fails() -> None:
     assert telegram.calls == ["X平台有新快讯-常规-标准模式：标题\nhttps://x.com/a/status/1"]
 
 
+def test_publish_regular_rules_ignore_legacy_disabled_flag() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.publisher_settings = repo.publisher_settings.__class__(
+        enabled=False,
+        timezone="Asia/Shanghai",
+        window_start_local="00:00",
+        window_end_local="23:59",
+    )
+    repo.add_task(task(1, status="publisher_pending"))
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="regular",
+        writer_feature_mode_enabled=False,
+        final_title="标题",
+        final_content="正文",
+    )
+    fake_ai = FakeAiClient(['{"decision":"pass"}'])
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=fake_ai,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "auto_published"
+    assert repo.pipelines[1].publisher_decision == "auto_publish"
+    assert repo.pipelines[1].publisher_reason_code == "rule_allowed"
+    assert push.calls[0]["is_publish"] is True
+    assert fake_ai.calls != []
+
+
 def test_publish_disabled_competitor_hides_source_url() -> None:
     repo = InMemoryXProcessingRepository()
+    repo.publisher_settings = repo.publisher_settings.__class__(
+        enabled=False,
+        timezone="Asia/Shanghai",
+        window_start_local="00:00",
+        window_end_local="23:59",
+    )
     repo.add_task(competitor_task(1, status="publisher_pending"))
     repo.pipelines[1] = PipelineRecord(
         task_id=1,
@@ -1223,13 +1268,14 @@ def test_publish_disabled_competitor_hides_source_url() -> None:
         final_title="标题",
         final_content="正文",
     )
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
         stage="publish",
         repository=repo,
         settings=settings(),
-        ai_client=None,
+        ai_client=fake_ai,
         push_client=push,
         telegram_client=telegram,
     )
@@ -1238,7 +1284,7 @@ def test_publish_disabled_competitor_hides_source_url() -> None:
 
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
-    assert repo.pipelines[1].publisher_reason_code == "channel_disabled"
+    assert repo.pipelines[1].publisher_reason_code == "rule_rejected"
     assert push.calls[0]["source_url"] is None
     assert push.calls[0]["is_publish"] is False
     assert telegram.calls == ["律动有新快讯-融资-标准模式：标题\nhttps://www.theblockbeats.info/flash/1"]
@@ -1290,7 +1336,7 @@ def test_publish_ai_source_uses_ai_source_notice_label_and_external_media_channe
         final_title="标题",
         final_content="正文",
     )
-    fake_ai = FakeAiClient(['{"category":"other","reason":"非自动发布分类"}'])
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -1325,7 +1371,7 @@ def test_publish_non_mainstream_auto_publishes_allowed_category() -> None:
         final_title="标题",
         final_content="正文",
     )
-    fake_ai = FakeAiClient(['{"category":"funding","reason":"明确融资新闻"}'])
+    fake_ai = FakeAiClient(['{"decision":"pass"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -1341,16 +1387,16 @@ def test_publish_non_mainstream_auto_publishes_allowed_category() -> None:
 
     assert result.processed == 1
     assert repo.tasks[1].status == "auto_published"
-    assert repo.pipelines[1].publisher_category == "funding"
+    assert repo.pipelines[1].publisher_category is None
     assert repo.pipelines[1].publisher_decision == "auto_publish"
-    assert repo.pipelines[1].publisher_reason_code == "category_allowed"
+    assert repo.pipelines[1].publisher_reason_code == "rule_allowed"
     assert push.calls[0]["source_url"] == "https://a16zcrypto.com/posts/article/token-launch/"
     assert push.calls[0]["is_publish"] is True
     assert push.calls[0]["is_push"] is False
     assert telegram.calls == ["a16z crypto Posts有新快讯-外媒-标准模式：标题\nhttps://a16zcrypto.com/posts/article/token-launch/"]
     assert fake_ai.calls[0]["model"] == "gpt-5.5"
     assert fake_ai.calls[0]["reasoning_effort"] == "low"
-    assert fake_ai.calls[0]["text_format"]["name"] == "publisher_category"
+    assert fake_ai.calls[0]["text_format"]["name"] == "publisher_decision"
 
 
 def test_publish_non_mainstream_routes_other_to_ready_review() -> None:
@@ -1369,7 +1415,7 @@ def test_publish_non_mainstream_routes_other_to_ready_review() -> None:
         final_title="标题",
         final_content="正文",
     )
-    fake_ai = FakeAiClient(['{"category":"other","reason":"不属于固定类目"}'])
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -1385,9 +1431,9 @@ def test_publish_non_mainstream_routes_other_to_ready_review() -> None:
 
     assert result.processed == 1
     assert repo.tasks[1].status == "ready_review"
-    assert repo.pipelines[1].publisher_category == "other"
+    assert repo.pipelines[1].publisher_category is None
     assert repo.pipelines[1].publisher_decision == "manual_review"
-    assert repo.pipelines[1].publisher_reason_code == "category_other"
+    assert repo.pipelines[1].publisher_reason_code == "rule_rejected"
     assert push.calls[0]["is_publish"] is False
 
 
@@ -1408,7 +1454,7 @@ def test_publish_outside_window_goes_ready_review_without_model_call() -> None:
         final_title="标题",
         final_content="正文",
     )
-    fake_ai = FakeAiClient(['{"category":"funding","reason":"不会走到这里"}'])
+    fake_ai = FakeAiClient(['{"decision":"pass"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -1472,7 +1518,7 @@ def test_publish_failure_records_publisher_failed_when_push_fails() -> None:
         final_title="标题",
         final_content="正文",
     )
-    fake_ai = FakeAiClient(['{"category":"funding","reason":"明确融资新闻"}'])
+    fake_ai = FakeAiClient(['{"decision":"pass"}'])
     push = FakePushClient(ok=False)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
@@ -1488,7 +1534,7 @@ def test_publish_failure_records_publisher_failed_when_push_fails() -> None:
 
     assert result.failed == 1
     assert repo.tasks[1].status == "publisher_failed"
-    assert repo.pipelines[1].publisher_category == "funding"
+    assert repo.pipelines[1].publisher_category is None
     assert repo.pipelines[1].publisher_decision == "failed"
     assert repo.pipelines[1].publisher_reason_code == "push_failed"
     assert telegram.calls == []
