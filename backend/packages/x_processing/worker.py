@@ -810,8 +810,6 @@ class XProcessingWorker:
             "source": task.source,
             "publisher_channel": publisher_channel,
             "timezone": publisher_settings.timezone,
-            "window_start_local": normalize_local_time_text(publisher_settings.window_start_local),
-            "window_end_local": normalize_local_time_text(publisher_settings.window_end_local),
         }
         now_local = decided_at.astimezone(resolve_publisher_timezone(publisher_settings.timezone))
         context_output["decision_local_time"] = now_local.strftime("%Y-%m-%d %H:%M")
@@ -866,21 +864,6 @@ class XProcessingWorker:
                 pipeline=pipeline,
                 publisher_channel=publisher_channel,
                 reason_code="publisher_no_enabled_allow_rules",
-                output=context_output,
-                decided_at=decided_at,
-            )
-            return
-
-        if not is_within_publish_window(
-            now_local=now_local,
-            window_start_local=publisher_settings.window_start_local,
-            window_end_local=publisher_settings.window_end_local,
-        ):
-            self._complete_manual_review_publish(
-                task=task,
-                pipeline=pipeline,
-                publisher_channel=publisher_channel,
-                reason_code="outside_publish_window",
                 output=context_output,
                 decided_at=decided_at,
             )

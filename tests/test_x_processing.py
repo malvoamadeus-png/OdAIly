@@ -1437,7 +1437,7 @@ def test_publish_non_mainstream_routes_other_to_ready_review() -> None:
     assert push.calls[0]["is_publish"] is False
 
 
-def test_publish_outside_window_goes_ready_review_without_model_call() -> None:
+def test_publish_rules_ignore_legacy_publish_window() -> None:
     repo = InMemoryXProcessingRepository()
     now_local = datetime.now(UTC).astimezone(ZoneInfo("Asia/Shanghai"))
     repo.publisher_settings = repo.publisher_settings.__class__(
@@ -1469,10 +1469,10 @@ def test_publish_outside_window_goes_ready_review_without_model_call() -> None:
     result = worker.run_once()
 
     assert result.processed == 1
-    assert repo.tasks[1].status == "ready_review"
-    assert repo.pipelines[1].publisher_reason_code == "outside_publish_window"
-    assert push.calls[0]["is_publish"] is False
-    assert fake_ai.calls == []
+    assert repo.tasks[1].status == "auto_published"
+    assert repo.pipelines[1].publisher_reason_code == "rule_allowed"
+    assert push.calls[0]["is_publish"] is True
+    assert fake_ai.calls != []
 
 
 def test_publish_falls_back_to_uncategorized_standard_mode_when_pipeline_metadata_missing() -> None:
@@ -1485,13 +1485,14 @@ def test_publish_falls_back_to_uncategorized_standard_mode_when_pipeline_metadat
     )
     repo.add_task(task(1, status="publisher_pending"))
     repo.pipelines[1] = PipelineRecord(task_id=1, final_title="标题", final_content="正文")
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
     push = FakePushClient(ok=True)
     telegram = FakeTelegramClient(TelegramResult(ok=True))
     worker = XProcessingWorker(
         stage="publish",
         repository=repo,
         settings=settings(),
-        ai_client=None,
+        ai_client=fake_ai,
         push_client=push,
         telegram_client=telegram,
     )
