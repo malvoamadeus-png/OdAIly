@@ -1024,14 +1024,10 @@ class XProcessingWorker:
         return remote_documents
 
     def _load_active_candidate_documents(self, *, exclude_task_id: int) -> list[SearchDocument]:
+        documents = self.repository.list_active_candidate_documents()
         cache = self._search_cache()
-        if cache is None:
-            documents = self.repository.list_active_candidate_documents()
-        else:
-            documents = cache.list_active_candidate_documents()
-            if not documents:
-                documents = self.repository.list_active_candidate_documents()
-                cache.upsert_documents(documents)
+        if cache is not None:
+            cache.upsert_documents(documents)
         return [document for document in documents if document.task_id != exclude_task_id]
 
     def _mirror_active_candidate(self, *, task: TaskRecord, candidate_id: int) -> None:

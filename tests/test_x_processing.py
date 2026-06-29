@@ -744,7 +744,7 @@ def test_searcher_uses_local_mirrored_odaily_references_after_warmup() -> None:
     assert repo.odaily_reads == 0
 
 
-def test_searcher_uses_local_mirrored_candidates_after_warmup() -> None:
+def test_searcher_refreshes_active_candidates_even_when_cache_has_candidates() -> None:
     repo = CountingRepository()
     primary = competitor_task(1, status="deduped")
     repo.add_task(primary)
@@ -777,7 +777,7 @@ def test_searcher_uses_local_mirrored_candidates_after_warmup() -> None:
 
     assert result.processed == 1
     assert repo.tasks[2].status == "duplicate"
-    assert repo.candidate_reads == 0
+    assert repo.candidate_reads == 1
 
 
 def test_searcher_ai_review_uses_judge_low_reasoning() -> None:
