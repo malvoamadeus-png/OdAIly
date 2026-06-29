@@ -488,6 +488,69 @@ textarea:focus {
   background: #ffffff;
 }
 
+.publisherToolbar,
+.publisherProfileHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #d9e2ea;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ffffff 0%, #f7fbfd 100%);
+}
+
+.publisherToolbar strong,
+.publisherToolbar span,
+.publisherProfileHeader h2,
+.publisherProfileHeader p {
+  display: block;
+  margin: 0;
+}
+
+.publisherToolbar span,
+.publisherProfileHeader p {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.publisherProfile {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #d8e1e8;
+  border-radius: 12px;
+  background: #f9fbfc;
+}
+
+.publisherProfile.disabled {
+  opacity: 0.62;
+  filter: grayscale(0.2);
+}
+
+.publisherProfileHeader h2 {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 18px;
+}
+
+.publisherProfileHeader h2 span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #edf1f5;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.publisherRuleColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .publisherHint {
   margin-top: 4px;
   color: #6b7280;
@@ -499,6 +562,65 @@ textarea:focus {
   display: grid;
   gap: 8px;
   margin-top: 12px;
+}
+
+.publisherRuleList {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.publisherRuleCard {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.publisherRuleTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.publisherRuleCard textarea {
+  resize: vertical;
+  min-height: 74px;
+}
+
+.publisherExamples {
+  display: grid;
+  gap: 8px;
+}
+
+.publisherExamplesHeader,
+.publisherExampleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.publisherExamplesHeader span {
+  color: #374151;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.publisherPromptPreview {
+  max-height: 320px;
+  overflow: auto;
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #111827;
+  color: #e5e7eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
 }
 
 .publisherRow,
@@ -536,7 +658,20 @@ textarea:focus {
 }
 
 .publisherToggle {
+  display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.publisherToggle.inline {
+  align-self: center;
+  padding-bottom: 8px;
+}
+
+.publisherToggle span {
+  color: #374151;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .publisherToggle small {
@@ -1206,6 +1341,15 @@ textarea:focus {
   .sourceRow,
   .promptLayout,
   .competitorLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .publisherToolbar,
+  .publisherProfileHeader,
+  .publisherRuleColumns,
+  .publisherRuleTop,
+  .publisherExamplesHeader,
+  .publisherExampleRow {
     grid-template-columns: 1fr;
   }
 

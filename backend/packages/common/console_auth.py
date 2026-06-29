@@ -102,3 +102,24 @@ class PostgresConsoleAuthRepository:
             )
             for row in rows
         ]
+
+    def get_admin(self, email: str) -> ConsoleAdminRecord | None:
+        normalized = normalize_console_admin_email(email)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT email, created_at, updated_at
+                    FROM console_admins
+                    WHERE email = %s
+                    """,
+                    (normalized,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return ConsoleAdminRecord(
+            email=str(row["email"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )

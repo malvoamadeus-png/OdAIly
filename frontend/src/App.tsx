@@ -32,11 +32,10 @@ import {
   getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
-  getPublisherSettings,
+  getPublisherRuleConfig,
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
-  listPublisherChannels,
   listRecentJin10Tasks,
   loadDashboard,
   loadWhaleWatchDashboard,
@@ -57,8 +56,7 @@ import {
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
   updateJin10Settings,
-  updatePublisherChannel,
-  updatePublisherSettings,
+  savePublisherRuleConfig,
   updatePromptTemplateFeatureMode,
   updateSettings,
   updateWhaleWatchAddress,
@@ -71,8 +69,10 @@ import {
   type Jin10Settings,
   type NonMainstreamSettings,
   type NonMainstreamSource,
-  type PublisherChannel,
-  type PublisherSettings,
+  type PublisherRule,
+  type PublisherRuleConfig,
+  type PublisherRuleProfile,
+  type PublisherRuleProfileKey,
   type Settings,
   type TaskItem,
   type WhaleWatchActivity,
@@ -107,14 +107,6 @@ const emptyNonMainstreamSettings: NonMainstreamSettings = {
   updated_at: null,
 };
 
-const emptyPublisherSettings: PublisherSettings = {
-  enabled: true,
-  timezone: 'Asia/Shanghai',
-  window_start_local: '00:01',
-  window_end_local: '07:30',
-  updated_at: null,
-};
-
 const emptyJin10Settings: Jin10Settings = {
   enabled: false,
   interval_seconds: 60,
@@ -127,13 +119,27 @@ const emptyJin10Settings: Jin10Settings = {
   updated_at: null,
 };
 
-const publisherCategoryItems = [
-  { key: 'policy_regulation', label: '政策法规', description: '命中后允许自动发布' },
-  { key: 'people_view', label: '人物观点', description: '命中后允许自动发布' },
-  { key: 'major_project_progress', label: '项目重大进展', description: '命中后允许自动发布' },
-  { key: 'funding', label: '融资', description: '命中后允许自动发布' },
-  { key: 'other', label: '其他', description: '只挂后台，不自动发布' },
-] as const;
+const emptyPublisherRuleConfig: PublisherRuleConfig = {
+  version: 1,
+  regular: {
+    key: 'regular',
+    label: '常规',
+    enabled: true,
+    note: '适用于 X、外媒、竞品、金十等非 AI 信源链路。',
+    allow_rules: [],
+    deny_rules: [],
+  },
+  ai_source: {
+    key: 'ai_source',
+    label: 'AI信源',
+    enabled: false,
+    note: '暂未启用。当前 AI 信源进入发布者时只挂后台，不自动放行。',
+    allow_rules: [],
+    deny_rules: [],
+  },
+  updated_at: null,
+  updated_by: null,
+};
 
 function fmtTime(value: string | null | undefined): string {
   if (!value) return '-';
@@ -186,6 +192,26 @@ const eventPageSize = 100;
 
 function visiblePromptTemplates(templates: PromptTemplate[]): PromptTemplate[] {
   return templates.filter((template) => template.template_key !== 'non_mainstream_media_writer');
+}
+
+function normalizePublisherRulesForSave(config: PublisherRuleConfig): PublisherRuleConfig {
+  const normalizeRule = (rule: PublisherRule) => ({
+    ...rule,
+    name: rule.name.trim(),
+    description: rule.description.trim(),
+    examples: rule.examples.map((example) => example.trim()).filter(Boolean),
+  });
+  const keepRule = (rule: PublisherRule) => rule.name.trim() || rule.description.trim() || rule.examples.some((example) => example.trim());
+  const normalizeProfile = (profile: PublisherRuleProfile): PublisherRuleProfile => ({
+    ...profile,
+    allow_rules: profile.allow_rules.filter(keepRule).map(normalizeRule),
+    deny_rules: profile.deny_rules.filter(keepRule).map(normalizeRule),
+  });
+  return {
+    ...config,
+    regular: normalizeProfile(config.regular),
+    ai_source: normalizeProfile(config.ai_source),
+  };
 }
 
 type ConsoleAppProps = {
@@ -414,11 +440,11 @@ export function App() {
 function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
-  const [publisherSettings, setPublisherSettings] = useState<PublisherSettings>(emptyPublisherSettings);
+  const [publisherRules, setPublisherRules] = useState<PublisherRuleConfig>(emptyPublisherRuleConfig);
+  const [publisherPromptPreview, setPublisherPromptPreview] = useState('');
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
-  const [publisherChannels, setPublisherChannels] = useState<PublisherChannel[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
@@ -499,9 +525,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     () => nonMainstreamSources.filter((source) => source.source_group === 'ai_source'),
     [nonMainstreamSources],
   );
-  const enabledPublisherChannelCount = useMemo(
-    () => publisherChannels.filter((channel) => channel.enabled).length,
-    [publisherChannels],
+  const enabledRegularRuleCount = useMemo(
+    () => publisherRules.regular.allow_rules.filter((rule) => rule.enabled).length + publisherRules.regular.deny_rules.filter((rule) => rule.enabled).length,
+    [publisherRules],
   );
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
@@ -543,9 +569,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadPublisherAll() {
     setError('');
-    const [nextSettings, nextChannels] = await Promise.all([getPublisherSettings(), listPublisherChannels()]);
-    setPublisherSettings(nextSettings);
-    setPublisherChannels(nextChannels);
+    const payload = await getPublisherRuleConfig();
+    setPublisherRules(payload.config);
+    setPublisherPromptPreview(payload.prompt_text);
     setLoadingPublisher(false);
   }
 
@@ -637,7 +663,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     const timer = window.setInterval(() => {
       loadAll().catch((err: Error) => setError(err.message));
       loadNonMainstreamAll().catch((err: Error) => setError(err.message));
-      loadPublisherAll().catch((err: Error) => setError(err.message));
       loadJin10All().catch((err: Error) => setError(err.message));
       loadWhaleWatchAll().catch((err: Error) => setError(err.message));
     }, 10000);
@@ -695,18 +720,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function savePublisherSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function savePublisherRules() {
     setSavingPublisherSettings(true);
     setError('');
-    const form = new FormData(event.currentTarget);
     try {
-      const updated = await updatePublisherSettings({
-        enabled: form.get('enabled') === 'on',
-        window_start_local: String(form.get('window_start_local') || publisherSettings.window_start_local),
-        window_end_local: String(form.get('window_end_local') || publisherSettings.window_end_local),
-      });
-      setPublisherSettings(updated);
+      const updated = await savePublisherRuleConfig(normalizePublisherRulesForSave(publisherRules));
+      setPublisherRules(updated.config);
+      setPublisherPromptPreview(updated.prompt_text);
       setMessage('发布者配置已保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -787,16 +807,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     try {
       await updateNonMainstreamSource(source.id, { enabled });
       await loadNonMainstreamAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function togglePublisherChannel(channel: PublisherChannel, enabled: boolean) {
-    setError('');
-    try {
-      await updatePublisherChannel(channel.channel_key, enabled);
-      await loadPublisherAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1122,7 +1132,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'ai_source'
         ? `${enabledAiSourceCount} 个启用站点 · 默认 300s`
       : view === 'publisher'
-        ? `${enabledPublisherChannelCount} 个启用渠道 · 北京时间 ${publisherSettings.window_start_local}-${publisherSettings.window_end_local}`
+        ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
         ? `${jin10Settings.enabled ? '已开启' : '已关闭'} · ${jin10Settings.interval_seconds}s`
       : view === 'whale'
@@ -1382,13 +1392,12 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'publisher' ? (
           <PublisherPanel
-            settings={publisherSettings}
-            channels={publisherChannels}
+            config={publisherRules}
+            promptPreview={publisherPromptPreview}
             loading={loadingPublisher}
             saving={savingPublisherSettings}
-            categories={publisherCategoryItems}
-            onSave={savePublisherSettings}
-            onToggleChannel={togglePublisherChannel}
+            onChange={setPublisherRules}
+            onSave={savePublisherRules}
           />
         ) : view === 'jin10' ? (
           <Jin10Panel
@@ -1987,92 +1996,286 @@ function NonMainstreamPanel({
 }
 
 function PublisherPanel({
-  settings,
-  channels,
+  config,
+  promptPreview,
   loading,
   saving,
-  categories,
+  onChange,
   onSave,
-  onToggleChannel,
 }: {
-  settings: PublisherSettings;
-  channels: PublisherChannel[];
+  config: PublisherRuleConfig;
+  promptPreview: string;
   loading: boolean;
   saving: boolean;
-  categories: ReadonlyArray<{ key: string; label: string; description: string }>;
-  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  onToggleChannel: (channel: PublisherChannel, enabled: boolean) => Promise<void>;
+  onChange: (config: PublisherRuleConfig) => void;
+  onSave: () => Promise<void>;
 }) {
+  function patchProfile(profileKey: PublisherRuleProfileKey, patch: Partial<PublisherRuleProfile>) {
+    onChange({ ...config, [profileKey]: { ...config[profileKey], ...patch } });
+  }
+
+  function patchRule(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules', ruleId: string, patch: Partial<PublisherRule>) {
+    const profile = config[profileKey];
+    patchProfile(profileKey, {
+      [kind]: profile[kind].map((rule) => (rule.id === ruleId ? { ...rule, ...patch } : rule)),
+    } as Partial<PublisherRuleProfile>);
+  }
+
+  function addRule(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules') {
+    const profile = config[profileKey];
+    const rule: PublisherRule = {
+      id: `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name: '',
+      description: '',
+      enabled: false,
+      examples: [],
+    };
+    patchProfile(profileKey, { [kind]: [...profile[kind], rule] } as Partial<PublisherRuleProfile>);
+  }
+
+  function removeRule(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules', ruleId: string) {
+    const profile = config[profileKey];
+    patchProfile(profileKey, { [kind]: profile[kind].filter((rule) => rule.id !== ruleId) } as Partial<PublisherRuleProfile>);
+  }
+
+  function updateExample(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number, value: string) {
+    patchRule(profileKey, kind, rule.id, {
+      examples: rule.examples.map((example, currentIndex) => (currentIndex === index ? value : example)),
+    });
+  }
+
+  function addExample(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules', rule: PublisherRule) {
+    patchRule(profileKey, kind, rule.id, { examples: [...rule.examples, ''] });
+  }
+
+  function removeExample(profileKey: PublisherRuleProfileKey, kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number) {
+    patchRule(profileKey, kind, rule.id, { examples: rule.examples.filter((_, currentIndex) => currentIndex !== index) });
+  }
+
   return (
     <section className="publisherLayout">
-      <form
-        key={`${settings.enabled}-${settings.window_start_local}-${settings.window_end_local}-${settings.updated_at ?? 'na'}`}
-        className="publisherSettingsForm"
-        onSubmit={onSave}
-      >
-        <label className="publisherToggle">
-          <span>发布者总开关</span>
-          <input name="enabled" type="checkbox" defaultChecked={settings.enabled} />
-          <small>关闭后，所有稿件都只调用一次挂后台，不自动发布。</small>
-        </label>
-        <label>
-          <span>时区</span>
-          <input className="readonlyInput" value="Asia/Shanghai" readOnly />
-        </label>
-        <label>
-          <span>开始时间</span>
-          <input name="window_start_local" type="time" defaultValue={settings.window_start_local} />
-        </label>
-        <label>
-          <span>结束时间</span>
-          <input name="window_end_local" type="time" defaultValue={settings.window_end_local} />
-        </label>
-        <button className="primaryButton" type="submit" disabled={saving}>
-          <Save size={17} /> 保存
+      <div className="publisherToolbar">
+        <div>
+          <strong>发布者规则</strong>
+          <span>
+            排除优先；未命中启用通过规则时默认挂后台。{config.updated_at ? `上次保存：${fmtTime(config.updated_at)}` : ''}
+          </span>
+        </div>
+        <button className="primaryButton" type="button" disabled={saving || loading} onClick={() => void onSave()}>
+          <Save size={17} /> 保存规则
         </button>
-      </form>
-
-      <div className="publisherSection">
-        <div className="sectionHeader">
-          <h2>自动发布渠道</h2>
-          <span>{loading ? '加载中' : `${channels.length} 个渠道`}</span>
-        </div>
-        <p className="publisherHint">第一版实验口径只建议开启“外媒”，其余渠道默认挂后台。</p>
-        <div className="publisherList">
-          {channels.map((channel) => (
-            <label className="publisherRow" key={channel.channel_key}>
-              <div>
-                <strong>{channel.display_name}</strong>
-                <span>{channel.channel_key}</span>
-              </div>
-              <input
-                type="checkbox"
-                checked={channel.enabled}
-                onChange={(event) => void onToggleChannel(channel, event.target.checked)}
-              />
-            </label>
-          ))}
-        </div>
       </div>
 
-      <div className="publisherSection">
-        <div className="sectionHeader">
-          <h2>固定分类</h2>
-          <span>只读</span>
+      <PublisherProfileEditor
+        profile={config.regular}
+        disabled={false}
+        onPatch={(patch) => patchProfile('regular', patch)}
+        onPatchRule={(kind, ruleId, patch) => patchRule('regular', kind, ruleId, patch)}
+        onAddRule={(kind) => addRule('regular', kind)}
+        onRemoveRule={(kind, ruleId) => removeRule('regular', kind, ruleId)}
+        onAddExample={(kind, rule) => addExample('regular', kind, rule)}
+        onUpdateExample={(kind, rule, index, value) => updateExample('regular', kind, rule, index, value)}
+        onRemoveExample={(kind, rule, index) => removeExample('regular', kind, rule, index)}
+      />
+
+      <PublisherProfileEditor
+        profile={config.ai_source}
+        disabled
+        badge="暂未启用"
+        onPatch={(patch) => patchProfile('ai_source', patch)}
+        onPatchRule={(kind, ruleId, patch) => patchRule('ai_source', kind, ruleId, patch)}
+        onAddRule={(kind) => addRule('ai_source', kind)}
+        onRemoveRule={(kind, ruleId) => removeRule('ai_source', kind, ruleId)}
+        onAddExample={(kind, rule) => addExample('ai_source', kind, rule)}
+        onUpdateExample={(kind, rule, index, value) => updateExample('ai_source', kind, rule, index, value)}
+        onRemoveExample={(kind, rule, index) => removeExample('ai_source', kind, rule, index)}
+      />
+
+      {promptPreview && (
+        <div className="publisherSection">
+          <div className="sectionHeader">
+            <h2>服务器拼接 Prompt 预览</h2>
+            <span>常规</span>
+          </div>
+          <pre className="publisherPromptPreview">{promptPreview}</pre>
         </div>
-        <div className="publisherCategoryList">
-          {categories.map((item) => (
-            <div className="publisherCategoryRow" key={item.key}>
-              <div>
-                <strong>{item.label}</strong>
-                <span>{item.key}</span>
+      )}
+    </section>
+  );
+}
+
+function PublisherProfileEditor({
+  profile,
+  disabled,
+  badge,
+  onPatch,
+  onPatchRule,
+  onAddRule,
+  onRemoveRule,
+  onAddExample,
+  onUpdateExample,
+  onRemoveExample,
+}: {
+  profile: PublisherRuleProfile;
+  disabled: boolean;
+  badge?: string;
+  onPatch: (patch: Partial<PublisherRuleProfile>) => void;
+  onPatchRule: (kind: 'allow_rules' | 'deny_rules', ruleId: string, patch: Partial<PublisherRule>) => void;
+  onAddRule: (kind: 'allow_rules' | 'deny_rules') => void;
+  onRemoveRule: (kind: 'allow_rules' | 'deny_rules', ruleId: string) => void;
+  onAddExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule) => void;
+  onUpdateExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number, value: string) => void;
+  onRemoveExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number) => void;
+}) {
+  return (
+    <div className={disabled ? 'publisherProfile disabled' : 'publisherProfile'}>
+      <div className="publisherProfileHeader">
+        <div>
+          <h2>
+            {profile.label}
+            {badge && <span>{badge}</span>}
+          </h2>
+          <p>{profile.note}</p>
+        </div>
+        <label className="publisherToggle">
+          <span>{profile.enabled ? '已启用' : '已停用'}</span>
+          <input type="checkbox" checked={profile.enabled} disabled={disabled} onChange={(event) => onPatch({ enabled: event.target.checked })} />
+        </label>
+      </div>
+
+      <div className="publisherRuleColumns">
+        <PublisherRuleGroup
+          title="通过规则"
+          hint="命中任意启用通过规则，且未命中排除规则时，允许自动发布。"
+          kind="allow_rules"
+          rules={profile.allow_rules}
+          disabled={disabled}
+          onPatchRule={onPatchRule}
+          onAddRule={onAddRule}
+          onRemoveRule={onRemoveRule}
+          onAddExample={onAddExample}
+          onUpdateExample={onUpdateExample}
+          onRemoveExample={onRemoveExample}
+        />
+        <PublisherRuleGroup
+          title="排除规则"
+          hint="排除优先。命中任意启用排除规则时直接挂后台。"
+          kind="deny_rules"
+          rules={profile.deny_rules}
+          disabled={disabled}
+          onPatchRule={onPatchRule}
+          onAddRule={onAddRule}
+          onRemoveRule={onRemoveRule}
+          onAddExample={onAddExample}
+          onUpdateExample={onUpdateExample}
+          onRemoveExample={onRemoveExample}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PublisherRuleGroup({
+  title,
+  hint,
+  kind,
+  rules,
+  disabled,
+  onPatchRule,
+  onAddRule,
+  onRemoveRule,
+  onAddExample,
+  onUpdateExample,
+  onRemoveExample,
+}: {
+  title: string;
+  hint: string;
+  kind: 'allow_rules' | 'deny_rules';
+  rules: PublisherRule[];
+  disabled: boolean;
+  onPatchRule: (kind: 'allow_rules' | 'deny_rules', ruleId: string, patch: Partial<PublisherRule>) => void;
+  onAddRule: (kind: 'allow_rules' | 'deny_rules') => void;
+  onRemoveRule: (kind: 'allow_rules' | 'deny_rules', ruleId: string) => void;
+  onAddExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule) => void;
+  onUpdateExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number, value: string) => void;
+  onRemoveExample: (kind: 'allow_rules' | 'deny_rules', rule: PublisherRule, index: number) => void;
+}) {
+  return (
+    <div className="publisherSection">
+        <div className="sectionHeader">
+          <h2>{title}</h2>
+          <button className="secondaryButton compact" type="button" disabled={disabled} onClick={() => onAddRule(kind)}>
+            <Plus size={15} /> 增加规则
+          </button>
+        </div>
+        <p className="publisherHint">{hint}</p>
+        <div className="publisherRuleList">
+          {rules.map((rule) => (
+            <div className="publisherRuleCard" key={rule.id}>
+              <div className="publisherRuleTop">
+                <label>
+                  <span>规则名</span>
+                  <input disabled={disabled} value={rule.name} onChange={(event) => onPatchRule(kind, rule.id, { name: event.target.value })} />
+                </label>
+                <label className="publisherToggle inline">
+                  <span>{rule.enabled ? '启用' : '停用'}</span>
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={rule.enabled}
+                    onChange={(event) => onPatchRule(kind, rule.id, { enabled: event.target.checked })}
+                  />
+                </label>
+                <button className="iconButton" type="button" disabled={disabled} onClick={() => onRemoveRule(kind, rule.id)}>
+                  <Trash2 size={16} />
+                </button>
               </div>
-              <small>{item.description}</small>
+              <label>
+                <span>规则说明</span>
+                <textarea
+                  disabled={disabled}
+                  rows={3}
+                  value={rule.description}
+                  onChange={(event) => onPatchRule(kind, rule.id, { description: event.target.value })}
+                />
+              </label>
+              <div className="publisherExamples">
+                <div className="publisherExamplesHeader">
+                  <span>案例列表</span>
+                  <button className="secondaryButton compact" type="button" disabled={disabled} onClick={() => onAddExample(kind, rule)}>
+                    <Plus size={14} /> 增加案例
+                  </button>
+                </div>
+                {(rule.examples.length > 0 ? rule.examples : ['']).map((example, index) => (
+                  <div className="publisherExampleRow" key={`${rule.id}-${index}`}>
+                    <input
+                      disabled={disabled}
+                      value={example}
+                      placeholder="例如：某项目完成 1000 万美元融资"
+                      onChange={(event) => {
+                        if (rule.examples.length === 0) {
+                          onPatchRule(kind, rule.id, { examples: [event.target.value] });
+                        } else {
+                          onUpdateExample(kind, rule, index, event.target.value);
+                        }
+                      }}
+                    />
+                    <button
+                      className="iconButton"
+                      type="button"
+                      disabled={disabled || rule.examples.length === 0}
+                      onClick={() => onRemoveExample(kind, rule, index)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
+          {rules.length === 0 && <p className="emptyHint">暂无规则。点击“增加规则”后，新规则默认停用。</p>}
         </div>
       </div>
-    </section>
   );
 }
 

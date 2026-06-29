@@ -30,6 +30,38 @@ export type PublisherChannel = {
   updated_at: string | null;
 };
 
+export type PublisherRule = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  examples: string[];
+};
+
+export type PublisherRuleProfileKey = 'regular' | 'ai_source';
+
+export type PublisherRuleProfile = {
+  key: PublisherRuleProfileKey;
+  label: string;
+  enabled: boolean;
+  note: string;
+  allow_rules: PublisherRule[];
+  deny_rules: PublisherRule[];
+};
+
+export type PublisherRuleConfig = {
+  version: number;
+  regular: PublisherRuleProfile;
+  ai_source: PublisherRuleProfile;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
+export type PublisherRuleConfigPayload = {
+  config: PublisherRuleConfig;
+  prompt_text: string;
+};
+
 export type Jin10Settings = {
   enabled: boolean;
   interval_seconds: number;
@@ -420,6 +452,29 @@ export async function getCurrentSession(): Promise<Session | null> {
   return data.session;
 }
 
+async function consoleApiPost<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+  const session = await getCurrentSession();
+  if (!session?.access_token) {
+    throw new Error('登录状态已失效，请重新登录');
+  }
+  const baseUrl = String(
+    import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'http://127.0.0.1:8765',
+  ).replace(/\/+$/, '');
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = (await response.json().catch(() => null)) as { ok?: boolean; data?: T; message?: string } | null;
+  if (!response.ok || !payload?.ok) {
+    throw new Error(payload?.message || `控制台服务请求失败：${response.status}`);
+  }
+  return payload.data as T;
+}
+
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
   const {
     data: { subscription },
@@ -741,6 +796,14 @@ export async function updatePublisherChannel(channelKey: PublisherChannelKey, en
     .single();
   raise(error);
   return assertData(data as PublisherChannel | null, '保存发布渠道失败');
+}
+
+export async function getPublisherRuleConfig(): Promise<PublisherRuleConfigPayload> {
+  return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/get');
+}
+
+export async function savePublisherRuleConfig(config: PublisherRuleConfig): Promise<PublisherRuleConfigPayload> {
+  return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/save', { config });
 }
 
 function normalizeJin10Settings(row: Jin10Settings): Jin10Settings {

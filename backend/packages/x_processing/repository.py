@@ -175,6 +175,14 @@ class XProcessingRepository(Protocol):
     ) -> None: ...
     def get_publisher_settings(self) -> PublisherSettingsRecord: ...
     def list_publisher_channels(self) -> list[PublisherChannelRecord]: ...
+    def get_publisher_rule_config_snapshot(self) -> dict[str, Any] | None: ...
+    def upsert_publisher_rule_config_snapshot(
+        self,
+        *,
+        config_json: dict[str, Any],
+        prompt_text: str,
+        updated_by: str | None,
+    ) -> None: ...
     def complete_publish(
         self,
         task_id: int,
@@ -625,6 +633,52 @@ class PostgresXProcessingRepository:
             ).fetchall()
             conn.commit()
         return [_row_to_publisher_channel(row) for row in rows]
+
+    def get_publisher_rule_config_snapshot(self) -> dict[str, Any] | None:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute(
+                """
+                SELECT config_json
+                FROM publisher_rule_config
+                WHERE singleton_key = 'global'
+                """,
+            ).fetchone()
+        if row is None:
+            return None
+        payload = row.get("config_json") or {}
+        return payload if isinstance(payload, dict) else None
+
+    def upsert_publisher_rule_config_snapshot(
+        self,
+        *,
+        config_json: dict[str, Any],
+        prompt_text: str,
+        updated_by: str | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO publisher_rule_config (
+                    singleton_key,
+                    config_json,
+                    prompt_text,
+                    updated_by,
+                    updated_at
+                )
+                VALUES ('global', %(config_json)s, %(prompt_text)s, %(updated_by)s, now())
+                ON CONFLICT (singleton_key) DO UPDATE
+                SET config_json = EXCLUDED.config_json,
+                    prompt_text = EXCLUDED.prompt_text,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                {
+                    "config_json": self._Jsonb(config_json),
+                    "prompt_text": prompt_text,
+                    "updated_by": updated_by,
+                },
+            )
+            conn.commit()
 
     def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
         with self._connect() as conn:
@@ -1426,6 +1480,19 @@ ON CONFLICT (channel_key) DO UPDATE
 SET display_name = EXCLUDED.display_name,
     updated_at = now();
 
+CREATE TABLE IF NOT EXISTS publisher_rule_config (
+    singleton_key text PRIMARY KEY,
+    config_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    prompt_text text NOT NULL DEFAULT '',
+    updated_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE publisher_rule_config ADD COLUMN IF NOT EXISTS config_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE publisher_rule_config ADD COLUMN IF NOT EXISTS prompt_text text NOT NULL DEFAULT '';
+ALTER TABLE publisher_rule_config ADD COLUMN IF NOT EXISTS updated_by text;
+
 CREATE TABLE IF NOT EXISTS x_task_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     news_type text CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'ai_source', 'mainstream_media')),
@@ -1573,6 +1640,7 @@ ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE prompt_template_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE publisher_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE publisher_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE publisher_rule_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
 ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
@@ -1582,6 +1650,7 @@ DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_anon_all ON prompt_template_versions;
 DROP POLICY IF EXISTS publisher_settings_anon_all ON publisher_settings;
 DROP POLICY IF EXISTS publisher_channels_anon_all ON publisher_channels;
+DROP POLICY IF EXISTS publisher_rule_config_anon_all ON publisher_rule_config;
 DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
@@ -1590,6 +1659,7 @@ DROP POLICY IF EXISTS prompt_templates_console_admin_all ON prompt_templates;
 DROP POLICY IF EXISTS prompt_template_versions_console_admin_all ON prompt_template_versions;
 DROP POLICY IF EXISTS publisher_settings_console_admin_all ON publisher_settings;
 DROP POLICY IF EXISTS publisher_channels_console_admin_all ON publisher_channels;
+DROP POLICY IF EXISTS publisher_rule_config_console_admin_all ON publisher_rule_config;
 DROP POLICY IF EXISTS x_task_pipeline_console_admin_select ON x_task_pipeline;
 DROP POLICY IF EXISTS odaily_reference_items_console_admin_select ON odaily_reference_items;
 DROP POLICY IF EXISTS search_event_candidates_console_admin_select ON search_event_candidates;
@@ -1598,7 +1668,7 @@ DROP POLICY IF EXISTS search_event_sources_console_admin_select ON search_event_
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, publisher_settings, publisher_channels, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
+        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, publisher_settings, publisher_channels, publisher_rule_config, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE prompt_template_versions_id_seq FROM anon;
     END IF;
 
@@ -1608,6 +1678,7 @@ BEGIN
         GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON publisher_settings TO authenticated;
         GRANT SELECT, INSERT, UPDATE ON publisher_channels TO authenticated;
+        GRANT SELECT, INSERT, UPDATE ON publisher_rule_config TO authenticated;
         GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO authenticated;
         GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO authenticated;
 
@@ -1618,6 +1689,8 @@ BEGIN
         EXECUTE 'CREATE POLICY publisher_settings_console_admin_all ON publisher_settings
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY publisher_channels_console_admin_all ON publisher_channels
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
+        EXECUTE 'CREATE POLICY publisher_rule_config_console_admin_all ON publisher_rule_config
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY x_task_pipeline_console_admin_select ON x_task_pipeline
             FOR SELECT TO authenticated USING (is_console_admin())';

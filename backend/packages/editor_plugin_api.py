@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
 from packages.common.config import XProcessingSettings, load_x_processing_settings
+from packages.common.console_auth import PostgresConsoleAuthRepository
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
     PostgresEditorPluginAuthRepository,
@@ -24,6 +25,13 @@ from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord
+from packages.x_processing.publisher_config import (
+    PublisherRuleConfig,
+    default_publisher_rule_config,
+    load_publisher_rule_config,
+    publisher_rule_config_payload,
+    save_publisher_rule_config,
+)
 from packages.x_processing.repository import PostgresXProcessingRepository
 from packages.x_processing.searcher import (
     AI_REVIEW_SCHEMA,
@@ -290,6 +298,7 @@ class EditorPluginNewsGenService:
         ensure_runtime_dirs(self.paths)
 
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
+        self.console_auth_repository = PostgresConsoleAuthRepository(database_url)
         self.x_capture_repository = PostgresXCaptureRepository(database_url)
         self.x_repository = PostgresXProcessingRepository(database_url)
 
@@ -331,6 +340,43 @@ class EditorPluginNewsGenService:
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         return self.authenticator.authenticate(authorization_header)
 
+    def authenticate_console_admin(self, authorization_header: str | None) -> AuthenticatedEditor:
+        token = parse_bearer_token(authorization_header)
+        try:
+            response = requests.get(
+                f"{str(self.api_settings.supabase_url).rstrip('/')}/auth/v1/user",
+                headers={
+                    "apikey": self.api_settings.supabase_key,
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=self.api_settings.auth_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
+
+        if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
+            raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
+        if not response.ok:
+            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试")
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
+        email = str(payload.get("email") or "").strip().lower()
+        if not email:
+            raise EditorPluginUnauthorizedError("当前登录态缺少邮箱信息")
+        record = self.console_auth_repository.get_admin(email)
+        if record is None:
+            raise EditorPluginForbiddenError("当前账号未加入控制台管理员白名单")
+        metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
+        display_name = str(metadata.get("display_name") or "").strip() or str(metadata.get("name") or "").strip()
+        return AuthenticatedEditor(
+            user_id=str(payload.get("id") or "").strip() or None,
+            email=record.email,
+            display_name=display_name or record.email.split("@", 1)[0],
+        )
+
     def login(self, request: EditorPluginLoginRequestModel) -> dict[str, Any]:
         token, expires_at, actor = self.authenticator.login(request)
         return {
@@ -352,6 +398,32 @@ class EditorPluginNewsGenService:
             "display_name": actor.display_name or actor.email.split("@", 1)[0],
             "enabled": True,
         }
+
+    def get_publisher_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        config = load_publisher_rule_config()
+        if config.updated_at is None:
+            snapshot = self.x_repository.get_publisher_rule_config_snapshot()
+            if snapshot:
+                try:
+                    config = PublisherRuleConfig.model_validate(snapshot)
+                    save_publisher_rule_config(config, updated_by=config.updated_by)
+                except ValidationError:
+                    config = default_publisher_rule_config()
+        return publisher_rule_config_payload(config)
+
+    def save_publisher_rules(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_config = payload.get("config")
+        if not isinstance(raw_config, dict):
+            raise EditorPluginApiError("config 必须是 JSON 对象")
+        config = PublisherRuleConfig.model_validate(raw_config)
+        saved_config = save_publisher_rule_config(config, updated_by=actor.email)
+        snapshot = publisher_rule_config_payload(saved_config)
+        self.x_repository.upsert_publisher_rule_config_snapshot(
+            config_json=snapshot["config"],
+            prompt_text=str(snapshot["prompt_text"]),
+            updated_by=actor.email,
+        )
+        return snapshot
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
         rows = self.auth_repository.call_plugin_function(
@@ -727,6 +799,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     AUTH_PATHS = {"/plugin/auth/login", "/plugin/auth/logout", "/plugin/auth/profile"}
     FEED_PATHS = {"/plugin/feed/items", "/plugin/feed/state", "/plugin/feed/mark-seen", "/plugin/feed/feedback"}
     NEWS_GEN_PATHS = {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}
+    CONSOLE_PATHS = {"/console/publisher-rules/get", "/console/publisher-rules/save"}
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -734,7 +807,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS:
+        if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS | self.CONSOLE_PATHS:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
             return
 
@@ -743,6 +816,17 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 request = EditorPluginLoginRequestModel.model_validate(self._read_json())
                 data = self.server.service.login(request)
                 self._send_json(HTTPStatus.OK, {"ok": True, "data": data})
+                return
+
+            if self.path in self.CONSOLE_PATHS:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                if self.path == "/console/publisher-rules/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_publisher_rules(actor)})
+                    return
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.save_publisher_rules(actor, self._read_json())},
+                )
                 return
 
             actor = self.server.service.authenticate(self.headers.get("Authorization"))

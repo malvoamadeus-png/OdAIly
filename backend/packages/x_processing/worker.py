@@ -32,7 +32,6 @@ from .models import (
     MAINSTREAM_MEDIA_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
-    PUBLISHER_CATEGORIES,
     PROMPT_KEY_BY_NEWS_TYPE,
     DiscardType,
     JudgeRoute,
@@ -44,6 +43,15 @@ from .models import (
     STAGE_SPECS,
     TaskRecord,
     render_prompt_content,
+)
+from .publisher_config import (
+    PUBLISHER_DECISION_SCHEMA,
+    build_publisher_rule_prompt,
+    enabled_rules,
+    get_profile,
+    load_publisher_rule_config,
+    parse_publisher_decision,
+    profile_key_for_task,
 )
 from .repository import (
     PROMPT_NOTIFY_CHANNEL,
@@ -215,12 +223,6 @@ AI_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的判断者-AI。你的任务是判
 
 
 DETERMINISTIC_JUDGE_MODEL = "deterministic-precheck"
-PUBLISHER_CATEGORY_ALLOWLIST = {
-    "policy_regulation",
-    "people_view",
-    "major_project_progress",
-    "funding",
-}
 PUBLISHER_CHANNEL_BY_SOURCE = {
     NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
     AI_SOURCE: "external_media",
@@ -229,29 +231,6 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     "panews": "competitor",
     "jinse": "competitor",
     JIN10_SOURCE: "jin10",
-}
-PUBLISHER_JSON_SCHEMA = {
-    "type": "json_schema",
-    "name": "publisher_category",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "category": {
-                "type": "string",
-                "enum": [
-                    "policy_regulation",
-                    "people_view",
-                    "major_project_progress",
-                    "funding",
-                    "other",
-                ],
-            },
-            "reason": {"type": "string"},
-        },
-        "required": ["category", "reason"],
-    },
-    "strict": True,
 }
 
 
@@ -292,27 +271,6 @@ JIN10_JUDGE_JSON_SCHEMA = {
     },
     "strict": True,
 }
-PUBLISHER_PROMPT_TEMPLATE = """你是 Odaily 的自动发布分类器。
-
-请只根据这条稿件内容判断，它是否属于以下固定分类之一：
-- policy_regulation：政策法规
-- people_view：人物观点
-- major_project_progress：项目重大进展
-- funding：融资
-- other：不属于以上四类，或信息不够明确
-
-要求：
-1. 只输出 JSON，不要输出解释性正文。
-2. 如果不确定，必须输出 other。
-3. reason 只写一句简短中文原因，便于后台记录。
-
-原始来源：{source}
-原始标题：{source_title}
-原始正文：{source_content}
-
-定稿标题：{final_title}
-定稿正文：{final_content}
-"""
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -848,7 +806,6 @@ class XProcessingWorker:
             raise HandledStageError(error)
 
         publisher_settings = self.repository.get_publisher_settings()
-        publisher_channels = {item.channel_key: item for item in self.repository.list_publisher_channels()}
         context_output = {
             "source": task.source,
             "publisher_channel": publisher_channel,
@@ -881,14 +838,46 @@ class XProcessingWorker:
             )
             return
 
-        channel_config = publisher_channels.get(publisher_channel)
-        if channel_config is None or not channel_config.enabled:
+        publisher_config = load_publisher_rule_config()
+        profile_key = profile_key_for_task(task)
+        context_output["publisher_profile"] = profile_key
+
+        if profile_key is None:
             self._complete_manual_review_publish(
                 task=task,
                 pipeline=pipeline,
                 publisher_channel=publisher_channel,
-                reason_code="channel_disabled",
-                output={**context_output, "channel_enabled": False},
+                reason_code="source_not_eligible",
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
+        profile = get_profile(publisher_config, profile_key)
+        allow_rules = enabled_rules(profile, "allow")
+        deny_rules = enabled_rules(profile, "deny")
+        context_output["publisher_profile_enabled"] = profile.enabled
+        context_output["enabled_allow_rules"] = [rule.name for rule in allow_rules]
+        context_output["enabled_deny_rules"] = [rule.name for rule in deny_rules]
+
+        if not profile.enabled:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code="publisher_profile_disabled",
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
+        if not allow_rules:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code="publisher_no_enabled_allow_rules",
+                output=context_output,
                 decided_at=decided_at,
             )
             return
@@ -911,11 +900,11 @@ class XProcessingWorker:
         try:
             raw_output = self._get_ai_client().generate_text(
                 model=self.settings.publisher_model,
-                prompt=build_publisher_prompt(task=task, pipeline=pipeline),
-                text_format=PUBLISHER_JSON_SCHEMA,
+                prompt=build_publisher_rule_prompt(task=task, pipeline=pipeline, profile=profile),
+                text_format=PUBLISHER_DECISION_SCHEMA,
                 reasoning_effort=self.settings.publisher_reasoning_effort,
             )
-            category, reason = parse_publisher_output(raw_output)
+            publisher_decision = parse_publisher_decision(raw_output)
         except Exception as exc:
             error = str(exc)
             self.repository.complete_publish(
@@ -935,7 +924,7 @@ class XProcessingWorker:
             self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
             raise HandledStageError(error) from exc
 
-        should_publish = category in PUBLISHER_CATEGORY_ALLOWLIST
+        should_publish = publisher_decision == "pass"
         push_result = self.push_client.push(
             title=pipeline.final_title,
             content=pipeline.final_content,
@@ -947,8 +936,7 @@ class XProcessingWorker:
         push_payload = push_result.model_dump(mode="json")
         publisher_output = {
             **context_output,
-            "category": category,
-            "reason": reason,
+            "decision": publisher_decision,
             "raw_output": raw_output,
         }
         if not push_result.ok:
@@ -957,7 +945,7 @@ class XProcessingWorker:
                 task.id,
                 publisher_channel=publisher_channel,
                 publisher_model=self.settings.publisher_model,
-                publisher_category=category,
+                publisher_category=None,
                 publisher_decision="failed",
                 publisher_reason_code="push_failed",
                 publisher_output=publisher_output,
@@ -975,9 +963,9 @@ class XProcessingWorker:
             task.id,
             publisher_channel=publisher_channel,
             publisher_model=self.settings.publisher_model,
-            publisher_category=category,
+            publisher_category=None,
             publisher_decision="auto_publish" if should_publish else "manual_review",
-            publisher_reason_code="category_allowed" if should_publish else "category_other",
+            publisher_reason_code="rule_allowed" if should_publish else "rule_rejected",
             publisher_output=publisher_output,
             push_result=push_payload,
             telegram_result=telegram_result.model_dump(mode="json"),
@@ -1209,6 +1197,8 @@ def utc_since_hours(hours: int) -> datetime:
 def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
     if is_ai_judge_task(task):
         return None
+    if is_competitor_task(task) and competitor_is_non_crypto_ai(task):
+        return "non_crypto_ai"
     return None
 
 
@@ -1224,6 +1214,62 @@ def competitor_judge_fallback_route(task: TaskRecord) -> JudgeRoute:
     ):
         return "onchain"
     return "regular"
+
+
+COMPETITOR_NON_CRYPTO_AI_PATTERNS = [
+    r"\bAnthropic\b",
+    r"\bOpenAI\b",
+    r"\bChatGPT\b",
+    r"\bClaude\b",
+    r"\bGemini\b",
+    r"\bMidjourney\b",
+    r"\bCursor\b",
+    r"\bPerplexity\b",
+    r"\bLlama\b",
+    r"\bGLM\b",
+    r"\bDeepSeek\b",
+    r"\bMistral\b",
+    r"半导体",
+    r"芯片",
+    r"算力",
+    r"光刻",
+    r"人形机器人",
+    r"机器人",
+    r"数据中心",
+    r"大模型",
+    r"模型训练",
+    r"AI\s*芯片",
+    r"开源AI",
+]
+
+COMPETITOR_CRYPTO_CONTEXT_PATTERNS = [
+    r"加密",
+    r"Crypto",
+    r"区块链",
+    r"稳定币",
+    r"比特币",
+    r"以太坊",
+    r"\bBTC\b",
+    r"\bETH\b",
+    r"\bSOL\b",
+    r"\bBNB\b",
+    r"代币",
+    r"链上",
+    r"钱包",
+    r"交易所",
+    r"DeFi",
+    r"Web3",
+]
+
+
+def competitor_is_non_crypto_ai(task: TaskRecord) -> bool:
+    text = f"{task.title or ''}\n{task.content}"
+    has_ai_signal = any(re.search(pattern, text, re.IGNORECASE) for pattern in COMPETITOR_NON_CRYPTO_AI_PATTERNS)
+    if not has_ai_signal:
+        return False
+    sanitized_text = re.sub(r"未提及加密业务|与加密无关|非加密业务|不涉及加密业务", "", text, flags=re.IGNORECASE)
+    has_crypto_context = any(re.search(pattern, sanitized_text, re.IGNORECASE) for pattern in COMPETITOR_CRYPTO_CONTEXT_PATTERNS)
+    return not has_crypto_context
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
@@ -1289,17 +1335,6 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
         "请严格输出一行标题、空一行、正文。不要输出解释。"
     )
 
-
-def build_publisher_prompt(*, task: TaskRecord, pipeline: PipelineRecord) -> str:
-    return PUBLISHER_PROMPT_TEMPLATE.format(
-        source=task.source,
-        source_title=task.title or "",
-        source_content=task.content,
-        final_title=pipeline.final_title or "",
-        final_content=pipeline.final_content or "",
-    )
-
-
 def build_jin10_judge_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
     return (
         f"{render_prompt_content(prompt)}\n\n"
@@ -1309,28 +1344,6 @@ def build_jin10_judge_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion)
         f"发布时间：{task.published_at.isoformat() if task.published_at else ''}\n\n"
         "请只输出 JSON。"
     )
-
-
-def parse_publisher_output(value: str) -> tuple[str, str]:
-    text = value.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    payload = json.loads(text)
-    if not isinstance(payload, dict):
-        raise ValueError("publisher output must be a JSON object")
-    category = str(payload.get("category") or "").strip()
-    reason = str(payload.get("reason") or "").strip()
-    if category not in PUBLISHER_CATEGORIES:
-        raise ValueError(f"invalid publisher category: {category}")
-    if not reason:
-        raise ValueError("publisher reason is required")
-    return category, reason
-
 
 def parse_jin10_judge_output(value: str) -> tuple[str, str, str]:
     text = value.strip()
