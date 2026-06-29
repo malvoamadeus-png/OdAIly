@@ -458,7 +458,7 @@ async function consoleApiPost<T>(path: string, body: Record<string, unknown> = {
     throw new Error('登录状态已失效，请重新登录');
   }
   const baseUrl = String(
-    import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'http://127.0.0.1:8765',
+    import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://47.76.243.147.sslip.io',
   ).replace(/\/+$/, '');
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',

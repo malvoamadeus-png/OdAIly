@@ -24,6 +24,7 @@ from packages.common.config import (  # noqa: E402
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths  # noqa: E402
 from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
+from packages.x_processing.publisher_config import load_publisher_rule_config, save_publisher_rule_config  # noqa: E402
 
 
 SCHEDULED_TASK_IDS = ("gate-tradfi", "us-market")
@@ -175,6 +176,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-clear-pending",
         action="store_true",
         help="Do not delete existing X pending tasks during initialization.",
+    )
+
+    subparsers.add_parser(
+        "publisher-init-config",
+        help="Create the default local publisher rule config if it does not exist.",
     )
 
     x_process_worker = subparsers.add_parser("x-process-worker", help="Run an X processing stage worker.")
@@ -683,6 +689,12 @@ def x_process_init_db_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def publisher_init_config_command(args: argparse.Namespace) -> int:
+    saved = save_publisher_rule_config(load_publisher_rule_config(), updated_by="system")
+    print(f"[odaily] publisher config initialized updated_at={saved.updated_at}")
+    return 0
+
+
 def x_process_worker_command(args: argparse.Namespace) -> int:
     from packages.x_capture.repository import PostgresXCaptureRepository
     from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
@@ -1157,6 +1169,8 @@ def main() -> int:
             return jin10_monitor_worker_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
+        if args.command == "publisher-init-config":
+            return publisher_init_config_command(args)
         if args.command == "x-process-worker":
             return x_process_worker_command(args)
         if args.command == "competitor-init-db":
