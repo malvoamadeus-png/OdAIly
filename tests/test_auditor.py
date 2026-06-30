@@ -135,11 +135,12 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "提出 / 转出 / 转入 / 提取 / 存入" in prompt
     assert "交易开放时间：" in prompt
     assert "不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错" in prompt
+    assert "不要根据外部背景知识、历史事件印象、常识时间线去猜测日期或年份是否写错" in prompt
     assert "issue.evidence" in prompt
 
 
-def test_auditor_prompt_version_is_v7() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v7"
+def test_auditor_prompt_version_is_v8() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v8"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -574,6 +575,34 @@ def test_parse_auditor_output_keeps_fact_correction_with_same_text_evidence() ->
     assert parsed.has_issue is True
     assert len(parsed.issues) == 1
     assert parsed.issues[0].evidence == "项目总投资为 52 亿美元"
+
+
+def test_parse_auditor_output_ignores_year_correction_without_same_text_date_evidence() -> None:
+    current = task(content="Odaily星球日报讯 币安慈善将捐赠300万美元支持委内瑞拉地震受灾地区用户，面向 2026 年 6 月 26 日前登记的受灾用户开放申请。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "2026 年 6 月 26 日前",
+                        "suggested": "2025 年 6 月 26 日前",
+                        "reason": "正文中日期年份与上下文明显不一致，疑似存在年份误写。",
+                        "evidence": "委内瑞拉地震受灾地区用户",
+                    }
+                ],
+                "summary": "正文年份可能写错。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
 
 
 def test_auditor_telegram_includes_issue_evidence() -> None:

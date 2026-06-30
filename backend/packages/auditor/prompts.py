@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v7"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v8"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
@@ -71,6 +71,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
 - 不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错；如果想指出这类问题，必须能在同一条标题或正文中引用另一处直接构成矛盾或校验关系的依据片段。
+- 不要根据外部背景知识、历史事件印象、常识时间线去猜测日期或年份是否写错；只有同一条标题或正文内部出现可直接引用的日期矛盾或明确时间关系冲突时，才允许提示。
 
 报警标准：
 - 只有明确错误或高置信异常才设置 has_issue=true。
@@ -80,6 +81,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - issue.suggested 只给最小必要改法，不整段重写。
 - issue.reason 必须直接说明错因，不能只说“疑似有误”。
 - issue.evidence 仅在涉及数字、金额、日期、比例、数量级等数据类指正时填写；必须引用同一条标题或正文中真实存在、且能支持该指正的另一处片段。其他问题填空字符串。
+- 如果 issue.suggested 改动了日期或年份，issue.evidence 必须包含同一条标题或正文中的另一处完整日期，或能直接证明时间关系冲突的原文片段；做不到时必须输出 has_issue=false。
 - 不输出推理过程。
 
 【标题】
@@ -342,6 +344,8 @@ def _is_unsupported_fact_correction_issue(
         return True
     if evidence not in (source_text or ""):
         return True
+    if _changes_date_like_value(original=original, suggested=suggested) and not _has_date_like_evidence(evidence):
+        return True
     return False
 
 
@@ -390,6 +394,26 @@ def _extract_fact_tokens(value: str) -> tuple[str, ...]:
     return tuple(
         re.findall(
             r"\d+(?:\.\d+)?(?:[%％]|万亿|亿|万|千|百|美元|美金|韩元|人民币|元|枚|股|年|月|日|天|倍|x)?",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _changes_date_like_value(*, original: str, suggested: str) -> bool:
+    return _extract_date_like_tokens(_normalize_for_fact_check(original)) != _extract_date_like_tokens(
+        _normalize_for_fact_check(suggested)
+    )
+
+
+def _has_date_like_evidence(value: str) -> bool:
+    return bool(_extract_date_like_tokens(_normalize_for_fact_check(value)))
+
+
+def _extract_date_like_tokens(value: str) -> tuple[str, ...]:
+    return tuple(
+        re.findall(
+            r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月|\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}|\d{4}/\d{1,2}/\d{1,2}",
             value,
             flags=re.IGNORECASE,
         )
