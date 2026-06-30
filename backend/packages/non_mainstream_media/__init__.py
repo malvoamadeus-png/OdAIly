@@ -14,6 +14,7 @@ from .repository import (
     PostgresNonMainstreamMediaRepository,
 )
 from .worker import NonMainstreamMediaWorker
+from .telegram_discovery import TelegramDiscoveryWorker
 
 __all__ = [
     "DiscoveredPage",
@@ -27,5 +28,6 @@ __all__ = [
     "PostgresNonMainstreamMediaRepository",
     "SiteDefinition",
     "SourceRunStats",
+    "TelegramDiscoveryWorker",
     "get_site_registry",
 ]

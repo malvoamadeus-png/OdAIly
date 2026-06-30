@@ -2289,6 +2289,8 @@ function NonMainstreamSourceRow({
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
 }) {
   const effectiveInterval = source.interval_seconds ?? settings.global_interval_seconds;
+  const discoveryLabel =
+    source.discovery_mode === 'telegram_primary_direct_fallback' ? 'Telegram 优先 · 直抓兜底' : '站点直抓';
 
   return (
     <article className={source.enabled ? 'sourceRow' : 'sourceRow disabled'}>
@@ -2301,7 +2303,7 @@ function NonMainstreamSourceRow({
       </div>
       <div className="sourceMeta">
         <strong>{source.capture_method === 'html_request' ? 'HTML 直抓' : '浏览器模拟'}</strong>
-        <span>{source.seeded_at ? '已 seed' : '待 seed'} · {effectiveInterval}s</span>
+        <span>{source.seeded_at ? '已 seed' : '待 seed'} · {effectiveInterval}s · {discoveryLabel}</span>
       </div>
       <a className="sourceLink" href={source.homepage_url} target="_blank" rel="noreferrer">
         {source.homepage_url}

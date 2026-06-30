@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from packages.non_mainstream_media.fetcher import (
     clean_body_text,
@@ -39,13 +40,17 @@ from packages.non_mainstream_media.fetcher import (
     parse_tether_article,
 )
 from packages.non_mainstream_media.models import (
+    DISCOVERY_MODE_DIRECT,
+    DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     SOURCE_GROUP_AI_SOURCE,
     DiscoveredPage,
     ParsedArticle,
     SiteDefinition,
 )
 from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
+from packages.non_mainstream_media.telegram_discovery import TelegramDiscoveryWorker, extract_candidate_url
 from packages.non_mainstream_media.worker import NonMainstreamMediaWorker
+from packages.common.config import TelegramDiscoverySettings
 
 
 def test_discover_a16z_pages_filters_taxonomy_and_keeps_content_pages() -> None:
@@ -121,6 +126,16 @@ def test_registry_assigns_new_external_media_pipeline_modes() -> None:
     assert registry["decrypt"].pipeline_mode == "write_flow"
     assert registry["tether_news"].pipeline_mode == "write_flow"
     assert registry["the_block"].pipeline_mode == "alert_only"
+
+
+def test_registry_assigns_discovery_modes_for_telegram_primary_sites() -> None:
+    registry = get_site_registry()
+
+    assert registry["coindesk"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
+    assert registry["cointelegraph"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
+    assert registry["decrypt"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
+    assert registry["the_block"].discovery_mode == DISCOVERY_MODE_DIRECT
+    assert registry["fortune_crypto"].discovery_mode == DISCOVERY_MODE_DIRECT
 
 
 def test_discover_coindesk_pages_reads_rss_titles() -> None:
@@ -923,6 +938,202 @@ def test_ctee_semiconductor_registered_as_ai_source_with_five_minute_interval() 
     assert site.pipeline_mode == "write_flow"
     assert site.interval_seconds == 300
     assert site.list_url == "https://www.ctee.com.tw/industry/semi"
+
+
+def build_telegram_settings() -> TelegramDiscoverySettings:
+    return TelegramDiscoverySettings(
+        api_id=1,
+        api_hash="hash",
+        session_path="telegram-discovery.session",
+        channel="https://t.me/PhoenixNewsEN",
+        proxy="none",
+        poll_interval_seconds=30,
+        retry_delay_seconds=120,
+        retry_max_attempts=3,
+        timeout_seconds=20.0,
+        connection_retries=3,
+    )
+
+
+def build_telegram_worker(
+    repository: InMemoryNonMainstreamMediaRepository,
+    *,
+    fetch_article_fn,
+    clock=None,
+) -> TelegramDiscoveryWorker:
+    repository.sync_sources(list(get_site_registry().values()))
+    return TelegramDiscoveryWorker(
+        repository=repository,
+        settings=build_telegram_settings(),
+        fetch_article_fn=fetch_article_fn,
+        pipeline_client=None,
+        clock=clock,
+    )
+
+
+def test_extract_candidate_url_from_plain_text_message() -> None:
+    message = SimpleNamespace(
+        message=(
+            "CoinDesk: Bitcoin rallies again "
+            "https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again"
+        ),
+        entities=[],
+        media=None,
+    )
+
+    assert (
+        extract_candidate_url(message, "coindesk")
+        == "https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again"
+    )
+
+
+def test_extract_candidate_url_from_hidden_entity_link() -> None:
+    entity = type("MessageEntityTextUrl", (), {"url": "https://decrypt.co/123/test"})()
+    message = SimpleNamespace(
+        message="Decrypt: hidden link",
+        entities=[entity],
+        media=None,
+    )
+
+    assert extract_candidate_url(message, "decrypt") == "https://decrypt.co/123/test"
+
+
+def test_telegram_worker_success_marks_seen_and_saves_task() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    article = ParsedArticle(
+        source_item_id="https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again/",
+        canonical_url="https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again/",
+        title="Bitcoin rallies again",
+        content="Body text",
+        published_at=datetime(2026, 6, 30, 7, 0, tzinfo=UTC),
+        author_names=["Author"],
+    )
+
+    def fake_fetch_article(site, page, **_kwargs):
+        assert site.site_key == "coindesk"
+        assert page.detail_url == "https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again"
+        return article
+
+    worker = build_telegram_worker(repository, fetch_article_fn=fake_fetch_article)
+    source = next(source for source in repository.list_sources() if source.site_key == "coindesk")
+    message = SimpleNamespace(
+        id=1001,
+        message=(
+            "CoinDesk: Bitcoin rallies again "
+            "https://www.coindesk.com/markets/2026/06/30/bitcoin-rallies-again"
+        ),
+        entities=[],
+        media=None,
+    )
+
+    event = worker.handle_message(message, sources={"coindesk": source})
+
+    assert event["status"] == "success"
+    assert len(repository.tasks) == 1
+    assert repository.tasks[0]["source_item_id"] == article.canonical_url
+    assert ("coindesk", article.canonical_url) in repository.seen
+
+
+def test_telegram_worker_failure_does_not_mark_seen() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+
+    def fake_fetch_article(_site, _page, **_kwargs):
+        raise RuntimeError("parse failed irrecoverably")
+
+    worker = build_telegram_worker(repository, fetch_article_fn=fake_fetch_article)
+    source = next(source for source in repository.list_sources() if source.site_key == "coindesk")
+    message = SimpleNamespace(
+        id=1002,
+        message=(
+            "CoinDesk: bad message "
+            "https://www.coindesk.com/markets/2026/06/30/bad-message"
+        ),
+        entities=[],
+        media=None,
+    )
+
+    event = worker.handle_message(message, sources={"coindesk": source})
+
+    assert event["status"] == "failed"
+    assert repository.tasks == []
+    assert repository.seen == {}
+
+
+def test_telegram_worker_404_retries_and_only_saves_once() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    clock_state = {"now": 0.0}
+    attempts = {"count": 0}
+    article = ParsedArticle(
+        source_item_id="https://cointelegraph.com/news/retry-story/",
+        canonical_url="https://cointelegraph.com/news/retry-story/",
+        title="Retry story",
+        content="Recovered body",
+        published_at=datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+    )
+
+    def fake_fetch_article(_site, _page, **_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError(
+                "request failed url=https://cointelegraph.com/news/retry-story: 404 Client Error: Not Found"
+            )
+        return article
+
+    worker = build_telegram_worker(
+        repository,
+        fetch_article_fn=fake_fetch_article,
+        clock=lambda: clock_state["now"],
+    )
+    source = next(source for source in repository.list_sources() if source.site_key == "cointelegraph")
+    message = SimpleNamespace(
+        id=1003,
+        message="Cointelegraph: retry story https://cointelegraph.com/news/retry-story",
+        entities=[],
+        media=None,
+    )
+
+    first = worker.handle_message(message, sources={"cointelegraph": source})
+    assert first["status"] == "retry_scheduled"
+    assert repository.tasks == []
+    assert repository.seen == {}
+
+    clock_state["now"] = 119.0
+    assert worker.process_retry_tasks() == []
+
+    clock_state["now"] = 120.0
+    retry_events = worker.process_retry_tasks()
+
+    assert retry_events == [
+        {
+            "status": "retry_success",
+            "site_key": "cointelegraph",
+            "url": "https://cointelegraph.com/news/retry-story",
+            "message_id": 1003,
+            "retry_attempt": 1,
+        }
+    ]
+    assert attempts["count"] == 2
+    assert len(repository.tasks) == 1
+    assert repository.tasks[0]["source_item_id"] == article.canonical_url
+    assert ("cointelegraph", article.canonical_url) in repository.seen
+    assert worker.process_retry_tasks() == []
+
+
+def test_telegram_worker_skips_non_target_message() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+
+    def fake_fetch_article(_site, _page, **_kwargs):
+        raise AssertionError("should not fetch")
+
+    worker = build_telegram_worker(repository, fetch_article_fn=fake_fetch_article)
+    message = SimpleNamespace(
+        id=1004,
+        message="BINANCE: Update on leverage tiers",
+        entities=[],
+        media=None,
+    )
+
+    assert worker.handle_message(message)["status"] == "skip"
 
 
 def test_discover_etnews_pages_reads_section_article_ids() -> None:
@@ -1943,6 +2154,7 @@ def test_worker_seeds_first_run_then_creates_task_for_new_url(monkeypatch) -> No
         "capture_method": "html_request",
         "pipeline_mode": "write_flow",
         "source_group": "external_media",
+        "discovery_mode": "direct",
         "source_label": "外媒",
         "content_format": "article",
         "author_names": ["Alice"],
@@ -2017,6 +2229,7 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "capture_method": "html_request",
         "pipeline_mode": "alert_only",
         "source_group": "external_media",
+        "discovery_mode": "direct",
         "source_label": "外媒",
         "excerpt": "Fresh alert item",
         "published_at_raw": None,

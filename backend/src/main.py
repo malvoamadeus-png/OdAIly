@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from packages.common.config import (  # noqa: E402
     load_gate_settings,
     load_pipeline_supervisor_settings,
     load_settings,
+    load_telegram_discovery_settings,
     load_whale_watch_hyperliquid_settings,
     load_whale_watch_settings,
     load_writer3_settings,
@@ -137,6 +139,12 @@ def parse_args() -> argparse.Namespace:
     )
     non_mainstream_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     non_mainstream_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
+    telegram_discovery_worker = subparsers.add_parser(
+        "telegram-discovery-worker",
+        help="Run the Telegram-first non-mainstream media discovery worker.",
+    )
+    telegram_discovery_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     external_alert_init = subparsers.add_parser(
         "external-media-alert-init-db",
@@ -581,6 +589,20 @@ def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
         print(f"[odaily] non-mainstream media once completed. sources={len(stats)}")
         return 0 if all(item.status == "success" for item in stats) else 1
     worker.run_forever()
+    return 0
+
+
+def telegram_discovery_worker_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import LocalPipelineClient
+    from packages.non_mainstream_media import PostgresNonMainstreamMediaRepository, TelegramDiscoveryWorker
+
+    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    worker = TelegramDiscoveryWorker(
+        repository=repository,
+        settings=load_telegram_discovery_settings(),
+        pipeline_client=LocalPipelineClient(),
+    )
+    asyncio.run(worker.run_forever())
     return 0
 
 
@@ -1157,6 +1179,8 @@ def main() -> int:
             return non_mainstream_media_init_db_command(args)
         if args.command == "non-mainstream-media-worker":
             return non_mainstream_media_worker_command(args)
+        if args.command == "telegram-discovery-worker":
+            return telegram_discovery_worker_command(args)
         if args.command == "external-media-alert-init-db":
             return external_media_alert_init_db_command(args)
         if args.command == "external-media-alert-worker":

@@ -9,6 +9,7 @@ CaptureMethod = Literal["html_request", "browser_render"]
 CaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty", "unsupported_method"]
 PipelineMode = Literal["write_flow", "alert_only"]
 SourceGroup = Literal["external_media", "ai_source"]
+DiscoveryMode = Literal["direct", "telegram_primary_direct_fallback"]
 
 
 SOURCE_GROUP_EXTERNAL_MEDIA = "external_media"
@@ -17,6 +18,8 @@ TASK_SOURCE_EXTERNAL_MEDIA = "non_mainstream_media"
 TASK_SOURCE_EXTERNAL_MEDIA_ALERT = "external_media_alert"
 TASK_SOURCE_AI_SOURCE = "ai_source"
 TASK_SOURCE_AI_SOURCE_ALERT = "ai_source_alert"
+DISCOVERY_MODE_DIRECT: DiscoveryMode = "direct"
+DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK: DiscoveryMode = "telegram_primary_direct_fallback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,7 @@ class NonMainstreamMediaSource:
     capture_method: CaptureMethod
     pipeline_mode: PipelineMode = "write_flow"
     source_group: SourceGroup = SOURCE_GROUP_EXTERNAL_MEDIA
+    discovery_mode: DiscoveryMode = DISCOVERY_MODE_DIRECT
     interval_seconds: int | None = None
     enabled: bool = True
     seeded_at: datetime | None = None
@@ -54,6 +58,7 @@ class SiteDefinition:
     capture_method: CaptureMethod
     pipeline_mode: PipelineMode
     source_group: SourceGroup = SOURCE_GROUP_EXTERNAL_MEDIA
+    discovery_mode: DiscoveryMode = DISCOVERY_MODE_DIRECT
     interval_seconds: int | None = None
 
 

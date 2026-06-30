@@ -8,6 +8,7 @@ from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MO
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
 
 from .models import (
+    DISCOVERY_MODE_DIRECT,
     SOURCE_GROUP_AI_SOURCE,
     SOURCE_GROUP_EXTERNAL_MEDIA,
     TASK_SOURCE_AI_SOURCE,
@@ -85,6 +86,7 @@ def _row_to_source(row: dict[str, Any]) -> NonMainstreamMediaSource:
         capture_method=str(row["capture_method"]),
         pipeline_mode=str(row.get("pipeline_mode") or "write_flow"),
         source_group=str(row.get("source_group") or SOURCE_GROUP_EXTERNAL_MEDIA),
+        discovery_mode=str(row.get("discovery_mode") or DISCOVERY_MODE_DIRECT),
         interval_seconds=row.get("interval_seconds"),
         enabled=bool(row["enabled"]),
         seeded_at=row.get("seeded_at"),
@@ -118,15 +120,16 @@ class PostgresNonMainstreamMediaRepository:
                     """
                     INSERT INTO non_mainstream_media_sources (
                         site_key, display_name, homepage_url, capture_method,
-                        pipeline_mode, source_group, interval_seconds, enabled
+                        pipeline_mode, source_group, discovery_mode, interval_seconds, enabled
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, true)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true)
                     ON CONFLICT (site_key) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         homepage_url = EXCLUDED.homepage_url,
                         capture_method = EXCLUDED.capture_method,
                         pipeline_mode = EXCLUDED.pipeline_mode,
                         source_group = EXCLUDED.source_group,
+                        discovery_mode = EXCLUDED.discovery_mode,
                         interval_seconds = EXCLUDED.interval_seconds,
                         updated_at = now()
                     WHERE non_mainstream_media_sources.display_name IS DISTINCT FROM EXCLUDED.display_name
@@ -134,6 +137,7 @@ class PostgresNonMainstreamMediaRepository:
                        OR non_mainstream_media_sources.capture_method IS DISTINCT FROM EXCLUDED.capture_method
                        OR non_mainstream_media_sources.pipeline_mode IS DISTINCT FROM EXCLUDED.pipeline_mode
                        OR non_mainstream_media_sources.source_group IS DISTINCT FROM EXCLUDED.source_group
+                       OR non_mainstream_media_sources.discovery_mode IS DISTINCT FROM EXCLUDED.discovery_mode
                        OR non_mainstream_media_sources.interval_seconds IS DISTINCT FROM EXCLUDED.interval_seconds
                     """,
                     (
@@ -143,6 +147,7 @@ class PostgresNonMainstreamMediaRepository:
                         site.capture_method,
                         site.pipeline_mode,
                         site.source_group,
+                        site.discovery_mode,
                         site.interval_seconds,
                     ),
                 )
@@ -294,6 +299,7 @@ class PostgresNonMainstreamMediaRepository:
             "capture_method": source.capture_method,
             "pipeline_mode": source.pipeline_mode,
             "source_group": source.source_group,
+            "discovery_mode": source.discovery_mode,
             "source_label": source_label,
             "content_format": article.content_format,
             "author_names": article.author_names,
@@ -348,6 +354,7 @@ class PostgresNonMainstreamMediaRepository:
             "capture_method": source.capture_method,
             "pipeline_mode": source.pipeline_mode,
             "source_group": source.source_group,
+            "discovery_mode": source.discovery_mode,
             "source_label": source_label,
             "excerpt": page.excerpt,
             "published_at_raw": page.published_at_raw,
@@ -482,6 +489,7 @@ class InMemoryNonMainstreamMediaRepository:
                     capture_method=site.capture_method,
                     pipeline_mode=site.pipeline_mode,
                     source_group=site.source_group,
+                    discovery_mode=site.discovery_mode,
                     interval_seconds=site.interval_seconds,
                 )
                 self.sources[self._source_id] = source
@@ -495,6 +503,7 @@ class InMemoryNonMainstreamMediaRepository:
                     "capture_method": site.capture_method,
                     "pipeline_mode": site.pipeline_mode,
                     "source_group": site.source_group,
+                    "discovery_mode": site.discovery_mode,
                     "interval_seconds": site.interval_seconds,
                     "updated_at": utc_now(),
                 }
@@ -586,6 +595,7 @@ class InMemoryNonMainstreamMediaRepository:
                     "capture_method": source.capture_method,
                     "pipeline_mode": source.pipeline_mode,
                     "source_group": source.source_group,
+                    "discovery_mode": source.discovery_mode,
                     "source_label": source_label,
                     "content_format": article.content_format,
                     "author_names": article.author_names,
@@ -624,6 +634,7 @@ class InMemoryNonMainstreamMediaRepository:
                     "capture_method": source.capture_method,
                     "pipeline_mode": source.pipeline_mode,
                     "source_group": source.source_group,
+                    "discovery_mode": source.discovery_mode,
                     "source_label": source_label,
                     "excerpt": page.excerpt,
                     "published_at_raw": page.published_at_raw,
@@ -712,6 +723,7 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     capture_method text NOT NULL CHECK (capture_method IN ('html_request', 'browser_render')),
     pipeline_mode text NOT NULL DEFAULT 'write_flow',
     source_group text NOT NULL DEFAULT 'external_media',
+    discovery_mode text NOT NULL DEFAULT 'direct',
     interval_seconds integer,
     enabled boolean NOT NULL DEFAULT true,
     seeded_at timestamptz,
@@ -727,6 +739,9 @@ ADD COLUMN IF NOT EXISTS pipeline_mode text NOT NULL DEFAULT 'write_flow';
 
 ALTER TABLE non_mainstream_media_sources
 ADD COLUMN IF NOT EXISTS source_group text NOT NULL DEFAULT 'external_media';
+
+ALTER TABLE non_mainstream_media_sources
+ADD COLUMN IF NOT EXISTS discovery_mode text NOT NULL DEFAULT 'direct';
 
 ALTER TABLE non_mainstream_media_sources
 ADD COLUMN IF NOT EXISTS interval_seconds integer;
@@ -750,6 +765,12 @@ ALTER TABLE non_mainstream_media_sources
 ALTER TABLE non_mainstream_media_sources
     ADD CONSTRAINT non_mainstream_media_sources_source_group_check
     CHECK (source_group IN ('external_media', 'ai_source'));
+
+ALTER TABLE non_mainstream_media_sources
+    DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_discovery_mode_check;
+ALTER TABLE non_mainstream_media_sources
+    ADD CONSTRAINT non_mainstream_media_sources_discovery_mode_check
+    CHECK (discovery_mode IN ('direct', 'telegram_primary_direct_fallback'));
 
 ALTER TABLE non_mainstream_media_sources
     DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_interval_seconds_check;
@@ -793,7 +814,7 @@ FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 DROP TRIGGER IF EXISTS trg_non_mainstream_media_sources_notify ON non_mainstream_media_sources;
 CREATE TRIGGER trg_non_mainstream_media_sources_notify
-AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, source_group, interval_seconds, enabled ON non_mainstream_media_sources
+AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, source_group, discovery_mode, interval_seconds, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
 ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;

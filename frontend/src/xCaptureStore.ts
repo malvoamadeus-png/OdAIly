@@ -111,6 +111,7 @@ export type NonMainstreamSource = {
   capture_method: 'html_request' | 'browser_render';
   pipeline_mode: 'write_flow' | 'alert_only';
   source_group: 'external_media' | 'ai_source';
+  discovery_mode: 'direct' | 'telegram_primary_direct_fallback';
   interval_seconds: number | null;
   enabled: boolean;
   seeded_at: string | null;
@@ -924,6 +925,7 @@ export async function listNonMainstreamSources(): Promise<NonMainstreamSource[]>
         'capture_method',
         'pipeline_mode',
         'source_group',
+        'discovery_mode',
         'interval_seconds',
         'enabled',
         'seeded_at',
@@ -1012,6 +1014,7 @@ export async function updateNonMainstreamSource(
         'capture_method',
         'pipeline_mode',
         'source_group',
+        'discovery_mode',
         'interval_seconds',
         'enabled',
         'seeded_at',

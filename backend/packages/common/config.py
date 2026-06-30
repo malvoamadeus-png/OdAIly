@@ -75,6 +75,39 @@ class RetrySettings(BaseModel):
     backoff_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
 
 
+class TelegramDiscoverySettings(BaseModel):
+    api_id: int
+    api_hash: str
+    session_path: str
+    channel: str = "https://t.me/PhoenixNewsEN"
+    proxy: str = "auto"
+    poll_interval_seconds: int = Field(default=30, ge=5, le=300)
+    retry_delay_seconds: int = Field(default=120, ge=10, le=3600)
+    retry_max_attempts: int = Field(default=3, ge=1, le=10)
+    timeout_seconds: float = Field(default=20.0, gt=0.0, le=60.0)
+    connection_retries: int = Field(default=3, ge=1, le=10)
+
+
+def load_telegram_discovery_settings() -> TelegramDiscoverySettings:
+    load_dotenv()
+    payload = {
+        "api_id": os.getenv("TELEGRAM_DISCOVERY_API_ID"),
+        "api_hash": os.getenv("TELEGRAM_DISCOVERY_API_HASH"),
+        "session_path": os.getenv("TELEGRAM_DISCOVERY_SESSION_PATH"),
+        "channel": os.getenv("TELEGRAM_DISCOVERY_CHANNEL") or "https://t.me/PhoenixNewsEN",
+        "proxy": os.getenv("TELEGRAM_DISCOVERY_PROXY") or "auto",
+        "poll_interval_seconds": int(os.getenv("TELEGRAM_DISCOVERY_POLL_INTERVAL_SECONDS") or 30),
+        "retry_delay_seconds": int(os.getenv("TELEGRAM_DISCOVERY_RETRY_DELAY_SECONDS") or 120),
+        "retry_max_attempts": int(os.getenv("TELEGRAM_DISCOVERY_RETRY_MAX_ATTEMPTS") or 3),
+        "timeout_seconds": float(os.getenv("TELEGRAM_DISCOVERY_TIMEOUT_SECONDS") or 20.0),
+        "connection_retries": int(os.getenv("TELEGRAM_DISCOVERY_CONNECTION_RETRIES") or 3),
+    }
+    try:
+        return TelegramDiscoverySettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Telegram discovery settings: {exc}") from exc
+
+
 class XCaptureWorkerSettings(BaseModel):
     attempt_retention_days: int = Field(default=7, ge=1, le=3650)
     processing_freshness_window_seconds: int = Field(

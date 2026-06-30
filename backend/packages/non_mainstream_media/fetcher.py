@@ -13,7 +13,13 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from .models import DiscoveredPage, ParsedArticle, SOURCE_GROUP_AI_SOURCE, SiteDefinition
+from .models import (
+    DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
+    DiscoveredPage,
+    ParsedArticle,
+    SOURCE_GROUP_AI_SOURCE,
+    SiteDefinition,
+)
 
 
 REQUEST_HEADERS = {
@@ -115,6 +121,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         list_url=COINDESK_FEED_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
+        discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     ),
     "cointelegraph": SiteDefinition(
         site_key="cointelegraph",
@@ -123,6 +130,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         list_url=COINTELEGRAPH_GOOGLE_NEWS_SITEMAP_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
+        discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     ),
     "decrypt": SiteDefinition(
         site_key="decrypt",
@@ -131,6 +139,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         list_url=DECRYPT_FEED_URL,
         capture_method="html_request",
         pipeline_mode="write_flow",
+        discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     ),
     "forbes_digital_assets": SiteDefinition(
         site_key="forbes_digital_assets",
