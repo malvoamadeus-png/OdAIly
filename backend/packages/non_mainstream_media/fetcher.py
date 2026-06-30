@@ -272,6 +272,7 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         list_url=THE_BLOCK_OFFICIAL_RSS_URL,
         capture_method="html_request",
         pipeline_mode="alert_only",
+        discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     ),
 }
 

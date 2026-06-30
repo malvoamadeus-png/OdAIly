@@ -134,7 +134,7 @@ def test_registry_assigns_discovery_modes_for_telegram_primary_sites() -> None:
     assert registry["coindesk"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
     assert registry["cointelegraph"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
     assert registry["decrypt"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
-    assert registry["the_block"].discovery_mode == DISCOVERY_MODE_DIRECT
+    assert registry["the_block"].discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
     assert registry["fortune_crypto"].discovery_mode == DISCOVERY_MODE_DIRECT
 
 
@@ -1134,6 +1134,33 @@ def test_telegram_worker_skips_non_target_message() -> None:
     )
 
     assert worker.handle_message(message)["status"] == "skip"
+
+
+def test_telegram_worker_the_block_alert_only_saves_title_task() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+
+    def fake_fetch_article(_site, _page, **_kwargs):
+        raise AssertionError("The Block Telegram alert flow should not fetch article body")
+
+    worker = build_telegram_worker(repository, fetch_article_fn=fake_fetch_article)
+    source = next(source for source in repository.list_sources() if source.site_key == "the_block")
+    message = SimpleNamespace(
+        id=1005,
+        message="The Block: ETF issuer files new application https://www.theblock.co/post/402447/etf-issuer-files-new-application",
+        entities=[],
+        media=None,
+    )
+
+    event = worker.handle_message(message, sources={"the_block": source})
+
+    assert event["status"] == "success"
+    assert len(repository.tasks) == 1
+    task = repository.tasks[0]
+    assert task["source"] == "external_media_alert"
+    assert task["source_item_id"] == "https://www.theblock.co/post/402447/etf-issuer-files-new-application"
+    assert task["source_url"] == "https://www.theblock.co/post/402447/etf-issuer-files-new-application"
+    assert task["metadata"]["site_key"] == "the_block"
+    assert ("the_block", "https://www.theblock.co/post/402447/etf-issuer-files-new-application") in repository.seen
 
 
 def test_discover_etnews_pages_reads_section_article_ids() -> None:

@@ -27,7 +27,7 @@ from .models import (
     ParsedArticle,
     SiteDefinition,
 )
-from .repository import NonMainstreamMediaRepository, write_flow_task_source
+from .repository import NonMainstreamMediaRepository, alert_only_task_source, write_flow_task_source
 
 
 PROXY_TYPES = {
@@ -50,6 +50,10 @@ TARGET_SITES = {
     "decrypt": {
         "prefixes": ["decrypt:", "[decrypt]"],
         "domains": ["decrypt.co", "www.decrypt.co"],
+    },
+    "the_block": {
+        "prefixes": ["the block:", "[the block]", "theblock:", "[theblock]"],
+        "domains": ["theblock.co", "www.theblock.co"],
     },
 }
 
@@ -314,8 +318,7 @@ class TelegramDiscoveryWorker:
         return {
             source.site_key: source
             for source in sources
-            if source.pipeline_mode == "write_flow"
-            and source.discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
+            if source.discovery_mode == DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK
             and source.site_key in TARGET_SITES
             and source.site_key in self.site_registry
         }
@@ -359,12 +362,25 @@ class TelegramDiscoveryWorker:
     def _submit_pipeline_job(self, *, task_id: int, source: str, source_item_id: str) -> None:
         if self.pipeline_client is None:
             return
+        job_type = "alert_only" if source in {"external_media_alert", "ai_source_alert"} else "write_flow"
         self.pipeline_client.submit_job(
-            job_type="write_flow",
+            job_type=job_type,
             task_id=task_id,
             source=source,
             source_item_id=source_item_id,
         )
+
+    def _save_alert_page(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> None:
+        task_id = self.repository.save_alert_task(source, page)
+        if task_id is None:
+            self.repository.mark_seen(source, page.source_item_id, seeded=False)
+            return
+        self._submit_pipeline_job(
+            task_id=task_id,
+            source=alert_only_task_source(source),
+            source_item_id=page.source_item_id,
+        )
+        self.repository.mark_seen(source, page.source_item_id, seeded=False)
 
     def _save_article(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> None:
         task_id = self.repository.save_task(source, article)
@@ -380,6 +396,13 @@ class TelegramDiscoveryWorker:
 
     def _attempt_fetch(self, *, source: NonMainstreamMediaSource, site_key: str, url: str) -> tuple[bool, str | None]:
         site = self.site_registry[site_key]
+        if source.pipeline_mode == "alert_only":
+            try:
+                self._save_alert_page(source, self._build_page(url))
+                self._clear_retry(site_key, url)
+                return True, None
+            except Exception as exc:
+                return False, str(exc)
         try:
             article = self.fetch_article_fn(
                 site,
