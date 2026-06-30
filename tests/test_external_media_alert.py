@@ -13,7 +13,7 @@ from packages.external_media_alert import (
 from packages.external_media_alert.fetcher import get_site_registry, parse_feed_items
 from packages.external_media_alert.models import ExternalMediaSourceDefinition, MediaNewsflashItem
 from packages.external_media_alert.repository import SCHEMA_SQL as EXTERNAL_MEDIA_ALERT_SCHEMA_SQL
-from packages.external_media_alert.worker import ExternalMediaAlertWorker, parse_domain_route
+from packages.external_media_alert.worker import ExternalMediaAlertWorker, build_alert_notice, parse_domain_route
 from packages.common.config import ExternalMediaAlertSettings, RetrySettings, load_external_media_alert_settings
 from packages.x_processing.searcher import SearchDocument
 from packages.x_processing.telegram import TelegramResult
@@ -165,6 +165,16 @@ def test_external_media_alert_worker_skips_notify_listener_when_disabled(capsys)
 
     assert thread is None
     assert "notify listener disabled" in capsys.readouterr().out
+
+
+def test_build_alert_notice_avoids_duplicate_url_when_title_is_url() -> None:
+    notice = build_alert_notice(
+        site_display_name="The Block",
+        title="https://www.theblock.co/post/406731/new-zcash-nonprofit-sovright-unveils-zec-wallet-recovery-tool",
+        source_url="https://www.theblock.co/post/406731/new-zcash-nonprofit-sovright-unveils-zec-wallet-recovery-tool",
+    )
+
+    assert notice.count("https://www.theblock.co/post/406731/new-zcash-nonprofit-sovright-unveils-zec-wallet-recovery-tool") == 1
 
 
 def test_the_block_uses_official_rss_feed() -> None:

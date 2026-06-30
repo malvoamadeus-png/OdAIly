@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS editor_plugin_users (
 CREATE TABLE IF NOT EXISTS editor_plugin_feedbacks (
     id bigserial PRIMARY KEY,
     feed_item_id text NOT NULL,
-    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
+    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'external_media_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
     feedback text NOT NULL CHECK (feedback IN ('accept', 'reject')),
     actor_user_id uuid,
     actor_email text NOT NULL,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS editor_plugin_feedbacks (
 CREATE TABLE IF NOT EXISTS editor_plugin_receipts (
     id bigserial PRIMARY KEY,
     feed_item_id text NOT NULL,
-    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
+    feed_kind text NOT NULL CHECK (feed_kind IN ('newsflash', 'auditor_alert', 'external_media_alert', 'writer3_context', 'whale_onchain', 'whale_hyperliquid')),
     viewer_user_id uuid,
     viewer_email text NOT NULL,
     viewer_display_name text,
@@ -522,6 +522,55 @@ BEGIN
         $auditor$);
     END IF;
 
+    IF to_regclass('public.external_media_alert_pipeline') IS NOT NULL AND to_regclass('public.tasks') IS NOT NULL THEN
+        parts := array_append(parts, $external_media_alert$
+            SELECT *
+            FROM (
+            SELECT
+                'external_media_alert:' || p.task_id::text AS feed_item_id,
+                'external_media_alert'::text AS feed_kind,
+                'high'::text AS lane,
+                86 AS priority,
+                COALESCE(NULLIF(t.title, ''), NULLIF(t.content, ''), '外媒标题提醒') AS title,
+                COALESCE(NULLIF(t.content, ''), NULLIF(t.title, ''), '外媒标题提醒暂无摘要') AS summary,
+                jsonb_build_array(
+                    jsonb_build_object(
+                        'label', '来源',
+                        'value', COALESCE(NULLIF(t.metadata ->> 'site_display_name', ''), '外媒'),
+                        'tone', 'neutral'
+                    ),
+                    jsonb_build_object(
+                        'label', '类型',
+                        'value', '标题提醒',
+                        'tone', 'accent'
+                    )
+                ) AS badges,
+                '标题提醒'::text AS status_label,
+                'warning'::text AS status_tone,
+                COALESCE(t.updated_at, t.created_at) AS occurred_at,
+                t.source_url,
+                t.source_url AS detail_url,
+                jsonb_build_object('type', 'read') AS action_schema,
+                jsonb_build_object(
+                    'task_id', t.id,
+                    'source', t.source,
+                    'task_status', t.status,
+                    'site_key', t.metadata ->> 'site_key',
+                    'pipeline_mode', t.metadata ->> 'pipeline_mode',
+                    'discovery_mode', t.metadata ->> 'discovery_mode'
+                ) AS meta_json
+            FROM external_media_alert_pipeline p
+            JOIN tasks t
+              ON t.id = p.task_id
+            WHERE t.source IN ('external_media_alert', 'ai_source_alert')
+              AND t.status = 'notified'
+              AND COALESCE(t.updated_at, t.created_at) >= now() - interval '30 minutes'
+            ORDER BY COALESCE(t.updated_at, t.created_at) DESC, p.task_id DESC
+            LIMIT $9
+            ) external_media_alert_candidates
+        $external_media_alert$);
+    END IF;
+
     IF to_regclass('public.writer3_contexts') IS NOT NULL THEN
         parts := array_append(parts, $writer3$
             SELECT *
@@ -648,6 +697,7 @@ BEGIN
                 CASE
                     WHEN lane = ''high'' AND feed_kind = ''newsflash'' THEN ''high_newsflash''
                     WHEN lane = ''high'' AND feed_kind = ''auditor_alert'' THEN ''high_auditor''
+                    WHEN lane = ''high'' AND feed_kind = ''external_media_alert'' THEN ''high_external_media_alert''
                     WHEN lane = ''ai'' AND feed_kind = ''newsflash'' THEN ''ai_newsflash''
                     WHEN lane = ''low'' AND feed_kind = ''writer3_context'' THEN ''low_writer3''
                     WHEN lane = ''low'' AND feed_kind IN (''whale_onchain'', ''whale_hyperliquid'') THEN ''low_whale''
@@ -675,6 +725,7 @@ BEGIN
               AND (
                 (quota_group = ''high_auditor'' AND group_rank <= $4)
                 OR (quota_group = ''high_newsflash'' AND group_rank <= $5)
+                OR (quota_group = ''high_external_media_alert'' AND group_rank <= GREATEST(1, CEIL($1 * 0.15)::integer))
               )
         ),
         low_reserved AS (

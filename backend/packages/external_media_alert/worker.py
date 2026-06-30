@@ -593,7 +593,7 @@ def build_alert_notice(
     source_label: str = "外媒",
 ) -> str:
     text = f"{source_label}标题提醒：{site_display_name}｜{title}"
-    if source_url and source_url.strip():
+    if source_url and source_url.strip() and title.strip().rstrip("/") != source_url.strip().rstrip("/"):
         text += f"\n{source_url.strip()}"
     return text
 

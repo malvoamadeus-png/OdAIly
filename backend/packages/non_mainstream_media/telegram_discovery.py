@@ -158,6 +158,30 @@ def message_text(message: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def extract_message_title(text: str, site_key: str, url: str | None = None) -> str | None:
+    normalized = text.strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    for prefix in TARGET_SITES[site_key]["prefixes"]:
+        if lowered.startswith(prefix):
+            normalized = normalized[len(prefix) :].strip()
+            break
+    if url:
+        normalized = normalized.replace(url, " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip(" -:\n\t")
+    if ":" in normalized:
+        _, tail = normalized.rsplit(":", 1)
+        if tail.strip():
+            normalized = tail.strip()
+    normalized = normalized.strip(" -:\n\t")
+    if not normalized:
+        return None
+    if url and normalized.rstrip("/") == url.rstrip("/"):
+        return None
+    return normalized
+
+
 def extract_site_key(text: str) -> str | None:
     normalized = text.strip().lower()
     for site_key, spec in TARGET_SITES.items():
@@ -349,11 +373,11 @@ class TelegramDiscoveryWorker:
     def _clear_retry(self, site_key: str, url: str) -> None:
         self._retry_tasks.pop(self._retry_key(site_key, url), None)
 
-    def _build_page(self, url: str) -> DiscoveredPage:
+    def _build_page(self, url: str, *, title: str | None = None) -> DiscoveredPage:
         return DiscoveredPage(
             source_item_id=url,
             detail_url=url,
-            title=None,
+            title=title,
             excerpt=None,
             published_at=None,
             published_at_raw=None,
@@ -394,11 +418,18 @@ class TelegramDiscoveryWorker:
         )
         self.repository.mark_seen(source, article.canonical_url, seeded=False)
 
-    def _attempt_fetch(self, *, source: NonMainstreamMediaSource, site_key: str, url: str) -> tuple[bool, str | None]:
+    def _attempt_fetch(
+        self,
+        *,
+        source: NonMainstreamMediaSource,
+        site_key: str,
+        url: str,
+        title: str | None = None,
+    ) -> tuple[bool, str | None]:
         site = self.site_registry[site_key]
         if source.pipeline_mode == "alert_only":
             try:
-                self._save_alert_page(source, self._build_page(url))
+                self._save_alert_page(source, self._build_page(url, title=title))
                 self._clear_retry(site_key, url)
                 return True, None
             except Exception as exc:
@@ -406,7 +437,7 @@ class TelegramDiscoveryWorker:
         try:
             article = self.fetch_article_fn(
                 site,
-                self._build_page(url),
+                self._build_page(url, title=title),
                 timeout_seconds=self.request_timeout_seconds,
                 max_attempts=self.max_attempts,
                 backoff_seconds=self.backoff_seconds,
@@ -436,7 +467,8 @@ class TelegramDiscoveryWorker:
                 "message_id": getattr(message, "id", None),
             }
         source = active_sources[site_key]
-        ok, error = self._attempt_fetch(source=source, site_key=site_key, url=url)
+        title = extract_message_title(text, site_key, url)
+        ok, error = self._attempt_fetch(source=source, site_key=site_key, url=url, title=title)
         if ok:
             return {
                 "status": "success",

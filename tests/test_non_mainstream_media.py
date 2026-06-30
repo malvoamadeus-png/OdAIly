@@ -48,7 +48,11 @@ from packages.non_mainstream_media.models import (
     SiteDefinition,
 )
 from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
-from packages.non_mainstream_media.telegram_discovery import TelegramDiscoveryWorker, extract_candidate_url
+from packages.non_mainstream_media.telegram_discovery import (
+    TelegramDiscoveryWorker,
+    extract_candidate_url,
+    extract_message_title,
+)
 from packages.non_mainstream_media.worker import NonMainstreamMediaWorker
 from packages.common.config import TelegramDiscoverySettings
 
@@ -1159,8 +1163,19 @@ def test_telegram_worker_the_block_alert_only_saves_title_task() -> None:
     assert task["source"] == "external_media_alert"
     assert task["source_item_id"] == "https://www.theblock.co/post/402447/etf-issuer-files-new-application"
     assert task["source_url"] == "https://www.theblock.co/post/402447/etf-issuer-files-new-application"
+    assert task["title"] == "ETF issuer files new application"
     assert task["metadata"]["site_key"] == "the_block"
     assert ("the_block", "https://www.theblock.co/post/402447/etf-issuer-files-new-application") in repository.seen
+
+
+def test_extract_message_title_removes_prefix_and_url() -> None:
+    title = extract_message_title(
+        "The Block: ETF issuer files new application https://www.theblock.co/post/402447/etf-issuer-files-new-application",
+        "the_block",
+        "https://www.theblock.co/post/402447/etf-issuer-files-new-application",
+    )
+
+    assert title == "ETF issuer files new application"
 
 
 def test_discover_etnews_pages_reads_section_article_ids() -> None:

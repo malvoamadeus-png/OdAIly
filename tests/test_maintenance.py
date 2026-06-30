@@ -6,8 +6,12 @@ from packages.maintenance import PostgresMaintenanceRepository
 
 def test_editor_plugin_feed_limits_each_source_before_union() -> None:
     assert "v_source_candidate_limit := GREATEST(p_limit, 40);" in EDITOR_PLUGIN_SCHEMA_SQL
-    assert EDITOR_PLUGIN_SCHEMA_SQL.count("LIMIT $9") >= 5
+    assert EDITOR_PLUGIN_SCHEMA_SQL.count("LIMIT $9") >= 6
     assert "v_source_candidate_limit;" in EDITOR_PLUGIN_SCHEMA_SQL
+
+
+def test_editor_plugin_schema_accepts_external_media_alert_feed_kind() -> None:
+    assert "'external_media_alert'" in EDITOR_PLUGIN_SCHEMA_SQL
 
 
 def test_editor_plugin_state_no_longer_reads_receipts() -> None:
