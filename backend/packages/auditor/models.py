@@ -29,6 +29,7 @@ class AuditorIssue:
     original: str
     suggested: str
     reason: str
+    evidence: str = ""
 
 
 @dataclass(frozen=True, slots=True)

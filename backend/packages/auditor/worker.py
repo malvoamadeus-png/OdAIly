@@ -191,6 +191,8 @@ def build_telegram_text(task: AuditorTask, audit: AuditorResult) -> str:
         )
         if issue.reason:
             lines.append(f"原因：{issue.reason}")
+        if issue.evidence:
+            lines.append(f"依据：{issue.evidence}")
     return "\n".join(lines).strip()
 
 

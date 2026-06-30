@@ -125,6 +125,7 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     prompt = build_auditor_prompt(task())
 
     assert "不要检查" in prompt
+    assert "标点符号问题本身" in prompt
     assert "Odaily 固定前缀" in prompt
     assert "媒体称谓" in prompt
     assert "空格风格" in prompt
@@ -133,10 +134,12 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "一新创建地址" in prompt
     assert "提出 / 转出 / 转入 / 提取 / 存入" in prompt
     assert "交易开放时间：" in prompt
+    assert "不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错" in prompt
+    assert "issue.evidence" in prompt
 
 
-def test_auditor_prompt_version_is_v5() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v5"
+def test_auditor_prompt_version_is_v7() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v7"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -152,7 +155,7 @@ def test_auditor_passed_does_not_send_telegram() -> None:
     assert telegram.calls == []
 
 
-def test_auditor_flagged_sends_to_dedicated_topic() -> None:
+def test_auditor_ignores_punctuation_alerts() -> None:
     current = task(content="Odaily星球日报讯 项目完成融资。。")
     repo = FakeAuditorRepository([current])
     ai = FakeAiClient(
@@ -178,14 +181,13 @@ def test_auditor_flagged_sends_to_dedicated_topic() -> None:
 
     result = worker.run_once()
 
-    assert result.flagged == 1
-    assert telegram.calls[0]["message_thread_id"] == 77
-    assert "审核者发现疑似问题" in telegram.calls[0]["text"]
-    assert repo.flagged[0]["telegram_result"]["ok"] is True
+    assert result.passed == 1
+    assert telegram.calls == []
+    assert repo.flagged == []
 
 
 def test_auditor_telegram_failure_records_flagged_result() -> None:
-    current = task(content="Odaily星球日报讯 项目完成融资。。")
+    current = task(content="Odaily星球日报讯 宣布完成融资。")
     repo = FakeAuditorRepository([current])
     ai = FakeAiClient(
         [
@@ -194,14 +196,15 @@ def test_auditor_telegram_failure_records_flagged_result() -> None:
                 "severity": "high",
                 "issues": [
                     {
-                        "type": "punctuation",
+                        "type": "grammar",
                         "location": "content",
-                        "original": "融资。。",
-                        "suggested": "融资。",
-                        "reason": "连续句号。",
+                        "original": "宣布完成融资。",
+                        "suggested": "该项目宣布完成融资。",
+                        "reason": "缺少必要的主语。",
+                        "evidence": "",
                     }
                 ],
-                "summary": "正文存在连续句号。",
+                "summary": "正文存在主语缺失。",
             }
         ]
     )
@@ -277,6 +280,34 @@ def test_parse_auditor_output_ignores_spacing_issue_type() -> None:
                     }
                 ],
                 "summary": "空格问题。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_parentheses_style_issue_even_if_not_labeled_punctuation() -> None:
+    current = task(content="贝莱德 (Blackrock） ETF IBIT")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "贝莱德 (Blackrock） ETF IBIT",
+                        "suggested": "贝莱德（Blackrock）ETF IBIT",
+                        "reason": "括号不配对，且英文括号与中文括号混用。",
+                        "evidence": "",
+                    }
+                ],
+                "summary": "括号样式问题。",
             },
             ensure_ascii=False,
         ),
@@ -486,3 +517,91 @@ def test_parse_auditor_output_ignores_chain_transfer_action_issue() -> None:
 
     assert parsed.has_issue is False
     assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_fact_correction_without_evidence() -> None:
+    current = task(content="Odaily星球日报讯 光州、全罗可能在项目中投资 520 万亿韩元。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "520 万亿韩元",
+                        "suggested": "52 万亿韩元",
+                        "reason": "金额数量级疑似有误。",
+                        "evidence": "",
+                    }
+                ],
+                "summary": "金额可能写错。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_keeps_fact_correction_with_same_text_evidence() -> None:
+    current = task(content="Odaily星球日报讯 项目总投资为 52 亿美元，其中首期投资 5200 万美元。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "首期投资 5200 万美元",
+                        "suggested": "首期投资 5.2 亿美元",
+                        "reason": "首期投资不能低于文中给出的总投资拆分口径，金额数量级前后矛盾。",
+                        "evidence": "项目总投资为 52 亿美元",
+                    }
+                ],
+                "summary": "正文金额前后矛盾。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is True
+    assert len(parsed.issues) == 1
+    assert parsed.issues[0].evidence == "项目总投资为 52 亿美元"
+
+
+def test_auditor_telegram_includes_issue_evidence() -> None:
+    current = task(content="Odaily星球日报讯 项目总投资为 52 亿美元，其中首期投资 5200 万美元。")
+    repo = FakeAuditorRepository([current])
+    ai = FakeAiClient(
+        [
+            {
+                "has_issue": True,
+                "severity": "medium",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "首期投资 5200 万美元",
+                        "suggested": "首期投资 5.2 亿美元",
+                        "reason": "金额数量级与同文总投资口径矛盾。",
+                        "evidence": "项目总投资为 52 亿美元",
+                    }
+                ],
+                "summary": "正文金额前后矛盾。",
+            }
+        ]
+    )
+    telegram = FakeTelegramClient()
+    worker = AuditorWorker(repository=repo, settings=settings(), ai_client=ai, telegram_client=telegram)
+
+    result = worker.run_once()
+
+    assert result.flagged == 1
+    assert "依据：项目总投资为 52 亿美元" in telegram.calls[0]["text"]

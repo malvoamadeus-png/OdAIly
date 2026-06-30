@@ -995,6 +995,30 @@ def test_judge_ai_discards_consumer_electronics_marketing_news() -> None:
     assert "终端品牌营销、渠道活动、促销、赞助类" in fake_ai.calls[0]["prompt"]
 
 
+def test_judge_ai_discards_fud_only_commentary_without_new_facts() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.add_task(
+        TaskRecord(
+            **{
+                **asdict(x_ai_task(1, status="pending")),
+                "title": "DigiTimes is spreading FUD again",
+                "content": (
+                    "DigiTimes is spreading FUD again. "
+                    "As always, whenever something looks like it could pose a threat to TSMC, "
+                    "they start making up all kinds of ridiculous narratives."
+                ),
+            }
+        )
+    )
+    fake_ai = FakeAiClient(['{"route":"discard","discard_type":"non_crypto_ai"}'])
+    judge_worker = XProcessingWorker(stage="judge_ai", repository=repo, settings=settings(), ai_client=fake_ai)
+
+    assert judge_worker.run_once().processed == 1
+    assert repo.tasks[1].status == "discarded"
+    assert "纯态度表达、吐槽、嘲讽、站队、情绪化评价或笼统指责" in fake_ai.calls[0]["prompt"]
+    assert "散播 FUD" in fake_ai.calls[0]["prompt"]
+
+
 def test_judge_ai_keeps_major_capacity_policy_and_capital_news() -> None:
     repo = InMemoryXProcessingRepository()
     repo.add_task(

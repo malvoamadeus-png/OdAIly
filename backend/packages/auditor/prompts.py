@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v5"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v7"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
@@ -36,8 +36,9 @@ AUDITOR_SCHEMA = {
                         "original": {"type": "string"},
                         "suggested": {"type": "string"},
                         "reason": {"type": "string"},
+                        "evidence": {"type": "string"},
                     },
-                    "required": ["type", "location", "original", "suggested", "reason"],
+                    "required": ["type", "location", "original", "suggested", "reason", "evidence"],
                 },
             },
             "summary": {"type": "string"},
@@ -52,11 +53,12 @@ def build_auditor_prompt(task: AuditorTask) -> str:
     return f"""你是 Odaily 已发布快讯的中文质量审核者。请只检查明确的中文文本质量问题，并输出结构化 JSON。
 
 只检查：
-- 标点错误：连续标点、英文标点混用、括号或引号不配对、明显句末标点缺失。
 - 语法错误：主谓宾残缺、语序明显不通、重复粘贴、断句异常。
 - 错别字或同音误用：只在上下文非常明确时提示。
+- 明确格式异常：例如重复粘贴导致的结构损坏，但不要把纯标点样式问题当成格式异常。
 
 不要检查：
+- 标点符号问题本身，包括连续标点、英文标点混用、括号或引号不配对、明显句末标点缺失、半角/全角标点切换。
 - 中英文之间、数字与中文单位之间、数字与币种之间、英文缩写与括号之间、中文与括号之间的空格风格。
 - 千分位逗号、钱包地址展示、省略号、半角/全角括号、数量表达是否统一。
 - Odaily 固定前缀、媒体称谓、常见术语格式是否统一。
@@ -68,6 +70,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
+- 不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错；如果想指出这类问题，必须能在同一条标题或正文中引用另一处直接构成矛盾或校验关系的依据片段。
 
 报警标准：
 - 只有明确错误或高置信异常才设置 has_issue=true。
@@ -75,6 +78,8 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - has_issue=false 时 issues 必须为空数组，summary 为空字符串。
 - issue.original 必须是标题或正文中真实存在的短片段。
 - issue.suggested 只给最小必要改法，不整段重写。
+- issue.reason 必须直接说明错因，不能只说“疑似有误”。
+- issue.evidence 仅在涉及数字、金额、日期、比例、数量级等数据类指正时填写；必须引用同一条标题或正文中真实存在、且能支持该指正的另一处片段。其他问题填空字符串。
 - 不输出推理过程。
 
 【标题】
@@ -97,6 +102,8 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
         issue_type = str(raw_issue.get("type") or "other")
         if issue_type == "spacing":
             continue
+        if issue_type == "punctuation":
+            continue
         if issue_type not in {"punctuation", "grammar", "typo", "format", "other"}:
             issue_type = "other"
         location = str(raw_issue.get("location") or "content")
@@ -105,12 +112,20 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
         original = _clean_excerpt(str(raw_issue.get("original") or ""))
         suggested = _clean_excerpt(str(raw_issue.get("suggested") or ""))
         reason = _clean(str(raw_issue.get("reason") or ""))
+        evidence = _clean_excerpt(str(raw_issue.get("evidence") or ""))
         source_text = task.title if location == "title" else task.content
         if not original or original not in (source_text or ""):
             continue
         if not suggested or suggested == original:
             continue
-        if _should_ignore_issue(location=location, original=original, suggested=suggested, reason=reason, task=task):
+        if _should_ignore_issue(
+            location=location,
+            original=original,
+            suggested=suggested,
+            reason=reason,
+            evidence=evidence,
+            task=task,
+        ):
             continue
         issues.append(
             AuditorIssue(
@@ -119,6 +134,7 @@ def parse_auditor_output(raw_output: str, task: AuditorTask) -> AuditorResult:
                 original=original,
                 suggested=suggested,
                 reason=reason,
+                evidence=evidence,
             )
         )
     has_issue = bool(payload.get("has_issue")) and bool(issues)
@@ -141,6 +157,7 @@ def auditor_result_to_dict(result: AuditorResult) -> dict[str, Any]:
                 "original": issue.original,
                 "suggested": issue.suggested,
                 "reason": issue.reason,
+                "evidence": issue.evidence,
             }
             for issue in result.issues
         ],
@@ -168,7 +185,9 @@ def _clean_excerpt(value: str) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
-def _should_ignore_issue(*, location: str, original: str, suggested: str, reason: str, task: AuditorTask) -> bool:
+def _should_ignore_issue(*, location: str, original: str, suggested: str, reason: str, evidence: str, task: AuditorTask) -> bool:
+    if _is_punctuation_only_issue(original=original, suggested=suggested, reason=reason):
+        return True
     if _is_fixed_trailing_slogan_issue(location=location, original=original, task=task):
         return True
     if _is_line_break_boundary_punctuation_issue(location=location, original=original, suggested=suggested):
@@ -178,6 +197,15 @@ def _should_ignore_issue(*, location: str, original: str, suggested: str, reason
     if _is_headline_quantifier_expansion_issue(location=location, original=original, suggested=suggested, task=task):
         return True
     if _is_chain_transfer_action_issue(original=original, suggested=suggested):
+        return True
+    if _is_unsupported_fact_correction_issue(
+        location=location,
+        original=original,
+        suggested=suggested,
+        reason=reason,
+        evidence=evidence,
+        task=task,
+    ):
         return True
     return False
 
@@ -190,6 +218,60 @@ def _is_fixed_trailing_slogan_issue(*, location: str, original: str, task: Audit
         if original in slogan and content.endswith(slogan):
             return True
     return False
+
+
+def _is_punctuation_only_issue(*, original: str, suggested: str, reason: str) -> bool:
+    normalized_original = _normalize_for_punctuation_check(original)
+    normalized_suggested = _normalize_for_punctuation_check(suggested)
+    if normalized_original != normalized_suggested:
+        return False
+    return _contains_punctuation_keyword(reason) or original != suggested
+
+
+def _normalize_for_punctuation_check(value: str) -> str:
+    punctuation_map = str.maketrans(
+        {
+            "（": "(",
+            "）": ")",
+            "【": "[",
+            "】": "]",
+            "“": '"',
+            "”": '"',
+            "‘": "'",
+            "’": "'",
+            "，": ",",
+            "。": ".",
+            "：": ":",
+            "；": ";",
+            "！": "!",
+            "？": "?",
+        }
+    )
+    translated = value.translate(punctuation_map)
+    translated = re.sub(r"[\s()\[\]\"'.,:;!?]", "", translated)
+    return translated
+
+
+def _contains_punctuation_keyword(value: str) -> bool:
+    normalized = _normalize_for_fact_check(value).lower()
+    return any(
+        keyword in normalized
+        for keyword in (
+            "标点",
+            "括号",
+            "引号",
+            "句号",
+            "逗号",
+            "分号",
+            "冒号",
+            "问号",
+            "叹号",
+            "顿号",
+            "punctuation",
+            "parenth",
+            "quote",
+        )
+    )
 
 
 def _is_line_break_boundary_punctuation_issue(*, location: str, original: str, suggested: str) -> bool:
@@ -240,3 +322,75 @@ def _is_chain_transfer_action_issue(*, original: str, suggested: str) -> bool:
     if not any(original_text.startswith(word) for word in CHAIN_TRANSFER_ACTION_WORDS):
         return False
     return any(suggested_text.startswith(word) for word in TRADING_ACTION_WORDS)
+
+
+def _is_unsupported_fact_correction_issue(
+    *,
+    location: str,
+    original: str,
+    suggested: str,
+    reason: str,
+    evidence: str,
+    task: AuditorTask,
+) -> bool:
+    if not _looks_like_fact_correction_issue(original=original, suggested=suggested, reason=reason):
+        return False
+    source_text = task.title if location == "title" else task.content
+    if not evidence:
+        return True
+    if evidence == original:
+        return True
+    if evidence not in (source_text or ""):
+        return True
+    return False
+
+
+def _looks_like_fact_correction_issue(*, original: str, suggested: str, reason: str) -> bool:
+    normalized_original = _normalize_for_fact_check(original)
+    normalized_suggested = _normalize_for_fact_check(suggested)
+    if normalized_original == normalized_suggested:
+        return False
+    if _contains_fact_keyword(reason):
+        return True
+    original_numbers = _extract_fact_tokens(normalized_original)
+    suggested_numbers = _extract_fact_tokens(normalized_suggested)
+    if original_numbers != suggested_numbers:
+        return bool(original_numbers or suggested_numbers)
+    return False
+
+
+def _normalize_for_fact_check(value: str) -> str:
+    return re.sub(r"\s+", "", value).replace("（", "(").replace("）", ")")
+
+
+def _contains_fact_keyword(value: str) -> bool:
+    normalized = _normalize_for_fact_check(value).lower()
+    return any(
+        keyword in normalized
+        for keyword in (
+            "数据",
+            "数字",
+            "金额",
+            "日期",
+            "比例",
+            "数量级",
+            "数值",
+            "单位",
+            "韩元",
+            "美元",
+            "usdt",
+            "btc",
+            "eth",
+            "%",
+        )
+    )
+
+
+def _extract_fact_tokens(value: str) -> tuple[str, ...]:
+    return tuple(
+        re.findall(
+            r"\d+(?:\.\d+)?(?:[%％]|万亿|亿|万|千|百|美元|美金|韩元|人民币|元|枚|股|年|月|日|天|倍|x)?",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
