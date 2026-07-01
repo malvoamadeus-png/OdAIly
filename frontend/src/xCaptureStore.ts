@@ -110,7 +110,7 @@ export type NonMainstreamSource = {
   homepage_url: string;
   capture_method: 'html_request' | 'browser_render';
   pipeline_mode: 'write_flow' | 'alert_only';
-  source_group: 'external_media' | 'ai_source';
+  source_group: 'external_media' | 'ai_source' | 'mixed_source';
   discovery_mode: 'direct' | 'telegram_primary_direct_fallback';
   interval_seconds: number | null;
   enabled: boolean;
@@ -393,7 +393,7 @@ const defaultPublisherSettings: PublisherSettings = {
 };
 
 const defaultPublisherChannels: PublisherChannel[] = [
-  { channel_key: 'external_media', display_name: '外媒', enabled: true, updated_at: null },
+  { channel_key: 'external_media', display_name: 'Crypto信源', enabled: true, updated_at: null },
   { channel_key: 'x', display_name: 'X', enabled: false, updated_at: null },
   { channel_key: 'competitor', display_name: '竞品', enabled: false, updated_at: null },
   { channel_key: 'jin10', display_name: '金十', enabled: false, updated_at: null },

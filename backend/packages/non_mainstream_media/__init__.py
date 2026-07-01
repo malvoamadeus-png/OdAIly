@@ -1,6 +1,7 @@
 from .fetcher import get_site_registry
 from .models import (
     DiscoveredPage,
+    MixedClassificationResult,
     NonMainstreamMediaSettings,
     NonMainstreamMediaSource,
     ParsedArticle,
@@ -19,6 +20,7 @@ from .telegram_discovery import TelegramDiscoveryWorker
 __all__ = [
     "DiscoveredPage",
     "InMemoryNonMainstreamMediaRepository",
+    "MixedClassificationResult",
     "NonMainstreamMediaRepository",
     "NonMainstreamMediaSettings",
     "NonMainstreamMediaSource",

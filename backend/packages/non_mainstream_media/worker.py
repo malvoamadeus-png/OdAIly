@@ -8,11 +8,26 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from packages.common.config import load_x_processing_settings
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.local_pipeline.client import LocalPipelineClient
+from .classifier import MixedSourceClassifier, build_mixed_source_classifier
 from .fetcher import fetch_article, fetch_discovered_pages, get_site_registry
-from .models import NonMainstreamMediaSettings, NonMainstreamMediaSource, SiteDefinition, SourceRunStats
-from .repository import NonMainstreamMediaRepository, alert_only_task_source, utc_now, write_flow_task_source
+from .models import (
+    NonMainstreamMediaSettings,
+    NonMainstreamMediaSource,
+    SOURCE_GROUP_MIXED_SOURCE,
+    SiteDefinition,
+    SourceRunStats,
+)
+from .repository import (
+    NonMainstreamMediaRepository,
+    alert_only_task_source,
+    alert_only_task_source_for_target,
+    utc_now,
+    write_flow_task_source,
+    write_flow_task_source_for_target,
+)
 
 
 @dataclass(slots=True)
@@ -32,6 +47,7 @@ class NonMainstreamMediaWorker:
         max_attempts: int = 3,
         backoff_seconds: float = 1.0,
         pipeline_client: LocalPipelineClient | None = None,
+        mixed_classifier: MixedSourceClassifier | None = None,
     ) -> None:
         self.repository = repository
         self.site_registry = site_registry or get_site_registry()
@@ -40,6 +56,7 @@ class NonMainstreamMediaWorker:
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
         self.pipeline_client = pipeline_client
+        self.mixed_classifier = mixed_classifier
         self.worker_id = f"non_mainstream_media-{os.getpid()}"
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
@@ -59,6 +76,14 @@ class NonMainstreamMediaWorker:
                 metadata=metadata,
             ),
         )
+        self._mixed_classifier_init_error: str | None = None
+        if self.mixed_classifier is None:
+            try:
+                settings = load_x_processing_settings()
+                if settings.openai_api_key:
+                    self.mixed_classifier = build_mixed_source_classifier(settings)
+            except Exception as exc:
+                self._mixed_classifier_init_error = str(exc)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -197,6 +222,11 @@ class NonMainstreamMediaWorker:
         new_count = 0
         saved_count = 0
         detail_errors: dict[str, str] = {}
+        classified_counts = {
+            "classified_crypto": 0,
+            "classified_ai": 0,
+            "classified_discard": 0,
+        }
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
@@ -211,7 +241,37 @@ class NonMainstreamMediaWorker:
             except Exception as exc:
                 detail_errors[page.detail_url] = str(exc)
                 continue
-            task_id = self.repository.save_task(source, article)
+            classified_target = None
+            if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
+                if self.mixed_classifier is None:
+                    detail_errors[page.detail_url] = self._mixed_classifier_init_error or "mixed source classifier unavailable"
+                    continue
+                try:
+                    classification = self.mixed_classifier.classify_fulltext(
+                        site_display_name=source.display_name,
+                        title=article.title,
+                        content=article.content,
+                        metadata={
+                            **article.metadata,
+                            "categories": article.categories,
+                            "tags": article.tags,
+                            "author_names": article.author_names,
+                        },
+                    )
+                except Exception as exc:
+                    detail_errors[page.detail_url] = f"mixed classification failed: {exc}"
+                    continue
+                classified_counts[f"classified_{classification.target}"] += 1
+                if classification.target == "discard":
+                    if self.repository.mark_seen(source, article.canonical_url, seeded=False):
+                        new_count += 1
+                    continue
+                classified_target = classification.target
+                article.metadata["classification_model"] = "gpt-5.4-mini"
+                article.metadata["classification_input_mode"] = "fulltext"
+                if classification.reason:
+                    article.metadata["classification_reason"] = classification.reason
+            task_id = self.repository.save_task(source, article, classified_target=classified_target)
             if task_id is None:
                 if self.repository.mark_seen(source, article.canonical_url, seeded=False):
                     new_count += 1
@@ -220,7 +280,11 @@ class NonMainstreamMediaWorker:
                 self._submit_pipeline_job(
                     job_type="write_flow",
                     task_id=task_id,
-                    source=write_flow_task_source(source),
+                    source=(
+                        write_flow_task_source_for_target(classified_target)
+                        if classified_target in {"crypto", "ai"}
+                        else write_flow_task_source(source)
+                    ),
                     source_item_id=article.canonical_url,
                 )
             except Exception as exc:
@@ -237,7 +301,10 @@ class NonMainstreamMediaWorker:
             new_count=new_count,
             saved_count=saved_count,
             error=f"{len(detail_errors)} detail page(s) failed" if detail_errors else None,
-            metadata={"detail_errors": detail_errors},
+            metadata={
+                "detail_errors": detail_errors,
+                **(classified_counts if source.source_group == SOURCE_GROUP_MIXED_SOURCE else {}),
+            },
         )
 
     def _save_alert_only_tasks(self, source: NonMainstreamMediaSource, pages: list[Any]) -> SourceRunStats:
@@ -245,10 +312,49 @@ class NonMainstreamMediaWorker:
         new_count = 0
         saved_count = 0
         enqueue_errors: dict[str, str] = {}
+        classified_counts = {
+            "classified_crypto": 0,
+            "classified_ai": 0,
+            "classified_discard": 0,
+        }
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
-            task_id = self.repository.save_alert_task(source, page)
+            classified_target = None
+            classification_metadata: dict[str, Any] | None = None
+            if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
+                if self.mixed_classifier is None:
+                    enqueue_errors[page.source_item_id] = self._mixed_classifier_init_error or "mixed source classifier unavailable"
+                    continue
+                try:
+                    classification = self.mixed_classifier.classify_headline_excerpt(
+                        site_display_name=source.display_name,
+                        title=page.title,
+                        excerpt=page.excerpt,
+                        detail_url=page.detail_url,
+                        metadata={},
+                    )
+                except Exception as exc:
+                    enqueue_errors[page.source_item_id] = f"mixed classification failed: {exc}"
+                    continue
+                classified_counts[f"classified_{classification.target}"] += 1
+                if classification.target == "discard":
+                    if self.repository.mark_seen(source, page.source_item_id, seeded=False):
+                        new_count += 1
+                    continue
+                classified_target = classification.target
+                classification_metadata = {
+                    "classification_model": "gpt-5.4-mini",
+                    "classification_input_mode": "headline_excerpt",
+                }
+                if classification.reason:
+                    classification_metadata["classification_reason"] = classification.reason
+            task_id = self.repository.save_alert_task(
+                source,
+                page,
+                classified_target=classified_target,
+                classification_metadata=classification_metadata,
+            )
             if task_id is None:
                 if self.repository.mark_seen(source, page.source_item_id, seeded=False):
                     new_count += 1
@@ -257,7 +363,11 @@ class NonMainstreamMediaWorker:
                 self._submit_pipeline_job(
                     job_type="alert_only",
                     task_id=task_id,
-                    source=alert_only_task_source(source),
+                    source=(
+                        alert_only_task_source_for_target(classified_target)
+                        if classified_target in {"crypto", "ai"}
+                        else alert_only_task_source(source)
+                    ),
                     source_item_id=page.source_item_id,
                 )
             except Exception as exc:
@@ -274,7 +384,10 @@ class NonMainstreamMediaWorker:
             new_count=new_count,
             saved_count=saved_count,
             error=f"{len(enqueue_errors)} local pipeline enqueue(s) failed" if enqueue_errors else None,
-            metadata={"enqueue_errors": enqueue_errors},
+            metadata={
+                "enqueue_errors": enqueue_errors,
+                **(classified_counts if source.source_group == SOURCE_GROUP_MIXED_SOURCE else {}),
+            },
         )
 
     def _submit_pipeline_job(self, *, job_type: str, task_id: int, source: str, source_item_id: str) -> None:
@@ -307,6 +420,9 @@ class NonMainstreamMediaWorker:
             "saved_count": sum(item.saved_count for item in stats),
             "new_count": sum(item.new_count for item in stats),
             "seeded_count": sum(item.seeded_count for item in stats),
+            "classified_crypto": sum(int(item.metadata.get("classified_crypto", 0)) for item in stats),
+            "classified_ai": sum(int(item.metadata.get("classified_ai", 0)) for item in stats),
+            "classified_discard": sum(int(item.metadata.get("classified_discard", 0)) for item in stats),
             "sites": [
                 {
                     "site_key": item.source.site_key,
@@ -316,6 +432,9 @@ class NonMainstreamMediaWorker:
                     "new_count": item.new_count,
                     "saved_count": item.saved_count,
                     "error": item.error,
+                    "classified_crypto": int(item.metadata.get("classified_crypto", 0)),
+                    "classified_ai": int(item.metadata.get("classified_ai", 0)),
+                    "classified_discard": int(item.metadata.get("classified_discard", 0)),
                 }
                 for item in stats
             ],

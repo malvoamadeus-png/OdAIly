@@ -11,6 +11,7 @@ from .models import (
     DISCOVERY_MODE_DIRECT,
     SOURCE_GROUP_AI_SOURCE,
     SOURCE_GROUP_EXTERNAL_MEDIA,
+    SOURCE_GROUP_MIXED_SOURCE,
     TASK_SOURCE_AI_SOURCE,
     TASK_SOURCE_AI_SOURCE_ALERT,
     TASK_SOURCE_EXTERNAL_MEDIA,
@@ -28,7 +29,11 @@ CONFIG_NOTIFY_CHANNEL = "non_mainstream_media_config_changed"
 
 
 def source_group_label(source_group: str) -> str:
-    return "AI信源" if source_group == SOURCE_GROUP_AI_SOURCE else "外媒"
+    if source_group == SOURCE_GROUP_AI_SOURCE:
+        return "AI信源"
+    if source_group == SOURCE_GROUP_MIXED_SOURCE:
+        return "混合信源"
+    return "Crypto信源"
 
 
 def write_flow_task_source(source: NonMainstreamMediaSource) -> str:
@@ -37,6 +42,14 @@ def write_flow_task_source(source: NonMainstreamMediaSource) -> str:
 
 def alert_only_task_source(source: NonMainstreamMediaSource) -> str:
     return TASK_SOURCE_AI_SOURCE_ALERT if source.source_group == SOURCE_GROUP_AI_SOURCE else TASK_SOURCE_EXTERNAL_MEDIA_ALERT
+
+
+def write_flow_task_source_for_target(classified_target: str) -> str:
+    return TASK_SOURCE_AI_SOURCE if classified_target == "ai" else TASK_SOURCE_EXTERNAL_MEDIA
+
+
+def alert_only_task_source_for_target(classified_target: str) -> str:
+    return TASK_SOURCE_AI_SOURCE_ALERT if classified_target == "ai" else TASK_SOURCE_EXTERNAL_MEDIA_ALERT
 
 
 class NonMainstreamMediaRepository(Protocol):
@@ -54,8 +67,21 @@ class NonMainstreamMediaRepository(Protocol):
     def mark_source_seeded(self, source: NonMainstreamMediaSource, source_item_ids: list[str]) -> None: ...
     def mark_seen(self, source: NonMainstreamMediaSource, source_item_id: str, *, seeded: bool) -> bool: ...
     def unseen_source_item_ids(self, site_key: str, source_item_ids: list[str]) -> set[str]: ...
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None: ...
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None: ...
+    def save_task(
+        self,
+        source: NonMainstreamMediaSource,
+        article: ParsedArticle,
+        *,
+        classified_target: str | None = None,
+    ) -> int | None: ...
+    def save_alert_task(
+        self,
+        source: NonMainstreamMediaSource,
+        page: DiscoveredPage,
+        *,
+        classified_target: str | None = None,
+        classification_metadata: dict[str, Any] | None = None,
+    ) -> int | None: ...
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None: ...
     def record_worker_heartbeat(
         self,
@@ -289,8 +315,18 @@ class PostgresNonMainstreamMediaRepository:
         seen = {str(row["source_item_id"]) for row in rows}
         return set(source_item_ids) - seen
 
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None:
-        task_source = write_flow_task_source(source)
+    def save_task(
+        self,
+        source: NonMainstreamMediaSource,
+        article: ParsedArticle,
+        *,
+        classified_target: str | None = None,
+    ) -> int | None:
+        task_source = (
+            write_flow_task_source_for_target(classified_target)
+            if classified_target in {"crypto", "ai"}
+            else write_flow_task_source(source)
+        )
         source_label = source_group_label(source.source_group)
         metadata = {
             **article.metadata,
@@ -309,6 +345,9 @@ class PostgresNonMainstreamMediaRepository:
             "canonical_url": article.canonical_url,
             "source_kind": task_source,
         }
+        if classified_target in {"crypto", "ai"}:
+            metadata["origin_source_group"] = source.source_group
+            metadata["classified_target"] = classified_target
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -344,8 +383,19 @@ class PostgresNonMainstreamMediaRepository:
             conn.commit()
             return int(row["id"]) if row is not None else None
 
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None:
-        task_source = alert_only_task_source(source)
+    def save_alert_task(
+        self,
+        source: NonMainstreamMediaSource,
+        page: DiscoveredPage,
+        *,
+        classified_target: str | None = None,
+        classification_metadata: dict[str, Any] | None = None,
+    ) -> int | None:
+        task_source = (
+            alert_only_task_source_for_target(classified_target)
+            if classified_target in {"crypto", "ai"}
+            else alert_only_task_source(source)
+        )
         source_label = source_group_label(source.source_group)
         content = (page.excerpt or page.title or page.detail_url).strip()
         metadata = {
@@ -360,6 +410,11 @@ class PostgresNonMainstreamMediaRepository:
             "published_at_raw": page.published_at_raw,
             "source_kind": task_source,
         }
+        if classified_target in {"crypto", "ai"}:
+            metadata["origin_source_group"] = source.source_group
+            metadata["classified_target"] = classified_target
+        if classification_metadata:
+            metadata.update(classification_metadata)
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -571,14 +626,44 @@ class InMemoryNonMainstreamMediaRepository:
             if (site_key, source_item_id) not in self.seen
         }
 
-    def save_task(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> int | None:
-        task_source = write_flow_task_source(source)
+    def save_task(
+        self,
+        source: NonMainstreamMediaSource,
+        article: ParsedArticle,
+        *,
+        classified_target: str | None = None,
+    ) -> int | None:
+        task_source = (
+            write_flow_task_source_for_target(classified_target)
+            if classified_target in {"crypto", "ai"}
+            else write_flow_task_source(source)
+        )
         source_label = source_group_label(source.source_group)
         if any(
             item["source"] == task_source and item["source_item_id"] == article.canonical_url
             for item in self.tasks
         ):
             return None
+        metadata = {
+            **article.metadata,
+            "site_key": source.site_key,
+            "site_display_name": source.display_name,
+            "capture_method": source.capture_method,
+            "pipeline_mode": source.pipeline_mode,
+            "source_group": source.source_group,
+            "discovery_mode": source.discovery_mode,
+            "source_label": source_label,
+            "content_format": article.content_format,
+            "author_names": article.author_names,
+            "tags": article.tags,
+            "categories": article.categories,
+            "excerpt": article.excerpt,
+            "canonical_url": article.canonical_url,
+            "source_kind": task_source,
+        }
+        if classified_target in {"crypto", "ai"}:
+            metadata["origin_source_group"] = source.source_group
+            metadata["classified_target"] = classified_target
         self.tasks.append(
             {
                 "id": len(self.tasks) + 1,
@@ -588,37 +673,49 @@ class InMemoryNonMainstreamMediaRepository:
                 "title": article.title,
                 "content": article.content,
                 "published_at": article.published_at,
-                "metadata": {
-                    **article.metadata,
-                    "site_key": source.site_key,
-                    "site_display_name": source.display_name,
-                    "capture_method": source.capture_method,
-                    "pipeline_mode": source.pipeline_mode,
-                    "source_group": source.source_group,
-                    "discovery_mode": source.discovery_mode,
-                    "source_label": source_label,
-                    "content_format": article.content_format,
-                    "author_names": article.author_names,
-                    "tags": article.tags,
-                    "categories": article.categories,
-                    "excerpt": article.excerpt,
-                    "canonical_url": article.canonical_url,
-                    "source_kind": task_source,
-                },
+                "metadata": metadata,
                 "raw_payload": article.raw_payload,
                 "status": "pending",
             }
         )
         return int(self.tasks[-1]["id"])
 
-    def save_alert_task(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> int | None:
-        task_source = alert_only_task_source(source)
+    def save_alert_task(
+        self,
+        source: NonMainstreamMediaSource,
+        page: DiscoveredPage,
+        *,
+        classified_target: str | None = None,
+        classification_metadata: dict[str, Any] | None = None,
+    ) -> int | None:
+        task_source = (
+            alert_only_task_source_for_target(classified_target)
+            if classified_target in {"crypto", "ai"}
+            else alert_only_task_source(source)
+        )
         source_label = source_group_label(source.source_group)
         if any(
             item["source"] == task_source and item["source_item_id"] == page.source_item_id
             for item in self.tasks
         ):
             return None
+        metadata = {
+            "site_key": source.site_key,
+            "site_display_name": source.display_name,
+            "capture_method": source.capture_method,
+            "pipeline_mode": source.pipeline_mode,
+            "source_group": source.source_group,
+            "discovery_mode": source.discovery_mode,
+            "source_label": source_label,
+            "excerpt": page.excerpt,
+            "published_at_raw": page.published_at_raw,
+            "source_kind": task_source,
+        }
+        if classified_target in {"crypto", "ai"}:
+            metadata["origin_source_group"] = source.source_group
+            metadata["classified_target"] = classified_target
+        if classification_metadata:
+            metadata.update(classification_metadata)
         self.tasks.append(
             {
                 "id": len(self.tasks) + 1,
@@ -628,18 +725,7 @@ class InMemoryNonMainstreamMediaRepository:
                 "title": page.title,
                 "content": page.excerpt or page.title or page.detail_url,
                 "published_at": page.published_at,
-                "metadata": {
-                    "site_key": source.site_key,
-                    "site_display_name": source.display_name,
-                    "capture_method": source.capture_method,
-                    "pipeline_mode": source.pipeline_mode,
-                    "source_group": source.source_group,
-                    "discovery_mode": source.discovery_mode,
-                    "source_label": source_label,
-                    "excerpt": page.excerpt,
-                    "published_at_raw": page.published_at_raw,
-                    "source_kind": task_source,
-                },
+                "metadata": metadata,
                 "raw_payload": {
                     "detail_url": page.detail_url,
                     "title": page.title,
@@ -764,7 +850,7 @@ ALTER TABLE non_mainstream_media_sources
     DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_source_group_check;
 ALTER TABLE non_mainstream_media_sources
     ADD CONSTRAINT non_mainstream_media_sources_source_group_check
-    CHECK (source_group IN ('external_media', 'ai_source'));
+    CHECK (source_group IN ('external_media', 'ai_source', 'mixed_source'));
 
 ALTER TABLE non_mainstream_media_sources
     DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_discovery_mode_check;

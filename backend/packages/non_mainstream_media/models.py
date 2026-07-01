@@ -8,12 +8,14 @@ from typing import Any, Literal
 CaptureMethod = Literal["html_request", "browser_render"]
 CaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty", "unsupported_method"]
 PipelineMode = Literal["write_flow", "alert_only"]
-SourceGroup = Literal["external_media", "ai_source"]
+SourceGroup = Literal["external_media", "ai_source", "mixed_source"]
 DiscoveryMode = Literal["direct", "telegram_primary_direct_fallback"]
+MixedClassificationTarget = Literal["crypto", "ai", "discard"]
 
 
 SOURCE_GROUP_EXTERNAL_MEDIA = "external_media"
 SOURCE_GROUP_AI_SOURCE = "ai_source"
+SOURCE_GROUP_MIXED_SOURCE = "mixed_source"
 TASK_SOURCE_EXTERNAL_MEDIA = "non_mainstream_media"
 TASK_SOURCE_EXTERNAL_MEDIA_ALERT = "external_media_alert"
 TASK_SOURCE_AI_SOURCE = "ai_source"
@@ -86,6 +88,12 @@ class ParsedArticle:
     content_format: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MixedClassificationResult:
+    target: MixedClassificationTarget
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

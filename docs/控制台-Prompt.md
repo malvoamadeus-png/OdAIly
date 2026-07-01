@@ -9,12 +9,12 @@
 - `external_media_alert_domain_judge`
 - `jin10_judge`
 
-## 外媒与 AI信源模板口径
+## Crypto信源与 AI信源模板口径
 
-- `mainstream_media_writer` 是当前唯一在用的外媒和 AI信源写作模板
-- 控制台应显示为“外媒快讯”
+- `mainstream_media_writer` 是当前唯一在用的 Crypto信源和 AI信源写作模板
+- 控制台应显示为“Crypto信源快讯”
 - 它同时服务：
-  - `non_mainstream_media` 的统一外媒全文写作
+  - `non_mainstream_media` 的统一 Crypto信源全文写作
   - `ai_source` 的 AI信源全文写作
   - 历史兼容 `mainstream_media`
 

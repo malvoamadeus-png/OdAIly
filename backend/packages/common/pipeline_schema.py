@@ -422,7 +422,7 @@ BEGIN
                         'label', '来源',
                         'value', CASE t.source
                             WHEN 'x' THEN 'X'
-                            WHEN 'non_mainstream_media' THEN '外媒'
+                            WHEN 'non_mainstream_media' THEN 'Crypto信源'
                             WHEN 'ai_source' THEN 'AI信源'
                             WHEN 'blockbeats' THEN 'BlockBeats'
                             WHEN 'panews' THEN 'PANews'
@@ -438,9 +438,9 @@ BEGIN
                                 'value', CASE p.news_type
                                     WHEN 'onchain' THEN '链上'
                                     WHEN 'funding' THEN '融资'
-                                    WHEN 'non_mainstream_media' THEN '外媒'
+                                    WHEN 'non_mainstream_media' THEN 'Crypto信源'
                                     WHEN 'ai_source' THEN 'AI信源'
-                                    WHEN 'mainstream_media' THEN '外媒'
+                                    WHEN 'mainstream_media' THEN 'Crypto信源'
                                     ELSE '常规'
                                 END,
                                 'tone', 'neutral'
@@ -531,12 +531,12 @@ BEGIN
                 'external_media_alert'::text AS feed_kind,
                 'high'::text AS lane,
                 86 AS priority,
-                COALESCE(NULLIF(t.title, ''), NULLIF(t.content, ''), '外媒标题提醒') AS title,
-                COALESCE(NULLIF(t.content, ''), NULLIF(t.title, ''), '外媒标题提醒暂无摘要') AS summary,
+                COALESCE(NULLIF(t.title, ''), NULLIF(t.content, ''), 'Crypto信源标题提醒') AS title,
+                COALESCE(NULLIF(t.content, ''), NULLIF(t.title, ''), 'Crypto信源标题提醒暂无摘要') AS summary,
                 jsonb_build_array(
                     jsonb_build_object(
                         'label', '来源',
-                        'value', COALESCE(NULLIF(t.metadata ->> 'site_display_name', ''), '外媒'),
+                        'value', COALESCE(NULLIF(t.metadata ->> 'site_display_name', ''), 'Crypto信源'),
                         'tone', 'neutral'
                     ),
                     jsonb_build_object(

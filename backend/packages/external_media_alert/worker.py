@@ -344,7 +344,7 @@ class ExternalMediaAlertWorker:
 
     def _run_notify(self, task) -> None:
         notice = build_alert_notice(
-            site_display_name=str(task.metadata.get("site_display_name") or "外媒"),
+            site_display_name=str(task.metadata.get("site_display_name") or "Crypto信源"),
             title=task.title or task.source_item_id,
             source_url=task.source_url,
             source_label=alert_source_label(task),
@@ -547,7 +547,7 @@ def normalize_title_key(value: str | None) -> str:
 
 def build_alert_ai_review_prompt(*, query: SearchDocument, match, target_type: str) -> str:
     return (
-        "你是 Odaily 外媒标题提醒搜索者。判断两条标题提醒是否是同一个新闻事件。\n"
+        "你是 Odaily Crypto信源标题提醒搜索者。判断两条标题提醒是否是同一个新闻事件。\n"
         "只输出 JSON，不输出解释。\n\n"
         "【新标题提醒】\n"
         f"标题：{query.title or ''}\n"
@@ -574,15 +574,15 @@ def parse_alert_ai_review_output(value: str) -> dict[str, Any]:
 def alert_source_label(task) -> str:
     if task.source == AI_SOURCE_ALERT_TASK_SOURCE:
         return "AI信源"
-    return "外媒"
+    return "Crypto信源"
 
 
 def alert_source_kind_label(task) -> str:
     if task.source == MAINSTREAM_MEDIA_TASK_SOURCE:
-        return "主流外媒快讯"
+        return "Crypto信源快讯"
     if task.source == AI_SOURCE_ALERT_TASK_SOURCE:
         return "AI信源标题提醒"
-    return "外媒标题提醒"
+    return "Crypto信源标题提醒"
 
 
 def build_alert_notice(
@@ -590,7 +590,7 @@ def build_alert_notice(
     site_display_name: str,
     title: str,
     source_url: str | None,
-    source_label: str = "外媒",
+    source_label: str = "Crypto信源",
 ) -> str:
     text = f"{source_label}标题提醒：{site_display_name}｜{title}"
     if source_url and source_url.strip() and title.strip().rstrip("/") != source_url.strip().rstrip("/"):

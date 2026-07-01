@@ -216,7 +216,7 @@ def default_publisher_rule_config() -> PublisherRuleConfig:
             key="regular",
             label="常规",
             enabled=True,
-            note="适用于 X、外媒、竞品、金十等非 AI 信源链路。",
+            note="适用于 X、Crypto信源、竞品、金十等非 AI 信源链路。",
             allow_rules=list(DEFAULT_REGULAR_ALLOW_RULES),
             deny_rules=list(DEFAULT_REGULAR_DENY_RULES),
         ),

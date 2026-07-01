@@ -122,7 +122,7 @@ ALTER TABLE non_mainstream_media_sources
     DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_source_group_check;
 ALTER TABLE non_mainstream_media_sources
     ADD CONSTRAINT non_mainstream_media_sources_source_group_check
-    CHECK (source_group IN ('external_media', 'ai_source'));
+    CHECK (source_group IN ('external_media', 'ai_source', 'mixed_source'));
 
 ALTER TABLE non_mainstream_media_sources
     DROP CONSTRAINT IF EXISTS non_mainstream_media_sources_interval_seconds_check;

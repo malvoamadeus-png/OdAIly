@@ -8,6 +8,7 @@ import {
   FileText,
   Globe2,
   Inbox,
+  Layers3,
   Pause,
   Plus,
   Radio,
@@ -119,16 +120,16 @@ const emptyJin10Settings: Jin10Settings = {
   updated_at: null,
 };
 
-const emptyPublisherRuleConfig: PublisherRuleConfig = {
+  const emptyPublisherRuleConfig: PublisherRuleConfig = {
   version: 1,
-  regular: {
-    key: 'regular',
-    label: '常规',
-    enabled: true,
-    note: '适用于 X、外媒、竞品、金十等非 AI 信源链路。',
-    allow_rules: [],
-    deny_rules: [],
-  },
+    regular: {
+      key: 'regular',
+      label: '常规',
+      enabled: true,
+      note: '适用于 X、Crypto信源、竞品、金十等非 AI 信源链路。',
+      allow_rules: [],
+      deny_rules: [],
+    },
   ai_source: {
     key: 'ai_source',
     label: 'AI信源',
@@ -451,7 +452,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<
-    'x' | 'non_mainstream' | 'ai_source' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+    'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
     | 'jin10'
   >('x');
   const [loading, setLoading] = useState(true);
@@ -510,19 +511,27 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const enabledNonMainstreamCount = useMemo(
-    () => nonMainstreamSources.filter((source) => source.enabled && source.source_group !== 'ai_source').length,
+    () => nonMainstreamSources.filter((source) => source.enabled && source.source_group === 'external_media').length,
     [nonMainstreamSources],
   );
   const enabledAiSourceCount = useMemo(
     () => nonMainstreamSources.filter((source) => source.enabled && source.source_group === 'ai_source').length,
     [nonMainstreamSources],
   );
+  const enabledMixedSourceCount = useMemo(
+    () => nonMainstreamSources.filter((source) => source.enabled && source.source_group === 'mixed_source').length,
+    [nonMainstreamSources],
+  );
   const externalMediaSources = useMemo(
-    () => nonMainstreamSources.filter((source) => source.source_group !== 'ai_source'),
+    () => nonMainstreamSources.filter((source) => source.source_group === 'external_media'),
     [nonMainstreamSources],
   );
   const aiSources = useMemo(
     () => nonMainstreamSources.filter((source) => source.source_group === 'ai_source'),
+    [nonMainstreamSources],
+  );
+  const mixedSources = useMemo(
+    () => nonMainstreamSources.filter((source) => source.source_group === 'mixed_source'),
     [nonMainstreamSources],
   );
   const enabledRegularRuleCount = useMemo(
@@ -712,7 +721,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         jitter_seconds: Number(form.get('jitter_seconds')),
       });
       setNonMainstreamSettings(updated);
-      setMessage('外媒设置已保存');
+      setMessage('Crypto信源设置已保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1088,9 +1097,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     view === 'x'
       ? 'X Capture'
       : view === 'non_mainstream'
-        ? 'External Media'
+        ? 'Crypto Sources'
       : view === 'ai_source'
         ? 'AI Sources'
+      : view === 'mixed_source'
+        ? 'Mixed Sources'
       : view === 'publisher'
         ? 'Publisher'
       : view === 'jin10'
@@ -1108,9 +1119,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     view === 'x'
       ? 'X 抓取控制台'
       : view === 'non_mainstream'
-        ? '外媒抓取控制台'
+        ? 'Crypto信源抓取控制台'
       : view === 'ai_source'
         ? 'AI信源抓取控制台'
+      : view === 'mixed_source'
+        ? '混合信源抓取控制台'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'jin10'
@@ -1131,6 +1144,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
       : view === 'ai_source'
         ? `${enabledAiSourceCount} 个启用站点 · 默认 300s`
+      : view === 'mixed_source'
+        ? `${enabledMixedSourceCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
@@ -1145,7 +1160,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
-      : view === 'non_mainstream' || view === 'ai_source'
+      : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
       : view === 'publisher'
         ? loadPublisherAll()
@@ -1178,7 +1193,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             type="button"
             onClick={() => switchView('non_mainstream')}
           >
-            <Globe2 size={18} /> 外媒
+            <Globe2 size={18} /> Crypto信源
           </button>
           <button
             className={view === 'ai_source' ? 'navItem active' : 'navItem'}
@@ -1186,6 +1201,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onClick={() => switchView('ai_source')}
           >
             <Bot size={18} /> AI信源
+          </button>
+          <button
+            className={view === 'mixed_source' ? 'navItem active' : 'navItem'}
+            type="button"
+            onClick={() => switchView('mixed_source')}
+          >
+            <Layers3 size={18} /> 混合信源
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1372,8 +1394,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             sources={externalMediaSources}
             loading={loadingNonMainstream}
             saving={savingNonMainstreamSettings}
-            title="已接入外媒"
-            emptyText="暂无已接入外媒，请先运行初始化命令。"
+            title="已接入Crypto信源"
+            emptyText="暂无已接入Crypto信源，请先运行初始化命令。"
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
@@ -1386,6 +1408,18 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             saving={savingNonMainstreamSettings}
             title="已接入AI信源"
             emptyText="暂无已接入AI信源，请先运行初始化命令。"
+            onSettingChange={updateNonMainstreamSetting}
+            onSave={saveNonMainstreamSettings}
+            onToggleSource={patchNonMainstreamSource}
+          />
+        ) : view === 'mixed_source' ? (
+          <NonMainstreamPanel
+            settings={nonMainstreamSettings}
+            sources={mixedSources}
+            loading={loadingNonMainstream}
+            saving={savingNonMainstreamSettings}
+            title="已接入混合信源"
+            emptyText="暂无已接入混合信源，请先运行初始化命令。"
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}

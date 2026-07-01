@@ -18,6 +18,7 @@ from .models import (
     DiscoveredPage,
     ParsedArticle,
     SOURCE_GROUP_AI_SOURCE,
+    SOURCE_GROUP_MIXED_SOURCE,
     SiteDefinition,
 )
 
@@ -76,6 +77,8 @@ CTEE_TIMEZONE = timezone(timedelta(hours=8))
 HANKYUNG_BASE_URL = "https://www.hankyung.com"
 HANKYUNG_PREMIUM_LIST_URL = "https://www.hankyung.com/premium9/0100001"
 HANKYUNG_TIMEZONE = timezone(timedelta(hours=9))
+BUSINESS_INSIDER_BASE_URL = "https://www.businessinsider.com"
+BUSINESS_INSIDER_LATEST_URL = "https://www.businessinsider.com/latest"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
@@ -225,6 +228,15 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         source_group=SOURCE_GROUP_AI_SOURCE,
         interval_seconds=300,
     ),
+    "businessinsider_latest": SiteDefinition(
+        site_key="businessinsider_latest",
+        display_name="Business Insider Latest",
+        homepage_url=BUSINESS_INSIDER_BASE_URL,
+        list_url=BUSINESS_INSIDER_LATEST_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_MIXED_SOURCE,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -337,6 +349,9 @@ def fetch_discovered_pages(
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
         )
+    if site.site_key == "businessinsider_latest":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_businessinsider_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -455,6 +470,9 @@ def fetch_article(
             fallback_urls=[build_jina_proxy_url(page.detail_url)],
         )
         article = parse_hankyung_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "businessinsider_latest":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_businessinsider_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -976,6 +994,31 @@ def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[Dis
             seen.add(detail_url)
             title = clean_inline_text(str(article_data.get("title") or article_data.get("name") or ""))
             results.append(DiscoveredPage(source_item_id=detail_url, detail_url=detail_url, title=title or None))
+    return results
+
+
+def discover_businessinsider_pages(html: str, *, base_url: str = BUSINESS_INSIDER_BASE_URL) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for anchor in soup.select("a[href]"):
+        href = clean_inline_text(anchor.get("href") or "")
+        if not href:
+            continue
+        detail_url = normalize_url(urljoin(base_url, href))
+        if not is_businessinsider_article_url(detail_url):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        title = clean_inline_text(anchor.get_text(" ", strip=True)) or None
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title,
+            )
+        )
     return results
 
 
@@ -1678,6 +1721,71 @@ def parse_decrypt_article(html: str, *, page_url: str, source_item_id: str) -> P
             "structured_type": structured.get("@type"),
             "structured_headline": structured.get("headline") or structured.get("name"),
         },
+        metadata=metadata,
+    )
+
+
+def parse_businessinsider_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or structured.get("dateCreated")
+        or select_meta_content(soup, "property", "article:published_time")
+    )
+    canonical = normalize_url(
+        str(
+            structured.get("url")
+            or select_attr(soup, "link[rel='canonical']", "href")
+            or select_meta_content(soup, "property", "og:url")
+            or page_url
+        )
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    categories = normalize_string_list(structured.get("articleSection")) or extract_businessinsider_categories(soup)
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(
+        str(structured.get("articleBody") or "")
+        or extract_businessinsider_body(soup)
+        or extract_body_text(soup)
+    )
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="businessinsider_article",
+        raw_payload={"page_url": page_url, "canonical_url": canonical},
         metadata=metadata,
     )
 
@@ -2553,6 +2661,16 @@ def is_fortune_article_url(url: str) -> bool:
     if parts[0] == "section":
         return False
     return all(part.isdigit() for part in parts[:3])
+
+
+def is_businessinsider_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("businessinsider.com"):
+        return False
+    path = parsed.path.rstrip("/")
+    if path in {"", "/latest"}:
+        return False
+    return bool(re.search(r"-\d{4}-\d{1,2}$", path))
 
 
 def is_fortune_crypto_relevant(title: str, url: str) -> bool:
@@ -3566,6 +3684,34 @@ def extract_hankyung_body(soup: BeautifulSoup, *, structured: dict[str, Any] | N
         if isinstance(body, str):
             return clean_inline_text(body)
     return ""
+
+
+def extract_businessinsider_body(soup: BeautifulSoup) -> str:
+    for selector in (
+        "article",
+        "main article",
+        "[data-test='article-body']",
+        "[data-testid='article-body']",
+        "[class*='content-lock-content']",
+        "main",
+    ):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = extract_body_from_node(node)
+        if text:
+            return text
+    return ""
+
+
+def extract_businessinsider_categories(soup: BeautifulSoup) -> list[str]:
+    categories: list[str] = []
+    for selector in ("nav[aria-label='Breadcrumb'] a", "[data-testid='breadcrumb'] a", ".breadcrumbs a"):
+        for node in soup.select(selector):
+            text = clean_inline_text(node.get_text(" ", strip=True))
+            if text and text != "Business Insider":
+                categories.append(text)
+    return unique_preserve_order(categories)
 
 
 def extract_hankyung_markdown_excerpt(value: str) -> str:

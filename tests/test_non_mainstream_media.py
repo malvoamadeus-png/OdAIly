@@ -8,6 +8,7 @@ from packages.non_mainstream_media.fetcher import (
     clean_body_text,
     discover_a16z_pages,
     discover_bloomberg_pages,
+    discover_businessinsider_pages,
     discover_coindesk_pages,
     discover_cointelegraph_pages,
     discover_ctee_pages,
@@ -27,6 +28,7 @@ from packages.non_mainstream_media.fetcher import (
     discover_wsj_pages,
     get_site_registry,
     parse_a16z_article,
+    parse_businessinsider_article,
     parse_coindesk_article,
     parse_cointelegraph_article,
     parse_ctee_article,
@@ -43,6 +45,7 @@ from packages.non_mainstream_media.models import (
     DISCOVERY_MODE_DIRECT,
     DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     SOURCE_GROUP_AI_SOURCE,
+    SOURCE_GROUP_MIXED_SOURCE,
     DiscoveredPage,
     ParsedArticle,
     SiteDefinition,
@@ -130,6 +133,76 @@ def test_registry_assigns_new_external_media_pipeline_modes() -> None:
     assert registry["decrypt"].pipeline_mode == "write_flow"
     assert registry["tether_news"].pipeline_mode == "write_flow"
     assert registry["the_block"].pipeline_mode == "alert_only"
+
+
+def test_registry_assigns_businessinsider_to_mixed_source() -> None:
+    registry = get_site_registry()
+
+    assert registry["businessinsider_latest"].pipeline_mode == "write_flow"
+    assert registry["businessinsider_latest"].source_group == SOURCE_GROUP_MIXED_SOURCE
+
+
+def test_discover_businessinsider_pages_extracts_article_links() -> None:
+    html = """
+    <html>
+      <body>
+        <a href="/latest">Latest</a>
+        <a href="/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6">AI article</a>
+        <a href="https://www.businessinsider.com/president-donald-trump-crypto-income-tops-billion-financial-disclosure-reveals-2026-6">Crypto article</a>
+        <a href="/some-topic-page">Topic page</a>
+      </body>
+    </html>
+    """
+
+    pages = discover_businessinsider_pages(html)
+
+    assert [page.detail_url for page in pages] == [
+        "https://www.businessinsider.com/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6/",
+        "https://www.businessinsider.com/president-donald-trump-crypto-income-tops-billion-financial-disclosure-reveals-2026-6/",
+    ]
+
+
+def test_parse_businessinsider_article_extracts_structured_fields() -> None:
+    html = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {
+            "@context":"https://schema.org",
+            "@type":"NewsArticle",
+            "headline":"AI adoption shifts towards long-term strategies, leaders reveal",
+            "url":"https://www.businessinsider.com/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6",
+            "datePublished":"2026-06-30T12:34:56Z",
+            "description":"Companies are changing how they think about AI adoption.",
+            "author":[{"@type":"Person","name":"Jane Doe"}],
+            "articleSection":["Tech","AI"],
+            "keywords":"AI, enterprise software",
+            "articleBody":"First paragraph.\\n\\nSecond paragraph."
+          }
+        </script>
+      </head>
+      <body>
+        <article>
+          <p>First paragraph.</p>
+          <p>Second paragraph.</p>
+        </article>
+      </body>
+    </html>
+    """
+
+    article = parse_businessinsider_article(
+        html,
+        page_url="https://www.businessinsider.com/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6",
+        source_item_id="https://www.businessinsider.com/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6/",
+    )
+
+    assert article.canonical_url == "https://www.businessinsider.com/ai-adoption-shifts-towards-long-term-strategies-leaders-reveal-2026-6/"
+    assert article.title == "AI adoption shifts towards long-term strategies, leaders reveal"
+    assert article.author_names == ["Jane Doe"]
+    assert article.categories == ["Tech", "AI"]
+    assert article.tags == ["AI", "enterprise software"]
+    assert article.content == "First paragraph.\n\nSecond paragraph."
+    assert article.content_format == "businessinsider_article"
 
 
 def test_registry_assigns_discovery_modes_for_telegram_primary_sites() -> None:
@@ -2197,7 +2270,7 @@ def test_worker_seeds_first_run_then_creates_task_for_new_url(monkeypatch) -> No
         "pipeline_mode": "write_flow",
         "source_group": "external_media",
         "discovery_mode": "direct",
-        "source_label": "外媒",
+        "source_label": "Crypto信源",
         "content_format": "article",
         "author_names": ["Alice"],
         "tags": ["DeFi"],
@@ -2272,7 +2345,7 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "pipeline_mode": "alert_only",
         "source_group": "external_media",
         "discovery_mode": "direct",
-        "source_label": "外媒",
+        "source_label": "Crypto信源",
         "excerpt": "Fresh alert item",
         "published_at_raw": None,
         "source_kind": "external_media_alert",
@@ -2389,6 +2462,347 @@ def test_worker_ai_source_alert_only_saves_ai_source_alert_task(monkeypatch) -> 
     assert task["metadata"]["source_group"] == "ai_source"
     assert task["metadata"]["source_label"] == "AI信源"
     assert task["metadata"]["source_kind"] == "ai_source_alert"
+
+
+def test_worker_mixed_source_write_flow_routes_to_crypto(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="crypto", reason="明确是加密新闻"),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="crypto", reason=""),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/crypto-story-2026-6/",
+            detail_url="https://www.businessinsider.com/crypto-story-2026-6/",
+            title="Crypto story",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "Crypto story",
+            content="BlackRock expands bitcoin ETF strategy.",
+            published_at=datetime(2026, 6, 30, 10, 0, tzinfo=UTC),
+            author_names=["BI Reporter"],
+            excerpt="BlackRock expands bitcoin ETF strategy.",
+            content_format="businessinsider_article",
+            raw_payload={"page_url": page.detail_url},
+            metadata={},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    task = repository.tasks[0]
+    assert task["source"] == "non_mainstream_media"
+    assert task["metadata"]["source_group"] == "mixed_source"
+    assert task["metadata"]["origin_source_group"] == "mixed_source"
+    assert task["metadata"]["classified_target"] == "crypto"
+    assert task["metadata"]["classification_model"] == "gpt-5.4-mini"
+    assert task["metadata"]["classification_input_mode"] == "fulltext"
+
+
+def test_worker_mixed_source_write_flow_routes_to_ai(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="ai", reason="明确是AI产业新闻"),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="ai", reason=""),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/ai-story-2026-6/",
+            detail_url="https://www.businessinsider.com/ai-story-2026-6/",
+            title="AI story",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "AI story",
+            content="Anthropic signs major data center expansion deal.",
+            published_at=datetime(2026, 6, 30, 10, 0, tzinfo=UTC),
+            author_names=["BI Reporter"],
+            excerpt="Anthropic signs major data center expansion deal.",
+            content_format="businessinsider_article",
+            raw_payload={"page_url": page.detail_url},
+            metadata={},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    task = repository.tasks[0]
+    assert task["source"] == "ai_source"
+    assert task["metadata"]["classified_target"] == "ai"
+
+
+def test_worker_mixed_source_write_flow_discard_marks_seen_without_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="write_flow",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="discard", reason="泛生活新闻"),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="discard", reason=""),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/lifestyle-story-2026-6/",
+            detail_url="https://www.businessinsider.com/lifestyle-story-2026-6/",
+            title="Lifestyle story",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title=page.title or "Lifestyle story",
+            content="A general lifestyle story.",
+            published_at=datetime(2026, 6, 30, 10, 0, tzinfo=UTC),
+            author_names=["BI Reporter"],
+            excerpt="A general lifestyle story.",
+            content_format="businessinsider_article",
+            raw_payload={"page_url": page.detail_url},
+            metadata={},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 0
+    assert stats[0].new_count == 1
+    assert stats[0].metadata["classified_discard"] == 1
+    assert repository.tasks == []
+
+
+def test_worker_mixed_source_alert_only_routes_to_crypto(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="crypto", reason=""),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="crypto", reason="标题明显是加密新闻"),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/crypto-alert-2026-6/",
+            detail_url="https://www.businessinsider.com/crypto-alert-2026-6/",
+            title="Crypto alert",
+            excerpt="Bitcoin ETF related headline.",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert stats[0].metadata["classified_crypto"] == 1
+    task = repository.tasks[0]
+    assert task["source"] == "external_media_alert"
+    assert task["metadata"]["source_group"] == "mixed_source"
+    assert task["metadata"]["origin_source_group"] == "mixed_source"
+    assert task["metadata"]["classified_target"] == "crypto"
+    assert task["metadata"]["classification_model"] == "gpt-5.4-mini"
+    assert task["metadata"]["classification_input_mode"] == "headline_excerpt"
+
+
+def test_worker_mixed_source_alert_only_routes_to_ai(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="ai", reason=""),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="ai", reason="标题明显是AI产业新闻"),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/ai-alert-2026-6/",
+            detail_url="https://www.businessinsider.com/ai-alert-2026-6/",
+            title="AI alert",
+            excerpt="Data center expansion headline.",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert stats[0].metadata["classified_ai"] == 1
+    task = repository.tasks[0]
+    assert task["source"] == "ai_source_alert"
+    assert task["metadata"]["classified_target"] == "ai"
+    assert task["metadata"]["classification_input_mode"] == "headline_excerpt"
+
+
+def test_worker_mixed_source_alert_only_discard_marks_seen_without_task(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "businessinsider_latest": SiteDefinition(
+            site_key="businessinsider_latest",
+            display_name="Business Insider Latest",
+            homepage_url="https://www.businessinsider.com",
+            list_url="https://www.businessinsider.com/latest",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+            source_group="mixed_source",
+        )
+    }
+    classifier = SimpleNamespace(
+        classify_fulltext=lambda **_: SimpleNamespace(target="discard", reason=""),
+        classify_headline_excerpt=lambda **_: SimpleNamespace(target="discard", reason="普通商业新闻"),
+    )
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry, mixed_classifier=classifier)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/seed-2026-6/",
+            detail_url="https://www.businessinsider.com/seed-2026-6/",
+            title="Seed story",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.businessinsider.com/general-alert-2026-6/",
+            detail_url="https://www.businessinsider.com/general-alert-2026-6/",
+            title="General alert",
+            excerpt="General business headline.",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 0
+    assert stats[0].new_count == 1
+    assert stats[0].metadata["classified_discard"] == 1
+    assert repository.tasks == []
 
 
 def test_non_mainstream_media_config_reload_interval_caps_idle_sleep_without_sources(monkeypatch) -> None:
