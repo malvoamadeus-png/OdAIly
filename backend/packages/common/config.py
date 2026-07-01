@@ -331,7 +331,7 @@ class XProcessingSettings(BaseModel):
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     search_window_hours: int = Field(default=24, ge=1, le=168)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
-    search_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    search_ai_review_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
@@ -376,7 +376,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "search_window_hours": int(os.getenv("SEARCH_WINDOW_HOURS") or 24),
         "search_duplicate_threshold": float(os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88),
-        "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.78),
+        "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.72),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
         "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),
@@ -409,7 +409,7 @@ class ExternalMediaAlertSettings(BaseModel):
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     search_window_hours: int = Field(default=168, ge=1, le=720)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
-    search_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    search_ai_review_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
@@ -455,7 +455,7 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
         "search_ai_review_threshold": float(
             os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_AI_REVIEW_THRESHOLD")
             or os.getenv("SEARCH_AI_REVIEW_THRESHOLD")
-            or 0.78
+            or 0.72
         ),
         "request_timeout_seconds": float(
             os.getenv("EXTERNAL_MEDIA_ALERT_REQUEST_TIMEOUT_SECONDS")
@@ -505,7 +505,7 @@ class CompetitorMonitorSettings(BaseModel):
     event_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     event_window_hours: int = Field(default=6, ge=1, le=168)
     event_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
-    event_ai_review_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    event_ai_review_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
     processing_freshness_window_seconds: int = Field(
         default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
         ge=1,
@@ -544,7 +544,7 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
             os.getenv("COMPETITOR_EVENT_DUPLICATE_THRESHOLD") or os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88
         ),
         "event_ai_review_threshold": float(
-            os.getenv("COMPETITOR_EVENT_AI_REVIEW_THRESHOLD") or os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.78
+            os.getenv("COMPETITOR_EVENT_AI_REVIEW_THRESHOLD") or os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.72
         ),
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS

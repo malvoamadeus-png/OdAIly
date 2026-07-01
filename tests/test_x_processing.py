@@ -15,7 +15,7 @@ from packages.x_processing.repository import (
     InMemoryXProcessingRepository,
     PostgresXProcessingRepository,
 )
-from packages.x_processing.searcher import SearchDocument, document_cache_key
+from packages.x_processing.searcher import SearchCache, SearchDocument, document_cache_key
 from packages.x_processing.telegram import TelegramClient, TelegramResult
 from packages.x_processing.worker import (
     X_JUDGE_JSON_SCHEMA,
@@ -133,6 +133,23 @@ class CountingRepository(InMemoryXProcessingRepository):
         return super().list_active_candidate_documents()
 
 
+class StubSearchWorker(XProcessingWorker):
+    def _run_search(self, task: TaskRecord) -> None:
+        return None
+
+
+def _odaily_reference(*, doc_id: str, title: str, published_at: datetime) -> SearchDocument:
+    return SearchDocument(
+        doc_type="odaily_reference",
+        doc_id=doc_id,
+        title=title,
+        content=title,
+        source="odaily",
+        published_at=published_at,
+        status="published",
+    )
+
+
 class FakeOpenAIResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
@@ -235,6 +252,39 @@ def test_x_processing_worker_skips_notify_listener_when_disabled(capsys) -> None
 
     assert thread is None
     assert "notify listener disabled" in capsys.readouterr().out
+
+
+def test_search_worker_refreshes_odaily_references_even_when_local_cache_is_non_empty() -> None:
+    repo = CountingRepository()
+    now = datetime.now(UTC)
+    stale_reference = _odaily_reference(
+        doc_id="stale-ref",
+        title="旧的 Odaily 历史",
+        published_at=now - timedelta(hours=2),
+    )
+    fresh_reference = _odaily_reference(
+        doc_id="fresh-ref",
+        title="新的 Odaily 历史",
+        published_at=now - timedelta(minutes=5),
+    )
+    repo.odaily_references = [fresh_reference]
+    worker = StubSearchWorker(
+        stage="search",
+        repository=repo,
+        settings=settings(),
+        search_embedding_service=FakeEmbeddingService(),
+        search_ai_client=FakeAiClient([]),
+    )
+    cache = worker._search_cache()
+    assert cache is not None
+    cache.upsert_document(stale_reference)
+
+    documents = worker._load_odaily_reference_documents(since=now - timedelta(hours=24))
+
+    assert repo.odaily_reads == 1
+    assert [document.doc_id for document in documents] == ["fresh-ref"]
+    cached_documents = cache.list_odaily_reference_documents(since=now - timedelta(hours=24))
+    assert [document.doc_id for document in cached_documents] == ["fresh-ref", "stale-ref"]
 
 
 def x_ai_task(task_id: int, status: str = "pending") -> TaskRecord:

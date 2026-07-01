@@ -1017,13 +1017,9 @@ class XProcessingWorker:
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()
-        if cache is None:
-            return self.repository.list_odaily_reference_documents(since=since)
-        local_documents = cache.list_odaily_reference_documents(since=since)
-        if local_documents:
-            return local_documents
         remote_documents = self.repository.list_odaily_reference_documents(since=since)
-        cache.upsert_documents(remote_documents)
+        if cache is not None:
+            cache.upsert_documents(remote_documents)
         return remote_documents
 
     def _load_active_candidate_documents(self, *, exclude_task_id: int) -> list[SearchDocument]:
