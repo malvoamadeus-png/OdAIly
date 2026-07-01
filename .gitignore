@@ -36,6 +36,7 @@ docs/查重.md
 docs/*发布推送接口*.md
 docs/*接口发布推送*.md
 tests/
+tools/
 
 data/config/*.json
 !data/config/*.example.json
