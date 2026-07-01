@@ -22,29 +22,19 @@
             <input id="pollIntervalSeconds" name="pollIntervalSeconds" type="number" min="10" max="120" step="1" />
           </label>
           <label class="field inlineField">
-            <span>声音提醒</span>
+            <span>总开关</span>
             <input id="soundEnabled" name="soundEnabled" type="checkbox" />
           </label>
-          <label class="field">
-            <span>提醒范围</span>
-            <select id="soundScope" name="soundScope">
-              <option value="high">仅高频区</option>
-              <option value="all">全部消息</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>音量</span>
-            <select id="soundVolume" name="soundVolume">
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
-          </label>
+          <p class="hintText">总开关关闭后，侧边栏不会为任何新消息发声。开启后可继续按消息类型单独配置。</p>
+        </section>
+
+        <section class="panel">
+          <h2>分类声音配置</h2>
+          <div id="soundProfiles" class="soundProfiles"></div>
         </section>
 
         <div class="formActions">
           <button type="submit" class="primaryButton">保存设置</button>
-          <button type="button" id="testSoundButton" class="secondaryButton">测试声音</button>
           <button type="button" id="resetButton" class="secondaryButton">恢复默认</button>
         </div>
         <p class="hintText">Supabase 连接参数已内置在插件中，设置页只保留轮询和声音选项。</p>

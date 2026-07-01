@@ -9,7 +9,7 @@ import {
   quickGenerateNewsflash,
   searchNewsGeneration
 } from "./lib/news-gen.js";
-import { playNotificationBeep, unlockNotificationSound } from "./lib/sound.js";
+import { playNotificationSound, unlockNotificationSound } from "./lib/sound.js";
 import {
   clearAuthSession,
   getActiveTopTab,
@@ -56,7 +56,7 @@ const state = {
   error: "",
   loginError: "",
   pollTimer: null,
-  soundCooldownUntil: 0,
+  soundCooldownUntilByKey: {},
   lastFeedIds: new Set(),
   feedItems: [],
   feedLaneRatios: { ...DEFAULT_FEED_LANE_RATIOS },
@@ -194,6 +194,30 @@ function feedKey(item) {
 
 function feedIdentity(item) {
   return feedKey(item);
+}
+
+const SOUND_PRIORITY = {
+  auditor_alert: 5,
+  newsflash_direct: 4,
+  newsflash_backstage: 3,
+  writer3_context: 2,
+  whale: 1
+};
+
+function soundKeyForFeedItem(item) {
+  if (item.feed_kind === "auditor_alert") {
+    return "auditor_alert";
+  }
+  if (item.feed_kind === "writer3_context") {
+    return "writer3_context";
+  }
+  if (item.feed_kind === "whale_onchain" || item.feed_kind === "whale_hyperliquid") {
+    return "whale";
+  }
+  if (item.feed_kind === "newsflash") {
+    return item.status_label === "已直发" ? "newsflash_direct" : "newsflash_backstage";
+  }
+  return null;
 }
 
 function isFreshFeedItem(item) {
@@ -1125,18 +1149,29 @@ async function maybePlaySound(nextItems) {
   if (document.visibilityState !== "visible") {
     return;
   }
-  const scope = state.settings.soundScope || "high";
   const previousIds = state.lastFeedIds;
   const newItems = nextItems.filter((item) => !previousIds.has(feedIdentity(item)));
-  const hit = newItems.some((item) => (scope === "all" ? true : item.lane === "high"));
-  if (!hit) {
+  const candidates = newItems
+    .map((item) => ({ item, soundKey: soundKeyForFeedItem(item) }))
+    .filter((entry) => entry.soundKey);
+  if (!candidates.length) {
     return;
   }
-  if (Date.now() < state.soundCooldownUntil) {
+  candidates.sort((left, right) => (SOUND_PRIORITY[right.soundKey] || 0) - (SOUND_PRIORITY[left.soundKey] || 0));
+  const selected = candidates[0];
+  const profile = state.settings.soundProfiles?.[selected.soundKey];
+  if (!profile?.enabled) {
     return;
   }
-  state.soundCooldownUntil = Date.now() + 4000;
-  await playNotificationBeep(state.settings.soundVolume || "medium");
+  const cooldownUntil = Number(state.soundCooldownUntilByKey[selected.soundKey] || 0);
+  if (Date.now() < cooldownUntil) {
+    return;
+  }
+  state.soundCooldownUntilByKey[selected.soundKey] = Date.now() + Number(profile.cooldownMs || 4000);
+  await playNotificationSound({
+    preset: profile.preset,
+    volume: profile.volume
+  });
 }
 
 async function refreshFeed(shouldSound) {
@@ -1272,8 +1307,7 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
     authConfigChanged ||
     changes.pollIntervalSeconds ||
     changes.soundEnabled ||
-    changes.soundScope ||
-    changes.soundVolume
+    changes.soundProfiles
   ) {
     state.settings = await getSettings();
     state.error = "";
