@@ -94,6 +94,15 @@ import {
   type NewsflashEventSummary,
   type ConsoleAdmin,
 } from './xCaptureStore';
+import {
+  workflowFilters,
+  workflowGroups,
+  workflowPrinciples,
+  workflowSideNotes,
+  type WorkflowFilterKey,
+  type WorkflowGroup,
+  type WorkflowNode,
+} from './workflowCatalog';
 
 const emptySettings: Settings = {
   global_interval_seconds: 30,
@@ -452,7 +461,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<
-    'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+    'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'workflow' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
     | 'jin10'
   >('x');
   const [loading, setLoading] = useState(true);
@@ -1106,6 +1115,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Publisher'
       : view === 'jin10'
         ? 'Jin10'
+      : view === 'workflow'
+        ? 'Workflow'
         : view === 'whale'
           ? 'Whale Watch'
         : view === 'prompts'
@@ -1128,6 +1139,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '发布者控制台'
       : view === 'jin10'
         ? '金十监控'
+      : view === 'workflow'
+        ? '流程管理'
         : view === 'whale'
         ? '巨鲸'
       : view === 'prompts'
@@ -1150,6 +1163,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
         ? `${jin10Settings.enabled ? '已开启' : '已关闭'} · ${jin10Settings.interval_seconds}s`
+      : view === 'workflow'
+        ? '自动化主链路全景 · 节点 / 分流 / 模型一图看清'
       : view === 'whale'
         ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
       : view === 'prompts'
@@ -1166,6 +1181,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadPublisherAll()
       : view === 'jin10'
         ? loadJin10All()
+      : view === 'workflow'
+        ? Promise.resolve()
       : view === 'whale'
         ? loadWhaleWatchAll()
       : view === 'prompts'
@@ -1214,6 +1231,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'jin10' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('jin10')}>
             <Radio size={18} /> 金十
+          </button>
+          <button className={view === 'workflow' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('workflow')}>
+            <Layers3 size={18} /> 流程管理
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
@@ -1441,6 +1461,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             saving={savingJin10Settings}
             onSave={saveJin10Settings}
           />
+        ) : view === 'workflow' ? (
+          <WorkflowPanel />
         ) : view === 'whale' ? (
           <WhaleWatchPanel
             addresses={whaleAddresses}
@@ -1526,6 +1548,272 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       </main>
     </div>
   );
+}
+
+function WorkflowPanel() {
+  const [mode, setMode] = useState<'detail' | 'compact'>('detail');
+  const [filter, setFilter] = useState<WorkflowFilterKey>('all');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(workflowGroups.map((group) => [group.id, true])),
+  );
+
+  const visibleGroups = workflowGroups.filter((group) => filter === 'all' || group.filterTags.includes(filter));
+  const aiNodeCount = workflowGroups.reduce((count, group) => count + group.nodes.filter((node) => node.usesAi).length, 0);
+  const modelSet = new Set(
+    workflowGroups
+      .flatMap((group) => group.nodes)
+      .filter((node) => node.usesAi && node.model && !node.model.includes('规则 + 向量'))
+      .map((node) => node.model),
+  );
+
+  function toggleExpanded(groupId: string) {
+    setExpanded((current) => ({ ...current, [groupId]: !current[groupId] }));
+  }
+
+  return (
+    <section className="workflowLayout">
+      <div className="workflowHero">
+        <div className="workflowHeroText">
+          <span className="workflowEyebrow">OdAIly workflow atlas</span>
+          <h2>一条信息从来源到发布，会经过哪些闸门？</h2>
+          <p>
+            这里把当前自动化主链路拆成可读的节点：谁负责收集、哪里分流、哪里用模型判断、哪里写作定稿，以及什么时候只提醒不发布。
+          </p>
+        </div>
+        <div className="workflowHeroStats">
+          <div>
+            <strong>{workflowGroups.length}</strong>
+            <span>条主工作流</span>
+          </div>
+          <div>
+            <strong>{aiNodeCount}</strong>
+            <span>个 AI 节点</span>
+          </div>
+          <div>
+            <strong>{modelSet.size}</strong>
+            <span>类固定模型口径</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="workflowToolbar">
+        <div className="workflowFilters" aria-label="工作流筛选">
+          {workflowFilters.map((item) => (
+            <button
+              className={filter === item.key ? 'workflowFilterButton active' : 'workflowFilterButton'}
+              type="button"
+              key={item.key}
+              onClick={() => setFilter(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="workflowModeSwitch" aria-label="展示模式">
+          <button className={mode === 'detail' ? 'active' : ''} type="button" onClick={() => setMode('detail')}>
+            全景详细
+          </button>
+          <button className={mode === 'compact' ? 'active' : ''} type="button" onClick={() => setMode('compact')}>
+            极简流向
+          </button>
+        </div>
+      </div>
+
+      {visibleGroups.length === 0 ? (
+        <div className="emptyState">当前筛选没有匹配的工作流。</div>
+      ) : mode === 'detail' ? (
+        <div className="workflowDetailList">
+          {visibleGroups.map((group) => (
+            <WorkflowGroupCard
+              expanded={expanded[group.id] ?? true}
+              group={group}
+              key={group.id}
+              onToggle={() => toggleExpanded(group.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="workflowCompactGrid">
+          {visibleGroups.map((group) => (
+            <WorkflowCompactCard group={group} key={group.id} />
+          ))}
+        </div>
+      )}
+
+      <div className="workflowPrinciples">
+        <div className="sectionHeader">
+          <h2>统一规律</h2>
+          <span>跨链路不变的系统约定</span>
+        </div>
+        <div className="workflowPrincipleGrid">
+          {workflowPrinciples.map((item) => (
+            <article className="workflowPrincipleCard" key={item.title}>
+              <strong>{item.title}</strong>
+              <p>{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <div className="workflowSideNotes">
+        <div className="sectionHeader">
+          <h2>系统旁路</h2>
+          <span>不放入主画布，但与生产运转相关</span>
+        </div>
+        <div className="workflowSideNoteGrid">
+          {workflowSideNotes.map((item) => (
+            <article className="workflowSideNote" key={item.title}>
+              <strong>{item.title}</strong>
+              <p>{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function WorkflowGroupCard({
+  group,
+  expanded,
+  onToggle,
+}: {
+  group: WorkflowGroup;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <article className="workflowCard">
+      <header className="workflowCardHeader">
+        <div>
+          <div className="workflowCardTitle">
+            <span>{group.badge}</span>
+            <h3>{group.title}</h3>
+          </div>
+          <p>{group.summary}</p>
+        </div>
+        <button className="secondaryButton" type="button" onClick={onToggle}>
+          {expanded ? '收起说明' : '展开说明'}
+        </button>
+      </header>
+
+      <div className="workflowMetaStrip">
+        <span>入口：{group.sourceEntry}</span>
+        <span>状态：{group.defaultStatus}</span>
+      </div>
+
+      {expanded && (
+        <div className="workflowRoutingNote">
+          <strong>分流口径</strong>
+          <p>{group.routingNote}</p>
+        </div>
+      )}
+
+      {group.routes && expanded && (
+        <div className="workflowRoutes">
+          {group.routes.map((route) => (
+            <div className="workflowRoute" key={route.label}>
+              <strong>{route.label}</strong>
+              <div>
+                {route.steps.map((step, index) => (
+                  <span key={`${route.label}-${step}`}>
+                    {index > 0 && <b>→</b>}
+                    {step}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className={expanded ? 'workflowRail' : 'workflowRail compact'}>
+        {group.nodes.map((node, index) => (
+          <WorkflowNodeCard expanded={expanded} isLast={index === group.nodes.length - 1} key={node.id} node={node} />
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function WorkflowNodeCard({
+  node,
+  expanded,
+  isLast,
+}: {
+  node: WorkflowNode;
+  expanded: boolean;
+  isLast: boolean;
+}) {
+  return (
+    <div className="workflowNodeWrap">
+      <div className={`workflowNode ${node.kind}${node.usesAi ? ' usesAi' : ''}`}>
+        <div className="workflowNodeTop">
+          <span className="workflowKind">{nodeKindLabel(node.kind)}</span>
+          {node.usesAi && <span className="workflowAiDot">AI</span>}
+        </div>
+        <strong>{node.name}</strong>
+        {expanded && <p>{node.description}</p>}
+        {node.usesAi && (
+          <div className="workflowModelCard">
+            <span>{node.model ?? '模型配置未固定'}</span>
+            {node.reasoningEffort && <small>思考等级：{node.reasoningEffort}</small>}
+          </div>
+        )}
+        {expanded && (
+          <div className="workflowOutput">
+            <span>产出</span>
+            <p>{node.output}</p>
+          </div>
+        )}
+      </div>
+      {!isLast && <div className="workflowConnector">→</div>}
+    </div>
+  );
+}
+
+function WorkflowCompactCard({ group }: { group: WorkflowGroup }) {
+  return (
+    <article className="workflowMiniMap">
+      <div className="workflowMiniMapHeader">
+        <span>{group.badge}</span>
+        <h3>{group.title}</h3>
+      </div>
+      <div className="workflowMiniRail">
+        {group.nodes.map((node, index) => (
+          <span className={node.usesAi ? 'workflowMiniNode ai' : 'workflowMiniNode'} key={node.id}>
+            {index > 0 && <b>→</b>}
+            <em>{node.compactLabel}</em>
+            {node.usesAi && node.model && !node.model.includes('规则 + 向量') && <small>{node.model}{node.reasoningEffort ? ` / ${node.reasoningEffort}` : ''}</small>}
+          </span>
+        ))}
+      </div>
+      {group.routes && (
+        <div className="workflowMiniRoutes">
+          {group.routes.map((route) => (
+            <span key={route.label}>
+              <strong>{route.label}</strong>
+              {route.steps.join(' -> ')}
+            </span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function nodeKindLabel(kind: WorkflowNode['kind']): string {
+  const labels: Record<WorkflowNode['kind'], string> = {
+    collector: '收集',
+    dedupe: '查重',
+    judge: '判断',
+    writer: '写作',
+    formatter: '定稿',
+    publisher: '发布',
+    notify: '提醒',
+    split: '分流',
+  };
+  return labels[kind];
 }
 
 function Jin10Panel({
