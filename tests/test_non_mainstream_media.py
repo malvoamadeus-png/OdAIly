@@ -1330,6 +1330,28 @@ def test_extract_message_title_removes_prefix_and_url() -> None:
     assert title == "ETF issuer files new application"
 
 
+def test_extract_message_title_keeps_full_headline_when_title_contains_colon() -> None:
+    url = "https://www.theblock.co/post/406766/europes-mica-crypto-regime-is-fully-in-force-heres-who-wins-and-loses"
+    title = extract_message_title(
+        f"[THE BLOCK]({url}) ({url}): Europe's MiCA crypto regime is fully in force: Here's who wins and loses",
+        "the_block",
+        url,
+    )
+
+    assert title == "Europe's MiCA crypto regime is fully in force: Here's who wins and loses"
+
+
+def test_extract_message_title_keeps_full_headline_when_suffix_is_single_word() -> None:
+    url = "https://www.theblock.co/post/406851/ripple-coinbase-election-donations"
+    title = extract_message_title(
+        f"[THE BLOCK]({url}) ({url}): Ripple, Coinbase among top donors in crypto's $189 million election spending: report",
+        "the_block",
+        url,
+    )
+
+    assert title == "Ripple, Coinbase among top donors in crypto's $189 million election spending: report"
+
+
 def test_discover_etnews_pages_reads_section_article_ids() -> None:
     html = """
     <html>

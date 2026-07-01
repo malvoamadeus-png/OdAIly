@@ -169,12 +169,9 @@ def extract_message_title(text: str, site_key: str, url: str | None = None) -> s
             break
     if url:
         normalized = normalized.replace(url, " ")
-    normalized = re.sub(r"\s+", " ", normalized).strip(" -:\n\t")
-    if ":" in normalized:
-        _, tail = normalized.rsplit(":", 1)
-        if tail.strip():
-            normalized = tail.strip()
-    normalized = normalized.strip(" -:\n\t")
+    normalized = re.sub(r"\(\s*\)", " ", normalized)
+    normalized = re.sub(r"\[\s*\]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" -:()[]\n\t")
     if not normalized:
         return None
     if url and normalized.rstrip("/") == url.rstrip("/"):
