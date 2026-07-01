@@ -41,6 +41,8 @@ COINTELEGRAPH_GOOGLE_NEWS_SITEMAP_URL = "https://cointelegraph.com/sitemap/googl
 COINTELEGRAPH_FEED_URL = "https://cointelegraph.com/rss"
 DECRYPT_BASE_URL = "https://decrypt.co"
 DECRYPT_FEED_URL = "https://decrypt.co/feed"
+NEWS_BITCOIN_BASE_URL = "https://news.bitcoin.com"
+NEWS_BITCOIN_FEED_URL = "https://news.bitcoin.com/feed/"
 FORBES_BASE_URL = "https://www.forbes.com"
 FORBES_SECTION_URL = "https://www.forbes.com/sites/digital-assets/"
 FORBES_FEED_URL = "https://www.forbes.com/sites/digital-assets/feed/"
@@ -88,6 +90,11 @@ FORTUNE_CRYPTO_PATTERN = re.compile(
     r"crypto|bitcoin|ethereum|stablecoin|token|tokenized|blockchain|web3|defi|nft|dao|airdrop|staking|"
     r"btc|eth|sol|bnb|usdt|usdc|layer\s*2|l2|onchain|wallet|exchange|miner|mining|"
     r"比特币|以太坊|稳定币|代币|区块链|加密|公链|链上|钱包|交易所|矿工|挖矿",
+    re.IGNORECASE,
+)
+NEWS_BITCOIN_RELEVANCE_PATTERN = re.compile(
+    r"crypto|bitcoin|btc|ethereum|eth|stablecoin|usdt|usdc|blockchain|mining|miner|wallet|exchange|"
+    r"market updates|regulation|legal|finance|token|web3|defi|dao|nft|binance|solana|sol|xrp|bnb",
     re.IGNORECASE,
 )
 HK01_ISSUE_URL = (
@@ -143,6 +150,14 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         capture_method="html_request",
         pipeline_mode="write_flow",
         discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
+    ),
+    "news_bitcoin": SiteDefinition(
+        site_key="news_bitcoin",
+        display_name="Bitcoin.com News",
+        homepage_url=NEWS_BITCOIN_BASE_URL,
+        list_url=NEWS_BITCOIN_FEED_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
     ),
     "forbes_digital_assets": SiteDefinition(
         site_key="forbes_digital_assets",
@@ -316,6 +331,9 @@ def fetch_discovered_pages(
     if site.site_key == "decrypt":
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_decrypt_pages(xml, base_url=site.homepage_url)
+    if site.site_key == "news_bitcoin":
+        xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_news_bitcoin_pages(xml, base_url=site.homepage_url)
     if site.site_key == "forbes_digital_assets":
         xml = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_forbes_pages(xml, base_url=site.homepage_url)
@@ -432,6 +450,9 @@ def fetch_article(
     elif site.site_key == "decrypt":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_decrypt_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "news_bitcoin":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_news_bitcoin_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "forbes_digital_assets":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_forbes_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
@@ -819,6 +840,42 @@ def discover_decrypt_pages(xml_text: str, *, base_url: str = DECRYPT_BASE_URL) -
         base_url=base_url,
         href_patterns=(r"^https://decrypt\.co/\d+/.+$",),
     )
+
+
+def discover_news_bitcoin_pages(xml_text: str, *, base_url: str = NEWS_BITCOIN_BASE_URL) -> list[DiscoveredPage]:
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid RSS payload") from exc
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        description = item.findtext("description", default="")
+        published_at_raw = clean_inline_text(item.findtext("pubDate", default=""))
+        categories = [clean_inline_text(node.text or "") for node in item.findall("category") if clean_inline_text(node.text or "")]
+        if not link or not title:
+            continue
+        detail_url = normalize_url(urljoin(base_url, link))
+        if not is_news_bitcoin_article_url(detail_url):
+            continue
+        if not is_news_bitcoin_feed_item_relevant(title=title, detail_url=detail_url, categories=categories):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title or None,
+                excerpt=extract_feed_excerpt(description, title=title) or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
 
 
 def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -> list[DiscoveredPage]:
@@ -1721,6 +1778,71 @@ def parse_decrypt_article(html: str, *, page_url: str, source_item_id: str) -> P
             "structured_type": structured.get("@type"),
             "structured_headline": structured.get("headline") or structured.get("name"),
         },
+        metadata=metadata,
+    )
+
+
+def parse_news_bitcoin_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or structured.get("dateCreated")
+        or select_meta_content(soup, "property", "article:published_time")
+    )
+    canonical = normalize_url(
+        str(
+            structured.get("url")
+            or select_attr(soup, "link[rel='canonical']", "href")
+            or select_meta_content(soup, "property", "og:url")
+            or page_url
+        )
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    categories = normalize_string_list(structured.get("articleSection")) or extract_news_bitcoin_categories(soup)
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(
+        str(structured.get("articleBody") or "")
+        or extract_news_bitcoin_body(soup)
+        or extract_body_text(soup)
+    )
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="news_bitcoin_article",
+        raw_payload={"page_url": page_url, "canonical_url": canonical},
         metadata=metadata,
     )
 
@@ -2671,6 +2793,29 @@ def is_businessinsider_article_url(url: str) -> bool:
     if path in {"", "/latest"}:
         return False
     return bool(re.search(r"-\d{4}-\d{1,2}$", path))
+
+
+def is_news_bitcoin_article_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.netloc.lower().endswith("news.bitcoin.com"):
+        return False
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        return False
+    excluded_prefixes = (
+        "/category/",
+        "/tag/",
+        "/submit-press-release/",
+        "/newsletters/",
+        "/contact/",
+        "/about/",
+    )
+    return not any(path.startswith(prefix.rstrip("/")) for prefix in excluded_prefixes)
+
+
+def is_news_bitcoin_feed_item_relevant(*, title: str, detail_url: str, categories: list[str]) -> bool:
+    haystacks = [title, urlparse(detail_url).path, *categories]
+    return any(NEWS_BITCOIN_RELEVANCE_PATTERN.search(value) for value in haystacks if value)
 
 
 def is_fortune_crypto_relevant(title: str, url: str) -> bool:
@@ -3702,6 +3847,34 @@ def extract_businessinsider_body(soup: BeautifulSoup) -> str:
         if text:
             return text
     return ""
+
+
+def extract_news_bitcoin_body(soup: BeautifulSoup) -> str:
+    for selector in (
+        "article",
+        "main article",
+        "[itemprop='articleBody']",
+        "[data-testid='article-content']",
+        "[class*='article-content']",
+        "main",
+    ):
+        node = soup.select_one(selector)
+        if node is None:
+            continue
+        text = extract_body_from_node(node)
+        if text:
+            return text
+    return ""
+
+
+def extract_news_bitcoin_categories(soup: BeautifulSoup) -> list[str]:
+    categories: list[str] = []
+    for selector in ("nav[aria-label='Breadcrumb'] a", "[data-testid='breadcrumb'] a", ".breadcrumbs a", "a[href*='/category/']"):
+        for node in soup.select(selector):
+            text = clean_inline_text(node.get_text(" ", strip=True))
+            if text and text != "News":
+                categories.append(text)
+    return unique_preserve_order(categories)
 
 
 def extract_businessinsider_categories(soup: BeautifulSoup) -> list[str]:

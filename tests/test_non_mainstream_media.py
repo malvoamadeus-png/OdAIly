@@ -21,6 +21,7 @@ from packages.non_mainstream_media.fetcher import (
     fetch_discovered_pages,
     fetch_article,
     discover_hk01_pages,
+    discover_news_bitcoin_pages,
     discover_thelec_pages,
     discover_zdnet_korea_pages,
     discover_tether_pages,
@@ -37,6 +38,7 @@ from packages.non_mainstream_media.fetcher import (
     parse_forbes_article,
     parse_hankyung_article,
     parse_hk01_article,
+    parse_news_bitcoin_article,
     parse_thelec_article,
     parse_zdnet_korea_article,
     parse_tether_article,
@@ -131,6 +133,7 @@ def test_registry_assigns_new_external_media_pipeline_modes() -> None:
     assert registry["coindesk"].pipeline_mode == "write_flow"
     assert registry["cointelegraph"].pipeline_mode == "write_flow"
     assert registry["decrypt"].pipeline_mode == "write_flow"
+    assert registry["news_bitcoin"].pipeline_mode == "write_flow"
     assert registry["tether_news"].pipeline_mode == "write_flow"
     assert registry["the_block"].pipeline_mode == "alert_only"
 
@@ -203,6 +206,82 @@ def test_parse_businessinsider_article_extracts_structured_fields() -> None:
     assert article.tags == ["AI", "enterprise software"]
     assert article.content == "First paragraph.\n\nSecond paragraph."
     assert article.content_format == "businessinsider_article"
+
+
+def test_discover_news_bitcoin_pages_filters_non_crypto_items() -> None:
+    xml = """
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Bank of Thailand Backs 1:1 Baht Stablecoin While Tightening Cross-Border Payment Rules</title>
+          <link>https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/</link>
+          <description><![CDATA[Stablecoin policy update.]]></description>
+          <pubDate>Wed, 01 Jul 2026 06:30:58 +0000</pubDate>
+          <category>Crypto News</category>
+          <category>Stablecoin</category>
+        </item>
+        <item>
+          <title>23 Years Later, a Boeing 727 That Took off in Angola Is Still Missing</title>
+          <link>https://news.bitcoin.com/23-years-later-a-boeing-727-that-took-off-in-angola-is-still-missing-49201/</link>
+          <description><![CDATA[Generic feature story.]]></description>
+          <pubDate>Wed, 01 Jul 2026 07:30:32 +0000</pubDate>
+          <category>Featured</category>
+          <category>technology</category>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    pages = discover_news_bitcoin_pages(xml)
+
+    assert [page.detail_url for page in pages] == [
+        "https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/"
+    ]
+
+
+def test_parse_news_bitcoin_article_extracts_structured_fields() -> None:
+    html = """
+    <html>
+      <head>
+        <link rel="canonical" href="https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/" />
+        <meta property="og:description" content="Thailand outlines a new stablecoin path." />
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "NewsArticle",
+            "headline": "Bank of Thailand Backs 1:1 Baht Stablecoin While Tightening Cross-Border Payment Rules",
+            "url": "https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/",
+            "datePublished": "2026-07-01T06:30:58Z",
+            "description": "Thailand outlines a new stablecoin path.",
+            "author": [{"@type":"Person","name":"Jamie Redman"}],
+            "articleSection": ["Crypto News", "Stablecoin"],
+            "keywords": "stablecoin, thailand, payments",
+            "articleBody": "First paragraph.\\n\\nSecond paragraph."
+          }
+        </script>
+      </head>
+      <body>
+        <article>
+          <p>First paragraph.</p>
+          <p>Second paragraph.</p>
+        </article>
+      </body>
+    </html>
+    """
+
+    article = parse_news_bitcoin_article(
+        html,
+        page_url="https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/",
+        source_item_id="https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/",
+    )
+
+    assert article.canonical_url == "https://news.bitcoin.com/bank-of-thailand-backs-11-baht-stablecoin-while-tightening-cross-border-payment-rules/"
+    assert article.title == "Bank of Thailand Backs 1:1 Baht Stablecoin While Tightening Cross-Border Payment Rules"
+    assert article.author_names == ["Jamie Redman"]
+    assert article.categories == ["Crypto News", "Stablecoin"]
+    assert article.tags == ["stablecoin", "thailand", "payments"]
+    assert article.content == "First paragraph.\n\nSecond paragraph."
+    assert article.content_format == "news_bitcoin_article"
 
 
 def test_registry_assigns_discovery_modes_for_telegram_primary_sites() -> None:
