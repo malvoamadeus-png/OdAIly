@@ -134,13 +134,14 @@ def test_auditor_prompt_excludes_odaily_fixed_expression_checks() -> None:
     assert "一新创建地址" in prompt
     assert "提出 / 转出 / 转入 / 提取 / 存入" in prompt
     assert "交易开放时间：" in prompt
+    assert "人名、机构、职位、地名、项目名、代币名等实体替换" in prompt
     assert "不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错" in prompt
     assert "不要根据外部背景知识、历史事件印象、常识时间线去猜测日期或年份是否写错" in prompt
     assert "issue.evidence" in prompt
 
 
-def test_auditor_prompt_version_is_v8() -> None:
-    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v8"
+def test_auditor_prompt_version_is_v9() -> None:
+    assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v9"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -546,6 +547,63 @@ def test_parse_auditor_output_ignores_fact_correction_without_evidence() -> None
 
     assert parsed.has_issue is False
     assert parsed.issues == []
+
+
+def test_parse_auditor_output_ignores_entity_correction_without_same_text_evidence() -> None:
+    current = task(content="Odaily星球日报讯 分析师表示，美联储主席沃什今晚不会给出前瞻指引。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "美联储主席沃什",
+                        "suggested": "美联储主席鲍威尔",
+                        "reason": "人名与职位对应关系疑似有误，应更正为常见正式称呼。",
+                        "evidence": "",
+                    }
+                ],
+                "summary": "正文人名可能写错。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is False
+    assert parsed.issues == []
+
+
+def test_parse_auditor_output_keeps_entity_correction_with_same_text_evidence() -> None:
+    current = task(content="Odaily星球日报讯 美联储主席鲍威尔在会后表示将继续观察数据，但前文误写为美联储主席沃什。")
+    parsed = parse_auditor_output(
+        json.dumps(
+            {
+                "has_issue": True,
+                "severity": "low",
+                "issues": [
+                    {
+                        "type": "other",
+                        "location": "content",
+                        "original": "美联储主席沃什",
+                        "suggested": "美联储主席鲍威尔",
+                        "reason": "同文后文已直接写出鲍威尔，前后人名不一致。",
+                        "evidence": "美联储主席鲍威尔在会后表示将继续观察数据",
+                    }
+                ],
+                "summary": "正文前后人名不一致。",
+            },
+            ensure_ascii=False,
+        ),
+        current,
+    )
+
+    assert parsed.has_issue is True
+    assert len(parsed.issues) == 1
+    assert parsed.issues[0].evidence == "美联储主席鲍威尔在会后表示将继续观察数据"
 
 
 def test_parse_auditor_output_keeps_fact_correction_with_same_text_evidence() -> None:

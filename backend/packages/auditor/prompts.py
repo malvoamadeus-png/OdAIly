@@ -7,13 +7,46 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v8"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v9"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
 HEADLINE_QUANTIFIER_PREFIXES = ("一个", "一名", "一位", "一家", "一则", "一笔", "一处", "一项")
 CHAIN_TRANSFER_ACTION_WORDS = ("提出", "转出", "转入", "提取", "存入")
 TRADING_ACTION_WORDS = ("购入", "买入", "加仓")
+ENTITY_CORRECTION_KEYWORDS = (
+    "人名",
+    "姓名",
+    "名称",
+    "称呼",
+    "机构",
+    "职位",
+    "头衔",
+    "地名",
+    "项目名",
+    "项目名称",
+    "代币名",
+    "币种",
+    "链名",
+    "公司名",
+    "组织名",
+    "实体",
+    "主席",
+    "总统",
+    "总理",
+    "首相",
+    "部长",
+    "议长",
+    "ceo",
+    "首席执行官",
+    "创始人",
+    "美联储",
+    "联储",
+    "交易所",
+    "基金",
+    "协议",
+    "网络",
+)
 
 
 AUDITOR_SCHEMA = {
@@ -70,6 +103,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
+- 人名、机构、职位、地名、项目名、代币名等实体替换；除非同一条标题或正文内部存在可直接引用的矛盾，并且证据片段里直接出现建议替换后的实体名称，否则不要报警。
 - 不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错；如果想指出这类问题，必须能在同一条标题或正文中引用另一处直接构成矛盾或校验关系的依据片段。
 - 不要根据外部背景知识、历史事件印象、常识时间线去猜测日期或年份是否写错；只有同一条标题或正文内部出现可直接引用的日期矛盾或明确时间关系冲突时，才允许提示。
 
@@ -82,6 +116,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - issue.reason 必须直接说明错因，不能只说“疑似有误”。
 - issue.evidence 仅在涉及数字、金额、日期、比例、数量级等数据类指正时填写；必须引用同一条标题或正文中真实存在、且能支持该指正的另一处片段。其他问题填空字符串。
 - 如果 issue.suggested 改动了日期或年份，issue.evidence 必须包含同一条标题或正文中的另一处完整日期，或能直接证明时间关系冲突的原文片段；做不到时必须输出 has_issue=false。
+- 如果 issue.suggested 改动了人名、机构、职位、地名、项目名、代币名等实体，issue.evidence 必须引用同一条标题或正文中直接出现建议实体的原文片段；做不到时必须输出 has_issue=false。
 - 不输出推理过程。
 
 【标题】
@@ -199,6 +234,14 @@ def _should_ignore_issue(*, location: str, original: str, suggested: str, reason
     if _is_headline_quantifier_expansion_issue(location=location, original=original, suggested=suggested, task=task):
         return True
     if _is_chain_transfer_action_issue(original=original, suggested=suggested):
+        return True
+    if _is_unsupported_entity_correction_issue(
+        original=original,
+        suggested=suggested,
+        reason=reason,
+        evidence=evidence,
+        task=task,
+    ):
         return True
     if _is_unsupported_fact_correction_issue(
         location=location,
@@ -326,6 +369,28 @@ def _is_chain_transfer_action_issue(*, original: str, suggested: str) -> bool:
     return any(suggested_text.startswith(word) for word in TRADING_ACTION_WORDS)
 
 
+def _is_unsupported_entity_correction_issue(
+    *,
+    original: str,
+    suggested: str,
+    reason: str,
+    evidence: str,
+    task: AuditorTask,
+) -> bool:
+    if not _looks_like_entity_correction_issue(original=original, suggested=suggested, reason=reason):
+        return False
+    source_text = _build_evidence_source_text(task)
+    if not evidence:
+        return True
+    if evidence == original:
+        return True
+    if evidence not in source_text:
+        return True
+    if suggested not in evidence:
+        return True
+    return False
+
+
 def _is_unsupported_fact_correction_issue(
     *,
     location: str,
@@ -337,7 +402,7 @@ def _is_unsupported_fact_correction_issue(
 ) -> bool:
     if not _looks_like_fact_correction_issue(original=original, suggested=suggested, reason=reason):
         return False
-    source_text = task.title if location == "title" else task.content
+    source_text = _build_evidence_source_text(task)
     if not evidence:
         return True
     if evidence == original:
@@ -347,6 +412,17 @@ def _is_unsupported_fact_correction_issue(
     if _changes_date_like_value(original=original, suggested=suggested) and not _has_date_like_evidence(evidence):
         return True
     return False
+
+
+def _looks_like_entity_correction_issue(*, original: str, suggested: str, reason: str) -> bool:
+    normalized_original = _normalize_for_fact_check(original)
+    normalized_suggested = _normalize_for_fact_check(suggested)
+    if normalized_original == normalized_suggested:
+        return False
+    combined = "\n".join((normalized_original, normalized_suggested, _normalize_for_fact_check(reason).lower()))
+    if any(keyword in combined for keyword in ENTITY_CORRECTION_KEYWORDS):
+        return True
+    return _looks_like_ticker_replacement(original=normalized_original, suggested=normalized_suggested)
 
 
 def _looks_like_fact_correction_issue(*, original: str, suggested: str, reason: str) -> bool:
@@ -400,6 +476,11 @@ def _extract_fact_tokens(value: str) -> tuple[str, ...]:
     )
 
 
+def _looks_like_ticker_replacement(*, original: str, suggested: str) -> bool:
+    ticker_pattern = re.compile(r"^[A-Z0-9]{2,12}$")
+    return bool(ticker_pattern.fullmatch(original) and ticker_pattern.fullmatch(suggested))
+
+
 def _changes_date_like_value(*, original: str, suggested: str) -> bool:
     return _extract_date_like_tokens(_normalize_for_fact_check(original)) != _extract_date_like_tokens(
         _normalize_for_fact_check(suggested)
@@ -418,3 +499,7 @@ def _extract_date_like_tokens(value: str) -> tuple[str, ...]:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _build_evidence_source_text(task: AuditorTask) -> str:
+    return "\n".join(part for part in (task.title or "", task.content or "") if part)
