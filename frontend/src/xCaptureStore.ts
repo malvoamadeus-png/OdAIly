@@ -197,12 +197,14 @@ export type WhaleWatchDashboardPayload = {
 
 export type TaskItem = {
   id: number;
+  source: string;
   source_item_id: string;
   source_url: string | null;
   title: string | null;
   content: string;
   status: string;
   created_at: string;
+  metadata: Record<string, unknown> | null;
 };
 
 export type PromptTemplate = {
@@ -1309,7 +1311,7 @@ async function listRecentAttempts(limit: number): Promise<Attempt[]> {
 async function listRecentTasks(limit: number): Promise<TaskItem[]> {
   const { data, error } = await supabase()
     .from('tasks')
-    .select('id,source_item_id,source_url,title,content,status,created_at')
+    .select('id,source,source_item_id,source_url,title,content,status,created_at,metadata')
     .eq('source', 'x')
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -1320,7 +1322,7 @@ async function listRecentTasks(limit: number): Promise<TaskItem[]> {
 export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
   const { data, error } = await supabase()
     .from('tasks')
-    .select('id,source_item_id,source_url,title,content,status,created_at')
+    .select('id,source,source_item_id,source_url,title,content,status,created_at,metadata')
     .eq('source', 'jin10')
     .order('created_at', { ascending: false })
     .limit(limit);

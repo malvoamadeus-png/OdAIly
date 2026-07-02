@@ -692,6 +692,68 @@ textarea:focus {
   gap: 8px;
 }
 
+.taskTable {
+  display: grid;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.taskTableHeader,
+.taskTableRow {
+  display: grid;
+  grid-template-columns: minmax(320px, 2.1fr) minmax(180px, 1fr) minmax(180px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.taskTableHeader {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e8edf2;
+  background: #f8fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.taskTableRow {
+  padding: 12px;
+  border-bottom: 1px solid #edf0f3;
+}
+
+.taskTableRow:last-child {
+  border-bottom: 0;
+}
+
+.taskCell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.taskCell strong,
+.taskCell span,
+.taskPrimaryCell a,
+.taskPrimaryCell p {
+  min-width: 0;
+}
+
+.taskPrimaryCell a {
+  color: #0f684a;
+  font-weight: 650;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.taskPrimaryCell p,
+.taskCell span {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .accountRow {
   display: grid;
   grid-template-columns: minmax(190px, 1.3fr) minmax(110px, 0.9fr) minmax(140px, 1fr) 110px 96px 126px;

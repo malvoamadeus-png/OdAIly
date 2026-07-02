@@ -172,6 +172,138 @@ function fmtUnixMs(value: number | null | undefined): string {
   return fmtTime(new Date(value).toISOString());
 }
 
+function trimText(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function firstLine(value: string | null | undefined): string {
+  return trimText(value).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
+}
+
+function compactText(value: string | null | undefined): string {
+  return trimText(value).replace(/\s+/g, ' ');
+}
+
+function taskHeadline(task: TaskItem): string {
+  return trimText(task.title) || firstLine(task.content) || task.source_item_id;
+}
+
+function taskSummary(task: TaskItem): string {
+  const summary = compactText(task.content);
+  if (!summary) return '-';
+  return summary.length > 160 ? `${summary.slice(0, 157)}...` : summary;
+}
+
+function taskMetadataValue(task: TaskItem, key: string): string {
+  const raw = task.metadata && typeof task.metadata === 'object' ? task.metadata[key] : null;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function taskSourceLabel(task: TaskItem): { primary: string; secondary: string } {
+  if (task.source === 'x') {
+    const primary = taskMetadataValue(task, 'effective_author_name')
+      || taskMetadataValue(task, 'author_display_name')
+      || taskMetadataValue(task, 'author_username')
+      || 'X 账号';
+    const username = taskMetadataValue(task, 'author_username');
+    return {
+      primary,
+      secondary: username ? `@${username.replace(/^@+/, '')}` : 'X',
+    };
+  }
+
+  if (task.source === 'jin10') {
+    return { primary: '金十', secondary: '网页端快讯接口' };
+  }
+
+  const siteDisplayName = taskMetadataValue(task, 'site_display_name');
+  if (siteDisplayName) {
+    const target = taskMetadataValue(task, 'classified_target');
+    return {
+      primary: siteDisplayName,
+      secondary: target ? `混合信源 -> ${target === 'ai' ? 'AI信源' : 'Crypto信源'}` : task.source,
+    };
+  }
+
+  return { primary: task.source, secondary: task.source_url || '-' };
+}
+
+function taskStatusLabel(status: string): string {
+  switch (status) {
+    case 'pending':
+      return '已入库待处理';
+    case 'judged':
+      return '判断完成';
+    case 'deduped':
+      return '已进入主链路';
+    case 'searched':
+      return '已完成查重';
+    case 'duplicate':
+      return '判定重复';
+    case 'discarded':
+      return '已丢弃';
+    case 'published':
+      return '已发布';
+    case 'notified':
+      return '已提醒';
+    case 'judge_failed':
+      return '判断失败';
+    case 'search_failed':
+      return '查重失败';
+    case 'write_failed':
+      return '写作失败';
+    case 'format_failed':
+      return '格式化失败';
+    case 'publish_failed':
+      return '发布失败';
+    case 'notify_failed':
+      return '提醒失败';
+    case 'legacy_skipped':
+      return '旧任务已跳过';
+    default:
+      return status || '-';
+  }
+}
+
+function isTaskStatusWarn(status: string): boolean {
+  return status.endsWith('_failed') || status === 'duplicate' || status === 'discarded';
+}
+
+function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string }) {
+  return (
+    <div className="taskTable">
+      <div className="taskTableHeader">
+        <span>收集到什么</span>
+        <span>来自哪里</span>
+        <span>如何处理了</span>
+      </div>
+      {tasks.length === 0 && <div className="emptyState">{emptyText}</div>}
+      {tasks.map((task) => {
+        const source = taskSourceLabel(task);
+        const statusLabel = taskStatusLabel(task.status);
+        return (
+          <div className="taskTableRow" key={task.id}>
+            <div className="taskCell taskPrimaryCell">
+              <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
+                {taskHeadline(task)}
+              </a>
+              <p>{taskSummary(task)}</p>
+            </div>
+            <div className="taskCell">
+              <strong>{source.primary}</strong>
+              <span>{source.secondary}</span>
+            </div>
+            <div className="taskCell">
+              <span className={isTaskStatusWarn(task.status) ? 'statusPill warn' : 'statusPill'}>{statusLabel}</span>
+              <span>{fmtTime(task.created_at)}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const sourceNames: Record<string, string> = {
   odaily: 'Odaily',
   blockbeats: 'BlockBeats',
@@ -519,6 +651,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingEventDetails, setLoadingEventDetails] = useState<Record<string, boolean>>({});
   const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
+  const loadedViewsRef = useRef<Set<string>>(new Set());
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const enabledNonMainstreamCount = useMemo(
@@ -695,7 +828,46 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   useEffect(() => {
-    Promise.all([loadAll(), loadNonMainstreamAll(), loadPublisherAll(), loadJin10All(), loadWhaleWatchAll()]).catch((err: Error) => {
+    const loadCurrentView = async () => {
+      if (view === 'events' || view === 'favorites') {
+        await loadEvents(eventFilter, view, eventPage);
+        return;
+      }
+      if (loadedViewsRef.current.has(view)) {
+        return;
+      }
+      loadedViewsRef.current.add(view);
+      switch (view) {
+        case 'x':
+          await loadAll();
+          return;
+        case 'non_mainstream':
+        case 'ai_source':
+        case 'mixed_source':
+          await loadNonMainstreamAll();
+          return;
+        case 'publisher':
+          await loadPublisherAll();
+          return;
+        case 'jin10':
+          await loadJin10All();
+          return;
+        case 'whale':
+          await loadWhaleWatchAll();
+          return;
+        case 'prompts':
+          await loadPrompts();
+          return;
+        case 'competitor':
+          await loadCompetitorKeywords();
+          return;
+        case 'workflow':
+        default:
+          return;
+      }
+    };
+
+    loadCurrentView().catch((err: Error) => {
       setError(err.message);
       setLoading(false);
       setLoadingNonMainstream(false);
@@ -703,26 +875,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setLoadingJin10(false);
       setLoadingWhaleWatch(false);
     });
-    const timer = window.setInterval(() => {
-      loadAll().catch((err: Error) => setError(err.message));
-      loadNonMainstreamAll().catch((err: Error) => setError(err.message));
-      loadJin10All().catch((err: Error) => setError(err.message));
-      loadWhaleWatchAll().catch((err: Error) => setError(err.message));
-    }, 10000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    loadPrompts().catch((err: Error) => setError(err.message));
-  }, []);
-
-  useEffect(() => {
-    loadCompetitorKeywords().catch((err: Error) => setError(err.message));
-  }, []);
-
-  useEffect(() => {
-    loadEvents(eventFilter, view, eventPage).catch((err: Error) => setError(err.message));
-  }, [eventFilter, eventPage, view]);
+  }, [view, eventFilter, eventPage]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1416,21 +1569,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <h2>最近入库</h2>
             <span>{tasks.length} 条</span>
           </div>
-          <div className="taskList">
-            {tasks.length === 0 && <div className="emptyState">暂无入库任务。</div>}
-            {tasks.map((task) => (
-              <article className="taskItem" key={task.id}>
-                <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
-                  {task.title || task.source_item_id}
-                </a>
-                <p>{task.content}</p>
-                <div>
-                  <span>{task.status}</span>
-                  <time>{fmtTime(task.created_at)}</time>
-                </div>
-              </article>
-            ))}
-          </div>
+          <TaskTable tasks={tasks} emptyText="暂无入库任务。" />
             </section>
           </>
         ) : view === 'non_mainstream' ? (
@@ -1909,21 +2048,7 @@ function Jin10Panel({
           <h2>最近入库</h2>
           <span>{tasks.length} 条</span>
         </div>
-        <div className="taskList">
-          {tasks.length === 0 && <div className="emptyState">暂无金十入库任务。</div>}
-          {tasks.map((task) => (
-            <article className="taskItem" key={task.id}>
-              <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
-                {task.title || task.source_item_id}
-              </a>
-              <p>{task.content}</p>
-              <div>
-                <span>{task.status}</span>
-                <time>{fmtTime(task.created_at)}</time>
-              </div>
-            </article>
-          ))}
-        </div>
+        <TaskTable tasks={tasks} emptyText="暂无金十入库任务。" />
       </section>
     </section>
   );
