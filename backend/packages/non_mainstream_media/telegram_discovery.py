@@ -162,6 +162,17 @@ def extract_message_title(text: str, site_key: str, url: str | None = None) -> s
     normalized = text.strip()
     if not normalized:
         return None
+    if url:
+        escaped_url = re.escape(url)
+        for pattern in (
+            rf"(?is)(?:\]\({escaped_url}\)\s*\({escaped_url}\)|\({escaped_url}\)|{escaped_url})\s*:\s*(?P<title>.+)$",
+            rf"(?is)(?:\]\({escaped_url}\)|{escaped_url})\s*:\s*(?P<title>.+)$",
+        ):
+            matched = re.search(pattern, normalized)
+            if matched:
+                extracted = matched.group("title").strip(" -:()[]\n\t")
+                if extracted:
+                    return extracted
     lowered = normalized.lower()
     for prefix in TARGET_SITES[site_key]["prefixes"]:
         if lowered.startswith(prefix):

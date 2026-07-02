@@ -309,6 +309,8 @@ function renderFeedCard(item) {
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
   const isFastLane = item.lane !== "low";
+  const isExternalAlert = item.feed_kind === "external_media_alert";
+  const titleShouldLink = Boolean(detailUrlForItem(item)) && (!isFastLane || isExternalAlert);
   const isExpanded = state.expandedFeedKeys.has(itemKey);
   const isFresh = isFreshFeedItem(item);
   const safeTitle = String(item.title || item.summary || `${item.feed_kind} 消息`);
@@ -319,7 +321,7 @@ function renderFeedCard(item) {
   const statusChipTone = isFeedback && feedbackStatus
     ? feedbackStatus.tone
     : item.status_tone || "neutral";
-  const detailUrl = item.detail_url || item.source_url || "";
+  const detailUrl = detailUrlForItem(item);
   const badgeHtml = renderBadges(item);
   const feedbackActionsHtml =
     isFeedback && !feedbackStatus
@@ -365,11 +367,11 @@ function renderFeedCard(item) {
             ${feedbackActionsHtml}
           </div>
         </div>
-        <h3 class="feedCard__title${isFastLane ? " feedCard__title--toggle" : ""}${
+        <h3 class="feedCard__title${isFastLane && !titleShouldLink ? " feedCard__title--toggle" : ""}${
           isFresh ? " feedCard__title--fresh" : ""
         }">
           ${
-            detailUrl && !isFastLane
+            titleShouldLink
               ? `<a href="${escapeHtml(detailUrl)}" target="_blank" rel="noreferrer">${escapeHtml(safeTitle)}</a>`
               : escapeHtml(safeTitle)
           }
@@ -389,6 +391,10 @@ function renderFeedCard(item) {
       </div>
     </article>
   `;
+}
+
+function detailUrlForItem(item) {
+  return item.detail_url || item.source_url || "";
 }
 
 function renderLanePanel(config, items) {

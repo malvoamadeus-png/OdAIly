@@ -1352,6 +1352,17 @@ def test_extract_message_title_keeps_full_headline_when_suffix_is_single_word() 
     assert title == "Ripple, Coinbase among top donors in crypto's $189 million election spending: report"
 
 
+def test_extract_message_title_prefers_text_after_double_link_prefix() -> None:
+    url = "https://www.theblock.co/post/407026/peter-thiel-backed-crypto-friendly-erebor-bank-eyes-8-billion-valuation-as-deposits-nearly-quadruple-bloomberg"
+    title = extract_message_title(
+        f"[THE BLOCK]({url}) ({url}): Peter Thiel-backed crypto-friendly Erebor Bank eyes $8 billion valuation as deposits nearly quadruple: Bloomberg",
+        "the_block",
+        url,
+    )
+
+    assert title == "Peter Thiel-backed crypto-friendly Erebor Bank eyes $8 billion valuation as deposits nearly quadruple: Bloomberg"
+
+
 def test_discover_etnews_pages_reads_section_article_ids() -> None:
     html = """
     <html>
