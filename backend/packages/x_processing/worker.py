@@ -1154,7 +1154,7 @@ def is_jin10_task(task: TaskRecord) -> bool:
 
 
 def hide_source_url(task: TaskRecord) -> bool:
-    return is_competitor_task(task) or is_jin10_task(task)
+    return is_jin10_task(task) or task.source in {"blockbeats", "panews"}
 
 
 def utc_since_hours(hours: int) -> datetime:

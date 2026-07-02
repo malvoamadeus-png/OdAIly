@@ -200,6 +200,20 @@ def competitor_task(task_id: int, status: str = "pending") -> TaskRecord:
     )
 
 
+def jinse_task(task_id: int, status: str = "pending") -> TaskRecord:
+    return TaskRecord(
+        id=task_id,
+        source="jinse",
+        source_item_id=f"jinse-{task_id}",
+        source_url="https://x.com/EmberCN/status/2072503560047308986",
+        title="高位买入黄金鲸鱼清仓 1,000 枚 PAXG",
+        content="高位买入黄金鲸鱼清仓 1,000 枚 PAXG，亏损 106 万美元。",
+        published_at=datetime.now(UTC),
+        status=status,
+        metadata={"source_kind": "competitor"},
+    )
+
+
 def non_mainstream_task(task_id: int, status: str = "pending") -> TaskRecord:
     return TaskRecord(
         id=task_id,
@@ -1326,7 +1340,7 @@ def test_publish_regular_rules_ignore_legacy_disabled_flag() -> None:
     assert fake_ai.calls != []
 
 
-def test_publish_disabled_competitor_hides_source_url() -> None:
+def test_publish_disabled_blockbeats_hides_source_url() -> None:
     repo = InMemoryXProcessingRepository()
     repo.publisher_settings = repo.publisher_settings.__class__(
         enabled=False,
@@ -1362,6 +1376,44 @@ def test_publish_disabled_competitor_hides_source_url() -> None:
     assert push.calls[0]["source_url"] is None
     assert push.calls[0]["is_publish"] is False
     assert telegram.calls == ["律动有新快讯-融资-标准模式：标题\nhttps://www.theblockbeats.info/flash/1"]
+
+
+def test_publish_disabled_jinse_keeps_source_url() -> None:
+    repo = InMemoryXProcessingRepository()
+    repo.publisher_settings = repo.publisher_settings.__class__(
+        enabled=False,
+        timezone="Asia/Shanghai",
+        window_start_local="00:00",
+        window_end_local="23:59",
+    )
+    repo.add_task(jinse_task(1, status="publisher_pending"))
+    repo.pipelines[1] = PipelineRecord(
+        task_id=1,
+        news_type="onchain",
+        writer_feature_mode_enabled=False,
+        final_title="标题",
+        final_content="正文",
+    )
+    fake_ai = FakeAiClient(['{"decision":"reject"}'])
+    push = FakePushClient(ok=True)
+    telegram = FakeTelegramClient(TelegramResult(ok=True))
+    worker = XProcessingWorker(
+        stage="publish",
+        repository=repo,
+        settings=settings(),
+        ai_client=fake_ai,
+        push_client=push,
+        telegram_client=telegram,
+    )
+
+    result = worker.run_once()
+
+    assert result.processed == 1
+    assert repo.tasks[1].status == "ready_review"
+    assert repo.pipelines[1].publisher_reason_code == "rule_rejected"
+    assert push.calls[0]["source_url"] == "https://x.com/EmberCN/status/2072503560047308986"
+    assert push.calls[0]["is_publish"] is False
+    assert telegram.calls == ["金色财经有新快讯-链上-标准模式：标题\nhttps://x.com/EmberCN/status/2072503560047308986"]
 
 
 def test_publish_ineligible_mainstream_media_keeps_source_url_and_site_name() -> None:

@@ -153,7 +153,11 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
             continue
         published_at = news.get("created_at") or news.get("published_at") or ""
         live_id = news.get("id")
-        source_url = str(news.get("jump_url") or (f"https://www.jinse2.com/lives/{live_id}.html" if live_id else "https://www.jinse2.com/lives"))
+        source_url = str(
+            news.get("link")
+            or news.get("jump_url")
+            or (f"https://www.jinse2.com/lives/{live_id}.html" if live_id else "https://www.jinse2.com/lives")
+        )
         source_id = str(news.get("id") or extract_jinse_live_id(source_url) or stable_id("jinse", title, str(published_at)))
         content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
         items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, source_url, str(published_at), news))

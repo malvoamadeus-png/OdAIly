@@ -355,6 +355,7 @@ def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:
     assert items[0].source_item_id == "512001"
     assert items[0].content == "美国参议院银行委员会将对法案进行首次投票"
     assert items[0].published_at == "1778283366"
+    assert items[0].source_url == "https://www.jinse2.com/lives/512001.html"
 
 
 def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
@@ -396,7 +397,7 @@ def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
     assert items[0].source_item_id == "512327"
     assert items[0].title == "半导体股市值占标普 500 总市值比例达创纪录的 23%"
     assert "金色财经报道" not in items[0].content
-    assert items[0].source_url == "https://www.jinse2.com/lives/512327.html"
+    assert items[0].source_url == "https://x.com/Cointelegraph/status/2054069277632741773"
     assert items[0].published_at == "1778563741"
 
 
