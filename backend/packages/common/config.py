@@ -734,7 +734,8 @@ class AuditorSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    model: str = "gpt-5.4-mini"
+    model: str = "gpt-5.4"
+    reasoning_effort: str = "high"
     lookback_minutes: int = Field(default=120, ge=1, le=10080)
     max_items_per_run: int = Field(default=20, ge=1, le=200)
     request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
@@ -757,7 +758,8 @@ def load_auditor_settings() -> AuditorSettings:
             or "https://api.openai.com/v1"
         ),
         "openai_api_style": os.getenv("AUDITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "model": os.getenv("AUDITOR_MODEL") or "gpt-5.4-mini",
+        "model": os.getenv("AUDITOR_MODEL") or "gpt-5.4",
+        "reasoning_effort": os.getenv("AUDITOR_REASONING_EFFORT") or "high",
         "lookback_minutes": int(os.getenv("AUDITOR_LOOKBACK_MINUTES") or 120),
         "max_items_per_run": int(os.getenv("AUDITOR_MAX_ITEMS_PER_RUN") or 20),
         "request_timeout_seconds": float(os.getenv("AUDITOR_REQUEST_TIMEOUT_SECONDS") or 60.0),

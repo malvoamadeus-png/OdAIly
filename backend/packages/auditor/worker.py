@@ -100,6 +100,7 @@ class AuditorWorker:
             model=self.settings.model,
             prompt=build_auditor_prompt(task),
             text_format=AUDITOR_SCHEMA,
+            reasoning_effort=self.settings.reasoning_effort,
         )
         audit = parse_auditor_output(raw_output, task)
         result_payload = auditor_result_to_dict(audit)
