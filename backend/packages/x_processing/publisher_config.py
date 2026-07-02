@@ -137,11 +137,16 @@ DEFAULT_REGULAR_ALLOW_RULES = [
     PublisherRule(
         id="allow_institution_people_view",
         name="机构观点 / 人物表态",
-        description="放行机构、公司、项目方、投资人、监管者、公众人物等具有新闻价值的观点或表态，不限制题材。",
+        description=(
+            "仅放行高重要性主体的观点或表态，且内容必须直接涉及 Crypto、监管、市场结构、交易基础设施、"
+            "稳定币、ETF、托管清算等核心议题，并且包含具体新信息、新动作、新数据或明确政策信号。"
+            "纯态度表达、吹捧、自我宣传、泛政治评论、宏大叙事、空泛站队、无新增事实的判断一律不自动发布。"
+            "如果无法从正文中明确看出主体具备高重要性，或无法明确看出与 Crypto/监管/市场结构直接相关，默认 reject。"
+        ),
         enabled=True,
         examples=[
-            "某机构负责人称稳定币市场仍有增长空间",
-            "某公司 CEO 表示将继续投入 AI 基础设施",
+            "美联储官员表示若通胀继续回落将支持年内降息",
+            "Coinbase CEO 表示公司已就某项稳定币监管草案向国会提交正式建议",
         ],
     ),
     PublisherRule(
@@ -167,7 +172,11 @@ DEFAULT_REGULAR_ALLOW_RULES = [
     PublisherRule(
         id="allow_project_org_major_move",
         name="项目 / 组织重大动向",
-        description="放行裁员、组织调整、关键高管变动、项目停运、业务关闭、产品停止维护、重大转向等组织层面的重要变化。",
+        description=(
+            "仅放行具备明确新闻价值的重大组织变化，例如头部或关键基础设施机构的裁员、重组、关键高管变动、"
+            "项目停运、业务关闭、产品停止维护、重大转向等。普通中小主体的常规组织更新、例行任命、常规扩张、"
+            "routine 业务推进不自动发布。"
+        ),
         enabled=True,
         examples=[
             "Robinhood 近期裁员",
@@ -179,6 +188,19 @@ DEFAULT_REGULAR_ALLOW_RULES = [
 
 
 DEFAULT_REGULAR_DENY_RULES = [
+    PublisherRule(
+        id="deny_self_promotion_endorsement",
+        name="自我宣传 / 站台型表达",
+        description=(
+            "排除主体自夸、自我背书、互相吹捧、站台转发、品牌宣传、姿态展示、空泛喊话等没有新增事实、"
+            "没有明确动作、没有可执行信息的表达。即使发言人知名，只要本质是宣传或站台，也必须 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "某创始人称很高兴看到某基金会正在审慎处理关键问题",
+            "某项目方表示行业终于开始理解我们的路线",
+        ],
+    ),
     PublisherRule(
         id="deny_geopolitics",
         name="地缘政治",
@@ -194,6 +216,19 @@ DEFAULT_REGULAR_DENY_RULES = [
         examples=["BTC 突破 70000 USDT", "某代币 1 小时上涨 20%"],
     ),
     PublisherRule(
+        id="deny_non_crypto_macro_political_commentary",
+        name="非 Crypto 的宏大政治评论",
+        description=(
+            "排除与 Crypto、数字资产监管、稳定币、交易市场结构没有直接关系的宏大政治、财政、宪政、文明叙事、"
+            "意识形态评论。即使发言人来自加密行业，只要内容本身不是直接的 Crypto 新闻，也必须 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "某交易所 CEO 讨论美国宪法应增加政府支出上限",
+            "某投资人谈民主制度终将因债务而失败",
+        ],
+    ),
+    PublisherRule(
         id="deny_incentive_grant_activity",
         name="激励 / 赠款 / 活动",
         description="排除明确指向交易大赛、奖励、空投活动、赠款计划、营销活动、社区活动的信息。",
@@ -206,6 +241,46 @@ DEFAULT_REGULAR_DENY_RULES = [
         description="排除普通战略合作、生态合作、合作备忘录等缺少实质进展的信息。",
         enabled=True,
         examples=["某项目与某公司达成战略合作"],
+    ),
+    PublisherRule(
+        id="deny_routine_small_entity_company_update",
+        name="中小主体例行公司新闻",
+        description=(
+            "排除普通中小或长尾主体的例行公司新闻，包括常规牌照/审批获批、普通合作、一般扩区、常规产品更新、"
+            "例行组织调整、普通上新等。只有当正文能明确证明该主体具备高重要性，或该事件对市场准入、监管格局、"
+            "核心基础设施、广泛用户资产安全产生显著影响时，才可不按本规则 reject；否则默认挂后台。"
+        ),
+        enabled=True,
+        examples=[
+            "某不知名平台获欧洲某地牌照",
+            "某小型金融科技公司宣布拓展至新市场",
+        ],
+    ),
+    PublisherRule(
+        id="deny_niche_tradfi_product_move",
+        name="小众传统金融产品异动",
+        description=(
+            "排除与 Crypto 没有直接关系的小众传统金融产品、冷门 ETF、单一基金、个别衍生品、非核心交易工具的"
+            "异常流入流出、规模变化、溢价波动或观察性点评。除非它明确影响加密市场结构或代表重大制度变化，否则 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "某冷门 ETF 单日流入 6 亿美元",
+            "某传统基金规模突然扩大四倍",
+        ],
+    ),
+    PublisherRule(
+        id="deny_niche_research_model_publication",
+        name="冷门论文 / 估值模型 / 研究发布",
+        description=(
+            "排除冷门论文发表、估值模型争论、学术研究发布、方法论阐释、研究者个人理论更新等低普适性内容。"
+            "除非正文能明确证明其带来监管落地、产品上线、市场结构变化或被核心机构正式采用，否则 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "某比特币价格幂律论文发表于期刊",
+            "研究者发布新的链上估值模型说明",
+        ],
     ),
 ]
 
@@ -305,6 +380,9 @@ def build_publisher_rule_prompt(
             "- 如果没有命中排除规则，但命中任意启用的通过规则，输出 pass。",
             "- 如果无法明确归入任意启用的通过规则，输出 reject。",
             "- 案例只是判断参考，不要求逐字匹配。",
+            "- 不允许凭常识脑补主体重要性。只有正文直接给出高重要性证据，或主体明显属于国家级监管、央行、头部交易基础设施、头部稳定币/ETF/托管/核心公链基金会等系统性主体时，才可按高重要主体理解。",
+            "- 对牌照、审批、合作、组织动向、产品更新等公司新闻，若主体看起来是中小或长尾实体，且正文没有明确写出其市场地位、用户规模、资产规模、监管层级、覆盖范围或系统性影响，默认按 routine company update 处理并 reject。",
+            "- 对观点类内容，必须同时满足：高重要主体、直接 Crypto/监管/市场结构相关、含具体新信息/新动作/新数据；三者缺一即 reject。",
             "",
             "【启用的排除规则】",
             format_rules_for_prompt(deny_rules) or "无",

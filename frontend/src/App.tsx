@@ -34,6 +34,7 @@ import {
   getCurrentConsoleAdmin,
   getCurrentSession,
   getPublisherRuleConfig,
+  getPublisherRuleConfigSnapshot,
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
@@ -452,6 +453,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
   const [publisherRules, setPublisherRules] = useState<PublisherRuleConfig>(emptyPublisherRuleConfig);
   const [publisherPromptPreview, setPublisherPromptPreview] = useState('');
+  const [publisherLoadWarning, setPublisherLoadWarning] = useState('');
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
@@ -587,10 +589,33 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadPublisherAll() {
     setError('');
-    const payload = await getPublisherRuleConfig();
-    setPublisherRules(payload.config);
-    setPublisherPromptPreview(payload.prompt_text);
-    setLoadingPublisher(false);
+    setPublisherLoadWarning('');
+    try {
+      const payload = await getPublisherRuleConfig();
+      setPublisherRules(payload.config);
+      setPublisherPromptPreview(payload.prompt_text);
+      setLoadingPublisher(false);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        const snapshot = await getPublisherRuleConfigSnapshot();
+        if (snapshot) {
+          setPublisherRules(snapshot.config);
+          setPublisherPromptPreview(snapshot.prompt_text);
+          setPublisherLoadWarning(`发布者接口加载失败，已回退显示 Supabase 快照：${message}`);
+          setLoadingPublisher(false);
+          return;
+        }
+      } catch (snapshotErr) {
+        const snapshotMessage = snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr);
+        setPublisherLoadWarning(`发布者接口与快照加载均失败：${message}；快照错误：${snapshotMessage}`);
+        setLoadingPublisher(false);
+        throw err;
+      }
+      setPublisherLoadWarning(`发布者接口加载失败，当前显示本地默认规则：${message}`);
+      setLoadingPublisher(false);
+    }
   }
 
   async function loadJin10All() {
@@ -1449,6 +1474,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             config={publisherRules}
             promptPreview={publisherPromptPreview}
             loading={loadingPublisher}
+            loadWarning={publisherLoadWarning}
             saving={savingPublisherSettings}
             onChange={setPublisherRules}
             onSave={savePublisherRules}
@@ -2321,6 +2347,7 @@ function PublisherPanel({
   config,
   promptPreview,
   loading,
+  loadWarning,
   saving,
   onChange,
   onSave,
@@ -2328,6 +2355,7 @@ function PublisherPanel({
   config: PublisherRuleConfig;
   promptPreview: string;
   loading: boolean;
+  loadWarning: string;
   saving: boolean;
   onChange: (config: PublisherRuleConfig) => void;
   onSave: () => Promise<void>;
@@ -2388,39 +2416,46 @@ function PublisherPanel({
         </button>
       </div>
 
-      <PublisherProfileEditor
-        profile={config.regular}
-        disabled={false}
-        onPatch={(patch) => patchProfile('regular', patch)}
-        onPatchRule={(kind, ruleId, patch) => patchRule('regular', kind, ruleId, patch)}
-        onAddRule={(kind) => addRule('regular', kind)}
-        onRemoveRule={(kind, ruleId) => removeRule('regular', kind, ruleId)}
-        onAddExample={(kind, rule) => addExample('regular', kind, rule)}
-        onUpdateExample={(kind, rule, index, value) => updateExample('regular', kind, rule, index, value)}
-        onRemoveExample={(kind, rule, index) => removeExample('regular', kind, rule, index)}
-      />
+      {loading ? <div className="emptyState">发布者规则加载中。</div> : null}
+      {!loading && loadWarning ? <div className="emptyState compact">{loadWarning}</div> : null}
 
-      <PublisherProfileEditor
-        profile={config.ai_source}
-        disabled
-        badge="暂未启用"
-        onPatch={(patch) => patchProfile('ai_source', patch)}
-        onPatchRule={(kind, ruleId, patch) => patchRule('ai_source', kind, ruleId, patch)}
-        onAddRule={(kind) => addRule('ai_source', kind)}
-        onRemoveRule={(kind, ruleId) => removeRule('ai_source', kind, ruleId)}
-        onAddExample={(kind, rule) => addExample('ai_source', kind, rule)}
-        onUpdateExample={(kind, rule, index, value) => updateExample('ai_source', kind, rule, index, value)}
-        onRemoveExample={(kind, rule, index) => removeExample('ai_source', kind, rule, index)}
-      />
+      {!loading && (
+        <>
+          <PublisherProfileEditor
+            profile={config.regular}
+            disabled={false}
+            onPatch={(patch) => patchProfile('regular', patch)}
+            onPatchRule={(kind, ruleId, patch) => patchRule('regular', kind, ruleId, patch)}
+            onAddRule={(kind) => addRule('regular', kind)}
+            onRemoveRule={(kind, ruleId) => removeRule('regular', kind, ruleId)}
+            onAddExample={(kind, rule) => addExample('regular', kind, rule)}
+            onUpdateExample={(kind, rule, index, value) => updateExample('regular', kind, rule, index, value)}
+            onRemoveExample={(kind, rule, index) => removeExample('regular', kind, rule, index)}
+          />
 
-      {promptPreview && (
-        <div className="publisherSection">
-          <div className="sectionHeader">
-            <h2>服务器拼接 Prompt 预览</h2>
-            <span>常规</span>
-          </div>
-          <pre className="publisherPromptPreview">{promptPreview}</pre>
-        </div>
+          <PublisherProfileEditor
+            profile={config.ai_source}
+            disabled
+            badge="暂未启用"
+            onPatch={(patch) => patchProfile('ai_source', patch)}
+            onPatchRule={(kind, ruleId, patch) => patchRule('ai_source', kind, ruleId, patch)}
+            onAddRule={(kind) => addRule('ai_source', kind)}
+            onRemoveRule={(kind, ruleId) => removeRule('ai_source', kind, ruleId)}
+            onAddExample={(kind, rule) => addExample('ai_source', kind, rule)}
+            onUpdateExample={(kind, rule, index, value) => updateExample('ai_source', kind, rule, index, value)}
+            onRemoveExample={(kind, rule, index) => removeExample('ai_source', kind, rule, index)}
+          />
+
+          {promptPreview && (
+            <div className="publisherSection">
+              <div className="sectionHeader">
+                <h2>服务器拼接 Prompt 预览</h2>
+                <span>常规</span>
+              </div>
+              <pre className="publisherPromptPreview">{promptPreview}</pre>
+            </div>
+          )}
+        </>
       )}
     </section>
   );

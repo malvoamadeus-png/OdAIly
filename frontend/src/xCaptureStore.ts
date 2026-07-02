@@ -807,6 +807,26 @@ export async function savePublisherRuleConfig(config: PublisherRuleConfig): Prom
   return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/save', { config });
 }
 
+export async function getPublisherRuleConfigSnapshot(): Promise<PublisherRuleConfigPayload | null> {
+  const { data, error } = await supabase()
+    .from('publisher_rule_config')
+    .select('config_json,prompt_text')
+    .eq('singleton_key', 'global')
+    .maybeSingle();
+  raise(error);
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+  const row = data as { config_json?: PublisherRuleConfig | null; prompt_text?: string | null };
+  if (!row.config_json || typeof row.config_json !== 'object') {
+    return null;
+  }
+  return {
+    config: row.config_json,
+    prompt_text: row.prompt_text || '',
+  };
+}
+
 function normalizeJin10Settings(row: Jin10Settings): Jin10Settings {
   return {
     ...defaultJin10Settings,
