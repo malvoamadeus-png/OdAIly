@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from packages.common.text import normalize_inline_text, normalize_multiline_text
+
 
 CaptureMethod = Literal["html_request", "browser_render"]
 CaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty", "unsupported_method"]
@@ -73,6 +75,12 @@ class DiscoveredPage:
     published_at: datetime | None = None
     published_at_raw: str | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
+        object.__setattr__(self, "detail_url", normalize_inline_text(self.detail_url))
+        object.__setattr__(self, "title", normalize_inline_text(self.title) or None if self.title else None)
+        object.__setattr__(self, "excerpt", normalize_multiline_text(self.excerpt) or None if self.excerpt else None)
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedArticle:
@@ -88,6 +96,13 @@ class ParsedArticle:
     content_format: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
+        object.__setattr__(self, "canonical_url", normalize_inline_text(self.canonical_url))
+        object.__setattr__(self, "title", normalize_inline_text(self.title))
+        object.__setattr__(self, "content", normalize_multiline_text(self.content))
+        object.__setattr__(self, "excerpt", normalize_multiline_text(self.excerpt) or None if self.excerpt else None)
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from packages.common.text import normalize_inline_text, normalize_multiline_text
+
 
 JIN10_SOURCE = "jin10"
 DEFAULT_JIN10_ENDPOINT_URL = "https://www.jin10.com/flash_newest.js"
@@ -41,6 +43,12 @@ class Jin10Item:
     published_at: datetime | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
+        object.__setattr__(self, "title", normalize_inline_text(self.title))
+        object.__setattr__(self, "content", normalize_multiline_text(self.content))
+        object.__setattr__(self, "source_url", normalize_inline_text(self.source_url) or None if self.source_url else None)
 
 
 @dataclass(frozen=True, slots=True)

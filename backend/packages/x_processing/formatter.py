@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from packages.common.text import normalize_multiline_text
+
 from .models import DraftBrief
 
 
@@ -63,7 +65,7 @@ def _normalize_title_spaces(value: str) -> str:
 
 
 def _ensure_prefix(content: str) -> str:
-    stripped = content.strip()
+    stripped = normalize_multiline_text(content)
     if stripped.startswith(ODAILY_PREFIX):
         return stripped
     if stripped.startswith("Odaily星球日报讯"):
@@ -74,11 +76,8 @@ def _ensure_prefix(content: str) -> str:
 
 def _ensure_paragraph_punctuation(content: str) -> str:
     paragraphs: list[str] = []
-    for line in content.splitlines():
+    for line in normalize_multiline_text(content).splitlines():
         stripped = line.strip()
-        if not stripped:
-            paragraphs.append("")
-            continue
         if not stripped.endswith(_PARAGRAPH_ENDINGS):
             stripped += "。"
         paragraphs.append(stripped)

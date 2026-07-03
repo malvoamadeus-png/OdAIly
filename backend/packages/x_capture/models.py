@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from packages.common.text import normalize_inline_text, normalize_multiline_text
+
 
 AttemptStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty"]
 
@@ -54,6 +56,12 @@ class TweetCandidate:
     source: str = "fxtwitter"
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tweet_id", normalize_inline_text(self.tweet_id))
+        object.__setattr__(self, "author_username", normalize_inline_text(self.author_username))
+        object.__setattr__(self, "author_display_name", normalize_inline_text(self.author_display_name))
+        object.__setattr__(self, "text", normalize_multiline_text(self.text))
+
 
 @dataclass(frozen=True, slots=True)
 class CaptureRecord:
@@ -72,6 +80,14 @@ class CaptureRecord:
     media_urls: list[str]
     metadata: dict[str, Any]
     raw_payload: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "platform", normalize_inline_text(self.platform))
+        object.__setattr__(self, "tweet_id", normalize_inline_text(self.tweet_id))
+        object.__setattr__(self, "author_username", normalize_inline_text(self.author_username))
+        object.__setattr__(self, "author_display_name", normalize_inline_text(self.author_display_name))
+        object.__setattr__(self, "url", normalize_inline_text(self.url))
+        object.__setattr__(self, "text", normalize_multiline_text(self.text))
 
 
 @dataclass(frozen=True, slots=True)

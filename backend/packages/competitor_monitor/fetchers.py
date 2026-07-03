@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import requests
+from packages.common.text import normalize_inline_text, normalize_multiline_text
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -34,6 +35,12 @@ class NewsflashItem:
     published_at: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
+        object.__setattr__(self, "title", normalize_inline_text(self.title))
+        object.__setattr__(self, "content", normalize_multiline_text(self.content))
+        object.__setattr__(self, "source_url", normalize_inline_text(self.source_url) or None if self.source_url else None)
 
 
 def strip_html(text: str, *, preserve_paragraph_breaks: bool = False) -> str:

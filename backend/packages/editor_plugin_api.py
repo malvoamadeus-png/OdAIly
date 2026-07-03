@@ -21,6 +21,7 @@ from packages.common.editor_plugin_auth import (
     PostgresEditorPluginAuthRepository,
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
+from packages.common.text import normalize_multiline_text
 from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
@@ -101,7 +102,7 @@ class EditorPluginRequestModel(BaseModel):
     @field_validator("post_text")
     @classmethod
     def normalize_post_text(cls, value: str) -> str:
-        text = value.strip()
+        text = normalize_multiline_text(value)
         if not text:
             raise ValueError("post_text is required")
         return text

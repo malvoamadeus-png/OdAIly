@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from packages.common.text import normalize_inline_text, normalize_multiline_text
+
 
 NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"]
@@ -94,19 +96,29 @@ class TaskRecord:
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
+        object.__setattr__(self, "source_url", normalize_inline_text(self.source_url) or None if self.source_url else None)
+        object.__setattr__(self, "title", normalize_inline_text(self.title) or None if self.title else None)
+        object.__setattr__(self, "content", normalize_multiline_text(self.content))
+
 
 @dataclass(frozen=True, slots=True)
 class PipelineRecord:
     task_id: int
     news_type: NewsType | None = None
     candidate_id: int | None = None
+    judge_completed_at: datetime | None = None
+    search_completed_at: datetime | None = None
     prompt_template_key: str | None = None
     prompt_version_id: int | None = None
     writer_feature_mode_enabled: bool | None = None
     draft_title: str | None = None
     draft_content: str | None = None
+    write_completed_at: datetime | None = None
     final_title: str | None = None
     final_content: str | None = None
+    format_completed_at: datetime | None = None
     publisher_channel: PublisherChannelKey | None = None
     publisher_model: str | None = None
     publisher_category: PublisherCategory | None = None
@@ -114,9 +126,24 @@ class PipelineRecord:
     publisher_reason_code: str | None = None
     publisher_output: dict[str, Any] = field(default_factory=dict)
     publisher_decided_at: datetime | None = None
+    publish_completed_at: datetime | None = None
     push_result: dict[str, Any] = field(default_factory=dict)
     telegram_result: dict[str, Any] = field(default_factory=dict)
     last_error: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "draft_title", normalize_inline_text(self.draft_title) or None if self.draft_title else None)
+        object.__setattr__(
+            self,
+            "draft_content",
+            normalize_multiline_text(self.draft_content) or None if self.draft_content else None,
+        )
+        object.__setattr__(self, "final_title", normalize_inline_text(self.final_title) or None if self.final_title else None)
+        object.__setattr__(
+            self,
+            "final_content",
+            normalize_multiline_text(self.final_content) or None if self.final_content else None,
+        )
 
 
 @dataclass(frozen=True, slots=True)
