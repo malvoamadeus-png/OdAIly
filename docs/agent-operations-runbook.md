@@ -2,6 +2,21 @@
 
 本文记录 Codex / WSL 环境执行 GitHub 推送、Linux 生产部署和前端上线核验时优先使用的稳定路径。
 
+## X 控评辅助工具
+
+JakeyCha 提供的两个值班辅助工具，不属于 OdAIly 主链路：
+
+- `docs/保安号-Hermes技能.md`：Hermes 技能，用于生成 X 评论区反击/澄清文案。
+- `docs/老Mi-X导出助手.md`：Chrome 插件，用于统计发帖数量。
+
+安装包由 JakeyCha 单独分发，放到 `third-party/` 对应目录后执行：
+
+```bash
+chmod +x tools/install-hermes-skill-baoanhao.sh tools/install-mi-x-export-helper.sh
+./tools/install-hermes-skill-baoanhao.sh
+./tools/install-mi-x-export-helper.sh
+```
+
 ## 稳定路径优先级
 
 - GitHub 操作优先走 `ssh.github.com:443`，不要反复尝试普通 `github.com:22`。

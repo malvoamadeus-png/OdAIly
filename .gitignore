@@ -48,6 +48,9 @@ data/runtime/**
 !data/processed/.gitkeep
 !data/exports/.gitkeep
 
+third-party/**/*.zip
+third-party/**/unpacked/
+
 .DS_Store
 .idea/
 .vscode/
