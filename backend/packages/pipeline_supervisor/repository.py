@@ -58,6 +58,7 @@ class PipelineSupervisorRepository(Protocol):
     def list_old_claimable_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
     def list_stuck_processing_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
     def list_recent_failed_tasks(self, *, since: datetime, threshold: int) -> list[dict[str, Any]]: ...
+    def list_recent_dashscope_arrearage_failures(self, *, since: datetime) -> list[dict[str, Any]]: ...
     def count_recent_x_success_attempts(self, *, since: datetime) -> int: ...
     def count_recent_x_capture_success_heartbeats(self, *, since: datetime) -> int: ...
     def claim_alert(self, *, alert_key: str, message: str, dedup_cutoff: datetime, metadata: dict[str, Any] | None = None) -> bool: ...
@@ -198,6 +199,44 @@ class PostgresPipelineSupervisorRepository:
                     since,
                     threshold,
                 ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_recent_dashscope_arrearage_failures(self, *, since: datetime) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    t.source,
+                    t.status,
+                    count(*)::int AS count,
+                    max(t.updated_at) AS latest_updated_at,
+                    left(
+                        max(
+                            CASE
+                                WHEN x.last_error ILIKE '%%DashScope%%' AND x.last_error ILIKE '%%Arrearage%%'
+                                    THEN x.last_error
+                                WHEN e.last_error ILIKE '%%DashScope%%' AND e.last_error ILIKE '%%Arrearage%%'
+                                    THEN e.last_error
+                                ELSE NULL
+                            END
+                        ),
+                        500
+                    ) AS sample_error
+                FROM tasks t
+                LEFT JOIN x_task_pipeline x ON x.task_id = t.id
+                LEFT JOIN external_media_alert_pipeline e ON e.task_id = t.id
+                WHERE t.source = ANY(%s::text[])
+                  AND t.status = 'search_failed'
+                  AND t.updated_at >= %s
+                  AND (
+                      (x.last_error ILIKE '%%DashScope%%' AND x.last_error ILIKE '%%Arrearage%%')
+                      OR (e.last_error ILIKE '%%DashScope%%' AND e.last_error ILIKE '%%Arrearage%%')
+                  )
+                GROUP BY t.source, t.status
+                ORDER BY count(*) DESC, latest_updated_at DESC
+                """,
+                (MONITORED_TASK_SOURCES, since),
             ).fetchall()
         return [dict(row) for row in rows]
 

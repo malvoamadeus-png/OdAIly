@@ -171,6 +171,26 @@ class PipelineSupervisorWorker:
                 )
             )
 
+        for row in self.repository.list_recent_dashscope_arrearage_failures(since=failed_since):
+            source = str(row["source"])
+            status = str(row["status"])
+            count = int(row["count"])
+            sample_error = str(row.get("sample_error") or "-")
+            alerts.append(
+                PipelineAlert(
+                    alert_key=f"dashscope_arrearage:{source}:{status}",
+                    message=(
+                        "OdAIly流水线报警\n"
+                        "类型：DashScope 欠费需充值\n"
+                        f"对象：{source}/{status}\n"
+                        f"详情：最近 {self.settings.failed_window_minutes} 分钟因 DashScope Arrearage 失败 {count} 条\n"
+                        f"动作：请立即充值或恢复 DashScope embedding 账号\n"
+                        f"样例：{sample_error}"
+                    ),
+                    metadata=dict(row),
+                )
+            )
+
         has_recent_x_capture_success = self.repository.count_recent_x_capture_success_heartbeats(since=heartbeat_cutoff) > 0
         if not has_recent_x_capture_success:
             try:

@@ -104,6 +104,13 @@ class DashScopeEmbeddingClient:
         raise RuntimeError(str(last_error) if last_error else "embedding request failed")
 
 
+def is_dashscope_arrearage_error(error: Exception | str) -> bool:
+    message = str(error).strip().lower()
+    if not message:
+        return False
+    return "dashscope" in message and "arrearage" in message
+
+
 def extract_embeddings(payload: dict[str, Any]) -> list[list[float]]:
     data = payload.get("data")
     if not isinstance(data, list):

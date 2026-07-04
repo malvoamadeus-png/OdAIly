@@ -16,6 +16,7 @@ class FakeSupervisorRepository:
         self.old_tasks: list[dict[str, Any]] = []
         self.stuck_tasks: list[dict[str, Any]] = []
         self.failed_tasks: list[dict[str, Any]] = []
+        self.dashscope_arrearage_failures: list[dict[str, Any]] = []
         self.x_success_count = 1
         self.x_success_heartbeats = 0
         self.claimed: set[str] = set()
@@ -37,6 +38,9 @@ class FakeSupervisorRepository:
 
     def list_recent_failed_tasks(self, *, since: datetime, threshold: int):
         return [item for item in self.failed_tasks if item["count"] >= threshold]
+
+    def list_recent_dashscope_arrearage_failures(self, *, since: datetime):
+        return self.dashscope_arrearage_failures
 
     def count_recent_x_success_attempts(self, *, since: datetime) -> int:
         return self.x_success_count
@@ -132,6 +136,28 @@ def test_supervisor_detects_worker_without_recent_success() -> None:
     assert result.checked == 1
     assert "无近期成功心跳" in telegram.calls[0]
     assert "competitor_monitor" in telegram.calls[0]
+
+
+def test_supervisor_sends_dashscope_arrearage_recharge_alert() -> None:
+    repo = FakeSupervisorRepository()
+    repo.dashscope_arrearage_failures = [
+        {
+            "source": "x",
+            "status": "search_failed",
+            "count": 3,
+            "sample_error": '400 Client Error from DashScope embeddings: {"error":{"code":"Arrearage"}}',
+        }
+    ]
+    telegram = FakeTelegramClient()
+    worker = PipelineSupervisorWorker(repository=repo, settings=settings(), telegram_client=telegram)
+
+    result = worker.run_once()
+
+    assert result.checked == 1
+    assert result.sent == 1
+    assert "DashScope 欠费需充值" in telegram.calls[0]
+    assert "请立即充值或恢复 DashScope embedding 账号" in telegram.calls[0]
+    assert "x/search_failed" in telegram.calls[0]
 
 
 def test_supervisor_accepts_recent_x_capture_heartbeat_when_attempts_are_sampled() -> None:

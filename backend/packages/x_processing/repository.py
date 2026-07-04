@@ -1243,7 +1243,7 @@ class InMemoryXProcessingRepository:
     def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(
-            **{**asdict(current), "search_completed_at": utc_now(), "last_error": None}
+            **{**asdict(current), "search_result": result, "search_completed_at": utc_now(), "last_error": None}
         )
         self._set_status(task_id, "duplicate")
 
@@ -1253,6 +1253,7 @@ class InMemoryXProcessingRepository:
             **{
                 **asdict(current),
                 "candidate_id": candidate_id or None,
+                "search_result": result,
                 "search_completed_at": utc_now(),
                 "last_error": None,
             }

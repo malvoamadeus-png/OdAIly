@@ -10,6 +10,7 @@ from packages.x_processing.searcher import (
     SearchCache,
     SearchDocument,
     cosine_similarity,
+    is_dashscope_arrearage_error,
     normalize_for_embedding,
 )
 
@@ -105,6 +106,12 @@ def test_dashscope_embedding_client_includes_error_body(monkeypatch) -> None:
         assert "too many inputs" in str(exc)
     else:
         raise AssertionError("DashScope 400 should fail with response body")
+
+
+def test_dashscope_arrearage_error_detection() -> None:
+    assert is_dashscope_arrearage_error("400 Client Error from DashScope embeddings: Arrearage")
+    assert is_dashscope_arrearage_error('{"error":{"message":"Access denied","code":"Arrearage"}} from DashScope')
+    assert not is_dashscope_arrearage_error("requests timeout while calling embeddings")
 
 
 def test_search_cache_reuses_embedding_by_content_hash(tmp_path: Path) -> None:

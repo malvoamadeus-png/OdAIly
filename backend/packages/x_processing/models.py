@@ -109,6 +109,7 @@ class PipelineRecord:
     news_type: NewsType | None = None
     candidate_id: int | None = None
     judge_completed_at: datetime | None = None
+    search_result: dict[str, Any] = field(default_factory=dict)
     search_completed_at: datetime | None = None
     prompt_template_key: str | None = None
     prompt_version_id: int | None = None
