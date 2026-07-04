@@ -144,11 +144,11 @@ def test_auditor_prompt_version_is_v9() -> None:
     assert AUDITOR_PROMPT_VERSION == "auditor_zh_quality_v9"
 
 
-def test_auditor_settings_default_to_gpt54_high_reasoning() -> None:
+def test_auditor_settings_default_to_gpt55_medium_reasoning() -> None:
     current = settings()
 
-    assert current.model == "gpt-5.4"
-    assert current.reasoning_effort == "high"
+    assert current.model == "gpt-5.5"
+    assert current.reasoning_effort == "medium"
 
 
 def test_auditor_passed_does_not_send_telegram() -> None:
@@ -161,8 +161,8 @@ def test_auditor_passed_does_not_send_telegram() -> None:
 
     assert result.passed == 1
     assert repo.passed[0]["prompt_version"] == AUDITOR_PROMPT_VERSION
-    assert ai.calls[0]["model"] == "gpt-5.4"
-    assert ai.calls[0]["reasoning_effort"] == "high"
+    assert ai.calls[0]["model"] == "gpt-5.5"
+    assert ai.calls[0]["reasoning_effort"] == "medium"
     assert telegram.calls == []
 
 
