@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Coco 小皮 · 作品集 · AdventureX 2026</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "WenQuanYi Micro Hei","Microsoft YaHei",sans-serif; color:#1f2937; }
+  .page {
+    width: 210mm; min-height: 297mm; padding: 16mm 15mm;
+    page-break-after: always; position: relative;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  /* Cover */
+  .cover { background:#0f0f12; color:#fff; display:flex; flex-direction:column; justify-content:center; }
+  .cover .kicker { color:#f0a074; letter-spacing:3px; font-size:11pt; }
+  .cover h1 { font-size:40pt; margin:10px 0 4px; letter-spacing:2px; }
+  .cover .en { color:#9ca3af; font-size:14pt; }
+  .cover .line { width:60px; height:4px; background:#c2410c; margin:22px 0; }
+  .cover .tag { font-size:12.5pt; line-height:1.9; color:#e5e7eb; max-width:150mm; }
+  .cover .tag b { color:#f0a074; }
+  .cover .foot { position:absolute; bottom:16mm; left:15mm; font-size:9.5pt; color:#9ca3af; }
+  .cover .foot a { color:#f0a074; text-decoration:none; }
+
+  h2.title { font-size:17pt; color:#111827; }
+  .role { color:#6b7280; font-size:10pt; margin:2px 0 2px; }
+  .one { color:#c2410c; font-size:11pt; font-weight:bold; margin-bottom:12px; }
+  .accent { width:46px; height:4px; background:#c2410c; margin:8px 0 14px; }
+  ul { list-style:none; margin:6px 0 0; }
+  li { position:relative; padding-left:16px; margin-bottom:6px; font-size:10.5pt; line-height:1.5; }
+  li::before { content:"▹"; position:absolute; left:0; color:#c2410c; }
+  .link { margin-top:12px; font-size:10pt; color:#374151; }
+  .link b { color:#c2410c; }
+  .pgnum { position:absolute; bottom:10mm; right:15mm; color:#9ca3af; font-size:9pt; }
+  .name-foot { position:absolute; bottom:10mm; left:15mm; color:#9ca3af; font-size:9pt; }
+
+  /* stat cards */
+  .stats { display:flex; gap:10px; margin:16px 0; flex-wrap:wrap; }
+  .stat { flex:1; min-width:70px; background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:14px 8px; text-align:center; }
+  .stat .n { font-size:20pt; font-weight:bold; color:#c2410c; }
+  .stat .l { font-size:8.5pt; color:#7c5b45; margin-top:3px; }
+
+  /* architecture flow */
+  .flow { display:flex; align-items:stretch; gap:0; margin:18px 0; flex-wrap:wrap; }
+  .node { background:#111827; color:#fff; border-radius:9px; padding:12px 10px; text-align:center; min-width:78px; font-size:10pt; }
+  .node .sub { font-size:7.5pt; color:#f0a074; margin-top:3px; }
+  .arrow { display:flex; align-items:center; color:#c2410c; font-size:15pt; padding:0 4px; }
+  .sources { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 4px; }
+  .chip { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:20px; padding:4px 11px; font-size:9pt; color:#374151; }
+  .async { display:flex; gap:10px; margin-top:10px; }
+  .async .box { flex:1; background:#fef2f2; border:1px dashed #fca5a5; border-radius:8px; padding:9px 11px; font-size:9.3pt; color:#7f1d1d; }
+
+  /* image slot */
+  .slot { border:2px dashed #d1d5db; border-radius:12px; background:#fafafa; height:78mm; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#9ca3af; margin:14px 0; text-align:center; }
+  .slot .big { font-size:12pt; color:#6b7280; }
+  .slot .small { font-size:9pt; margin-top:6px; }
+  .caption { font-size:8.8pt; color:#9ca3af; text-align:center; margin-top:-6px; }
+
+  .note { font-size:8.8pt; color:#9ca3af; margin-top:10px; font-style:italic; }
+</style>
+</head>
+<body>
+
+<!-- ===== COVER ===== -->
+<div class="page cover">
+  <div class="kicker">PORTFOLIO · 个人作品集</div>
+  <h1>裴诗艺 <span class="en">/ Coco 小皮</span></h1>
+  <div class="line"></div>
+  <div class="tag">
+    19 岁 · 大一在读 · 一个人用 <b>Python + AI</b> 搭多智能体系统的建造者。<br>
+    白天在 Odaily 做 AI 新闻自动化，晚上做自己的 AI Agent side project。<br>
+    这里是我<b>真正做出来、在跑</b>的一些东西。
+  </div>
+  <div class="foot">
+    申请方向：AdventureX 2026　·　GitHub: <a>github.com/PeaSea-21</a>　·　公众号/小红书「诗行艺旅」
+  </div>
+</div>
+
+<!-- ===== P1 OdAIly ===== -->
+<div class="page">
+  <h2 class="title">OdAIly · 多信源 AI 新闻自动生产系统</h2>
+  <div class="role">Odaily 实习 · 主力开发之一　|　Python · Supabase/Postgres · Prompt 工程 · Chrome 插件</div>
+  <div class="one">一个人把"一整个快讯编辑部"的活，做成了会自己跑的多智能体流水线。</div>
+  <div class="accent"></div>
+
+  <div style="font-size:9.5pt;color:#6b7280;">覆盖信源</div>
+  <div class="sources">
+    <span class="chip">X / Twitter</span><span class="chip">竞品快讯</span><span class="chip">外媒全文</span>
+    <span class="chip">AI 信源</span><span class="chip">金十</span><span class="chip">…共 12+ 信源</span>
+  </div>
+
+  <div class="flow">
+    <div class="node">多信源抓取<div class="sub">Collectors</div></div>
+    <div class="arrow">→</div>
+    <div class="node">判断<div class="sub">Judge</div></div>
+    <div class="arrow">→</div>
+    <div class="node">检索/查重<div class="sub">Search</div></div>
+    <div class="arrow">→</div>
+    <div class="node">写作<div class="sub">Writer</div></div>
+    <div class="arrow">→</div>
+    <div class="node">格式化<div class="sub">Format</div></div>
+    <div class="arrow">→</div>
+    <div class="node">发布<div class="sub">Publish</div></div>
+  </div>
+  <div class="async">
+    <div class="box">发布后 · <b>审核者</b>：异步复盘已发内容，人工可反馈接受/拒绝</div>
+    <div class="box">全程 · <b>监督者</b>：心跳告警，任一环节掉线即时提醒</div>
+  </div>
+
+  <ul>
+    <li>用 Python + Supabase/Postgres 搭建"抓取 → 判断 → 检索 → 写作 → 发布"全自动流水线</li>
+    <li>独立负责竞品复盘分析 + 快讯 Prompt 工程优化，把英文外媒稿的中文改写风格迭代到 v9</li>
+    <li>配套 Chrome 插件（信息流 + 一键快讯生成）、Vite 控制台、GitHub Actions 定时、systemd + Caddy 部署</li>
+  </ul>
+  <div class="note">* 该系统为 Odaily 内部系统，本页仅展示架构与个人贡献，不含任何后台/代码/内部数据。</div>
+  <div class="name-foot">Coco 小皮 · 作品集</div>
+  <div class="pgnum">01</div>
+</div>
+
+<!-- ===== P2 Swarm Labs ===== -->
+<div class="page">
+  <h2 class="title">Swarm Labs · 信源聚合 Agent（每日 AI 情报）</h2>
+  <div class="role">主理人之一　|　GitHub Actions · Agent · 内容策略</div>
+  <div class="one">带团队把"12 信源自动聚合 → 每天 7:30 定时成稿播报"跑成了稳定产品。</div>
+  <div class="accent"></div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">12+</div><div class="l">聚合信源</div></div>
+    <div class="stat"><div class="n">37</div><div class="l">定时任务全绿</div></div>
+    <div class="stat"><div class="n">7:30</div><div class="l">每天自动播报</div></div>
+    <div class="stat"><div class="n">~2min</div><div class="l">单次全流程</div></div>
+  </div>
+
+  <ul>
+    <li>用 GitHub Actions 部署 <b>Daily AI Intel</b> 定时工作流，每天自动抓取、筛选、成稿并推送到团队群</li>
+    <li>设计每日 AI 情报的选题与排版风格，产出可直接阅读的精选日报</li>
+    <li>担任小红书 AI 创业社群管理员，沉淀 AI 工作流与工具实测内容</li>
+  </ul>
+
+  <div class="slot">
+    <div class="big">［在此放：Swarm Labs 每日情报日报截图］</div>
+    <div class="small">就是那张橙黑配色的「SWARM LABS AI INTEL DAILY」成稿图（横/方图）</div>
+  </div>
+
+  <div class="name-foot">Coco 小皮 · 作品集</div>
+  <div class="pgnum">02</div>
+</div>
+
+<!-- ===== P3 Airdrop tracker ===== -->
+<div class="page">
+  <h2 class="title">Crypto Airdrop 追踪工具</h2>
+  <div class="role">独立开发 · Claude Code 从零搭建　|　公开可访问</div>
+  <div class="one">从 0 用 AI 写出来的第一个上线小工具，管理自己参与的链上项目。</div>
+  <div class="accent"></div>
+
+  <ul>
+    <li>用 Claude Code 独立完成前端开发并部署到 GitHub Pages，公开可访问</li>
+    <li>按 <b>Ongoing / Completed / Claimed</b> 管理 SENT、KOGE、ARTX、AIO 等项目状态与操作笔记</li>
+    <li>从"只会用 AI 聊天"到"用 AI 做出一个能用的产品"的第一步</li>
+  </ul>
+
+  <div class="slot">
+    <div class="big">［在此放：Airdrop 追踪工具网页截图］</div>
+    <div class="small">peasea-21.github.io/airdrop-tracker/ 那张深色卡片界面（横屏最佳）</div>
+  </div>
+
+  <div class="link">🔗 在线体验：<b>peasea-21.github.io/airdrop-tracker/</b>　·　源码：github.com/PeaSea-21</div>
+  <div class="name-foot">Coco 小皮 · 作品集</div>
+  <div class="pgnum">03</div>
+</div>
+
+<!-- ===== P4 公众号 ===== -->
+<div class="page">
+  <h2 class="title">AI 内容操盘 · 公众号「诗行艺旅」</h2>
+  <div class="role">独立操盘手　|　选题 → AI 写作 → 数据追踪 全流程</div>
+  <div class="one">用 AI 内容工作流跑出单篇 66 万+ 阅读，验证 AI 辅助媒体生产的商业可行性。</div>
+  <div class="accent"></div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">66.9万</div><div class="l">单篇最高阅读</div></div>
+    <div class="stat"><div class="n">2,290</div><div class="l">分享</div></div>
+    <div class="stat"><div class="n">874</div><div class="l">留言</div></div>
+    <div class="stat"><div class="n">297</div><div class="l">点赞</div></div>
+    <div class="stat"><div class="n">20万字</div><div class="l">累计输出</div></div>
+  </div>
+
+  <ul>
+    <li>独立运营科技评测 / 市场分析号，构建"选题策划 → AI 写作 → 数据追踪"的完整内容工作流</li>
+    <li>爆款单篇阅读 <b>669,211</b>，通过流量变现实现 3000+ 元收入</li>
+    <li>累计输出 20 万字结构化内容，探索人机协作下的高效内容生产</li>
+  </ul>
+
+  <div class="slot" style="height:55mm;">
+    <div class="big">［可选 · 在此放：公众号那篇 66.9 万阅读的数据截图］</div>
+    <div class="small">手机后台竖屏截图即可；不放也不影响，上方数据卡已能说明</div>
+  </div>
+  <div class="name-foot">Coco 小皮 · 作品集</div>
+  <div class="pgnum">04</div>
+</div>
+
+<!-- ===== P5 imToken + 关于 ===== -->
+<div class="page">
+  <h2 class="title">imToken 十周年 AI 共创 · SpendWise AI</h2>
+  <div class="role">参与者　|　5 天 hackathon · React 原型</div>
+  <div class="one">5 天从 0 想法做到可演示产品，体验"为创造冲刺"的极限速度。</div>
+  <div class="accent"></div>
+  <ul>
+    <li>用自然语言 + Token Core 素材做出面向钱包记账场景的 <b>SpendWise AI</b> React 仪表盘原型</li>
+    <li>完整走通"想法 → 设计 → 可演示 demo"，而不是停在 PPT 里</li>
+  </ul>
+  <div class="slot" style="height:50mm;">
+    <div class="big">［可选 · 在此放：SpendWise AI 仪表盘截图］</div>
+    <div class="small">有就放，没有可留空或删掉这块</div>
+  </div>
+
+  <h2 class="title" style="margin-top:22px;">关于我</h2>
+  <div class="accent"></div>
+  <ul>
+    <li>连续早起 100+ 天，知识库累计编辑 20 万字，一个人写 prompt、调代码、看数据也能上头</li>
+    <li>正在探索 "agent 对 agent" 的信息核验网络：让互不信任的信源 agent 交换核验信号、达成可信共识</li>
+    <li>相信"一个人走得快，一群人走得远"——来 AdventureX 找一起为创造熬夜的人</li>
+  </ul>
+  <div class="link">📮 yinengjiazaizhong@foxmail.com　·　GitHub: <b>github.com/PeaSea-21</b>　·　X: @xiaoshiyi021</div>
+  <div class="name-foot">Coco 小皮 · 作品集</div>
+  <div class="pgnum">05</div>
+</div>
+
+</body>
+</html>
