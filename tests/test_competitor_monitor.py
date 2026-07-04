@@ -355,7 +355,7 @@ def test_fetch_jinse_uses_live_id_and_title_fallback(monkeypatch) -> None:
     assert items[0].source_item_id == "512001"
     assert items[0].content == "美国参议院银行委员会将对法案进行首次投票"
     assert items[0].published_at == "1778283366"
-    assert items[0].source_url == "https://www.jinse2.com/lives/512001.html"
+    assert items[0].source_url is None
 
 
 def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
@@ -399,6 +399,31 @@ def test_fetch_jinse_reads_coinmeta_grouped_lives(monkeypatch) -> None:
     assert "金色财经报道" not in items[0].content
     assert items[0].source_url == "https://x.com/Cointelegraph/status/2054069277632741773"
     assert items[0].published_at == "1778563741"
+
+
+def test_fetch_jinse_accepts_external_jump_url_when_link_missing(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": 512009,
+                        "title": "某项目完成融资",
+                        "published_at": 1778283366,
+                        "jump_url": "https://www.coindesk.com/markets/2026/05/24/example",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", lambda *args, **kwargs: Response())
+
+    items = fetch_jinse(timeout_seconds=3)
+
+    assert len(items) == 1
+    assert items[0].source_url == "https://www.coindesk.com/markets/2026/05/24/example"
 
 
 def test_fetch_odaily_preserves_paragraph_breaks_between_html_blocks(monkeypatch) -> None:

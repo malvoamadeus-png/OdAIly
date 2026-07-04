@@ -4,11 +4,12 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
 from packages.common.config import load_x_processing_settings
+from packages.common.freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS, evaluate_source_freshness
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.local_pipeline.client import LocalPipelineClient
 from .classifier import MixedSourceClassifier, build_mixed_source_classifier
@@ -57,6 +58,7 @@ class NonMainstreamMediaWorker:
         self.backoff_seconds = backoff_seconds
         self.pipeline_client = pipeline_client
         self.mixed_classifier = mixed_classifier
+        self.processing_freshness_window_seconds = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         self.worker_id = f"non_mainstream_media-{os.getpid()}"
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
@@ -77,13 +79,13 @@ class NonMainstreamMediaWorker:
             ),
         )
         self._mixed_classifier_init_error: str | None = None
-        if self.mixed_classifier is None:
-            try:
-                settings = load_x_processing_settings()
-                if settings.openai_api_key:
-                    self.mixed_classifier = build_mixed_source_classifier(settings)
-            except Exception as exc:
-                self._mixed_classifier_init_error = str(exc)
+        try:
+            settings = load_x_processing_settings()
+            self.processing_freshness_window_seconds = settings.processing_freshness_window_seconds
+            if self.mixed_classifier is None and settings.openai_api_key:
+                self.mixed_classifier = build_mixed_source_classifier(settings)
+        except Exception as exc:
+            self._mixed_classifier_init_error = str(exc)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -312,6 +314,7 @@ class NonMainstreamMediaWorker:
         new_count = 0
         saved_count = 0
         enqueue_errors: dict[str, str] = {}
+        stale_count = 0
         classified_counts = {
             "classified_crypto": 0,
             "classified_ai": 0,
@@ -349,9 +352,19 @@ class NonMainstreamMediaWorker:
                 }
                 if classification.reason:
                     classification_metadata["classification_reason"] = classification.reason
+            try:
+                prepared_page = self._prepare_alert_page(source, page)
+            except Exception as exc:
+                enqueue_errors[page.source_item_id] = f"detail enrichment failed: {exc}"
+                continue
+            if prepared_page is None:
+                if self.repository.mark_seen(source, page.source_item_id, seeded=False):
+                    new_count += 1
+                    stale_count += 1
+                continue
             task_id = self.repository.save_alert_task(
                 source,
-                page,
+                prepared_page,
                 classified_target=classified_target,
                 classification_metadata=classification_metadata,
             )
@@ -386,8 +399,42 @@ class NonMainstreamMediaWorker:
             error=f"{len(enqueue_errors)} local pipeline enqueue(s) failed" if enqueue_errors else None,
             metadata={
                 "enqueue_errors": enqueue_errors,
+                "stale_count": stale_count,
                 **(classified_counts if source.source_group == SOURCE_GROUP_MIXED_SOURCE else {}),
             },
+        )
+
+    def _prepare_alert_page(
+        self,
+        source: NonMainstreamMediaSource,
+        page: Any,
+    ) -> Any | None:
+        if source.site_key != "ft_crypto":
+            return page
+        site = self.site_registry.get(source.site_key)
+        if site is None:
+            raise ValueError(f"site not registered: {source.site_key}")
+        article = fetch_article(
+            site,
+            page,
+            timeout_seconds=self.request_timeout_seconds,
+            max_attempts=self.max_attempts,
+            backoff_seconds=self.backoff_seconds,
+        )
+        check = evaluate_source_freshness(
+            article.published_at,
+            window_seconds=self.processing_freshness_window_seconds,
+        )
+        if not check.is_fresh:
+            return None
+        published_at_raw = str(article.metadata.get("published_at_raw") or page.published_at_raw or "").strip() or None
+        return replace(
+            page,
+            detail_url=article.canonical_url or page.detail_url,
+            title=article.title or page.title,
+            excerpt=article.excerpt or page.excerpt,
+            published_at=article.published_at,
+            published_at_raw=published_at_raw,
         )
 
     def _submit_pipeline_job(self, *, job_type: str, task_id: int, source: str, source_item_id: str) -> None:

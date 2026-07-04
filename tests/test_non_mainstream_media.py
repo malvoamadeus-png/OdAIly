@@ -1907,6 +1907,51 @@ def test_discover_ft_pages_reads_google_news_rss_and_decodes_ft_links(monkeypatc
     ]
 
 
+def test_fetch_article_ft_crypto_falls_back_to_jina_and_extracts_published_at(monkeypatch) -> None:
+    site = get_site_registry()["ft_crypto"]
+    page = DiscoveredPage(
+        source_item_id="https://www.ft.com/content/abc123/",
+        detail_url="https://www.ft.com/content/abc123/",
+        title="Crypto story",
+        excerpt="Google News excerpt",
+    )
+    calls: list[str] = []
+    payload = """
+Title: Crypto story
+
+URL Source: https://www.ft.com/content/abc123
+
+Published Time: 2026-07-03T05:00:00Z
+
+Markdown Content:
+# Crypto story
+
+Bitcoin treasury companies are raising new capital to expand token holdings.
+
+The latest move underscores growing institutional demand for crypto exposure.
+""".strip()
+
+    def fake_fetch_html(url: str, **_: object) -> str:
+        calls.append(url)
+        if url == page.detail_url:
+            raise RuntimeError("cloudflare challenge")
+        assert url == "https://r.jina.ai/http://https://www.ft.com/content/abc123/"
+        return payload
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.fetch_html", fake_fetch_html)
+
+    article = fetch_article(site, page, timeout_seconds=20.0)
+
+    assert calls == [
+        "https://www.ft.com/content/abc123/",
+        "https://r.jina.ai/http://https://www.ft.com/content/abc123/",
+    ]
+    assert article.canonical_url == "https://www.ft.com/content/abc123/"
+    assert article.published_at == datetime(2026, 7, 3, 5, 0, tzinfo=UTC)
+    assert article.metadata["published_at_raw"] == "2026-07-03T05:00:00Z"
+    assert article.metadata["proxy_fallback"] == "jina_markdown"
+
+
 def test_discover_wsj_pages_reads_rss_titles() -> None:
     xml = """
     <rss version="2.0">
@@ -2462,6 +2507,67 @@ def test_worker_alert_only_site_saves_title_tasks_without_fetching_details(monke
         "published_at_raw": None,
         "source_kind": "external_media_alert",
     }
+
+
+def test_worker_ft_alert_only_skips_stale_article_after_detail_time_fetch(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "ft_crypto": SiteDefinition(
+            site_key="ft_crypto",
+            display_name="FT Crypto",
+            homepage_url="https://www.ft.com/crypto",
+            list_url="https://news.google.com/rss/search?q=site:ft.com+crypto&hl=en-US&gl=US&ceid=US:en",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.ft.com/content/seed/",
+            detail_url="https://www.ft.com/content/seed/",
+            title="Seed story",
+            excerpt="Seed excerpt",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.ft.com/content/old-story/",
+            detail_url="https://www.ft.com/content/old-story/",
+            title="Old story",
+            excerpt="Old excerpt",
+        )
+    ]
+    fetch_calls: list[str] = []
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "ft_crypto"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        fetch_calls.append(page.detail_url)
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title="Old story",
+            content="Old story body",
+            published_at=datetime(2018, 6, 25, 4, 30, tzinfo=UTC),
+            excerpt="Old story body",
+            metadata={"published_at_raw": "2018-06-25T04:30:00.000Z"},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert fetch_calls == ["https://www.ft.com/content/old-story/"]
+    assert stats[0].new_count == 1
+    assert stats[0].saved_count == 0
+    assert stats[0].metadata["stale_count"] == 1
+    assert repository.tasks == []
+    assert ("ft_crypto", "https://www.ft.com/content/old-story/") in repository.seen
 
 
 def test_worker_ai_source_write_flow_saves_ai_source_task(monkeypatch) -> None:
@@ -3106,3 +3212,64 @@ def test_worker_the_block_alert_only_saves_title_task(monkeypatch) -> None:
     assert repository.tasks[0]["source"] == "external_media_alert"
     assert repository.tasks[0]["metadata"]["site_key"] == "the_block"
     assert repository.tasks[0]["metadata"]["pipeline_mode"] == "alert_only"
+
+
+def test_worker_ft_alert_only_saves_fresh_task_with_detail_published_at(monkeypatch) -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    registry = {
+        "ft_crypto": SiteDefinition(
+            site_key="ft_crypto",
+            display_name="FT Crypto",
+            homepage_url="https://www.ft.com/crypto",
+            list_url="https://news.google.com/rss/search?q=site:ft.com+crypto&hl=en-US&gl=US&ceid=US:en",
+            capture_method="html_request",
+            pipeline_mode="alert_only",
+        )
+    }
+    worker = NonMainstreamMediaWorker(repository=repository, site_registry=registry)
+    fresh_published_at = datetime.now(UTC)
+    first_pages = [
+        DiscoveredPage(
+            source_item_id="https://www.ft.com/content/seed/",
+            detail_url="https://www.ft.com/content/seed/",
+            title="Seed story",
+            excerpt="Seed excerpt",
+        )
+    ]
+    second_pages = first_pages + [
+        DiscoveredPage(
+            source_item_id="https://www.ft.com/content/fresh-story/",
+            detail_url="https://www.ft.com/content/fresh-story/",
+            title="Fresh story",
+            excerpt="Google News excerpt",
+        )
+    ]
+
+    def fake_fetch_discovered_pages(site: SiteDefinition, **_: object) -> list[DiscoveredPage]:
+        assert site.site_key == "ft_crypto"
+        return first_pages if repository.sources[1].seeded_at is None else second_pages
+
+    def fake_fetch_article(site: SiteDefinition, page: DiscoveredPage, **_: object) -> ParsedArticle:
+        assert page.detail_url == "https://www.ft.com/content/fresh-story/"
+        return ParsedArticle(
+            source_item_id=page.source_item_id,
+            canonical_url=page.detail_url,
+            title="Fresh story refined",
+            content="Fresh story body",
+            published_at=fresh_published_at,
+            excerpt="Fresh story body",
+            metadata={"published_at_raw": fresh_published_at.isoformat()},
+        )
+
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_discovered_pages", fake_fetch_discovered_pages)
+    monkeypatch.setattr("packages.non_mainstream_media.worker.fetch_article", fake_fetch_article)
+
+    worker.run_once()
+    stats = worker.run_once()
+
+    assert stats[0].saved_count == 1
+    assert repository.tasks[0]["source"] == "external_media_alert"
+    assert repository.tasks[0]["title"] == "Fresh story refined"
+    assert repository.tasks[0]["content"] == "Fresh story body"
+    assert repository.tasks[0]["published_at"] == fresh_published_at
+    assert repository.tasks[0]["metadata"]["published_at_raw"] == fresh_published_at.isoformat()

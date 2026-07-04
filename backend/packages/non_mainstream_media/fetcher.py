@@ -516,6 +516,15 @@ def fetch_article(
                 page_url=page.detail_url,
                 source_item_id=page.source_item_id,
             )
+    elif site.site_key == "ft_crypto":
+        html = fetch_html_with_fallbacks(
+            page.detail_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+            fallback_urls=[build_jina_proxy_url(page.detail_url)],
+        )
+        article = parse_ft_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     else:
         raise ValueError(f"unsupported site registry entry: {site.site_key}")
     return apply_discovery_page_fallback(article, page)
@@ -1908,6 +1917,110 @@ def parse_businessinsider_article(html: str, *, page_url: str, source_item_id: s
         excerpt=excerpt,
         content_format="businessinsider_article",
         raw_payload={"page_url": page_url, "canonical_url": canonical},
+        metadata=metadata,
+    )
+
+
+def parse_ft_article(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    if "Markdown Content:" in html:
+        return parse_ft_markdown_article(html, page_url=page_url, source_item_id=source_item_id)
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or structured.get("dateCreated")
+        or select_meta_content(soup, "property", "article:published_time")
+        or select_meta_content(soup, "name", "article:published_time")
+    )
+    canonical = normalize_url(
+        str(
+            structured.get("url")
+            or select_attr(soup, "link[rel='canonical']", "href")
+            or select_meta_content(soup, "property", "og:url")
+            or page_url
+        )
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    categories = normalize_string_list(structured.get("articleSection"))
+    tags = normalize_keywords(structured.get("keywords"))
+    body = clean_body_text(str(structured.get("articleBody") or "") or extract_body_text(soup))
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=tags,
+        categories=categories,
+        excerpt=excerpt,
+        content_format="ft_content_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "structured_type": structured.get("@type"),
+            "structured_headline": structured.get("headline") or structured.get("name"),
+        },
+        metadata=metadata,
+    )
+
+
+def parse_ft_markdown_article(payload: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    text = extract_jina_markdown_payload(payload)
+    title = clean_inline_text(extract_line_value(payload, prefix="Title:")) or normalize_url(page_url)
+    canonical = normalize_url(extract_line_value(payload, prefix="URL Source:") or page_url)
+    published_at_raw = clean_inline_text(extract_line_value(payload, prefix="Published Time:")) or None
+    lines = [line.rstrip() for line in text.splitlines()]
+    body = clean_body_text(extract_ft_markdown_body(lines, title=title))
+    excerpt = body.split("\n\n", 1)[0][:240] if body else None
+    if not body:
+        body = title
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "proxy_fallback": "jina_markdown",
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=[],
+        tags=[],
+        categories=[],
+        excerpt=excerpt,
+        content_format="ft_content_article",
+        raw_payload={
+            "page_url": page_url,
+            "canonical_url": canonical,
+            "proxy_fallback": "jina_markdown",
+        },
         metadata=metadata,
     )
 
@@ -4008,6 +4121,38 @@ def extract_hankyung_markdown_body(lines: list[str], *, title: str, start_index:
     return "\n\n".join(body_lines)
 
 
+def extract_ft_markdown_body(lines: list[str], *, title: str) -> str:
+    body_lines: list[str] = []
+    in_body = False
+    cleaned_title = clean_inline_text(title)
+    for line in lines:
+        cleaned = clean_inline_text(strip_markdown_formatting(line))
+        if not cleaned:
+            continue
+        if cleaned == cleaned_title or cleaned == f"# {cleaned_title}":
+            in_body = True
+            continue
+        if cleaned.startswith("Published Time:") or cleaned.startswith("URL Source:") or cleaned.startswith("Title:"):
+            continue
+        if cleaned.startswith("Markets data delayed by at least 15 minutes."):
+            break
+        if cleaned.startswith("The Financial Times and its journalism are subject"):
+            break
+        if cleaned.startswith("Close side navigation menu"):
+            break
+        if cleaned.startswith("Subscribe for full access"):
+            break
+        if _looks_like_ft_ui_text(cleaned):
+            continue
+        if not in_body:
+            if len(cleaned) >= 80:
+                in_body = True
+            else:
+                continue
+        body_lines.append(cleaned)
+    return "\n\n".join(body_lines)
+
+
 def _looks_like_hankyung_ui_text(value: str) -> bool:
     markers = (
         "모바일 전체메뉴",
@@ -4019,6 +4164,45 @@ def _looks_like_hankyung_ui_text(value: str) -> bool:
         "AI를 넘어서는 성공투자",
     )
     return any(marker in value for marker in markers)
+
+
+def _looks_like_ft_ui_text(value: str) -> bool:
+    markers = (
+        "Accessibility help",
+        "Skip to navigation",
+        "Skip to main content",
+        "Skip to footer",
+        "Open side navigation menu",
+        "Open search bar",
+        "Go to Financial Times homepage",
+        "Search the FT Search",
+        "Sections",
+        "Most Read",
+        "Show more ",
+        "Top sections",
+        "Community & Events",
+        "More from the FT Group",
+        "Close side navigation menu",
+        "Edition:International",
+        "Subscribe for full access",
+        "News feed",
+        "Newsletters",
+        "Currency Converter",
+    )
+    exact = {
+        "Subscribe",
+        "Sign In",
+        "Home",
+        "World",
+        "US",
+        "Companies",
+        "Opinion",
+        "Lex",
+        "Work & Careers",
+        "Life & Arts",
+        "HTSI",
+    }
+    return value in exact or any(marker in value for marker in markers)
 
 
 def is_hankyung_article_url(url: str) -> bool:

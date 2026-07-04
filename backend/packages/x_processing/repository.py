@@ -277,6 +277,8 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         task_id=int(row["task_id"]),
         news_type=news_type,
         candidate_id=row.get("candidate_id"),
+        judge_completed_at=row.get("judge_completed_at"),
+        search_completed_at=row.get("search_completed_at"),
         prompt_template_key=row.get("prompt_template_key"),
         prompt_version_id=row.get("prompt_version_id"),
         writer_feature_mode_enabled=(
@@ -284,8 +286,10 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         ),
         draft_title=row.get("draft_title"),
         draft_content=row.get("draft_content"),
+        write_completed_at=row.get("write_completed_at"),
         final_title=row.get("final_title"),
         final_content=row.get("final_content"),
+        format_completed_at=row.get("format_completed_at"),
         publisher_channel=publisher_channel,
         publisher_model=row.get("publisher_model"),
         publisher_category=publisher_category,
@@ -293,6 +297,7 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         publisher_reason_code=row.get("publisher_reason_code"),
         publisher_output=row.get("publisher_output") or {},
         publisher_decided_at=row.get("publisher_decided_at"),
+        publish_completed_at=row.get("publish_completed_at"),
         push_result=row.get("push_result") or {},
         telegram_result=row.get("telegram_result") or {},
         last_error=row.get("last_error"),
@@ -699,6 +704,7 @@ class PostgresXProcessingRepository:
                 SET news_type = %s,
                     judge_model = %s,
                     judge_output = %s,
+                    judge_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
@@ -723,6 +729,7 @@ class PostgresXProcessingRepository:
                 SET news_type = NULL,
                     judge_model = %s,
                     judge_output = %s,
+                    judge_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
@@ -748,6 +755,7 @@ class PostgresXProcessingRepository:
                 UPDATE x_task_pipeline
                 SET candidate_id = COALESCE(%s, candidate_id),
                     search_result = %s,
+                    search_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
@@ -764,6 +772,7 @@ class PostgresXProcessingRepository:
                 UPDATE x_task_pipeline
                 SET candidate_id = NULLIF(%s, 0),
                     search_result = %s,
+                    search_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
@@ -934,6 +943,7 @@ class PostgresXProcessingRepository:
                     writer_output = %s,
                     draft_title = %s,
                     draft_content = %s,
+                    write_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %s
@@ -965,6 +975,7 @@ class PostgresXProcessingRepository:
                 UPDATE x_task_pipeline
                 SET final_title = %(final_title)s,
                     final_content = %(final_content)s,
+                    format_completed_at = now(),
                     last_error = NULL,
                     updated_at = now()
                 WHERE task_id = %(task_id)s
@@ -1005,6 +1016,7 @@ class PostgresXProcessingRepository:
                     publisher_reason_code = %(publisher_reason_code)s,
                     publisher_output = %(publisher_output)s,
                     publisher_decided_at = %(publisher_decided_at)s,
+                    publish_completed_at = now(),
                     push_result = %(push_result)s,
                     telegram_result = %(telegram_result)s,
                     last_error = %(last_error)s,
@@ -1211,13 +1223,17 @@ class InMemoryXProcessingRepository:
 
     def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
-        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": news_type, "last_error": None})
+        self.pipelines[task_id] = PipelineRecord(
+            **{**asdict(current), "news_type": news_type, "judge_completed_at": utc_now(), "last_error": None}
+        )
         task = self.tasks[task_id]
         self._set_status(task_id, "deduped" if task.source in SEARCH_FIRST_SOURCES else "judged")
 
     def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
         current = self.pipelines[task_id]
-        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "news_type": None, "last_error": None})
+        self.pipelines[task_id] = PipelineRecord(
+            **{**asdict(current), "news_type": None, "judge_completed_at": utc_now(), "last_error": None}
+        )
         self._release_primary_candidate(task_id)
         self._set_status(task_id, "discarded")
 
@@ -1226,12 +1242,21 @@ class InMemoryXProcessingRepository:
 
     def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
         current = self.pipelines[task_id]
-        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "last_error": None})
+        self.pipelines[task_id] = PipelineRecord(
+            **{**asdict(current), "search_completed_at": utc_now(), "last_error": None}
+        )
         self._set_status(task_id, "duplicate")
 
     def complete_search_ready(self, task_id: int, *, candidate_id: int, result: dict[str, Any]) -> None:
         current = self.pipelines[task_id]
-        self.pipelines[task_id] = PipelineRecord(**{**asdict(current), "candidate_id": candidate_id or None, "last_error": None})
+        self.pipelines[task_id] = PipelineRecord(
+            **{
+                **asdict(current),
+                "candidate_id": candidate_id or None,
+                "search_completed_at": utc_now(),
+                "last_error": None,
+            }
+        )
         task = self.tasks[task_id]
         self._set_status(task_id, "searched" if task.source in SEARCH_FIRST_SOURCES else "deduped")
 
@@ -1307,6 +1332,7 @@ class InMemoryXProcessingRepository:
                 "writer_feature_mode_enabled": prompt.feature_mode_enabled,
                 "draft_title": draft_title,
                 "draft_content": draft_content,
+                "write_completed_at": utc_now(),
                 "last_error": None,
             }
         )
@@ -1325,6 +1351,7 @@ class InMemoryXProcessingRepository:
                 **asdict(current),
                 "final_title": final_title,
                 "final_content": final_content,
+                "format_completed_at": utc_now(),
                 "last_error": None,
             }
         )
@@ -1357,6 +1384,7 @@ class InMemoryXProcessingRepository:
                 "publisher_reason_code": publisher_reason_code,
                 "publisher_output": publisher_output,
                 "publisher_decided_at": decided_at,
+                "publish_completed_at": utc_now(),
                 "push_result": push_result,
                 "telegram_result": telegram_result,
                 "last_error": last_error,
@@ -1510,7 +1538,9 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
+    judge_completed_at timestamptz,
     search_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    search_completed_at timestamptz,
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
     writer_feature_mode_enabled boolean,
@@ -1518,8 +1548,10 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     writer_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     draft_title text,
     draft_content text,
+    write_completed_at timestamptz,
     final_title text,
     final_content text,
+    format_completed_at timestamptz,
     publisher_channel text,
     publisher_model text,
     publisher_category text,
@@ -1527,6 +1559,7 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     publisher_reason_code text,
     publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     publisher_decided_at timestamptz,
+    publish_completed_at timestamptz,
     push_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_error text,
@@ -1540,7 +1573,11 @@ ALTER TABLE x_task_pipeline
     CHECK (news_type IS NULL OR news_type IN ('regular', 'onchain', 'funding', 'non_mainstream_media', 'ai_source', 'mainstream_media'));
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS judge_completed_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS search_completed_at timestamptz;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS writer_feature_mode_enabled boolean;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS write_completed_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS format_completed_at timestamptz;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_channel text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_model text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_category text;
@@ -1548,6 +1585,7 @@ ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decision text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_reason_code text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decided_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publish_completed_at timestamptz;
 
 ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_channel_check;
 ALTER TABLE x_task_pipeline

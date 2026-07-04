@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -160,12 +161,9 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
             continue
         published_at = news.get("created_at") or news.get("published_at") or ""
         live_id = news.get("id")
-        source_url = str(
-            news.get("link")
-            or news.get("jump_url")
-            or (f"https://www.jinse2.com/lives/{live_id}.html" if live_id else "https://www.jinse2.com/lives")
-        )
-        source_id = str(news.get("id") or extract_jinse_live_id(source_url) or stable_id("jinse", title, str(published_at)))
+        source_url = extract_jinse_original_link(news)
+        raw_link_for_id = str(news.get("jump_url") or news.get("link") or "")
+        source_id = str(news.get("id") or extract_jinse_live_id(raw_link_for_id) or stable_id("jinse", title, str(published_at)))
         content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
         items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, source_url, str(published_at), news))
     return items
@@ -188,6 +186,18 @@ def extract_jinse_title(content: Any) -> str:
     text = clean_text(strip_html(str(content or "")))
     match = re.match(r"^【([^】]+)】", text)
     return match.group(1).strip() if match else ""
+
+
+def extract_jinse_original_link(news: dict[str, Any]) -> str | None:
+    for key in ("link", "jump_url"):
+        value = str(news.get(key) or "").strip()
+        if not value:
+            continue
+        parsed = urlparse(value)
+        host = (parsed.netloc or "").lower()
+        if host and "jinse" not in host:
+            return value
+    return None
 
 
 def extract_jinse_live_id(source_url: str | None) -> str | None:

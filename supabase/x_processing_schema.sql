@@ -152,7 +152,9 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     candidate_id bigint,
     judge_model text,
     judge_output jsonb NOT NULL DEFAULT '{}'::jsonb,
+    judge_completed_at timestamptz,
     search_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    search_completed_at timestamptz,
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
     writer_feature_mode_enabled boolean,
@@ -160,8 +162,10 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     writer_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     draft_title text,
     draft_content text,
+    write_completed_at timestamptz,
     final_title text,
     final_content text,
+    format_completed_at timestamptz,
     publisher_channel text,
     publisher_model text,
     publisher_category text,
@@ -169,6 +173,7 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
     publisher_reason_code text,
     publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb,
     publisher_decided_at timestamptz,
+    publish_completed_at timestamptz,
     push_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     telegram_result jsonb NOT NULL DEFAULT '{}'::jsonb,
     last_error text,
@@ -177,7 +182,11 @@ CREATE TABLE IF NOT EXISTS x_task_pipeline (
 );
 
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS candidate_id bigint;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS judge_completed_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS search_completed_at timestamptz;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS writer_feature_mode_enabled boolean;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS write_completed_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS format_completed_at timestamptz;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_channel text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_model text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_category text;
@@ -185,6 +194,7 @@ ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decision text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_reason_code text;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_output jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publisher_decided_at timestamptz;
+ALTER TABLE x_task_pipeline ADD COLUMN IF NOT EXISTS publish_completed_at timestamptz;
 
 ALTER TABLE x_task_pipeline DROP CONSTRAINT IF EXISTS x_task_pipeline_publisher_channel_check;
 ALTER TABLE x_task_pipeline

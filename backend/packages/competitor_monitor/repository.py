@@ -112,11 +112,11 @@ class PostgresCompetitorMonitorRepository:
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
                     ON CONFLICT (source, source_item_id) DO UPDATE SET
-                        source_url = COALESCE(EXCLUDED.source_url, tasks.source_url),
-                        raw_payload = CASE
-                            WHEN EXCLUDED.source_url IS NOT NULL THEN EXCLUDED.raw_payload
-                            ELSE tasks.raw_payload
+                        source_url = CASE
+                            WHEN EXCLUDED.source = 'jinse' THEN EXCLUDED.source_url
+                            ELSE COALESCE(EXCLUDED.source_url, tasks.source_url)
                         END,
+                        raw_payload = EXCLUDED.raw_payload,
                         updated_at = tasks.updated_at
                     RETURNING id
                     """,
@@ -182,11 +182,11 @@ class PostgresCompetitorMonitorRepository:
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
                     ON CONFLICT (source, source_item_id) DO UPDATE SET
-                        source_url = COALESCE(EXCLUDED.source_url, tasks.source_url),
-                        raw_payload = CASE
-                            WHEN EXCLUDED.source_url IS NOT NULL THEN EXCLUDED.raw_payload
-                            ELSE tasks.raw_payload
+                        source_url = CASE
+                            WHEN EXCLUDED.source = 'jinse' THEN EXCLUDED.source_url
+                            ELSE COALESCE(EXCLUDED.source_url, tasks.source_url)
                         END,
+                        raw_payload = EXCLUDED.raw_payload,
                         updated_at = now()
                     RETURNING id
                     """,
