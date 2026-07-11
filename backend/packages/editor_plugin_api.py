@@ -411,7 +411,7 @@ class EditorPluginNewsGenService:
             if snapshot:
                 try:
                     config = PublisherRuleConfig.model_validate(snapshot)
-                    save_publisher_rule_config(config, updated_by=config.updated_by)
+                    config = save_publisher_rule_config(config, updated_by=config.updated_by)
                 except ValidationError:
                     config = default_publisher_rule_config()
         return publisher_rule_config_payload(config)
