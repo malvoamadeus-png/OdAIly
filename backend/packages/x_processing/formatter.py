@@ -64,6 +64,23 @@ def _normalize_title_spaces(value: str) -> str:
     return text
 
 
+def _split_existing_prefix(content: str) -> tuple[str, str]:
+    stripped = content.strip()
+    if stripped.startswith(ODAILY_PREFIX):
+        return ODAILY_PREFIX, stripped.removeprefix(ODAILY_PREFIX)
+    if stripped.startswith("Odaily星球日报讯"):
+        return ODAILY_PREFIX, stripped.removeprefix("Odaily星球日报讯").lstrip()
+    return "", stripped
+
+
+def _normalize_content_spaces(value: str) -> str:
+    text = re.sub(r"(?<=[A-Za-z])(?=[\u4e00-\u9fff])", " ", value)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])(?=[A-Za-z])", " ", text)
+    text = re.sub(r"(?<=\d)(?=[\u4e00-\u9fff])", " ", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])(?=\d)", " ", text)
+    return text
+
+
 def _ensure_prefix(content: str) -> str:
     stripped = normalize_multiline_text(content)
     if stripped.startswith(ODAILY_PREFIX):
@@ -86,7 +103,11 @@ def _ensure_paragraph_punctuation(content: str) -> str:
 
 def format_brief(draft: DraftBrief) -> DraftBrief:
     title = _normalize_title_spaces(_apply_common_replacements(draft.title.strip()))
-    content = _apply_common_replacements(draft.content.strip())
+    prefix, content_body = _split_existing_prefix(draft.content)
+    content = _apply_common_replacements(content_body)
+    content = _normalize_content_spaces(content)
+    if prefix:
+        content = f"{prefix}{content}"
     content = _ensure_prefix(content)
     content = _ensure_paragraph_punctuation(content)
     return DraftBrief(title=title, content=content)
