@@ -18,6 +18,19 @@ PublisherDecision = Literal["pass", "reject"]
 CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 2
 
 
+class PublisherDecisionResult(BaseModel):
+    decision: PublisherDecision
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        text = " ".join(value.strip().split())
+        if not text:
+            raise ValueError("reason 不能为空")
+        return text
+
+
 class PublisherRule(BaseModel):
     id: str
     name: str
@@ -86,8 +99,11 @@ PUBLISHER_DECISION_SCHEMA = {
                 "type": "string",
                 "enum": ["pass", "reject"],
             },
+            "reason": {
+                "type": "string",
+            },
         },
-        "required": ["decision"],
+        "required": ["decision", "reason"],
     },
     "strict": True,
 }
@@ -504,13 +520,15 @@ def build_publisher_rule_prompt(
             "你是 Odaily 快讯发布者。你的任务是判断一条已定稿快讯是否允许自动发布到前台。",
             "",
             "只输出 JSON，不输出解释文本。格式必须为：",
-            '{"decision":"pass|reject"}',
+            '{"decision":"pass|reject","reason":"一小段中文业务理由"}',
             "",
             "硬性规则：",
             "- 排除规则优先：只要命中任意启用的排除规则，必须输出 reject。",
             "- 如果没有命中排除规则，但命中任意启用的通过规则，输出 pass。",
             "- 如果无法明确归入任意启用的通过规则，输出 reject。",
             "- 案例只是判断参考，不要求逐字匹配。",
+            "- reason 必须写给值班编辑看：用一小段中文说明这条快讯命中了哪些正文事实、对应哪类通过或排除规则、为什么应直发或挂后台。",
+            "- reason 不要只复述“通过规则/排除规则/模型判断”，不要写内部原因码，不要写逐步推理过程。",
             "- 不允许凭常识脑补主体重要性。只有正文直接给出高重要性证据，或主体明显属于国家级监管、央行、头部交易基础设施、头部稳定币/ETF/托管/核心公链基金会等系统性主体时，才可按高重要主体理解。",
             "- 对牌照、审批、合作、组织动向、产品更新等公司新闻，若主体看起来是中小或长尾实体，且正文没有明确写出其市场地位、用户规模、资产规模、监管层级、覆盖范围或系统性影响，默认按 routine company update 处理并 reject。",
             "- 关键组织的关键人物不能只按人物或机构名放行。只有正式政策动作、监管动作、产品/市场结构变化、明确影响利率或资产负债表的政策信号，才可按重要事件理解；组建工作组、研究框架、内部审查、专家名单、方法论讨论默认 reject。",
@@ -550,7 +568,7 @@ def format_rules_for_prompt(rules: list[PublisherRule]) -> str:
     return "\n\n".join(blocks)
 
 
-def parse_publisher_decision(value: str) -> PublisherDecision:
+def parse_publisher_decision(value: str) -> PublisherDecisionResult:
     text = value.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -565,7 +583,7 @@ def parse_publisher_decision(value: str) -> PublisherDecision:
     decision = str(payload.get("decision") or "").strip()
     if decision not in {"pass", "reject"}:
         raise ValueError(f"invalid publisher decision: {decision}")
-    return decision  # type: ignore[return-value]
+    return PublisherDecisionResult(decision=decision, reason=str(payload.get("reason") or ""))
 
 
 def publisher_config_to_prompt_text(config: PublisherRuleConfig) -> str:

@@ -326,58 +326,13 @@ function filterTaskOverview(tasks: TaskItem[], filter: TaskOverviewFilter): Task
   return tasks.filter((task) => taskSourceBucket(task) === filter);
 }
 
-function publisherDecisionLabel(value: string | null | undefined): string {
-  switch (value) {
-    case 'auto_publish':
-      return '直发';
-    case 'manual_review':
-      return '挂后台';
-    case 'failed':
-      return '失败';
-    default:
-      return value || '已进入发布者';
-  }
-}
-
-function publisherReasonLabel(value: string | null | undefined): string {
-  switch (value) {
-    case 'source_not_eligible':
-      return '来源没有映射到自动发布渠道，因此挂后台人工看。';
-    case 'publisher_profile_disabled':
-      return '对应发布者规则块未启用，因此按保守策略挂后台。';
-    case 'publisher_no_enabled_allow_rules':
-      return '没有启用的通过规则，因此不自动放行。';
-    case 'rule_allowed':
-      return '发布者模型按当前通过/排除规则判定可以自动发布。';
-    case 'rule_rejected':
-      return '发布者模型按当前通过/排除规则判定不适合自动发布，因此挂后台。';
-    case 'model_failed':
-      return '发布者模型调用或结果解析失败。';
-    case 'push_failed':
-      return '推送接口返回失败，发布阶段没有完成。';
-    case 'format_missing':
-      return '缺少编写者2定稿，无法完成发布判断。';
-    default:
-      return value ? `发布者原因码：${value}` : '发布者已完成决策。';
-  }
-}
-
 function taskPublisherExplanation(task: TaskItem): string {
   const pipeline = task.pipeline;
   if (!pipeline?.publisher_decided_at && !pipeline?.publisher_decision) return '';
   const output = pipeline.publisher_output && typeof pipeline.publisher_output === 'object' ? pipeline.publisher_output : {};
-  const profile = typeof output.publisher_profile === 'string' ? output.publisher_profile : '';
-  const modelDecision = typeof output.decision === 'string' ? output.decision : '';
-  const pieces = [
-    `发布者判断：${publisherDecisionLabel(pipeline.publisher_decision)}。`,
-    publisherReasonLabel(pipeline.publisher_reason_code),
-  ];
-  if (profile) {
-    pieces.push(`规则块：${profile === 'ai_source' ? 'AI信源' : '常规'}。`);
-  }
-  if (modelDecision) {
-    pieces.push(`模型输出：${modelDecision === 'pass' ? 'pass 放行' : 'reject 挂后台'}。`);
-  }
+  const reason = typeof output.reason === 'string' ? output.reason.trim() : '';
+  if (!reason) return '';
+  const pieces = [`发布者理由：${reason}`];
   if (pipeline.last_error) {
     pieces.push(`错误：${pipeline.last_error}`);
   }

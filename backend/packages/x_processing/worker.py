@@ -798,7 +798,10 @@ class XProcessingWorker:
                 publisher_category=None,
                 publisher_decision="failed",
                 publisher_reason_code="format_missing",
-                publisher_output={"source": task.source},
+                publisher_output={
+                    "source": task.source,
+                    "reason": "缺少编写者2定稿，发布者无法判断这条快讯是否适合直发。",
+                },
                 push_result={},
                 telegram_result={},
                 decided_at=decided_at,
@@ -879,7 +882,7 @@ class XProcessingWorker:
                 text_format=PUBLISHER_DECISION_SCHEMA,
                 reasoning_effort=self.settings.publisher_reasoning_effort,
             )
-            publisher_decision = parse_publisher_decision(raw_output)
+            publisher_decision_result = parse_publisher_decision(raw_output)
         except Exception as exc:
             error = str(exc)
             self.repository.complete_publish(
@@ -889,7 +892,11 @@ class XProcessingWorker:
                 publisher_category=None,
                 publisher_decision="failed",
                 publisher_reason_code="model_failed",
-                publisher_output={**context_output, "error": error},
+                publisher_output={
+                    **context_output,
+                    "reason": "发布者模型没有返回可解析的发稿判断，无法确认是否应直发，因此本次发布阶段失败。",
+                    "error": error,
+                },
                 push_result={},
                 telegram_result={},
                 decided_at=decided_at,
@@ -899,6 +906,7 @@ class XProcessingWorker:
             self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
             raise HandledStageError(error) from exc
 
+        publisher_decision = publisher_decision_result.decision
         should_publish = publisher_decision == "pass"
         push_result = self.push_client.push(
             title=pipeline.final_title,
@@ -912,6 +920,7 @@ class XProcessingWorker:
         publisher_output = {
             **context_output,
             "decision": publisher_decision,
+            "reason": publisher_decision_result.reason,
             "raw_output": raw_output,
         }
         if not push_result.ok:
@@ -958,6 +967,10 @@ class XProcessingWorker:
         output: dict[str, Any],
         decided_at: datetime,
     ) -> None:
+        publisher_output = {
+            **output,
+            "reason": output.get("reason") or publisher_manual_review_reason(reason_code, task=task),
+        }
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
@@ -975,7 +988,7 @@ class XProcessingWorker:
                 publisher_category=None,
                 publisher_decision="failed",
                 publisher_reason_code="push_failed",
-                publisher_output=output,
+                publisher_output=publisher_output,
                 push_result=push_result.model_dump(mode="json"),
                 telegram_result={},
                 decided_at=decided_at,
@@ -992,7 +1005,7 @@ class XProcessingWorker:
             publisher_category=None,
             publisher_decision="manual_review",
             publisher_reason_code=reason_code,
-            publisher_output=output,
+            publisher_output=publisher_output,
             push_result=push_result.model_dump(mode="json"),
             telegram_result=telegram_result.model_dump(mode="json"),
             decided_at=decided_at,
@@ -1155,6 +1168,18 @@ def is_jin10_task(task: TaskRecord) -> bool:
 
 def hide_source_url(task: TaskRecord) -> bool:
     return is_jin10_task(task) or task.source in {"blockbeats", "panews"}
+
+
+def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str:
+    if reason_code == "source_not_eligible":
+        return f"来源 {task.source} 当前没有接入自动发布规则，发布者无法按规则确认可直发，因此挂后台人工处理。"
+    if reason_code == "publisher_profile_disabled":
+        if is_ai_source_task(task):
+            return "这条任务属于 AI信源，但 AI信源发布者规则块当前未启用，按保守策略挂后台人工处理。"
+        return "对应发布者规则块当前未启用，发布者不自动放行，按保守策略挂后台人工处理。"
+    if reason_code == "publisher_no_enabled_allow_rules":
+        return "对应发布者规则块没有启用任何通过规则，即使未命中排除条件也不能自动放行，因此挂后台人工处理。"
+    return "发布者未获得足够明确的自动发布依据，因此挂后台人工处理。"
 
 
 def utc_since_hours(hours: int) -> datetime:
