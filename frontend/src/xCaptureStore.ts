@@ -211,6 +211,8 @@ export type TaskItem = {
 export type TaskPipelineSummary = {
   task_id: number;
   news_type: string | null;
+  final_title: string | null;
+  final_content: string | null;
   judge_output: Record<string, unknown>;
   search_result: Record<string, unknown>;
   judge_completed_at: string | null;
@@ -402,6 +404,8 @@ const taskSelectFields = 'id,source,source_item_id,source_url,title,content,stat
 const taskPipelineSelectFields = [
   'task_id',
   'news_type',
+  'final_title',
+  'final_content',
   'judge_output',
   'search_result',
   'judge_completed_at',
@@ -422,6 +426,7 @@ const taskPipelineSelectFields = [
 export const processingTaskSources = [
   'x',
   'non_mainstream_media',
+  'mainstream_media',
   'ai_source',
   'external_media_alert',
   'ai_source_alert',

@@ -187,11 +187,11 @@ function compactText(value: string | null | undefined): string {
 }
 
 function taskHeadline(task: TaskItem): string {
-  return trimText(task.title) || firstLine(task.content) || task.source_item_id;
+  return trimText(task.pipeline?.final_title) || trimText(task.title) || firstLine(task.content) || task.source_item_id;
 }
 
 function taskSummary(task: TaskItem): string {
-  const summary = compactText(task.content);
+  const summary = compactText(task.pipeline?.final_content) || compactText(task.content);
   if (!summary) return '-';
   return summary.length > 160 ? `${summary.slice(0, 157)}...` : summary;
 }
@@ -320,10 +320,35 @@ function taskSourceBucket(task: TaskItem): TaskOverviewFilter {
   return 'all';
 }
 
-function filterTaskOverview(tasks: TaskItem[], filter: TaskOverviewFilter): TaskItem[] {
-  if (filter === 'all') return tasks;
-  if (filter === 'publisher') return tasks.filter((task) => Boolean(task.pipeline?.publisher_decided_at || task.pipeline?.publisher_decision));
-  return tasks.filter((task) => taskSourceBucket(task) === filter);
+function taskMatchesOverviewQuery(task: TaskItem, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  const source = taskSourceLabel(task);
+  const fields = [
+    String(task.id),
+    task.source,
+    task.source_item_id,
+    task.source_url || '',
+    task.title || '',
+    task.content || '',
+    task.pipeline?.final_title || '',
+    task.pipeline?.final_content || '',
+    taskStatusLabel(task.status),
+    source.primary,
+    source.secondary,
+    taskPublisherExplanation(task),
+  ];
+  return fields.some((field) => field.toLowerCase().includes(normalized));
+}
+
+function filterTaskOverview(tasks: TaskItem[], filter: TaskOverviewFilter, query = ''): TaskItem[] {
+  const filtered =
+    filter === 'all'
+      ? tasks
+      : filter === 'publisher'
+        ? tasks.filter((task) => Boolean(task.pipeline?.publisher_decided_at || task.pipeline?.publisher_decision))
+        : tasks.filter((task) => taskSourceBucket(task) === filter);
+  return filtered.filter((task) => taskMatchesOverviewQuery(task, query));
 }
 
 function taskPublisherExplanation(task: TaskItem): string {
@@ -725,6 +750,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [loadingEventDetails, setLoadingEventDetails] = useState<Record<string, boolean>>({});
   const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
   const [taskOverviewFilter, setTaskOverviewFilter] = useState<TaskOverviewFilter>('all');
+  const [taskOverviewQuery, setTaskOverviewQuery] = useState('');
   const loadedViewsRef = useRef<Set<string>>(new Set());
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
@@ -757,8 +783,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     [publisherRules],
   );
   const visibleProcessingTasks = useMemo(
-    () => filterTaskOverview(processingTasks, taskOverviewFilter),
-    [processingTasks, taskOverviewFilter],
+    () => filterTaskOverview(processingTasks, taskOverviewFilter, taskOverviewQuery),
+    [processingTasks, taskOverviewFilter, taskOverviewQuery],
   );
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
@@ -1672,6 +1698,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             loading={loadingProcessingTasks}
             filter={taskOverviewFilter}
             onFilterChange={setTaskOverviewFilter}
+            query={taskOverviewQuery}
+            onQueryChange={setTaskOverviewQuery}
           />
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
@@ -1822,12 +1850,16 @@ function TaskOverviewPanel({
   loading,
   filter,
   onFilterChange,
+  query,
+  onQueryChange,
 }: {
   tasks: TaskItem[];
   totalCount: number;
   loading: boolean;
   filter: TaskOverviewFilter;
   onFilterChange: (filter: TaskOverviewFilter) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
 }) {
   const publisherCount = tasks.filter((task) => Boolean(task.pipeline?.publisher_decision || task.pipeline?.publisher_decided_at)).length;
   return (
@@ -1843,6 +1875,13 @@ function TaskOverviewPanel({
             {item.label}
           </button>
         ))}
+        <input
+          className="taskSearchInput"
+          type="search"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="搜索标题、链接、来源"
+        />
       </div>
 
       <section className="section">

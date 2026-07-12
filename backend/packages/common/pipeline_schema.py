@@ -479,7 +479,7 @@ BEGIN
             WHERE t.status IN ('auto_published', 'ready_review')
               AND COALESCE(p.final_title, t.title) IS NOT NULL
               AND COALESCE(p.final_content, t.content) <> ''
-              AND COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) >= now() - interval '30 minutes'
+              AND COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) >= now() - interval '2 hours'
             ORDER BY COALESCE(p.publisher_decided_at, t.updated_at, t.created_at) DESC, p.task_id DESC
             LIMIT $9
             ) newsflash_candidates
@@ -515,7 +515,7 @@ BEGIN
                 ) AS meta_json
             FROM auditor_checks a
             WHERE a.status = 'flagged'
-              AND COALESCE(a.alerted_at, a.updated_at, a.created_at) >= now() - interval '30 minutes'
+              AND COALESCE(a.alerted_at, a.updated_at, a.created_at) >= now() - interval '2 hours'
             ORDER BY COALESCE(a.alerted_at, a.updated_at, a.created_at) DESC, a.id DESC
             LIMIT $9
             ) auditor_candidates
@@ -564,7 +564,7 @@ BEGIN
               ON t.id = p.task_id
             WHERE t.source IN ('external_media_alert', 'ai_source_alert')
               AND t.status = 'notified'
-              AND COALESCE(t.updated_at, t.created_at) >= now() - interval '30 minutes'
+              AND COALESCE(t.updated_at, t.created_at) >= now() - interval '2 hours'
             ORDER BY COALESCE(t.updated_at, t.created_at) DESC, p.task_id DESC
             LIMIT $9
             ) external_media_alert_candidates
@@ -608,7 +608,7 @@ BEGIN
                 ) AS meta_json
             FROM writer3_contexts w
             WHERE w.status = 'sent'
-              AND COALESCE(w.sent_at, w.updated_at, w.created_at) >= now() - interval '30 minutes'
+              AND COALESCE(w.sent_at, w.updated_at, w.created_at) >= now() - interval '2 hours'
             ORDER BY COALESCE(w.sent_at, w.updated_at, w.created_at) DESC, w.id DESC
             LIMIT $9
             ) writer3_candidates
@@ -643,7 +643,7 @@ BEGIN
             FROM whale_watch_activities a
             JOIN whale_watch_addresses addr
               ON addr.id = a.address_id
-            WHERE a.created_at >= now() - interval '30 minutes'
+            WHERE a.created_at >= now() - interval '2 hours'
             ORDER BY a.created_at DESC, a.id DESC
             LIMIT $9
             ) whale_candidates
@@ -679,7 +679,7 @@ BEGIN
             FROM whale_watch_hyperliquid_activities a
             JOIN whale_watch_hyperliquid_addresses addr
               ON addr.id = a.address_id
-            WHERE a.created_at >= now() - interval '30 minutes'
+            WHERE a.created_at >= now() - interval '2 hours'
             ORDER BY a.created_at DESC, a.id DESC
             LIMIT $9
             ) hyper_candidates

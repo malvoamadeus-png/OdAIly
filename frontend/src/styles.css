@@ -1034,6 +1034,12 @@ textarea:focus {
   font-weight: 650;
 }
 
+.taskSearchInput {
+  flex: 1 1 260px;
+  min-width: 220px;
+  margin-left: auto;
+}
+
 .eventTable {
   display: grid;
   max-height: calc(100vh - 210px);
