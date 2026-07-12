@@ -38,6 +38,7 @@ import {
   listCompetitorFilterKeywords,
   listNewsflashEventSources,
   listNewsflashEvents,
+  listRecentTasksBySources,
   listRecentJin10Tasks,
   loadDashboard,
   loadWhaleWatchDashboard,
@@ -94,6 +95,7 @@ import {
   type NewsflashSourceSummary,
   type NewsflashEventSummary,
   type ConsoleAdmin,
+  processingTaskSources,
 } from './xCaptureStore';
 import {
   workflowFilters,
@@ -216,6 +218,26 @@ function taskSourceLabel(task: TaskItem): { primary: string; secondary: string }
     return { primary: '金十', secondary: '网页端快讯接口' };
   }
 
+  if (task.source === 'blockbeats') {
+    return { primary: 'BlockBeats', secondary: '竞品快讯' };
+  }
+
+  if (task.source === 'panews') {
+    return { primary: 'PANews', secondary: '竞品快讯' };
+  }
+
+  if (task.source === 'jinse') {
+    return { primary: '金色财经', secondary: '竞品快讯' };
+  }
+
+  if (task.source === 'external_media_alert') {
+    return { primary: taskMetadataValue(task, 'site_display_name') || 'Crypto信源', secondary: '标题提醒' };
+  }
+
+  if (task.source === 'ai_source_alert') {
+    return { primary: taskMetadataValue(task, 'site_display_name') || 'AI信源', secondary: '标题提醒' };
+  }
+
   const siteDisplayName = taskMetadataValue(task, 'site_display_name');
   if (siteDisplayName) {
     const target = taskMetadataValue(task, 'classified_target');
@@ -236,6 +258,8 @@ function taskStatusLabel(status: string): string {
       return '判断完成';
     case 'deduped':
       return '已进入主链路';
+    case 'domain_failed':
+      return '领域判断失败';
     case 'searched':
       return '已完成查重';
     case 'duplicate':
@@ -244,6 +268,10 @@ function taskStatusLabel(status: string): string {
       return '已丢弃';
     case 'published':
       return '已发布';
+    case 'auto_published':
+      return '已直发';
+    case 'ready_review':
+      return '挂后台';
     case 'notified':
       return '已提醒';
     case 'judge_failed':
@@ -256,6 +284,8 @@ function taskStatusLabel(status: string): string {
       return '格式化失败';
     case 'publish_failed':
       return '发布失败';
+    case 'publisher_failed':
+      return '发布阶段失败';
     case 'notify_failed':
       return '提醒失败';
     case 'legacy_skipped':
@@ -267,6 +297,91 @@ function taskStatusLabel(status: string): string {
 
 function isTaskStatusWarn(status: string): boolean {
   return status.endsWith('_failed') || status === 'duplicate' || status === 'discarded';
+}
+
+type TaskOverviewFilter = 'all' | 'x' | 'media' | 'alert' | 'competitor' | 'jin10' | 'publisher';
+
+const taskOverviewFilters: { key: TaskOverviewFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'x', label: 'X' },
+  { key: 'media', label: '媒体信源' },
+  { key: 'alert', label: '标题提醒' },
+  { key: 'competitor', label: '竞品' },
+  { key: 'jin10', label: '金十' },
+  { key: 'publisher', label: '到发布者' },
+];
+
+function taskSourceBucket(task: TaskItem): TaskOverviewFilter {
+  if (task.source === 'x') return 'x';
+  if (task.source === 'jin10') return 'jin10';
+  if (['blockbeats', 'panews', 'jinse'].includes(task.source)) return 'competitor';
+  if (['external_media_alert', 'ai_source_alert'].includes(task.source)) return 'alert';
+  if (['non_mainstream_media', 'ai_source', 'mainstream_media'].includes(task.source)) return 'media';
+  return 'all';
+}
+
+function filterTaskOverview(tasks: TaskItem[], filter: TaskOverviewFilter): TaskItem[] {
+  if (filter === 'all') return tasks;
+  if (filter === 'publisher') return tasks.filter((task) => Boolean(task.pipeline?.publisher_decided_at || task.pipeline?.publisher_decision));
+  return tasks.filter((task) => taskSourceBucket(task) === filter);
+}
+
+function publisherDecisionLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'auto_publish':
+      return '直发';
+    case 'manual_review':
+      return '挂后台';
+    case 'failed':
+      return '失败';
+    default:
+      return value || '已进入发布者';
+  }
+}
+
+function publisherReasonLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'source_not_eligible':
+      return '来源没有映射到自动发布渠道，因此挂后台人工看。';
+    case 'publisher_profile_disabled':
+      return '对应发布者规则块未启用，因此按保守策略挂后台。';
+    case 'publisher_no_enabled_allow_rules':
+      return '没有启用的通过规则，因此不自动放行。';
+    case 'rule_allowed':
+      return '发布者模型按当前通过/排除规则判定可以自动发布。';
+    case 'rule_rejected':
+      return '发布者模型按当前通过/排除规则判定不适合自动发布，因此挂后台。';
+    case 'model_failed':
+      return '发布者模型调用或结果解析失败。';
+    case 'push_failed':
+      return '推送接口返回失败，发布阶段没有完成。';
+    case 'format_missing':
+      return '缺少编写者2定稿，无法完成发布判断。';
+    default:
+      return value ? `发布者原因码：${value}` : '发布者已完成决策。';
+  }
+}
+
+function taskPublisherExplanation(task: TaskItem): string {
+  const pipeline = task.pipeline;
+  if (!pipeline?.publisher_decided_at && !pipeline?.publisher_decision) return '';
+  const output = pipeline.publisher_output && typeof pipeline.publisher_output === 'object' ? pipeline.publisher_output : {};
+  const profile = typeof output.publisher_profile === 'string' ? output.publisher_profile : '';
+  const modelDecision = typeof output.decision === 'string' ? output.decision : '';
+  const pieces = [
+    `发布者判断：${publisherDecisionLabel(pipeline.publisher_decision)}。`,
+    publisherReasonLabel(pipeline.publisher_reason_code),
+  ];
+  if (profile) {
+    pieces.push(`规则块：${profile === 'ai_source' ? 'AI信源' : '常规'}。`);
+  }
+  if (modelDecision) {
+    pieces.push(`模型输出：${modelDecision === 'pass' ? 'pass 放行' : 'reject 挂后台'}。`);
+  }
+  if (pipeline.last_error) {
+    pieces.push(`错误：${pipeline.last_error}`);
+  }
+  return pieces.join(' ');
 }
 
 function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string }) {
@@ -281,6 +396,7 @@ function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string 
       {tasks.map((task) => {
         const source = taskSourceLabel(task);
         const statusLabel = taskStatusLabel(task.status);
+        const publisherExplanation = taskPublisherExplanation(task);
         return (
           <div className="taskTableRow" key={task.id}>
             <div className="taskCell taskPrimaryCell">
@@ -296,6 +412,7 @@ function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string 
             <div className="taskCell">
               <span className={isTaskStatusWarn(task.status) ? 'statusPill warn' : 'statusPill'}>{statusLabel}</span>
               <span>{fmtTime(task.created_at)}</span>
+              {publisherExplanation && <span className="publisherReason">{publisherExplanation}</span>}
             </div>
           </div>
         );
@@ -590,15 +707,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [processingTasks, setProcessingTasks] = useState<TaskItem[]>([]);
   const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<
-    'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'workflow' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
+    'x' | 'tasks' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'workflow' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
     | 'jin10'
   >('x');
   const [loading, setLoading] = useState(true);
+  const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [loadingPublisher, setLoadingPublisher] = useState(true);
   const [loadingJin10, setLoadingJin10] = useState(true);
@@ -651,6 +769,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [loadingEventDetails, setLoadingEventDetails] = useState<Record<string, boolean>>({});
   const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
+  const [taskOverviewFilter, setTaskOverviewFilter] = useState<TaskOverviewFilter>('all');
   const loadedViewsRef = useRef<Set<string>>(new Set());
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
@@ -682,6 +801,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     () => publisherRules.regular.allow_rules.filter((rule) => rule.enabled).length + publisherRules.regular.deny_rules.filter((rule) => rule.enabled).length,
     [publisherRules],
   );
+  const visibleProcessingTasks = useMemo(
+    () => filterTaskOverview(processingTasks, taskOverviewFilter),
+    [processingTasks, taskOverviewFilter],
+  );
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
     value: string,
@@ -708,7 +831,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setSettings(dashboard.settings);
     setAccounts(dashboard.accounts);
     setAttempts(dashboard.attempts);
-    setTasks(dashboard.tasks);
     setLoading(false);
   }
 
@@ -718,6 +840,17 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setNonMainstreamSettings(dashboard.settings);
     setNonMainstreamSources(dashboard.sources);
     setLoadingNonMainstream(false);
+  }
+
+  async function loadProcessingTasks() {
+    setError('');
+    setLoadingProcessingTasks(true);
+    try {
+      const nextTasks = await listRecentTasksBySources(processingTaskSources, 120);
+      setProcessingTasks(nextTasks);
+    } finally {
+      setLoadingProcessingTasks(false);
+    }
   }
 
   async function loadPublisherAll() {
@@ -841,6 +974,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         case 'x':
           await loadAll();
           return;
+        case 'tasks':
+          await loadProcessingTasks();
+          return;
         case 'non_mainstream':
         case 'ai_source':
         case 'mixed_source':
@@ -870,6 +1006,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     loadCurrentView().catch((err: Error) => {
       setError(err.message);
       setLoading(false);
+      setLoadingProcessingTasks(false);
       setLoadingNonMainstream(false);
       setLoadingPublisher(false);
       setLoadingJin10(false);
@@ -1283,6 +1420,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const productLabel =
     view === 'x'
       ? 'X Capture'
+      : view === 'tasks'
+        ? 'Tasks'
       : view === 'non_mainstream'
         ? 'Crypto Sources'
       : view === 'ai_source'
@@ -1307,6 +1446,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const titleLabel =
     view === 'x'
       ? 'X 抓取控制台'
+      : view === 'tasks'
+        ? '入库及背后信息'
       : view === 'non_mainstream'
         ? 'Crypto信源抓取控制台'
       : view === 'ai_source'
@@ -1331,6 +1472,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const subtitle =
     view === 'x'
       ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
+      : view === 'tasks'
+        ? `${visibleProcessingTasks.length} / ${processingTasks.length} 条最近任务 · 发布者说明随任务展示`
       : view === 'non_mainstream'
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
       : view === 'ai_source'
@@ -1353,6 +1496,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
+      : view === 'tasks'
+        ? loadProcessingTasks()
       : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
       : view === 'publisher'
@@ -1382,6 +1527,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         <nav>
           <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('x')}>
             <Activity size={18} /> 账号
+          </button>
+          <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
+            <Database size={18} /> 入库
           </button>
           <button
             className={view === 'non_mainstream' ? 'navItem active' : 'navItem'}
@@ -1428,9 +1576,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <button className={view === 'favorites' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('favorites')}>
             <Star size={18} /> 收藏
           </button>
-          <a href="#tasks" onClick={() => switchView('x')}>
-            <Database size={18} /> 入库
-          </a>
         </nav>
       </aside>
 
@@ -1564,14 +1709,15 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </div>
             </section>
 
-            <section id="tasks" className="section">
-          <div className="sectionHeader">
-            <h2>最近入库</h2>
-            <span>{tasks.length} 条</span>
-          </div>
-          <TaskTable tasks={tasks} emptyText="暂无入库任务。" />
-            </section>
           </>
+        ) : view === 'tasks' ? (
+          <TaskOverviewPanel
+            tasks={visibleProcessingTasks}
+            totalCount={processingTasks.length}
+            loading={loadingProcessingTasks}
+            filter={taskOverviewFilter}
+            onFilterChange={setTaskOverviewFilter}
+          />
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}
@@ -1712,6 +1858,46 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         )}
       </main>
     </div>
+  );
+}
+
+function TaskOverviewPanel({
+  tasks,
+  totalCount,
+  loading,
+  filter,
+  onFilterChange,
+}: {
+  tasks: TaskItem[];
+  totalCount: number;
+  loading: boolean;
+  filter: TaskOverviewFilter;
+  onFilterChange: (filter: TaskOverviewFilter) => void;
+}) {
+  const publisherCount = tasks.filter((task) => Boolean(task.pipeline?.publisher_decision || task.pipeline?.publisher_decided_at)).length;
+  return (
+    <section className="tasksOverviewLayout">
+      <div className="filterBar">
+        {taskOverviewFilters.map((item) => (
+          <button
+            className={filter === item.key ? 'filterButton active' : 'filterButton'}
+            type="button"
+            key={item.key}
+            onClick={() => onFilterChange(item.key)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <section className="section">
+        <div className="sectionHeader">
+          <h2>最近入库</h2>
+          <span>{loading ? '加载中' : `${tasks.length} 条显示 / ${totalCount} 条最近任务 · ${publisherCount} 条到发布者`}</span>
+        </div>
+        <TaskTable tasks={tasks} emptyText={loading ? '正在加载最近入库任务。' : '当前筛选没有入库任务。'} />
+      </section>
+    </section>
   );
 }
 

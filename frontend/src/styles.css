@@ -215,6 +215,12 @@ h2 {
   margin-top: 18px;
 }
 
+.tasksOverviewLayout {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
 .publisherLayout {
   display: grid;
   gap: 18px;
@@ -752,6 +758,11 @@ textarea:focus {
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.taskCell .publisherReason {
+  padding-top: 2px;
+  color: #394150;
 }
 
 .accountRow {

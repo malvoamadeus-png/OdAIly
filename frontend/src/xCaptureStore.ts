@@ -205,6 +205,27 @@ export type TaskItem = {
   status: string;
   created_at: string;
   metadata: Record<string, unknown> | null;
+  pipeline: TaskPipelineSummary | null;
+};
+
+export type TaskPipelineSummary = {
+  task_id: number;
+  news_type: string | null;
+  judge_output: Record<string, unknown>;
+  search_result: Record<string, unknown>;
+  judge_completed_at: string | null;
+  search_completed_at: string | null;
+  write_completed_at: string | null;
+  format_completed_at: string | null;
+  publisher_channel: string | null;
+  publisher_model: string | null;
+  publisher_decision: string | null;
+  publisher_reason_code: string | null;
+  publisher_output: Record<string, unknown>;
+  publisher_decided_at: string | null;
+  publish_completed_at: string | null;
+  push_result: Record<string, unknown>;
+  last_error: string | null;
 };
 
 export type PromptTemplate = {
@@ -299,7 +320,6 @@ export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
   attempts: Attempt[];
-  tasks: TaskItem[];
 };
 
 export type NonMainstreamDashboardPayload = {
@@ -372,6 +392,44 @@ type NewsflashItemRow = {
   source_url: string | null;
   published_at: string | null;
 };
+
+type TaskRowWithPipeline = Omit<TaskItem, 'pipeline'> & {
+  x_task_pipeline?: TaskPipelineSummary | TaskPipelineSummary[] | null;
+};
+
+const taskSelectFields = 'id,source,source_item_id,source_url,title,content,status,created_at,metadata';
+
+const taskPipelineSelectFields = [
+  'task_id',
+  'news_type',
+  'judge_output',
+  'search_result',
+  'judge_completed_at',
+  'search_completed_at',
+  'write_completed_at',
+  'format_completed_at',
+  'publisher_channel',
+  'publisher_model',
+  'publisher_decision',
+  'publisher_reason_code',
+  'publisher_output',
+  'publisher_decided_at',
+  'publish_completed_at',
+  'push_result',
+  'last_error',
+].join(',');
+
+export const processingTaskSources = [
+  'x',
+  'non_mainstream_media',
+  'ai_source',
+  'external_media_alert',
+  'ai_source_alert',
+  'blockbeats',
+  'panews',
+  'jinse',
+  'jin10',
+] as const;
 
 const defaultSettings: Settings = {
   global_interval_seconds: 30,
@@ -540,6 +598,16 @@ function raise(error: { message: string } | null): void {
   }
 }
 
+function normalizeTaskRow(row: TaskRowWithPipeline): TaskItem {
+  const relation = row.x_task_pipeline;
+  const pipeline = Array.isArray(relation) ? relation[0] ?? null : relation ?? null;
+  const { x_task_pipeline: _pipelineRelation, ...task } = row;
+  return {
+    ...task,
+    pipeline,
+  };
+}
+
 export function normalizeUsername(value: string): string {
   let raw = value.trim();
   if (!raw) {
@@ -575,13 +643,12 @@ export function normalizeUsername(value: string): string {
 }
 
 export async function loadDashboard(): Promise<DashboardPayload> {
-  const [settings, accounts, attempts, tasks] = await Promise.all([
+  const [settings, accounts, attempts] = await Promise.all([
     getSettings(),
     listAccounts(),
     listRecentAttempts(30),
-    listRecentTasks(20),
   ]);
-  return { settings, accounts, attempts, tasks };
+  return { settings, accounts, attempts };
 }
 
 export async function loadNonMainstreamDashboard(): Promise<NonMainstreamDashboardPayload> {
@@ -1308,26 +1375,20 @@ async function listRecentAttempts(limit: number): Promise<Attempt[]> {
   return (data ?? []) as unknown as Attempt[];
 }
 
-async function listRecentTasks(limit: number): Promise<TaskItem[]> {
-  const { data, error } = await supabase()
-    .from('tasks')
-    .select('id,source,source_item_id,source_url,title,content,status,created_at,metadata')
-    .eq('source', 'x')
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  raise(error);
-  return (data ?? []) as TaskItem[];
+export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
+  return listRecentTasksBySources(['jin10'], limit);
 }
 
-export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
+export async function listRecentTasksBySources(sources: readonly string[], limit = 80): Promise<TaskItem[]> {
+  const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 200);
   const { data, error } = await supabase()
     .from('tasks')
-    .select('id,source,source_item_id,source_url,title,content,status,created_at,metadata')
-    .eq('source', 'jin10')
+    .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
+    .in('source', sources.length > 0 ? [...sources] : [...processingTaskSources])
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(normalizedLimit);
   raise(error);
-  return (data ?? []) as TaskItem[];
+  return ((data ?? []) as unknown as TaskRowWithPipeline[]).map(normalizeTaskRow);
 }
 
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {
