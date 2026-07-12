@@ -1380,15 +1380,23 @@ export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
 }
 
 export async function listRecentTasksBySources(sources: readonly string[], limit = 80): Promise<TaskItem[]> {
-  const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 200);
-  const { data, error } = await supabase()
-    .from('tasks')
-    .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
-    .in('source', sources.length > 0 ? [...sources] : [...processingTaskSources])
-    .order('created_at', { ascending: false })
-    .limit(normalizedLimit);
-  raise(error);
-  return ((data ?? []) as unknown as TaskRowWithPipeline[]).map(normalizeTaskRow);
+  const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 80);
+  const targetSources = sources.length > 0 ? [...sources] : [...processingTaskSources];
+  const fetchSourceTasks = async (source: string) => {
+    const { data, error } = await supabase()
+      .from('tasks')
+      .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
+      .eq('source', source)
+      .order('created_at', { ascending: false })
+      .limit(normalizedLimit);
+    raise(error);
+    return ((data ?? []) as unknown as TaskRowWithPipeline[]).map(normalizeTaskRow);
+  };
+
+  const groups = await Promise.all(targetSources.map(fetchSourceTasks));
+  return groups
+    .flat()
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
 }
 
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {

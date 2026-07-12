@@ -801,7 +801,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setError('');
     setLoadingProcessingTasks(true);
     try {
-      const nextTasks = await listRecentTasksBySources(processingTaskSources, 120);
+      const nextTasks = await listRecentTasksBySources(processingTaskSources, 30);
       setProcessingTasks(nextTasks);
     } finally {
       setLoadingProcessingTasks(false);
@@ -1376,7 +1376,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     view === 'x'
       ? 'X Capture'
       : view === 'tasks'
-        ? 'Tasks'
+        ? 'Cycle Monitor'
       : view === 'non_mainstream'
         ? 'Crypto Sources'
       : view === 'ai_source'
@@ -1402,7 +1402,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     view === 'x'
       ? 'X 抓取控制台'
       : view === 'tasks'
-        ? '入库及背后信息'
+        ? '信息周期监控'
       : view === 'non_mainstream'
         ? 'Crypto信源抓取控制台'
       : view === 'ai_source'
@@ -1484,7 +1484,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <Activity size={18} /> 账号
           </button>
           <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
-            <Database size={18} /> 入库
+            <Database size={18} /> 信息周期监控
           </button>
           <button
             className={view === 'non_mainstream' ? 'navItem active' : 'navItem'}
@@ -1847,10 +1847,10 @@ function TaskOverviewPanel({
 
       <section className="section">
         <div className="sectionHeader">
-          <h2>最近入库</h2>
+          <h2>最近信息</h2>
           <span>{loading ? '加载中' : `${tasks.length} 条显示 / ${totalCount} 条最近任务 · ${publisherCount} 条到发布者`}</span>
         </div>
-        <TaskTable tasks={tasks} emptyText={loading ? '正在加载最近入库任务。' : '当前筛选没有入库任务。'} />
+        <TaskTable tasks={tasks} emptyText={loading ? '正在加载最近任务。' : '当前筛选没有任务。'} />
       </section>
     </section>
   );
