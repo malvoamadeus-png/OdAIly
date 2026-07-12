@@ -185,6 +185,7 @@ DROP POLICY IF EXISTS x_capture_accounts_console_admin_all ON x_capture_accounts
 DROP POLICY IF EXISTS x_capture_attempts_console_admin_select ON x_capture_attempts;
 DROP POLICY IF EXISTS competitor_filter_keywords_console_admin_all ON competitor_filter_keywords;
 DROP POLICY IF EXISTS tasks_x_console_admin_select ON tasks;
+DROP POLICY IF EXISTS tasks_console_admin_select ON tasks;
 
 DO $$
 BEGIN
@@ -208,8 +209,8 @@ BEGIN
             FOR SELECT TO authenticated USING (is_console_admin())';
         EXECUTE 'CREATE POLICY competitor_filter_keywords_console_admin_all ON competitor_filter_keywords
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY tasks_x_console_admin_select ON tasks
-            FOR SELECT TO authenticated USING (is_console_admin() AND source = ''x'')';
+        EXECUTE 'CREATE POLICY tasks_console_admin_select ON tasks
+            FOR SELECT TO authenticated USING (is_console_admin())';
     END IF;
 END
 $$;
