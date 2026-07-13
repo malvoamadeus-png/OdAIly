@@ -16,7 +16,14 @@ from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.models import PromptTemplateVersion, render_prompt_content
-from packages.x_processing.searcher import CachedEmbeddingService, DashScopeEmbeddingClient, SearchCache, SearchDecision, SearchDocument, top_match
+from packages.x_processing.searcher import (
+    CachedEmbeddingService,
+    DashScopeEmbeddingClient,
+    SearchCache,
+    SearchDecision,
+    SearchDocument,
+    top_match,
+)
 from packages.x_processing.telegram import TelegramClient
 
 from .models import (

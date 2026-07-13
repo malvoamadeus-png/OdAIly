@@ -410,6 +410,15 @@ class PostgresNonMainstreamMediaRepository:
             "published_at_raw": page.published_at_raw,
             "source_kind": task_source,
         }
+        raw_payload = {
+            "detail_url": page.detail_url,
+            "title": page.title,
+            "excerpt": page.excerpt,
+            "published_at_raw": page.published_at_raw,
+        }
+        if page.discovery_url and page.discovery_url != page.detail_url:
+            metadata["discovery_url"] = page.discovery_url
+            raw_payload["discovery_url"] = page.discovery_url
         if classified_target in {"crypto", "ai"}:
             metadata["origin_source_group"] = source.source_group
             metadata["classified_target"] = classified_target
@@ -443,14 +452,7 @@ class PostgresNonMainstreamMediaRepository:
                     "title": page.title,
                     "content": content,
                     "published_at": page.published_at,
-                    "raw_payload": self._Jsonb(
-                        {
-                            "detail_url": page.detail_url,
-                            "title": page.title,
-                            "excerpt": page.excerpt,
-                            "published_at_raw": page.published_at_raw,
-                        }
-                    ),
+                    "raw_payload": self._Jsonb(raw_payload),
                     "metadata": self._Jsonb(metadata),
                 },
             ).fetchone()
@@ -711,6 +713,15 @@ class InMemoryNonMainstreamMediaRepository:
             "published_at_raw": page.published_at_raw,
             "source_kind": task_source,
         }
+        raw_payload = {
+            "detail_url": page.detail_url,
+            "title": page.title,
+            "excerpt": page.excerpt,
+            "published_at_raw": page.published_at_raw,
+        }
+        if page.discovery_url and page.discovery_url != page.detail_url:
+            metadata["discovery_url"] = page.discovery_url
+            raw_payload["discovery_url"] = page.discovery_url
         if classified_target in {"crypto", "ai"}:
             metadata["origin_source_group"] = source.source_group
             metadata["classified_target"] = classified_target
@@ -726,12 +737,7 @@ class InMemoryNonMainstreamMediaRepository:
                 "content": page.excerpt or page.title or page.detail_url,
                 "published_at": page.published_at,
                 "metadata": metadata,
-                "raw_payload": {
-                    "detail_url": page.detail_url,
-                    "title": page.title,
-                    "excerpt": page.excerpt,
-                    "published_at_raw": page.published_at_raw,
-                },
+                "raw_payload": raw_payload,
                 "status": "pending",
             }
         )

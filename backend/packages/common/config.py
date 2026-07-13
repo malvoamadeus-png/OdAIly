@@ -331,7 +331,7 @@ class XProcessingSettings(BaseModel):
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     search_window_hours: int = Field(default=24, ge=1, le=168)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
-    search_ai_review_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
+    search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
@@ -376,7 +376,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "search_window_hours": int(os.getenv("SEARCH_WINDOW_HOURS") or 24),
         "search_duplicate_threshold": float(os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88),
-        "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.72),
+        "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.65),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
         "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),

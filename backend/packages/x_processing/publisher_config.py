@@ -15,7 +15,7 @@ from .models import AI_SOURCE, PipelineRecord, TaskRecord
 PublisherProfileKey = Literal["regular", "ai_source"]
 PublisherRuleKind = Literal["allow", "deny"]
 PublisherDecision = Literal["pass", "reject"]
-CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 2
+CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 3
 
 
 class PublisherDecisionResult(BaseModel):
@@ -341,11 +341,42 @@ DEFAULT_REGULAR_DENY_RULES = [
         ],
     ),
     PublisherRule(
-        id="deny_incentive_grant_activity",
-        name="激励 / 赠款 / 活动",
-        description="排除明确指向交易大赛、奖励、空投活动、赠款计划、营销活动、社区活动的信息。",
+        id="deny_marketing_campaign_activity",
+        name="营销活动 / 社区活动",
+        description="排除明确指向交易大赛、品牌营销、社区活动、促销活动、任务活动、积分活动等以拉新、促活或宣传为主要目的的信息。",
         enabled=True,
-        examples=["某交易所开展交易大赛，奖池 10 万美元"],
+        examples=["某交易所开展交易大赛，奖池 10 万美元", "某项目启动社区任务活动"],
+    ),
+    PublisherRule(
+        id="deny_token_distribution_airdrop_incentive",
+        name="代币分发 / 空投 / 激励",
+        description="排除空投、代币领取、奖励发放、生态激励、赠款计划、积分兑换、用户补贴等代币或权益分发信息，除非它同时构成重大安全、监管、融资或核心产品事件。",
+        enabled=True,
+        examples=["某项目开放空投查询和领取", "某基金会启动 1000 万美元生态赠款计划"],
+    ),
+    PublisherRule(
+        id="deny_exchange_network_upgrade_deposit_withdrawal",
+        name="交易所网络升级充值提现暂停",
+        description="排除交易所因支持公链或网络升级、钱包维护、节点维护而临时暂停或恢复充值、提现的信息；这类公告通常属于运营维护，不自动发布。",
+        enabled=True,
+        examples=["币安将支持 Moonbeam 网络升级，并暂停 GLMR 充值、提现"],
+    ),
+    PublisherRule(
+        id="deny_digital_renminbi",
+        name="数字人民币",
+        description="排除数字人民币、e-CNY、数币钱包、数币试点、数币支付场景等信息；除非后续单独打开相关发布开关，否则默认不自动发布。",
+        enabled=True,
+        examples=["某地新增数字人民币公交支付场景", "数字人民币 App 上线新功能"],
+    ),
+    PublisherRule(
+        id="deny_non_crypto_traditional_manufacturing_supply_price",
+        name="非 Crypto 传统制造业供应链价格调整",
+        description=(
+            "排除与 Crypto 无直接关系的传统制造业零部件、材料、供应链、渠道价格调整信息。"
+            "AI/半导体核心产业链若未来需要自动发布，应由 AI信源发布者或独立开关承接，不在常规 Crypto 发布者中放行。"
+        ),
+        enabled=True,
+        examples=["某传统电子零部件厂商下调低中电容 MLCC 价格"],
     ),
     PublisherRule(
         id="deny_strategic_partnership",
@@ -398,6 +429,14 @@ DEFAULT_REGULAR_DENY_RULES = [
 ]
 
 
+DEPRECATED_DEFAULT_RULE_REPLACEMENTS = {
+    "deny_incentive_grant_activity": (
+        "deny_marketing_campaign_activity",
+        "deny_token_distribution_airdrop_incentive",
+    ),
+}
+
+
 def default_publisher_rule_config() -> PublisherRuleConfig:
     return PublisherRuleConfig(
         version=CURRENT_PUBLISHER_RULE_CONFIG_VERSION,
@@ -445,6 +484,17 @@ def merge_default_rules(existing_rules: list[PublisherRule], default_rules: list
     seen: set[str] = set()
     merged: list[PublisherRule] = []
     for existing in existing_rules:
+        if existing.id in seen:
+            continue
+        replacement_ids = DEPRECATED_DEFAULT_RULE_REPLACEMENTS.get(existing.id)
+        if replacement_ids:
+            for replacement_id in replacement_ids:
+                default = defaults_by_id.get(replacement_id)
+                if default is not None and replacement_id not in seen:
+                    merged.append(default.model_copy(update={"enabled": existing.enabled}))
+                    seen.add(replacement_id)
+            seen.add(existing.id)
+            continue
         default = defaults_by_id.get(existing.id)
         if default is None:
             merged.append(existing)
@@ -493,7 +543,7 @@ def save_publisher_rule_config(
 
 
 def profile_key_for_task(task: TaskRecord) -> PublisherProfileKey | None:
-    if task.source == AI_SOURCE:
+    if task.source == AI_SOURCE or bool((task.metadata or {}).get("x_account_is_ai_source")):
         return "ai_source"
     return "regular"
 
@@ -538,6 +588,9 @@ def build_publisher_rule_prompt(
             "- 财政赤字、政府预算、货币市场基金规模、一般流动性总量等泛宏观背景数据，即使金额巨大或创历史新高，也不得仅凭宏观数据规则 pass。",
             "- 命中 TRON、TRX、波场、火币、HTX、孙宇晨、Justin Sun、Sun Yuchen 相关内容时必须 reject。",
             "- 涉及中国领土主权、国家安全、外交红线、台海、香港、新疆、西藏、南海、中美军事/外交摩擦等敏感议题时必须 reject。",
+            "- 交易所因支持网络升级、钱包维护、节点维护而暂停或恢复充值/提现时必须 reject。",
+            "- 数字人民币、e-CNY、数币钱包、数币试点、数币支付场景等内容必须 reject。",
+            "- 非 Crypto 的传统制造业零部件、材料、供应链或渠道价格调整必须 reject；AI/半导体核心产业链自动发布不由常规发布者放行。",
             "",
             "【启用的排除规则】",
             format_rules_for_prompt(deny_rules) or "无",

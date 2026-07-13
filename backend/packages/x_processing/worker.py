@@ -656,6 +656,9 @@ class XProcessingWorker:
             target_type="odaily_published",
         )
         query_vector: list[float] | None = None
+        odaily_match = None
+        candidate_match = None
+        non_duplicate_review: SearchDecision | None = None
         if decision is None:
             candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
             decision = exact_duplicate_decision(
@@ -669,7 +672,12 @@ class XProcessingWorker:
                 query_vector,
                 self.search_embedding_service.embed_documents(odaily_documents),
             )
-            decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
+            odaily_decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
+            if odaily_decision is not None:
+                if odaily_decision.is_duplicate:
+                    decision = odaily_decision
+                else:
+                    non_duplicate_review = odaily_decision
         if decision is None:
             candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
             if query_vector is None:
@@ -678,7 +686,15 @@ class XProcessingWorker:
                 query_vector,
                 self.search_embedding_service.embed_documents(candidate_documents),
             )
-            decision = self._decide_match(query=query, match=candidate_match, target_type="inflight_candidate")
+            candidate_decision = self._decide_match(query=query, match=candidate_match, target_type="inflight_candidate")
+            if candidate_decision is not None:
+                if candidate_decision.is_duplicate:
+                    decision = candidate_decision
+                elif (
+                    non_duplicate_review is None
+                    or candidate_decision.similarity > non_duplicate_review.similarity
+                ):
+                    non_duplicate_review = candidate_decision
         if decision and decision.is_duplicate:
             result = decision.to_result()
             if decision.candidate_id is not None:
@@ -689,8 +705,23 @@ class XProcessingWorker:
             "is_duplicate": False,
             "duplicate_target_type": "none",
             "duplicate_target_id": None,
-            "reason": "no_match",
+            "reason": non_duplicate_review.reason if non_duplicate_review is not None else "no_match",
         }
+        observed_matches = [
+            match_info
+            for match_info in (
+                self._serialize_search_match(odaily_match, target_type="odaily_published"),
+                self._serialize_search_match(candidate_match, target_type="inflight_candidate"),
+            )
+            if match_info is not None
+        ]
+        if observed_matches:
+            result["observed_matches"] = observed_matches
+        if non_duplicate_review is not None:
+            result["reviewed_by_ai"] = True
+            result["review_similarity"] = non_duplicate_review.similarity
+            if non_duplicate_review.raw_ai_output:
+                result["raw_ai_output"] = non_duplicate_review.raw_ai_output
         candidate_id, is_primary = self.repository.create_candidate_for_task(task, search_result=result)
         if is_primary:
             self._mirror_active_candidate(task=task, candidate_id=candidate_id)
@@ -740,6 +771,18 @@ class XProcessingWorker:
             candidate_id=candidate_id if is_duplicate and duplicate_type == "inflight_candidate" else None,
             raw_ai_output=raw_output,
         )
+
+    def _serialize_search_match(self, match, *, target_type: str) -> dict[str, Any] | None:
+        if match is None:
+            return None
+        return {
+            "target_type": target_type,
+            "target_id": match.document.doc_id,
+            "candidate_id": match.document.candidate_id,
+            "title": match.document.title,
+            "source_url": match.document.source_url,
+            "similarity": round(match.similarity, 6),
+        }
 
     def _run_write(self, task: TaskRecord) -> None:
         pipeline = self.repository.get_pipeline(task.id)
@@ -1174,7 +1217,7 @@ def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str
     if reason_code == "source_not_eligible":
         return f"来源 {task.source} 当前没有接入自动发布规则，发布者无法按规则确认可直发，因此挂后台人工处理。"
     if reason_code == "publisher_profile_disabled":
-        if is_ai_source_task(task):
+        if is_ai_judge_task(task):
             return "这条任务属于 AI信源，但 AI信源发布者规则块当前未启用，按保守策略挂后台人工处理。"
         return "对应发布者规则块当前未启用，发布者不自动放行，按保守策略挂后台人工处理。"
     if reason_code == "publisher_no_enabled_allow_rules":

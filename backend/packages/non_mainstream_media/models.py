@@ -70,6 +70,7 @@ class SiteDefinition:
 class DiscoveredPage:
     source_item_id: str
     detail_url: str
+    discovery_url: str | None = None
     title: str | None = None
     excerpt: str | None = None
     published_at: datetime | None = None
@@ -78,6 +79,7 @@ class DiscoveredPage:
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
         object.__setattr__(self, "detail_url", normalize_inline_text(self.detail_url))
+        object.__setattr__(self, "discovery_url", normalize_inline_text(self.discovery_url) or None if self.discovery_url else None)
         object.__setattr__(self, "title", normalize_inline_text(self.title) or None if self.title else None)
         object.__setattr__(self, "excerpt", normalize_multiline_text(self.excerpt) or None if self.excerpt else None)
 

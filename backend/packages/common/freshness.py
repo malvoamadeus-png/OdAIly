@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 
-DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS = 600
+DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS = 1200
 
 
 @dataclass(frozen=True, slots=True)

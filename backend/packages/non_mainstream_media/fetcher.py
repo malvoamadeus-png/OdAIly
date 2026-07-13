@@ -696,7 +696,13 @@ def fetch_the_block_discovered_pages(
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
         )
-        pages = discover_the_block_pages(xml, source_name=site.display_name)
+        pages = discover_the_block_google_news_pages(
+            xml,
+            source_name=site.display_name,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
         if pages:
             return pages
         fallback_error = "the block google-news fallback returned no pages"
@@ -919,6 +925,56 @@ def discover_the_block_pages(xml_text: str, *, source_name: str = "The Block") -
                 detail_url=link,
                 title=clean_title,
                 excerpt=excerpt or None,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
+            )
+        )
+    return results
+
+
+def discover_the_block_google_news_pages(
+    xml_text: str,
+    *,
+    source_name: str = "The Block",
+    timeout_seconds: float = 20.0,
+    max_attempts: int = 3,
+    backoff_seconds: float = 1.0,
+) -> list[DiscoveredPage]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError("invalid The Block Google News RSS payload") from exc
+    seen: set[str] = set()
+    results: list[DiscoveredPage] = []
+    for item in root.findall(".//item"):
+        link = clean_inline_text(item.findtext("link", default=""))
+        title = clean_inline_text(item.findtext("title", default=""))
+        item_source = clean_inline_text(item.findtext("source", default=""))
+        description_html = item.findtext("description", default="")
+        published_at_raw = clean_inline_text(item.findtext("pubDate", default="") or item.findtext("published", default=""))
+        if not link or not title or item_source != source_name:
+            continue
+        decoded_url = decode_google_news_url(
+            link,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        if not decoded_url:
+            continue
+        detail_url = normalize_the_block_discovery_url(decoded_url)
+        if not detail_url or not urlparse(detail_url).netloc.lower().endswith("theblock.co"):
+            continue
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                discovery_url=link,
+                title=strip_google_news_source_suffix(title, source_name),
+                excerpt=extract_google_news_excerpt(description_html, title=title, source_name=source_name) or None,
                 published_at=parse_published_at(published_at_raw),
                 published_at_raw=published_at_raw or None,
             )

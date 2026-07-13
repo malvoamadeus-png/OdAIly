@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from packages.common.config import load_x_processing_settings
 from packages.common.freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS, evaluate_source_freshness
@@ -409,6 +410,14 @@ class NonMainstreamMediaWorker:
         source: NonMainstreamMediaSource,
         page: Any,
     ) -> Any | None:
+        if source.site_key == "the_block" and self._is_google_news_discovery_page(page):
+            check = evaluate_source_freshness(
+                page.published_at,
+                window_seconds=self.processing_freshness_window_seconds,
+            )
+            if not check.is_fresh:
+                return None
+            return page
         if source.site_key != "ft_crypto":
             return page
         site = self.site_registry.get(source.site_key)
@@ -436,6 +445,13 @@ class NonMainstreamMediaWorker:
             published_at=article.published_at,
             published_at_raw=published_at_raw,
         )
+
+    @staticmethod
+    def _is_google_news_discovery_page(page: Any) -> bool:
+        discovery_url = str(getattr(page, "discovery_url", "") or "").strip()
+        if not discovery_url:
+            return False
+        return urlparse(discovery_url).netloc.lower() in {"news.google.com", "www.news.google.com"}
 
     def _submit_pipeline_job(self, *, job_type: str, task_id: int, source: str, source_item_id: str) -> None:
         if self.pipeline_client is None:
