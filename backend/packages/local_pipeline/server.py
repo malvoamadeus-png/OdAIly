@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,15 +21,20 @@ class LocalPipelineService:
         self.processor = processor
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
-        self._worker_thread = threading.Thread(target=self._run_worker, name="local-pipeline-worker", daemon=True)
+        self._worker_lock = threading.Lock()
+        self._worker_thread: threading.Thread | None = None
+        self._worker_restart_count = 0
+        self._last_worker_error: str | None = None
 
     def start(self) -> None:
-        self._worker_thread.start()
+        self._ensure_worker_running()
 
     def stop(self) -> None:
         self._stop_event.set()
         self._wake_event.set()
-        self._worker_thread.join(timeout=5)
+        worker = self._worker_thread
+        if worker is not None:
+            worker.join(timeout=5)
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_type = str(payload.get("job_type") or "").strip()
@@ -49,48 +55,99 @@ class LocalPipelineService:
             source_item_id=source_item_id,
             payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
         )
+        self._ensure_worker_running()
         self._wake_event.set()
         return {"id": job.id, "status": job.status}
 
     def health(self) -> dict[str, Any]:
-        return {"ok": True, "queue": self.queue.stats()}
+        self._ensure_worker_running()
+        worker = self._worker_thread
+        worker_alive = worker is not None and worker.is_alive()
+        return {
+            "ok": worker_alive,
+            "queue": self._safe_queue_stats(),
+            "worker_alive": worker_alive,
+            "worker_restarts": self._worker_restart_count,
+            "last_worker_error": self._last_worker_error,
+        }
 
     def _run_worker(self) -> None:
         print("[odaily] local pipeline worker started")
         while not self._stop_event.is_set():
-            job = self.queue.claim_next(worker_id=self.processor.worker_id)
-            if job is None:
-                self.processor.record_heartbeat(success=True, error=None, metadata={"idle": True, "queue": self.queue.stats()})
-                self._wake_event.wait(5)
-                self._wake_event.clear()
-                continue
             try:
-                result = self.processor.process(job)
+                self._run_worker_once()
+                continue
             except Exception as exc:
-                self.queue.mark_failed(job.id, error=str(exc), attempt_count=job.attempt_count)
-                self.processor.record_heartbeat(
+                self._last_worker_error = str(exc)
+                print(f"[odaily] local pipeline worker loop error: {exc}")
+                self._safe_record_heartbeat(
                     success=False,
                     error=str(exc),
-                    metadata={"job_id": job.id, "task_id": job.task_id, "job_type": job.job_type},
+                    metadata={"worker_loop_error": True},
                 )
-                print(f"[odaily] local pipeline failed job_id={job.id} task_id={job.task_id} error={exc}")
-                continue
-            self.queue.mark_succeeded(job.id)
-            self.processor.record_heartbeat(
-                success=True,
-                error=None,
-                metadata={
-                    "job_id": job.id,
-                    "task_id": result.task_id,
-                    "job_type": job.job_type,
-                    "task_status": result.status,
-                    "message": result.message,
-                },
+            self._wake_event.wait(5)
+            self._wake_event.clear()
+
+    def _run_worker_once(self) -> None:
+        job = self.queue.claim_next(worker_id=self.processor.worker_id)
+        if job is None:
+            self._safe_record_heartbeat(success=True, error=None, metadata={"idle": True, "queue": self._safe_queue_stats()})
+            self._wake_event.wait(5)
+            self._wake_event.clear()
+            return
+        try:
+            result = self.processor.process(job)
+        except Exception as exc:
+            self.queue.mark_failed(job.id, error=str(exc), attempt_count=job.attempt_count)
+            self._safe_record_heartbeat(
+                success=False,
+                error=str(exc),
+                metadata={"job_id": job.id, "task_id": job.task_id, "job_type": job.job_type},
             )
-            print(
-                "[odaily] local pipeline completed "
-                f"job_id={job.id} task_id={result.task_id} status={result.status} message={result.message}"
-            )
+            print(f"[odaily] local pipeline failed job_id={job.id} task_id={job.task_id} error={exc}")
+            return
+        self.queue.mark_succeeded(job.id)
+        self._last_worker_error = None
+        self._safe_record_heartbeat(
+            success=True,
+            error=None,
+            metadata={
+                "job_id": job.id,
+                "task_id": result.task_id,
+                "job_type": job.job_type,
+                "task_status": result.status,
+                "message": result.message,
+            },
+        )
+        print(
+            "[odaily] local pipeline completed "
+            f"job_id={job.id} task_id={result.task_id} status={result.status} message={result.message}"
+        )
+
+    def _ensure_worker_running(self) -> None:
+        if self._stop_event.is_set():
+            return
+        with self._worker_lock:
+            if self._worker_thread is not None and self._worker_thread.is_alive():
+                return
+            if self._worker_thread is not None:
+                self._worker_restart_count += 1
+                print("[odaily] local pipeline worker restarting")
+            self._worker_thread = threading.Thread(target=self._run_worker, name="local-pipeline-worker", daemon=True)
+            self._worker_thread.start()
+
+    def _safe_queue_stats(self) -> dict[str, int]:
+        try:
+            return self.queue.stats()
+        except Exception as exc:
+            print(f"[odaily] local pipeline queue stats failed: {exc}")
+            return {}
+
+    def _safe_record_heartbeat(self, *, success: bool, error: str | None, metadata: dict[str, Any]) -> None:
+        try:
+            self.processor.record_heartbeat(success=success, error=error, metadata=metadata)
+        except Exception as exc:
+            print(f"[odaily] local pipeline heartbeat write failed: {exc}")
 
 
 class LocalPipelineHTTPServer(ThreadingHTTPServer):
@@ -151,6 +208,7 @@ def run_local_pipeline_server(
     paths = get_paths()
     ensure_runtime_dirs(paths)
     queue = LocalPipelineQueue(queue_path or paths.runtime_dir / "local_pipeline.sqlite")
+    requeued = queue.requeue_stale_running_jobs(stale_before=datetime.now(UTC) - timedelta(minutes=30))
     processor = LocalPipelineProcessor(
         database_url=database_url,
         x_settings=load_x_processing_settings(),
@@ -161,6 +219,8 @@ def run_local_pipeline_server(
     server = LocalPipelineHTTPServer((host, port), LocalPipelineHandler)
     server.service = service
     print(f"[odaily] local pipeline server listening on {host}:{port}")
+    if requeued:
+        print(f"[odaily] local pipeline requeued stale running jobs count={requeued}")
     try:
         server.serve_forever()
     finally:

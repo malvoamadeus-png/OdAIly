@@ -280,7 +280,7 @@ def parse_args() -> argparse.Namespace:
     telegram_test.add_argument("--message-thread-id", help="Telegram forum topic message_thread_id.")
 
     telegram_topic = subparsers.add_parser("telegram-create-topic", help="Create a Telegram forum topic and print message_thread_id.")
-    telegram_topic.add_argument("--name", default="审核者", help="Telegram forum topic name.")
+    telegram_topic.add_argument("--name", default="系统告警", help="Telegram forum topic name.")
 
     writer3_init = subparsers.add_parser("writer3-init-db", help="Initialize Writer3 Postgres tables.")
     writer3_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")

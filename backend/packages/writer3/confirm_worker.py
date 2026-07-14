@@ -75,13 +75,16 @@ class Writer3TelegramConfirmWorker:
     def run_forever(self) -> None:
         print("[odaily] writer3 telegram confirm worker started")
         while True:
-            result = self.run_once()
-            if result.updates or result.failed:
-                print(
-                    "[odaily] writer3 confirm round "
-                    f"updates={result.updates} confirmed={result.confirmed} ignored={result.ignored} failed={result.failed} "
-                    f"message={result.message}"
-                )
+            try:
+                result = self.run_once()
+                if result.updates or result.failed:
+                    print(
+                        "[odaily] writer3 confirm round "
+                        f"updates={result.updates} confirmed={result.confirmed} ignored={result.ignored} failed={result.failed} "
+                        f"message={result.message}"
+                    )
+            except Exception as exc:
+                print(f"[odaily] writer3 confirm round failed: {exc}")
             if self.poll_timeout_seconds == 0:
                 time.sleep(self.settings.worker_idle_sleep_seconds)
 

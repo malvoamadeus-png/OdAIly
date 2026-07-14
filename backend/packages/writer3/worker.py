@@ -9,7 +9,7 @@ from typing import Any
 from packages.common.config import Writer3Settings
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
-from packages.x_processing.telegram import TelegramClient
+from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .index import Writer3Index
 from .matching import exclusion_reason
@@ -87,13 +87,16 @@ class Writer3Worker:
     def run_forever(self) -> None:
         print("[odaily] writer3 worker started")
         while True:
-            result = self.run_once()
-            if result.processed:
-                print(
-                    "[odaily] writer3 round "
-                    f"processed={result.processed} sent={result.sent} skipped={result.skipped} failed={result.failed} "
-                    f"message={result.message}"
-                )
+            try:
+                result = self.run_once()
+                if result.processed:
+                    print(
+                        "[odaily] writer3 round "
+                        f"processed={result.processed} sent={result.sent} skipped={result.skipped} failed={result.failed} "
+                        f"message={result.message}"
+                    )
+            except Exception as exc:
+                print(f"[odaily] writer3 round failed: {exc}")
             time.sleep(self.settings.worker_idle_sleep_seconds)
 
     def _process_task(self, task: Writer3Task) -> Writer3RunResult:
@@ -157,13 +160,7 @@ class Writer3Worker:
             return Writer3RunResult(processed=1, sent=0, skipped=1, failed=0, message="context not writable")
 
         telegram_text = build_telegram_text(task=task, context=context, evidence_source_url=evidence_url)
-        telegram_result = self.telegram_client.send_message(
-            telegram_text,
-            message_thread_id=self.settings.telegram_message_thread_id,
-            reply_markup=writer3_confirm_reply_markup(task),
-        )
-        if not telegram_result.ok:
-            raise RuntimeError(telegram_result.error or "writer3 telegram send failed")
+        telegram_result = skipped_telegram_result("writer3 business notice disabled; use editor plugin feed")
         self._record_confirmation_target(task=task, telegram_text=telegram_text, telegram_result=telegram_result.model_dump(mode="json"))
         self.repository.complete_sent(
             task,
@@ -210,11 +207,10 @@ class Writer3Worker:
         )
 
     def _build_telegram_client(self) -> TelegramClient:
-        if self.settings.telegram_message_thread_id is None:
-            raise RuntimeError("Missing WRITER3_TELEGRAM_MESSAGE_THREAD_ID")
         return TelegramClient(
             bot_token=self.settings.telegram_bot_token,
             chat_id=self.settings.telegram_chat_id,
+            message_thread_id=self.settings.telegram_message_thread_id,
             timeout_seconds=self.settings.telegram_timeout_seconds,
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,

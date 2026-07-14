@@ -175,12 +175,31 @@ class PostgresPipelineSupervisorRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT source, status, count(*)::int AS count, max(updated_at) AS latest_updated_at
-                FROM tasks
-                WHERE source = ANY(%s::text[])
-                  AND status = ANY(%s::text[])
-                  AND updated_at >= %s
-                GROUP BY source, status
+                SELECT
+                    t.source,
+                    t.status,
+                    count(*)::int AS count,
+                    max(t.updated_at) AS latest_updated_at,
+                    left(
+                        max(
+                            NULLIF(
+                                CASE
+                                    WHEN x.last_error IS NOT NULL THEN x.last_error
+                                    WHEN e.last_error IS NOT NULL THEN e.last_error
+                                    ELSE ''
+                                END,
+                                ''
+                            )
+                        ),
+                        500
+                    ) AS sample_error
+                FROM tasks t
+                LEFT JOIN x_task_pipeline x ON x.task_id = t.id
+                LEFT JOIN external_media_alert_pipeline e ON e.task_id = t.id
+                WHERE t.source = ANY(%s::text[])
+                  AND t.status = ANY(%s::text[])
+                  AND t.updated_at >= %s
+                GROUP BY t.source, t.status
                 HAVING count(*) >= %s
                 ORDER BY count(*) DESC, latest_updated_at DESC
                 """,

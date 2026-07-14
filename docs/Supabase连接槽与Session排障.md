@@ -122,6 +122,8 @@ tasks.status
 - 本地服务 `odaily-local-pipeline.service` 监听 `127.0.0.1:8776`。
 - 本地队列文件位于 `data/runtime/local_pipeline.sqlite`。
 - `local_pipeline` 在一个进程里顺序调用判断、查重、编写、发布或提醒。
+- `local_pipeline` 启动时会把锁定超过 `30` 分钟的本地 `running` job 回收到可重试状态，避免历史僵尸 job 长期残留。
+- `GET /health` 除了队列计数外，还应返回 `worker_alive`、`worker_restarts` 和 `last_worker_error`，用于识别“主进程还活着，但后台 worker 线程已经退出”的假活状态。
 - Supabase 只存原始记录、阶段结果、最终状态和失败原因。
 - 旧 `tasks` notify trigger / function 已删除。
 - 旧分阶段 worker 已停用并 disabled。
@@ -170,6 +172,7 @@ age 约 3 小时
 - `pipeline-supervisor` 重启次数曾达到数百次，`x-capture` 也有大量重启。
 - `pg_stat_activity` 中出现多条 `wait_event_type = Lock`，阻塞链里有 `CREATE TABLE IF NOT EXISTS pipeline_worker_heartbeats ...`。
 - `editor_plugin_feed` 曾出现长 SQL 超时和 `BrokenPipeError`，说明插件信息流查询也可能在高压时放大连接占用。
+- 插件轻服务调用 `editor_plugin_feed` / `editor_plugin_state` / 反馈 RPC 后需要显式提交，确保 `request.jwt.claims` 所在事务及时结束，避免读请求长期停在 `idle in transaction`。
 - 对 `x_capture_attempts` 做最近成功记录查询时，即使用 `EXISTS` 也可能触发 `statement timeout`；这张表当时不能作为监督者的首选健康信号。
 
 这次的放大链路是：
@@ -284,6 +287,8 @@ curl -fsS http://127.0.0.1:8776/health
 ```bash
 journalctl -u odaily-local-pipeline.service -n 120 --no-pager
 ```
+
+如果 `/health` 里出现 `worker_alive = false`，或 `last_worker_error` 持续出现 `EMAXCONNSESSION` / `ECHECKOUTTIMEOUT`，优先按下面的连接槽排障步骤查 `pg_stat_activity`，不要只看 systemd 上的 `active`。
 
 ### 查数据库连接状态
 

@@ -77,14 +77,19 @@ class Jin10MonitorWorker:
     def run_forever(self) -> None:
         print("[odaily] jin10 monitor started")
         while not self._stop_event.is_set():
-            settings = self.repository.get_settings()
-            result = self.run_once()
-            print(
-                "[odaily] jin10 monitor round "
-                f"status={result.status} fetched={result.fetched} seeded={result.seeded} "
-                f"new={result.new} saved={result.saved} error={result.error or '-'}"
-            )
-            self._wake_event.wait(max(10, settings.interval_seconds))
+            sleep_seconds = 60
+            try:
+                settings = self.repository.get_settings()
+                sleep_seconds = max(10, settings.interval_seconds)
+                result = self.run_once()
+                print(
+                    "[odaily] jin10 monitor round "
+                    f"status={result.status} fetched={result.fetched} seeded={result.seeded} "
+                    f"new={result.new} saved={result.saved} error={result.error or '-'}"
+                )
+            except Exception as exc:
+                print(f"[odaily] jin10 monitor round failed: {exc}")
+            self._wake_event.wait(sleep_seconds)
             self._wake_event.clear()
 
     def _process_items(self, items: list[Jin10Item]) -> Jin10RunResult:

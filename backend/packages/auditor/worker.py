@@ -8,7 +8,7 @@ from typing import Any
 from packages.common.config import AuditorSettings
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
-from packages.x_processing.telegram import TelegramClient
+from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .models import AuditorResult, AuditorTask
 from .prompts import AUDITOR_PROMPT_VERSION, AUDITOR_SCHEMA, auditor_result_to_dict, build_auditor_prompt, parse_auditor_output
@@ -79,20 +79,23 @@ class AuditorWorker:
             flagged = 0
             failed = 0
             message = "idle"
-            for _ in range(self.settings.max_items_per_run):
-                result = self.run_once()
-                processed += result.processed
-                passed += result.passed
-                flagged += result.flagged
-                failed += result.failed
-                message = result.message
-                if result.processed == 0:
-                    break
-            if processed:
-                print(
-                    "[odaily] auditor round "
-                    f"processed={processed} passed={passed} flagged={flagged} failed={failed} message={message}"
-                )
+            try:
+                for _ in range(self.settings.max_items_per_run):
+                    result = self.run_once()
+                    processed += result.processed
+                    passed += result.passed
+                    flagged += result.flagged
+                    failed += result.failed
+                    message = result.message
+                    if result.processed == 0:
+                        break
+                if processed:
+                    print(
+                        "[odaily] auditor round "
+                        f"processed={processed} passed={passed} flagged={flagged} failed={failed} message={message}"
+                    )
+            except Exception as exc:
+                print(f"[odaily] auditor round failed: {exc}")
             time.sleep(self.settings.worker_idle_sleep_seconds)
 
     def _process_task(self, task: AuditorTask) -> AuditorRunResult:
@@ -115,10 +118,7 @@ class AuditorWorker:
             return AuditorRunResult(processed=1, passed=1, flagged=0, failed=0, message="passed")
 
         telegram_text = build_telegram_text(task, audit)
-        telegram_result = self.telegram_client.send_message(
-            telegram_text,
-            message_thread_id=self.settings.telegram_message_thread_id,
-        )
+        telegram_result = skipped_telegram_result("auditor content-quality notice disabled; use editor plugin feed")
         self.repository.complete_flagged(
             task,
             model=self.settings.model,
@@ -133,7 +133,7 @@ class AuditorWorker:
             passed=0,
             flagged=1,
             failed=0,
-            message="flagged" if telegram_result.ok else f"flagged telegram_failed={telegram_result.error}",
+            message="flagged",
         )
 
     def _build_ai_client(self) -> TextGenerationClient:
@@ -149,11 +149,10 @@ class AuditorWorker:
         )
 
     def _build_telegram_client(self) -> TelegramClient:
-        if self.settings.telegram_message_thread_id is None:
-            raise RuntimeError("Missing AUDITOR_TELEGRAM_MESSAGE_THREAD_ID")
         return TelegramClient(
             bot_token=self.settings.telegram_bot_token,
             chat_id=self.settings.telegram_chat_id,
+            message_thread_id=self.settings.telegram_message_thread_id,
             timeout_seconds=self.settings.telegram_timeout_seconds,
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,

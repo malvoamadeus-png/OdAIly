@@ -71,7 +71,7 @@ from .searcher import (
     parse_ai_review_output,
     top_match,
 )
-from .telegram import TelegramClient
+from .telegram import TelegramClient, skipped_telegram_result
 
 
 class HandledStageError(RuntimeError):
@@ -1056,20 +1056,7 @@ class XProcessingWorker:
         )
 
     def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
-        return self.telegram_client.send_message(
-            build_telegram_notice(
-                source=task.source,
-                title=pipeline.final_title or task.title or "",
-                source_url=task.source_url,
-                route_label=resolve_notice_route_label(task=task, pipeline=pipeline),
-                feature_mode_enabled=pipeline.writer_feature_mode_enabled,
-                site_display_name=(
-                    task.metadata.get("site_display_name")
-                    if is_mainstream_media_task(task) or is_non_mainstream_media_task(task) or is_ai_source_task(task)
-                    else None
-                ),
-            )
-        )
+        return skipped_telegram_result("business publish notice disabled; use editor plugin feed")
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()

@@ -68,12 +68,15 @@ class PipelineSupervisorWorker:
     def run_forever(self) -> None:
         print("[odaily] pipeline supervisor started")
         while True:
-            result = self.run_once()
-            if result.checked:
-                print(
-                    "[odaily] pipeline supervisor round "
-                    f"alerts={result.checked} sent={result.sent} suppressed={result.suppressed}"
-                )
+            try:
+                result = self.run_once()
+                if result.checked:
+                    print(
+                        "[odaily] pipeline supervisor round "
+                        f"alerts={result.checked} sent={result.sent} suppressed={result.suppressed}"
+                    )
+            except Exception as exc:
+                print(f"[odaily] pipeline supervisor round failed: {exc}")
             time.sleep(self.settings.interval_seconds)
 
     def build_alerts(self) -> list[PipelineAlert]:
@@ -158,6 +161,10 @@ class PipelineSupervisorWorker:
             source = str(row["source"])
             status = str(row["status"])
             count = int(row["count"])
+            sample_error = str(row.get("sample_error") or "-")
+            category = classify_error(sample_error, status=status)
+            stage = stage_label_for_status(status)
+            action = action_hint_for_category(category)
             alerts.append(
                 PipelineAlert(
                     alert_key=f"recent_failed:{source}:{status}",
@@ -165,7 +172,11 @@ class PipelineSupervisorWorker:
                         "OdAIly流水线报警\n"
                         "类型：失败任务异常\n"
                         f"对象：{source}/{status}\n"
-                        f"详情：最近 {self.settings.failed_window_minutes} 分钟失败 {count} 条"
+                        f"环节：{stage}\n"
+                        f"分类：{category}\n"
+                        f"详情：最近 {self.settings.failed_window_minutes} 分钟失败 {count} 条\n"
+                        f"样例：{sample_error}\n"
+                        f"动作：{action}"
                     ),
                     metadata=dict(row),
                 )
@@ -226,3 +237,54 @@ def format_dt(value: Any) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def stage_label_for_status(status: str) -> str:
+    return {
+        "judge_failed": "判断者",
+        "domain_failed": "领域判断",
+        "search_failed": "搜索/查重",
+        "write_failed": "编写者1",
+        "format_failed": "编写者2/格式化",
+        "publish_failed": "推送接口",
+        "publisher_failed": "发布者",
+        "notify_failed": "标题提醒",
+    }.get(status, status)
+
+
+def classify_error(sample_error: str, *, status: str) -> str:
+    text = sample_error.lower()
+    if not sample_error or sample_error == "-":
+        return "unknown"
+    if any(token in text for token in ("emaxconnsession", "echeckouttimeout", "max clients", "connection failed", "statement timeout", "idle in transaction")):
+        return "database_connection"
+    if any(token in text for token in ("arrearage", "insufficient_quota", "quota", "billing", "欠费")):
+        return "external_ai_billing"
+    if any(token in text for token in ("rate limit", "429", "too many requests")):
+        return "external_rate_limit"
+    if any(token in text for token in ("unauthorized", "forbidden", "invalid api key", "401", "403")):
+        return "external_auth"
+    if any(token in text for token in ("telegram", "sendmessage")) or status == "notify_failed":
+        return "telegram_delivery"
+    if any(token in text for token in ("push failed", "push api", "ispublish", "ispush")) or status in {"publish_failed", "publisher_failed"}:
+        return "publisher_push"
+    if any(token in text for token in ("json", "parse", "schema", "invalid route", "invalid decision")):
+        return "program_output_parse"
+    if any(token in text for token in ("timeout", "connection reset", "read timed out", "502", "503", "504")):
+        return "external_network"
+    return "program_or_unknown"
+
+
+def action_hint_for_category(category: str) -> str:
+    return {
+        "database_connection": "检查 Supabase 连接槽、idle in transaction、锁等待和相关服务连接释放。",
+        "external_ai_billing": "检查 AI/embedding 服务余额、额度和账单状态；程序只能等待外部服务恢复。",
+        "external_rate_limit": "检查外部服务限流，必要时降低并发或等待窗口恢复。",
+        "external_auth": "检查外部 API token、权限和环境变量配置。",
+        "telegram_delivery": "检查 Telegram bot token、chat/topic 配置和 Telegram API 可达性。",
+        "publisher_push": "检查发布者规则、Push API 返回和 Odaily 推送接口可达性。",
+        "program_output_parse": "检查对应阶段 prompt、模型输出格式和解析兼容性。",
+        "external_network": "检查外部站点/API 网络、超时和重试窗口。",
+        "program_or_unknown": "查看对应 pipeline last_error 和服务日志定位程序内异常。",
+        "unknown": "查看对应任务详情和服务日志补充样例错误。",
+    }.get(category, "查看对应任务详情和服务日志。")

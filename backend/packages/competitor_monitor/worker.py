@@ -165,20 +165,23 @@ class CompetitorMonitorWorker:
     def run_forever(self) -> None:
         print("[odaily] competitor monitor started")
         while True:
-            result = self.run_once()
-            print(
-                "[odaily] competitor monitor round "
-                f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
-                f"events={result.events_updated} "
-                f"filtered={result.filtered} "
-                f"expired_for_tasks={result.expired_for_tasks} "
-                f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
-                f"event_error={result.event_error or '-'} "
-                f"fetched_by_source={result.fetched_by_source} "
-                f"filtered_by_source={result.filtered_by_source} "
-                f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
-                f"failed={result.failed_sources}"
-            )
+            try:
+                result = self.run_once()
+                print(
+                    "[odaily] competitor monitor round "
+                    f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
+                    f"events={result.events_updated} "
+                    f"filtered={result.filtered} "
+                    f"expired_for_tasks={result.expired_for_tasks} "
+                    f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
+                    f"event_error={result.event_error or '-'} "
+                    f"fetched_by_source={result.fetched_by_source} "
+                    f"filtered_by_source={result.filtered_by_source} "
+                    f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
+                    f"failed={result.failed_sources}"
+                )
+            except Exception as exc:
+                print(f"[odaily] competitor monitor round failed: {exc}")
             time.sleep(self.settings.fetch_interval_seconds)
 
     def _load_exclude_terms(self) -> list[str]:

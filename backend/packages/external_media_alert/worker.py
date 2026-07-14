@@ -24,7 +24,7 @@ from packages.x_processing.searcher import (
     SearchDocument,
     top_match,
 )
-from packages.x_processing.telegram import TelegramClient
+from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .models import (
     ALERT_PROMPT_KEY,
@@ -350,17 +350,7 @@ class ExternalMediaAlertWorker:
         )
 
     def _run_notify(self, task) -> None:
-        notice = build_alert_notice(
-            site_display_name=str(task.metadata.get("site_display_name") or "Crypto信源"),
-            title=task.title or task.source_item_id,
-            source_url=task.source_url,
-            source_label=alert_source_label(task),
-        )
-        result = self.telegram_client.send_message(notice)
-        if not result.ok:
-            error = result.error or "telegram notify failed"
-            self.repository.fail_task(task.id, stage=self.stage, error=error, status="notify_failed")
-            raise HandledStageError(error)
+        result = skipped_telegram_result("business alert notice disabled; use editor plugin feed")
         self.repository.complete_notify(task.id, telegram_result=result.model_dump(mode="json"))
         cache = self._search_cache()
         if cache is not None:

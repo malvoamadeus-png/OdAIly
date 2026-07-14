@@ -124,6 +124,10 @@ class TelegramClient:
         return TelegramResult(ok=False, error=str(last_error) if last_error else "telegram request failed")
 
 
+def skipped_telegram_result(reason: str) -> TelegramResult:
+    return TelegramResult(ok=False, skipped=True, error=reason)
+
+
 def _normalize_message_thread_id(value: int | str | None) -> int | None:
     if value is None:
         return None

@@ -309,6 +309,7 @@ class PostgresEditorPluginAuthRepository:
                 )
                 cur.execute(sql, args)
                 rows = cur.fetchall()
+                conn.commit()
         return [dict(row) for row in rows]
 
     def call_plugin_json_function(self, *, email: str, function_name: str, args: tuple[Any, ...]) -> Any:
@@ -332,6 +333,7 @@ class PostgresEditorPluginAuthRepository:
                 )
                 cur.execute(sql, args)
                 rows = cur.fetchall()
+                conn.commit()
         if not rows:
             return None
         return next(iter(rows[0].values()))

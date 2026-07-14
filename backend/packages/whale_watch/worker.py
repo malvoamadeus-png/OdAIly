@@ -11,7 +11,7 @@ from typing import Any, Iterator
 
 from packages.common.config import WhaleWatchSettings
 from packages.common.heartbeat import HeartbeatThrottle
-from packages.x_processing.telegram import TelegramClient
+from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .chains import ChainDefinition, resolve_chains
 from .client import BlockscoutClient
@@ -114,12 +114,15 @@ class WhaleWatchWorker:
         )
         with self._install_signal_handlers():
             while not self._stop:
-                result = self.run_once()
-                print(
-                    "[odaily] whale watch round "
-                    f"addresses={result.addresses} pairs={result.processed_pairs} seeded={result.seeded_pairs} "
-                    f"detected={result.detected} inserted={result.inserted} sent={result.sent} failed={len(result.failed)}"
-                )
+                try:
+                    result = self.run_once()
+                    print(
+                        "[odaily] whale watch round "
+                        f"addresses={result.addresses} pairs={result.processed_pairs} seeded={result.seeded_pairs} "
+                        f"detected={result.detected} inserted={result.inserted} sent={result.sent} failed={len(result.failed)}"
+                    )
+                except Exception as exc:
+                    print(f"[odaily] whale watch round failed: {exc}")
                 self._sleep()
 
     def _process_pair(self, *, whale, chain: ChainDefinition) -> dict[str, int | bool]:
@@ -181,18 +184,15 @@ class WhaleWatchWorker:
         return {"seeded": False, "detected": detected, "inserted": inserted, "sent": sent}
 
     def _send_activity(self, activity: Activity) -> bool:
-        result = self.telegram_client.send_message(
-            activity.telegram_text,
-            message_thread_id=self.settings.telegram_message_thread_id,
-        )
+        result = skipped_telegram_result("whale business signal disabled; use editor plugin feed")
         self.repository.update_activity_telegram_result(
             tx_hash=activity.tx_hash,
             fingerprint=activity.fingerprint,
             telegram_result=result.model_dump(mode="json"),
         )
-        if not result.ok:
+        if not result.ok and not result.skipped:
             print(f"[odaily] whale watch telegram failed tx={activity.tx_hash} error={result.error}")
-        return result.ok
+        return result.ok or result.skipped
 
     def _record_heartbeat(self, result: WhaleRunResult) -> None:
         try:

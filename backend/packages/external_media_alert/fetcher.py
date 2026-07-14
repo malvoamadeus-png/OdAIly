@@ -454,14 +454,17 @@ class ExternalMediaFetcher:
             f"sources={len(self.site_registry)} interval={int(self.poll_interval_seconds)}s"
         )
         while not self._stop_event.is_set():
-            stats = self.run_once()
-            for item in stats:
-                print(
-                    "[odaily] external media fetcher "
-                    f"site={item.source.site_key} status={item.status} "
-                    f"candidates={item.candidate_count} saved={item.saved_count} "
-                    f"duplicates={item.duplicate_count} error={item.error or '-'}"
-                )
+            try:
+                stats = self.run_once()
+                for item in stats:
+                    print(
+                        "[odaily] external media fetcher "
+                        f"site={item.source.site_key} status={item.status} "
+                        f"candidates={item.candidate_count} saved={item.saved_count} "
+                        f"duplicates={item.duplicate_count} error={item.error or '-'}"
+                    )
+            except Exception as exc:
+                print(f"[odaily] external media fetcher round failed: {exc}")
             wait_seconds = self.poll_interval_seconds + random.uniform(0, 0.5)
             self._stop_event.wait(wait_seconds)
 

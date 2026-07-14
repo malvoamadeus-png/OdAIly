@@ -162,6 +162,30 @@ class LocalPipelineQueue:
             conn.commit()
             return self._row_to_job(row)
 
+    def requeue_stale_running_jobs(self, *, stale_before: datetime) -> int:
+        now = encode_dt()
+        cutoff = encode_dt(stale_before)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE local_pipeline_jobs
+                SET status = 'failed',
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    last_error = CASE
+                        WHEN coalesce(last_error, '') = '' THEN 'stale running job requeued after worker restart'
+                        ELSE substr(last_error, 1, 1800) || '\n[stale running job requeued after worker restart]'
+                    END,
+                    next_attempt_at = ?,
+                    updated_at = ?
+                WHERE status = 'running'
+                  AND locked_at IS NOT NULL
+                  AND locked_at < ?
+                """,
+                (now, now, cutoff),
+            )
+            return int(cursor.rowcount or 0)
+
     def mark_succeeded(self, job_id: int) -> None:
         now = encode_dt()
         with self._connect() as conn:

@@ -11,7 +11,7 @@ from typing import Iterator
 
 from packages.common.config import WhaleWatchHyperliquidSettings
 from packages.common.heartbeat import HeartbeatThrottle
-from packages.x_processing.telegram import TelegramClient
+from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .hyperliquid_client import HyperliquidClient
 from .hyperliquid_detector import detect_hyperliquid_activity, format_money
@@ -105,13 +105,16 @@ class WhaleWatchHyperliquidWorker:
         print(f"[odaily] whale watch hyperliquid worker started interval={self.settings.interval_seconds}s")
         with self._install_signal_handlers():
             while not self._stop:
-                result = self.run_once()
-                print(
-                    "[odaily] whale watch hyperliquid round "
-                    f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
-                    f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
-                    f"suppressed={result.suppressed} failed={len(result.failed)}"
-                )
+                try:
+                    result = self.run_once()
+                    print(
+                        "[odaily] whale watch hyperliquid round "
+                        f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
+                        f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
+                        f"suppressed={result.suppressed} failed={len(result.failed)}"
+                    )
+                except Exception as exc:
+                    print(f"[odaily] whale watch hyperliquid round failed: {exc}")
                 self._sleep()
 
     def _process_address(self, *, whale, runtime: HyperliquidRuntimeSettings) -> dict[str, int | bool]:
@@ -225,17 +228,14 @@ class WhaleWatchHyperliquidWorker:
         }
 
     def _send_activity(self, activity) -> bool:
-        result = self.telegram_client.send_message(
-            activity.telegram_text,
-            message_thread_id=self.settings.telegram_message_thread_id,
-        )
+        result = skipped_telegram_result("whale hyperliquid business signal disabled; use editor plugin feed")
         self.repository.update_activity_telegram_result(
             fill_key=activity.fill_key,
             telegram_result=result.model_dump(mode="json"),
         )
-        if not result.ok:
+        if not result.ok and not result.skipped:
             print(f"[odaily] whale watch hyperliquid telegram failed fill={activity.fill_key} error={result.error}")
-        return result.ok
+        return result.ok or result.skipped
 
     def _record_heartbeat(self, result: HyperliquidRunResult) -> None:
         try:
