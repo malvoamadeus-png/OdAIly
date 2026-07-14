@@ -146,6 +146,9 @@ class AuditorWorker:
             timeout_seconds=self.settings.request_timeout_seconds,
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
+            omit_reasoning_effort=self.settings.omit_reasoning_effort,
+            chat_response_format_mode=self.settings.chat_response_format_mode,
+            append_json_schema_to_prompt=self.settings.append_json_schema_to_prompt,
         )
 
     def _build_telegram_client(self) -> TelegramClient:

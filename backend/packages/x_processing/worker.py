@@ -338,6 +338,7 @@ class XProcessingWorker:
                 metadata=metadata,
             ),
         )
+        self.judge_ai_client: TextGenerationClient | None = ai_client
 
     def _build_ai_client(self) -> TextGenerationClient:
         if not self.settings.openai_api_key:
@@ -351,10 +352,31 @@ class XProcessingWorker:
             backoff_seconds=self.settings.retry.backoff_seconds,
         )
 
+    def _build_judge_ai_client(self) -> TextGenerationClient:
+        api_key = self.settings.judge_openai_api_key or self.settings.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing judge OpenAI API key")
+        return OpenAIResponsesClient(
+            api_key=api_key,
+            base_url=str(self.settings.judge_openai_base_url or self.settings.openai_base_url),
+            api_style=self.settings.judge_openai_api_style or self.settings.openai_api_style,
+            timeout_seconds=self.settings.request_timeout_seconds,
+            max_attempts=self.settings.retry.max_attempts,
+            backoff_seconds=self.settings.retry.backoff_seconds,
+            omit_reasoning_effort=self.settings.judge_omit_reasoning_effort,
+            chat_response_format_mode=self.settings.judge_chat_response_format_mode,
+            append_json_schema_to_prompt=self.settings.judge_append_json_schema_to_prompt,
+        )
+
     def _get_ai_client(self) -> TextGenerationClient:
         if self.ai_client is None:
             self.ai_client = self._build_ai_client()
         return self.ai_client
+
+    def _get_judge_ai_client(self) -> TextGenerationClient:
+        if self.judge_ai_client is None:
+            self.judge_ai_client = self._build_judge_ai_client()
+        return self.judge_ai_client
 
     def _build_embedding_service(self) -> CachedEmbeddingService:
         if not self.settings.dashscope_api_key:
@@ -552,7 +574,7 @@ class XProcessingWorker:
             )
             schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
         try:
-            raw_output = self._get_ai_client().generate_text(
+            raw_output = self._get_judge_ai_client().generate_text(
                 model=self.settings.judge_model,
                 prompt=prompt,
                 text_format=schema,
@@ -600,7 +622,7 @@ class XProcessingWorker:
     def _run_jin10_judge(self, task: TaskRecord) -> None:
         prompt = self._get_prompt("jin10_judge")
         input_prompt = build_jin10_judge_prompt(task=task, prompt=prompt)
-        raw_output = self._get_ai_client().generate_text(
+        raw_output = self._get_judge_ai_client().generate_text(
             model=self.settings.judge_model,
             prompt=input_prompt,
             text_format=JIN10_JUDGE_JSON_SCHEMA,

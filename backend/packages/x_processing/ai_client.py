@@ -8,6 +8,7 @@ import requests
 
 
 OpenAIApiStyle = Literal["responses", "chat_completions"]
+ChatResponseFormatMode = Literal["json_schema", "json_object"]
 
 
 class TextGenerationClient(Protocol):
@@ -31,6 +32,9 @@ class OpenAIResponsesClient:
         timeout_seconds: float,
         max_attempts: int,
         backoff_seconds: float,
+        omit_reasoning_effort: bool = False,
+        chat_response_format_mode: ChatResponseFormatMode = "json_schema",
+        append_json_schema_to_prompt: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = str(base_url).rstrip("/")
@@ -38,6 +42,9 @@ class OpenAIResponsesClient:
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max(1, max_attempts)
         self.backoff_seconds = max(0.0, backoff_seconds)
+        self.omit_reasoning_effort = omit_reasoning_effort
+        self.chat_response_format_mode = chat_response_format_mode
+        self.append_json_schema_to_prompt = append_json_schema_to_prompt
 
     def generate_text(
         self,
@@ -49,7 +56,7 @@ class OpenAIResponsesClient:
     ) -> str:
         if self.api_style == "responses":
             url = self._responses_url()
-            payload = self._responses_payload(
+            request_payload = self._responses_payload(
                 model=model,
                 prompt=prompt,
                 text_format=text_format,
@@ -58,9 +65,10 @@ class OpenAIResponsesClient:
             extractor = extract_response_text
         elif self.api_style == "chat_completions":
             url = self._chat_completions_url()
-            payload = self._chat_completions_payload(
+            chat_prompt = self._chat_prompt(prompt=prompt, text_format=text_format)
+            request_payload = self._chat_completions_payload(
                 model=model,
-                prompt=prompt,
+                prompt=chat_prompt,
                 text_format=text_format,
                 reasoning_effort=reasoning_effort,
             )
@@ -74,7 +82,7 @@ class OpenAIResponsesClient:
             try:
                 response = requests.post(
                     url,
-                    json=payload,
+                    json=request_payload,
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
@@ -83,8 +91,8 @@ class OpenAIResponsesClient:
                 )
                 response.raise_for_status()
                 try:
-                    payload = parse_openai_response_payload(response)
-                    return extractor(payload)
+                    response_payload = parse_openai_response_payload(response)
+                    return extractor(response_payload)
                 except Exception as exc:
                     fallback_text = self._try_chat_responses_fallback(
                         model=model,
@@ -135,9 +143,22 @@ class OpenAIResponsesClient:
         }
         if text_format is not None:
             payload["text"] = {"format": text_format}
-        if reasoning_effort:
+        if reasoning_effort and not self.omit_reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
         return payload
+
+    def _chat_prompt(self, *, prompt: str, text_format: dict[str, Any] | None) -> str:
+        if not self.append_json_schema_to_prompt or text_format is None:
+            return prompt
+        schema = text_format.get("schema")
+        if not isinstance(schema, dict):
+            return prompt
+        schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        return (
+            f"{prompt}\n\n"
+            "请严格输出符合以下 JSON Schema 的 JSON 对象，不要输出 Markdown、解释文本或推理过程：\n"
+            f"{schema_text}"
+        )
 
     def _chat_completions_payload(
         self,
@@ -152,8 +173,8 @@ class OpenAIResponsesClient:
             "messages": [{"role": "user", "content": prompt}],
         }
         if text_format is not None:
-            payload["response_format"] = to_chat_response_format(text_format)
-        if reasoning_effort:
+            payload["response_format"] = to_chat_response_format(text_format, mode=self.chat_response_format_mode)
+        if reasoning_effort and not self.omit_reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         return payload
 
@@ -350,7 +371,13 @@ def build_ai_fallback_error_message(
     )
 
 
-def to_chat_response_format(text_format: dict[str, Any]) -> dict[str, Any]:
+def to_chat_response_format(
+    text_format: dict[str, Any],
+    *,
+    mode: ChatResponseFormatMode = "json_schema",
+) -> dict[str, Any]:
+    if mode == "json_object":
+        return {"type": "json_object"}
     if text_format.get("type") != "json_schema":
         return text_format
     json_schema = {

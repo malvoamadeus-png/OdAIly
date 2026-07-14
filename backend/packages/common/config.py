@@ -320,6 +320,12 @@ class XProcessingSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    judge_openai_api_key: str | None = None
+    judge_openai_base_url: HttpUrl | None = None
+    judge_openai_api_style: Literal["responses", "chat_completions"] | None = None
+    judge_omit_reasoning_effort: bool = False
+    judge_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
+    judge_append_json_schema_to_prompt: bool = False
     judge_model: str = "gpt-5.4-mini"
     judge_reasoning_effort: str = "low"
     writer_model: str = "gpt-5.5"
@@ -357,6 +363,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def load_x_processing_settings() -> XProcessingSettings:
     load_dotenv()
+    judge_base_url = os.getenv("X_PROCESS_JUDGE_OPENAI_BASE_URL") or None
+    judge_model = os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini"
     payload = {
         "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
         "openai_base_url": (
@@ -365,7 +373,22 @@ def load_x_processing_settings() -> XProcessingSettings:
             or "https://api.openai.com/v1"
         ),
         "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "judge_model": os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
+        "judge_openai_api_key": (
+            os.getenv("X_PROCESS_JUDGE_OPENAI_API_KEY")
+            or (
+                os.getenv("DEEPSEEK_API_KEY")
+                or os.getenv("DEEPSEEK_API")
+                or os.getenv("DeepSeek_API")
+                if judge_base_url or "deepseek" in judge_model.lower()
+                else None
+            )
+        ),
+        "judge_openai_base_url": judge_base_url,
+        "judge_openai_api_style": os.getenv("X_PROCESS_JUDGE_OPENAI_API_STYLE") or None,
+        "judge_omit_reasoning_effort": _env_bool("X_PROCESS_JUDGE_OMIT_REASONING_EFFORT", False),
+        "judge_chat_response_format_mode": os.getenv("X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE") or "json_schema",
+        "judge_append_json_schema_to_prompt": _env_bool("X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT", False),
+        "judge_model": judge_model,
         "judge_reasoning_effort": os.getenv("X_PROCESS_JUDGE_REASONING_EFFORT") or "low",
         "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
         "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "low",
@@ -734,6 +757,9 @@ class AuditorSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
+    omit_reasoning_effort: bool = False
+    chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
+    append_json_schema_to_prompt: bool = False
     model: str = "gpt-5.5"
     reasoning_effort: str = "medium"
     lookback_minutes: int = Field(default=120, ge=1, le=10080)
@@ -749,16 +775,32 @@ class AuditorSettings(BaseModel):
 
 def load_auditor_settings() -> AuditorSettings:
     load_dotenv()
+    auditor_base_url = (
+        os.getenv("AUDITOR_OPENAI_BASE_URL")
+        or os.getenv("X_PROCESS_OPENAI_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
+    auditor_model = os.getenv("AUDITOR_MODEL") or "gpt-5.5"
     payload = {
-        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
-        "openai_base_url": (
-            os.getenv("AUDITOR_OPENAI_BASE_URL")
-            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
+        "openai_api_key": (
+            os.getenv("AUDITOR_OPENAI_API_KEY")
+            or (
+                os.getenv("DEEPSEEK_API_KEY")
+                or os.getenv("DEEPSEEK_API")
+                or os.getenv("DeepSeek_API")
+                if "deepseek" in auditor_base_url.lower() or "deepseek" in auditor_model.lower()
+                else None
+            )
+            or os.getenv("OPENAI_API_KEY")
+            or None
         ),
+        "openai_base_url": auditor_base_url,
         "openai_api_style": os.getenv("AUDITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "model": os.getenv("AUDITOR_MODEL") or "gpt-5.5",
+        "omit_reasoning_effort": _env_bool("AUDITOR_OMIT_REASONING_EFFORT", False),
+        "chat_response_format_mode": os.getenv("AUDITOR_CHAT_RESPONSE_FORMAT_MODE") or "json_schema",
+        "append_json_schema_to_prompt": _env_bool("AUDITOR_APPEND_JSON_SCHEMA_TO_PROMPT", False),
+        "model": auditor_model,
         "reasoning_effort": os.getenv("AUDITOR_REASONING_EFFORT") or "medium",
         "lookback_minutes": int(os.getenv("AUDITOR_LOOKBACK_MINUTES") or 120),
         "max_items_per_run": int(os.getenv("AUDITOR_MAX_ITEMS_PER_RUN") or 20),

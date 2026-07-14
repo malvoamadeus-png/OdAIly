@@ -283,8 +283,14 @@ PROCESSING_FRESHNESS_WINDOW_SECONDS=1200
 X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
 X_PROCESS_OPENAI_API_STYLE=responses
 COMPETITOR_OPENAI_API_STYLE=
+DEEPSEEK_API_KEY=
 X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
 X_PROCESS_JUDGE_REASONING_EFFORT=low
+X_PROCESS_JUDGE_OPENAI_BASE_URL=
+X_PROCESS_JUDGE_OPENAI_API_STYLE=
+X_PROCESS_JUDGE_OMIT_REASONING_EFFORT=false
+X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE=json_schema
+X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT=false
 X_PROCESS_WRITER_MODEL=gpt-5.5
 X_PROCESS_WRITER_REASONING_EFFORT=medium
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
@@ -331,6 +337,10 @@ competitor event-review endpoint needs a different style from the rest of the
 X-processing workers. `X_PROCESS_JUDGE_REASONING_EFFORT` controls the
 reasoning effort used by 判断者 and defaults to `low`;
 `X_PROCESS_WRITER_REASONING_EFFORT` controls 编写者1 and defaults to `medium`.
+`X_PROCESS_JUDGE_OPENAI_*` can override only 判断者, leaving writer, publisher,
+and search-review calls on the original GPT endpoint. For DeepSeek non-thinking
+tests, use `chat_completions`, `json_object`, append the JSON Schema to the
+prompt, and omit reasoning effort.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for
