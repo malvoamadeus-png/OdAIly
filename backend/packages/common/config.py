@@ -337,6 +337,8 @@ class XProcessingSettings(BaseModel):
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     search_window_hours: int = Field(default=24, ge=1, le=168)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
+    search_ai_review_model: str = "gpt-5.4-mini"
+    search_ai_review_reasoning_effort: str = "low"
     search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
@@ -399,6 +401,8 @@ def load_x_processing_settings() -> XProcessingSettings:
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "search_window_hours": int(os.getenv("SEARCH_WINDOW_HOURS") or 24),
         "search_duplicate_threshold": float(os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88),
+        "search_ai_review_model": os.getenv("SEARCH_AI_REVIEW_MODEL") or "gpt-5.4-mini",
+        "search_ai_review_reasoning_effort": os.getenv("SEARCH_AI_REVIEW_REASONING_EFFORT") or "low",
         "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.65),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
@@ -459,7 +463,6 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
         ),
         "domain_judge_model": (
             os.getenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL")
-            or os.getenv("X_PROCESS_JUDGE_MODEL")
             or "gpt-5.4-mini"
         ),
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
@@ -554,7 +557,7 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
             or "https://api.openai.com/v1"
         ),
         "openai_api_style": os.getenv("COMPETITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "event_review_model": os.getenv("COMPETITOR_EVENT_REVIEW_MODEL") or os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini",
+        "event_review_model": os.getenv("COMPETITOR_EVENT_REVIEW_MODEL") or "gpt-5.4-mini",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "event_embedding_model": os.getenv("COMPETITOR_EVENT_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "event_embedding_base_url": (

@@ -733,9 +733,10 @@ class EditorPluginNewsGenService:
         if match.similarity < self.x_settings.search_ai_review_threshold:
             return None
         raw_output = self.ai_client.generate_text(
-            model=self.x_settings.judge_model,
+            model=self.x_settings.search_ai_review_model,
             prompt=build_ai_review_prompt(query=query, match=match),
             text_format=AI_REVIEW_SCHEMA,
+            reasoning_effort=self.x_settings.search_ai_review_reasoning_effort,
         )
         payload = parse_ai_review_output(raw_output)
         is_duplicate = bool(payload.get("is_duplicate"))

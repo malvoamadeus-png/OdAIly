@@ -16,6 +16,8 @@
 - 搜索者里的 embedding 和 AI 复核。
 - 外媒标题领域判断。
 
+2026-07-14 补充修正：初次上线时 `X_PROCESS_JUDGE_MODEL=deepseek-chat` 被搜索者 AI 复核复用，导致搜索阶段把 `deepseek-chat` 发到原 GPT relay 并出现 `model_not_found`。已将搜索 AI 复核拆成独立配置 `SEARCH_AI_REVIEW_MODEL` / `SEARCH_AI_REVIEW_REASONING_EFFORT`，并取消外媒领域判断、竞品事件复核对 `X_PROCESS_JUDGE_MODEL` 的隐式 fallback。
+
 ## 测速结果
 
 ### 测试1：判断者

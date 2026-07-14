@@ -776,10 +776,10 @@ class XProcessingWorker:
         if match.similarity < self.settings.search_ai_review_threshold or self.search_ai_client is None:
             return None
         raw_output = self.search_ai_client.generate_text(
-            model=self.settings.judge_model,
+            model=self.settings.search_ai_review_model,
             prompt=build_ai_review_prompt(query=query, match=match),
             text_format=AI_REVIEW_SCHEMA,
-            reasoning_effort=self.settings.judge_reasoning_effort,
+            reasoning_effort=self.settings.search_ai_review_reasoning_effort,
         )
         payload = parse_ai_review_output(raw_output)
         is_duplicate = bool(payload.get("is_duplicate"))
