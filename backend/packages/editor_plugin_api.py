@@ -53,6 +53,7 @@ from packages.x_processing.worker import build_writer_prompt
 QUICK_GENERATE_WRITER_MODEL = "gpt-5.4-mini"
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
 GENERATE_WRITER_REASONING_EFFORT = "low"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 PluginNewsType = Literal["regular", "funding", "onchain"]
 
 
@@ -182,6 +183,15 @@ def parse_bearer_token(value: str | None) -> str:
     return token
 
 
+def looks_like_openai_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith(("gpt-", "o"))
+
+
+def is_deepseek_url(value: str) -> bool:
+    return "deepseek" in value.lower()
+
+
 def hash_plugin_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -308,7 +318,7 @@ class EditorPluginNewsGenService:
             repository=self.auth_repository,
         )
 
-        self.ai_client = self._build_search_ai_client()
+        self.search_ai_client = self._build_search_ai_client()
         self.embedding_service = self._build_embedding_service()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
@@ -325,6 +335,29 @@ class EditorPluginNewsGenService:
             omit_reasoning_effort=self.x_settings.search_ai_review_omit_reasoning_effort,
             chat_response_format_mode=self.x_settings.search_ai_review_chat_response_format_mode,
             append_json_schema_to_prompt=self.x_settings.search_ai_review_append_json_schema_to_prompt,
+        )
+
+    def _build_writer_ai_client(self, *, model: str) -> TextGenerationClient:
+        api_key = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_KEY") or self.x_settings.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing writer OpenAI API key")
+        base_url = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL") or str(self.x_settings.openai_base_url)
+        api_style = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE") or self.x_settings.openai_api_style
+        if looks_like_openai_model(model) and is_deepseek_url(base_url) and not os.getenv(
+            "EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL"
+        ):
+            base_url = DEFAULT_OPENAI_BASE_URL
+            if not os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE"):
+                api_style = "responses"
+        if api_style not in {"responses", "chat_completions"}:
+            raise RuntimeError("Invalid editor plugin writer OpenAI API style")
+        return OpenAIResponsesClient(
+            api_key=api_key,
+            base_url=base_url,
+            api_style=api_style,
+            timeout_seconds=self.api_settings.generation_timeout_seconds,
+            max_attempts=self.x_settings.retry.max_attempts,
+            backoff_seconds=self.x_settings.retry.backoff_seconds,
         )
 
     def _build_embedding_service(self) -> CachedEmbeddingService:
@@ -585,7 +618,7 @@ class EditorPluginNewsGenService:
             route = self._require_news_type(request)
             prompt = self._get_prompt(PROMPT_KEY_BY_NEWS_TYPE[route])
             writer_prompt = build_writer_prompt(task=task, prompt=prompt)
-            raw_output = self.ai_client.generate_text(
+            raw_output = self._build_writer_ai_client(model=writer_model).generate_text(
                 model=writer_model,
                 prompt=writer_prompt,
                 reasoning_effort=writer_reasoning_effort,
@@ -736,7 +769,7 @@ class EditorPluginNewsGenService:
             )
         if match.similarity < self.x_settings.search_ai_review_threshold:
             return None
-        raw_output = self.ai_client.generate_text(
+        raw_output = self.search_ai_client.generate_text(
             model=self.x_settings.search_ai_review_model,
             prompt=build_ai_review_prompt(query=query, match=match),
             text_format=AI_REVIEW_SCHEMA,
