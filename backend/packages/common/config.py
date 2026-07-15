@@ -16,6 +16,7 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
+DEFAULT_DEEPSEEK_AUDITOR_MODEL = "odaily-deepseek-auditor"
 
 
 DEFAULT_WATCHLIST = [
@@ -423,6 +424,14 @@ def _llm_deepseek_review_model(*specific_names: str) -> str:
     return DEFAULT_DEEPSEEK_REVIEW_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "deepseek-v4-flash"
 
 
+def _llm_deepseek_auditor_model(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return DEFAULT_DEEPSEEK_AUDITOR_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "deepseek-v4-pro"
+
+
 def load_x_processing_settings() -> XProcessingSettings:
     load_dotenv()
     judge_base_url = os.getenv("X_PROCESS_JUDGE_OPENAI_BASE_URL") or None
@@ -819,8 +828,8 @@ class AuditorSettings(BaseModel):
     omit_reasoning_effort: bool = False
     chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     append_json_schema_to_prompt: bool = False
-    model: str = DEFAULT_DEEPSEEK_REVIEW_MODEL
-    reasoning_effort: str = "medium"
+    model: str = DEFAULT_DEEPSEEK_AUDITOR_MODEL
+    reasoning_effort: str = "max"
     lookback_minutes: int = Field(default=120, ge=1, le=10080)
     max_items_per_run: int = Field(default=20, ge=1, le=200)
     request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
@@ -835,7 +844,7 @@ class AuditorSettings(BaseModel):
 def load_auditor_settings() -> AuditorSettings:
     load_dotenv()
     auditor_base_url = _llm_base_url("AUDITOR_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL")
-    auditor_model = _llm_deepseek_review_model("AUDITOR_MODEL")
+    auditor_model = _llm_deepseek_auditor_model("AUDITOR_MODEL")
     payload = {
         "openai_api_key": (
             os.getenv("AUDITOR_OPENAI_API_KEY")
@@ -855,7 +864,7 @@ def load_auditor_settings() -> AuditorSettings:
         "chat_response_format_mode": os.getenv("AUDITOR_CHAT_RESPONSE_FORMAT_MODE") or "json_schema",
         "append_json_schema_to_prompt": _env_bool("AUDITOR_APPEND_JSON_SCHEMA_TO_PROMPT", False),
         "model": auditor_model,
-        "reasoning_effort": os.getenv("AUDITOR_REASONING_EFFORT") or "medium",
+        "reasoning_effort": os.getenv("AUDITOR_REASONING_EFFORT") or "max",
         "lookback_minutes": int(os.getenv("AUDITOR_LOOKBACK_MINUTES") or 120),
         "max_items_per_run": int(os.getenv("AUDITOR_MAX_ITEMS_PER_RUN") or 20),
         "request_timeout_seconds": float(os.getenv("AUDITOR_REQUEST_TIMEOUT_SECONDS") or 60.0),

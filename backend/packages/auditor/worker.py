@@ -149,6 +149,7 @@ class AuditorWorker:
             omit_reasoning_effort=self.settings.omit_reasoning_effort,
             chat_response_format_mode=self.settings.chat_response_format_mode,
             append_json_schema_to_prompt=self.settings.append_json_schema_to_prompt,
+            allow_deepseek_reasoning_effort=not self.settings.omit_reasoning_effort,
         )
 
     def _build_telegram_client(self) -> TelegramClient:

@@ -15,6 +15,11 @@ model_list:
       model: deepseek/deepseek-v4-flash
       api_key: os.environ/DEEPSEEK_API_KEY
 
+  - model_name: odaily-deepseek-auditor
+    litellm_params:
+      model: deepseek/deepseek-v4-pro
+      api_key: os.environ/DEEPSEEK_API_KEY
+
 litellm_settings:
   drop_params: true
   request_timeout: 120

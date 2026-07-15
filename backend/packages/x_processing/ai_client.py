@@ -35,6 +35,7 @@ class OpenAIResponsesClient:
         omit_reasoning_effort: bool = False,
         chat_response_format_mode: ChatResponseFormatMode = "json_schema",
         append_json_schema_to_prompt: bool = False,
+        allow_deepseek_reasoning_effort: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = str(base_url).rstrip("/")
@@ -45,6 +46,7 @@ class OpenAIResponsesClient:
         self.omit_reasoning_effort = omit_reasoning_effort
         self.chat_response_format_mode = chat_response_format_mode
         self.append_json_schema_to_prompt = append_json_schema_to_prompt
+        self.allow_deepseek_reasoning_effort = allow_deepseek_reasoning_effort
 
     def generate_text(
         self,
@@ -77,7 +79,9 @@ class OpenAIResponsesClient:
                 text_format=text_format,
                 reasoning_effort=reasoning_effort,
                 force_json_object=use_deepseek_chat_compat,
-                force_omit_reasoning_effort=use_deepseek_chat_compat,
+                force_omit_reasoning_effort=(
+                    use_deepseek_chat_compat and not self.allow_deepseek_reasoning_effort
+                ),
             )
             extractor = extract_chat_completion_text
         else:

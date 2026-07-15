@@ -141,3 +141,40 @@ def test_deepseek_alias_uses_json_object_compat_by_default(monkeypatch) -> None:
     assert requests_seen[0]["response_format"] == {"type": "json_object"}
     assert "reasoning_effort" not in requests_seen[0]
     assert "JSON Schema" in requests_seen[0]["messages"][0]["content"]
+
+
+def test_deepseek_auditor_can_send_reasoning_effort(monkeypatch) -> None:
+    requests_seen: list[dict[str, Any]] = []
+
+    def fake_post(*args, **kwargs):
+        requests_seen.append(kwargs["json"])
+        return _json_response({"choices": [{"message": {"content": '{"ok":true}'}}]})
+
+    monkeypatch.setattr("packages.x_processing.ai_client.requests.post", fake_post)
+
+    client = OpenAIResponsesClient(
+        api_key="test-key",
+        base_url="https://example.test/v1",
+        api_style="chat_completions",
+        timeout_seconds=1,
+        max_attempts=1,
+        backoff_seconds=0,
+        allow_deepseek_reasoning_effort=True,
+    )
+
+    assert (
+        client.generate_text(
+            model="odaily-deepseek-auditor",
+            prompt="hello",
+            text_format={
+                "type": "json_schema",
+                "name": "test_schema",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+            },
+            reasoning_effort="max",
+        )
+        == '{"ok":true}'
+    )
+    assert requests_seen[0]["response_format"] == {"type": "json_object"}
+    assert requests_seen[0]["reasoning_effort"] == "max"
+    assert "JSON Schema" in requests_seen[0]["messages"][0]["content"]

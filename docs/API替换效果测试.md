@@ -1,6 +1,6 @@
 # API 替换效果测试
 
-> 本文是 2026-07-14 的历史测试记录，保留当时直连 DeepSeek / GPT relay 的测试参数。当前生产文本 LLM 已统一经本机 LiteLLM proxy 调用，生产配置以 `README.md`、`.env.example` 和各模块文档中的 `odaily-gpt-writer`、`odaily-deepseek-fast`、`odaily-deepseek-review` 业务别名为准。
+> 本文是 2026-07-14 的历史测试记录，保留当时直连 DeepSeek / GPT relay 的测试参数。当前生产文本 LLM 已统一经本机 LiteLLM proxy 调用，生产配置以 `README.md`、`.env.example` 和各模块文档中的 `odaily-gpt-writer`、`odaily-deepseek-fast`、`odaily-deepseek-review`、`odaily-deepseek-auditor` 业务别名为准。
 
 ## 背景
 
@@ -42,7 +42,7 @@
 
 ### 测试2：审核者
 
-使用审核者 Prompt 和 `AUDITOR_SCHEMA`，从历史 `auditor_checks.status = 'failed'` 中挑 5 条源内容。原方案按审核者默认 `gpt-5.5 + medium` 测试；DeepSeek 用 `deepseek-chat` 非思考模式，并把 JSON Schema 约束追加到 prompt。
+使用审核者 Prompt 和 `AUDITOR_SCHEMA`，从历史 `auditor_checks.status = 'failed'` 中挑 5 条源内容。原方案按审核者默认 `gpt-5.5 + medium` 测试；DeepSeek 当时用 `deepseek-chat` 非思考模式并把 JSON Schema 约束追加到 prompt；当前生产审核者改为 `odaily-deepseek-auditor` 思考模式。
 
 | auditor_check_id | 标题 | 原方案耗时 | DeepSeek 耗时 | DeepSeek 快多少 | 最终结果 |
 | ---: | --- | ---: | ---: | ---: | --- |
@@ -81,11 +81,11 @@ X_PROCESS_JUDGE_OMIT_REASONING_EFFORT=true
 X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE=json_object
 X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT=true
 
-AUDITOR_MODEL=deepseek-chat
+AUDITOR_MODEL=odaily-deepseek-auditor
 AUDITOR_REASONING_EFFORT=max
-AUDITOR_OPENAI_BASE_URL=https://api.deepseek.com
-AUDITOR_OPENAI_API_STYLE=chat_completions
-AUDITOR_OMIT_REASONING_EFFORT=true
+AUDITOR_OPENAI_BASE_URL=
+AUDITOR_OPENAI_API_STYLE=
+AUDITOR_OMIT_REASONING_EFFORT=false
 AUDITOR_CHAT_RESPONSE_FORMAT_MODE=json_object
 AUDITOR_APPEND_JSON_SCHEMA_TO_PROMPT=true
 
@@ -102,7 +102,7 @@ SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 
 - `X_PROCESS_JUDGE_REASONING_EFFORT=high` 和 `AUDITOR_REASONING_EFFORT=max` 保留为本次效果测试的配置标签。
 - `SEARCH_AI_REVIEW_REASONING_EFFORT=low` 继续保留为搜索复核的业务标签；当接口不接收 reasoning 参数时，由 `SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=true` 在请求层省略。
-- DeepSeek 非思考模式不接收 reasoning 参数，因此实际请求通过 `*_OMIT_REASONING_EFFORT=true` 省略该字段。
+- 审核者 DeepSeek 思考模式会发送 `AUDITOR_REASONING_EFFORT=max`；判断者与搜索者复核仍可通过 `*_OMIT_REASONING_EFFORT=true` 省略 reasoning 参数。
 - `*_CHAT_RESPONSE_FORMAT_MODE=json_object` 配合 `*_APPEND_JSON_SCHEMA_TO_PROMPT=true`，用于兼容 DeepSeek chat completions 的结构化输出。
 
 ## 回滚方案
@@ -145,5 +145,5 @@ systemctl restart odaily-local-pipeline.service odaily-auditor.service
 
 1. 当前方案最大的性能瓶颈：原 GPT 判断者和审核者在高 reasoning 或长内容下耗时明显，审核者历史失败样本可超过 13 秒。
 2. 数据量扩大 100 倍后最先出现的问题：模型调用耗时会导致判断者和发布后审核队列堆积，恢复补扫时尤其明显。
-3. 可优化方案及预期收益：先把判断者和审核者切到 DeepSeek 非思考模式，预期模型调用耗时降到约 1 秒；边界样本后续可再设计 GPT 复核。
+3. 可优化方案及预期收益：先把判断者切到 DeepSeek 非思考模式，审核者切到 DeepSeek 思考模式，按当时非思考测试预期模型调用耗时降到约 1 秒；边界样本后续可再设计 GPT 复核。
 4. 当前 Trade-off：DeepSeek 速度优势明显，接入成本低；但样本量有限，正式长期使用前应继续观察 24-72 小时真实流量下的误判、误报和结构化输出稳定性。

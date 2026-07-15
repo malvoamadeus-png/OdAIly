@@ -348,10 +348,11 @@ WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 Production text LLM calls go through the local LiteLLM proxy at
 `ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
 proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
-and `odaily-deepseek-review`. The former fast GPT path has been removed; fast
+`odaily-deepseek-review`, and `odaily-deepseek-auditor`. The former fast GPT path has been removed; fast
 classification, review, analysis, and browser-plugin quick generation now use
 DeepSeek through LiteLLM. For DeepSeek JSON tasks, use `chat_completions`,
-`json_object`, append the JSON Schema to the prompt, and omit reasoning effort.
+`json_object`, and append the JSON Schema to the prompt; the auditor sends
+`AUDITOR_REASONING_EFFORT=max`, while judge/search review omit reasoning effort.
 DashScope embedding remains configured
 separately and does not go through LiteLLM.
 
