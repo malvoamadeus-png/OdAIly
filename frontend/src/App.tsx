@@ -1,9 +1,7 @@
 import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
-  Activity,
   Ban,
-  Bot,
   Database,
   FileText,
   Globe2,
@@ -106,6 +104,24 @@ import {
   type WorkflowGroup,
   type WorkflowNode,
 } from './workflowCatalog';
+
+type SourceManagementView = 'x' | 'non_mainstream' | 'ai_source' | 'mixed_source';
+
+type ConsoleView =
+  | SourceManagementView
+  | 'tasks'
+  | 'publisher'
+  | 'workflow'
+  | 'whale'
+  | 'prompts'
+  | 'competitor'
+  | 'events'
+  | 'favorites'
+  | 'jin10';
+
+function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
+  return view === 'x' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source';
+}
 
 const emptySettings: Settings = {
   global_interval_seconds: 30,
@@ -691,10 +707,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<
-    'x' | 'tasks' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'publisher' | 'workflow' | 'whale' | 'prompts' | 'competitor' | 'events' | 'favorites'
-    | 'jin10'
-  >('x');
+  const [view, setView] = useState<ConsoleView>('x');
+  const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
@@ -778,6 +792,24 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     () => nonMainstreamSources.filter((source) => source.source_group === 'mixed_source'),
     [nonMainstreamSources],
   );
+  const sourceManagementActive = isSourceManagementView(view);
+  const sourceManagementView: SourceManagementView = isSourceManagementView(view) ? view : lastSourceManagementView;
+  const sourceManagementLabel =
+    sourceManagementView === 'x'
+      ? 'X'
+      : sourceManagementView === 'non_mainstream'
+        ? 'Crypto信源'
+        : sourceManagementView === 'ai_source'
+          ? 'AI信源'
+          : '混合信源';
+  const sourceManagementSummary =
+    sourceManagementView === 'x'
+      ? `${enabledCount} 个启用 X 账号 · 全局 ${settings.global_interval_seconds}s · 抓取频率 / 写作名 / AI标签`
+      : sourceManagementView === 'non_mainstream'
+        ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 全文 / 标题提醒`
+        : sourceManagementView === 'ai_source'
+          ? `${enabledAiSourceCount} 个启用站点 · 默认 300s · AI/半导体全文链路`
+          : `${enabledMixedSourceCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 轻量 AI 分流`;
   const enabledRegularRuleCount = useMemo(
     () => publisherRules.regular.allow_rules.filter((rule) => rule.enabled).length + publisherRules.regular.deny_rules.filter((rule) => rule.enabled).length,
     [publisherRules],
@@ -786,6 +818,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     () => filterTaskOverview(processingTasks, taskOverviewFilter, taskOverviewQuery),
     [processingTasks, taskOverviewFilter, taskOverviewQuery],
   );
+
+  useEffect(() => {
+    if (isSourceManagementView(view)) {
+      setLastSourceManagementView(view);
+    }
+  }, [view]);
+
   function updateSetting<K extends keyof Pick<Settings, 'global_interval_seconds' | 'max_concurrency' | 'jitter_seconds'>>(
     key: K,
     value: string,
@@ -1099,7 +1138,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     try {
       await createAccount(body);
       setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '', is_ai_source: false });
-      setMessage('账号已保存');
+      setMessage('X 账号已保存');
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1399,16 +1438,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   const productLabel =
-    view === 'x'
-      ? 'X Capture'
+    sourceManagementActive
+      ? 'Source Management'
       : view === 'tasks'
         ? 'Cycle Monitor'
-      : view === 'non_mainstream'
-        ? 'Crypto Sources'
-      : view === 'ai_source'
-        ? 'AI Sources'
-      : view === 'mixed_source'
-        ? 'Mixed Sources'
       : view === 'publisher'
         ? 'Publisher'
       : view === 'jin10'
@@ -1425,22 +1458,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
               ? '收藏'
               : '事件';
   const titleLabel =
-    view === 'x'
-      ? 'X 抓取控制台'
+    sourceManagementActive
+      ? '信源管理'
       : view === 'tasks'
         ? '信息周期监控'
-      : view === 'non_mainstream'
-        ? 'Crypto信源抓取控制台'
-      : view === 'ai_source'
-        ? 'AI信源抓取控制台'
-      : view === 'mixed_source'
-        ? '混合信源抓取控制台'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'jin10'
         ? '金十监控'
       : view === 'workflow'
-        ? '流程管理'
+        ? '流程展示'
         : view === 'whale'
         ? '巨鲸'
       : view === 'prompts'
@@ -1451,22 +1478,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             ? '收藏事件'
             : '事件复盘';
   const subtitle =
-    view === 'x'
-      ? `${enabledCount} 个启用账号 · 全局 ${settings.global_interval_seconds}s`
+    sourceManagementActive
+      ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
       : view === 'tasks'
         ? `${visibleProcessingTasks.length} / ${processingTasks.length} 条最近任务 · 发布者说明随任务展示`
-      : view === 'non_mainstream'
-        ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
-      : view === 'ai_source'
-        ? `${enabledAiSourceCount} 个启用站点 · 默认 300s`
-      : view === 'mixed_source'
-        ? `${enabledMixedSourceCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s`
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
         ? `${jin10Settings.enabled ? '已开启' : '已关闭'} · ${jin10Settings.interval_seconds}s`
       : view === 'workflow'
-        ? '自动化主链路全景 · 节点 / 分流 / 模型一图看清'
+        ? '自动化主链路全景 · 分流、查重、发布后审核一图看清'
       : view === 'whale'
         ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
       : view === 'prompts'
@@ -1506,32 +1527,15 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </div>
         </div>
         <nav>
-          <button className={view === 'x' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('x')}>
-            <Activity size={18} /> 账号
+          <button
+            className={sourceManagementActive ? 'navItem active' : 'navItem'}
+            type="button"
+            onClick={() => switchView(sourceManagementActive ? view : lastSourceManagementView)}
+          >
+            <Globe2 size={18} /> 信源管理
           </button>
           <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
             <Database size={18} /> 信息周期监控
-          </button>
-          <button
-            className={view === 'non_mainstream' ? 'navItem active' : 'navItem'}
-            type="button"
-            onClick={() => switchView('non_mainstream')}
-          >
-            <Globe2 size={18} /> Crypto信源
-          </button>
-          <button
-            className={view === 'ai_source' ? 'navItem active' : 'navItem'}
-            type="button"
-            onClick={() => switchView('ai_source')}
-          >
-            <Bot size={18} /> AI信源
-          </button>
-          <button
-            className={view === 'mixed_source' ? 'navItem active' : 'navItem'}
-            type="button"
-            onClick={() => switchView('mixed_source')}
-          >
-            <Layers3 size={18} /> 混合信源
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1540,7 +1544,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <Radio size={18} /> 金十
           </button>
           <button className={view === 'workflow' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('workflow')}>
-            <Layers3 size={18} /> 流程管理
+            <Layers3 size={18} /> 流程展示
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt
@@ -1571,14 +1575,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
               <strong>管理员</strong>
               <span>{adminEmail}</span>
             </div>
-          <button
-            className="iconButton"
-            type="button"
-            onClick={refreshCurrent}
-            title="刷新"
-          >
-            <RefreshCcw size={18} />
-          </button>
+            <button
+              className="iconButton"
+              type="button"
+              onClick={refreshCurrent}
+              title="刷新"
+            >
+              <RefreshCcw size={18} />
+            </button>
             <button className="secondaryButton" type="button" onClick={() => void onSignOut()} disabled={signingOut}>
               退出登录
             </button>
@@ -1591,103 +1595,140 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </div>
         )}
 
+        {sourceManagementActive && (
+          <section className="sourceManagementTabsGrid" aria-label="信源管理子页">
+            {[
+              {
+                key: 'x' as const,
+                label: 'X',
+                summary: `${enabledCount} 个启用 X 账号 · 抓取频率 / 写作名 / AI标签`,
+              },
+              {
+                key: 'non_mainstream' as const,
+                label: 'Crypto信源',
+                summary: `${enabledNonMainstreamCount} 个启用站点 · 全文 / 标题提醒`,
+              },
+              {
+                key: 'ai_source' as const,
+                label: 'AI信源',
+                summary: `${enabledAiSourceCount} 个启用站点 · 默认 300s`,
+              },
+              {
+                key: 'mixed_source' as const,
+                label: '混合信源',
+                summary: `${enabledMixedSourceCount} 个启用站点 · 轻量 AI 分流`,
+              },
+            ].map((item) => (
+              <button
+                className={sourceManagementView === item.key ? 'promptTab active' : 'promptTab'}
+                type="button"
+                key={item.key}
+                onClick={() => switchView(item.key)}
+              >
+                <strong>{item.label}</strong>
+                <span>{item.summary}</span>
+              </button>
+            ))}
+          </section>
+        )}
+
         {view === 'x' ? (
           <>
             <section className="toolbarBand">
               <form className="settingsForm" onSubmit={saveSettings}>
-            <label>
-              <span>全局频率</span>
-              <input
-                name="global_interval_seconds"
-                type="number"
-                min="5"
-                max="3600"
-                value={settings.global_interval_seconds}
-                onChange={(event) => updateSetting('global_interval_seconds', event.target.value)}
-              />
-            </label>
-            <label>
-              <span>并发</span>
-              <input
-                name="max_concurrency"
-                type="number"
-                min="1"
-                max="20"
-                value={settings.max_concurrency}
-                onChange={(event) => updateSetting('max_concurrency', event.target.value)}
-              />
-            </label>
-            <label>
-              <span>抖动秒</span>
-              <input
-                name="jitter_seconds"
-                type="number"
-                min="0"
-                max="300"
-                value={settings.jitter_seconds}
-                onChange={(event) => updateSetting('jitter_seconds', event.target.value)}
-              />
-            </label>
-            <button className="primaryButton" type="submit" disabled={savingSettings}>
-              <Save size={17} /> 保存
-            </button>
+                <label>
+                  <span>全局频率</span>
+                  <input
+                    name="global_interval_seconds"
+                    type="number"
+                    min="5"
+                    max="3600"
+                    value={settings.global_interval_seconds}
+                    onChange={(event) => updateSetting('global_interval_seconds', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>并发</span>
+                  <input
+                    name="max_concurrency"
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={settings.max_concurrency}
+                    onChange={(event) => updateSetting('max_concurrency', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>抖动秒</span>
+                  <input
+                    name="jitter_seconds"
+                    type="number"
+                    min="0"
+                    max="300"
+                    value={settings.jitter_seconds}
+                    onChange={(event) => updateSetting('jitter_seconds', event.target.value)}
+                  />
+                </label>
+                <button className="primaryButton" type="submit" disabled={savingSettings}>
+                  <Save size={17} /> 保存
+                </button>
               </form>
             </section>
 
             <section id="accounts" className="section">
-          <div className="sectionHeader">
-            <h2>账号规则</h2>
-            <span>{loading ? '加载中' : `${accounts.length} 个账号`}</span>
-          </div>
-          <form className="addAccount" onSubmit={addAccount}>
-            <input
-              placeholder="@username 或 x.com/username"
-              value={newAccount.username_or_url}
-              onChange={(event) => setNewAccount({ ...newAccount, username_or_url: event.target.value })}
-            />
-            <input
-              placeholder="显示名"
-              value={newAccount.display_name}
-              onChange={(event) => setNewAccount({ ...newAccount, display_name: event.target.value })}
-            />
-            <input
-              placeholder="写作名"
-              value={newAccount.write_name}
-              onChange={(event) => setNewAccount({ ...newAccount, write_name: event.target.value })}
-            />
-            <input
-              placeholder="频率秒"
-              type="number"
-              min="5"
-              max="3600"
-              value={newAccount.interval_seconds}
-              onChange={(event) => setNewAccount({ ...newAccount, interval_seconds: event.target.value })}
-            />
-            <label className="inlineToggle">
-              <input
-                type="checkbox"
-                checked={newAccount.is_ai_source}
-                onChange={(event) => setNewAccount({ ...newAccount, is_ai_source: event.target.checked })}
-              />
-              <span>AI信源</span>
-            </label>
-            <button className="primaryButton" type="submit">
-              <Plus size={17} /> 添加
-            </button>
-          </form>
+              <div className="sectionHeader">
+                <h2>X 规则</h2>
+                <span>{loading ? '加载中' : `${accounts.length} 个 X 账号`}</span>
+              </div>
+              <form className="addAccount" onSubmit={addAccount}>
+                <input
+                  placeholder="@username 或 x.com/username"
+                  value={newAccount.username_or_url}
+                  onChange={(event) => setNewAccount({ ...newAccount, username_or_url: event.target.value })}
+                />
+                <input
+                  placeholder="显示名"
+                  value={newAccount.display_name}
+                  onChange={(event) => setNewAccount({ ...newAccount, display_name: event.target.value })}
+                />
+                <input
+                  placeholder="写作名"
+                  value={newAccount.write_name}
+                  onChange={(event) => setNewAccount({ ...newAccount, write_name: event.target.value })}
+                />
+                <input
+                  placeholder="频率秒"
+                  type="number"
+                  min="5"
+                  max="3600"
+                  value={newAccount.interval_seconds}
+                  onChange={(event) => setNewAccount({ ...newAccount, interval_seconds: event.target.value })}
+                />
+                <label className="inlineToggle">
+                  <input
+                    type="checkbox"
+                    checked={newAccount.is_ai_source}
+                    onChange={(event) => setNewAccount({ ...newAccount, is_ai_source: event.target.checked })}
+                  />
+                  <span>AI信源</span>
+                </label>
+                <button className="primaryButton" type="submit">
+                  <Plus size={17} /> 添加
+                </button>
+              </form>
 
-          <div className="accountList">
-            {!loading && accounts.length === 0 && <div className="emptyState">暂无账号，先添加一个 X 账号。</div>}
-            {accounts.map((account) => (
-              <AccountRow
-                key={account.id}
-                account={account}
-                settings={settings}
-                onPatch={patchAccount}
-                onDelete={deleteAccount}
-              />
-            ))}
-          </div>
+              <div className="accountList">
+                {!loading && accounts.length === 0 && <div className="emptyState">暂无 X 账号，先添加一个账号。</div>}
+                {accounts.map((account) => (
+                  <AccountRow
+                    key={account.id}
+                    account={account}
+                    settings={settings}
+                    onPatch={patchAccount}
+                    onDelete={deleteAccount}
+                  />
+                ))}
+              </div>
             </section>
 
           </>
@@ -1920,9 +1961,9 @@ function WorkflowPanel() {
       <div className="workflowHero">
         <div className="workflowHeroText">
           <span className="workflowEyebrow">OdAIly workflow atlas</span>
-          <h2>一条信息从来源到发布，会经过哪些闸门？</h2>
+          <h2>一条信息从来源到发布，再到发布后复核，会经过哪些闸门？</h2>
           <p>
-            这里把当前自动化主链路拆成可读的节点：谁负责收集、哪里分流、哪里用模型判断、哪里写作定稿，以及什么时候只提醒不发布。
+            这里把当前自动化主链路拆成可读的节点：谁负责收集、怎么按管理标签分流、搜索者如何查重、哪里用模型判断和写作定稿，以及发布后怎样进入审核者异步质检。
           </p>
         </div>
         <div className="workflowHeroStats">

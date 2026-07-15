@@ -208,6 +208,13 @@ h2 {
   margin-top: 18px;
 }
 
+.sourceManagementTabsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .nonMainstreamLayout,
 .jin10Layout {
   display: grid;
@@ -1884,6 +1891,10 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .sourceManagementTabsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .workflowSideNoteGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1934,6 +1945,7 @@ textarea:focus {
   .jin10SettingsForm,
   .accountRow,
   .sourceRow,
+  .sourceManagementTabsGrid,
   .promptLayout,
   .competitorLayout,
   .workflowCardHeader,
