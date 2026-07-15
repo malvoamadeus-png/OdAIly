@@ -300,6 +300,12 @@ SEARCH_WINDOW_HOURS=6
 SEARCH_DUPLICATE_THRESHOLD=0.88
 SEARCH_AI_REVIEW_MODEL=gpt-5.4-mini
 SEARCH_AI_REVIEW_REASONING_EFFORT=low
+SEARCH_AI_REVIEW_OPENAI_API_KEY=
+SEARCH_AI_REVIEW_OPENAI_BASE_URL=
+SEARCH_AI_REVIEW_OPENAI_API_STYLE=
+SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=false
+SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE=json_schema
+SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=false
 SEARCH_AI_REVIEW_THRESHOLD=0.65
 COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
@@ -339,10 +345,10 @@ competitor event-review endpoint needs a different style from the rest of the
 X-processing workers. `X_PROCESS_JUDGE_REASONING_EFFORT` controls the
 reasoning effort used by 判断者 and defaults to `low`;
 `X_PROCESS_WRITER_REASONING_EFFORT` controls 编写者1 and defaults to `medium`.
-`X_PROCESS_JUDGE_OPENAI_*` can override only 判断者, leaving writer, publisher,
-and search-review calls on the original GPT endpoint. For DeepSeek non-thinking
-tests, use `chat_completions`, `json_object`, append the JSON Schema to the
-prompt, and omit reasoning effort.
+`X_PROCESS_JUDGE_OPENAI_*` can override only 判断者. `SEARCH_AI_REVIEW_OPENAI_*`
+can override only 搜索者 AI 复核, including the browser plugin's `AI查重`.
+For DeepSeek non-thinking tests, use `chat_completions`, `json_object`, append
+the JSON Schema to the prompt, and omit reasoning effort.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for

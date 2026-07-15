@@ -308,19 +308,23 @@ class EditorPluginNewsGenService:
             repository=self.auth_repository,
         )
 
-        self.ai_client = self._build_ai_client()
+        self.ai_client = self._build_search_ai_client()
         self.embedding_service = self._build_embedding_service()
 
-    def _build_ai_client(self) -> TextGenerationClient:
-        if not self.x_settings.openai_api_key:
-            raise RuntimeError("Missing OPENAI_API_KEY")
+    def _build_search_ai_client(self) -> TextGenerationClient:
+        api_key = self.x_settings.search_ai_review_openai_api_key or self.x_settings.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing search AI review OpenAI API key")
         return OpenAIResponsesClient(
-            api_key=self.x_settings.openai_api_key,
-            base_url=str(self.x_settings.openai_base_url),
-            api_style=self.x_settings.openai_api_style,
+            api_key=api_key,
+            base_url=str(self.x_settings.search_ai_review_openai_base_url or self.x_settings.openai_base_url),
+            api_style=self.x_settings.search_ai_review_openai_api_style or self.x_settings.openai_api_style,
             timeout_seconds=self.api_settings.generation_timeout_seconds,
             max_attempts=self.x_settings.retry.max_attempts,
             backoff_seconds=self.x_settings.retry.backoff_seconds,
+            omit_reasoning_effort=self.x_settings.search_ai_review_omit_reasoning_effort,
+            chat_response_format_mode=self.x_settings.search_ai_review_chat_response_format_mode,
+            append_json_schema_to_prompt=self.x_settings.search_ai_review_append_json_schema_to_prompt,
         )
 
     def _build_embedding_service(self) -> CachedEmbeddingService:

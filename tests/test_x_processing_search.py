@@ -38,6 +38,7 @@ def build_settings(*, search_ai_review_threshold: float = 0.65) -> XProcessingSe
             "openai_api_key": "test-key",
             "dashscope_api_key": "test-key",
             "push_endpoint": "http://127.0.0.1:9/push",
+            "search_window_hours": 72,
             "search_duplicate_threshold": 0.88,
             "search_ai_review_threshold": search_ai_review_threshold,
         }

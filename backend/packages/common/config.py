@@ -339,6 +339,12 @@ class XProcessingSettings(BaseModel):
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     search_ai_review_model: str = "gpt-5.4-mini"
     search_ai_review_reasoning_effort: str = "low"
+    search_ai_review_openai_api_key: str | None = None
+    search_ai_review_openai_base_url: HttpUrl | None = None
+    search_ai_review_openai_api_style: Literal["responses", "chat_completions"] | None = None
+    search_ai_review_omit_reasoning_effort: bool = False
+    search_ai_review_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
+    search_ai_review_append_json_schema_to_prompt: bool = False
     search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
@@ -367,6 +373,8 @@ def load_x_processing_settings() -> XProcessingSettings:
     load_dotenv()
     judge_base_url = os.getenv("X_PROCESS_JUDGE_OPENAI_BASE_URL") or None
     judge_model = os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini"
+    search_review_base_url = os.getenv("SEARCH_AI_REVIEW_OPENAI_BASE_URL") or None
+    search_review_model = os.getenv("SEARCH_AI_REVIEW_MODEL") or "gpt-5.4-mini"
     payload = {
         "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
         "openai_base_url": (
@@ -401,8 +409,27 @@ def load_x_processing_settings() -> XProcessingSettings:
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "search_window_hours": int(os.getenv("SEARCH_WINDOW_HOURS") or 24),
         "search_duplicate_threshold": float(os.getenv("SEARCH_DUPLICATE_THRESHOLD") or 0.88),
-        "search_ai_review_model": os.getenv("SEARCH_AI_REVIEW_MODEL") or "gpt-5.4-mini",
+        "search_ai_review_model": search_review_model,
         "search_ai_review_reasoning_effort": os.getenv("SEARCH_AI_REVIEW_REASONING_EFFORT") or "low",
+        "search_ai_review_openai_api_key": (
+            os.getenv("SEARCH_AI_REVIEW_OPENAI_API_KEY")
+            or (
+                os.getenv("DEEPSEEK_API_KEY")
+                or os.getenv("DEEPSEEK_API")
+                or os.getenv("DeepSeek_API")
+                if search_review_base_url or "deepseek" in search_review_model.lower()
+                else None
+            )
+        ),
+        "search_ai_review_openai_base_url": search_review_base_url,
+        "search_ai_review_openai_api_style": os.getenv("SEARCH_AI_REVIEW_OPENAI_API_STYLE") or None,
+        "search_ai_review_omit_reasoning_effort": _env_bool("SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT", False),
+        "search_ai_review_chat_response_format_mode": (
+            os.getenv("SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE") or "json_schema"
+        ),
+        "search_ai_review_append_json_schema_to_prompt": _env_bool(
+            "SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT", False
+        ),
         "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.65),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),

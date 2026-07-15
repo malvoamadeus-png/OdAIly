@@ -310,7 +310,7 @@ class XProcessingWorker:
         self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
         self.search_ai_client = (
             search_ai_client
-            or ((ai_client or self._build_ai_client()) if stage == "search" and settings.openai_api_key else ai_client)
+            or (self._build_search_ai_client() if stage == "search" else ai_client)
         )
         self.push_client = push_client or PushClient(
             endpoint=str(settings.push_endpoint),
@@ -366,6 +366,22 @@ class XProcessingWorker:
             omit_reasoning_effort=self.settings.judge_omit_reasoning_effort,
             chat_response_format_mode=self.settings.judge_chat_response_format_mode,
             append_json_schema_to_prompt=self.settings.judge_append_json_schema_to_prompt,
+        )
+
+    def _build_search_ai_client(self) -> TextGenerationClient:
+        api_key = self.settings.search_ai_review_openai_api_key or self.settings.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing search AI review OpenAI API key")
+        return OpenAIResponsesClient(
+            api_key=api_key,
+            base_url=str(self.settings.search_ai_review_openai_base_url or self.settings.openai_base_url),
+            api_style=self.settings.search_ai_review_openai_api_style or self.settings.openai_api_style,
+            timeout_seconds=self.settings.request_timeout_seconds,
+            max_attempts=self.settings.retry.max_attempts,
+            backoff_seconds=self.settings.retry.backoff_seconds,
+            omit_reasoning_effort=self.settings.search_ai_review_omit_reasoning_effort,
+            chat_response_format_mode=self.settings.search_ai_review_chat_response_format_mode,
+            append_json_schema_to_prompt=self.settings.search_ai_review_append_json_schema_to_prompt,
         )
 
     def _get_ai_client(self) -> TextGenerationClient:
