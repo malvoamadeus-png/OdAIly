@@ -15,7 +15,7 @@ from .models import AI_SOURCE, PipelineRecord, TaskRecord
 PublisherProfileKey = Literal["regular", "ai_source"]
 PublisherRuleKind = Literal["allow", "deny"]
 PublisherDecision = Literal["pass", "reject"]
-CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 3
+CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 4
 
 
 class PublisherDecisionResult(BaseModel):
