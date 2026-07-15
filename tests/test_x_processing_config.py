@@ -71,11 +71,11 @@ def test_litellm_alias_defaults_route_text_llm_calls(monkeypatch) -> None:
     assert x_settings.search_ai_review_openai_api_key is None
     assert x_settings.writer_model == "odaily-gpt-writer"
     assert x_settings.publisher_model == "odaily-gpt-writer"
-    assert writer3_settings.analysis_model == "odaily-gpt-fast"
+    assert writer3_settings.analysis_model == "odaily-deepseek-fast"
     assert writer3_settings.writer_model == "odaily-gpt-writer"
     assert auditor_settings.model == "odaily-deepseek-review"
     assert auditor_settings.openai_api_key == "litellm-key"
-    assert QUICK_GENERATE_WRITER_MODEL == "odaily-gpt-fast"
+    assert QUICK_GENERATE_WRITER_MODEL == "odaily-deepseek-fast"
 
 
 def test_ai_source_uses_dedicated_writer_prompt_seed() -> None:

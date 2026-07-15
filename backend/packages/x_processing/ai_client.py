@@ -65,12 +65,19 @@ class OpenAIResponsesClient:
             extractor = extract_response_text
         elif self.api_style == "chat_completions":
             url = self._chat_completions_url()
-            chat_prompt = self._chat_prompt(prompt=prompt, text_format=text_format)
+            use_deepseek_chat_compat = uses_deepseek_chat_compat(model)
+            chat_prompt = self._chat_prompt(
+                prompt=prompt,
+                text_format=text_format,
+                force_append_json_schema=use_deepseek_chat_compat,
+            )
             request_payload = self._chat_completions_payload(
                 model=model,
                 prompt=chat_prompt,
                 text_format=text_format,
                 reasoning_effort=reasoning_effort,
+                force_json_object=use_deepseek_chat_compat,
+                force_omit_reasoning_effort=use_deepseek_chat_compat,
             )
             extractor = extract_chat_completion_text
         else:
@@ -147,8 +154,14 @@ class OpenAIResponsesClient:
             payload["reasoning"] = {"effort": reasoning_effort}
         return payload
 
-    def _chat_prompt(self, *, prompt: str, text_format: dict[str, Any] | None) -> str:
-        if not self.append_json_schema_to_prompt or text_format is None:
+    def _chat_prompt(
+        self,
+        *,
+        prompt: str,
+        text_format: dict[str, Any] | None,
+        force_append_json_schema: bool = False,
+    ) -> str:
+        if not (self.append_json_schema_to_prompt or force_append_json_schema) or text_format is None:
             return prompt
         schema = text_format.get("schema")
         if not isinstance(schema, dict):
@@ -167,14 +180,17 @@ class OpenAIResponsesClient:
         prompt: str,
         text_format: dict[str, Any] | None,
         reasoning_effort: str | None,
+        force_json_object: bool = False,
+        force_omit_reasoning_effort: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
         if text_format is not None:
-            payload["response_format"] = to_chat_response_format(text_format, mode=self.chat_response_format_mode)
-        if reasoning_effort and not self.omit_reasoning_effort:
+            mode = "json_object" if force_json_object else self.chat_response_format_mode
+            payload["response_format"] = to_chat_response_format(text_format, mode=mode)
+        if reasoning_effort and not (self.omit_reasoning_effort or force_omit_reasoning_effort):
             payload["reasoning_effort"] = reasoning_effort
         return payload
 
@@ -256,6 +272,11 @@ def parse_openai_response_payload(response: requests.Response) -> dict[str, Any]
     if "text/event-stream" in content_type:
         return parse_sse_payload(response.text)
     return response.json()
+
+
+def uses_deepseek_chat_compat(model: str) -> bool:
+    normalized = model.strip().lower()
+    return normalized.startswith("deepseek") or normalized.startswith("odaily-deepseek")
 
 
 def parse_sse_payload(raw_text: str) -> dict[str, Any]:

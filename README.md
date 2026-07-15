@@ -316,7 +316,7 @@ SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 SEARCH_AI_REVIEW_THRESHOLD=0.65
 COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
-COMPETITOR_EVENT_REVIEW_MODEL=odaily-gpt-fast
+COMPETITOR_EVENT_REVIEW_MODEL=odaily-deepseek-fast
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_MESSAGE_THREAD_ID=
@@ -336,7 +336,7 @@ WHALE_HYPERLIQUID_MAX_ATTEMPTS=3
 WHALE_HYPERLIQUID_BACKOFF_SECONDS=1
 WRITER3_START_AFTER=
 WRITER3_HISTORY_DAYS=90
-WRITER3_ANALYSIS_MODEL=odaily-gpt-fast
+WRITER3_ANALYSIS_MODEL=odaily-deepseek-fast
 WRITER3_WRITER_MODEL=odaily-gpt-writer
 WRITER3_WRITER_REASONING_EFFORT=medium
 WRITER3_CANDIDATE_LIMIT=20
@@ -347,11 +347,12 @@ WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 
 Production text LLM calls go through the local LiteLLM proxy at
 `ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
-proxy and use business model aliases: `odaily-gpt-writer`, `odaily-gpt-fast`,
-and `odaily-deepseek-review`. DeepSeek is reserved for 判断者, 搜索者 AI 复核
-(including the browser plugin's `AI查重`), and 审核者. For those DeepSeek
-JSON tasks, use `chat_completions`, `json_object`, append the JSON Schema to
-the prompt, and omit reasoning effort. DashScope embedding remains configured
+proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
+and `odaily-deepseek-review`. The former fast GPT path has been removed; fast
+classification, review, analysis, and browser-plugin quick generation now use
+DeepSeek through LiteLLM. For DeepSeek JSON tasks, use `chat_completions`,
+`json_object`, append the JSON Schema to the prompt, and omit reasoning effort.
+DashScope embedding remains configured
 separately and does not go through LiteLLM.
 
 The Vite console also includes Prompt editing and publishing. Publishing a

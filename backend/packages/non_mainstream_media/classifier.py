@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from packages.common.config import DEFAULT_GPT_FAST_MODEL, XProcessingSettings
+from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 
 from .models import MixedClassificationResult
@@ -34,7 +34,7 @@ MIXED_CLASSIFICATION_JSON_SCHEMA = {
 @dataclass(slots=True)
 class MixedSourceClassifier:
     client: TextGenerationClient
-    model: str = DEFAULT_GPT_FAST_MODEL
+    model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     reasoning_effort: str | None = "low"
 
     def classify_fulltext(
@@ -133,4 +133,4 @@ def build_mixed_source_classifier(settings: XProcessingSettings) -> MixedSourceC
         max_attempts=settings.retry.max_attempts,
         backoff_seconds=settings.retry.backoff_seconds,
     )
-    return MixedSourceClassifier(client=client, model=DEFAULT_GPT_FAST_MODEL, reasoning_effort="low")
+    return MixedSourceClassifier(client=client, model=DEFAULT_DEEPSEEK_FAST_MODEL, reasoning_effort="low")

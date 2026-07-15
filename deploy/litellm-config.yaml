@@ -5,11 +5,10 @@ model_list:
       api_base: os.environ/OPENAI_RELAY_BASE_URL
       api_key: os.environ/OPENAI_RELAY_API_KEY
 
-  - model_name: odaily-gpt-fast
+  - model_name: odaily-deepseek-fast
     litellm_params:
-      model: openai/gpt-5.4-mini
-      api_base: os.environ/OPENAI_RELAY_BASE_URL
-      api_key: os.environ/OPENAI_RELAY_API_KEY
+      model: deepseek/deepseek-v4-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
 
   - model_name: odaily-deepseek-review
     litellm_params:

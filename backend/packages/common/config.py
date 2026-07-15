@@ -13,7 +13,7 @@ from .paths import get_paths
 
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_GPT_FAST_MODEL = "odaily-gpt-fast"
+DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
 
@@ -404,7 +404,7 @@ def _llm_fast_model(*specific_names: str) -> str:
         value = os.getenv(name)
         if value:
             return value
-    return DEFAULT_GPT_FAST_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.4-mini"
+    return DEFAULT_DEEPSEEK_FAST_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "deepseek-v4-flash"
 
 
 def _llm_writer_model(*specific_names: str) -> str:
@@ -420,7 +420,7 @@ def _llm_deepseek_review_model(*specific_names: str) -> str:
         value = os.getenv(name)
         if value:
             return value
-    return DEFAULT_DEEPSEEK_REVIEW_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.4-mini"
+    return DEFAULT_DEEPSEEK_REVIEW_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "deepseek-v4-flash"
 
 
 def load_x_processing_settings() -> XProcessingSettings:
@@ -507,7 +507,7 @@ class ExternalMediaAlertSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    domain_judge_model: str = DEFAULT_GPT_FAST_MODEL
+    domain_judge_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -590,7 +590,7 @@ class CompetitorMonitorSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    event_review_model: str = DEFAULT_GPT_FAST_MODEL
+    event_review_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     dashscope_api_key: str | None = None
     event_embedding_model: str = "text-embedding-v4"
     event_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -764,7 +764,7 @@ class Writer3Settings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    analysis_model: str = DEFAULT_GPT_FAST_MODEL
+    analysis_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     writer_model: str = DEFAULT_GPT_WRITER_MODEL
     writer_reasoning_effort: str = "medium"
     history_days: int = Field(default=90, ge=1, le=365)

@@ -404,7 +404,7 @@ export const workflowGroups: WorkflowGroup[] = [
         kind: 'split',
         description: '在入库前判断文章更适合 Crypto、AI，或应直接丢弃。',
         usesAi: true,
-        model: 'odaily-gpt-fast',
+        model: 'odaily-deepseek-fast',
         reasoningEffort: '轻量分流',
         output: "crypto -> non_mainstream_media；ai -> ai_source；discard -> mark seen。",
         compactLabel: 'split',

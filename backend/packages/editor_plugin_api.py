@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
-from packages.common.config import DEFAULT_GPT_FAST_MODEL, XProcessingSettings, load_x_processing_settings
+from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
 from packages.common.console_auth import PostgresConsoleAuthRepository
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
@@ -50,7 +50,7 @@ from packages.x_processing.searcher import (
 from packages.x_processing.worker import build_writer_prompt
 
 
-QUICK_GENERATE_WRITER_MODEL = DEFAULT_GPT_FAST_MODEL
+QUICK_GENERATE_WRITER_MODEL = DEFAULT_DEEPSEEK_FAST_MODEL
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
 GENERATE_WRITER_REASONING_EFFORT = "low"
 PluginNewsType = Literal["regular", "funding", "onchain"]

@@ -1,6 +1,6 @@
 # API 替换效果测试
 
-> 本文是 2026-07-14 的历史测试记录，保留当时直连 DeepSeek / GPT relay 的测试参数。当前生产文本 LLM 已统一经本机 LiteLLM proxy 调用，生产配置以 `README.md`、`.env.example` 和各模块文档中的 `odaily-gpt-writer`、`odaily-gpt-fast`、`odaily-deepseek-review` 业务别名为准。
+> 本文是 2026-07-14 的历史测试记录，保留当时直连 DeepSeek / GPT relay 的测试参数。当前生产文本 LLM 已统一经本机 LiteLLM proxy 调用，生产配置以 `README.md`、`.env.example` 和各模块文档中的 `odaily-gpt-writer`、`odaily-deepseek-fast`、`odaily-deepseek-review` 业务别名为准。
 
 ## 背景
 
@@ -26,7 +26,7 @@
 
 使用 `X_JUDGE_PROMPT_TEMPLATE` 和判断者 JSON 输出结构，5 个自选案例覆盖 `regular`、`onchain`、`funding`、`discard`。
 
-| 案例 | 原方案 `gpt-5.4-mini + high` | DeepSeek 非思考 | DeepSeek 快多少 | 判断一致性 |
+| 案例 | 历史 GPT 快速方案 | DeepSeek 非思考 | DeepSeek 快多少 | 判断一致性 |
 | --- | ---: | ---: | ---: | --- |
 | `regular_exchange_listing` | 4.949s | 0.758s | 6.53x | 一致 |
 | `onchain_whale_transfer` | 8.253s | 0.867s | 9.52x | 一致 |
@@ -110,7 +110,7 @@ SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 如果判断者或审核者效果不好，保留代码不动，只回滚服务器 `.env`：
 
 ```dotenv
-X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
+X_PROCESS_JUDGE_MODEL=odaily-deepseek-review
 X_PROCESS_JUDGE_REASONING_EFFORT=low
 X_PROCESS_JUDGE_OPENAI_BASE_URL=
 X_PROCESS_JUDGE_OPENAI_API_STYLE=
