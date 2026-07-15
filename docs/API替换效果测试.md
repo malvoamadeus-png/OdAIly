@@ -1,5 +1,7 @@
 # API 替换效果测试
 
+> 本文是 2026-07-14 的历史测试记录，保留当时直连 DeepSeek / GPT relay 的测试参数。当前生产文本 LLM 已统一经本机 LiteLLM proxy 调用，生产配置以 `README.md`、`.env.example` 和各模块文档中的 `odaily-gpt-writer`、`odaily-gpt-fast`、`odaily-deepseek-review` 业务别名为准。
+
 ## 背景
 
 2026-07-14 对判断者和审核者做一次 DeepSeek API 替换效果测试。目标是降低模型调用耗时，同时保留原 GPT API 代码和配置能力，便于效果不好时快速回滚。

@@ -276,39 +276,47 @@ Required runtime env:
 
 ```text
 OPENAI_API_KEY=
+ODAILY_LLM_BASE_URL=http://127.0.0.1:4000/v1
+ODAILY_LLM_API_KEY=
+ODAILY_LLM_API_STYLE=chat_completions
+LITELLM_MASTER_KEY=
+OPENAI_RELAY_BASE_URL=https://api.penguinsaichat.dpdns.org/v1
+OPENAI_RELAY_API_KEY=
 DASHSCOPE_API_KEY=
 BLOCKBEATS_API_KEY=
 X_CAPTURE_ATTEMPT_RETENTION_DAYS=3
 PROCESSING_FRESHNESS_WINDOW_SECONDS=1200
-X_PROCESS_OPENAI_BASE_URL=https://api.openai.com/v1
-X_PROCESS_OPENAI_API_STYLE=responses
+X_PROCESS_OPENAI_BASE_URL=http://127.0.0.1:4000/v1
+X_PROCESS_OPENAI_API_STYLE=chat_completions
 COMPETITOR_OPENAI_API_STYLE=
 DEEPSEEK_API_KEY=
-X_PROCESS_JUDGE_MODEL=gpt-5.4-mini
+X_PROCESS_JUDGE_MODEL=odaily-deepseek-review
 X_PROCESS_JUDGE_REASONING_EFFORT=low
 X_PROCESS_JUDGE_OPENAI_BASE_URL=
 X_PROCESS_JUDGE_OPENAI_API_STYLE=
-X_PROCESS_JUDGE_OMIT_REASONING_EFFORT=false
-X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE=json_schema
-X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT=false
-X_PROCESS_WRITER_MODEL=gpt-5.5
+X_PROCESS_JUDGE_OMIT_REASONING_EFFORT=true
+X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE=json_object
+X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT=true
+X_PROCESS_WRITER_MODEL=odaily-gpt-writer
 X_PROCESS_WRITER_REASONING_EFFORT=medium
+X_PROCESS_PUBLISHER_MODEL=odaily-gpt-writer
 X_PROCESS_PUSH_ENDPOINT=http://47.113.217.70:8501/push/data
 SEARCH_EMBEDDING_MODEL=text-embedding-v4
 SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 SEARCH_WINDOW_HOURS=6
 SEARCH_DUPLICATE_THRESHOLD=0.88
-SEARCH_AI_REVIEW_MODEL=gpt-5.4-mini
+SEARCH_AI_REVIEW_MODEL=odaily-deepseek-review
 SEARCH_AI_REVIEW_REASONING_EFFORT=low
 SEARCH_AI_REVIEW_OPENAI_API_KEY=
 SEARCH_AI_REVIEW_OPENAI_BASE_URL=
 SEARCH_AI_REVIEW_OPENAI_API_STYLE=
-SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=false
-SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE=json_schema
-SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=false
+SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=true
+SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE=json_object
+SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 SEARCH_AI_REVIEW_THRESHOLD=0.65
 COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
+COMPETITOR_EVENT_REVIEW_MODEL=odaily-gpt-fast
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_MESSAGE_THREAD_ID=
@@ -328,8 +336,8 @@ WHALE_HYPERLIQUID_MAX_ATTEMPTS=3
 WHALE_HYPERLIQUID_BACKOFF_SECONDS=1
 WRITER3_START_AFTER=
 WRITER3_HISTORY_DAYS=90
-WRITER3_ANALYSIS_MODEL=gpt-5.4-mini
-WRITER3_WRITER_MODEL=gpt-5.5
+WRITER3_ANALYSIS_MODEL=odaily-gpt-fast
+WRITER3_WRITER_MODEL=odaily-gpt-writer
 WRITER3_WRITER_REASONING_EFFORT=medium
 WRITER3_CANDIDATE_LIMIT=20
 WRITER3_CONTEXT_CANDIDATES=5
@@ -337,18 +345,14 @@ WRITER3_CURRENT_FRESHNESS_WINDOW_SECONDS=600
 WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 ```
 
-`X_PROCESS_OPENAI_BASE_URL` may point to an OpenAI-compatible relay, usually
-ending in `/v1`. Keep `X_PROCESS_OPENAI_API_STYLE=responses` when the relay
-supports `/v1/responses`; use `chat_completions` when it only supports
-`/v1/chat/completions`. Set `COMPETITOR_OPENAI_API_STYLE` only when the
-competitor event-review endpoint needs a different style from the rest of the
-X-processing workers. `X_PROCESS_JUDGE_REASONING_EFFORT` controls the
-reasoning effort used by 判断者 and defaults to `low`;
-`X_PROCESS_WRITER_REASONING_EFFORT` controls 编写者1 and defaults to `medium`.
-`X_PROCESS_JUDGE_OPENAI_*` can override only 判断者. `SEARCH_AI_REVIEW_OPENAI_*`
-can override only 搜索者 AI 复核, including the browser plugin's `AI查重`.
-For DeepSeek non-thinking tests, use `chat_completions`, `json_object`, append
-the JSON Schema to the prompt, and omit reasoning effort.
+Production text LLM calls go through the local LiteLLM proxy at
+`ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
+proxy and use business model aliases: `odaily-gpt-writer`, `odaily-gpt-fast`,
+and `odaily-deepseek-review`. DeepSeek is reserved for 判断者, 搜索者 AI 复核
+(including the browser plugin's `AI查重`), and 审核者. For those DeepSeek
+JSON tasks, use `chat_completions`, `json_object`, append the JSON Schema to
+the prompt, and omit reasoning effort. DashScope embedding remains configured
+separately and does not go through LiteLLM.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
 prompt version updates `prompt_templates.active_version_id`; workers listen for

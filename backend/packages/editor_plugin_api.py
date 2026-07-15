@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
-from packages.common.config import XProcessingSettings, load_x_processing_settings
+from packages.common.config import DEFAULT_GPT_FAST_MODEL, XProcessingSettings, load_x_processing_settings
 from packages.common.console_auth import PostgresConsoleAuthRepository
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
@@ -50,10 +50,9 @@ from packages.x_processing.searcher import (
 from packages.x_processing.worker import build_writer_prompt
 
 
-QUICK_GENERATE_WRITER_MODEL = "gpt-5.4-mini"
+QUICK_GENERATE_WRITER_MODEL = DEFAULT_GPT_FAST_MODEL
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
 GENERATE_WRITER_REASONING_EFFORT = "low"
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 PluginNewsType = Literal["regular", "funding", "onchain"]
 
 
@@ -181,15 +180,6 @@ def parse_bearer_token(value: str | None) -> str:
     if not token:
         raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
     return token
-
-
-def looks_like_openai_model(model: str) -> bool:
-    normalized = model.strip().lower()
-    return normalized.startswith(("gpt-", "o"))
-
-
-def is_deepseek_url(value: str) -> bool:
-    return "deepseek" in value.lower()
 
 
 def hash_plugin_token(token: str) -> str:
@@ -341,20 +331,10 @@ class EditorPluginNewsGenService:
         api_key = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_KEY") or self.x_settings.openai_api_key
         if not api_key:
             raise RuntimeError("Missing writer OpenAI API key")
-        base_url = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL") or str(self.x_settings.openai_base_url)
-        api_style = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE") or self.x_settings.openai_api_style
-        if looks_like_openai_model(model) and not os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE"):
-            api_style = "responses"
-        if looks_like_openai_model(model) and is_deepseek_url(base_url) and not os.getenv(
-            "EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL"
-        ):
-            base_url = DEFAULT_OPENAI_BASE_URL
-        if api_style not in {"responses", "chat_completions"}:
-            raise RuntimeError("Invalid editor plugin writer OpenAI API style")
         return OpenAIResponsesClient(
             api_key=api_key,
-            base_url=base_url,
-            api_style=api_style,
+            base_url=str(os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL") or self.x_settings.openai_base_url),
+            api_style=os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE") or self.x_settings.openai_api_style,
             timeout_seconds=self.api_settings.generation_timeout_seconds,
             max_attempts=self.x_settings.retry.max_attempts,
             backoff_seconds=self.x_settings.retry.backoff_seconds,
@@ -598,7 +578,7 @@ class EditorPluginNewsGenService:
             actor,
             request,
             action="quick_generate",
-            writer_model=QUICK_GENERATE_WRITER_MODEL,
+            writer_model=os.getenv("EDITOR_PLUGIN_QUICK_GENERATE_WRITER_MODEL") or QUICK_GENERATE_WRITER_MODEL,
             writer_reasoning_effort=QUICK_GENERATE_WRITER_REASONING_EFFORT,
         )
 

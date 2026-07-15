@@ -1,0 +1,16 @@
+[Unit]
+Description=OdAIly LiteLLM proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/litellm --config /opt/OdAIly/deploy/litellm-config.yaml --host 127.0.0.1 --port 4000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

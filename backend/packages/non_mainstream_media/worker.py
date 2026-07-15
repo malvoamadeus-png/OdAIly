@@ -270,7 +270,7 @@ class NonMainstreamMediaWorker:
                         new_count += 1
                     continue
                 classified_target = classification.target
-                article.metadata["classification_model"] = "gpt-5.4-mini"
+                article.metadata["classification_model"] = self.mixed_classifier.model
                 article.metadata["classification_input_mode"] = "fulltext"
                 if classification.reason:
                     article.metadata["classification_reason"] = classification.reason
@@ -348,7 +348,7 @@ class NonMainstreamMediaWorker:
                     continue
                 classified_target = classification.target
                 classification_metadata = {
-                    "classification_model": "gpt-5.4-mini",
+                    "classification_model": self.mixed_classifier.model,
                     "classification_input_mode": "headline_excerpt",
                 }
                 if classification.reason:

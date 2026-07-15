@@ -1,0 +1,25 @@
+model_list:
+  - model_name: odaily-gpt-writer
+    litellm_params:
+      model: openai/gpt-5.5
+      api_base: os.environ/OPENAI_RELAY_BASE_URL
+      api_key: os.environ/OPENAI_RELAY_API_KEY
+
+  - model_name: odaily-gpt-fast
+    litellm_params:
+      model: openai/gpt-5.4-mini
+      api_base: os.environ/OPENAI_RELAY_BASE_URL
+      api_key: os.environ/OPENAI_RELAY_API_KEY
+
+  - model_name: odaily-deepseek-review
+    litellm_params:
+      model: deepseek/deepseek-v4-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  num_retries: 2
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -12,6 +12,12 @@ from .freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
 from .paths import get_paths
 
 
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_GPT_FAST_MODEL = "odaily-gpt-fast"
+DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
+DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
+
+
 DEFAULT_WATCHLIST = [
     "NVDA",
     "GOOGL",
@@ -326,18 +332,18 @@ class XProcessingSettings(BaseModel):
     judge_omit_reasoning_effort: bool = False
     judge_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     judge_append_json_schema_to_prompt: bool = False
-    judge_model: str = "gpt-5.4-mini"
+    judge_model: str = DEFAULT_DEEPSEEK_REVIEW_MODEL
     judge_reasoning_effort: str = "low"
-    writer_model: str = "gpt-5.5"
+    writer_model: str = DEFAULT_GPT_WRITER_MODEL
     writer_reasoning_effort: str = "low"
-    publisher_model: str = "gpt-5.5"
+    publisher_model: str = DEFAULT_GPT_WRITER_MODEL
     publisher_reasoning_effort: str = "low"
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     search_window_hours: int = Field(default=24, ge=1, le=168)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
-    search_ai_review_model: str = "gpt-5.4-mini"
+    search_ai_review_model: str = DEFAULT_DEEPSEEK_REVIEW_MODEL
     search_ai_review_reasoning_effort: str = "low"
     search_ai_review_openai_api_key: str | None = None
     search_ai_review_openai_base_url: HttpUrl | None = None
@@ -369,27 +375,71 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _llm_api_key() -> str | None:
+    return os.getenv("ODAILY_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or None
+
+
+def _llm_base_url(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return os.getenv("ODAILY_LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL
+
+
+def _llm_api_style(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return (
+        os.getenv("ODAILY_LLM_API_STYLE")
+        or os.getenv("X_PROCESS_OPENAI_API_STYLE")
+        or ("chat_completions" if os.getenv("ODAILY_LLM_BASE_URL") else "responses")
+    )
+
+
+def _llm_fast_model(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return DEFAULT_GPT_FAST_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.4-mini"
+
+
+def _llm_writer_model(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.5"
+
+
+def _llm_deepseek_review_model(*specific_names: str) -> str:
+    for name in specific_names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return DEFAULT_DEEPSEEK_REVIEW_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.4-mini"
+
+
 def load_x_processing_settings() -> XProcessingSettings:
     load_dotenv()
     judge_base_url = os.getenv("X_PROCESS_JUDGE_OPENAI_BASE_URL") or None
-    judge_model = os.getenv("X_PROCESS_JUDGE_MODEL") or "gpt-5.4-mini"
+    judge_model = _llm_deepseek_review_model("X_PROCESS_JUDGE_MODEL")
     search_review_base_url = os.getenv("SEARCH_AI_REVIEW_OPENAI_BASE_URL") or None
-    search_review_model = os.getenv("SEARCH_AI_REVIEW_MODEL") or "gpt-5.4-mini"
+    search_review_model = _llm_deepseek_review_model("SEARCH_AI_REVIEW_MODEL")
     payload = {
-        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
-        "openai_base_url": (
-            os.getenv("X_PROCESS_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ),
-        "openai_api_style": os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "openai_api_key": _llm_api_key(),
+        "openai_base_url": _llm_base_url("X_PROCESS_OPENAI_BASE_URL"),
+        "openai_api_style": _llm_api_style(),
         "judge_openai_api_key": (
             os.getenv("X_PROCESS_JUDGE_OPENAI_API_KEY")
             or (
                 os.getenv("DEEPSEEK_API_KEY")
                 or os.getenv("DEEPSEEK_API")
                 or os.getenv("DeepSeek_API")
-                if judge_base_url or "deepseek" in judge_model.lower()
+                if judge_base_url and "deepseek" in judge_base_url.lower()
                 else None
             )
         ),
@@ -400,9 +450,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         "judge_append_json_schema_to_prompt": _env_bool("X_PROCESS_JUDGE_APPEND_JSON_SCHEMA_TO_PROMPT", False),
         "judge_model": judge_model,
         "judge_reasoning_effort": os.getenv("X_PROCESS_JUDGE_REASONING_EFFORT") or "low",
-        "writer_model": os.getenv("X_PROCESS_WRITER_MODEL") or "gpt-5.5",
+        "writer_model": _llm_writer_model("X_PROCESS_WRITER_MODEL"),
         "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "low",
-        "publisher_model": os.getenv("X_PROCESS_PUBLISHER_MODEL") or "gpt-5.5",
+        "publisher_model": _llm_writer_model("X_PROCESS_PUBLISHER_MODEL"),
         "publisher_reasoning_effort": os.getenv("X_PROCESS_PUBLISHER_REASONING_EFFORT") or "low",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
@@ -417,7 +467,7 @@ def load_x_processing_settings() -> XProcessingSettings:
                 os.getenv("DEEPSEEK_API_KEY")
                 or os.getenv("DEEPSEEK_API")
                 or os.getenv("DeepSeek_API")
-                if search_review_base_url or "deepseek" in search_review_model.lower()
+                if search_review_base_url and "deepseek" in search_review_base_url.lower()
                 else None
             )
         ),
@@ -457,7 +507,7 @@ class ExternalMediaAlertSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    domain_judge_model: str = "gpt-5.4-mini"
+    domain_judge_model: str = DEFAULT_GPT_FAST_MODEL
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -476,22 +526,10 @@ class ExternalMediaAlertSettings(BaseModel):
 def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
     load_dotenv()
     payload = {
-        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
-        "openai_base_url": (
-            os.getenv("EXTERNAL_MEDIA_ALERT_OPENAI_BASE_URL")
-            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ),
-        "openai_api_style": (
-            os.getenv("EXTERNAL_MEDIA_ALERT_OPENAI_API_STYLE")
-            or os.getenv("X_PROCESS_OPENAI_API_STYLE")
-            or "responses"
-        ),
-        "domain_judge_model": (
-            os.getenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL")
-            or "gpt-5.4-mini"
-        ),
+        "openai_api_key": _llm_api_key(),
+        "openai_base_url": _llm_base_url("EXTERNAL_MEDIA_ALERT_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL"),
+        "openai_api_style": _llm_api_style("EXTERNAL_MEDIA_ALERT_OPENAI_API_STYLE"),
+        "domain_judge_model": _llm_fast_model("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL"),
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "search_embedding_base_url": (
@@ -552,7 +590,7 @@ class CompetitorMonitorSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    event_review_model: str = "gpt-5.4-mini"
+    event_review_model: str = DEFAULT_GPT_FAST_MODEL
     dashscope_api_key: str | None = None
     event_embedding_model: str = "text-embedding-v4"
     event_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -577,14 +615,10 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
             "max_attempts": int(os.getenv("COMPETITOR_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("COMPETITOR_BACKOFF_SECONDS") or 1.0),
         },
-        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
-        "openai_base_url": (
-            os.getenv("X_PROCESS_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ),
-        "openai_api_style": os.getenv("COMPETITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "event_review_model": os.getenv("COMPETITOR_EVENT_REVIEW_MODEL") or "gpt-5.4-mini",
+        "openai_api_key": _llm_api_key(),
+        "openai_base_url": _llm_base_url("X_PROCESS_OPENAI_BASE_URL"),
+        "openai_api_style": _llm_api_style("COMPETITOR_OPENAI_API_STYLE"),
+        "event_review_model": _llm_fast_model("COMPETITOR_EVENT_REVIEW_MODEL"),
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "event_embedding_model": os.getenv("COMPETITOR_EVENT_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "event_embedding_base_url": (
@@ -730,8 +764,8 @@ class Writer3Settings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    analysis_model: str = "gpt-5.4-mini"
-    writer_model: str = "gpt-5.5"
+    analysis_model: str = DEFAULT_GPT_FAST_MODEL
+    writer_model: str = DEFAULT_GPT_WRITER_MODEL
     writer_reasoning_effort: str = "medium"
     history_days: int = Field(default=90, ge=1, le=365)
     candidate_limit: int = Field(default=20, ge=1, le=100)
@@ -750,16 +784,11 @@ class Writer3Settings(BaseModel):
 def load_writer3_settings() -> Writer3Settings:
     load_dotenv()
     payload = {
-        "openai_api_key": os.getenv("OPENAI_API_KEY") or None,
-        "openai_base_url": (
-            os.getenv("WRITER3_OPENAI_BASE_URL")
-            or os.getenv("X_PROCESS_OPENAI_BASE_URL")
-            or os.getenv("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ),
-        "openai_api_style": os.getenv("WRITER3_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
-        "analysis_model": os.getenv("WRITER3_ANALYSIS_MODEL") or "gpt-5.4-mini",
-        "writer_model": os.getenv("WRITER3_WRITER_MODEL") or "gpt-5.5",
+        "openai_api_key": _llm_api_key(),
+        "openai_base_url": _llm_base_url("WRITER3_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL"),
+        "openai_api_style": _llm_api_style("WRITER3_OPENAI_API_STYLE"),
+        "analysis_model": _llm_fast_model("WRITER3_ANALYSIS_MODEL"),
+        "writer_model": _llm_writer_model("WRITER3_WRITER_MODEL"),
         "writer_reasoning_effort": os.getenv("WRITER3_WRITER_REASONING_EFFORT") or "medium",
         "history_days": int(os.getenv("WRITER3_HISTORY_DAYS") or 90),
         "candidate_limit": int(os.getenv("WRITER3_CANDIDATE_LIMIT") or 20),
@@ -790,7 +819,7 @@ class AuditorSettings(BaseModel):
     omit_reasoning_effort: bool = False
     chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     append_json_schema_to_prompt: bool = False
-    model: str = "gpt-5.5"
+    model: str = DEFAULT_DEEPSEEK_REVIEW_MODEL
     reasoning_effort: str = "medium"
     lookback_minutes: int = Field(default=120, ge=1, le=10080)
     max_items_per_run: int = Field(default=20, ge=1, le=200)
@@ -805,13 +834,8 @@ class AuditorSettings(BaseModel):
 
 def load_auditor_settings() -> AuditorSettings:
     load_dotenv()
-    auditor_base_url = (
-        os.getenv("AUDITOR_OPENAI_BASE_URL")
-        or os.getenv("X_PROCESS_OPENAI_BASE_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or "https://api.openai.com/v1"
-    )
-    auditor_model = os.getenv("AUDITOR_MODEL") or "gpt-5.5"
+    auditor_base_url = _llm_base_url("AUDITOR_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL")
+    auditor_model = _llm_deepseek_review_model("AUDITOR_MODEL")
     payload = {
         "openai_api_key": (
             os.getenv("AUDITOR_OPENAI_API_KEY")
@@ -819,14 +843,14 @@ def load_auditor_settings() -> AuditorSettings:
                 os.getenv("DEEPSEEK_API_KEY")
                 or os.getenv("DEEPSEEK_API")
                 or os.getenv("DeepSeek_API")
-                if "deepseek" in auditor_base_url.lower() or "deepseek" in auditor_model.lower()
+                if "deepseek" in auditor_base_url.lower()
                 else None
             )
-            or os.getenv("OPENAI_API_KEY")
+            or _llm_api_key()
             or None
         ),
         "openai_base_url": auditor_base_url,
-        "openai_api_style": os.getenv("AUDITOR_OPENAI_API_STYLE") or os.getenv("X_PROCESS_OPENAI_API_STYLE") or "responses",
+        "openai_api_style": _llm_api_style("AUDITOR_OPENAI_API_STYLE"),
         "omit_reasoning_effort": _env_bool("AUDITOR_OMIT_REASONING_EFFORT", False),
         "chat_response_format_mode": os.getenv("AUDITOR_CHAT_RESPONSE_FORMAT_MODE") or "json_schema",
         "append_json_schema_to_prompt": _env_bool("AUDITOR_APPEND_JSON_SCHEMA_TO_PROMPT", False),
