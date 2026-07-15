@@ -148,6 +148,7 @@ class EditorPluginApiSettings(BaseModel):
     generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
     local_feed_sync_enabled: bool = True
+    local_feed_backfill_enabled: bool = False
     local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
     local_feed_sync_email: str | None = None
@@ -208,6 +209,7 @@ class EditorPluginLocalFeedSyncer:
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.settings.local_feed_sync_enabled,
+            "feed_backfill_enabled": self.settings.local_feed_backfill_enabled,
             "sync_email": self._sync_email,
             "last_feed_sync_at": self._last_feed_sync_at,
             "last_error": self._last_error,
@@ -227,7 +229,7 @@ class EditorPluginLocalFeedSyncer:
 
     def _sync_once(self) -> None:
         self._sync_pending_feedbacks()
-        if self._sync_email:
+        if self.settings.local_feed_backfill_enabled and self._sync_email:
             rows = self.repository.call_plugin_function(
                 email=self._sync_email,
                 function_name="editor_plugin_feed",
@@ -274,6 +276,8 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
         "local_feed_sync_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_ENABLED") or "true").lower()
+        not in {"0", "false", "no", "off"},
+        "local_feed_backfill_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED") or "false").lower()
         not in {"0", "false", "no", "off"},
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),
@@ -578,6 +582,35 @@ class EditorPluginNewsGenService:
             "email": actor.email,
             "display_name": actor.display_name or actor.email.split("@", 1)[0],
             "enabled": True,
+        }
+
+    def local_feed_health(self) -> dict[str, Any]:
+        syncer_status = self.feed_syncer.status()
+        local_stats = self.local_store.stats(max_age_hours=self.api_settings.local_feed_max_age_hours)
+        return {
+            "ok": syncer_status["last_error"] is None,
+            "local_feed": {
+                "max_age_hours": local_stats["max_age_hours"],
+                "feed_items": {
+                    "recent": local_stats["feed_items"]["recent"],
+                    "latest_occurred_at": local_stats["feed_items"]["latest_occurred_at"],
+                    "by_lane": local_stats["feed_items"]["by_lane"],
+                },
+                "feedbacks": {
+                    "pending": local_stats["feedbacks"]["pending"],
+                    "failed": local_stats["feedbacks"]["failed"],
+                },
+                "sessions": {
+                    "active": local_stats["sessions"]["active"],
+                },
+            },
+            "syncer": {
+                "enabled": syncer_status["enabled"],
+                "feed_backfill_enabled": syncer_status["feed_backfill_enabled"],
+                "has_sync_email": bool(syncer_status["sync_email"]),
+                "last_feed_sync_at": syncer_status["last_feed_sync_at"],
+                "last_error": syncer_status["last_error"],
+            },
         }
 
     def get_publisher_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
@@ -987,6 +1020,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self._send_common_headers()
         self.end_headers()
 
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/health":
+            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
+            return
+        self._send_json(HTTPStatus.OK, self.server.service.local_feed_health())
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS | self.CONSOLE_PATHS:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
@@ -1075,7 +1114,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", self.server.service.api_settings.cors_allow_origin)
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")

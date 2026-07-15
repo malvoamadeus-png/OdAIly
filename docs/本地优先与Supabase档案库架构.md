@@ -4,7 +4,7 @@
 
 本文记录已经接受的长期架构方向：插件信息流本地化、主生产链路本地优先、Supabase 从实时依赖降级为异步档案库。
 
-这是一份目标架构和迁移方向文档。当前代码已经完成插件轻服务请求路径本地化，并已让核心业务 worker 直接写本地 feed store；后台 syncer 仍低频同步 Supabase，作为回填、补偿和反馈归档路径。排障时仍要以当前实现文档和实际代码为准。
+这是一份目标架构和迁移方向文档。当前代码已经完成插件轻服务请求路径本地化，并已让核心业务 worker 直接写本地 feed store；后台 syncer 默认只做反馈归档，Supabase feed 回填已经拆成独立开关，作为临时补偿能力保留。排障时仍要以当前实现文档和实际代码为准。
 
 ## 背景
 
@@ -56,7 +56,7 @@ plugin feedback -> local feedback queue -> async syncer -> Supabase
 - 本地 feed store 必须能覆盖当前信息流的五类展示：`新快讯`、`Crypto信源标题提醒`、`审核者`、`此前消息`、`巨鲸`。
 - 插件刷新失败时，优先暴露本地轻服务或本地 store 问题，而不是把 Supabase pooler 状态作为第一故障面。
 
-这一阶段完成后，插件常规刷新不应再调用 `editor_plugin_feed`，也不应因为 Supabase session pooler 满而无法展示已有本地消息。当前代码已完成这一阶段的请求路径本地化，并已让核心 feed 类型由 worker 直接写本地 store；后台 syncer 仍保留为回填补偿。
+这一阶段完成后，插件常规刷新不应再调用 `editor_plugin_feed`，也不应因为 Supabase session pooler 满而无法展示已有本地消息。当前代码已完成这一阶段的请求路径本地化，并已让核心 feed 类型由 worker 直接写本地 store；后台 syncer 默认不再回填 feed，只有显式开启 `EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED=true` 时才调用 `editor_plugin_feed` 做临时补偿。
 
 ### 第二阶段：主生产链路本地优先
 
@@ -167,8 +167,8 @@ low
 - 插件浏览器侧调用 `editor-plugin-api-server`。
 - `editor-plugin-api-server` 的信息流请求路径当前读写 `data/runtime/editor_plugin_local.sqlite`。
 - 新快讯、Crypto信源标题提醒、审核者、Writer3 此前消息、链上巨鲸和 Hyperliquid 巨鲸当前已由对应 worker 直接写入本地 feed store。
-- 后台 syncer 当前仍会调用 `editor_plugin_feed` 回填本地 feed，并调用 `editor_plugin_submit_feedback` 异步归档本地反馈。
-- `editor_plugin_feed` 仍在 Supabase/Postgres 侧聚合多张业务表，但不再由插件刷新请求同步触发。
+- 后台 syncer 默认调用 `editor_plugin_submit_feedback` 异步归档本地反馈。
+- `editor_plugin_feed` 仍在 Supabase/Postgres 侧聚合多张业务表，但不再由插件刷新请求同步触发，也不再由后台 syncer 默认调用；需要临时回填时必须显式开启 `EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED=true`。
 - 主写作链路已经通过 `local_pipeline` 减少了旧 `tasks.status + LISTEN/NOTIFY + 多 worker claim` 的阶段交接依赖。
 - Supabase 当前仍保存原始记录、阶段结果、最终状态、失败原因和插件反馈等复盘数据。
 
@@ -198,7 +198,7 @@ low
 - 插件 `/plugin/feed/items` 常规刷新不再调用 `editor_plugin_feed`。
 - Supabase session pooler 满时，插件仍能展示已经写入本地 feed store 的最近消息。
 - 插件 `接受 / 拒绝` 可以先写本地队列并在本地状态中立即体现。
-- Supabase 恢复后，syncer 能把本地 feed 事件和反馈补偿同步到 Supabase。
+- Supabase 恢复后，syncer 能把本地反馈补偿同步到 Supabase；本地 feed 回填只作为显式开启的补偿路径，不是常规依赖。
 - 文档和日志能明确区分本地 store 故障、syncer 故障和 Supabase 归档故障。
 
 第二阶段完成的最低验收口径：

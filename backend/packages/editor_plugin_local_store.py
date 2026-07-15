@@ -469,6 +469,84 @@ class LocalEditorPluginStore:
             )
             conn.execute("DELETE FROM editor_plugin_local_sessions WHERE expires_at <= ?", (session_cutoff,))
 
+    def stats(self, *, max_age_hours: int = 2) -> dict[str, Any]:
+        cutoff = encode_dt(utc_now() - timedelta(hours=max_age_hours))
+        with self._connect() as conn:
+            total_feed_items = int(
+                conn.execute("SELECT count(*) FROM editor_plugin_local_feed_items").fetchone()[0]
+            )
+            recent_feed_items = int(
+                conn.execute(
+                    "SELECT count(*) FROM editor_plugin_local_feed_items WHERE occurred_at >= ?",
+                    (cutoff,),
+                ).fetchone()[0]
+            )
+            latest_feed_at = conn.execute(
+                "SELECT max(occurred_at) FROM editor_plugin_local_feed_items"
+            ).fetchone()[0]
+            by_lane = {
+                str(row["lane"]): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT lane, count(*) AS count
+                    FROM editor_plugin_local_feed_items
+                    WHERE occurred_at >= ?
+                    GROUP BY lane
+                    ORDER BY lane
+                    """,
+                    (cutoff,),
+                ).fetchall()
+            }
+            by_kind = {
+                str(row["feed_kind"]): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT feed_kind, count(*) AS count
+                    FROM editor_plugin_local_feed_items
+                    WHERE occurred_at >= ?
+                    GROUP BY feed_kind
+                    ORDER BY feed_kind
+                    """,
+                    (cutoff,),
+                ).fetchall()
+            }
+            feedback_by_status = {
+                str(row["sync_status"]): int(row["count"])
+                for row in conn.execute(
+                    """
+                    SELECT sync_status, count(*) AS count
+                    FROM editor_plugin_local_feedbacks
+                    GROUP BY sync_status
+                    ORDER BY sync_status
+                    """
+                ).fetchall()
+            }
+            active_sessions = int(
+                conn.execute(
+                    "SELECT count(*) FROM editor_plugin_local_sessions WHERE expires_at > ?",
+                    (encode_dt(),),
+                ).fetchone()[0]
+            )
+        return {
+            "path": str(self.path),
+            "max_age_hours": max_age_hours,
+            "feed_items": {
+                "total": total_feed_items,
+                "recent": recent_feed_items,
+                "latest_occurred_at": latest_feed_at,
+                "by_lane": by_lane,
+                "by_kind": by_kind,
+            },
+            "feedbacks": {
+                "by_sync_status": feedback_by_status,
+                "pending": feedback_by_status.get("pending", 0),
+                "failed": feedback_by_status.get("failed", 0),
+            },
+            "sessions": {
+                "active": active_sessions,
+            },
+        }
+
     @staticmethod
     def _feed_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
         return {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -107,6 +109,17 @@ def parse_args() -> argparse.Namespace:
     editor_plugin_api.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     editor_plugin_api.add_argument("--host", help="Bind host. Defaults to EDITOR_PLUGIN_API_HOST or 127.0.0.1.")
     editor_plugin_api.add_argument("--port", type=int, help="Bind port. Defaults to EDITOR_PLUGIN_API_PORT or 8765.")
+
+    editor_plugin_local_feed_status = subparsers.add_parser(
+        "editor-plugin-local-feed-status",
+        help="Print local editor plugin feed store diagnostics without connecting to Supabase.",
+    )
+    editor_plugin_local_feed_status.add_argument(
+        "--max-age-hours",
+        type=int,
+        default=None,
+        help="Recent feed window for lane/kind counts. Defaults to EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS or 2.",
+    )
 
     local_pipeline = subparsers.add_parser(
         "local-pipeline-server",
@@ -517,6 +530,30 @@ def editor_plugin_api_server_command(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
     )
+
+
+def editor_plugin_local_feed_status_command(args: argparse.Namespace) -> int:
+    from dotenv import load_dotenv
+
+    from packages.editor_plugin_local_store import LocalEditorPluginStore
+
+    load_dotenv()
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    local_feed_max_age_hours = int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2)
+    max_age_hours = args.max_age_hours or local_feed_max_age_hours
+    store = LocalEditorPluginStore(paths.runtime_dir / "editor_plugin_local.sqlite")
+    payload = store.stats(max_age_hours=max_age_hours)
+    payload["settings"] = {
+        "local_feed_sync_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_ENABLED") or "true").lower()
+        not in {"0", "false", "no", "off"},
+        "local_feed_backfill_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED") or "false").lower()
+        not in {"0", "false", "no", "off"},
+        "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
+        "local_feed_max_age_hours": local_feed_max_age_hours,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 def local_pipeline_server_command(args: argparse.Namespace) -> int:
@@ -1168,6 +1205,8 @@ def main() -> int:
             return editor_plugin_list_users_command(args)
         if args.command == "editor-plugin-api-server":
             return editor_plugin_api_server_command(args)
+        if args.command == "editor-plugin-local-feed-status":
+            return editor_plugin_local_feed_status_command(args)
         if args.command == "local-pipeline-server":
             return local_pipeline_server_command(args)
         if args.command == "local-pipeline-skip-legacy":

@@ -234,7 +234,7 @@ session pooler 槽位紧张
   - `notify_external_media_alert_task_queue_changed()`
 - `pipeline_worker_heartbeats.component = local_pipeline` 持续更新
 - 常驻服务启动路径不自动执行 schema / RPC / 索引初始化；初始化只由显式 `*-init-db` 命令承担
-- 插件信息流请求路径读写 `data/runtime/editor_plugin_local.sqlite`；核心业务 worker 直接写本地 feed store，后台 syncer 低频回填 Supabase feed 并异步同步反馈
+- 插件信息流请求路径读写 `data/runtime/editor_plugin_local.sqlite`；核心业务 worker 直接写本地 feed store，后台 syncer 默认只异步同步反馈。Supabase feed 回填需显式开启 `EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED=true`
 
 ## 长期治理方向：本地优先，Supabase 档案库
 
@@ -248,9 +248,9 @@ session pooler 槽位紧张
 - Supabase 只承担异步档案库、控制台查询源、历史复盘源和备份目标。
 - Supabase 短时不可用、session pooler 满或远端 SQL 变慢时，不应阻断插件已有消息展示，也不应阻断主生产链路继续推进。
 
-当前实现中，插件轻服务请求路径已经本地化，核心 feed 类型也由 worker 直接写本地 store；后台 syncer 仍会低频调用 `editor_plugin_feed` 回填本地 feed，并调用反馈 RPC 归档本地反馈。因此，排障时要区分“插件刷新请求 / worker 本地写 feed”与“后台 syncer”：前者不应再同步占用 Supabase session pooler，后者如果失败应只造成回填或归档延迟。
+当前实现中，插件轻服务请求路径已经本地化，核心 feed 类型也由 worker 直接写本地 store；后台 syncer 默认只调用反馈 RPC 归档本地反馈。只有显式开启 `EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED=true` 时，syncer 才会调用 `editor_plugin_feed` 回填本地 feed。因此，排障时要区分“插件刷新请求 / worker 本地写 feed”与“后台 syncer”：前者不应再同步占用 Supabase session pooler，后者如果失败应只造成归档延迟；feed 回填连接占用只应出现在显式开启回填时。
 
-完整迁移边界见 `docs/本地优先与Supabase档案库架构.md`。该文档描述的是目标架构和后续实现计划；当前代码尚未完全移除后台 Supabase RPC 依赖，但它不再是插件刷新和核心 feed 产出的实时依赖。
+完整迁移边界见 `docs/本地优先与Supabase档案库架构.md`。该文档描述的是目标架构和后续实现计划；当前代码尚未完全移除后台 Supabase RPC 依赖，但它不再是插件刷新和核心 feed 产出的实时依赖，`editor_plugin_feed` 也不再默认由后台 syncer 调用。
 
 ## 快速检查命令
 
@@ -306,6 +306,21 @@ journalctl -u odaily-local-pipeline.service -n 120 --no-pager
 ```
 
 如果 `/health` 里出现 `worker_alive = false`，或 `last_worker_error` 持续出现 `EMAXCONNSESSION` / `ECHECKOUTTIMEOUT`，优先按下面的连接槽排障步骤查 `pg_stat_activity`，不要只看 systemd 上的 `active`。
+
+### 插件本地信息流健康
+
+这条命令只读服务器本地 SQLite，不连接 Supabase；当 session pooler 已满时仍可使用：
+
+```bash
+python backend/src/main.py editor-plugin-local-feed-status
+```
+
+重点看：
+
+- `feed_items.recent` 是否大于 `0`。
+- `feed_items.by_lane` 是否有 `high / ai / low` 的合理分布。
+- `feedbacks.pending` 和 `feedbacks.failed` 是否持续积压。
+- `settings.local_feed_backfill_enabled` 正常应为 `false`；只有临时补偿历史 feed 时才开启。
 
 ### 查数据库连接状态
 
