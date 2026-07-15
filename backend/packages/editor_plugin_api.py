@@ -343,12 +343,12 @@ class EditorPluginNewsGenService:
             raise RuntimeError("Missing writer OpenAI API key")
         base_url = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL") or str(self.x_settings.openai_base_url)
         api_style = os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE") or self.x_settings.openai_api_style
+        if looks_like_openai_model(model) and not os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE"):
+            api_style = "responses"
         if looks_like_openai_model(model) and is_deepseek_url(base_url) and not os.getenv(
             "EDITOR_PLUGIN_WRITER_OPENAI_BASE_URL"
         ):
             base_url = DEFAULT_OPENAI_BASE_URL
-            if not os.getenv("EDITOR_PLUGIN_WRITER_OPENAI_API_STYLE"):
-                api_style = "responses"
         if api_style not in {"responses", "chat_completions"}:
             raise RuntimeError("Invalid editor plugin writer OpenAI API style")
         return OpenAIResponsesClient(
