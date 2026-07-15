@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from packages.common.config import load_x_processing_settings
+from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE
+from packages.x_processing.repository import PROMPT_SEEDS
 
 
 def test_load_x_processing_settings_uses_search_ai_review_overrides(monkeypatch) -> None:
@@ -25,3 +29,10 @@ def test_load_x_processing_settings_uses_search_ai_review_overrides(monkeypatch)
     assert settings.search_ai_review_omit_reasoning_effort is True
     assert settings.search_ai_review_chat_response_format_mode == "json_object"
     assert settings.search_ai_review_append_json_schema_to_prompt is True
+
+
+def test_ai_source_uses_dedicated_writer_prompt_seed() -> None:
+    assert PROMPT_KEY_BY_NEWS_TYPE["ai_source"] == "ai_source_writer"
+    assert "ai_source_writer" in PROMPT_SEEDS
+    _display_name, relative_path, _note = PROMPT_SEEDS["ai_source_writer"]
+    assert Path(relative_path).name == "AI信源快讯模板.txt"

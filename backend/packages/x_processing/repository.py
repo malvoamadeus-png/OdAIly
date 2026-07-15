@@ -97,6 +97,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "docs/主流外媒快讯模板.txt",
         "initial mainstream media writer template",
     ),
+    "ai_source_writer": (
+        "AI信源快讯",
+        "docs/AI信源快讯模板.txt",
+        "initial AI source writer template",
+    ),
     "external_media_alert_domain_judge": (
         "外媒标题领域判断",
         "docs/外媒标题领域判断模板.txt",
