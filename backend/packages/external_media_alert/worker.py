@@ -14,6 +14,7 @@ from uuid import uuid4
 from packages.common.config import ExternalMediaAlertSettings
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.models import PromptTemplateVersion, render_prompt_content
 from packages.x_processing.searcher import (
@@ -114,6 +115,7 @@ class ExternalMediaAlertWorker:
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
         self._search_cache_store = SearchCache(_search_cache_path_for_repository(self.repository))
+        self.feed_writer = LocalEditorPluginFeedWriter()
 
         self.ai_client = (ai_client or self._build_ai_client()) if stage in {"domain_judge", "search"} else ai_client
         self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
@@ -352,6 +354,7 @@ class ExternalMediaAlertWorker:
     def _run_notify(self, task) -> None:
         result = skipped_telegram_result("business alert notice disabled; use editor plugin feed")
         self.repository.complete_notify(task.id, telegram_result=result.model_dump(mode="json"))
+        self._write_external_alert_feed(task)
         cache = self._search_cache()
         if cache is not None:
             now = datetime.now(UTC)
@@ -378,6 +381,20 @@ class ExternalMediaAlertWorker:
             prompt = self.repository.get_active_prompt(template_key)
             self._prompt_cache[template_key] = prompt
         return prompt
+
+    def _write_external_alert_feed(self, task) -> None:
+        try:
+            self.feed_writer.upsert_external_media_alert(
+                task_id=task.id,
+                source=task.source,
+                source_url=task.source_url,
+                title=task.title,
+                content=task.content,
+                metadata=task.metadata,
+                occurred_at=datetime.now(UTC),
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped external_alert_task_id={task.id} error={exc}")
 
     def _start_notify_listener(self) -> threading.Thread | None:
         if not isinstance(self.repository, PostgresExternalMediaAlertRepository):

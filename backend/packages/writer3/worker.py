@@ -8,6 +8,7 @@ from typing import Any
 
 from packages.common.config import Writer3Settings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
@@ -53,6 +54,7 @@ class Writer3Worker:
         self.start_after = parse_start_after(self.settings.start_after)
         self.ai_client = ai_client or self._build_ai_client()
         self.telegram_client = telegram_client or self._build_telegram_client()
+        self.feed_writer = LocalEditorPluginFeedWriter()
         self._heartbeat_throttle = HeartbeatThrottle(
             component="writer3",
             worker_id=self.worker_id,
@@ -173,6 +175,7 @@ class Writer3Worker:
             writer_model=self.settings.writer_model,
             writer_reasoning_effort=self.settings.writer_reasoning_effort,
         )
+        self._write_writer3_feed(task=task, context=context)
         return Writer3RunResult(processed=1, sent=1, skipped=0, failed=0, message="sent")
 
     def _record_confirmation_target(self, *, task: Writer3Task, telegram_text: str, telegram_result: dict[str, Any]) -> None:
@@ -226,6 +229,23 @@ class Writer3Worker:
             )
         except Exception as exc:
             print(f"[odaily] writer3 heartbeat failed: {exc}")
+
+    def _write_writer3_feed(self, *, task: Writer3Task, context: ContextResult) -> None:
+        if task.context_id is None:
+            return
+        try:
+            self.feed_writer.upsert_writer3_context(
+                context_id=task.context_id,
+                current_source=task.source,
+                current_source_item_id=task.source_item_id,
+                current_source_url=task.source_url,
+                current_title=task.title,
+                current_content=task.final_content or task.content,
+                context_text=context.context_text,
+                evidence_source_item_ids=context.evidence_source_item_ids,
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped writer3_context_id={task.context_id} error={exc}")
 
 
 def parse_start_after(value: str | None) -> datetime:

@@ -23,7 +23,7 @@ class WhaleWatchRepository(Protocol):
     def mark_chain_seeded(self, *, address_id: int, chain_key: str, block_number: int | None, polled_at: datetime) -> None: ...
     def record_chain_success(self, *, address_id: int, chain_key: str, block_number: int | None, polled_at: datetime) -> None: ...
     def record_chain_error(self, *, address_id: int, chain_key: str, error: str, polled_at: datetime) -> None: ...
-    def save_activity(self, *, whale: WhaleAddress, chain_key: str, activity: Activity) -> bool: ...
+    def save_activity(self, *, whale: WhaleAddress, chain_key: str, activity: Activity) -> int | None: ...
     def update_activity_telegram_result(self, *, tx_hash: str, fingerprint: str, telegram_result: dict[str, Any]) -> None: ...
     def record_worker_heartbeat(
         self,
@@ -171,7 +171,7 @@ class PostgresWhaleWatchRepository:
             )
             conn.commit()
 
-    def save_activity(self, *, whale: WhaleAddress, chain_key: str, activity: Activity) -> bool:
+    def save_activity(self, *, whale: WhaleAddress, chain_key: str, activity: Activity) -> int | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -201,7 +201,7 @@ class PostgresWhaleWatchRepository:
                 ),
             ).fetchone()
             conn.commit()
-        return row is not None
+        return int(row["id"]) if row is not None else None
 
     def update_activity_telegram_result(self, *, tx_hash: str, fingerprint: str, telegram_result: dict[str, Any]) -> None:
         with self._connect() as conn:

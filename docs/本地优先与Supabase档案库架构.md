@@ -4,7 +4,7 @@
 
 本文记录已经接受的长期架构方向：插件信息流本地化、主生产链路本地优先、Supabase 从实时依赖降级为异步档案库。
 
-这是一份目标架构和迁移方向文档。当前代码已经完成插件轻服务第一阶段本地化：插件刷新请求路径读写本地 SQLite store，后台 syncer 低频同步 Supabase；但还没有完成所有 worker 直接写本地 feed store。排障时仍要以当前实现文档和实际代码为准。
+这是一份目标架构和迁移方向文档。当前代码已经完成插件轻服务请求路径本地化，并已让核心业务 worker 直接写本地 feed store；后台 syncer 仍低频同步 Supabase，作为回填、补偿和反馈归档路径。排障时仍要以当前实现文档和实际代码为准。
 
 ## 背景
 
@@ -56,7 +56,7 @@ plugin feedback -> local feedback queue -> async syncer -> Supabase
 - 本地 feed store 必须能覆盖当前信息流的五类展示：`新快讯`、`Crypto信源标题提醒`、`审核者`、`此前消息`、`巨鲸`。
 - 插件刷新失败时，优先暴露本地轻服务或本地 store 问题，而不是把 Supabase pooler 状态作为第一故障面。
 
-这一阶段完成后，插件常规刷新不应再调用 `editor_plugin_feed`，也不应因为 Supabase session pooler 满而无法展示已有本地消息。当前代码已完成这一阶段的请求路径本地化，但 feed 数据主要仍由后台 syncer 从 Supabase 回填；上游 worker 直接写本地 feed store 属于后续增强。
+这一阶段完成后，插件常规刷新不应再调用 `editor_plugin_feed`，也不应因为 Supabase session pooler 满而无法展示已有本地消息。当前代码已完成这一阶段的请求路径本地化，并已让核心 feed 类型由 worker 直接写本地 store；后台 syncer 仍保留为回填补偿。
 
 ### 第二阶段：主生产链路本地优先
 
@@ -166,6 +166,7 @@ low
 
 - 插件浏览器侧调用 `editor-plugin-api-server`。
 - `editor-plugin-api-server` 的信息流请求路径当前读写 `data/runtime/editor_plugin_local.sqlite`。
+- 新快讯、Crypto信源标题提醒、审核者、Writer3 此前消息、链上巨鲸和 Hyperliquid 巨鲸当前已由对应 worker 直接写入本地 feed store。
 - 后台 syncer 当前仍会调用 `editor_plugin_feed` 回填本地 feed，并调用 `editor_plugin_submit_feedback` 异步归档本地反馈。
 - `editor_plugin_feed` 仍在 Supabase/Postgres 侧聚合多张业务表，但不再由插件刷新请求同步触发。
 - 主写作链路已经通过 `local_pipeline` 减少了旧 `tasks.status + LISTEN/NOTIFY + 多 worker claim` 的阶段交接依赖。
@@ -178,7 +179,7 @@ low
 - worker 生产事件优先写 Linux 本地队列或本地业务库。
 - Supabase 写入变成异步归档和补偿同步。
 
-因此，后续排障必须区分“插件请求路径已经本地化”和“后台 syncer / 上游 worker 仍可能使用 Supabase”。不能把本文的最终目标描述当成所有生产写入都已经本地优先的事实。
+因此，后续排障必须区分“插件请求路径和核心 feed 产出已经本地化”和“后台 syncer / 其他未迁移路径仍可能使用 Supabase”。不能把本文的最终目标描述当成所有生产写入都已经本地优先的事实。
 
 ## 实现原则
 

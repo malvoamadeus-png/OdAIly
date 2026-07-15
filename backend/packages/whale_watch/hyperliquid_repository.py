@@ -48,7 +48,7 @@ class WhaleWatchHyperliquidRepository(Protocol):
         aggregate_alert_active: bool | None = None,
     ) -> None: ...
     def record_error(self, *, address_id: int, error: str, polled_at: datetime) -> None: ...
-    def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> bool: ...
+    def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> int | None: ...
     def update_activity_telegram_result(self, *, fill_key: str, telegram_result: dict[str, Any]) -> None: ...
     def record_worker_heartbeat(
         self,
@@ -264,7 +264,7 @@ class PostgresWhaleWatchHyperliquidRepository:
             )
             conn.commit()
 
-    def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> bool:
+    def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> int | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -299,7 +299,7 @@ class PostgresWhaleWatchHyperliquidRepository:
                 ),
             ).fetchone()
             conn.commit()
-        return row is not None
+        return int(row["id"]) if row is not None else None
 
     def update_activity_telegram_result(self, *, fill_key: str, telegram_result: dict[str, Any]) -> None:
         with self._connect() as conn:

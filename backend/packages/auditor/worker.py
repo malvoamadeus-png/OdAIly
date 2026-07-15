@@ -7,6 +7,7 @@ from typing import Any
 
 from packages.common.config import AuditorSettings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
@@ -40,6 +41,7 @@ class AuditorWorker:
         self.worker_id = worker_id or f"auditor-{os.getpid()}"
         self.ai_client = ai_client or self._build_ai_client()
         self.telegram_client = telegram_client or self._build_telegram_client()
+        self.feed_writer = LocalEditorPluginFeedWriter()
         self._heartbeat_throttle = HeartbeatThrottle(
             component="auditor",
             worker_id=self.worker_id,
@@ -128,6 +130,7 @@ class AuditorWorker:
             telegram_text=telegram_text,
             telegram_result=telegram_result.model_dump(mode="json"),
         )
+        self._write_auditor_feed(task=task, result=result_payload, telegram_text=telegram_text)
         return AuditorRunResult(
             processed=1,
             passed=0,
@@ -172,6 +175,19 @@ class AuditorWorker:
             )
         except Exception as exc:
             print(f"[odaily] auditor heartbeat failed: {exc}")
+
+    def _write_auditor_feed(self, *, task: AuditorTask, result: dict[str, Any], telegram_text: str) -> None:
+        try:
+            self.feed_writer.upsert_auditor_alert(
+                check_id=task.id,
+                source_item_id=task.source_item_id,
+                source_url=task.source_url,
+                title=task.title,
+                telegram_text=telegram_text,
+                audit_result=result,
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped auditor_check_id={task.id} error={exc}")
 
 
 def build_telegram_text(task: AuditorTask, audit: AuditorResult) -> str:

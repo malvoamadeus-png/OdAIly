@@ -11,6 +11,7 @@ from typing import Iterator
 
 from packages.common.config import WhaleWatchHyperliquidSettings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .hyperliquid_client import HyperliquidClient
@@ -45,6 +46,7 @@ class WhaleWatchHyperliquidWorker:
             backoff_seconds=settings.retry.backoff_seconds,
         )
         self.worker_id = worker_id or f"whale_watch_hyperliquid-{os.getpid()}"
+        self.feed_writer = LocalEditorPluginFeedWriter()
         self._heartbeat = HeartbeatThrottle(
             component="whale_watch_hyperliquid",
             worker_id=self.worker_id,
@@ -177,8 +179,10 @@ class WhaleWatchHyperliquidWorker:
 
             should_send_single = activity.notional_usd >= runtime.single_fill_min_notional_usd
             if should_send_single:
-                if self.repository.save_activity(whale=whale, activity=activity):
+                activity_id = self.repository.save_activity(whale=whale, activity=activity)
+                if activity_id is not None:
                     inserted += 1
+                    self._write_activity_feed(activity_id=activity_id, whale=whale, activity=activity)
                     sent_ok = self._send_activity(activity)
                     sent += int(sent_ok)
                     if not sent_ok:
@@ -192,8 +196,10 @@ class WhaleWatchHyperliquidWorker:
                     entries=aggregate_window_entries,
                     aggregate_total=aggregate_total,
                 )
-                if self.repository.save_activity(whale=whale, activity=aggregate_activity):
+                aggregate_activity_id = self.repository.save_activity(whale=whale, activity=aggregate_activity)
+                if aggregate_activity_id is not None:
                     inserted += 1
+                    self._write_activity_feed(activity_id=aggregate_activity_id, whale=whale, activity=aggregate_activity)
                     sent_ok = self._send_activity(aggregate_activity)
                     sent += int(sent_ok)
                     if not sent_ok:
@@ -236,6 +242,23 @@ class WhaleWatchHyperliquidWorker:
         if not result.ok and not result.skipped:
             print(f"[odaily] whale watch hyperliquid telegram failed fill={activity.fill_key} error={result.error}")
         return result.ok or result.skipped
+
+    def _write_activity_feed(self, *, activity_id: int, whale, activity: HyperliquidActivity) -> None:
+        try:
+            self.feed_writer.upsert_whale_hyperliquid(
+                feed_item_id=f"whale_hyperliquid:{activity_id}",
+                address=whale.address,
+                address_label=whale.label,
+                coin=activity.coin,
+                direction=activity.direction,
+                notional_usd=str(activity.notional_usd),
+                alert_kind=activity.alert_kind,
+                summary=activity.summary or activity.telegram_text,
+                detail_url=f"https://hyperbot.network/trader/{whale.address}",
+                occurred_at=datetime.now(UTC),
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped whale_hyperliquid_activity_id={activity_id} error={exc}")
 
     def _record_heartbeat(self, result: HyperliquidRunResult) -> None:
         try:

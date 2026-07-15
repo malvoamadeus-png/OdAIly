@@ -234,7 +234,7 @@ session pooler 槽位紧张
   - `notify_external_media_alert_task_queue_changed()`
 - `pipeline_worker_heartbeats.component = local_pipeline` 持续更新
 - 常驻服务启动路径不自动执行 schema / RPC / 索引初始化；初始化只由显式 `*-init-db` 命令承担
-- 插件信息流请求路径读写 `data/runtime/editor_plugin_local.sqlite`；后台 syncer 低频回填 Supabase feed 并异步同步反馈
+- 插件信息流请求路径读写 `data/runtime/editor_plugin_local.sqlite`；核心业务 worker 直接写本地 feed store，后台 syncer 低频回填 Supabase feed 并异步同步反馈
 
 ## 长期治理方向：本地优先，Supabase 档案库
 
@@ -248,9 +248,9 @@ session pooler 槽位紧张
 - Supabase 只承担异步档案库、控制台查询源、历史复盘源和备份目标。
 - Supabase 短时不可用、session pooler 满或远端 SQL 变慢时，不应阻断插件已有消息展示，也不应阻断主生产链路继续推进。
 
-当前第一阶段实现中，插件轻服务请求路径已经本地化；后台 syncer 仍会低频调用 `editor_plugin_feed` 回填本地 feed，并调用反馈 RPC 归档本地反馈。因此，排障时要区分“插件刷新请求”与“后台 syncer”：前者不应再同步占用 Supabase session pooler，后者如果失败应只造成回填或归档延迟。
+当前实现中，插件轻服务请求路径已经本地化，核心 feed 类型也由 worker 直接写本地 store；后台 syncer 仍会低频调用 `editor_plugin_feed` 回填本地 feed，并调用反馈 RPC 归档本地反馈。因此，排障时要区分“插件刷新请求 / worker 本地写 feed”与“后台 syncer”：前者不应再同步占用 Supabase session pooler，后者如果失败应只造成回填或归档延迟。
 
-完整迁移边界见 `docs/本地优先与Supabase档案库架构.md`。该文档描述的是目标架构和后续实现计划；当前代码尚未完成所有 worker 直接写本地 feed store，因此还没有完全移除后台 Supabase RPC 依赖。
+完整迁移边界见 `docs/本地优先与Supabase档案库架构.md`。该文档描述的是目标架构和后续实现计划；当前代码尚未完全移除后台 Supabase RPC 依赖，但它不再是插件刷新和核心 feed 产出的实时依赖。
 
 ## 快速检查命令
 

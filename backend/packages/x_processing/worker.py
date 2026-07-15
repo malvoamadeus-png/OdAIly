@@ -16,6 +16,7 @@ from packages.common.config import XProcessingSettings
 from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import PushClient
 from packages.x_capture.naming import choose_effective_author_name
 from packages.x_capture.repository import XCaptureRepository
@@ -305,6 +306,7 @@ class XProcessingWorker:
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
         self._search_cache_store = SearchCache(_search_cache_path_for_repository(self.repository))
+        self.feed_writer = LocalEditorPluginFeedWriter()
 
         self.ai_client = (ai_client or self._build_ai_client()) if stage in {"judge", "write"} else ai_client
         self.search_embedding_service = search_embedding_service or (self._build_embedding_service() if stage == "search" else None)
@@ -1037,6 +1039,14 @@ class XProcessingWorker:
             decided_at=decided_at,
             status="auto_published" if should_publish else "ready_review",
         )
+        self._write_newsflash_feed(
+            task=task,
+            pipeline=pipeline,
+            status="auto_published" if should_publish else "ready_review",
+            publisher_decision="auto_publish" if should_publish else "manual_review",
+            publisher_reason_code="rule_allowed" if should_publish else "rule_rejected",
+            decided_at=decided_at,
+        )
 
     def _complete_manual_review_publish(
         self,
@@ -1092,9 +1102,47 @@ class XProcessingWorker:
             decided_at=decided_at,
             status="ready_review",
         )
+        self._write_newsflash_feed(
+            task=task,
+            pipeline=pipeline,
+            status="ready_review",
+            publisher_decision="manual_review",
+            publisher_reason_code=reason_code,
+            decided_at=decided_at,
+        )
 
     def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
         return skipped_telegram_result("business publish notice disabled; use editor plugin feed")
+
+    def _write_newsflash_feed(
+        self,
+        *,
+        task: TaskRecord,
+        pipeline: PipelineRecord,
+        status: str,
+        publisher_decision: str,
+        publisher_reason_code: str,
+        decided_at: datetime,
+    ) -> None:
+        try:
+            self.feed_writer.upsert_newsflash(
+                task_id=task.id,
+                source=task.source,
+                source_item_id=task.source_item_id,
+                source_url=task.source_url,
+                title=pipeline.final_title or task.title,
+                content=pipeline.final_content or task.content,
+                status=status,
+                news_type=pipeline.news_type,
+                publisher_decision=publisher_decision,
+                publisher_reason_code=publisher_reason_code,
+                publisher_category=pipeline.publisher_category,
+                x_account_is_ai_source=bool(task.metadata.get("x_account_is_ai_source")),
+                feature_mode_enabled=bool(pipeline.writer_feature_mode_enabled),
+                occurred_at=decided_at,
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped task_id={task.id} error={exc}")
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()

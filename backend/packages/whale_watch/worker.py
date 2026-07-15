@@ -11,6 +11,7 @@ from typing import Any, Iterator
 
 from packages.common.config import WhaleWatchSettings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .chains import ChainDefinition, resolve_chains
@@ -53,6 +54,7 @@ class WhaleWatchWorker:
             backoff_seconds=settings.retry.backoff_seconds,
         )
         self.worker_id = worker_id or f"whale_watch-{os.getpid()}"
+        self.feed_writer = LocalEditorPluginFeedWriter()
         self._heartbeat = HeartbeatThrottle(
             component="whale_watch",
             worker_id=self.worker_id,
@@ -161,9 +163,11 @@ class WhaleWatchWorker:
             if activity is None:
                 continue
             detected += 1
-            if not self.repository.save_activity(whale=whale, chain_key=chain.key, activity=activity):
+            activity_id = self.repository.save_activity(whale=whale, chain_key=chain.key, activity=activity)
+            if activity_id is None:
                 continue
             inserted += 1
+            self._write_activity_feed(activity_id=activity_id, whale=whale, chain_key=chain.key, activity=activity)
             sent_ok = self._send_activity(activity)
             sent += int(sent_ok)
             if not sent_ok:
@@ -193,6 +197,22 @@ class WhaleWatchWorker:
         if not result.ok and not result.skipped:
             print(f"[odaily] whale watch telegram failed tx={activity.tx_hash} error={result.error}")
         return result.ok or result.skipped
+
+    def _write_activity_feed(self, *, activity_id: int, whale, chain_key: str, activity: Activity) -> None:
+        try:
+            self.feed_writer.upsert_whale_onchain(
+                feed_item_id=f"whale_onchain:{activity_id}",
+                address=whale.address,
+                address_label=whale.label,
+                chain_key=chain_key,
+                activity_type=activity.kind,
+                direction=activity.direction,
+                summary=activity.summary or activity.telegram_text,
+                tx_url=activity.tx_url,
+                occurred_at=datetime.now(UTC),
+            )
+        except Exception as exc:
+            print(f"[odaily] local feed write skipped whale_activity_id={activity_id} error={exc}")
 
     def _record_heartbeat(self, result: WhaleRunResult) -> None:
         try:
