@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from dotenv import load_dotenv
-
+from packages.common.postgres import (
+    build_psycopg_connect_kwargs,
+    get_postgres_connect_timeout_seconds as _get_postgres_connect_timeout_seconds,
+    load_database_url,
+)
 from packages.common.pipeline_schema import (
     CONSOLE_AUTH_SCHEMA_SQL,
     COMPETITOR_FILTER_SCHEMA_SQL,
@@ -222,11 +224,7 @@ def utc_now() -> datetime:
 
 
 def get_database_url() -> str:
-    load_dotenv()
-    value = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-    if not value:
-        raise RuntimeError("Missing SUPABASE_DB_URL or DATABASE_URL")
-    return value
+    return load_database_url()
 
 
 def _import_psycopg():
@@ -240,11 +238,7 @@ def _import_psycopg():
 
 
 def get_postgres_connect_timeout_seconds() -> int:
-    value = str(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS") or "10").strip()
-    try:
-        return max(1, int(value))
-    except ValueError:
-        return 10
+    return _get_postgres_connect_timeout_seconds()
 
 
 def _row_to_task(row: dict[str, Any]) -> TaskRecord:
@@ -345,14 +339,16 @@ class PostgresXProcessingRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
-        self.connect_timeout_seconds = get_postgres_connect_timeout_seconds()
+        self.application_name = "odaily-x-processing"
 
     def _connect(self, *, autocommit: bool = False):
         return self._psycopg.connect(
             self.database_url,
-            row_factory=self._dict_row,
-            autocommit=autocommit,
-            connect_timeout=self.connect_timeout_seconds,
+            **build_psycopg_connect_kwargs(
+                row_factory=self._dict_row,
+                autocommit=autocommit,
+                application_name=self.application_name,
+            ),
         )
 
     def init_schema(self) -> None:

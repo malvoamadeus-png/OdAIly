@@ -172,7 +172,7 @@ age 约 3 小时
 - `pipeline-supervisor` 重启次数曾达到数百次，`x-capture` 也有大量重启。
 - `pg_stat_activity` 中出现多条 `wait_event_type = Lock`，阻塞链里有 `CREATE TABLE IF NOT EXISTS pipeline_worker_heartbeats ...`。
 - `editor_plugin_feed` 曾出现长 SQL 超时和 `BrokenPipeError`，说明插件信息流查询也可能在高压时放大连接占用。
-- 插件轻服务调用 `editor_plugin_feed` / `editor_plugin_state` / 反馈 RPC 后需要显式提交，确保 `request.jwt.claims` 所在事务及时结束，避免读请求长期停在 `idle in transaction`。
+- 当插件轻服务或后台 syncer 调用 `editor_plugin_feed` / `editor_plugin_state` / 反馈 RPC 时，需要显式提交，确保 `request.jwt.claims` 所在事务及时结束，避免读请求长期停在 `idle in transaction`。当前插件刷新请求路径已本地化，不应再同步调用这些 RPC。
 - 对 `x_capture_attempts` 做最近成功记录查询时，即使用 `EXISTS` 也可能触发 `statement timeout`；这张表当时不能作为监督者的首选健康信号。
 
 这次的放大链路是：
@@ -234,6 +234,23 @@ session pooler 槽位紧张
   - `notify_external_media_alert_task_queue_changed()`
 - `pipeline_worker_heartbeats.component = local_pipeline` 持续更新
 - 常驻服务启动路径不自动执行 schema / RPC / 索引初始化；初始化只由显式 `*-init-db` 命令承担
+- 插件信息流请求路径读写 `data/runtime/editor_plugin_local.sqlite`；后台 syncer 低频回填 Supabase feed 并异步同步反馈
+
+## 长期治理方向：本地优先，Supabase 档案库
+
+连接槽问题不能只靠增大 `pool_size` 或反复重启服务解决。长期目标是减少插件信息流和主生产链路对 Supabase session pooler 的同步依赖。
+
+目标架构：
+
+- 插件信息流刷新读取 Linux 本地 feed store，不在请求路径实时调用 Supabase/Postgres 聚合查询，也不由刷新请求触发 `editor_plugin_feed`。
+- 插件 `接受 / 拒绝` 反馈先写 Linux 本地 feedback queue，再由异步 syncer 写入 Supabase。
+- 采集、处理、审核、巨鲸、Writer3 等生产事件优先写 Linux 本地库或本地队列。
+- Supabase 只承担异步档案库、控制台查询源、历史复盘源和备份目标。
+- Supabase 短时不可用、session pooler 满或远端 SQL 变慢时，不应阻断插件已有消息展示，也不应阻断主生产链路继续推进。
+
+当前第一阶段实现中，插件轻服务请求路径已经本地化；后台 syncer 仍会低频调用 `editor_plugin_feed` 回填本地 feed，并调用反馈 RPC 归档本地反馈。因此，排障时要区分“插件刷新请求”与“后台 syncer”：前者不应再同步占用 Supabase session pooler，后者如果失败应只造成回填或归档延迟。
+
+完整迁移边界见 `docs/本地优先与Supabase档案库架构.md`。该文档描述的是目标架构和后续实现计划；当前代码尚未完成所有 worker 直接写本地 feed store，因此还没有完全移除后台 Supabase RPC 依赖。
 
 ## 快速检查命令
 
@@ -441,6 +458,8 @@ SELECT pg_terminate_backend(<pid>);
 - 长驻 worker 启动时不要自动跑 DDL。
 - DDL 只放在显式 `*-init-db` 命令里。
 - 数据库连接用完必须关闭，优先使用 `with psycopg.connect(...) as conn`。
+- 后端共享连接参数默认开启 `POSTGRES_CONNECT_TIMEOUT_SECONDS=10`、`POSTGRES_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=60000`，避免连接无限卡住或事务意外挂成长期 `idle in transaction`。
+- 各常驻服务连接都要带固定 `application_name`，这样排查 `pg_stat_activity` 时能直接看出是 `x_capture`、插件轻服务还是其他 worker 在占槽。
 - 长驻 HTTP 服务不要保留一个全局 psycopg 连接不放。
 - 不要在事务里等待外部 HTTP、AI、Telegram、抓网页。
 - 需要常驻缓存时，缓存数据，不缓存打开的数据库事务。
@@ -450,6 +469,7 @@ SELECT pg_terminate_backend(<pid>);
 
 - 不要重新启用旧 `odaily-x-process@...` 和 `odaily-external-media-alert@...`，除非明确回滚。
 - 如果紧急回滚旧 worker，先确认 `X_PROCESS_ENABLE_NOTIFY_LISTENER=false` 和 `EXTERNAL_MEDIA_ALERT_ENABLE_NOTIFY_LISTENER=false`，避免旧 worker 一启动就占长期监听槽。
+- 旧 `x-process-worker` 命令现在也不再在启动时自动执行 `init_schema()`；回滚分阶段 worker 之前，先显式跑一次 `x-process-init-db`，不要靠重启服务顺带迁移。
 - 新任务交接走 `odaily-local-pipeline.service`，不是数据库 `LISTEN/NOTIFY`。
 - `data/runtime/` 是服务器本地运行资产，不进 Git。
 

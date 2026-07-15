@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
-
+from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from .pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL
 
 
 def get_database_url(database_url: str | None = None) -> str:
-    if database_url:
-        return database_url
-    load_dotenv()
-    value = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-    if not value:
-        raise RuntimeError("Missing SUPABASE_DB_URL or DATABASE_URL")
-    return value
+    return load_database_url(database_url)
 
 
 def _import_psycopg():
@@ -45,9 +37,17 @@ class PostgresConsoleAuthRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = get_database_url(database_url)
         self._psycopg, self._dict_row = _import_psycopg()
+        self.application_name = "odaily-console-auth"
 
-    def _connect(self):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+    def _connect(self, *, autocommit: bool = False):
+        return self._psycopg.connect(
+            self.database_url,
+            **build_psycopg_connect_kwargs(
+                row_factory=self._dict_row,
+                autocommit=autocommit,
+                application_name=self.application_name,
+            ),
+        )
 
     def init_schema(self) -> None:
         with self._connect() as conn:

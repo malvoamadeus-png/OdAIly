@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Protocol
-
-from dotenv import load_dotenv
 
 from packages.common.attempt_sampling import (
     NOOP_SUCCESS_WINDOW,
     should_sample_x_capture_attempt,
     x_capture_attempt_fingerprint,
 )
+from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 
 from .client import normalize_username
@@ -88,11 +86,7 @@ UNSET = _Unset()
 
 
 def get_database_url() -> str:
-    load_dotenv()
-    value = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-    if not value:
-        raise RuntimeError("Missing SUPABASE_DB_URL or DATABASE_URL")
-    return value
+    return load_database_url()
 
 
 def utc_now() -> datetime:
@@ -142,9 +136,17 @@ class PostgresXCaptureRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        self.application_name = "odaily-x-capture"
 
-    def _connect(self):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+    def _connect(self, *, autocommit: bool = False):
+        return self._psycopg.connect(
+            self.database_url,
+            **build_psycopg_connect_kwargs(
+                row_factory=self._dict_row,
+                autocommit=autocommit,
+                application_name=self.application_name,
+            ),
+        )
 
     def init_schema(self) -> None:
         with self._connect() as conn:

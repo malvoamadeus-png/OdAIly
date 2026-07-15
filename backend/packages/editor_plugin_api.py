@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
@@ -22,6 +23,7 @@ from packages.common.editor_plugin_auth import (
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
+from packages.editor_plugin_local_store import LocalEditorPluginStore
 from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
@@ -145,6 +147,10 @@ class EditorPluginApiSettings(BaseModel):
     session_ttl_hours: float = Field(default=168.0, gt=0.0, le=720.0)
     generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
+    local_feed_sync_enabled: bool = True
+    local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
+    local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
+    local_feed_sync_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +158,108 @@ class AuthenticatedEditor:
     user_id: str | None
     email: str
     display_name: str | None
+
+
+class EditorPluginLocalFeedSyncer:
+    def __init__(
+        self,
+        *,
+        settings: EditorPluginApiSettings,
+        repository: PostgresEditorPluginAuthRepository,
+        local_store: LocalEditorPluginStore,
+    ) -> None:
+        self.settings = settings
+        self.repository = repository
+        self.local_store = local_store
+        self._sync_email = (settings.local_feed_sync_email or "").strip().lower() or None
+        self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._last_error: str | None = None
+        self._last_feed_sync_at: datetime | None = None
+
+    def start(self) -> None:
+        if not self.settings.local_feed_sync_enabled:
+            return
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(target=self._run, name="editor-plugin-local-feed-syncer", daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._wake_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def set_sync_email(self, email: str | None) -> None:
+        normalized = (email or "").strip().lower()
+        if not normalized:
+            return
+        if self._sync_email != normalized:
+            self._sync_email = normalized
+            self._wake_event.set()
+
+    def wake(self) -> None:
+        self._wake_event.set()
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.settings.local_feed_sync_enabled,
+            "sync_email": self._sync_email,
+            "last_feed_sync_at": self._last_feed_sync_at,
+            "last_error": self._last_error,
+        }
+
+    def _run(self) -> None:
+        print("[odaily] editor plugin local feed syncer started")
+        while not self._stop_event.is_set():
+            try:
+                self._sync_once()
+                self._last_error = None
+            except Exception as exc:
+                self._last_error = str(exc)
+                print(f"[odaily] editor plugin local feed sync failed: {exc}")
+            self._wake_event.wait(self.settings.local_feed_sync_interval_seconds)
+            self._wake_event.clear()
+
+    def _sync_once(self) -> None:
+        self._sync_pending_feedbacks()
+        if self._sync_email:
+            rows = self.repository.call_plugin_function(
+                email=self._sync_email,
+                function_name="editor_plugin_feed",
+                args=(120,),
+            )
+            normalized = [EditorPluginNewsGenService.normalize_feed_row(row) for row in rows]
+            count = self.local_store.upsert_feed_items(normalized)
+            self._last_feed_sync_at = datetime.now(UTC)
+            print(f"[odaily] editor plugin local feed synced count={count}")
+        self.local_store.prune_old(
+            feed_retention_hours=max(24, self.settings.local_feed_max_age_hours * 4),
+            synced_feedback_retention_days=90,
+        )
+
+    def _sync_pending_feedbacks(self) -> None:
+        for item in self.local_store.list_pending_feedbacks(limit=50):
+            try:
+                self.repository.call_plugin_json_function(
+                    email=item.actor_email,
+                    function_name="editor_plugin_submit_feedback",
+                    args=(
+                        item.feed_item_id,
+                        item.feed_kind,
+                        item.feedback,
+                        item.session_id,
+                        json.dumps(item.extra_json, ensure_ascii=False),
+                    ),
+                )
+            except Exception as exc:
+                self.local_store.mark_feedback_failed(item.id, error=str(exc))
+                continue
+            self.local_store.mark_feedback_synced(item.id)
 
 
 def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None = None) -> EditorPluginApiSettings:
@@ -165,6 +273,11 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "session_ttl_hours": float(os.getenv("EDITOR_PLUGIN_API_SESSION_TTL_HOURS") or 168.0),
         "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
+        "local_feed_sync_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_ENABLED") or "true").lower()
+        not in {"0", "false", "no", "off"},
+        "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
+        "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),
+        "local_feed_sync_email": os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_EMAIL"),
     }
     try:
         return EditorPluginApiSettings.model_validate(payload)
@@ -204,9 +317,11 @@ class SupabaseEditorPluginAuthenticator:
         *,
         settings: EditorPluginApiSettings,
         repository: PostgresEditorPluginAuthRepository,
+        local_store: LocalEditorPluginStore,
     ) -> None:
         self.settings = settings
         self.repository = repository
+        self.local_store = local_store
 
     def login(self, request: EditorPluginLoginRequestModel) -> tuple[str, datetime, AuthenticatedEditor]:
         try:
@@ -219,30 +334,63 @@ class SupabaseEditorPluginAuthenticator:
         display_name = record.display_name or email.split("@", 1)[0]
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now(UTC) + timedelta(hours=self.settings.session_ttl_hours)
-        self.repository.create_session(
-            token_hash=hash_plugin_token(token),
+        token_hash = hash_plugin_token(token)
+        self.local_store.upsert_session(
+            token_hash=token_hash,
             user_id=user_id,
             email=record.email,
             display_name=display_name,
             expires_at=expires_at,
         )
+        try:
+            self.repository.create_session(
+                token_hash=token_hash,
+                user_id=user_id,
+                email=record.email,
+                display_name=display_name,
+                expires_at=expires_at,
+            )
+        except Exception as exc:
+            print(f"[odaily] editor plugin remote session archive skipped error={exc}")
         return token, expires_at, AuthenticatedEditor(user_id=user_id, email=record.email, display_name=display_name)
 
     def logout(self, authorization_header: str | None) -> None:
         token = parse_bearer_token(authorization_header)
-        self.repository.delete_session(hash_plugin_token(token))
+        token_hash = hash_plugin_token(token)
+        self.local_store.delete_session(token_hash)
+        try:
+            self.repository.delete_session(token_hash)
+        except Exception as exc:
+            print(f"[odaily] editor plugin remote session delete skipped error={exc}")
 
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         token = parse_bearer_token(authorization_header)
-        session = self.repository.get_session(hash_plugin_token(token))
+        token_hash = hash_plugin_token(token)
+        local_session = self.local_store.get_session(token_hash)
+        if local_session is not None:
+            return AuthenticatedEditor(
+                user_id=local_session.user_id,
+                email=local_session.email,
+                display_name=local_session.display_name or local_session.email.split("@", 1)[0],
+            )
+
+        session = self.repository.get_session(token_hash)
         if session is not None:
             record = self.repository.get_enabled_user(session.email)
             if record is None:
                 raise EditorPluginForbiddenError("当前账号未加入插件白名单或已被停用")
+            display_name = record.display_name or session.display_name or record.email.split("@", 1)[0]
+            self.local_store.upsert_session(
+                token_hash=token_hash,
+                user_id=session.user_id,
+                email=record.email,
+                display_name=display_name,
+                expires_at=session.expires_at,
+            )
             return AuthenticatedEditor(
                 user_id=session.user_id,
                 email=record.email,
-                display_name=record.display_name or session.display_name or record.email.split("@", 1)[0],
+                display_name=display_name,
             )
 
         try:
@@ -298,6 +446,7 @@ class EditorPluginNewsGenService:
         self.paths = get_paths()
         ensure_runtime_dirs(self.paths)
 
+        self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
         self.console_auth_repository = PostgresConsoleAuthRepository(database_url)
         self.x_capture_repository = PostgresXCaptureRepository(database_url)
@@ -306,10 +455,17 @@ class EditorPluginNewsGenService:
         self.authenticator = SupabaseEditorPluginAuthenticator(
             settings=api_settings,
             repository=self.auth_repository,
+            local_store=self.local_store,
+        )
+        self.feed_syncer = EditorPluginLocalFeedSyncer(
+            settings=api_settings,
+            repository=self.auth_repository,
+            local_store=self.local_store,
         )
 
         self.search_ai_client = self._build_search_ai_client()
         self.embedding_service = self._build_embedding_service()
+        self.feed_syncer.start()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
         api_key = self.x_settings.search_ai_review_openai_api_key or self.x_settings.openai_api_key
@@ -355,8 +511,13 @@ class EditorPluginNewsGenService:
             cache=SearchCache(self.paths.searcher_cache_path),
         )
 
+    def close(self) -> None:
+        self.feed_syncer.stop()
+
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
-        return self.authenticator.authenticate(authorization_header)
+        actor = self.authenticator.authenticate(authorization_header)
+        self.feed_syncer.set_sync_email(actor.email)
+        return actor
 
     def authenticate_console_admin(self, authorization_header: str | None) -> AuthenticatedEditor:
         token = parse_bearer_token(authorization_header)
@@ -397,6 +558,8 @@ class EditorPluginNewsGenService:
 
     def login(self, request: EditorPluginLoginRequestModel) -> dict[str, Any]:
         token, expires_at, actor = self.authenticator.login(request)
+        self.feed_syncer.set_sync_email(actor.email)
+        self.feed_syncer.wake()
         return {
             "access_token": token,
             "expires_at": int(expires_at.timestamp()),
@@ -451,46 +614,38 @@ class EditorPluginNewsGenService:
         return snapshot
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
-        rows = self.auth_repository.call_plugin_function(
-            email=actor.email,
-            function_name="editor_plugin_feed",
-            args=(limit,),
+        self.feed_syncer.set_sync_email(actor.email)
+        return self.local_store.list_feed_items(
+            limit=limit,
+            max_age_hours=self.api_settings.local_feed_max_age_hours,
         )
-        return [self._normalize_feed_row(row) for row in rows]
 
     def feed_state(self, actor: AuthenticatedEditor, feed_item_ids: list[str]) -> list[dict[str, Any]]:
-        return self.auth_repository.call_plugin_function(
-            email=actor.email,
-            function_name="editor_plugin_state",
-            args=(feed_item_ids,),
-        )
+        return self.local_store.feed_state(actor_email=actor.email, feed_item_ids=feed_item_ids)
 
     def mark_seen(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
-        return self.auth_repository.call_plugin_json_function(
-            email=actor.email,
-            function_name="editor_plugin_mark_seen",
-            args=(
-                str(payload.get("p_feed_item_id") or ""),
-                str(payload.get("p_feed_kind") or ""),
-                payload.get("p_session_id"),
-                json.dumps(payload.get("p_extra_json") or {}, ensure_ascii=False),
-            ),
+        return self.local_store.mark_seen(
+            feed_item_id=str(payload.get("p_feed_item_id") or ""),
+            feed_kind=str(payload.get("p_feed_kind") or ""),
         )
 
     def submit_feedback(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
-        return self.auth_repository.call_plugin_json_function(
-            email=actor.email,
-            function_name="editor_plugin_submit_feedback",
-            args=(
-                str(payload.get("p_feed_item_id") or ""),
-                str(payload.get("p_feed_kind") or ""),
-                str(payload.get("p_feedback") or ""),
-                payload.get("p_session_id"),
-                json.dumps(payload.get("p_extra_json") or {}, ensure_ascii=False),
-            ),
+        result = self.local_store.record_feedback(
+            feed_item_id=str(payload.get("p_feed_item_id") or ""),
+            feed_kind=str(payload.get("p_feed_kind") or ""),
+            feedback=str(payload.get("p_feedback") or ""),
+            actor_user_id=actor.user_id,
+            actor_email=actor.email,
+            actor_display_name=actor.display_name,
+            session_id=payload.get("p_session_id"),
+            extra_json=payload.get("p_extra_json") if isinstance(payload.get("p_extra_json"), dict) else {},
         )
+        self.feed_syncer.set_sync_email(actor.email)
+        self.feed_syncer.wake()
+        return result
 
-    def _normalize_feed_row(self, row: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def normalize_feed_row(row: dict[str, Any]) -> dict[str, Any]:
         return {
             **row,
             "badges": row.get("badges") or [],
@@ -960,4 +1115,5 @@ def run_editor_plugin_api_server(
         print("[odaily] editor plugin api server stopped")
     finally:
         server.server_close()
+        service.close()
     return 0

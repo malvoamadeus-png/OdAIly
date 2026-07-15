@@ -723,7 +723,6 @@ def x_process_worker_command(args: argparse.Namespace) -> int:
 
     ensure_runtime_dirs(get_paths())
     x_capture_repository = PostgresXCaptureRepository(args.database_url)
-    x_capture_repository.init_schema()
     repository = PostgresXProcessingRepository(args.database_url)
     worker = XProcessingWorker(
         stage=args.stage,

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.x_processing.repository import _import_psycopg, get_database_url
 
 
@@ -25,9 +26,17 @@ class PostgresMaintenanceRepository:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        self.application_name = "odaily-maintenance"
 
-    def _connect(self):
-        return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+    def _connect(self, *, autocommit: bool = False):
+        return self._psycopg.connect(
+            self.database_url,
+            **build_psycopg_connect_kwargs(
+                row_factory=self._dict_row,
+                autocommit=autocommit,
+                application_name=self.application_name,
+            ),
+        )
 
     def cleanup(
         self,
