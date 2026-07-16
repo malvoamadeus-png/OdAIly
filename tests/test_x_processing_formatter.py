@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 import requests
 from packages.x_processing.ai_client import OpenAIResponsesClient
-from packages.x_processing.formatter import format_brief
+from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import DraftBrief
 
 
@@ -29,6 +30,40 @@ def test_format_brief_preserves_existing_odaily_prefix_when_normalizing_content(
     formatted = format_brief(draft)
 
     assert formatted.content == "Odaily星球日报讯 Altman 表示将投入 1000 美元支持 OpenAI 生态。"
+
+
+def test_parse_draft_output_rejects_markdown_link_meta_title() -> None:
+    raw_output = (
+        "[**我会先读取原文链接内容，提取可核验的信息后按指定格式输出。"
+        "长鑫存储DRAM全球市场份额升至5%**](https://x.com/jukan05/status/2077648404600254508)\n\n"
+        "Odaily星球日报讯 Citrini 分析师 jukan 在 X 平台发文表示，"
+        "Counterpoint Research 数据显示，长鑫存储 DRAM 全球市场份额已升至 5%。"
+    )
+
+    with pytest.raises(ValueError, match="forbidden link|meta text|explanatory text"):
+        parse_draft_output(raw_output)
+
+
+def test_parse_draft_output_rejects_explanatory_preamble() -> None:
+    raw_output = (
+        "我会先读取原文链接内容，提取可核验的信息后按指定格式输出。\n\n"
+        "长鑫存储DRAM全球市场份额升至5%\n\n"
+        "Citrini 分析师 jukan 在 X 平台发文表示，Counterpoint Research 数据显示，"
+        "长鑫存储 DRAM 全球市场份额已升至 5%。"
+    )
+
+    with pytest.raises(ValueError, match="explanatory text|meta text"):
+        parse_draft_output(raw_output)
+
+
+def test_format_brief_rejects_prefixed_explanatory_content() -> None:
+    draft = DraftBrief(
+        title="长鑫存储DRAM全球市场份额升至5%",
+        content="Odaily星球日报讯 我会先读取原文链接内容，提取可核验的信息后按指定格式输出。",
+    )
+
+    with pytest.raises(ValueError, match="explanatory text|meta text"):
+        format_brief(draft)
 
 
 def _json_response(payload: dict[str, Any]) -> requests.Response:

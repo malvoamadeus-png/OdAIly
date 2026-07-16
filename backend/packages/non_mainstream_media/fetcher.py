@@ -2783,6 +2783,8 @@ def extract_cointelegraph_embedded_published_at(html: str) -> str | None:
     for pattern in (
         r'"publishedAt"\s*:\s*"([^"]+)"',
         r'"datePublished"\s*:\s*"([^"]+)"',
+        r'\\"publishedAt\\"\s*:\s*\\"([^"\\]+)\\"',
+        r'\\"datePublished\\"\s*:\s*\\"([^"\\]+)\\"',
     ):
         match = re.search(pattern, html)
         if match:

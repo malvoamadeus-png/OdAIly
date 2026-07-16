@@ -9,6 +9,15 @@ from .models import DraftBrief
 
 ODAILY_PREFIX = "Odaily星球日报讯 "
 _PARAGRAPH_ENDINGS = ("。", "！", "？", "；", ".", "!", "?", ";", "”", "’", "\"", "'")
+_MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]\n]{1,300}\]\(https?://[^)\s]+(?:\s+\"[^\"]*\")?\)", re.IGNORECASE)
+_URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_MODEL_META_LINE_PATTERN = re.compile(
+    r"^(?:"
+    r"好的|以下是|下面是|已根据|根据要求|按要求|我会先|我将先|我先|我已经|我已|"
+    r"先读取|先提取|将原文|这里是|这是"
+    r")"
+)
+_FORBIDDEN_META_PHRASES = ("原文链接", "来源链接", "按指定格式输出", "可核验的信息")
 
 
 def _strip_code_fence(value: str) -> str:
@@ -40,9 +49,34 @@ def parse_draft_output(value: str) -> DraftBrief:
         content_lines = content_lines[1:]
     content = "\n".join(content_lines).strip()
     content = re.sub(r"^正文[:：]\s*", "", content)
+    _reject_contaminated_output(title=title, content=content)
     if not title or not content:
         raise ValueError("writer output must contain title and content")
     return DraftBrief(title=title, content=content)
+
+
+def _reject_contaminated_output(*, title: str, content: str) -> None:
+    title_text = title.strip()
+    content_text = content.strip()
+    if not title_text or not content_text:
+        return
+
+    fields = (("title", title_text), ("content", content_text))
+    for field_name, text in fields:
+        if _MARKDOWN_LINK_PATTERN.search(text) or _URL_PATTERN.search(text):
+            raise ValueError(f"writer output contains forbidden link in {field_name}")
+        if any(phrase in text for phrase in _FORBIDDEN_META_PHRASES):
+            raise ValueError(f"writer output contains meta text in {field_name}")
+
+    first_content_line = content_text.splitlines()[0].strip()
+    if first_content_line.startswith(ODAILY_PREFIX):
+        first_content_line = first_content_line.removeprefix(ODAILY_PREFIX).lstrip()
+    elif first_content_line.startswith("Odaily星球日报讯"):
+        first_content_line = first_content_line.removeprefix("Odaily星球日报讯").lstrip()
+    for field_name, text in (("title", title_text), ("content", first_content_line)):
+        normalized = text.strip("「」《》【】[]()（）\"'“”‘’*# 　")
+        if _MODEL_META_LINE_PATTERN.match(normalized):
+            raise ValueError(f"writer output contains explanatory text in {field_name}")
 
 
 def _apply_common_replacements(value: str) -> str:
@@ -110,4 +144,5 @@ def format_brief(draft: DraftBrief) -> DraftBrief:
         content = f"{prefix}{content}"
     content = _ensure_prefix(content)
     content = _ensure_paragraph_punctuation(content)
+    _reject_contaminated_output(title=title, content=content)
     return DraftBrief(title=title, content=content)
