@@ -14,6 +14,7 @@ import {
   Save,
   Send,
   Star,
+  Timer,
   Trash2,
   Wallet,
   Zap,
@@ -31,6 +32,7 @@ import {
   getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
+  getPipelineTimingDashboard,
   getPublisherRuleConfig,
   getPublisherRuleConfigSnapshot,
   listCompetitorFilterKeywords,
@@ -69,6 +71,10 @@ import {
   type NonMainstreamDashboardPayload,
   type Jin10Settings,
   type NonMainstreamSettings,
+  type PipelineTimingDashboard,
+  type PipelineTimingFlow,
+  type PipelineTimingStage,
+  type PipelineTimingWindow,
   type NonMainstreamSource,
   type PublisherRule,
   type PublisherRuleConfig,
@@ -110,6 +116,7 @@ type SourceManagementView = 'x' | 'non_mainstream' | 'ai_source' | 'mixed_source
 type ConsoleView =
   | SourceManagementView
   | 'tasks'
+  | 'timing'
   | 'publisher'
   | 'workflow'
   | 'whale'
@@ -148,7 +155,7 @@ const emptyJin10Settings: Jin10Settings = {
   updated_at: null,
 };
 
-  const emptyPublisherRuleConfig: PublisherRuleConfig = {
+const emptyPublisherRuleConfig: PublisherRuleConfig = {
   version: 1,
     regular: {
       key: 'regular',
@@ -170,6 +177,12 @@ const emptyJin10Settings: Jin10Settings = {
   updated_by: null,
 };
 
+const emptyPipelineTimingDashboard: PipelineTimingDashboard = {
+  generated_at: null,
+  windows: [],
+  last_error: null,
+};
+
 function fmtTime(value: string | null | undefined): string {
   if (!value) return '-';
   const date = new Date(value);
@@ -183,6 +196,17 @@ function fmtTime(value: string | null | undefined): string {
     second: '2-digit',
     hour12: false,
   }).format(date);
+}
+
+function fmtSeconds(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+  if (value >= 60) return `${(value / 60).toFixed(1)}m`;
+  return `${value.toFixed(1)}s`;
+}
+
+function fmtPercent(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function fmtUnixMs(value: number | null | undefined): string {
@@ -699,6 +723,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [publisherRules, setPublisherRules] = useState<PublisherRuleConfig>(emptyPublisherRuleConfig);
   const [publisherPromptPreview, setPublisherPromptPreview] = useState('');
   const [publisherLoadWarning, setPublisherLoadWarning] = useState('');
+  const [pipelineTiming, setPipelineTiming] = useState<PipelineTimingDashboard>(emptyPipelineTimingDashboard);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
@@ -711,6 +736,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
+  const [loadingPipelineTiming, setLoadingPipelineTiming] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [loadingPublisher, setLoadingPublisher] = useState(true);
   const [loadingJin10, setLoadingJin10] = useState(true);
@@ -873,6 +899,17 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function loadPipelineTiming() {
+    setError('');
+    setLoadingPipelineTiming(true);
+    try {
+      const dashboard = await getPipelineTimingDashboard();
+      setPipelineTiming(dashboard);
+    } finally {
+      setLoadingPipelineTiming(false);
+    }
+  }
+
   async function loadPublisherAll() {
     setError('');
     setPublisherLoadWarning('');
@@ -997,6 +1034,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         case 'tasks':
           await loadProcessingTasks();
           return;
+        case 'timing':
+          await loadPipelineTiming();
+          return;
         case 'non_mainstream':
         case 'ai_source':
         case 'mixed_source':
@@ -1027,6 +1067,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setError(err.message);
       setLoading(false);
       setLoadingProcessingTasks(false);
+      setLoadingPipelineTiming(false);
       setLoadingNonMainstream(false);
       setLoadingPublisher(false);
       setLoadingJin10(false);
@@ -1442,6 +1483,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'Source Management'
       : view === 'tasks'
         ? 'Cycle Monitor'
+      : view === 'timing'
+        ? 'Timing'
       : view === 'publisher'
         ? 'Publisher'
       : view === 'jin10'
@@ -1462,6 +1505,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? '信源管理'
       : view === 'tasks'
         ? '信息周期监控'
+      : view === 'timing'
+        ? '耗时看板'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'jin10'
@@ -1482,6 +1527,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
       : view === 'tasks'
         ? `${visibleProcessingTasks.length} / ${processingTasks.length} 条最近任务 · 发布者说明随任务展示`
+      : view === 'timing'
+        ? `本地快照${pipelineTiming.generated_at ? ` · ${fmtTime(pipelineTiming.generated_at)}` : '生成中'} · 每小时刷新`
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
@@ -1500,6 +1547,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? loadAll()
       : view === 'tasks'
         ? loadProcessingTasks()
+      : view === 'timing'
+        ? loadPipelineTiming()
       : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
       : view === 'publisher'
@@ -1536,6 +1585,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
             <Database size={18} /> 信息周期监控
+          </button>
+          <button className={view === 'timing' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('timing')}>
+            <Timer size={18} /> 耗时看板
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1742,6 +1794,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             query={taskOverviewQuery}
             onQueryChange={setTaskOverviewQuery}
           />
+        ) : view === 'timing' ? (
+          <PipelineTimingPanel dashboard={pipelineTiming} loading={loadingPipelineTiming} />
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}
@@ -1933,6 +1987,165 @@ function TaskOverviewPanel({
         <TaskTable tasks={tasks} emptyText={loading ? '正在加载最近任务。' : '当前筛选没有任务。'} />
       </section>
     </section>
+  );
+}
+
+function PipelineTimingPanel({ dashboard, loading }: { dashboard: PipelineTimingDashboard; loading: boolean }) {
+  const [selectedHours, setSelectedHours] = useState(24);
+  const [mode, setMode] = useState<'overview' | 'flows'>('overview');
+  const selectedWindow =
+    dashboard.windows.find((window) => window.hours === selectedHours)
+    || dashboard.windows[0]
+    || null;
+
+  useEffect(() => {
+    if (dashboard.windows.length > 0 && !dashboard.windows.some((window) => window.hours === selectedHours)) {
+      setSelectedHours(dashboard.windows[0].hours);
+    }
+  }, [dashboard.windows, selectedHours]);
+
+  if (loading) {
+    return <div className="emptyState timingEmpty">耗时快照加载中。</div>;
+  }
+
+  if (!selectedWindow) {
+    return (
+      <section className="timingLayout">
+        <div className="emptyState timingEmpty">
+          本地耗时快照还在生成中。服务启动后会在首轮计算完成后显示数据。
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="timingLayout">
+      <div className="timingToolbar">
+        <div className="workflowModeSwitch" aria-label="耗时窗口">
+          {dashboard.windows.map((window) => (
+            <button
+              className={selectedWindow.hours === window.hours ? 'active' : ''}
+              type="button"
+              key={window.hours}
+              onClick={() => setSelectedHours(window.hours)}
+            >
+              {window.label}
+            </button>
+          ))}
+        </div>
+        <div className="workflowModeSwitch" aria-label="耗时展示模式">
+          <button className={mode === 'overview' ? 'active' : ''} type="button" onClick={() => setMode('overview')}>
+            总览
+          </button>
+          <button className={mode === 'flows' ? 'active' : ''} type="button" onClick={() => setMode('flows')}>
+            按流程拆分
+          </button>
+        </div>
+      </div>
+
+      {dashboard.last_error && <div className="notice error">最近一次快照刷新失败：{dashboard.last_error}</div>}
+
+      <div className="timingSummaryGrid">
+        <TimingSummaryCard label="样本" value={`${selectedWindow.overall.sample_count}`} detail="进入主写作链路" />
+        <TimingSummaryCard
+          label="完成率"
+          value={fmtPercent(selectedWindow.overall.completion_rate)}
+          detail={`${selectedWindow.overall.completed_count} 条到发布完成`}
+        />
+        <TimingSummaryCard label="均值" value={fmtSeconds(selectedWindow.overall.mean_seconds)} detail="已完成样本总耗时" />
+        <TimingSummaryCard label="中位数" value={fmtSeconds(selectedWindow.overall.median_seconds)} detail="已完成样本总耗时" />
+      </div>
+
+      {mode === 'overview' ? (
+        <>
+          <section className="section">
+            <div className="sectionHeader">
+              <h2>阶段耗时</h2>
+              <span>{selectedWindow.label} · 均值 / 中位数</span>
+            </div>
+            <TimingStageTable stages={selectedWindow.by_stage} />
+          </section>
+          <section className="section">
+            <div className="sectionHeader">
+              <h2>状态分布</h2>
+              <span>{selectedWindow.status_breakdown.length} 类状态</span>
+            </div>
+            <div className="timingStatusGrid">
+              {selectedWindow.status_breakdown.map((item) => (
+                <div className="timingStatusPill" key={item.status}>
+                  <strong>{taskStatusLabel(item.status)}</strong>
+                  <span>{item.count}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      ) : (
+        <TimingFlowTable window={selectedWindow} />
+      )}
+    </section>
+  );
+}
+
+function TimingSummaryCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="timingSummaryCard">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function TimingStageTable({ stages }: { stages: PipelineTimingStage[] }) {
+  return (
+    <div className="timingTable">
+      <div className="timingTableHeader">
+        <span>环节</span>
+        <span>样本</span>
+        <span>均值</span>
+        <span>中位数</span>
+      </div>
+      {stages.map((stage) => (
+        <div className="timingTableRow" key={stage.stage_key}>
+          <strong>{stage.stage_name}</strong>
+          <span>{stage.count}</span>
+          <span>{fmtSeconds(stage.mean_seconds)}</span>
+          <span>{fmtSeconds(stage.median_seconds)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TimingFlowTable({ window }: { window: PipelineTimingWindow }) {
+  return (
+    <div className="timingFlowList">
+      {window.by_flow.map((flow) => (
+        <TimingFlowCard flow={flow} key={flow.flow_key} />
+      ))}
+      {window.by_flow.length === 0 && <div className="emptyState">当前窗口没有可展示的流程数据。</div>}
+    </div>
+  );
+}
+
+function TimingFlowCard({ flow }: { flow: PipelineTimingFlow }) {
+  return (
+    <article className="timingFlowCard">
+      <div className="timingFlowHeader">
+        <div>
+          <h2>{flow.flow_name}</h2>
+          <span>{flow.sample_count} 条样本 · {flow.completed_count} 条完成 · 完成率 {fmtPercent(flow.completion_rate)}</span>
+        </div>
+        <div className="timingFlowTotals">
+          <strong>{fmtSeconds(flow.mean_seconds)}</strong>
+          <span>均值</span>
+          <strong>{fmtSeconds(flow.median_seconds)}</strong>
+          <span>中位数</span>
+        </div>
+      </div>
+      <TimingStageTable stages={flow.by_stage} />
+    </article>
   );
 }
 

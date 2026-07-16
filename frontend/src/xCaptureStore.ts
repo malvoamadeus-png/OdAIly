@@ -62,6 +62,49 @@ export type PublisherRuleConfigPayload = {
   prompt_text: string;
 };
 
+export type PipelineTimingMetric = {
+  count: number;
+  mean_seconds: number | null;
+  median_seconds: number | null;
+};
+
+export type PipelineTimingSummary = PipelineTimingMetric & {
+  sample_count: number;
+  completed_count: number;
+  completion_rate: number;
+};
+
+export type PipelineTimingStage = PipelineTimingMetric & {
+  stage_key: string;
+  stage_name: string;
+};
+
+export type PipelineTimingFlow = PipelineTimingSummary & {
+  flow_key: string;
+  flow_name: string;
+  by_stage: PipelineTimingStage[];
+};
+
+export type PipelineTimingStatus = {
+  status: string;
+  count: number;
+};
+
+export type PipelineTimingWindow = {
+  hours: number;
+  label: string;
+  overall: PipelineTimingSummary;
+  by_stage: PipelineTimingStage[];
+  by_flow: PipelineTimingFlow[];
+  status_breakdown: PipelineTimingStatus[];
+};
+
+export type PipelineTimingDashboard = {
+  generated_at: string | null;
+  windows: PipelineTimingWindow[];
+  last_error?: string | null;
+};
+
 export type Jin10Settings = {
   enabled: boolean;
   interval_seconds: number;
@@ -875,6 +918,10 @@ export async function updatePublisherChannel(channelKey: PublisherChannelKey, en
 
 export async function getPublisherRuleConfig(): Promise<PublisherRuleConfigPayload> {
   return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/get');
+}
+
+export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashboard> {
+  return consoleApiPost<PipelineTimingDashboard>('/console/pipeline-timing/get');
 }
 
 export async function savePublisherRuleConfig(config: PublisherRuleConfig): Promise<PublisherRuleConfigPayload> {

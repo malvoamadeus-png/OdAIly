@@ -228,6 +228,166 @@ h2 {
   margin-top: 18px;
 }
 
+.timingLayout {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.timingToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.timingSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.timingSummaryCard {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.timingSummaryCard span,
+.timingSummaryCard small {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.timingSummaryCard strong {
+  color: #1f2933;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.timingTable {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.timingTableHeader,
+.timingTableRow {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(90px, 0.7fr));
+  gap: 10px;
+  align-items: center;
+}
+
+.timingTableHeader {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e8edf2;
+  background: #f8fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.timingTableRow {
+  padding: 12px;
+  border-bottom: 1px solid #edf0f3;
+}
+
+.timingTableRow:last-child {
+  border-bottom: 0;
+}
+
+.timingTableRow span {
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.timingStatusGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timingStatusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d8dde3;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.timingStatusPill strong {
+  color: #394150;
+  font-size: 13px;
+}
+
+.timingStatusPill span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.timingFlowList {
+  display: grid;
+  gap: 12px;
+}
+
+.timingFlowCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.timingFlowHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.timingFlowHeader h2,
+.timingFlowHeader span {
+  display: block;
+}
+
+.timingFlowHeader span,
+.timingFlowTotals span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.timingFlowTotals {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 2px 12px;
+  align-items: baseline;
+  text-align: right;
+}
+
+.timingFlowTotals strong {
+  color: #1f2933;
+  font-size: 18px;
+}
+
+.timingEmpty {
+  margin-top: 18px;
+}
+
 .publisherLayout {
   display: grid;
   gap: 18px;
@@ -1886,6 +2046,7 @@ textarea:focus {
 
   .workflowHero,
   .workflowToolbar,
+  .timingSummaryGrid,
   .workflowCompactGrid,
   .workflowPrincipleGrid {
     grid-template-columns: 1fr;
@@ -1970,13 +2131,26 @@ textarea:focus {
     min-height: auto;
   }
 
+  .timingToolbar,
   .workflowToolbar {
     align-items: stretch;
   }
 
+  .timingToolbar .workflowModeSwitch,
   .workflowModeSwitch {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .timingTableHeader,
+  .timingTableRow,
+  .timingFlowHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .timingFlowTotals {
+    justify-content: start;
+    text-align: left;
   }
 
   .workflowRail,

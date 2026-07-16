@@ -475,11 +475,13 @@ def console_list_admins_command(args: argparse.Namespace) -> int:
 
 def editor_plugin_init_command(args: argparse.Namespace) -> int:
     from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+    from packages.pipeline_timing import PostgresPipelineTimingRepository
     from packages.x_capture.repository import PostgresXCaptureRepository
 
     repository = PostgresEditorPluginAuthRepository(args.database_url)
     repository.init_schema()
     PostgresXCaptureRepository(args.database_url).init_schema()
+    PostgresPipelineTimingRepository(args.database_url).init_schema()
     print("[odaily] editor plugin database schema initialized")
     return 0
 

@@ -24,6 +24,11 @@ from packages.common.editor_plugin_auth import (
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
 from packages.editor_plugin_local_store import LocalEditorPluginStore
+from packages.pipeline_timing import (
+    PipelineTimingLocalStore,
+    PipelineTimingSnapshotService,
+    PostgresPipelineTimingRepository,
+)
 from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
@@ -152,6 +157,7 @@ class EditorPluginApiSettings(BaseModel):
     local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
     local_feed_sync_email: str | None = None
+    pipeline_timing_refresh_interval_seconds: float = Field(default=3600.0, ge=60.0, le=86400.0)
 
 
 @dataclass(frozen=True)
@@ -282,6 +288,7 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),
         "local_feed_sync_email": os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_EMAIL"),
+        "pipeline_timing_refresh_interval_seconds": float(os.getenv("PIPELINE_TIMING_REFRESH_INTERVAL_SECONDS") or 3600.0),
     }
     try:
         return EditorPluginApiSettings.model_validate(payload)
@@ -451,10 +458,12 @@ class EditorPluginNewsGenService:
         ensure_runtime_dirs(self.paths)
 
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
+        self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
         self.console_auth_repository = PostgresConsoleAuthRepository(database_url)
         self.x_capture_repository = PostgresXCaptureRepository(database_url)
         self.x_repository = PostgresXProcessingRepository(database_url)
+        self.pipeline_timing_repository = PostgresPipelineTimingRepository(database_url)
 
         self.authenticator = SupabaseEditorPluginAuthenticator(
             settings=api_settings,
@@ -466,10 +475,16 @@ class EditorPluginNewsGenService:
             repository=self.auth_repository,
             local_store=self.local_store,
         )
+        self.pipeline_timing_snapshots = PipelineTimingSnapshotService(
+            local_store=self.pipeline_timing_store,
+            repository=self.pipeline_timing_repository,
+            refresh_interval_seconds=api_settings.pipeline_timing_refresh_interval_seconds,
+        )
 
         self.search_ai_client = self._build_search_ai_client()
         self.embedding_service = self._build_embedding_service()
         self.feed_syncer.start()
+        self.pipeline_timing_snapshots.start()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
         api_key = self.x_settings.search_ai_review_openai_api_key or self.x_settings.openai_api_key
@@ -516,6 +531,7 @@ class EditorPluginNewsGenService:
         )
 
     def close(self) -> None:
+        self.pipeline_timing_snapshots.stop()
         self.feed_syncer.stop()
 
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
@@ -645,6 +661,10 @@ class EditorPluginNewsGenService:
         except Exception as exc:
             print(f"[odaily] publisher rules snapshot save skipped error={exc}")
         return snapshot
+
+    def get_pipeline_timing(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.pipeline_timing_snapshots.dashboard()
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
         self.feed_syncer.set_sync_email(actor.email)
@@ -1013,7 +1033,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     AUTH_PATHS = {"/plugin/auth/login", "/plugin/auth/logout", "/plugin/auth/profile"}
     FEED_PATHS = {"/plugin/feed/items", "/plugin/feed/state", "/plugin/feed/mark-seen", "/plugin/feed/feedback"}
     NEWS_GEN_PATHS = {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}
-    CONSOLE_PATHS = {"/console/publisher-rules/get", "/console/publisher-rules/save"}
+    CONSOLE_PATHS = {"/console/publisher-rules/get", "/console/publisher-rules/save", "/console/pipeline-timing/get"}
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -1040,6 +1060,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
 
             if self.path in self.CONSOLE_PATHS:
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                if self.path == "/console/pipeline-timing/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
+                    return
                 if self.path == "/console/publisher-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_publisher_rules(actor)})
                     return
