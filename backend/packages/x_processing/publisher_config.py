@@ -15,7 +15,7 @@ from .models import AI_SOURCE, PipelineRecord, TaskRecord
 PublisherProfileKey = Literal["regular", "ai_source"]
 PublisherRuleKind = Literal["allow", "deny"]
 PublisherDecision = Literal["pass", "reject"]
-CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 4
+CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 5
 
 
 class PublisherDecisionResult(BaseModel):
@@ -323,6 +323,20 @@ DEFAULT_REGULAR_DENY_RULES = [
         ],
     ),
     PublisherRule(
+        id="deny_scattered_market_overview",
+        name="多主题市场综评 / 拼盘解读",
+        description=(
+            "排除没有单一核心新闻事实、把币价涨跌、技术指标、宏观数据、法案进展、美股/个股波动、市场评论等"
+            "多个主题拼在一起的综评类文本。即使其中包含某个可关注元素，只要正文主线发散、像行情解读或市场综述，"
+            "且不能改写为围绕一个明确事件的快讯，必须 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "XRP 下跌、日线确认死亡交叉，同时夹带 Clarity Act 投票推迟、BTC/ETH 表现和市场回调",
+            "比特币随美股回落，同时回顾 CPI/PPI、科技股抛售和美光较高点回撤",
+        ],
+    ),
+    PublisherRule(
         id="deny_small_security_loss",
         name="小额安全损失",
         description=(
@@ -606,6 +620,7 @@ def build_publisher_rule_prompt(
             "- 关键组织的关键人物不能只按人物或机构名放行。只有正式政策动作、监管动作、产品/市场结构变化、明确影响利率或资产负债表的政策信号，才可按重要事件理解；组建工作组、研究框架、内部审查、专家名单、方法论讨论默认 reject。",
             "- 高管离职不按公司名自动放行。创始人、CEO、实际控制人、主席、核心基金会负责人变动可进入重大动向判断；CFO、COO、销售/分销/业务负责人等离任默认 reject，除非正文明确证明影响核心产品、上市进程、监管资格、托管/清算安全或广泛用户资产。",
             "- 对观点类内容，必须同时满足：高重要主体、直接 Crypto/监管/市场结构相关、含具体新信息/新动作/新数据；三者缺一即 reject。",
+            "- 多主题市场综评、行情拼盘或东一嘴西一嘴的解读稿必须 reject；即使文本同时提到币价、技术指标、宏观数据、法案进展、美股或个股波动，只要没有围绕一个明确核心新闻事实展开，就不能按其中任一元素 pass。",
             "- 链上资金事件不要求必须出现完整 0x 地址；团队关联实体、项目方钱包、基金会相关地址、做市商相关钱包等可识别关系主体，只要有明确卖出、转入、增减持、清算、解锁后出售等事实，可按链上资金事件判断。",
             "- “拉高出货”“操纵”等定性判断不能单独作为 pass 依据；必须以正文中的可报道资金动作、金额、持仓变化、安全事故或其他事实为依据。",
             "- 金额型安全事件损失低于 10 万美元时默认 reject；只有链停摆、核心协议级漏洞、持续攻击或广泛用户资产风险等重大非金额影响时才可按安全事故规则 pass。",
