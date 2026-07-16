@@ -1111,6 +1111,7 @@ textarea:focus {
 .promptList,
 .promptEditor,
 .versionList,
+.blockbeatsKeyForm,
 .keywordForm,
 .keywordList {
   min-width: 0;
@@ -1128,10 +1129,34 @@ textarea:focus {
   gap: 8px;
 }
 
+.competitorControls,
+.blockbeatsKeyForm,
 .keywordForm {
   display: grid;
   align-content: start;
   gap: 10px;
+}
+
+.blockbeatsKeyForm input {
+  width: 100%;
+}
+
+.blockbeatsStatus {
+  display: grid;
+  gap: 6px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.blockbeatsStatus code {
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border: 1px solid #f2c8c8;
+  border-radius: 6px;
+  background: #fff7f7;
+  color: #7a271a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
 }
 
 .keywordTextarea {
@@ -1351,6 +1376,11 @@ textarea:focus {
 .statusPill.warn {
   background: #fff7e6;
   color: #a15c00;
+}
+
+.statusPill.bad {
+  background: #fff1f0;
+  color: #b42318;
 }
 
 .iconButton.favorite.active {

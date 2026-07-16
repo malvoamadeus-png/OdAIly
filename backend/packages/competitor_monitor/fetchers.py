@@ -26,6 +26,12 @@ COMPETITOR_BRAND_WORDS = ["律动", "BlockBeats", "PANews", "金色财经"]
 ODAILY_BRAND_WORDS = ["Odaily 星球日报讯", "Odaily星球日报讯"]
 
 
+class BlockbeatsQuotaError(RuntimeError):
+    def __init__(self, message: str, *, payload: Any = None) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
 @dataclass(frozen=True, slots=True)
 class NewsflashItem:
     source: str
@@ -103,8 +109,10 @@ def fetch_blockbeats(*, api_key: str | None, timeout_seconds: float) -> list[New
         headers=headers,
         timeout=timeout_seconds,
     )
+    payload = _parse_response_payload(response)
+    if response.status_code == 429 or _is_blockbeats_quota_payload(payload):
+        raise BlockbeatsQuotaError(_blockbeats_error_message(payload, fallback=f"HTTP {response.status_code}"), payload=payload)
     response.raise_for_status()
-    payload = response.json()
     news_list = _extract_list(payload)
     items: list[NewsflashItem] = []
     for news in news_list:
@@ -117,6 +125,50 @@ def fetch_blockbeats(*, api_key: str | None, timeout_seconds: float) -> list[New
         source_url = str(news.get("url") or news.get("link") or f"https://www.theblockbeats.info/flash/{source_id}")
         items.append(NewsflashItem("blockbeats", source_id, scrub_competitor_brands(title), content, source_url, published_at, news))
     return items
+
+
+def _parse_response_payload(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        return response.text[:2000]
+
+
+def _is_blockbeats_quota_payload(payload: Any) -> bool:
+    text = _blockbeats_error_message(payload, fallback="")
+    if not text:
+        return False
+    normalized = text.lower()
+    return any(
+        token in normalized
+        for token in (
+            "quota",
+            "insufficient",
+            "exceed",
+            "exceeded",
+            "limit",
+            "rate limit",
+            "too many requests",
+            "余额不足",
+            "额度不足",
+            "次数不足",
+            "已用完",
+            "超出",
+            "超过",
+        )
+    )
+
+
+def _blockbeats_error_message(payload: Any, *, fallback: str) -> str:
+    if isinstance(payload, dict):
+        parts = []
+        for key in ("code", "status", "message", "msg", "error", "err_msg", "errmsg", "detail"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                parts.append(str(value))
+        return " ".join(parts) or fallback
+    text = str(payload or "").strip()
+    return text or fallback
 
 
 def fetch_panews(*, timeout_seconds: float) -> list[NewsflashItem]:

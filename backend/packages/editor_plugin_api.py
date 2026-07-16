@@ -23,6 +23,11 @@ from packages.common.editor_plugin_auth import (
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
+from packages.competitor_monitor.blockbeats_key_config import (
+    BlockbeatsKeySaveRequest,
+    load_blockbeats_key_config,
+    save_blockbeats_key,
+)
 from packages.editor_plugin_local_store import LocalEditorPluginStore
 from packages.pipeline_timing import (
     PipelineTimingLocalStore,
@@ -662,6 +667,14 @@ class EditorPluginNewsGenService:
             print(f"[odaily] publisher rules snapshot save skipped error={exc}")
         return snapshot
 
+    def get_blockbeats_key(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return load_blockbeats_key_config().model_dump(mode="json")
+
+    def save_blockbeats_key(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        request = BlockbeatsKeySaveRequest.model_validate(payload)
+        return save_blockbeats_key(request.api_key, updated_by=actor.email).model_dump(mode="json")
+
     def get_pipeline_timing(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.pipeline_timing_snapshots.dashboard()
@@ -1033,7 +1046,13 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     AUTH_PATHS = {"/plugin/auth/login", "/plugin/auth/logout", "/plugin/auth/profile"}
     FEED_PATHS = {"/plugin/feed/items", "/plugin/feed/state", "/plugin/feed/mark-seen", "/plugin/feed/feedback"}
     NEWS_GEN_PATHS = {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}
-    CONSOLE_PATHS = {"/console/publisher-rules/get", "/console/publisher-rules/save", "/console/pipeline-timing/get"}
+    CONSOLE_PATHS = {
+        "/console/publisher-rules/get",
+        "/console/publisher-rules/save",
+        "/console/pipeline-timing/get",
+        "/console/blockbeats-key/get",
+        "/console/blockbeats-key/save",
+    }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -1065,6 +1084,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/publisher-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_publisher_rules(actor)})
+                    return
+                if self.path == "/console/blockbeats-key/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_blockbeats_key(actor)})
+                    return
+                if self.path == "/console/blockbeats-key/save":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_blockbeats_key(actor, self._read_json())})
                     return
                 self._send_json(
                     HTTPStatus.OK,

@@ -32,6 +32,7 @@ import {
   getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
+  getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
   getPublisherRuleConfig,
   getPublisherRuleConfigSnapshot,
@@ -50,6 +51,7 @@ import {
   publishPromptVersion,
   saveNewsflashEventNote,
   saveNewsflashItemNote,
+  saveBlockbeatsKey,
   signInWithPassword,
   signOut as signOutFromSupabase,
   setNewsflashEventFavorite,
@@ -68,6 +70,7 @@ import {
   type Account,
   type AccountPatch,
   type Attempt,
+  type BlockbeatsKeyConfig,
   type NonMainstreamDashboardPayload,
   type Jin10Settings,
   type NonMainstreamSettings,
@@ -173,6 +176,18 @@ const emptyPublisherRuleConfig: PublisherRuleConfig = {
     allow_rules: [],
     deny_rules: [],
   },
+  updated_at: null,
+  updated_by: null,
+};
+
+const emptyBlockbeatsKeyConfig: BlockbeatsKeyConfig = {
+  api_key: '',
+  status: 'unknown',
+  last_checked_at: null,
+  last_success_at: null,
+  last_quota_error_at: null,
+  last_error: null,
+  last_error_payload: null,
   updated_at: null,
   updated_by: null,
 };
@@ -780,6 +795,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [competitorKeywords, setCompetitorKeywords] = useState<CompetitorFilterKeyword[]>([]);
   const [newKeywords, setNewKeywords] = useState('');
   const [savingKeywords, setSavingKeywords] = useState(false);
+  const [blockbeatsKeyConfig, setBlockbeatsKeyConfig] = useState<BlockbeatsKeyConfig>(emptyBlockbeatsKeyConfig);
+  const [blockbeatsKeyDraft, setBlockbeatsKeyDraft] = useState('');
+  const [savingBlockbeatsKey, setSavingBlockbeatsKey] = useState(false);
   const [eventFilter, setEventFilter] = useState<NewsflashEventFilter>('all');
   const [eventPage, setEventPage] = useState(0);
   const [events, setEvents] = useState<NewsflashEventSummary[]>([]);
@@ -986,8 +1004,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadCompetitorKeywords() {
     setError('');
-    const keywords = await listCompetitorFilterKeywords();
+    const [keywords, blockbeatsConfig] = await Promise.all([listCompetitorFilterKeywords(), getBlockbeatsKeyConfig()]);
     setCompetitorKeywords(keywords);
+    setBlockbeatsKeyConfig(blockbeatsConfig);
+    setBlockbeatsKeyDraft(blockbeatsConfig.api_key);
   }
 
   async function loadEvents(nextFilter = eventFilter, nextView = view, nextPage = eventPage) {
@@ -1398,6 +1418,22 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSavingKeywords(false);
+    }
+  }
+
+  async function saveBlockbeatsKeyConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingBlockbeatsKey(true);
+    setError('');
+    try {
+      const saved = await saveBlockbeatsKey(blockbeatsKeyDraft);
+      setBlockbeatsKeyConfig(saved);
+      setBlockbeatsKeyDraft(saved.api_key);
+      setMessage('BlockBeats API Key 已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingBlockbeatsKey(false);
     }
   }
 
@@ -1898,9 +1934,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'competitor' ? (
           <CompetitorPanel
+            blockbeatsConfig={blockbeatsKeyConfig}
+            blockbeatsKeyDraft={blockbeatsKeyDraft}
             keywords={competitorKeywords}
             newKeywords={newKeywords}
             saving={savingKeywords}
+            savingBlockbeatsKey={savingBlockbeatsKey}
+            onBlockbeatsKeyChange={setBlockbeatsKeyDraft}
+            onSaveBlockbeatsKey={saveBlockbeatsKeyConfig}
             onNewKeywordsChange={setNewKeywords}
             onAdd={addCompetitorKeywords}
             onToggle={toggleCompetitorKeyword}
@@ -3364,40 +3405,104 @@ function PromptPanel({
   );
 }
 
+function blockbeatsStatusLabel(status: BlockbeatsKeyConfig['status']): string {
+  switch (status) {
+    case 'ok':
+      return '可用';
+    case 'quota_exhausted':
+      return '额度不足';
+    case 'request_failed':
+      return '请求失败';
+    case 'missing_key':
+      return '缺少 Key';
+    case 'unknown':
+    default:
+      return '未检查';
+  }
+}
+
+function blockbeatsStatusTone(status: BlockbeatsKeyConfig['status']): string {
+  if (status === 'quota_exhausted' || status === 'missing_key') return 'bad';
+  if (status === 'request_failed') return 'warn';
+  return '';
+}
+
 function CompetitorPanel({
+  blockbeatsConfig,
+  blockbeatsKeyDraft,
   keywords,
   newKeywords,
   saving,
+  savingBlockbeatsKey,
+  onBlockbeatsKeyChange,
+  onSaveBlockbeatsKey,
   onNewKeywordsChange,
   onAdd,
   onToggle,
   onDelete,
 }: {
+  blockbeatsConfig: BlockbeatsKeyConfig;
+  blockbeatsKeyDraft: string;
   keywords: CompetitorFilterKeyword[];
   newKeywords: string;
   saving: boolean;
+  savingBlockbeatsKey: boolean;
+  onBlockbeatsKeyChange: (value: string) => void;
+  onSaveBlockbeatsKey: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onNewKeywordsChange: (value: string) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggle: (keyword: CompetitorFilterKeyword) => Promise<void>;
   onDelete: (keyword: CompetitorFilterKeyword) => Promise<void>;
 }) {
+  const statusTone = blockbeatsStatusTone(blockbeatsConfig.status);
+  const payloadText = blockbeatsConfig.last_error_payload ? JSON.stringify(blockbeatsConfig.last_error_payload) : '';
+
   return (
     <section className="competitorLayout">
-      <form className="keywordForm" onSubmit={onAdd}>
-        <div className="sectionHeader">
-          <h2>排除词表</h2>
-          <button className="primaryButton" type="submit" disabled={saving}>
-            <Plus size={17} /> 保存
-          </button>
-        </div>
-        <textarea
-          className="keywordTextarea"
-          value={newKeywords}
-          onChange={(event) => onNewKeywordsChange(event.target.value)}
-          placeholder={'每行一个词\n跌破\n突破'}
-          spellCheck={false}
-        />
-      </form>
+      <div className="competitorControls">
+        <form className="blockbeatsKeyForm" onSubmit={onSaveBlockbeatsKey}>
+          <div className="sectionHeader">
+            <div>
+              <h2>BlockBeats API Key</h2>
+              <span>Linux 本地配置</span>
+            </div>
+            <button className="primaryButton" type="submit" disabled={savingBlockbeatsKey}>
+              <Save size={17} /> 保存
+            </button>
+          </div>
+          <input
+            value={blockbeatsKeyDraft}
+            onChange={(event) => onBlockbeatsKeyChange(event.target.value)}
+            placeholder="api-key"
+            spellCheck={false}
+          />
+          <div className="blockbeatsStatus">
+            <span className={statusTone ? `statusPill ${statusTone}` : 'statusPill'}>
+              {blockbeatsStatusLabel(blockbeatsConfig.status)}
+            </span>
+            <span>最近检查 {fmtTime(blockbeatsConfig.last_checked_at)}</span>
+            <span>最近成功 {fmtTime(blockbeatsConfig.last_success_at)}</span>
+            {blockbeatsConfig.last_quota_error_at && <span className="bad">额度不足 {fmtTime(blockbeatsConfig.last_quota_error_at)}</span>}
+            {blockbeatsConfig.last_error && <span className="bad">{blockbeatsConfig.last_error}</span>}
+            {payloadText && <code>{payloadText}</code>}
+          </div>
+        </form>
+        <form className="keywordForm" onSubmit={onAdd}>
+          <div className="sectionHeader">
+            <h2>排除词表</h2>
+            <button className="primaryButton" type="submit" disabled={saving}>
+              <Plus size={17} /> 保存
+            </button>
+          </div>
+          <textarea
+            className="keywordTextarea"
+            value={newKeywords}
+            onChange={(event) => onNewKeywordsChange(event.target.value)}
+            placeholder={'每行一个词\n跌破\n突破'}
+            spellCheck={false}
+          />
+        </form>
+      </div>
 
       <div className="keywordList">
         {keywords.length === 0 && <div className="emptyState">暂无排除词，请先运行初始化命令或添加新词。</div>}

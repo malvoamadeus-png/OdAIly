@@ -16,7 +16,8 @@ from packages.common.paths import get_paths
 from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.searcher import SearchCache, SearchDocument
 
-from .fetchers import NewsflashItem
+from .blockbeats_key_config import error_payload_summary, load_blockbeats_key_config, record_blockbeats_key_status
+from .fetchers import BlockbeatsQuotaError, NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
 from .events import NewsflashEventAggregator
 from .repository import CompetitorMonitorRepository, parse_datetime
@@ -80,10 +81,7 @@ class CompetitorMonitorWorker:
         sample_titles_by_source: dict[str, list[str]] = {source: [] for source in NEWSFLASH_SOURCES}
         try:
             fetchers = {
-                "blockbeats": lambda: fetch_blockbeats(
-                    api_key=self.settings.blockbeats_api_key,
-                    timeout_seconds=self.settings.request_timeout_seconds,
-                ),
+                "blockbeats": self._fetch_blockbeats_items,
                 "panews": lambda: fetch_panews(timeout_seconds=self.settings.request_timeout_seconds),
                 "jinse": lambda: fetch_jinse(timeout_seconds=self.settings.request_timeout_seconds),
                 "odaily": lambda: fetch_odaily(timeout_seconds=self.settings.request_timeout_seconds),
@@ -192,6 +190,28 @@ class CompetitorMonitorWorker:
         except Exception as exc:
             print(f"[odaily] competitor monitor exclude keywords load failed: {exc}")
             return []
+
+    def _fetch_blockbeats_items(self) -> list[NewsflashItem]:
+        config = load_blockbeats_key_config()
+        api_key = config.api_key or self.settings.blockbeats_api_key
+        if not api_key:
+            error = "Missing BLOCKBEATS_API_KEY"
+            record_blockbeats_key_status("missing_key", error=error)
+            raise RuntimeError(error)
+        try:
+            items = fetch_blockbeats(api_key=api_key, timeout_seconds=self.settings.request_timeout_seconds)
+        except BlockbeatsQuotaError as exc:
+            record_blockbeats_key_status(
+                "quota_exhausted",
+                error=str(exc),
+                error_payload=error_payload_summary(exc.payload),
+            )
+            raise
+        except Exception as exc:
+            record_blockbeats_key_status("request_failed", error=str(exc))
+            raise
+        record_blockbeats_key_status("ok")
+        return items
 
     def _filter_items_for_tasks(self, items: list[NewsflashItem]) -> tuple[list[NewsflashItem], int, dict[str, int]]:
         kept: list[NewsflashItem] = []

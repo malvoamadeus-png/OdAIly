@@ -62,6 +62,20 @@ export type PublisherRuleConfigPayload = {
   prompt_text: string;
 };
 
+export type BlockbeatsKeyStatus = 'unknown' | 'ok' | 'quota_exhausted' | 'request_failed' | 'missing_key';
+
+export type BlockbeatsKeyConfig = {
+  api_key: string;
+  status: BlockbeatsKeyStatus;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  last_quota_error_at: string | null;
+  last_error: string | null;
+  last_error_payload: Record<string, unknown> | null;
+  updated_at: string | null;
+  updated_by: string | null;
+};
+
 export type PipelineTimingMetric = {
   count: number;
   mean_seconds: number | null;
@@ -926,6 +940,14 @@ export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashbo
 
 export async function savePublisherRuleConfig(config: PublisherRuleConfig): Promise<PublisherRuleConfigPayload> {
   return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/save', { config });
+}
+
+export async function getBlockbeatsKeyConfig(): Promise<BlockbeatsKeyConfig> {
+  return consoleApiPost<BlockbeatsKeyConfig>('/console/blockbeats-key/get');
+}
+
+export async function saveBlockbeatsKey(apiKey: string): Promise<BlockbeatsKeyConfig> {
+  return consoleApiPost<BlockbeatsKeyConfig>('/console/blockbeats-key/save', { api_key: apiKey });
 }
 
 export async function getPublisherRuleConfigSnapshot(): Promise<PublisherRuleConfigPayload | null> {
