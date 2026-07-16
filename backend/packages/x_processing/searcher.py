@@ -16,6 +16,11 @@ import requests
 
 from .models import ACTIVE_CANDIDATE_TTL
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - optional runtime acceleration
+    np = None
+
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -566,12 +571,47 @@ def _row_to_search_document(row: sqlite3.Row) -> SearchDocument:
 
 
 def top_match(query_vector: list[float], documents: list[tuple[SearchDocument, list[float]]]) -> SearchMatch | None:
+    if np is not None and query_vector and documents:
+        match = _top_match_numpy(query_vector, documents)
+        if match is not None:
+            return match
     best: SearchMatch | None = None
     for document, vector in documents:
         similarity = cosine_similarity(query_vector, vector)
         if best is None or similarity > best.similarity:
             best = SearchMatch(document=document, similarity=similarity)
     return best
+
+
+def _top_match_numpy(
+    query_vector: list[float],
+    documents: list[tuple[SearchDocument, list[float]]],
+) -> SearchMatch | None:
+    dimensions = len(query_vector)
+    if dimensions == 0:
+        return None
+    if any(len(vector) != dimensions for _document, vector in documents):
+        return None
+    try:
+        query = np.asarray(query_vector, dtype=np.float64)
+        matrix = np.asarray([vector for _document, vector in documents], dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        return None
+    query_norm = float(np.linalg.norm(query))
+    document_norms = np.linalg.norm(matrix, axis=1)
+    denominator = document_norms * query_norm
+    if query_norm == 0.0:
+        return SearchMatch(document=documents[0][0], similarity=0.0)
+    similarities = np.divide(
+        matrix @ query,
+        denominator,
+        out=np.zeros_like(document_norms, dtype=np.float64),
+        where=denominator != 0,
+    )
+    best_index = int(np.argmax(similarities))
+    return SearchMatch(document=documents[best_index][0], similarity=float(similarities[best_index]))
 
 
 AI_REVIEW_SCHEMA = {

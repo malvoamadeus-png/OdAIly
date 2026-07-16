@@ -45,6 +45,7 @@ from .models import (
     TaskRecord,
     render_prompt_content,
 )
+from .odaily_reference_source import fetch_odaily_reference_documents_from_api
 from .publisher_config import (
     PUBLISHER_DECISION_SCHEMA,
     build_publisher_rule_prompt,
@@ -1146,7 +1147,14 @@ class XProcessingWorker:
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()
-        remote_documents = self.repository.list_odaily_reference_documents(since=since)
+        try:
+            remote_documents = fetch_odaily_reference_documents_from_api(
+                since=since,
+                timeout_seconds=self.settings.request_timeout_seconds,
+            )
+        except Exception as exc:
+            print(f"[odaily] search odaily api refresh failed; fallback=supabase error={exc}")
+            remote_documents = self.repository.list_odaily_reference_documents(since=since)
         if cache is not None:
             cache.upsert_documents(remote_documents)
         return remote_documents

@@ -58,6 +58,44 @@ Host jibai-prod
 /mnt/c/Windows/System32/OpenSSH/ssh.exe jibai-prod "journalctl -u odaily-non-mainstream-media.service -n 120 --no-pager"
 ```
 
+## PowerShell Wrapper
+
+在 Windows PowerShell 中执行包含 SQL、JSON、Python 多行字符串或中文的远端命令时，不要把复杂脚本塞进 `ssh "..."` 一行里。PowerShell、本地 SSH、远端 bash 和目标解释器会连续处理引号，容易把 SQL 或 Python 字符串拆坏。
+
+仓库提供两个项目专用 wrapper，默认连接 `root@47.76.243.147` 并进入 `/opt/OdAIly`，通过 base64 + stdin 把脚本发到远端执行：
+
+```powershell
+@'
+git rev-parse --short HEAD
+systemctl is-active odaily-editor-plugin-api.service
+journalctl -u odaily-editor-plugin-api.service -n 40 --no-pager
+'@ | .\scripts\prod-bash.ps1
+```
+
+```powershell
+@'
+import sqlite3
+from pathlib import Path
+
+p = Path("data/runtime/pipeline_timing.sqlite")
+conn = sqlite3.connect(p)
+print(conn.execute("""
+select generated_at, length(payload_json)
+from pipeline_timing_snapshots
+order by generated_at desc
+limit 3
+""").fetchall())
+conn.close()
+'@ | .\scripts\prod-python.ps1
+```
+
+可选参数：
+
+```powershell
+.\scripts\prod-bash.ps1 -Target root@47.76.243.147 -Workdir /opt/OdAIly
+.\scripts\prod-python.ps1 -Python .venv/bin/python
+```
+
 ## 注意事项
 
 - 生产服务器 `/opt/OdAIly` 只用于部署同步，不作为长期开发工作区。

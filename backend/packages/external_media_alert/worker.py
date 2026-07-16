@@ -25,6 +25,7 @@ from packages.x_processing.searcher import (
     SearchDocument,
     top_match,
 )
+from packages.x_processing.odaily_reference_source import fetch_odaily_reference_documents_from_api
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .models import (
@@ -440,6 +441,16 @@ class ExternalMediaAlertWorker:
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()
+        try:
+            api_documents = fetch_odaily_reference_documents_from_api(
+                since=since,
+                timeout_seconds=self.settings.request_timeout_seconds,
+            )
+            if cache is not None:
+                cache.upsert_documents(api_documents)
+            return api_documents
+        except Exception as exc:
+            print(f"[odaily] external alert odaily api refresh failed; fallback=supabase/cache error={exc}")
         if cache is None:
             return self.repository.list_odaily_reference_documents(since=since)
         local_documents = cache.list_odaily_reference_documents(since=since)
