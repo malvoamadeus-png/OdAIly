@@ -24,6 +24,7 @@ from .repository import CompetitorMonitorRepository, parse_datetime
 
 
 NEWSFLASH_SOURCES = ("blockbeats", "panews", "jinse", "odaily")
+NON_ALERTING_HEARTBEAT_FAILED_SOURCES = {"blockbeats"}
 
 
 class EventAssignmentTimeout(RuntimeError):
@@ -248,10 +249,21 @@ class CompetitorMonitorWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         try:
+            alerting_failed_sources = {
+                source: error
+                for source, error in result.failed_sources.items()
+                if source not in NON_ALERTING_HEARTBEAT_FAILED_SOURCES
+            }
+            non_alerting_failed_sources = {
+                source: error
+                for source, error in result.failed_sources.items()
+                if source in NON_ALERTING_HEARTBEAT_FAILED_SOURCES
+            }
+            success = not bool(alerting_failed_sources)
             self._heartbeat.send(
-                status="ok" if not result.failed_sources else "failed",
-                success=not bool(result.failed_sources),
-                error=str(result.failed_sources) if result.failed_sources else None,
+                status="ok" if success else "failed",
+                success=success,
+                error=str(alerting_failed_sources) if alerting_failed_sources else None,
                 metadata={
                     "fetched": result.fetched,
                     "task_inserted": result.task_inserted,
@@ -266,6 +278,8 @@ class CompetitorMonitorWorker:
                     "expired_for_tasks_by_source": result.expired_for_tasks_by_source,
                     "sample_titles_by_source": result.sample_titles_by_source,
                     "failed_sources": result.failed_sources,
+                    "alerting_failed_sources": alerting_failed_sources,
+                    "non_alerting_failed_sources": non_alerting_failed_sources,
                     "event_assignment_timeout_seconds": self.settings.event_assignment_timeout_seconds,
                 },
             )

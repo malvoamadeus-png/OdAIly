@@ -5,13 +5,14 @@ import json
 import pytest
 
 from packages.common.config import CompetitorMonitorSettings
+from packages.common.heartbeat import HeartbeatThrottle
 from packages.competitor_monitor.blockbeats_key_config import (
     load_blockbeats_key_config,
     record_blockbeats_key_status,
     save_blockbeats_key,
 )
 from packages.competitor_monitor.fetchers import BlockbeatsQuotaError
-from packages.competitor_monitor.worker import CompetitorMonitorWorker
+from packages.competitor_monitor.worker import CompetitorMonitorWorker, CompetitorRunResult
 
 
 def test_load_missing_blockbeats_key_config(tmp_path):
@@ -124,3 +125,89 @@ def test_worker_records_request_failure(monkeypatch, tmp_path):
     config = load_blockbeats_key_config(path=path)
     assert config.status == "request_failed"
     assert config.last_error == "upstream unavailable"
+
+
+def test_blockbeats_failure_does_not_make_competitor_heartbeat_failed():
+    repository = _HeartbeatRepository()
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.repository = repository
+    worker.settings = CompetitorMonitorSettings()
+    worker.worker_id = "test-worker"
+    worker._heartbeat = HeartbeatThrottle(
+        component="competitor_monitor",
+        worker_id=worker.worker_id,
+        writer=lambda component, worker_id, status, success, error, metadata: repository.record_worker_heartbeat(
+            component=component,
+            worker_id=worker_id,
+            status=status,
+            success=success,
+            error=error,
+            metadata=metadata,
+        ),
+    )
+
+    worker._record_heartbeat(_run_result(failed_sources={"blockbeats": "quota exhausted"}))
+
+    heartbeat = repository.heartbeats[-1]
+    assert heartbeat["status"] == "ok"
+    assert heartbeat["success"] is True
+    assert heartbeat["error"] is None
+    assert heartbeat["metadata"]["failed_sources"] == {"blockbeats": "quota exhausted"}
+    assert heartbeat["metadata"]["alerting_failed_sources"] == {}
+    assert heartbeat["metadata"]["non_alerting_failed_sources"] == {"blockbeats": "quota exhausted"}
+
+
+def test_non_blockbeats_failure_still_makes_competitor_heartbeat_failed():
+    repository = _HeartbeatRepository()
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.repository = repository
+    worker.settings = CompetitorMonitorSettings()
+    worker.worker_id = "test-worker"
+    worker._heartbeat = HeartbeatThrottle(
+        component="competitor_monitor",
+        worker_id=worker.worker_id,
+        writer=lambda component, worker_id, status, success, error, metadata: repository.record_worker_heartbeat(
+            component=component,
+            worker_id=worker_id,
+            status=status,
+            success=success,
+            error=error,
+            metadata=metadata,
+        ),
+    )
+
+    worker._record_heartbeat(_run_result(failed_sources={"panews": "upstream unavailable", "blockbeats": "quota exhausted"}))
+
+    heartbeat = repository.heartbeats[-1]
+    assert heartbeat["status"] == "failed"
+    assert heartbeat["success"] is False
+    assert heartbeat["error"] == "{'panews': 'upstream unavailable'}"
+    assert heartbeat["metadata"]["failed_sources"] == {"panews": "upstream unavailable", "blockbeats": "quota exhausted"}
+    assert heartbeat["metadata"]["alerting_failed_sources"] == {"panews": "upstream unavailable"}
+    assert heartbeat["metadata"]["non_alerting_failed_sources"] == {"blockbeats": "quota exhausted"}
+
+
+class _HeartbeatRepository:
+    def __init__(self) -> None:
+        self.heartbeats = []
+
+    def record_worker_heartbeat(self, **kwargs):
+        self.heartbeats.append(kwargs)
+
+
+def _run_result(*, failed_sources: dict[str, str]) -> CompetitorRunResult:
+    return CompetitorRunResult(
+        fetched=0,
+        task_inserted=0,
+        reference_inserted=0,
+        events_updated=0,
+        filtered=0,
+        event_elapsed_seconds=0.0,
+        event_error=None,
+        expired_for_tasks=0,
+        expired_for_tasks_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
+        failed_sources=failed_sources,
+        fetched_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
+        filtered_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
+        sample_titles_by_source={"blockbeats": [], "panews": [], "jinse": [], "odaily": []},
+    )
