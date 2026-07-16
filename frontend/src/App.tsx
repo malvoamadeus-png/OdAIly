@@ -114,7 +114,7 @@ import {
   type WorkflowNode,
 } from './workflowCatalog';
 
-type SourceManagementView = 'x' | 'non_mainstream' | 'ai_source' | 'mixed_source';
+type SourceManagementView = 'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'blockbeats_key';
 
 type ConsoleView =
   | SourceManagementView
@@ -130,7 +130,7 @@ type ConsoleView =
   | 'jin10';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
-  return view === 'x' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source';
+  return view === 'x' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
 }
 
 const emptySettings: Settings = {
@@ -845,7 +845,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Crypto信源'
         : sourceManagementView === 'ai_source'
           ? 'AI信源'
-          : '混合信源';
+          : sourceManagementView === 'mixed_source'
+            ? '混合信源'
+            : '律动key';
   const sourceManagementSummary =
     sourceManagementView === 'x'
       ? `${enabledCount} 个启用 X 账号 · 全局 ${settings.global_interval_seconds}s · 抓取频率 / 写作名 / AI标签`
@@ -853,7 +855,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 全文 / 标题提醒`
         : sourceManagementView === 'ai_source'
           ? `${enabledAiSourceCount} 个启用站点 · 默认 300s · AI/半导体全文链路`
-          : `${enabledMixedSourceCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 轻量 AI 分流`;
+          : sourceManagementView === 'mixed_source'
+            ? `${enabledMixedSourceCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 轻量 AI 分流`
+            : `${blockbeatsStatusLabel(blockbeatsKeyConfig.status)} · Linux 本地 JSON`;
   const enabledRegularRuleCount = useMemo(
     () => publisherRules.regular.allow_rules.filter((rule) => rule.enabled).length + publisherRules.regular.deny_rules.filter((rule) => rule.enabled).length,
     [publisherRules],
@@ -1004,8 +1008,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadCompetitorKeywords() {
     setError('');
-    const [keywords, blockbeatsConfig] = await Promise.all([listCompetitorFilterKeywords(), getBlockbeatsKeyConfig()]);
+    const keywords = await listCompetitorFilterKeywords();
     setCompetitorKeywords(keywords);
+  }
+
+  async function loadBlockbeatsKey() {
+    setError('');
+    const blockbeatsConfig = await getBlockbeatsKeyConfig();
     setBlockbeatsKeyConfig(blockbeatsConfig);
     setBlockbeatsKeyDraft(blockbeatsConfig.api_key);
   }
@@ -1061,6 +1070,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         case 'ai_source':
         case 'mixed_source':
           await loadNonMainstreamAll();
+          return;
+        case 'blockbeats_key':
+          await loadBlockbeatsKey();
           return;
         case 'publisher':
           await loadPublisherAll();
@@ -1587,6 +1599,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadPipelineTiming()
       : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
+      : view === 'blockbeats_key'
+        ? loadBlockbeatsKey()
       : view === 'publisher'
         ? loadPublisherAll()
       : view === 'jin10'
@@ -1705,6 +1719,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                 key: 'mixed_source' as const,
                 label: '混合信源',
                 summary: `${enabledMixedSourceCount} 个启用站点 · 轻量 AI 分流`,
+              },
+              {
+                key: 'blockbeats_key' as const,
+                label: '律动key',
+                summary: `${blockbeatsStatusLabel(blockbeatsKeyConfig.status)} · 明文本地保存`,
               },
             ].map((item) => (
               <button
@@ -1868,6 +1887,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
           />
+        ) : view === 'blockbeats_key' ? (
+          <BlockbeatsKeyPanel
+            config={blockbeatsKeyConfig}
+            draft={blockbeatsKeyDraft}
+            saving={savingBlockbeatsKey}
+            onDraftChange={setBlockbeatsKeyDraft}
+            onSave={saveBlockbeatsKeyConfig}
+          />
         ) : view === 'publisher' ? (
           <PublisherPanel
             config={publisherRules}
@@ -1934,14 +1961,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'competitor' ? (
           <CompetitorPanel
-            blockbeatsConfig={blockbeatsKeyConfig}
-            blockbeatsKeyDraft={blockbeatsKeyDraft}
             keywords={competitorKeywords}
             newKeywords={newKeywords}
             saving={savingKeywords}
-            savingBlockbeatsKey={savingBlockbeatsKey}
-            onBlockbeatsKeyChange={setBlockbeatsKeyDraft}
-            onSaveBlockbeatsKey={saveBlockbeatsKeyConfig}
             onNewKeywordsChange={setNewKeywords}
             onAdd={addCompetitorKeywords}
             onToggle={toggleCompetitorKeyword}
@@ -3427,66 +3449,75 @@ function blockbeatsStatusTone(status: BlockbeatsKeyConfig['status']): string {
   return '';
 }
 
+function BlockbeatsKeyPanel({
+  config,
+  draft,
+  saving,
+  onDraftChange,
+  onSave,
+}: {
+  config: BlockbeatsKeyConfig;
+  draft: string;
+  saving: boolean;
+  onDraftChange: (value: string) => void;
+  onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+  const statusTone = blockbeatsStatusTone(config.status);
+  const payloadText = config.last_error_payload ? JSON.stringify(config.last_error_payload) : '';
+
+  return (
+    <section className="section blockbeatsKeySection">
+      <form className="blockbeatsKeyForm" onSubmit={onSave}>
+        <div className="sectionHeader">
+          <div>
+            <h2>律动 API Key</h2>
+            <span>Linux 本地配置 · 明文保存</span>
+          </div>
+          <button className="primaryButton" type="submit" disabled={saving}>
+            <Save size={17} /> 保存
+          </button>
+        </div>
+        <input
+          value={draft}
+          onChange={(event) => onDraftChange(event.target.value)}
+          placeholder="BlockBeats api-key"
+          spellCheck={false}
+        />
+        <div className="blockbeatsStatus">
+          <span className={statusTone ? `statusPill ${statusTone}` : 'statusPill'}>
+            {blockbeatsStatusLabel(config.status)}
+          </span>
+          <span>最近检查 {fmtTime(config.last_checked_at)}</span>
+          <span>最近成功 {fmtTime(config.last_success_at)}</span>
+          {config.last_quota_error_at && <span className="bad">额度不足 {fmtTime(config.last_quota_error_at)}</span>}
+          {config.last_error && <span className="bad">{config.last_error}</span>}
+          {payloadText && <code>{payloadText}</code>}
+        </div>
+      </form>
+    </section>
+  );
+}
+
 function CompetitorPanel({
-  blockbeatsConfig,
-  blockbeatsKeyDraft,
   keywords,
   newKeywords,
   saving,
-  savingBlockbeatsKey,
-  onBlockbeatsKeyChange,
-  onSaveBlockbeatsKey,
   onNewKeywordsChange,
   onAdd,
   onToggle,
   onDelete,
 }: {
-  blockbeatsConfig: BlockbeatsKeyConfig;
-  blockbeatsKeyDraft: string;
   keywords: CompetitorFilterKeyword[];
   newKeywords: string;
   saving: boolean;
-  savingBlockbeatsKey: boolean;
-  onBlockbeatsKeyChange: (value: string) => void;
-  onSaveBlockbeatsKey: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onNewKeywordsChange: (value: string) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggle: (keyword: CompetitorFilterKeyword) => Promise<void>;
   onDelete: (keyword: CompetitorFilterKeyword) => Promise<void>;
 }) {
-  const statusTone = blockbeatsStatusTone(blockbeatsConfig.status);
-  const payloadText = blockbeatsConfig.last_error_payload ? JSON.stringify(blockbeatsConfig.last_error_payload) : '';
-
   return (
     <section className="competitorLayout">
       <div className="competitorControls">
-        <form className="blockbeatsKeyForm" onSubmit={onSaveBlockbeatsKey}>
-          <div className="sectionHeader">
-            <div>
-              <h2>BlockBeats API Key</h2>
-              <span>Linux 本地配置</span>
-            </div>
-            <button className="primaryButton" type="submit" disabled={savingBlockbeatsKey}>
-              <Save size={17} /> 保存
-            </button>
-          </div>
-          <input
-            value={blockbeatsKeyDraft}
-            onChange={(event) => onBlockbeatsKeyChange(event.target.value)}
-            placeholder="api-key"
-            spellCheck={false}
-          />
-          <div className="blockbeatsStatus">
-            <span className={statusTone ? `statusPill ${statusTone}` : 'statusPill'}>
-              {blockbeatsStatusLabel(blockbeatsConfig.status)}
-            </span>
-            <span>最近检查 {fmtTime(blockbeatsConfig.last_checked_at)}</span>
-            <span>最近成功 {fmtTime(blockbeatsConfig.last_success_at)}</span>
-            {blockbeatsConfig.last_quota_error_at && <span className="bad">额度不足 {fmtTime(blockbeatsConfig.last_quota_error_at)}</span>}
-            {blockbeatsConfig.last_error && <span className="bad">{blockbeatsConfig.last_error}</span>}
-            {payloadText && <code>{payloadText}</code>}
-          </div>
-        </form>
         <form className="keywordForm" onSubmit={onAdd}>
           <div className="sectionHeader">
             <h2>排除词表</h2>

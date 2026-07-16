@@ -210,7 +210,7 @@ h2 {
 
 .sourceManagementTabsGrid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-top: 18px;
 }
@@ -1139,6 +1139,10 @@ textarea:focus {
 
 .blockbeatsKeyForm input {
   width: 100%;
+}
+
+.blockbeatsKeySection {
+  max-width: 760px;
 }
 
 .blockbeatsStatus {
