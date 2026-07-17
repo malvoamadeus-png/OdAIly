@@ -51,6 +51,7 @@ Crypto信源快讯编辑
 
 【通用禁令】
 禁重复描述同一事件（"购入WBTC，通过借贷做多BTC"→"借贷做多WBTC"）。全文禁#$符号。
+涉及利润、亏损、盈亏、损益时，必须按语义写"盈利/获利/亏损"，不得输出"盈亏为-490万美元""累计盈亏-490万美元""损益为-490万美元"等负号式表达；负数盈亏必须改写为"亏损490万美元"，正数盈亏可写为"盈利490万美元"。
 
 【术语表】
 Binance→币安 | Bitcoin→比特币 | Retail traders→散户 | dApp→DApp | builder→开发者 | AI禁译"人工智能" | long→"做多"/"多单" | oil trading / oil交易→原油交易 | CXMT / ChangXin Memory Technologies→长鑫存储

@@ -292,6 +292,7 @@ export type PromptTemplate = {
   display_name: string;
   active_version_id: number | null;
   feature_mode_enabled: boolean;
+  feature_mode_text: string;
   updated_at: string;
 };
 
@@ -1476,7 +1477,7 @@ export async function listRecentTasksBySources(sources: readonly string[], limit
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {
   const { data, error } = await supabase()
     .from('prompt_templates')
-    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,feature_mode_text,updated_at')
     .order('template_key', { ascending: true });
   raise(error);
   return (data ?? []) as unknown as PromptTemplate[];
@@ -1535,7 +1536,7 @@ export async function publishPromptVersion(templateKey: string, versionId: numbe
       updated_at: nowIso(),
     })
     .eq('template_key', templateKey)
-    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,feature_mode_text,updated_at')
     .single();
   raise(error);
   return assertData(data as PromptTemplate | null, '发布 Prompt 版本失败');
@@ -1544,15 +1545,17 @@ export async function publishPromptVersion(templateKey: string, versionId: numbe
 export async function updatePromptTemplateFeatureMode(
   templateKey: string,
   enabled: boolean,
+  featureModeText: string,
 ): Promise<PromptTemplate> {
   const { data, error } = await supabase()
     .from('prompt_templates')
     .update({
       feature_mode_enabled: enabled,
+      feature_mode_text: featureModeText,
       updated_at: nowIso(),
     })
     .eq('template_key', templateKey)
-    .select('template_key,display_name,active_version_id,feature_mode_enabled,updated_at')
+    .select('template_key,display_name,active_version_id,feature_mode_enabled,feature_mode_text,updated_at')
     .single();
   raise(error);
   return assertData(data as PromptTemplate | null, 'failed to update prompt feature mode');

@@ -47,7 +47,6 @@ PUBLISHER_CATEGORIES: set[str] = {
     "other",
 }
 PUBLISHER_DECISIONS: set[str] = {"auto_publish", "manual_review", "failed"}
-FEATURE_MODE_PREFIX = "开启特色模式"
 ACTIVE_CANDIDATE_TTL = timedelta(hours=24)
 
 
@@ -56,7 +55,7 @@ PROMPT_KEY_BY_NEWS_TYPE: dict[NewsType, str] = {
     "onchain": "x_onchain_writer",
     "funding": "x_funding_writer",
     "non_mainstream_media": "mainstream_media_writer",
-    "ai_source": "ai_source_writer",
+    "ai_source": "mainstream_media_writer",
     "mainstream_media": "mainstream_media_writer",
 }
 
@@ -171,6 +170,7 @@ class PromptTemplateVersion:
     version_number: int
     content: str
     feature_mode_enabled: bool = False
+    feature_mode_text: str = ""
     note: str | None = None
     created_at: datetime | None = None
     published_at: datetime | None = None
@@ -179,10 +179,10 @@ class PromptTemplateVersion:
 def render_prompt_content(prompt: PromptTemplateVersion) -> str:
     if not prompt.feature_mode_enabled:
         return prompt.content
-    stripped_content = prompt.content.lstrip()
-    if stripped_content.startswith(FEATURE_MODE_PREFIX):
+    feature_text = prompt.feature_mode_text.strip()
+    if not feature_text:
         return prompt.content
-    return f"{FEATURE_MODE_PREFIX}\n\n{prompt.content}"
+    return f"{feature_text}\n\n{prompt.content}"
 
 
 @dataclass(frozen=True, slots=True)

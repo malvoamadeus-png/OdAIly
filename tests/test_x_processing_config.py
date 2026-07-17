@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from packages.common.config import load_auditor_settings, load_writer3_settings, load_x_processing_settings
 from packages.editor_plugin_api import QUICK_GENERATE_WRITER_MODEL
-from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE
+from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, render_prompt_content
 from packages.x_processing.repository import PROMPT_SEEDS
 
 
@@ -78,8 +76,29 @@ def test_litellm_alias_defaults_route_text_llm_calls(monkeypatch) -> None:
     assert QUICK_GENERATE_WRITER_MODEL == "odaily-deepseek-fast"
 
 
-def test_ai_source_uses_dedicated_writer_prompt_seed() -> None:
-    assert PROMPT_KEY_BY_NEWS_TYPE["ai_source"] == "ai_source_writer"
-    assert "ai_source_writer" in PROMPT_SEEDS
-    _display_name, relative_path, _note = PROMPT_SEEDS["ai_source_writer"]
-    assert Path(relative_path).name == "AI信源快讯模板.txt"
+def test_ai_source_reuses_mainstream_media_writer_prompt_seed() -> None:
+    assert PROMPT_KEY_BY_NEWS_TYPE["ai_source"] == "mainstream_media_writer"
+    assert "ai_source_writer" not in PROMPT_SEEDS
+
+
+def test_feature_mode_text_is_prepended_only_when_enabled() -> None:
+    prompt = PromptTemplateVersion(
+        id=1,
+        template_key="x_onchain_writer",
+        version_number=1,
+        content="正文模板",
+        feature_mode_enabled=True,
+        feature_mode_text="【标题风格】\n\n保留空行",
+    )
+
+    assert render_prompt_content(prompt) == "【标题风格】\n\n保留空行\n\n正文模板"
+    assert render_prompt_content(
+        PromptTemplateVersion(
+            id=1,
+            template_key="x_onchain_writer",
+            version_number=1,
+            content="正文模板",
+            feature_mode_enabled=False,
+            feature_mode_text="【标题风格】",
+        )
+    ) == "正文模板"

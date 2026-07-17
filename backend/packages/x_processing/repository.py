@@ -99,11 +99,6 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "docs/主流外媒快讯模板.txt",
         "initial mainstream media writer template",
     ),
-    "ai_source_writer": (
-        "AI信源快讯",
-        "docs/AI信源快讯模板.txt",
-        "initial AI source writer template",
-    ),
     "external_media_alert_domain_judge": (
         "外媒标题领域判断",
         "docs/外媒标题领域判断模板.txt",
@@ -119,6 +114,46 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
 PROMPT_FEATURE_MODE_DEFAULTS: dict[str, bool] = {
     "x_onchain_writer": True,
 }
+
+DEFAULT_FEATURE_MODE_TEXT = """【标题风格】
+
+当开启特色模式时，标题优先以以下风格撰写：
+
+1. 结果前置型
+
+    当新闻存在以下“结果型信息”时，可优先将结果前置，但不得添加主观情绪词、过度夸张、改变事实因果：
+
+    创历史新高、成交量激增、持仓激增、门槛降低、限制解除、权限开放、单日大额盈利、大额爆仓
+
+    标题结构调整为：
+
+    【结果/变化】+【主体】+【具体事件】
+
+    优秀示例：
+
+    - 创历史新高，Strategy 旗下 STRC 单日成交额达15.3亿美元
+    - 门槛逐步降低，Hyperliquid 开放更多永续 DEX 部署空间
+2. 强调“变化方向”而不是“动作本身”
+
+    标题应优先突出：“变化后的结果”，而非“主体动作”本身。变化永远比动作更有传播性。
+
+    低水平示例：
+
+    - Hyperliquid HIP-3文档更新：50万HYPE质押门槛将逐步降低
+
+    高水平示例：
+
+    - Hyperliquid 部署永续 DEX门槛降低，HIP-3文档更新后将从50万HYPE逐步下调
+3. 主体特征放大型
+
+    当主体存在显著特征时：超高胜率、长期持仓、超大额交易、黑客身份、OG身份、巨额资产规模、极端交易风格
+
+    优秀示例：
+
+    - 持有ETH 11年后卖出，某巨鲸出售3000枚ETH
+    - 场场下注百万美元，新生巨豪建仓40万美元的XX战胜XX
+
+    禁止：虚构主体特征、推断主体动机、使用情绪化形容词"""
 
 PUBLISHER_SETTINGS_DEFAULT = {
     "singleton_key": "global",
@@ -310,6 +345,7 @@ def _row_to_prompt(row: dict[str, Any]) -> PromptTemplateVersion:
         version_number=int(row["version_number"]),
         content=str(row["content"]),
         feature_mode_enabled=bool(row.get("feature_mode_enabled") or False),
+        feature_mode_text=str(row.get("feature_mode_text") or ""),
         note=row.get("note"),
         created_at=row.get("created_at"),
         published_at=row.get("published_at"),
@@ -404,13 +440,14 @@ class PostgresXProcessingRepository:
                 feature_mode_enabled = PROMPT_FEATURE_MODE_DEFAULTS.get(template_key, False)
                 conn.execute(
                     """
-                    INSERT INTO prompt_templates (template_key, display_name, feature_mode_enabled)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO prompt_templates (template_key, display_name, feature_mode_enabled, feature_mode_text)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (template_key) DO UPDATE
                     SET display_name = EXCLUDED.display_name,
+                        feature_mode_text = COALESCE(NULLIF(prompt_templates.feature_mode_text, ''), EXCLUDED.feature_mode_text),
                         updated_at = now()
                     """,
-                    (template_key, display_name, feature_mode_enabled),
+                    (template_key, display_name, feature_mode_enabled, DEFAULT_FEATURE_MODE_TEXT),
                 )
                 existing = conn.execute(
                     "SELECT active_version_id FROM prompt_templates WHERE template_key = %s",
@@ -600,7 +637,7 @@ class PostgresXProcessingRepository:
         with self._connect(autocommit=True) as conn:
             row = conn.execute(
                 """
-                SELECT v.*, t.feature_mode_enabled
+                SELECT v.*, t.feature_mode_enabled, t.feature_mode_text
                 FROM prompt_templates t
                 JOIN prompt_template_versions v ON v.id = t.active_version_id
                 WHERE t.template_key = %s
@@ -1176,6 +1213,7 @@ class InMemoryXProcessingRepository:
                 version_number=1,
                 content=f"prompt {key}",
                 feature_mode_enabled=PROMPT_FEATURE_MODE_DEFAULTS.get(key, False),
+                feature_mode_text=DEFAULT_FEATURE_MODE_TEXT,
             )
             for index, key in enumerate({*PROMPT_KEY_BY_NEWS_TYPE.values(), *PROMPT_SEEDS.keys()}, start=1)
         }
@@ -1455,11 +1493,13 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     display_name text NOT NULL,
     active_version_id bigint,
     feature_mode_enabled boolean NOT NULL DEFAULT false,
+    feature_mode_text text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_text text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS prompt_template_versions (
     id bigserial PRIMARY KEY,
@@ -1670,7 +1710,9 @@ BEGIN
             'active_version_id',
             NEW.active_version_id,
             'feature_mode_enabled',
-            NEW.feature_mode_enabled
+            NEW.feature_mode_enabled,
+            'feature_mode_text',
+            NEW.feature_mode_text
         )::text
     );
     RETURN NEW;
@@ -1679,11 +1721,12 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_prompt_templates_notify ON prompt_templates;
 CREATE TRIGGER trg_prompt_templates_notify
-AFTER UPDATE OF active_version_id, feature_mode_enabled ON prompt_templates
+AFTER UPDATE OF active_version_id, feature_mode_enabled, feature_mode_text ON prompt_templates
 FOR EACH ROW
 WHEN (
     OLD.active_version_id IS DISTINCT FROM NEW.active_version_id
     OR OLD.feature_mode_enabled IS DISTINCT FROM NEW.feature_mode_enabled
+    OR OLD.feature_mode_text IS DISTINCT FROM NEW.feature_mode_text
 )
 EXECUTE FUNCTION notify_prompt_config_changed();
 

@@ -1496,27 +1496,46 @@ textarea:focus {
   gap: 10px;
 }
 
-.featureModeToggle {
+.featureModeBox {
+  display: grid;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px;
   border: 1px solid #e5e8ec;
   border-radius: 8px;
   background: #f8fafb;
 }
 
+.featureModeToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+}
+
 .featureModeToggle input {
-  width: auto;
+  width: 14px;
+  height: 14px;
   margin: 0;
 }
 
 .featureModeToggle span {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
   color: #1f2937;
 }
 
-.featureModeToggle small {
-  color: #6b7280;
+.featureModeTextarea {
+  min-height: 128px;
+  max-height: 220px;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.featureModeBox .secondaryButton {
+  justify-self: end;
+  min-height: 30px;
+  padding: 6px 10px;
   font-size: 12px;
 }
 

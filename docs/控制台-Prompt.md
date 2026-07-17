@@ -6,19 +6,19 @@
 - `x_onchain_writer`
 - `x_funding_writer`
 - `mainstream_media_writer`
-- `ai_source_writer`
 - `external_media_alert_domain_judge`
 - `jin10_judge`
 
 ## Crypto信源与 AI信源模板口径
 
 - `mainstream_media_writer` 服务 `non_mainstream_media` 的统一 Crypto信源全文写作，以及历史兼容 `mainstream_media`。
-- `ai_source_writer` 服务 `tasks.source = 'ai_source'` 的 AI信源全文写作。
-- 标记为 `AI信源` 的 X 账号不使用 `ai_source_writer`；保留后仍使用 `x_regular_writer`，以保持 X 发言人写作口径一致。
+- `mainstream_media_writer` 同时服务 `tasks.source = 'ai_source'` 的 AI信源全文写作。
+- 标记为 `AI信源` 的 X 账号保留后仍使用 `x_regular_writer`，以保持 X 发言人写作口径一致。
 
 ## 隐藏但保留的历史模板
 
 - `non_mainstream_media_writer`
+- `ai_source_writer`
 
 它保留数据库记录与历史版本追溯，但不再出现在控制台模板列表里，也不再被新任务选择。
 
@@ -32,7 +32,7 @@
 ## 种子文件
 
 - Crypto信源全文：`docs/主流外媒快讯模板.txt` -> `mainstream_media_writer`
-- AI信源全文：`docs/AI信源快讯模板.txt` -> `ai_source_writer`
+- AI信源全文：`docs/主流外媒快讯模板.txt` -> `mainstream_media_writer`
 - 历史保留：`docs/外媒模板.txt` -> `non_mainstream_media_writer`
 - 标题提醒领域判断：`docs/外媒标题领域判断模板.txt` -> `external_media_alert_domain_judge`
 - 金十判断：`docs/判断者-金十模板.txt` -> `jin10_judge`

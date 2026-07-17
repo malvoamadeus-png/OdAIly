@@ -486,7 +486,7 @@ const eventFilters: { key: NewsflashEventFilter; label: string }[] = [
 const eventPageSize = 100;
 
 function visiblePromptTemplates(templates: PromptTemplate[]): PromptTemplate[] {
-  return templates.filter((template) => template.template_key !== 'non_mainstream_media_writer');
+  return templates.filter((template) => !['non_mainstream_media_writer', 'ai_source_writer'].includes(template.template_key));
 }
 
 function normalizePublisherRulesForSave(config: PublisherRuleConfig): PublisherRuleConfig {
@@ -789,6 +789,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [promptContent, setPromptContent] = useState('');
   const [promptNote, setPromptNote] = useState('');
+  const [featureModeText, setFeatureModeText] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [updatingPromptFeatureMode, setUpdatingPromptFeatureMode] = useState(false);
   const [deletingPromptVersionId, setDeletingPromptVersionId] = useState<number | null>(null);
@@ -996,13 +997,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     if (!key) {
       setPromptVersions([]);
       setPromptContent('');
+      setFeatureModeText('');
       return;
     }
     const versions = await listPromptVersions(key);
     setPromptVersions(versions);
-    const activeId = templates.find((template) => template.template_key === key)?.active_version_id;
+    const template = templates.find((item) => item.template_key === key);
+    const activeId = template?.active_version_id;
     const active = versions.find((version) => version.id === activeId) || versions[0];
     setPromptContent(active?.content ?? '');
+    setFeatureModeText(template?.feature_mode_text ?? '');
     setPromptNote('');
   }
 
@@ -1386,9 +1390,25 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setUpdatingPromptFeatureMode(true);
     setError('');
     try {
-      await updatePromptTemplateFeatureMode(selectedPromptKey, enabled);
+      await updatePromptTemplateFeatureMode(selectedPromptKey, enabled, featureModeText);
       setMessage(enabled ? '已开启特色模式' : '已关闭特色模式');
       await loadPrompts(selectedPromptKey);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingPromptFeatureMode(false);
+    }
+  }
+
+  async function saveFeatureModeText() {
+    const selected = promptTemplates.find((template) => template.template_key === selectedPromptKey);
+    if (!selected) return;
+    setUpdatingPromptFeatureMode(true);
+    setError('');
+    try {
+      await updatePromptTemplateFeatureMode(selected.template_key, selected.feature_mode_enabled, featureModeText);
+      setMessage('特色模式文本已保存');
+      await loadPrompts(selected.template_key);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1947,14 +1967,17 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             versions={promptVersions}
             content={promptContent}
             note={promptNote}
+            featureModeText={featureModeText}
             saving={savingPrompt}
             featureModeSaving={updatingPromptFeatureMode}
             deletingVersionId={deletingPromptVersionId}
             onSelect={selectPrompt}
             onContentChange={setPromptContent}
             onNoteChange={setPromptNote}
+            onFeatureModeTextChange={setFeatureModeText}
             onSave={savePromptVersion}
             onToggleFeatureMode={togglePromptFeatureMode}
+            onSaveFeatureModeText={saveFeatureModeText}
             onPublish={publishExistingVersion}
             onDeleteVersion={removePromptVersion}
             onRefresh={() => loadPrompts(selectedPromptKey)}
@@ -3311,14 +3334,17 @@ function PromptPanel({
   versions,
   content,
   note,
+  featureModeText,
   saving,
   featureModeSaving,
   deletingVersionId,
   onSelect,
   onContentChange,
   onNoteChange,
+  onFeatureModeTextChange,
   onSave,
   onToggleFeatureMode,
+  onSaveFeatureModeText,
   onPublish,
   onDeleteVersion,
   onRefresh,
@@ -3328,14 +3354,17 @@ function PromptPanel({
   versions: PromptVersion[];
   content: string;
   note: string;
+  featureModeText: string;
   saving: boolean;
   featureModeSaving: boolean;
   deletingVersionId: number | null;
   onSelect: (templateKey: string) => Promise<void>;
   onContentChange: (value: string) => void;
   onNoteChange: (value: string) => void;
+  onFeatureModeTextChange: (value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleFeatureMode: (enabled: boolean) => Promise<void>;
+  onSaveFeatureModeText: () => Promise<void>;
   onPublish: (version: PromptVersion) => Promise<void>;
   onDeleteVersion: (version: PromptVersion) => Promise<void>;
   onRefresh: () => Promise<void>;
@@ -3376,16 +3405,32 @@ function PromptPanel({
             <Save size={17} /> 发布新版本
           </button>
         </div>
-        <label className="featureModeToggle">
-          <input
-            type="checkbox"
-            checked={Boolean(selected?.feature_mode_enabled)}
-            disabled={!selected || featureModeSaving}
-            onChange={(event) => void onToggleFeatureMode(event.target.checked)}
+        <div className="featureModeBox">
+          <label className="featureModeToggle">
+            <input
+              type="checkbox"
+              checked={Boolean(selected?.feature_mode_enabled)}
+              disabled={!selected || featureModeSaving}
+              onChange={(event) => void onToggleFeatureMode(event.target.checked)}
+            />
+            <span>特色模式</span>
+          </label>
+          <textarea
+            className="featureModeTextarea"
+            value={featureModeText}
+            onChange={(event) => onFeatureModeTextChange(event.target.value)}
+            placeholder="特色模式文本"
+            spellCheck={false}
           />
-          <span>开启特色模式</span>
-          <small>启用后，后端会在执行时自动在 Prompt 最前面加上“开启特色模式”。</small>
-        </label>
+          <button
+            className="secondaryButton"
+            type="button"
+            disabled={!selected || featureModeSaving}
+            onClick={() => void onSaveFeatureModeText()}
+          >
+            <Save size={15} /> 保存特色文本
+          </button>
+        </div>
         <textarea
           value={content}
           onChange={(event) => onContentChange(event.target.value)}

@@ -67,11 +67,13 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     display_name text NOT NULL,
     active_version_id bigint,
     feature_mode_enabled boolean NOT NULL DEFAULT false,
+    feature_mode_text text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE prompt_templates ADD COLUMN IF NOT EXISTS feature_mode_text text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS prompt_template_versions (
     id bigserial PRIMARY KEY,
@@ -615,7 +617,9 @@ BEGIN
             'active_version_id',
             NEW.active_version_id,
             'feature_mode_enabled',
-            NEW.feature_mode_enabled
+            NEW.feature_mode_enabled,
+            'feature_mode_text',
+            NEW.feature_mode_text
         )::text
     );
     RETURN NEW;
@@ -624,11 +628,12 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_prompt_templates_notify ON prompt_templates;
 CREATE TRIGGER trg_prompt_templates_notify
-AFTER UPDATE OF active_version_id, feature_mode_enabled ON prompt_templates
+AFTER UPDATE OF active_version_id, feature_mode_enabled, feature_mode_text ON prompt_templates
 FOR EACH ROW
 WHEN (
     OLD.active_version_id IS DISTINCT FROM NEW.active_version_id
     OR OLD.feature_mode_enabled IS DISTINCT FROM NEW.feature_mode_enabled
+    OR OLD.feature_mode_text IS DISTINCT FROM NEW.feature_mode_text
 )
 EXECUTE FUNCTION notify_prompt_config_changed();
 
