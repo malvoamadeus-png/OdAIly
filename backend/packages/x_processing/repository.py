@@ -85,28 +85,30 @@ LEGACY_SKIP_SOURCES = [
 ]
 
 
+PROMPT_DOCS_DIR = "docs/OdAIly代码与整体设计"
+
 PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
-    "x_regular_writer": ("X 常规快讯", "docs/常规快讯模板.txt", "initial regular writer template"),
-    "x_onchain_writer": ("X 链上快讯", "docs/链上快讯模板.txt", "initial onchain writer template"),
-    "x_funding_writer": ("X 融资快讯", "docs/融资快讯模板.txt", "initial funding writer template"),
+    "x_regular_writer": ("X 常规快讯", f"{PROMPT_DOCS_DIR}/常规快讯模板.txt", "initial regular writer template"),
+    "x_onchain_writer": ("X 链上快讯", f"{PROMPT_DOCS_DIR}/链上快讯模板.txt", "initial onchain writer template"),
+    "x_funding_writer": ("X 融资快讯", f"{PROMPT_DOCS_DIR}/融资快讯模板.txt", "initial funding writer template"),
     "non_mainstream_media_writer": (
         "外媒快讯（旧）",
-        "docs/外媒模板.txt",
+        f"{PROMPT_DOCS_DIR}/外媒模板.txt",
         "initial non-mainstream media writer template",
     ),
     "mainstream_media_writer": (
         "外媒快讯",
-        "docs/主流外媒快讯模板.txt",
+        f"{PROMPT_DOCS_DIR}/主流外媒快讯模板.txt",
         "initial mainstream media writer template",
     ),
     "external_media_alert_domain_judge": (
         "外媒标题领域判断",
-        "docs/外媒标题领域判断模板.txt",
+        f"{PROMPT_DOCS_DIR}/外媒标题领域判断模板.txt",
         "initial external media alert domain judge template",
     ),
     "jin10_judge": (
         "判断者-金十",
-        "docs/判断者-金十模板.txt",
+        f"{PROMPT_DOCS_DIR}/判断者-金十模板.txt",
         "initial Jin10 judge template",
     ),
 }
