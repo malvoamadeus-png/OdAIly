@@ -84,6 +84,23 @@ def test_disabled_feature_mode_forces_trace_to_false() -> None:
     assert result.trace["feature_mode_reason"] == ""
 
 
+def test_structured_writer_rejects_title_trace_label_in_content() -> None:
+    raw = json.dumps(
+        {
+            "title": "Michael Saylor\uff1a\u6bd4\u7279\u5e01\u8981\u6210\u4e3a\u5168\u7403\u8d27\u5e01\u7f51\u7edc\u9700\u8981\u4f01\u4e1a\u91c7\u7528",
+            "content": "**\u6807\u9898\uff1a\u53d1\u8a00\u4eba\u524d\u7f6e**\nOdaily\u661f\u7403\u65e5\u62a5\u8baf Michael Saylor \u8868\u793a\uff0c\u4f01\u4e1a\u91c7\u7528\u662f\u5fc5\u8981\u7684\u3002",
+            "title_strategy": "speaker_anchor",
+            "title_strategy_reason": "The speaker is central to the statement.",
+            "matched_title_rules": ["known_speaker_anchor"],
+            "feature_mode_applied": False,
+            "feature_mode_reason": "",
+        }
+    )
+
+    with pytest.raises(ValueError, match="structured field label"):
+        parse_structured_writer_output(raw, known_subjects=[], feature_mode_enabled=False)
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -105,4 +122,3 @@ def test_disabled_feature_mode_forces_trace_to_false() -> None:
 def test_invalid_writer_json_is_rejected(raw: str) -> None:
     with pytest.raises(ValueError):
         parse_structured_writer_output(raw, known_subjects=[], feature_mode_enabled=False)
-

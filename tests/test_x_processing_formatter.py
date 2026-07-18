@@ -91,6 +91,17 @@ def test_format_brief_rejects_prefixed_explanatory_content() -> None:
         format_brief(draft)
 
 
+def test_parse_draft_output_rejects_title_trace_label_in_content() -> None:
+    raw_output = (
+        "Michael Saylor\uff1a\u6bd4\u7279\u5e01\u8981\u6210\u4e3a\u5168\u7403\u8d27\u5e01\u7f51\u7edc\u9700\u8981\u4f01\u4e1a\u91c7\u7528\n\n"
+        "**\u6807\u9898\uff1a\u53d1\u8a00\u4eba\u524d\u7f6e**\n"
+        "Odaily\u661f\u7403\u65e5\u62a5\u8baf Michael Saylor \u8868\u793a\uff0c\u6bd4\u7279\u5e01\u8981\u6210\u4e3a\u5168\u7403\u8d27\u5e01\u7f51\u7edc\uff0c\u4f01\u4e1a\u91c7\u7528\u662f\u5fc5\u8981\u7684\u3002"
+    )
+
+    with pytest.raises(ValueError, match="structured field label"):
+        parse_draft_output(raw_output)
+
+
 def _json_response(payload: dict[str, Any]) -> requests.Response:
     response = requests.Response()
     response.status_code = 200

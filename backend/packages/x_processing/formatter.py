@@ -18,6 +18,13 @@ _MODEL_META_LINE_PATTERN = re.compile(
     r")"
 )
 _FORBIDDEN_META_PHRASES = ("原文链接", "来源链接", "按指定格式输出", "可核验的信息")
+_FIELD_LABEL_LINE_PATTERN = re.compile(
+    r"^(?:\*\*)?\s*(?:"
+    r"\u6807\u9898(?:\u7b56\u7565)?|\u6b63\u6587|"
+    r"title(?:_strategy)?|content|matched_title_rules|feature_mode(?:_applied|_reason)?"
+    r")\s*[:\uff1a]",
+    re.IGNORECASE,
+)
 _COMMON_CHINESE_COMPANY_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?<![A-Za-z0-9])Samsung\s+Electronics(?![A-Za-z0-9])", re.IGNORECASE), "三星电子"),
     (re.compile(r"(?<![A-Za-z0-9])Samsung(?![A-Za-z0-9])", re.IGNORECASE), "三星"),
@@ -89,6 +96,8 @@ def _reject_contaminated_output(*, title: str, content: str) -> None:
         first_content_line = first_content_line.removeprefix("Odaily星球日报讯").lstrip()
     for field_name, text in (("title", title_text), ("content", first_content_line)):
         normalized = text.strip("「」《》【】[]()（）\"'“”‘’*# 　")
+        if field_name == "content" and _FIELD_LABEL_LINE_PATTERN.match(normalized):
+            raise ValueError("writer output contains structured field label in content")
         if _MODEL_META_LINE_PATTERN.match(normalized):
             raise ValueError(f"writer output contains explanatory text in {field_name}")
 
