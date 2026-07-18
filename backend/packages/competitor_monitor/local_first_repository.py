@@ -22,8 +22,8 @@ class LocalFirstCompetitorMonitorRepository:
     def init_schema(self) -> None:
         self.remote.init_schema()
 
-    def list_enabled_filter_keywords(self) -> list[str]:
-        return self.remote.list_enabled_filter_keywords()
+    def list_enabled_competitor_exclusion_terms(self) -> list[str]:
+        return self.remote.list_enabled_competitor_exclusion_terms()
 
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
         return self.remote.save_items(items)

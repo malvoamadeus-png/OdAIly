@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from packages.common.config import XProcessingSettings
 from packages.x_processing.models import PipelineRecord, TaskRecord
@@ -47,7 +47,7 @@ def build_settings(*, search_ai_review_threshold: float = 0.65) -> XProcessingSe
 
 
 def build_task(*, task_id: int = 1) -> TaskRecord:
-    now = datetime(2026, 7, 13, 12, 47, tzinfo=UTC)
+    now = datetime.now(UTC)
     return TaskRecord(
         id=task_id,
         source="x",
@@ -73,7 +73,7 @@ def build_reference(*, doc_id: str = "500139") -> SearchDocument:
         content="Strategy 宣布旗下美元储备已增加了 4.5 亿美元，截至 7 月 12 日美元储备规模已增至 30 亿美元，同时比特币持仓量为 843,775 枚。",
         source="odaily",
         source_url="https://x.com/Strategy/status/2076638779528388781",
-        published_at=datetime(2026, 7, 13, 12, 5, 22, tzinfo=UTC),
+        published_at=datetime.now(UTC) - timedelta(minutes=42),
     )
 
 

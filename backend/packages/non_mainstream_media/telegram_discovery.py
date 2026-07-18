@@ -17,6 +17,7 @@ except ModuleNotFoundError:
 
 from packages.common.config import TelegramDiscoverySettings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.source_exclusions import SourceExclusionMatcher, media_source_exclusion_scopes
 from packages.local_pipeline.client import LocalPipelineClient
 
 from .fetcher import fetch_article, get_site_registry
@@ -298,6 +299,7 @@ class TelegramDiscoveryWorker:
         max_attempts: int = 3,
         backoff_seconds: float = 1.0,
         clock: Callable[[], float] | None = None,
+        exclusion_matcher: SourceExclusionMatcher | None = None,
     ) -> None:
         self.repository = repository
         self.settings = settings
@@ -312,6 +314,7 @@ class TelegramDiscoveryWorker:
         self.max_attempts = max(1, int(max_attempts))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
         self._clock = clock or time.monotonic
+        self.exclusion_matcher = exclusion_matcher
         self.worker_id = f"non_mainstream_media_telegram-{os.getpid()}"
         self.channel_name = normalize_channel_target(settings.channel)
         self._last_message_id = 0
@@ -403,6 +406,9 @@ class TelegramDiscoveryWorker:
         )
 
     def _save_alert_page(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> None:
+        if self._is_excluded(source, [page.title, page.excerpt]):
+            self.repository.mark_seen(source, page.source_item_id, seeded=False)
+            return
         task_id = self.repository.save_alert_task(source, page)
         if task_id is None:
             self.repository.mark_seen(source, page.source_item_id, seeded=False)
@@ -415,6 +421,9 @@ class TelegramDiscoveryWorker:
         self.repository.mark_seen(source, page.source_item_id, seeded=False)
 
     def _save_article(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> None:
+        if self._is_excluded(source, [article.title, article.excerpt, article.content]):
+            self.repository.mark_seen(source, article.canonical_url, seeded=False)
+            return
         task_id = self.repository.save_task(source, article)
         if task_id is None:
             self.repository.mark_seen(source, article.canonical_url, seeded=False)
@@ -425,6 +434,14 @@ class TelegramDiscoveryWorker:
             source_item_id=article.canonical_url,
         )
         self.repository.mark_seen(source, article.canonical_url, seeded=False)
+
+    def _is_excluded(self, source: NonMainstreamMediaSource, texts: list[str | None]) -> bool:
+        if self.exclusion_matcher is None:
+            return False
+        return self.exclusion_matcher.is_excluded(
+            scopes=media_source_exclusion_scopes(source.source_group),
+            texts=texts,
+        )
 
     def _attempt_fetch(
         self,

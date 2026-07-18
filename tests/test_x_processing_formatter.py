@@ -10,6 +10,19 @@ from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import DraftBrief
 
 
+@pytest.mark.parametrize("account", ["@Jason60704294", "Jason60704294"])
+def test_format_brief_replaces_jason_account_in_title_and_content(account: str) -> None:
+    draft = DraftBrief(
+        title=f"{account} opens a BTC long position",
+        content=f"{account} opened another BTC long position.",
+    )
+
+    formatted = format_brief(draft)
+
+    assert formatted.title == '“先定10个大目标” opens a BTC long position'
+    assert '“先定10个大目标” opened another BTC long position.' in formatted.content
+
+
 def test_format_brief_normalizes_han_ascii_spacing_in_content() -> None:
     draft = DraftBrief(
         title="标题",

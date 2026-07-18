@@ -9,7 +9,17 @@ from packages.common.text import normalize_inline_text, normalize_multiline_text
 
 NewsType = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"]
 JudgeRoute = Literal["regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"]
-DiscardType = Literal["none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai", "off_topic"]
+DiscardType = Literal[
+    "none",
+    "pure_emotion",
+    "baseless_trading_call",
+    "daily_chatter",
+    "non_crypto_ai",
+    "non_crypto_tradfi",
+    "marketing_activity",
+    "routine_company_news",
+    "off_topic",
+]
 ProcessingStage = Literal[
     "judge",
     "judge_crypto",
@@ -31,7 +41,17 @@ MAINSTREAM_MEDIA_SOURCE = "mainstream_media"
 JIN10_SOURCE = "jin10"
 NEWS_TYPES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "mainstream_media"}
 JUDGE_ROUTES: set[str] = {"regular", "onchain", "funding", "non_mainstream_media", "ai_source", "discard"}
-DISCARD_TYPES: set[str] = {"none", "pure_emotion", "baseless_trading_call", "daily_chatter", "non_crypto_ai", "off_topic"}
+DISCARD_TYPES: set[str] = {
+    "none",
+    "pure_emotion",
+    "baseless_trading_call",
+    "daily_chatter",
+    "non_crypto_ai",
+    "non_crypto_tradfi",
+    "marketing_activity",
+    "routine_company_news",
+    "off_topic",
+}
 COMPETITOR_SOURCES: set[str] = {"blockbeats", "panews", "jinse"}
 ODAILY_REFERENCE_SOURCE = "odaily"
 SEARCH_FIRST_SOURCES: set[str] = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE, AI_SOURCE}
@@ -107,12 +127,15 @@ class PipelineRecord:
     task_id: int
     news_type: NewsType | None = None
     candidate_id: int | None = None
+    judge_output: dict[str, Any] = field(default_factory=dict)
     judge_completed_at: datetime | None = None
     search_result: dict[str, Any] = field(default_factory=dict)
     search_completed_at: datetime | None = None
     prompt_template_key: str | None = None
     prompt_version_id: int | None = None
     writer_feature_mode_enabled: bool | None = None
+    writer_model: str | None = None
+    writer_output: dict[str, Any] = field(default_factory=dict)
     draft_title: str | None = None
     draft_content: str | None = None
     write_completed_at: datetime | None = None

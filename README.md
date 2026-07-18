@@ -172,7 +172,7 @@ so editors do not need to fill connection parameters manually.
 
 Then load `extension/` in `chrome://extensions` as an unpacked extension.
 Detailed setup and behavior live in
-[`docs/信息流插件.md`](docs/信息流插件.md) and
+[`docs/OdAIly代码与整体设计/信息流插件.md`](docs/OdAIly代码与整体设计/信息流插件.md) and
 [`extension/README-install.md`](extension/README-install.md).
 
 The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
@@ -203,7 +203,7 @@ The current implementation names still use `x_capture` and
 Collector-Competitor, but the commands and packages are not renamed in this
 change.
 
-Initialize the processing schema and seed prompts from `docs/*.txt`:
+Initialize the processing schema and seed prompts from `docs/OdAIly代码与整体设计/*.txt`:
 
 ```powershell
 python backend\src\main.py x-process-init-db
@@ -394,7 +394,7 @@ Production sync rules:
 
 1. Develop and test in the local checkout first.
 2. Commit and push repo-tracked changes to GitHub.
-3. Prefer the stable operations paths in `docs/agent-operations-runbook.md`: GitHub over `ssh.github.com:443`, and Linux access through Windows OpenSSH from WSL.
+3. Local maintainers use the ignored private runbook at `docs/工具与运维私有/agent-operations-runbook.md` for access details; do not commit it or copy its deployment-specific values into public docs.
 4. Update the server from `/opt/OdAIly` with:
 
    ```bash
@@ -438,12 +438,13 @@ Clean these worktree pollutants instead of keeping them beside the repo:
 
 ## Documentation
 
-- `docs/完整程序架构.md`: system contract and documentation index.
-- `docs/收集者-X.md`: X/Twitter collection and task ingestion.
-- `docs/收集者-竞品.md`: competitor and Odaily reference collection.
-- `docs/控制台.md`: console module index.
-- `docs/判断者.md`: route and discard rules.
-- `docs/搜索者.md`: duplicate detection and embedding strategy.
-- `docs/编写者1.md`: AI draft generation and prompt version tracing.
-- `docs/编写者2.md`: deterministic formatting and push behavior.
-- `docs/监督者.md`: pipeline health checks and alerts.
+- [`docs/README.md`](docs/README.md): documentation categories and privacy boundary.
+- `docs/OdAIly代码与整体设计/完整程序架构.md`: system contract and documentation index.
+- `docs/OdAIly代码与整体设计/收集者-X.md`: X/Twitter collection and task ingestion.
+- `docs/OdAIly代码与整体设计/收集者-竞品.md`: competitor and Odaily reference collection.
+- `docs/OdAIly代码与整体设计/控制台.md`: console module index.
+- `docs/OdAIly代码与整体设计/判断者.md`: route and discard rules.
+- `docs/OdAIly代码与整体设计/搜索者.md`: duplicate detection and embedding strategy.
+- `docs/OdAIly代码与整体设计/编写者1.md`: AI draft generation and prompt version tracing.
+- `docs/OdAIly代码与整体设计/编写者2.md`: deterministic formatting and push behavior.
+- `docs/OdAIly代码与整体设计/监督者.md`: pipeline health checks and alerts.

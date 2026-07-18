@@ -26,6 +26,12 @@ _COMMON_CHINESE_COMPANY_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?<![A-Za-z0-9])Apple(?![A-Za-z0-9])", re.IGNORECASE), "苹果"),
     (re.compile(r"(?<![A-Za-z0-9])AAPL(?![A-Za-z0-9])", re.IGNORECASE), "苹果"),
 )
+_COMMON_ACCOUNT_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?<![A-Za-z0-9_])@?Jason60704294(?![A-Za-z0-9_])", re.IGNORECASE),
+        "“先定10个大目标”",
+    ),
+)
 
 
 def _strip_code_fence(value: str) -> str:
@@ -95,10 +101,16 @@ def _apply_common_replacements(value: str) -> str:
         text = text.replace("，，", "，")
     for pattern, replacement in _COMMON_CHINESE_COMPANY_NAMES:
         text = pattern.sub(replacement, text)
+    for pattern, replacement in _COMMON_ACCOUNT_NAMES:
+        text = pattern.sub(replacement, text)
     text = text.replace("Binance", "币安")
     text = re.sub(r"dapp", "DApp", text, flags=re.IGNORECASE)
     text = re.sub(r"(\d(?:[\d,.]*\d)?|\d)\s*USDT\b", r"\1 USDT", text, flags=re.IGNORECASE)
     return text
+
+
+def _restore_fixed_account_names(value: str) -> str:
+    return re.sub(r"“先定\s*10\s*个大目标”", "“先定10个大目标”", value)
 
 
 def _normalize_title_spaces(value: str) -> str:
@@ -146,10 +158,10 @@ def _ensure_paragraph_punctuation(content: str) -> str:
 
 
 def format_brief(draft: DraftBrief) -> DraftBrief:
-    title = _normalize_title_spaces(_apply_common_replacements(draft.title.strip()))
+    title = _restore_fixed_account_names(_normalize_title_spaces(_apply_common_replacements(draft.title.strip())))
     prefix, content_body = _split_existing_prefix(draft.content)
     content = _apply_common_replacements(content_body)
-    content = _normalize_content_spaces(content)
+    content = _restore_fixed_account_names(_normalize_content_spaces(content))
     if prefix:
         content = f"{prefix}{content}"
     content = _ensure_prefix(content)

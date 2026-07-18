@@ -12,6 +12,10 @@ from urllib.parse import urlparse
 from packages.common.config import load_x_processing_settings
 from packages.common.freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS, evaluate_source_freshness
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.source_exclusions import (
+    SourceExclusionMatcher,
+    media_source_exclusion_scopes,
+)
 from packages.local_pipeline.client import LocalPipelineClient
 from .classifier import MixedSourceClassifier, build_mixed_source_classifier
 from .fetcher import fetch_article, fetch_discovered_pages, get_site_registry
@@ -50,6 +54,7 @@ class NonMainstreamMediaWorker:
         backoff_seconds: float = 1.0,
         pipeline_client: LocalPipelineClient | None = None,
         mixed_classifier: MixedSourceClassifier | None = None,
+        exclusion_matcher: SourceExclusionMatcher | None = None,
     ) -> None:
         self.repository = repository
         self.site_registry = site_registry or get_site_registry()
@@ -59,6 +64,7 @@ class NonMainstreamMediaWorker:
         self.backoff_seconds = backoff_seconds
         self.pipeline_client = pipeline_client
         self.mixed_classifier = mixed_classifier
+        self.exclusion_matcher = exclusion_matcher
         self.processing_freshness_window_seconds = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         self.worker_id = f"non_mainstream_media-{os.getpid()}"
         self._stop_event = threading.Event()
@@ -233,6 +239,9 @@ class NonMainstreamMediaWorker:
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
+            if self._is_excluded(source, [page.title, page.excerpt]):
+                self.repository.mark_seen(source, page.source_item_id, seeded=False)
+                continue
             try:
                 article = fetch_article(
                     site,
@@ -243,6 +252,9 @@ class NonMainstreamMediaWorker:
                 )
             except Exception as exc:
                 detail_errors[page.detail_url] = str(exc)
+                continue
+            if self._is_excluded(source, [article.title, article.excerpt, article.content]):
+                self.repository.mark_seen(source, article.canonical_url, seeded=False)
                 continue
             classified_target = None
             if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
@@ -274,6 +286,13 @@ class NonMainstreamMediaWorker:
                 article.metadata["classification_input_mode"] = "fulltext"
                 if classification.reason:
                     article.metadata["classification_reason"] = classification.reason
+            if self._is_excluded(
+                source,
+                [article.title, article.excerpt, article.content],
+                classified_target=classified_target,
+            ):
+                self.repository.mark_seen(source, article.canonical_url, seeded=False)
+                continue
             task_id = self.repository.save_task(source, article, classified_target=classified_target)
             if task_id is None:
                 if self.repository.mark_seen(source, article.canonical_url, seeded=False):
@@ -324,6 +343,9 @@ class NonMainstreamMediaWorker:
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
+            if self._is_excluded(source, [page.title, page.excerpt]):
+                self.repository.mark_seen(source, page.source_item_id, seeded=False)
+                continue
             classified_target = None
             classification_metadata: dict[str, Any] | None = None
             if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
@@ -362,6 +384,13 @@ class NonMainstreamMediaWorker:
                 if self.repository.mark_seen(source, page.source_item_id, seeded=False):
                     new_count += 1
                     stale_count += 1
+                continue
+            if self._is_excluded(
+                source,
+                [prepared_page.title, prepared_page.excerpt],
+                classified_target=classified_target,
+            ):
+                self.repository.mark_seen(source, page.source_item_id, seeded=False)
                 continue
             task_id = self.repository.save_alert_task(
                 source,
@@ -444,6 +473,23 @@ class NonMainstreamMediaWorker:
             excerpt=article.excerpt or page.excerpt,
             published_at=article.published_at,
             published_at_raw=published_at_raw,
+        )
+
+    def _is_excluded(
+        self,
+        source: NonMainstreamMediaSource,
+        texts: list[str | None],
+        *,
+        classified_target: str | None = None,
+    ) -> bool:
+        if self.exclusion_matcher is None:
+            return False
+        return self.exclusion_matcher.is_excluded(
+            scopes=media_source_exclusion_scopes(
+                source.source_group,
+                classified_target=classified_target,
+            ),
+            texts=texts,
         )
 
     @staticmethod

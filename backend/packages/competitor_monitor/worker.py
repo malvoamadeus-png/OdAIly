@@ -13,6 +13,7 @@ from packages.common.config import CompetitorMonitorSettings
 from packages.common.freshness import evaluate_source_freshness
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
+from packages.common.source_exclusions import SourceExclusionMatcher
 from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.searcher import SearchCache, SearchDocument
 
@@ -37,14 +38,12 @@ class CompetitorRunResult:
     task_inserted: int
     reference_inserted: int
     events_updated: int
-    filtered: int
     event_elapsed_seconds: float
     event_error: str | None
     expired_for_tasks: int
     expired_for_tasks_by_source: dict[str, int]
     failed_sources: dict[str, str]
     fetched_by_source: dict[str, int]
-    filtered_by_source: dict[str, int]
     sample_titles_by_source: dict[str, list[str]]
 
 
@@ -55,10 +54,12 @@ class CompetitorMonitorWorker:
         repository: CompetitorMonitorRepository,
         settings: CompetitorMonitorSettings,
         pipeline_client: LocalPipelineClient | None = None,
+        exclusion_matcher: SourceExclusionMatcher | None = None,
     ) -> None:
         self.repository = repository
         self.settings = settings
         self.pipeline_client = pipeline_client
+        self.exclusion_matcher = exclusion_matcher
         self.worker_id = f"competitor_monitor-{os.getpid()}"
         self._event_aggregator: NewsflashEventAggregator | None = None
         self._search_cache = SearchCache(_search_cache_path_for_repository(self.repository))
@@ -98,8 +99,7 @@ class CompetitorMonitorWorker:
                 except Exception as exc:
                     failed[source] = str(exc)
                     print(f"[odaily] competitor monitor source failed source={source} error={exc}")
-            exclude_terms = self._load_exclude_terms()
-            filtered_items, filtered_count, filtered_by_source = exclude_newsflash_items(items, exclude_terms)
+            filtered_items = self._exclude_items(items)
             event_elapsed_seconds = 0.0
             event_error = None
             event_started = time.monotonic()
@@ -130,14 +130,12 @@ class CompetitorMonitorWorker:
                 task_inserted=task_count,
                 reference_inserted=reference_count,
                 events_updated=len(event_ids),
-                filtered=filtered_count,
                 event_elapsed_seconds=event_elapsed_seconds,
                 event_error=event_error,
                 expired_for_tasks=expired_for_tasks,
                 expired_for_tasks_by_source=expired_for_tasks_by_source,
                 failed_sources=failed,
                 fetched_by_source=fetched_by_source,
-                filtered_by_source=filtered_by_source,
                 sample_titles_by_source=sample_titles_by_source,
             )
         except Exception as exc:
@@ -146,14 +144,12 @@ class CompetitorMonitorWorker:
                 task_inserted=0,
                 reference_inserted=0,
                 events_updated=0,
-                filtered=0,
                 event_elapsed_seconds=0.0,
                 event_error=None,
                 expired_for_tasks=0,
                 expired_for_tasks_by_source={source: 0 for source in NEWSFLASH_SOURCES},
                 failed_sources={"worker": str(exc)},
                 fetched_by_source=fetched_by_source,
-                filtered_by_source={source: 0 for source in NEWSFLASH_SOURCES},
                 sample_titles_by_source=sample_titles_by_source,
             )
             self._record_heartbeat(result)
@@ -170,12 +166,10 @@ class CompetitorMonitorWorker:
                     "[odaily] competitor monitor round "
                     f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
                     f"events={result.events_updated} "
-                    f"filtered={result.filtered} "
                     f"expired_for_tasks={result.expired_for_tasks} "
                     f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
                     f"event_error={result.event_error or '-'} "
                     f"fetched_by_source={result.fetched_by_source} "
-                    f"filtered_by_source={result.filtered_by_source} "
                     f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
                     f"failed={result.failed_sources}"
                 )
@@ -183,14 +177,18 @@ class CompetitorMonitorWorker:
                 print(f"[odaily] competitor monitor round failed: {exc}")
             time.sleep(self.settings.fetch_interval_seconds)
 
-    def _load_exclude_terms(self) -> list[str]:
-        if not hasattr(self.repository, "list_enabled_filter_keywords"):
-            return []
-        try:
-            return self.repository.list_enabled_filter_keywords()
-        except Exception as exc:
-            print(f"[odaily] competitor monitor exclude keywords load failed: {exc}")
-            return []
+    def _exclude_items(self, items: list[NewsflashItem]) -> list[NewsflashItem]:
+        if self.exclusion_matcher is None:
+            return items
+        return [
+            item
+            for item in items
+            if item.source == "odaily"
+            or not self.exclusion_matcher.is_excluded(
+                scopes=["competitor"],
+                texts=[item.title, item.content],
+            )
+        ]
 
     def _fetch_blockbeats_items(self) -> list[NewsflashItem]:
         config = load_blockbeats_key_config()
@@ -269,12 +267,10 @@ class CompetitorMonitorWorker:
                     "task_inserted": result.task_inserted,
                     "reference_inserted": result.reference_inserted,
                     "events_updated": result.events_updated,
-                    "filtered": result.filtered,
                     "expired_for_tasks": result.expired_for_tasks,
                     "event_elapsed_seconds": round(result.event_elapsed_seconds, 3),
                     "event_error": result.event_error,
                     "fetched_by_source": result.fetched_by_source,
-                    "filtered_by_source": result.filtered_by_source,
                     "expired_for_tasks_by_source": result.expired_for_tasks_by_source,
                     "sample_titles_by_source": result.sample_titles_by_source,
                     "failed_sources": result.failed_sources,
@@ -346,52 +342,6 @@ def _event_assignment_deadline(timeout_seconds: int) -> Iterator[None]:
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_timer[0] > 0:
             signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
-
-
-def normalize_exclude_term(value: str) -> str:
-    return " ".join(value.strip().lower().split())
-
-
-def match_exclude_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
-    if item.source == "odaily":
-        return []
-    haystack = normalize_exclude_term(f"{item.title}\n{item.content}")
-    matches: list[str] = []
-    for term in terms:
-        normalized = normalize_exclude_term(term)
-        if normalized and normalized in haystack:
-            matches.append(term)
-    return matches
-
-
-def exclude_newsflash_items(items: list[NewsflashItem], terms: list[str]) -> tuple[list[NewsflashItem], int, dict[str, int]]:
-    filtered_by_source = {source: 0 for source in NEWSFLASH_SOURCES}
-    if not terms:
-        return items, 0, filtered_by_source
-    kept: list[NewsflashItem] = []
-    filtered = 0
-    for item in items:
-        matches = match_exclude_terms(item, terms)
-        if matches:
-            filtered += 1
-            filtered_by_source[item.source] = filtered_by_source.get(item.source, 0) + 1
-            print(
-                "[odaily] competitor monitor excluded "
-                f"source={item.source} source_item_id={item.source_item_id} "
-                f"matched_terms={matches} title={item.title}"
-            )
-            continue
-        kept.append(item)
-    return kept, filtered, filtered_by_source
-
-
-def filter_competitor_items(items: list[NewsflashItem], terms: list[str]) -> tuple[list[NewsflashItem], int]:
-    kept, filtered, _ = exclude_newsflash_items(items, terms)
-    return kept, filtered
-
-
-def match_filter_terms(item: NewsflashItem, terms: list[str]) -> list[str]:
-    return match_exclude_terms(item, terms)
 
 
 def _search_cache_path_for_repository(repository) -> Any:

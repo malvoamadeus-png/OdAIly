@@ -679,6 +679,12 @@ class EditorPluginNewsGenService:
         del actor
         return self.pipeline_timing_snapshots.dashboard()
 
+    def get_runtime_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        from packages.runtime_rules import build_runtime_rules_payload
+
+        return build_runtime_rules_payload()
+
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
         self.feed_syncer.set_sync_email(actor.email)
         return self.local_store.list_feed_items(
@@ -1050,6 +1056,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/publisher-rules/get",
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
+        "/console/runtime-rules/get",
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
     }
@@ -1060,10 +1067,22 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/health":
-            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
+        if self.path == "/health":
+            self._send_json(HTTPStatus.OK, self.server.service.local_feed_health())
             return
-        self._send_json(HTTPStatus.OK, self.server.service.local_feed_health())
+        if self.path == "/console/runtime-rules/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.get_runtime_rules(actor)},
+                )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS | self.CONSOLE_PATHS:
@@ -1081,6 +1100,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
+                    return
+                if self.path == "/console/runtime-rules/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_runtime_rules(actor)})
                     return
                 if self.path == "/console/publisher-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_publisher_rules(actor)})

@@ -121,7 +121,7 @@ whale_onchain
 whale_hyperliquid
 ```
 
-新增类型必须先更新 `docs/信息流插件.md` 和对应生产模块文档。
+新增类型必须先更新 `docs/OdAIly代码与整体设计/信息流插件.md` 和对应生产模块文档。
 
 ### `lane`
 

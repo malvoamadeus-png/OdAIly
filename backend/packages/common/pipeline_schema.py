@@ -1007,6 +1007,35 @@ $$;
 
 
 COMPETITOR_FILTER_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS source_exclusion_rule_groups (
+    id bigserial PRIMARY KEY,
+    rule_key text NOT NULL UNIQUE,
+    name text NOT NULL UNIQUE,
+    description text NOT NULL DEFAULT '',
+    scopes text[] NOT NULL,
+    terms text[] NOT NULL,
+    enabled boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (cardinality(scopes) > 0),
+    CHECK (cardinality(terms) > 0),
+    CHECK (scopes <@ ARRAY['x', 'competitor', 'crypto_source', 'ai_source', 'mixed_source', 'jin10']::text[])
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_exclusion_rule_groups_enabled
+ON source_exclusion_rule_groups(enabled, updated_at DESC);
+
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+VALUES (
+    'ripple-xrp-commercial-content',
+    'Ripple / XRP 商务稿',
+    '从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。',
+    ARRAY['crypto_source']::text[],
+    ARRAY['Ripple', 'XRP', 'RLUSD']::text[],
+    true
+)
+ON CONFLICT (rule_key) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
     id bigserial PRIMARY KEY,
     term text NOT NULL UNIQUE,
@@ -1049,23 +1078,59 @@ ON CONFLICT (term_normalized) DO UPDATE
 SET term = EXCLUDED.term,
     updated_at = now();
 
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+SELECT
+    'legacy-competitor-enabled',
+    '旧版竞品排除词',
+    '由旧 competitor_filter_keywords 中启用词迁移。',
+    ARRAY['competitor']::text[],
+    array_agg(term ORDER BY length(term) DESC, term ASC),
+    true
+FROM competitor_filter_keywords
+WHERE enabled = true
+HAVING count(*) > 0
+ON CONFLICT (rule_key) DO NOTHING;
+
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+SELECT
+    'legacy-competitor-disabled',
+    '旧版已停用竞品排除词',
+    '由旧 competitor_filter_keywords 中停用词迁移，迁移后保持停用。',
+    ARRAY['competitor']::text[],
+    array_agg(term ORDER BY length(term) DESC, term ASC),
+    false
+FROM competitor_filter_keywords
+WHERE enabled = false
+HAVING count(*) > 0
+ON CONFLICT (rule_key) DO NOTHING;
+
+ALTER TABLE source_exclusion_rule_groups ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE competitor_filter_keywords ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS competitor_filter_keywords_anon_all ON competitor_filter_keywords;
 DROP POLICY IF EXISTS competitor_filter_keywords_console_admin_all ON competitor_filter_keywords;
+DROP POLICY IF EXISTS source_exclusion_rule_groups_anon_all ON source_exclusion_rule_groups;
+DROP POLICY IF EXISTS source_exclusion_rule_groups_console_admin_all ON source_exclusion_rule_groups;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+        REVOKE ALL PRIVILEGES ON source_exclusion_rule_groups FROM anon;
+        REVOKE ALL PRIVILEGES ON SEQUENCE source_exclusion_rule_groups_id_seq FROM anon;
         REVOKE ALL PRIVILEGES ON competitor_filter_keywords FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE competitor_filter_keywords_id_seq FROM anon;
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
         GRANT USAGE ON SCHEMA public TO authenticated;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON source_exclusion_rule_groups TO authenticated;
+        GRANT USAGE, SELECT ON SEQUENCE source_exclusion_rule_groups_id_seq TO authenticated;
         GRANT SELECT, INSERT, UPDATE, DELETE ON competitor_filter_keywords TO authenticated;
         GRANT USAGE, SELECT ON SEQUENCE competitor_filter_keywords_id_seq TO authenticated;
 
+        EXECUTE 'CREATE POLICY source_exclusion_rule_groups_console_admin_all ON source_exclusion_rule_groups
+            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
         EXECUTE 'CREATE POLICY competitor_filter_keywords_console_admin_all ON competitor_filter_keywords
             FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;

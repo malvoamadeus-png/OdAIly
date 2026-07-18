@@ -2,6 +2,8 @@ import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 
 import type { Session } from '@supabase/supabase-js';
 import {
   Ban,
+  ChevronDown,
+  ChevronRight,
   Database,
   FileText,
   Globe2,
@@ -20,11 +22,11 @@ import {
   Zap,
 } from 'lucide-react';
 import {
-  createCompetitorFilterKeywords,
+  createSourceExclusionRuleGroup,
   createAccount,
   createWhaleWatchAddress,
   createWhaleWatchHyperliquidAddress,
-  deleteCompetitorFilterKeyword,
+  deleteSourceExclusionRuleGroup,
   deleteAccount as deleteAccountFromSupabase,
   deleteWhaleWatchAddress,
   deleteWhaleWatchHyperliquidAddress,
@@ -34,9 +36,10 @@ import {
   getCurrentSession,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
+  getRuntimeRules,
   getPublisherRuleConfig,
   getPublisherRuleConfigSnapshot,
-  listCompetitorFilterKeywords,
+  listSourceExclusionRuleGroups,
   listNewsflashEventSources,
   listNewsflashEvents,
   listRecentTasksBySources,
@@ -56,7 +59,7 @@ import {
   signOut as signOutFromSupabase,
   setNewsflashEventFavorite,
   loadNonMainstreamDashboard,
-  updateCompetitorFilterKeyword,
+  updateSourceExclusionRuleGroup,
   updateAccount,
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
@@ -96,7 +99,11 @@ import {
   type WhaleWatchHyperliquidState,
   type PromptTemplate,
   type PromptVersion,
-  type CompetitorFilterKeyword,
+  type RuntimeRuleEntry,
+  type RuntimeRulesPayload,
+  type SourceExclusionRuleGroup,
+  type SourceExclusionRuleGroupInput,
+  type SourceExclusionScope,
   type NewsflashEventFilter,
   type NewsflashEventSourceItem,
   type NewsflashSourceSummary,
@@ -179,6 +186,8 @@ const emptyPublisherRuleConfig: PublisherRuleConfig = {
   updated_at: null,
   updated_by: null,
 };
+
+const emptyRuntimeRules: RuntimeRulesPayload = { schema_version: 1, sections: [] };
 
 const emptyBlockbeatsKeyConfig: BlockbeatsKeyConfig = {
   api_key: '',
@@ -419,7 +428,35 @@ function taskPublisherExplanation(task: TaskItem): string {
   return pieces.join(' ');
 }
 
+type TitleTrace = {
+  schema_version?: number;
+  title_strategy?: string;
+  title_strategy_reason?: string;
+  matched_known_subjects?: { name?: string; type?: string; importance?: string; matched_alias?: string }[];
+  matched_title_rules?: string[];
+  feature_mode_applied?: boolean;
+  feature_mode_reason?: string;
+};
+
+const titleStrategyLabels: Record<string, string> = {
+  plain: '常规直述',
+  speaker_anchor: '发言人前置',
+  entity_front: '主体前置',
+  action_first: '动作前置',
+  result_front: '结果前置',
+  amount_front: '金额前置',
+  time_window_front: '时间窗前置',
+};
+
+function taskTitleTrace(task: TaskItem): TitleTrace | null {
+  const writerOutput = task.pipeline?.writer_output;
+  if (!writerOutput || typeof writerOutput !== 'object') return null;
+  const trace = writerOutput.trace;
+  return trace && typeof trace === 'object' ? trace as TitleTrace : null;
+}
+
 function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string }) {
+  const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
   return (
     <div className="taskTable">
       <div className="taskTableHeader">
@@ -432,23 +469,36 @@ function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string 
         const source = taskSourceLabel(task);
         const statusLabel = taskStatusLabel(task.status);
         const publisherExplanation = taskPublisherExplanation(task);
+        const trace = taskTitleTrace(task);
+        const expanded = expandedTaskId === task.id;
+        const strategy = trace?.title_strategy || '';
         return (
-          <div className="taskTableRow" key={task.id}>
-            <div className="taskCell taskPrimaryCell">
-              <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
-                {taskHeadline(task)}
-              </a>
-              <p>{taskSummary(task)}</p>
+          <div className="taskTableItem" key={task.id}>
+            <div className="taskTableRow">
+              <div className="taskCell taskPrimaryCell">
+                <a href={task.source_url ?? '#'} target="_blank" rel="noreferrer">
+                  {taskHeadline(task)}
+                </a>
+                <div className="traceBadgeRow">
+                  {strategy && strategy !== 'plain' && <span className="traceBadge">标题：{titleStrategyLabels[strategy] || strategy}</span>}
+                  {trace?.feature_mode_applied && <span className="traceBadge feature">特色已用</span>}
+                </div>
+                <p>{taskSummary(task)}</p>
+              </div>
+              <div className="taskCell">
+                <strong>{source.primary}</strong>
+                <span>{source.secondary}</span>
+              </div>
+              <div className="taskCell taskActionCell">
+                <span className={isTaskStatusWarn(task.status) ? 'statusPill warn' : 'statusPill'}>{statusLabel}</span>
+                <span>{fmtTime(task.created_at)}</span>
+                {publisherExplanation && <span className="publisherReason">{publisherExplanation}</span>}
+                <button className="iconButton" type="button" title="查看处理详情" onClick={() => setExpandedTaskId(expanded ? null : task.id)}>
+                  {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                </button>
+              </div>
             </div>
-            <div className="taskCell">
-              <strong>{source.primary}</strong>
-              <span>{source.secondary}</span>
-            </div>
-            <div className="taskCell">
-              <span className={isTaskStatusWarn(task.status) ? 'statusPill warn' : 'statusPill'}>{statusLabel}</span>
-              <span>{fmtTime(task.created_at)}</span>
-              {publisherExplanation && <span className="publisherReason">{publisherExplanation}</span>}
-            </div>
+            {expanded && <TaskTraceDetails task={task} trace={trace} />}
           </div>
         );
       })}
@@ -793,9 +843,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [updatingPromptFeatureMode, setUpdatingPromptFeatureMode] = useState(false);
   const [deletingPromptVersionId, setDeletingPromptVersionId] = useState<number | null>(null);
-  const [competitorKeywords, setCompetitorKeywords] = useState<CompetitorFilterKeyword[]>([]);
-  const [newKeywords, setNewKeywords] = useState('');
-  const [savingKeywords, setSavingKeywords] = useState(false);
+  const [exclusionGroups, setExclusionGroups] = useState<SourceExclusionRuleGroup[]>([]);
+  const [savingExclusionGroup, setSavingExclusionGroup] = useState(false);
+  const [runtimeRules, setRuntimeRules] = useState<RuntimeRulesPayload>(emptyRuntimeRules);
   const [blockbeatsKeyConfig, setBlockbeatsKeyConfig] = useState<BlockbeatsKeyConfig>(emptyBlockbeatsKeyConfig);
   const [blockbeatsKeyDraft, setBlockbeatsKeyDraft] = useState('');
   const [savingBlockbeatsKey, setSavingBlockbeatsKey] = useState(false);
@@ -987,7 +1037,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadPrompts(nextSelectedKey?: string) {
     setError('');
-    const templates = visiblePromptTemplates(await listPromptTemplates());
+    const [allTemplates, rules] = await Promise.all([listPromptTemplates(), getRuntimeRules()]);
+    const templates = visiblePromptTemplates(allTemplates);
+    setRuntimeRules(rules);
     setPromptTemplates(templates);
     const requestedKey = nextSelectedKey || selectedPromptKey;
     const key = templates.some((template) => template.template_key === requestedKey)
@@ -1012,8 +1064,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadCompetitorKeywords() {
     setError('');
-    const keywords = await listCompetitorFilterKeywords();
-    setCompetitorKeywords(keywords);
+    const groups = await listSourceExclusionRuleGroups();
+    setExclusionGroups(groups);
   }
 
   async function loadBlockbeatsKey() {
@@ -1437,20 +1489,22 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function addCompetitorKeywords(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSavingKeywords(true);
+  async function saveExclusionGroup(id: number | null, input: SourceExclusionRuleGroupInput): Promise<number> {
+    setSavingExclusionGroup(true);
     setError('');
     try {
-      const created = await createCompetitorFilterKeywords(newKeywords);
-      setNewKeywords('');
-      setMessage(`已保存 ${created.length} 个排除词`);
+      const saved = id === null
+        ? await createSourceExclusionRuleGroup(input)
+        : await updateSourceExclusionRuleGroup(id, input);
+      setMessage('排除规则组已保存');
       await loadCompetitorKeywords();
+      return saved.id;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSavingKeywords(false);
+      setSavingExclusionGroup(false);
     }
+    return id ?? 0;
   }
 
   async function saveBlockbeatsKeyConfig(event: FormEvent<HTMLFormElement>) {
@@ -1469,20 +1523,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function toggleCompetitorKeyword(keyword: CompetitorFilterKeyword) {
+  async function removeExclusionGroup(group: SourceExclusionRuleGroup) {
     setError('');
     try {
-      await updateCompetitorFilterKeyword(keyword.id, { enabled: !keyword.enabled });
-      await loadCompetitorKeywords();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function removeCompetitorKeyword(keyword: CompetitorFilterKeyword) {
-    setError('');
-    try {
-      await deleteCompetitorFilterKeyword(keyword.id);
+      await deleteSourceExclusionRuleGroup(group.id);
       await loadCompetitorKeywords();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1608,7 +1652,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
         : view === 'competitor'
-          ? `${competitorKeywords.filter((item) => item.enabled).length} 个启用排除词`
+          ? `${exclusionGroups.filter((item) => item.enabled).length} 个启用规则组`
           : `${events.length} 个事件`;
   const refreshCurrent = () =>
     view === 'x'
@@ -1963,6 +2007,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ) : view === 'prompts' ? (
           <PromptPanel
             templates={promptTemplates}
+            runtimeRules={runtimeRules}
             selectedKey={selectedPromptKey}
             versions={promptVersions}
             content={promptContent}
@@ -1984,13 +2029,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'competitor' ? (
           <CompetitorPanel
-            keywords={competitorKeywords}
-            newKeywords={newKeywords}
-            saving={savingKeywords}
-            onNewKeywordsChange={setNewKeywords}
-            onAdd={addCompetitorKeywords}
-            onToggle={toggleCompetitorKeyword}
-            onDelete={removeCompetitorKeyword}
+            groups={exclusionGroups}
+            saving={savingExclusionGroup}
+            onSave={saveExclusionGroup}
+            onDelete={removeExclusionGroup}
           />
         ) : (
           <EventsPanel
@@ -2042,6 +2084,16 @@ function TaskOverviewPanel({
   query: string;
   onQueryChange: (query: string) => void;
 }) {
+  const [strategyFilter, setStrategyFilter] = useState('all');
+  const [featureOnly, setFeatureOnly] = useState(false);
+  const [knownOnly, setKnownOnly] = useState(false);
+  const traceFilteredTasks = tasks.filter((task) => {
+    const trace = taskTitleTrace(task);
+    if (strategyFilter !== 'all' && trace?.title_strategy !== strategyFilter) return false;
+    if (featureOnly && !trace?.feature_mode_applied) return false;
+    if (knownOnly && !trace?.matched_known_subjects?.length) return false;
+    return true;
+  });
   const publisherCount = tasks.filter((task) => Boolean(task.pipeline?.publisher_decision || task.pipeline?.publisher_decided_at)).length;
   return (
     <section className="tasksOverviewLayout">
@@ -2063,16 +2115,50 @@ function TaskOverviewPanel({
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="搜索标题、链接、来源"
         />
+        <select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}>
+          <option value="all">全部标题策略</option>
+          {Object.entries(titleStrategyLabels).map(([key, label]) => <option value={key} key={key}>{label}</option>)}
+        </select>
+        <label className="inlineToggle compact"><input type="checkbox" checked={featureOnly} onChange={(event) => setFeatureOnly(event.target.checked)} /><span>特色已用</span></label>
+        <label className="inlineToggle compact"><input type="checkbox" checked={knownOnly} onChange={(event) => setKnownOnly(event.target.checked)} /><span>知名主体</span></label>
       </div>
 
       <section className="section">
         <div className="sectionHeader">
           <h2>最近信息</h2>
-          <span>{loading ? '加载中' : `${tasks.length} 条显示 / ${totalCount} 条最近任务 · ${publisherCount} 条到发布者`}</span>
+          <span>{loading ? '加载中' : `${traceFilteredTasks.length} 条显示 / ${totalCount} 条最近任务 · ${publisherCount} 条到发布者`}</span>
         </div>
-        <TaskTable tasks={tasks} emptyText={loading ? '正在加载最近任务。' : '当前筛选没有任务。'} />
+        <TaskTable tasks={traceFilteredTasks} emptyText={loading ? '正在加载最近任务。' : '当前筛选没有任务。'} />
       </section>
     </section>
+  );
+}
+
+function TaskTraceDetails({ task, trace }: { task: TaskItem; trace: TitleTrace | null }) {
+  const pipeline = task.pipeline;
+  const knownSubjects = trace?.matched_known_subjects || [];
+  const titleRules = trace?.matched_title_rules || [];
+  const judgeRuleSet = typeof pipeline?.judge_output?.rule_set === 'string' ? pipeline.judge_output.rule_set : '-';
+  const judgeRuleVersion = typeof pipeline?.judge_output?.rule_version === 'string' ? pipeline.judge_output.rule_version : '-';
+  return (
+    <div className="taskTraceDetails">
+      <div className="taskTraceGrid">
+        <div><span>标题策略</span><strong>{trace?.title_strategy ? titleStrategyLabels[trace.title_strategy] || trace.title_strategy : '旧任务无标题溯源'}</strong></div>
+        <div><span>特色模式</span><strong>{pipeline?.writer_feature_mode_enabled ? '已启用' : '未启用'} / {trace?.feature_mode_applied ? '实际采用' : '未采用'}</strong></div>
+        <div><span>写作 Prompt</span><strong>{pipeline?.prompt_template_key || '-'}{pipeline?.prompt_version_id ? ` · #${pipeline.prompt_version_id}` : ''}</strong></div>
+        <div><span>写作模型</span><strong>{pipeline?.writer_model || '-'}</strong></div>
+        <div><span>判断规则</span><strong>{judgeRuleSet} · {judgeRuleVersion}</strong></div>
+      </div>
+      {trace && (
+        <div className="taskTraceNarrative">
+          {trace.title_strategy_reason && <p><strong>策略原因</strong>{trace.title_strategy_reason}</p>}
+          {knownSubjects.length > 0 && <p><strong>知名主体</strong>{knownSubjects.map((subject) => `${subject.name}${subject.matched_alias ? `（${subject.matched_alias}）` : ''}`).join('、')}</p>}
+          {titleRules.length > 0 && <p><strong>命中规则</strong>{titleRules.join('、')}</p>}
+          {trace.feature_mode_applied && trace.feature_mode_reason && <p><strong>特色原因</strong>{trace.feature_mode_reason}</p>}
+          <details><summary>查看原始溯源</summary><pre>{JSON.stringify(trace, null, 2)}</pre></details>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -3330,6 +3416,7 @@ function NonMainstreamSourceRow({
 
 function PromptPanel({
   templates,
+  runtimeRules,
   selectedKey,
   versions,
   content,
@@ -3350,6 +3437,7 @@ function PromptPanel({
   onRefresh,
 }: {
   templates: PromptTemplate[];
+  runtimeRules: RuntimeRulesPayload;
   selectedKey: string;
   versions: PromptVersion[];
   content: string;
@@ -3369,11 +3457,24 @@ function PromptPanel({
   onDeleteVersion: (version: PromptVersion) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
+  const [panelMode, setPanelMode] = useState<'editable' | 'runtime'>('editable');
   const selected = templates.find((template) => template.template_key === selectedKey);
   const activeVersion = versions.find((version) => version.id === selected?.active_version_id);
 
   return (
-    <section className="promptLayout">
+    <>
+      <div className="workflowModeSwitch promptModeSwitch" aria-label="Prompt 展示模式">
+        <button className={panelMode === 'editable' ? 'active' : ''} type="button" onClick={() => setPanelMode('editable')}>
+          可编辑 Prompt
+        </button>
+        <button className={panelMode === 'runtime' ? 'active' : ''} type="button" onClick={() => setPanelMode('runtime')}>
+          内置规则
+        </button>
+      </div>
+      {panelMode === 'runtime' ? (
+        <RuntimeRulesPanel payload={runtimeRules} />
+      ) : (
+      <section className="promptLayout">
       <aside className="promptList">
         <div className="sectionHeader">
           <h2>模板</h2>
@@ -3469,6 +3570,8 @@ function PromptPanel({
         ))}
       </aside>
     </section>
+      )}
+    </>
   );
 }
 
@@ -3543,62 +3646,213 @@ function BlockbeatsKeyPanel({
   );
 }
 
+function RuntimeRulesPanel({ payload }: { payload: RuntimeRulesPayload }) {
+  const [sectionKey, setSectionKey] = useState('all');
+  const [query, setQuery] = useState('');
+  const normalized = query.trim().toLocaleLowerCase();
+  const entries = payload.sections
+    .filter((section) => sectionKey === 'all' || section.key === sectionKey)
+    .flatMap((section) => section.entries.map((entry) => ({ ...entry, sectionLabel: section.label })))
+    .filter((entry) => !normalized || `${entry.title}\n${entry.summary}\n${entry.content}`.toLocaleLowerCase().includes(normalized));
+
+  return (
+    <section className="runtimeRulesLayout">
+      <div className="filterBar">
+        <button className={sectionKey === 'all' ? 'filterButton active' : 'filterButton'} type="button" onClick={() => setSectionKey('all')}>
+          全部
+        </button>
+        {payload.sections.map((section) => (
+          <button className={sectionKey === section.key ? 'filterButton active' : 'filterButton'} type="button" key={section.key} onClick={() => setSectionKey(section.key)}>
+            {section.label}
+          </button>
+        ))}
+        <input className="taskSearchInput" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索规则内容" />
+      </div>
+      <div className="runtimeRuleList">
+        {entries.map((entry) => (
+          <RuntimeRuleItem entry={entry} key={entry.key} />
+        ))}
+        {entries.length === 0 && <div className="emptyState">没有匹配的内置规则。</div>}
+      </div>
+    </section>
+  );
+}
+
+function RuntimeRuleItem({ entry }: { entry: RuntimeRuleEntry & { sectionLabel: string } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <article className="runtimeRuleItem">
+      <button className="runtimeRuleSummary" type="button" onClick={() => setOpen((current) => !current)}>
+        <div>
+          <strong>{entry.title}</strong>
+          <span>{entry.sectionLabel} · {entry.kind} · {entry.editable ? `可在${entry.editable_at || '控制台'}编辑` : '代码内置，只读'}</span>
+        </div>
+        <small>{entry.summary}</small>
+        {open ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+      </button>
+      {open && (
+        <div className="runtimeRuleBody">
+          <div className="traceBadgeRow">{entry.scopes.map((scope) => <span className="traceBadge" key={scope}>{scope}</span>)}</div>
+          <pre>{entry.content}</pre>
+          <code>{entry.source_location}</code>
+        </div>
+      )}
+    </article>
+  );
+}
+
+const exclusionScopeOptions: { key: SourceExclusionScope; label: string }[] = [
+  { key: 'x', label: 'X' },
+  { key: 'competitor', label: '竞品' },
+  { key: 'crypto_source', label: 'Crypto信源' },
+  { key: 'ai_source', label: 'AI信源' },
+  { key: 'mixed_source', label: '混合信源' },
+  { key: 'jin10', label: '金十' },
+];
+
+type ExclusionGroupDraft = SourceExclusionRuleGroupInput & { termsText: string };
+
+const emptyExclusionDraft: ExclusionGroupDraft = {
+  name: '',
+  description: '',
+  scopes: ['crypto_source'],
+  terms: [],
+  termsText: '',
+  enabled: true,
+};
+
 function CompetitorPanel({
-  keywords,
-  newKeywords,
+  groups,
   saving,
-  onNewKeywordsChange,
-  onAdd,
-  onToggle,
+  onSave,
   onDelete,
 }: {
-  keywords: CompetitorFilterKeyword[];
-  newKeywords: string;
+  groups: SourceExclusionRuleGroup[];
   saving: boolean;
-  onNewKeywordsChange: (value: string) => void;
-  onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  onToggle: (keyword: CompetitorFilterKeyword) => Promise<void>;
-  onDelete: (keyword: CompetitorFilterKeyword) => Promise<void>;
+  onSave: (id: number | null, input: SourceExclusionRuleGroupInput) => Promise<number>;
+  onDelete: (group: SourceExclusionRuleGroup) => Promise<void>;
 }) {
-  return (
-    <section className="competitorLayout">
-      <div className="competitorControls">
-        <form className="keywordForm" onSubmit={onAdd}>
-          <div className="sectionHeader">
-            <h2>排除词表</h2>
-            <button className="primaryButton" type="submit" disabled={saving}>
-              <Plus size={17} /> 保存
-            </button>
-          </div>
-          <textarea
-            className="keywordTextarea"
-            value={newKeywords}
-            onChange={(event) => onNewKeywordsChange(event.target.value)}
-            placeholder={'每行一个词\n跌破\n突破'}
-            spellCheck={false}
-          />
-        </form>
-      </div>
+  const [selectedId, setSelectedId] = useState<number | null>(groups[0]?.id ?? null);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState<ExclusionGroupDraft>(emptyExclusionDraft);
+  const [query, setQuery] = useState('');
+  const [scopeFilter, setScopeFilter] = useState<'all' | SourceExclusionScope>('all');
+  const [testText, setTestText] = useState('');
 
-      <div className="keywordList">
-        {keywords.length === 0 && <div className="emptyState">暂无排除词，请先运行初始化命令或添加新词。</div>}
-        {keywords.map((keyword) => (
-          <article className={keyword.enabled ? 'keywordRow' : 'keywordRow disabled'} key={keyword.id}>
-            <div>
-              <strong>{keyword.term}</strong>
-              <span>{keyword.enabled ? '启用' : '停用'} · {fmtTime(keyword.updated_at)}</span>
-            </div>
-            <div className="rowActions">
-              <button className="iconButton" type="button" onClick={() => onToggle(keyword)} title={keyword.enabled ? '停用' : '启用'}>
-                {keyword.enabled ? <Pause size={17} /> : <Zap size={17} />}
-              </button>
-              <button className="iconButton danger" type="button" onClick={() => onDelete(keyword)} title="删除">
+  useEffect(() => {
+    const selected = groups.find((group) => group.id === selectedId);
+    if (!selected) {
+      if (!creating && groups.length > 0) {
+        setSelectedId(groups[0].id);
+        return;
+      }
+      setDraft(emptyExclusionDraft);
+      return;
+    }
+    setDraft({
+      name: selected.name,
+      description: selected.description,
+      scopes: selected.scopes,
+      terms: selected.terms,
+      termsText: selected.terms.join('\n'),
+      enabled: selected.enabled,
+    });
+  }, [creating, groups, selectedId]);
+
+  const visibleGroups = groups.filter((group) => {
+    const matchesScope = scopeFilter === 'all' || group.scopes.includes(scopeFilter);
+    const normalized = query.trim().toLocaleLowerCase();
+    const matchesQuery = !normalized || `${group.name}\n${group.description}\n${group.terms.join('\n')}`.toLocaleLowerCase().includes(normalized);
+    return matchesScope && matchesQuery;
+  });
+  const normalizedTest = testText.normalize('NFKC').toLocaleLowerCase();
+  const testMatches = normalizedTest
+    ? groups.filter((group) => group.enabled && group.terms.some((term) => normalizedTest.includes(term.normalize('NFKC').toLocaleLowerCase())))
+    : [];
+
+  function toggleScope(scope: SourceExclusionScope) {
+    setDraft((current) => ({
+      ...current,
+      scopes: current.scopes.includes(scope) ? current.scopes.filter((item) => item !== scope) : [...current.scopes, scope],
+    }));
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const terms = draft.termsText.split(/\r?\n/).map((term) => term.trim()).filter(Boolean);
+    if (!draft.name.trim() || draft.scopes.length === 0 || terms.length === 0) return;
+    const savedId = await onSave(selectedId, { ...draft, name: draft.name.trim(), description: draft.description.trim(), terms });
+    if (savedId > 0) {
+      setCreating(false);
+      setSelectedId(savedId);
+    }
+  }
+
+  return (
+    <section className="exclusionLayout">
+      <aside className="exclusionGroupList">
+        <div className="sectionHeader">
+          <h2>规则组</h2>
+          <button className="iconButton" type="button" title="新建规则组" onClick={() => { setCreating(true); setSelectedId(null); setDraft(emptyExclusionDraft); }}>
+            <Plus size={17} />
+          </button>
+        </div>
+        <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索规则组或词" />
+        <select value={scopeFilter} onChange={(event) => setScopeFilter(event.target.value as 'all' | SourceExclusionScope)}>
+          <option value="all">全部路径</option>
+          {exclusionScopeOptions.map((scope) => <option value={scope.key} key={scope.key}>{scope.label}</option>)}
+        </select>
+        <div className="exclusionGroupRows">
+          {visibleGroups.map((group) => (
+            <button className={selectedId === group.id ? 'exclusionGroupRow active' : 'exclusionGroupRow'} type="button" key={group.id} onClick={() => { setCreating(false); setSelectedId(group.id); }}>
+              <strong>{group.name}</strong>
+              <span>{group.enabled ? '启用' : '停用'} · {group.terms.length} 个词</span>
+              <small>{group.scopes.map((scope) => exclusionScopeOptions.find((item) => item.key === scope)?.label || scope).join('、')}</small>
+            </button>
+          ))}
+          {visibleGroups.length === 0 && <div className="emptyState compact">没有匹配的规则组。</div>}
+        </div>
+      </aside>
+
+      <form className="exclusionEditor" onSubmit={submit}>
+        <div className="sectionHeader">
+          <div>
+            <h2>{selectedId === null ? '新建规则组' : draft.name || '规则组'}</h2>
+            <span>{selectedId === null ? '整组配置路径和词表' : `最近更新 ${fmtTime(groups.find((group) => group.id === selectedId)?.updated_at || null)}`}</span>
+          </div>
+          <div className="rowActions">
+            {selectedId !== null && (
+              <button className="iconButton danger" type="button" title="删除规则组" onClick={() => { const group = groups.find((item) => item.id === selectedId); if (group) void onDelete(group); }}>
                 <Trash2 size={17} />
               </button>
-            </div>
-          </article>
-        ))}
-      </div>
+            )}
+            <button className="primaryButton" type="submit" disabled={saving || !draft.name.trim() || draft.scopes.length === 0 || !draft.termsText.trim()}>
+              <Save size={17} /> 保存
+            </button>
+          </div>
+        </div>
+        <label><span>名称</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+        <label><span>说明</span><textarea rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
+        <div className="exclusionScopeField">
+          <span>适用路径</span>
+          <div className="scopeChecks">
+            {exclusionScopeOptions.map((scope) => (
+              <label key={scope.key}><input type="checkbox" checked={draft.scopes.includes(scope.key)} onChange={() => toggleScope(scope.key)} /><span>{scope.label}</span></label>
+            ))}
+          </div>
+        </div>
+        <label><span>词表</span><textarea className="keywordTextarea" rows={12} value={draft.termsText} onChange={(event) => setDraft({ ...draft, termsText: event.target.value })} placeholder={'每行一个词\nRipple\nXRP\nRLUSD'} spellCheck={false} /></label>
+        <label className="inlineToggle"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>启用规则组</span></label>
+      </form>
+
+      <aside className="exclusionTester">
+        <div className="sectionHeader"><h2>测试文本</h2><span>仅本地预览</span></div>
+        <textarea rows={8} value={testText} onChange={(event) => setTestText(event.target.value)} placeholder="粘贴标题或正文" />
+        <div className="testMatchList">
+          {testText && testMatches.length === 0 && <span className="ok">未命中启用规则组</span>}
+          {testMatches.map((group) => <span className="statusPill warn" key={group.id}>{group.name}</span>)}
+        </div>
+      </aside>
     </section>
   );
 }

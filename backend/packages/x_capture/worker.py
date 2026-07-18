@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.source_exclusions import SourceExclusionMatcher
 from packages.common.freshness import (
     DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
     ensure_utc,
@@ -40,6 +41,7 @@ class XCaptureWorker:
         attempt_prune_interval_seconds: float = 3600.0,
         freshness_window_seconds: int = DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
         pipeline_client: LocalPipelineClient | None = None,
+        exclusion_matcher: SourceExclusionMatcher | None = None,
     ) -> None:
         self.repository = repository
         self.client = client or FXTwitterClient()
@@ -49,6 +51,7 @@ class XCaptureWorker:
         self.attempt_prune_interval_seconds = max(60.0, float(attempt_prune_interval_seconds))
         self.freshness_window_seconds = max(1, int(freshness_window_seconds))
         self.pipeline_client = pipeline_client
+        self.exclusion_matcher = exclusion_matcher
         self._stop_event = threading.Event()
         self._config_changed = threading.Event()
         self._wake_event = threading.Event()
@@ -304,6 +307,15 @@ class XCaptureWorker:
                 if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
                     ignored_stale_count += 1
                     ignored_stale_tweet_ids.append(candidate.tweet_id)
+                continue
+            exclusion_scopes = ["x"]
+            if account.is_ai_source:
+                exclusion_scopes.append("ai_source")
+            if self.exclusion_matcher is not None and self.exclusion_matcher.is_excluded(
+                scopes=exclusion_scopes,
+                texts=[record.text],
+            ):
+                self.repository.mark_seen(account, candidate.tweet_id, seeded=False)
                 continue
             task_id = self.repository.save_task(account, record)
             if task_id is None:

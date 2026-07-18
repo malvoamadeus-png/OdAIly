@@ -182,6 +182,8 @@ class XProcessingRepository(Protocol):
         news_type: NewsType,
         model: str,
         raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
     ) -> None: ...
     def complete_judge_discard(
         self,
@@ -190,6 +192,8 @@ class XProcessingRepository(Protocol):
         discard_type: str,
         model: str,
         raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
     ) -> None: ...
     def complete_search(self, task_id: int) -> None: ...
     def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None: ...
@@ -207,6 +211,7 @@ class XProcessingRepository(Protocol):
         draft_title: str,
         draft_content: str,
         raw_output: str,
+        trace: dict[str, Any],
     ) -> None: ...
     def complete_format_publish(
         self,
@@ -311,6 +316,7 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         task_id=int(row["task_id"]),
         news_type=news_type,
         candidate_id=row.get("candidate_id"),
+        judge_output=row.get("judge_output") or {},
         judge_completed_at=row.get("judge_completed_at"),
         search_completed_at=row.get("search_completed_at"),
         prompt_template_key=row.get("prompt_template_key"),
@@ -318,6 +324,8 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         writer_feature_mode_enabled=(
             bool(writer_feature_mode_enabled) if writer_feature_mode_enabled is not None else None
         ),
+        writer_model=row.get("writer_model"),
+        writer_output=row.get("writer_output") or {},
         draft_title=row.get("draft_title"),
         draft_content=row.get("draft_content"),
         write_completed_at=row.get("write_completed_at"),
@@ -734,7 +742,21 @@ class PostgresXProcessingRepository:
             )
             conn.commit()
 
-    def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
+    def complete_judge(
+        self,
+        task_id: int,
+        *,
+        news_type: NewsType,
+        model: str,
+        raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
+    ) -> None:
+        output = {"route": news_type, "discard_type": "none", "raw_output": raw_output}
+        if rule_set:
+            output["rule_set"] = rule_set
+        if rule_version:
+            output["rule_version"] = rule_version
         with self._connect() as conn:
             conn.execute(
                 """
@@ -750,7 +772,7 @@ class PostgresXProcessingRepository:
                 (
                     news_type,
                     model,
-                    self._Jsonb({"route": news_type, "discard_type": "none", "raw_output": raw_output}),
+                    self._Jsonb(output),
                     task_id,
                 ),
             )
@@ -759,7 +781,21 @@ class PostgresXProcessingRepository:
             self._set_task_status(conn, task_id, next_status)
             conn.commit()
 
-    def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
+    def complete_judge_discard(
+        self,
+        task_id: int,
+        *,
+        discard_type: str,
+        model: str,
+        raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
+    ) -> None:
+        output = {"route": "discard", "discard_type": discard_type, "raw_output": raw_output}
+        if rule_set:
+            output["rule_set"] = rule_set
+        if rule_version:
+            output["rule_version"] = rule_version
         with self._connect() as conn:
             conn.execute(
                 """
@@ -774,7 +810,7 @@ class PostgresXProcessingRepository:
                 """,
                 (
                     model,
-                    self._Jsonb({"route": "discard", "discard_type": discard_type, "raw_output": raw_output}),
+                    self._Jsonb(output),
                     task_id,
                 ),
             )
@@ -969,6 +1005,7 @@ class PostgresXProcessingRepository:
         draft_title: str,
         draft_content: str,
         raw_output: str,
+        trace: dict[str, Any],
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -991,7 +1028,7 @@ class PostgresXProcessingRepository:
                     prompt.id,
                     prompt.feature_mode_enabled,
                     model,
-                    self._Jsonb({"raw_output": raw_output}),
+                    self._Jsonb({"raw_output": raw_output, "trace": trace}),
                     draft_title,
                     draft_content,
                     task_id,
@@ -1260,18 +1297,58 @@ class InMemoryXProcessingRepository:
     def list_publisher_channels(self) -> list[PublisherChannelRecord]:
         return [self.publisher_channels[key] for key in sorted(self.publisher_channels)]
 
-    def complete_judge(self, task_id: int, *, news_type: NewsType, model: str, raw_output: str) -> None:
+    def complete_judge(
+        self,
+        task_id: int,
+        *,
+        news_type: NewsType,
+        model: str,
+        raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
+    ) -> None:
         current = self.pipelines[task_id]
+        judge_output = {"route": news_type, "discard_type": "none", "raw_output": raw_output}
+        if rule_set:
+            judge_output["rule_set"] = rule_set
+        if rule_version:
+            judge_output["rule_version"] = rule_version
         self.pipelines[task_id] = PipelineRecord(
-            **{**asdict(current), "news_type": news_type, "judge_completed_at": utc_now(), "last_error": None}
+            **{
+                **asdict(current),
+                "news_type": news_type,
+                "judge_output": judge_output,
+                "judge_completed_at": utc_now(),
+                "last_error": None,
+            }
         )
         task = self.tasks[task_id]
         self._set_status(task_id, "deduped" if task.source in SEARCH_FIRST_SOURCES else "judged")
 
-    def complete_judge_discard(self, task_id: int, *, discard_type: str, model: str, raw_output: str) -> None:
+    def complete_judge_discard(
+        self,
+        task_id: int,
+        *,
+        discard_type: str,
+        model: str,
+        raw_output: str,
+        rule_set: str | None = None,
+        rule_version: str | None = None,
+    ) -> None:
         current = self.pipelines[task_id]
+        judge_output = {"route": "discard", "discard_type": discard_type, "raw_output": raw_output}
+        if rule_set:
+            judge_output["rule_set"] = rule_set
+        if rule_version:
+            judge_output["rule_version"] = rule_version
         self.pipelines[task_id] = PipelineRecord(
-            **{**asdict(current), "news_type": None, "judge_completed_at": utc_now(), "last_error": None}
+            **{
+                **asdict(current),
+                "news_type": None,
+                "judge_output": judge_output,
+                "judge_completed_at": utc_now(),
+                "last_error": None,
+            }
         )
         self._release_primary_candidate(task_id)
         self._set_status(task_id, "discarded")
@@ -1362,6 +1439,7 @@ class InMemoryXProcessingRepository:
         draft_title: str,
         draft_content: str,
         raw_output: str,
+        trace: dict[str, Any],
     ) -> None:
         current = self.pipelines[task_id]
         self.pipelines[task_id] = PipelineRecord(
@@ -1370,6 +1448,8 @@ class InMemoryXProcessingRepository:
                 "prompt_template_key": prompt.template_key,
                 "prompt_version_id": prompt.id,
                 "writer_feature_mode_enabled": prompt.feature_mode_enabled,
+                "writer_model": model,
+                "writer_output": {"raw_output": raw_output, "trace": trace},
                 "draft_title": draft_title,
                 "draft_content": draft_content,
                 "write_completed_at": utc_now(),

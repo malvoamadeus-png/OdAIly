@@ -13,7 +13,6 @@ from packages.x_processing.ai_client import OpenAIResponsesClient, TextGeneratio
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
 
 from .index import Writer3Index
-from .matching import exclusion_reason
 from .models import AnalysisResult, ContextResult, Writer3Candidate, Writer3Task
 from .prompts import (
     ANALYSIS_SCHEMA,
@@ -102,12 +101,6 @@ class Writer3Worker:
             time.sleep(self.settings.worker_idle_sleep_seconds)
 
     def _process_task(self, task: Writer3Task) -> Writer3RunResult:
-        terms = self.repository.list_enabled_filter_keywords()
-        reason = exclusion_reason(task.title, task.final_content, terms)
-        if reason:
-            self.repository.complete_skipped(task, reason="excluded_keyword", metadata={"term": reason})
-            return Writer3RunResult(processed=1, sent=0, skipped=1, failed=0, message=f"excluded term={reason}")
-
         if task.published_at is None:
             self.repository.complete_skipped(task, reason="missing_published_at")
             return Writer3RunResult(processed=1, sent=0, skipped=1, failed=0, message="missing published_at")

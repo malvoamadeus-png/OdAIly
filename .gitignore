@@ -35,7 +35,16 @@ docs/*草稿*
 docs/查重.md
 docs/*发布推送接口*.md
 docs/*接口发布推送*.md
+docs/_private/
+docs/工具运维私有/
+docs/工具与运维私有/
 tests/
+!tests/
+tests/*
+!tests/test_source_exclusions.py
+!tests/test_runtime_rules.py
+!tests/test_x_processing_title_trace.py
+!tests/test_x_processing_competitor_judge.py
 tools/
 
 data/config/*.json

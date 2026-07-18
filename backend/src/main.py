@@ -586,6 +586,7 @@ def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
 
 
 def x_capture_worker_command(args: argparse.Namespace) -> int:
+    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
     from packages.local_pipeline import LocalPipelineClient
     from packages.x_capture import FXTwitterClient, XCaptureWorker
     from packages.x_capture.repository import PostgresXCaptureRepository
@@ -598,6 +599,7 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
         attempt_retention_days=settings.attempt_retention_days,
         freshness_window_seconds=settings.processing_freshness_window_seconds,
         pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
     )
     if args.once:
         stats = worker.run_once()
@@ -618,11 +620,16 @@ def non_mainstream_media_init_db_command(args: argparse.Namespace) -> int:
 
 
 def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
+    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
     from packages.local_pipeline import LocalPipelineClient
     from packages.non_mainstream_media import NonMainstreamMediaWorker, PostgresNonMainstreamMediaRepository
 
     repository = PostgresNonMainstreamMediaRepository(args.database_url)
-    worker = NonMainstreamMediaWorker(repository=repository, pipeline_client=LocalPipelineClient())
+    worker = NonMainstreamMediaWorker(
+        repository=repository,
+        pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+    )
     if args.once:
         stats = worker.run_once()
         print(f"[odaily] non-mainstream media once completed. sources={len(stats)}")
@@ -632,6 +639,7 @@ def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
 
 
 def telegram_discovery_worker_command(args: argparse.Namespace) -> int:
+    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
     from packages.local_pipeline import LocalPipelineClient
     from packages.non_mainstream_media import PostgresNonMainstreamMediaRepository, TelegramDiscoveryWorker
 
@@ -640,6 +648,7 @@ def telegram_discovery_worker_command(args: argparse.Namespace) -> int:
         repository=repository,
         settings=load_telegram_discovery_settings(),
         pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
     )
     asyncio.run(worker.run_forever())
     return 0
@@ -719,11 +728,16 @@ def jin10_init_db_command(args: argparse.Namespace) -> int:
 
 
 def jin10_monitor_worker_command(args: argparse.Namespace) -> int:
+    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
     from packages.jin10_monitor import Jin10MonitorWorker, PostgresJin10MonitorRepository
     from packages.local_pipeline import LocalPipelineClient
 
     repository = PostgresJin10MonitorRepository(args.database_url)
-    worker = Jin10MonitorWorker(repository=repository, pipeline_client=LocalPipelineClient())
+    worker = Jin10MonitorWorker(
+        repository=repository,
+        pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+    )
     if args.once:
         result = worker.run_once()
         print(
@@ -827,6 +841,7 @@ def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
 
 
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
+    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
     from packages.local_pipeline import LocalPipelineClient
     from packages.competitor_monitor import (
         CompetitorMonitorWorker,
@@ -846,17 +861,17 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
         repository=repository,
         settings=load_competitor_monitor_settings(),
         pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
     )
     if args.once:
         result = worker.run_once()
         print(
             "[odaily] competitor monitor once "
             f"fetched={result.fetched} tasks={result.task_inserted} references={result.reference_inserted} "
-            f"events={result.events_updated} filtered={result.filtered} "
+            f"events={result.events_updated} "
             f"expired_for_tasks={result.expired_for_tasks} "
             f"event_elapsed_seconds={result.event_elapsed_seconds:.1f} "
             f"fetched_by_source={result.fetched_by_source} "
-            f"filtered_by_source={result.filtered_by_source} "
             f"expired_for_tasks_by_source={result.expired_for_tasks_by_source} "
             f"failed={result.failed_sources}"
         )

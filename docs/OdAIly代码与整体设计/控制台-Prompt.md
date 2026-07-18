@@ -1,5 +1,9 @@
 # 控制台-Prompt
 
+Prompt 页面分为 `可编辑 Prompt` 与 `内置规则` 两个标签。前者保持现有版本发布和特色模式编辑能力；后者通过认证接口 `GET /console/runtime-rules/get` 只读展示运行时代码中的来源判断 Prompt / Schema、排除词路径语义、标题策略、知名主体、编写者2替换与拦截、发布者默认规则和来源映射。
+
+内置规则支持按模块筛选、全文搜索与展开原文，并显示代码位置及“代码只读 / 控制台可编辑”状态。接口内容从代码常量实时组装，不读取或返回环境变量、数据库连接串、API key 或其他密钥。
+
 ## 当前可见模板
 
 - `x_regular_writer`
@@ -31,11 +35,11 @@
 
 ## 种子文件
 
-- Crypto信源全文：`docs/主流外媒快讯模板.txt` -> `mainstream_media_writer`
-- AI信源全文：`docs/主流外媒快讯模板.txt` -> `mainstream_media_writer`
-- 历史保留：`docs/外媒模板.txt` -> `non_mainstream_media_writer`
-- 标题提醒领域判断：`docs/外媒标题领域判断模板.txt` -> `external_media_alert_domain_judge`
-- 金十判断：`docs/判断者-金十模板.txt` -> `jin10_judge`
+- Crypto信源全文：`docs/OdAIly代码与整体设计/主流外媒快讯模板.txt` -> `mainstream_media_writer`
+- AI信源全文：`docs/OdAIly代码与整体设计/主流外媒快讯模板.txt` -> `mainstream_media_writer`
+- 历史保留：`docs/OdAIly代码与整体设计/外媒模板.txt` -> `non_mainstream_media_writer`
+- 标题提醒领域判断：`docs/OdAIly代码与整体设计/外媒标题领域判断模板.txt` -> `external_media_alert_domain_judge`
+- 金十判断：`docs/OdAIly代码与整体设计/判断者-金十模板.txt` -> `jin10_judge`
 
 ## 相关文档
 

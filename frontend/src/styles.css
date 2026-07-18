@@ -1108,6 +1108,304 @@ textarea:focus {
   margin-top: 18px;
 }
 
+.promptModeSwitch {
+  width: fit-content;
+  margin-top: 18px;
+}
+
+.runtimeRulesLayout,
+.exclusionLayout {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.runtimeRuleList {
+  display: grid;
+  gap: 8px;
+}
+
+.runtimeRuleItem {
+  overflow: hidden;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.runtimeRuleSummary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1.2fr) 24px;
+  gap: 18px;
+  align-items: center;
+  width: 100%;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 0;
+  background: #ffffff;
+  color: #24313f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtimeRuleSummary div,
+.runtimeRuleBody {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.runtimeRuleSummary span,
+.runtimeRuleSummary small,
+.runtimeRuleBody code {
+  color: #6b7280;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.runtimeRuleBody {
+  padding: 14px;
+  border-top: 1px solid #e8edf2;
+  background: #f8fafb;
+}
+
+.runtimeRuleBody pre,
+.taskTraceNarrative pre {
+  max-height: 440px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #dfe5eb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #24313f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.exclusionLayout {
+  grid-template-columns: minmax(220px, 280px) minmax(340px, 1fr) minmax(230px, 300px);
+  align-items: start;
+  margin-top: 18px;
+}
+
+.exclusionGroupList,
+.exclusionEditor,
+.exclusionTester {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.exclusionEditor label,
+.exclusionScopeField {
+  display: grid;
+  gap: 7px;
+  color: #394150;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.exclusionEditor textarea:not(.keywordTextarea) {
+  min-height: 88px;
+}
+
+.exclusionTester textarea {
+  min-height: 220px;
+}
+
+.exclusionGroupRows,
+.testMatchList {
+  display: grid;
+  gap: 7px;
+}
+
+.exclusionGroupRow {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #24313f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exclusionGroupRow:hover,
+.exclusionGroupRow.active {
+  border-color: #86c8a7;
+  background: #eef9f3;
+}
+
+.exclusionGroupRow span,
+.exclusionGroupRow small {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.scopeChecks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.scopeChecks label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  background: #f8fafb;
+  font-weight: 600;
+}
+
+.scopeChecks input,
+.inlineToggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.inlineToggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.inlineToggle.compact {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #394150;
+  font-size: 12px;
+}
+
+.traceBadgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.traceBadge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  padding: 2px 7px;
+  border: 1px solid #bad9cb;
+  border-radius: 6px;
+  background: #eef9f3;
+  color: #0f684a;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.traceBadge.feature {
+  border-color: #e7c77d;
+  background: #fff8e5;
+  color: #825100;
+}
+
+.taskTableItem {
+  border-bottom: 1px solid #edf0f3;
+}
+
+.taskTableItem:last-child {
+  border-bottom: 0;
+}
+
+.taskTableItem .taskTableRow {
+  border-bottom: 0;
+}
+
+.taskActionCell {
+  grid-template-columns: minmax(0, 1fr) 34px;
+}
+
+.taskActionCell > :not(button) {
+  grid-column: 1;
+}
+
+.taskActionCell button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+}
+
+.taskTraceDetails {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid #e8edf2;
+  background: #f8fafb;
+}
+
+.taskTraceGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.taskTraceGrid div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.taskTraceGrid span,
+.taskTraceNarrative p {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.taskTraceGrid strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.taskTraceNarrative {
+  display: grid;
+  gap: 7px;
+}
+
+.taskTraceNarrative p {
+  margin: 0;
+}
+
+.taskTraceNarrative p strong {
+  margin-right: 9px;
+  color: #24313f;
+}
+
+.taskTraceNarrative details summary {
+  width: fit-content;
+  color: #0f684a;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
 .promptList,
 .promptEditor,
 .versionList,
@@ -2112,6 +2410,18 @@ textarea:focus {
   .workflowSideNoteGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .exclusionLayout {
+    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  }
+
+  .exclusionTester {
+    grid-column: 1 / -1;
+  }
+
+  .taskTraceGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -2162,6 +2472,9 @@ textarea:focus {
   .sourceManagementTabsGrid,
   .promptLayout,
   .competitorLayout,
+  .exclusionLayout,
+  .runtimeRuleSummary,
+  .taskTraceGrid,
   .workflowCardHeader,
   .workflowRoute,
   .workflowSideNoteGrid {
@@ -2199,6 +2512,39 @@ textarea:focus {
   .timingTableRow,
   .timingFlowHeader {
     grid-template-columns: 1fr;
+  }
+
+  .exclusionTester {
+    grid-column: auto;
+  }
+
+  .scopeChecks {
+    grid-template-columns: 1fr;
+  }
+
+  .taskTableHeader {
+    display: none;
+  }
+
+  .taskTableRow {
+    grid-template-columns: 1fr;
+  }
+
+  .taskActionCell {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  .runtimeRuleSummary {
+    grid-template-columns: minmax(0, 1fr) 24px;
+  }
+
+  .runtimeRuleSummary small {
+    grid-column: 1 / -1;
+  }
+
+  .runtimeRuleSummary > svg {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .timingFlowTotals {

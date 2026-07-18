@@ -75,6 +75,12 @@ from .searcher import (
     top_match,
 )
 from .telegram import TelegramClient, skipped_telegram_result
+from .title_trace import (
+    WRITER_JSON_SCHEMA,
+    build_known_subject_prompt,
+    match_known_title_subjects,
+    parse_structured_writer_output,
+)
 
 
 class HandledStageError(RuntimeError):
@@ -153,6 +159,61 @@ X_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对�
 内容：{content}
 """
 
+COMPETITOR_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的竞品信源判断者。每条内容只在这里判断一次：先判断是否应丢弃，再为保留内容选择快讯路由。
+
+竞品来源本身不能证明内容具有 Crypto 新闻价值。请按完整语义判断新闻的核心主体、动作和结果是否与加密行业存在实质联系，不能因为正文偶然出现 Crypto、Web3、代币名称或免责声明就放行。
+
+可丢弃内容：
+- pure_emotion：只有情绪、立场或口号，没有新增事实。
+- baseless_trading_call：无事实依据的喊单、价格口号或涨跌预测。
+- daily_chatter：寒暄、日常状态、meme、节日祝福或社区闲聊。
+- non_crypto_ai：AI、半导体、芯片、机器人、企业软件或模型产品新闻，核心事件与区块链、代币、稳定币、链上协议、钱包、交易所或加密监管没有实质关系。
+- non_crypto_tradfi：传统股票、基金、银行、宏观或普通公司资本市场新闻，核心事件与 Crypto 行业无实质关系。
+- marketing_activity：赞助、公益捐赠、品牌活动、商务软文、获奖、会议宣传或促销，没有足够独立新闻价值。
+- routine_company_news：普通产品发布、常规合作、人事、招聘、例行经营动态或公司宣传，没有重要 Crypto 行业影响。
+
+以下情况应保留：
+- 事件直接涉及区块链协议、代币、稳定币、交易所、钱包、链上资金、安全事件或加密监管。
+- AI 或传统金融主体的动作对 Crypto 产品、市场结构、监管或链上生态产生明确结果。
+- 融资、投资、收购的标的是 Crypto/Web3 项目，或资金明确用于相关业务。
+
+保留后选择：regular 为常规行业快讯；onchain 为链上资金、安全、地址或合约事件；funding 为融资、投资、收购、基金或估值事件。
+只输出 JSON，不输出解释文本：
+{{"route":"regular|onchain|funding|discard","discard_type":"none|pure_emotion|baseless_trading_call|daily_chatter|non_crypto_ai|non_crypto_tradfi|marketing_activity|routine_company_news"}}
+route 不是 discard 时 discard_type 必须为 none。
+
+来源媒体：{site_display_name}
+标题：{title}
+正文：{content}
+"""
+
+COMPETITOR_JUDGE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "competitor_judge_route",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "route": {"type": "string", "enum": ["regular", "onchain", "funding", "discard"]},
+            "discard_type": {
+                "type": "string",
+                "enum": [
+                    "none",
+                    "pure_emotion",
+                    "baseless_trading_call",
+                    "daily_chatter",
+                    "non_crypto_ai",
+                    "non_crypto_tradfi",
+                    "marketing_activity",
+                    "routine_company_news",
+                ],
+            },
+        },
+        "required": ["route", "discard_type"],
+    },
+    "strict": True,
+}
+
 NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是判断一条 Crypto信源原文，是否值得进入后续快讯写作。
 
 请严格分两步判断：
@@ -228,7 +289,13 @@ AI_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的判断者-AI。你的任务是判
 """
 
 
-DETERMINISTIC_JUDGE_MODEL = "deterministic-precheck"
+JUDGE_RULE_VERSIONS = {
+    "x": "x-v1",
+    "competitor": "competitor-v1",
+    "crypto_source": "crypto-source-v1",
+    "ai_source": "ai-source-v1",
+    "jin10": "jin10-v1",
+}
 PUBLISHER_CHANNEL_BY_SOURCE = {
     NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
     AI_SOURCE: "external_media",
@@ -541,30 +608,14 @@ class XProcessingWorker:
         if is_jin10_task(task):
             self._run_jin10_judge(task)
             return
-        deterministic_discard_type = deterministic_judge_discard_type(task)
-        if deterministic_discard_type is not None:
-            self._release_local_candidate_for_task(task.id, release_reason="discarded")
-            raw_output = json.dumps(
-                {
-                    "route": "discard",
-                    "discard_type": deterministic_discard_type,
-                },
-                ensure_ascii=False,
-            )
-            self.repository.complete_judge_discard(
-                task.id,
-                discard_type=deterministic_discard_type,
-                model=DETERMINISTIC_JUDGE_MODEL,
-                raw_output=raw_output,
-            )
-            return
         is_ai_judge = is_ai_judge_task(task)
+        rule_set = "x"
         prompt = X_JUDGE_PROMPT_TEMPLATE.format(
             author=task.metadata.get("effective_author_name")
             or task.metadata.get("author_display_name")
             or task.metadata.get("author_username")
             or "",
-            source_kind="信源" if is_competitor_task(task) else "X",
+            source_kind="X",
             content=task.content,
         )
         schema = X_JUDGE_JSON_SCHEMA
@@ -583,6 +634,7 @@ class XProcessingWorker:
                 content=task.content,
             )
             schema = AI_JUDGE_JSON_SCHEMA
+            rule_set = "ai_source"
         elif is_non_mainstream_media_task(task):
             prompt_template = NON_MAINSTREAM_JUDGE_PROMPT_TEMPLATE
             prompt = prompt_template.format(
@@ -593,34 +645,22 @@ class XProcessingWorker:
                 content=task.content,
             )
             schema = NON_MAINSTREAM_JUDGE_JSON_SCHEMA
-        try:
-            raw_output = self._get_judge_ai_client().generate_text(
-                model=self.settings.judge_model,
-                prompt=prompt,
-                text_format=schema,
-                reasoning_effort=self.settings.judge_reasoning_effort,
+            rule_set = "crypto_source"
+        elif is_competitor_task(task):
+            prompt = COMPETITOR_JUDGE_PROMPT_TEMPLATE.format(
+                site_display_name=task.metadata.get("site_display_name") or task.source,
+                title=task.title or "",
+                content=task.content,
             )
-            route, discard_type = parse_judge_route(raw_output)
-        except Exception as exc:
-            fallback_route = competitor_judge_fallback_route(task) if is_competitor_task(task) else None
-            if fallback_route is None:
-                raise
-            route = fallback_route
-            discard_type = "none"
-            raw_output = json.dumps(
-                {
-                    "route": route,
-                    "discard_type": discard_type,
-                    "fallback": "competitor_judge_ai_failed",
-                    "error": str(exc)[:500],
-                },
-                ensure_ascii=False,
-            )
-            print(
-                "[odaily] x-processing judge fallback "
-                f"task_id={task.id} source={task.source} source_item_id={task.source_item_id} "
-                f"route={route} error={exc}"
-            )
+            schema = COMPETITOR_JUDGE_JSON_SCHEMA
+            rule_set = "competitor"
+        raw_output = self._get_judge_ai_client().generate_text(
+            model=self.settings.judge_model,
+            prompt=prompt,
+            text_format=schema,
+            reasoning_effort=self.settings.judge_reasoning_effort,
+        )
+        route, discard_type = parse_judge_route(raw_output)
         if route == "discard":
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
             self.repository.complete_judge_discard(
@@ -628,6 +668,8 @@ class XProcessingWorker:
                 discard_type=discard_type,
                 model=self.settings.judge_model,
                 raw_output=raw_output,
+                rule_set=rule_set,
+                rule_version=JUDGE_RULE_VERSIONS[rule_set],
             )
         else:
             if is_ai_judge:
@@ -637,6 +679,8 @@ class XProcessingWorker:
                 news_type=route,
                 model=self.settings.judge_model,
                 raw_output=raw_output,
+                rule_set=rule_set,
+                rule_version=JUDGE_RULE_VERSIONS[rule_set],
             )
 
     def _run_jin10_judge(self, task: TaskRecord) -> None:
@@ -656,6 +700,8 @@ class XProcessingWorker:
                 discard_type="off_topic",
                 model=self.settings.judge_model,
                 raw_output=raw_output,
+                rule_set="jin10",
+                rule_version=JUDGE_RULE_VERSIONS["jin10"],
             )
             return
         self.repository.complete_judge(
@@ -671,6 +717,8 @@ class XProcessingWorker:
                 },
                 ensure_ascii=False,
             ),
+            rule_set="jin10",
+            rule_version=JUDGE_RULE_VERSIONS["jin10"],
         )
 
     def _run_search(self, task: TaskRecord) -> None:
@@ -836,20 +884,31 @@ class XProcessingWorker:
         if template_key is None:
             raise ValueError("missing news_type")
         prompt = self._get_prompt(template_key)
-        input_prompt = build_writer_prompt(task=task, prompt=prompt)
+        known_subjects = match_known_title_subjects(task)
+        input_prompt = build_structured_writer_prompt(
+            task=task,
+            prompt=prompt,
+            known_subjects=known_subjects,
+        )
         raw_output = self._get_ai_client().generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
+            text_format=WRITER_JSON_SCHEMA,
             reasoning_effort=self.settings.writer_reasoning_effort,
         )
-        draft = parse_draft_output(raw_output)
+        structured = parse_structured_writer_output(
+            raw_output,
+            known_subjects=known_subjects,
+            feature_mode_enabled=prompt.feature_mode_enabled,
+        )
         self.repository.complete_write(
             task.id,
             prompt=prompt,
             model=self.settings.writer_model,
-            draft_title=draft.title,
-            draft_content=draft.content,
+            draft_title=structured.draft.title,
+            draft_content=structured.draft.content,
             raw_output=raw_output,
+            trace=structured.trace,
         )
 
     def _run_format_publish(self, task: TaskRecord) -> None:
@@ -1319,82 +1378,24 @@ def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
 
 
-def deterministic_judge_discard_type(task: TaskRecord) -> DiscardType | None:
-    if is_ai_judge_task(task):
-        return None
-    if is_competitor_task(task) and competitor_is_non_crypto_ai(task):
-        return "non_crypto_ai"
-    return None
-
-
-def competitor_judge_fallback_route(task: TaskRecord) -> JudgeRoute:
-    text = f"{task.title or ''}\n{task.content}"
-    if re.search(r"融资|募资|投资|领投|参投|估值|收购|并购|基金|战略轮|种子轮|A\s*轮|B\s*轮", text, re.IGNORECASE):
-        return "funding"
-    if re.search(
-        r"链上|地址|钱包|巨鲸|转入|转出|转账|被盗|攻击|漏洞|合约|冻结|黑客|助记词|跨链桥|清算|爆仓|"
-        r"USDT|USDC|BTC|ETH|SOL|BNB|Bitcoin|Ethereum",
-        text,
-        re.IGNORECASE,
-    ):
-        return "onchain"
-    return "regular"
-
-
-COMPETITOR_NON_CRYPTO_AI_PATTERNS = [
-    r"\bAnthropic\b",
-    r"\bOpenAI\b",
-    r"\bChatGPT\b",
-    r"\bClaude\b",
-    r"\bGemini\b",
-    r"\bMidjourney\b",
-    r"\bCursor\b",
-    r"\bPerplexity\b",
-    r"\bLlama\b",
-    r"\bGLM\b",
-    r"\bDeepSeek\b",
-    r"\bMistral\b",
-    r"半导体",
-    r"芯片",
-    r"算力",
-    r"光刻",
-    r"人形机器人",
-    r"机器人",
-    r"数据中心",
-    r"大模型",
-    r"模型训练",
-    r"AI\s*芯片",
-    r"开源AI",
-]
-
-COMPETITOR_CRYPTO_CONTEXT_PATTERNS = [
-    r"加密",
-    r"Crypto",
-    r"区块链",
-    r"稳定币",
-    r"比特币",
-    r"以太坊",
-    r"\bBTC\b",
-    r"\bETH\b",
-    r"\bSOL\b",
-    r"\bBNB\b",
-    r"代币",
-    r"链上",
-    r"钱包",
-    r"交易所",
-    r"DeFi",
-    r"Web3",
-]
-
-
-def competitor_is_non_crypto_ai(task: TaskRecord) -> bool:
-    text = f"{task.title or ''}\n{task.content}"
-    has_ai_signal = any(re.search(pattern, text, re.IGNORECASE) for pattern in COMPETITOR_NON_CRYPTO_AI_PATTERNS)
-    if not has_ai_signal:
-        return False
-    sanitized_text = re.sub(r"未提及加密业务|与加密无关|非加密业务|不涉及加密业务", "", text, flags=re.IGNORECASE)
-    has_crypto_context = any(re.search(pattern, sanitized_text, re.IGNORECASE) for pattern in COMPETITOR_CRYPTO_CONTEXT_PATTERNS)
-    return not has_crypto_context
+def build_structured_writer_prompt(
+    *,
+    task: TaskRecord,
+    prompt: PromptTemplateVersion,
+    known_subjects: list[dict[str, str]],
+) -> str:
+    subject_prompt = build_known_subject_prompt(known_subjects)
+    subject_block = f"\n\n{subject_prompt}" if subject_prompt else ""
+    return (
+        f"{build_writer_prompt(task=task, prompt=prompt)}"
+        f"{subject_block}\n\n"
+        "【本次系统输出契约】\n"
+        "本次输出格式覆盖模板中任何旧的‘标题空一行正文’要求。只输出一个 JSON 对象，不要输出 Markdown 或解释。\n"
+        "title_strategy 只能使用 plain、speaker_anchor、entity_front、action_first、result_front、amount_front、time_window_front。\n"
+        "matched_title_rules 只能使用 known_speaker_anchor、entity_front、action_first、result_change_front、amount_front、time_window_front、plain_direct、feature_subject_amplification。\n"
+        "title_strategy_reason 只解释标题组织方式；不要输出事实抽取或风险分析。\n"
+        "feature_mode_applied 表示是否实际采用特色写法，不等同于特色模式配置是否开启。"
+    )
 
 
 def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:

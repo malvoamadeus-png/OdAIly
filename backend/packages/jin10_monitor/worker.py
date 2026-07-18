@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.source_exclusions import SourceExclusionMatcher
 from packages.local_pipeline.client import LocalPipelineClient
 
 from .fetcher import fetch_jin10_items
@@ -26,12 +27,14 @@ class Jin10MonitorWorker:
         pipeline_client: LocalPipelineClient | None = None,
         fetch_items: FetchJin10Items | None = None,
         worker_id: str | None = None,
+        exclusion_matcher: SourceExclusionMatcher | None = None,
     ) -> None:
         self.repository = repository
         self.request_timeout_seconds = request_timeout_seconds
         self.pipeline_client = pipeline_client
         self.fetch_items = fetch_items or default_fetch_items
         self.worker_id = worker_id or f"jin10_monitor-{os.getpid()}"
+        self.exclusion_matcher = exclusion_matcher
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._heartbeat = HeartbeatThrottle(
@@ -108,6 +111,12 @@ class Jin10MonitorWorker:
         enqueue_errors: dict[str, str] = {}
         for item in items:
             if item.source_item_id not in unseen:
+                continue
+            if self.exclusion_matcher is not None and self.exclusion_matcher.is_excluded(
+                scopes=["jin10"],
+                texts=[item.title, item.content],
+            ):
+                self.repository.mark_seen(item.source_item_id, seeded=False)
                 continue
             task_id = self.repository.save_task(item)
             if task_id is None:

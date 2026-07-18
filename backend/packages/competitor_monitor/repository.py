@@ -14,7 +14,7 @@ from .fetchers import NewsflashItem
 
 class CompetitorMonitorRepository(Protocol):
     def init_schema(self) -> None: ...
-    def list_enabled_filter_keywords(self) -> list[str]: ...
+    def list_enabled_competitor_exclusion_terms(self) -> list[str]: ...
     def save_items(self, items: list[NewsflashItem]) -> tuple[int, int]: ...
     def save_items_for_pipeline(self, items: list[NewsflashItem]) -> tuple[list[tuple[NewsflashItem, int]], int]: ...
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
@@ -59,13 +59,15 @@ class PostgresCompetitorMonitorRepository:
             conn.execute(SCHEMA_SQL)
             conn.commit()
 
-    def list_enabled_filter_keywords(self) -> list[str]:
+    def list_enabled_competitor_exclusion_terms(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT term
-                FROM competitor_filter_keywords
-                WHERE enabled = true
+                SELECT DISTINCT term
+                FROM source_exclusion_rule_groups groups
+                CROSS JOIN LATERAL unnest(groups.terms) AS term
+                WHERE groups.enabled = true
+                  AND 'competitor' = ANY(groups.scopes)
                 ORDER BY length(term) DESC, term ASC
                 """
             ).fetchall()
@@ -460,7 +462,7 @@ class PostgresCompetitorMonitorRepository:
         return len(rows)
 
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]:
-        exclude_terms = terms if terms is not None else self.list_enabled_filter_keywords()
+        exclude_terms = terms if terms is not None else self.list_enabled_competitor_exclusion_terms()
         normalized_terms = [normalized for term in exclude_terms if (normalized := normalize_exclude_term(term))]
         if not normalized_terms:
             return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}

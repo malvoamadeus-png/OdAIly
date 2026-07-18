@@ -23,7 +23,6 @@ class Writer3Repository(Protocol):
         freshness_window_seconds: int,
         lock_seconds: int = 300,
     ) -> Writer3Task | None: ...
-    def list_enabled_filter_keywords(self) -> list[str]: ...
     def list_odaily_references(self, *, since: datetime) -> list[OdailyReference]: ...
     def upsert_odaily_references(self, references: list[OdailyReference]) -> int: ...
     def complete_skipped(self, task: Writer3Task, *, reason: str, metadata: dict[str, Any] | None = None) -> None: ...
@@ -171,18 +170,6 @@ class PostgresWriter3Repository:
             conn.commit()
         task = _row_to_task(row)
         return _replace_task_context_id(task, int(context_row["id"]) if context_row else task.context_id)
-
-    def list_enabled_filter_keywords(self) -> list[str]:
-        with self._connect(autocommit=True) as conn:
-            rows = conn.execute(
-                """
-                SELECT term
-                FROM competitor_filter_keywords
-                WHERE enabled = true
-                ORDER BY length(term) DESC, term ASC
-                """
-            ).fetchall()
-        return [str(row["term"]) for row in rows if str(row["term"]).strip()]
 
     def list_odaily_references(self, *, since: datetime) -> list[OdailyReference]:
         with self._connect(autocommit=True) as conn:

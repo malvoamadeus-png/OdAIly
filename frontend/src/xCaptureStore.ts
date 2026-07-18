@@ -271,6 +271,11 @@ export type TaskPipelineSummary = {
   final_title: string | null;
   final_content: string | null;
   judge_output: Record<string, unknown>;
+  prompt_template_key: string | null;
+  prompt_version_id: number | null;
+  writer_feature_mode_enabled: boolean | null;
+  writer_model: string | null;
+  writer_output: Record<string, unknown>;
   search_result: Record<string, unknown>;
   judge_completed_at: string | null;
   search_completed_at: string | null;
@@ -306,13 +311,49 @@ export type PromptVersion = {
   published_at: string | null;
 };
 
-export type CompetitorFilterKeyword = {
+export type SourceExclusionScope = 'x' | 'competitor' | 'crypto_source' | 'ai_source' | 'mixed_source' | 'jin10';
+
+export type SourceExclusionRuleGroup = {
   id: number;
-  term: string;
-  term_normalized: string;
+  rule_key: string;
+  name: string;
+  description: string;
+  scopes: SourceExclusionScope[];
+  terms: string[];
   enabled: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type SourceExclusionRuleGroupInput = {
+  name: string;
+  description: string;
+  scopes: SourceExclusionScope[];
+  terms: string[];
+  enabled: boolean;
+};
+
+export type RuntimeRuleEntry = {
+  key: string;
+  title: string;
+  kind: string;
+  scopes: string[];
+  summary: string;
+  content: string;
+  source_location: string;
+  editable: boolean;
+  editable_at?: string;
+};
+
+export type RuntimeRuleSection = {
+  key: string;
+  label: string;
+  entries: RuntimeRuleEntry[];
+};
+
+export type RuntimeRulesPayload = {
+  schema_version: number;
+  sections: RuntimeRuleSection[];
 };
 
 export type NewsflashSourceSummary = {
@@ -429,11 +470,6 @@ export type WhaleWatchHyperliquidSettingsPatch = {
   aggregate_window_seconds: number;
 };
 
-export type CompetitorKeywordPatch = {
-  enabled?: boolean;
-  term?: string;
-};
-
 type NewsflashEventSourceLinkRow = {
   id: number;
   event_id: string;
@@ -465,6 +501,11 @@ const taskPipelineSelectFields = [
   'final_title',
   'final_content',
   'judge_output',
+  'prompt_template_key',
+  'prompt_version_id',
+  'writer_feature_mode_enabled',
+  'writer_model',
+  'writer_output',
   'search_result',
   'judge_completed_at',
   'search_completed_at',
@@ -935,8 +976,31 @@ export async function getPublisherRuleConfig(): Promise<PublisherRuleConfigPaylo
   return consoleApiPost<PublisherRuleConfigPayload>('/console/publisher-rules/get');
 }
 
+async function consoleApiGet<T>(path: string): Promise<T> {
+  const session = await getCurrentSession();
+  if (!session?.access_token) {
+    throw new Error('登录状态已失效，请重新登录');
+  }
+  const baseUrl = String(
+    import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://47.76.243.147.sslip.io',
+  ).replace(/\/+$/, '');
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  });
+  const payload = (await response.json().catch(() => null)) as { ok?: boolean; data?: T; message?: string } | null;
+  if (!response.ok || !payload?.ok) {
+    throw new Error(payload?.message || `控制台服务请求失败：${response.status}`);
+  }
+  return payload.data as T;
+}
+
 export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashboard> {
   return consoleApiPost<PipelineTimingDashboard>('/console/pipeline-timing/get');
+}
+
+export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {
+  return consoleApiGet<RuntimeRulesPayload>('/console/runtime-rules/get');
 }
 
 export async function savePublisherRuleConfig(config: PublisherRuleConfig): Promise<PublisherRuleConfigPayload> {
@@ -1596,66 +1660,70 @@ export async function deletePromptVersion(templateKey: string, versionId: number
   raise(error);
 }
 
-export function normalizeCompetitorKeyword(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+export function normalizeSourceExclusionTerm(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
-export async function listCompetitorFilterKeywords(): Promise<CompetitorFilterKeyword[]> {
-  const { data, error } = await supabase()
-    .from('competitor_filter_keywords')
-    .select('id,term,term_normalized,enabled,created_at,updated_at')
-    .order('enabled', { ascending: false })
-    .order('term', { ascending: true });
-  raise(error);
-  return (data ?? []) as unknown as CompetitorFilterKeyword[];
-}
-
-export async function createCompetitorFilterKeywords(rawText: string): Promise<CompetitorFilterKeyword[]> {
-  const rows = rawText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
+export function normalizeSourceExclusionTerms(values: string[]): string[] {
+  return values
+    .map((term) => term.trim())
     .filter(Boolean)
-    .map((term) => ({ term, term_normalized: normalizeCompetitorKeyword(term), enabled: true, updated_at: nowIso() }))
-    .filter((row, index, all) => row.term_normalized && all.findIndex((item) => item.term_normalized === row.term_normalized) === index);
-
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const { data, error } = await supabase()
-    .from('competitor_filter_keywords')
-    .upsert(rows, { onConflict: 'term_normalized' })
-    .select('id,term,term_normalized,enabled,created_at,updated_at');
-  raise(error);
-  return (data ?? []) as unknown as CompetitorFilterKeyword[];
+    .filter((term, index, all) => {
+      const normalized = normalizeSourceExclusionTerm(term);
+      return normalized && all.findIndex((item) => normalizeSourceExclusionTerm(item) === normalized) === index;
+    });
 }
 
-export async function updateCompetitorFilterKeyword(
-  id: number,
-  patch: CompetitorKeywordPatch,
-): Promise<CompetitorFilterKeyword> {
-  const payload: Record<string, string | boolean> = {
-    updated_at: nowIso(),
-  };
-  if ('enabled' in patch && patch.enabled !== undefined) {
-    payload.enabled = patch.enabled;
-  }
-  if ('term' in patch && patch.term !== undefined) {
-    payload.term = patch.term.trim();
-    payload.term_normalized = normalizeCompetitorKeyword(patch.term);
-  }
+export async function listSourceExclusionRuleGroups(): Promise<SourceExclusionRuleGroup[]> {
   const { data, error } = await supabase()
-    .from('competitor_filter_keywords')
-    .update(payload)
-    .eq('id', id)
-    .select('id,term,term_normalized,enabled,created_at,updated_at')
+    .from('source_exclusion_rule_groups')
+    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
+    .order('enabled', { ascending: false })
+    .order('name', { ascending: true });
+  raise(error);
+  return (data ?? []) as unknown as SourceExclusionRuleGroup[];
+}
+
+export async function createSourceExclusionRuleGroup(
+  input: SourceExclusionRuleGroupInput,
+): Promise<SourceExclusionRuleGroup> {
+  const { data, error } = await supabase()
+    .from('source_exclusion_rule_groups')
+    .insert({
+      rule_key: crypto.randomUUID(),
+      ...input,
+      terms: normalizeSourceExclusionTerms(input.terms),
+      updated_at: nowIso(),
+    })
+    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
     .single();
   raise(error);
-  return assertData(data as CompetitorFilterKeyword | null, '更新排除词失败');
+  return assertData(data as SourceExclusionRuleGroup | null, '创建排除规则组失败');
 }
 
-export async function deleteCompetitorFilterKeyword(id: number): Promise<void> {
-  const { error } = await supabase().from('competitor_filter_keywords').delete().eq('id', id);
+export async function updateSourceExclusionRuleGroup(
+  id: number,
+  input: SourceExclusionRuleGroupInput,
+): Promise<SourceExclusionRuleGroup> {
+  const payload = {
+    ...input,
+    name: input.name.trim(),
+    description: input.description.trim(),
+    terms: normalizeSourceExclusionTerms(input.terms),
+    updated_at: nowIso(),
+  };
+  const { data, error } = await supabase()
+    .from('source_exclusion_rule_groups')
+    .update(payload)
+    .eq('id', id)
+    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
+    .single();
+  raise(error);
+  return assertData(data as SourceExclusionRuleGroup | null, '更新排除规则组失败');
+}
+
+export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> {
+  const { error } = await supabase().from('source_exclusion_rule_groups').delete().eq('id', id);
   raise(error);
 }
 

@@ -201,13 +201,11 @@ def _run_result(*, failed_sources: dict[str, str]) -> CompetitorRunResult:
         task_inserted=0,
         reference_inserted=0,
         events_updated=0,
-        filtered=0,
         event_elapsed_seconds=0.0,
         event_error=None,
         expired_for_tasks=0,
         expired_for_tasks_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
         failed_sources=failed_sources,
         fetched_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
-        filtered_by_source={"blockbeats": 0, "panews": 0, "jinse": 0, "odaily": 0},
         sample_titles_by_source={"blockbeats": [], "panews": [], "jinse": [], "odaily": []},
     )
