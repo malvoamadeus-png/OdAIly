@@ -101,6 +101,24 @@ def test_structured_writer_rejects_title_trace_label_in_content() -> None:
         parse_structured_writer_output(raw, known_subjects=[], feature_mode_enabled=False)
 
 
+def test_structured_writer_rejects_repeated_title_in_content() -> None:
+    title = "Michael Saylor\uff1a\u6bd4\u7279\u5e01\u8981\u6210\u4e3a\u5168\u7403\u8d27\u5e01\u7f51\u7edc\u9700\u8981\u4f01\u4e1a\u91c7\u7528"
+    raw = json.dumps(
+        {
+            "title": title,
+            "content": f"{title}\n\nMichael Saylor \u5728 X \u5e73\u53f0\u53d1\u6587\u8868\u793a\uff0c\u4f01\u4e1a\u91c7\u7528\u662f\u5fc5\u8981\u7684\u3002",
+            "title_strategy": "speaker_anchor",
+            "title_strategy_reason": "The speaker is central to the statement.",
+            "matched_title_rules": ["known_speaker_anchor"],
+            "feature_mode_applied": False,
+            "feature_mode_reason": "",
+        }
+    )
+
+    with pytest.raises(ValueError, match="repeats title"):
+        parse_structured_writer_output(raw, known_subjects=[], feature_mode_enabled=False)
+
+
 @pytest.mark.parametrize(
     "raw",
     [

@@ -98,8 +98,21 @@ def _reject_contaminated_output(*, title: str, content: str) -> None:
         normalized = text.strip("「」《》【】[]()（）\"'“”‘’*# 　")
         if field_name == "content" and _FIELD_LABEL_LINE_PATTERN.match(normalized):
             raise ValueError("writer output contains structured field label in content")
+        if field_name == "content" and _line_repeats_title(title_text, normalized):
+            raise ValueError("writer output repeats title in content")
         if _MODEL_META_LINE_PATTERN.match(normalized):
             raise ValueError(f"writer output contains explanatory text in {field_name}")
+
+
+def _line_repeats_title(title: str, line: str) -> bool:
+    compact_title = _compact_title_like(title)
+    compact_line = _compact_title_like(line)
+    return bool(compact_title and compact_line == compact_title)
+
+
+def _compact_title_like(value: str) -> str:
+    stripped = value.strip("銆屻€嶃€娿€嬨€愩€慬]()锛堬級\"'鈥溾€濃€樷€?# 銆€銆傦紒锛侊紵?!.")
+    return re.sub(r"\s+", "", stripped)
 
 
 def _apply_common_replacements(value: str) -> str:
