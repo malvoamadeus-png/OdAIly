@@ -115,9 +115,10 @@ Every real request sends:
 }
 ```
 
-X processing requests also include `sourceUrl` from the original X post. MSX
-and Gate generated briefs do not send `sourceUrl`, and no flow sends
-`imageUrl` unless it is explicitly added later.
+X processing requests include `sourceUrl` when the upstream task has a
+publishable original link, such as an original X post or a BlockBeats/Jinse
+external original link. MSX and Gate generated briefs do not send `sourceUrl`,
+and no flow sends `imageUrl` unless it is explicitly added later.
 
 ## X Capture Console
 

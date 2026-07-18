@@ -24,6 +24,27 @@ BRAND_PATTERNS = [
 ]
 COMPETITOR_BRAND_WORDS = ["律动", "BlockBeats", "PANews", "金色财经"]
 ODAILY_BRAND_WORDS = ["Odaily 星球日报讯", "Odaily星球日报讯"]
+BLOCKBEATS_HOST_MARKERS = ("theblockbeats.info", "blockbeats.info")
+BLOCKBEATS_ORIGINAL_LINK_KEYS = (
+    "source_url",
+    "sourceUrl",
+    "original_url",
+    "originalUrl",
+    "origin_url",
+    "originUrl",
+    "original_link",
+    "originalLink",
+    "source_link",
+    "sourceLink",
+    "reference_url",
+    "referenceUrl",
+    "external_url",
+    "externalUrl",
+    "jump_url",
+    "jumpUrl",
+    "link",
+    "url",
+)
 
 
 class BlockbeatsQuotaError(RuntimeError):
@@ -122,9 +143,27 @@ def fetch_blockbeats(*, api_key: str | None, timeout_seconds: float) -> list[New
         source_id = str(news.get("id") or news.get("flash_id") or news.get("newsflash_id") or stable_id("blockbeats", title))
         content = normalize_item_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title))
         published_at = str(news.get("create_time") or news.get("created_at") or news.get("publish_time") or news.get("published_at") or "")
-        source_url = str(news.get("url") or news.get("link") or f"https://www.theblockbeats.info/flash/{source_id}")
+        source_url = extract_blockbeats_original_link(news)
         items.append(NewsflashItem("blockbeats", source_id, scrub_competitor_brands(title), content, source_url, published_at, news))
     return items
+
+
+def extract_blockbeats_original_link(news: dict[str, Any]) -> str | None:
+    for key in BLOCKBEATS_ORIGINAL_LINK_KEYS:
+        value = str(news.get(key) or "").strip()
+        if is_external_original_link(value, blocked_host_markers=BLOCKBEATS_HOST_MARKERS):
+            return value
+    return None
+
+
+def is_external_original_link(value: str | None, *, blocked_host_markers: tuple[str, ...]) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = parsed.netloc.lower()
+    return not any(marker in host for marker in blocked_host_markers)
 
 
 def _parse_response_payload(response: requests.Response) -> Any:

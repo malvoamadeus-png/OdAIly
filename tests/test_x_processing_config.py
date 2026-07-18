@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
+import requests
 from packages.common.config import load_auditor_settings, load_writer3_settings, load_x_processing_settings
+from packages.competitor_monitor.fetchers import extract_blockbeats_original_link, fetch_blockbeats
 from packages.editor_plugin_api import QUICK_GENERATE_WRITER_MODEL
-from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, render_prompt_content
+from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord, render_prompt_content
 from packages.x_processing.repository import PROMPT_SEEDS
+from packages.x_processing.worker import should_omit_publish_source_url
 
 
 def test_load_x_processing_settings_uses_search_ai_review_overrides(monkeypatch) -> None:
@@ -102,3 +108,81 @@ def test_feature_mode_text_is_prepended_only_when_enabled() -> None:
             feature_mode_text="【标题风格】",
         )
     ) == "正文模板"
+
+
+def test_extract_blockbeats_original_link_prefers_external_source_url() -> None:
+    assert (
+        extract_blockbeats_original_link(
+            {
+                "url": "https://www.theblockbeats.info/flash/123",
+                "sourceUrl": "https://x.com/coinbureau/status/2078126324896629220",
+            }
+        )
+        == "https://x.com/coinbureau/status/2078126324896629220"
+    )
+
+
+def test_extract_blockbeats_original_link_ignores_blockbeats_site_url() -> None:
+    assert extract_blockbeats_original_link({"url": "https://www.theblockbeats.info/flash/123"}) is None
+
+
+def test_extract_blockbeats_original_link_uses_url_when_link_is_blockbeats_site() -> None:
+    assert (
+        extract_blockbeats_original_link(
+            {
+                "link": "https://m.theblockbeats.info/flash/330276",
+                "url": "https://x.com/DeribitOfficial/status/2016799729062154411",
+            }
+        )
+        == "https://x.com/DeribitOfficial/status/2016799729062154411"
+    )
+
+
+def test_fetch_blockbeats_saves_external_original_link(monkeypatch) -> None:
+    response = requests.Response()
+    response.status_code = 200
+    response.headers["content-type"] = "application/json"
+    response._content = json.dumps(
+        {
+            "data": {
+                "list": [
+                    {
+                        "id": 123,
+                        "title": "美众议院行政委员会主席：CLARITY Act下周有望在参议院通过",
+                        "content": "BlockBeats 消息，CLARITY Act 下周有望在参议院通过。",
+                        "url": "https://www.theblockbeats.info/flash/123",
+                        "sourceUrl": "https://x.com/coinbureau/status/2078126324896629220",
+                    }
+                ]
+            }
+        }
+    ).encode("utf-8")
+
+    def fake_get(*args: Any, **kwargs: Any) -> requests.Response:
+        return response
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", fake_get)
+
+    items = fetch_blockbeats(api_key="test-key", timeout_seconds=1)
+
+    assert len(items) == 1
+    assert items[0].source_url == "https://x.com/coinbureau/status/2078126324896629220"
+
+
+def _blockbeats_task(source_url: str | None) -> TaskRecord:
+    return TaskRecord(
+        id=1,
+        source="blockbeats",
+        source_item_id="bb-1",
+        source_url=source_url,
+        title="CLARITY Act下周有望在参议院通过",
+        content="美众议院行政委员会主席表示，CLARITY Act 下周有望在参议院通过。",
+    )
+
+
+def test_blockbeats_external_original_link_is_not_hidden_from_publisher() -> None:
+    assert should_omit_publish_source_url(_blockbeats_task("https://x.com/coinbureau/status/2078126324896629220")) is False
+
+
+def test_blockbeats_site_link_is_hidden_from_publisher() -> None:
+    assert should_omit_publish_source_url(_blockbeats_task("https://www.theblockbeats.info/flash/123")) is True

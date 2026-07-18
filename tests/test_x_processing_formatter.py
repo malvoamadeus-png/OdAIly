@@ -32,6 +32,18 @@ def test_format_brief_preserves_existing_odaily_prefix_when_normalizing_content(
     assert formatted.content == "Odaily星球日报讯 Altman 表示将投入 1000 美元支持 OpenAI 生态。"
 
 
+def test_format_brief_uses_common_chinese_names_for_large_foreign_companies() -> None:
+    draft = DraftBrief(
+        title="AAPL超越NVDA，成为全球市值最高公司",
+        content="AAPL超越NVDA，Samsung相关仓位同步增加。",
+    )
+
+    formatted = format_brief(draft)
+
+    assert formatted.title == "苹果超越英伟达，成为全球市值最高公司"
+    assert formatted.content == "Odaily星球日报讯 苹果超越英伟达，三星相关仓位同步增加。"
+
+
 def test_parse_draft_output_rejects_markdown_link_meta_title() -> None:
     raw_output = (
         "[**我会先读取原文链接内容，提取可核验的信息后按指定格式输出。"

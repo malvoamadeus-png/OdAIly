@@ -9,6 +9,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime, time as dt_time, timedelta
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -996,7 +997,7 @@ class XProcessingWorker:
             title=pipeline.final_title,
             content=pipeline.final_content,
             dry_run=self.settings.dry_run,
-            source_url=None if hide_source_url(task) else task.source_url,
+            source_url=None if should_omit_publish_source_url(task) else task.source_url,
             is_publish=should_publish,
             is_push=False,
         )
@@ -1067,7 +1068,7 @@ class XProcessingWorker:
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
             dry_run=self.settings.dry_run,
-            source_url=None if hide_source_url(task) else task.source_url,
+            source_url=None if should_omit_publish_source_url(task) else task.source_url,
             is_publish=False,
             is_push=False,
         )
@@ -1290,8 +1291,16 @@ def is_jin10_task(task: TaskRecord) -> bool:
     return task.source == JIN10_SOURCE
 
 
-def hide_source_url(task: TaskRecord) -> bool:
-    return is_jin10_task(task) or task.source in {"blockbeats", "panews"}
+def should_omit_publish_source_url(task: TaskRecord) -> bool:
+    return is_jin10_task(task) or task.source == "panews" or is_blockbeats_site_url(task.source_url)
+
+
+def is_blockbeats_site_url(source_url: str | None) -> bool:
+    if not source_url:
+        return False
+    parsed = urlparse(source_url.strip())
+    host = (parsed.netloc or "").lower()
+    return "theblockbeats.info" in host or "blockbeats.info" in host
 
 
 def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str:

@@ -18,6 +18,14 @@ _MODEL_META_LINE_PATTERN = re.compile(
     r")"
 )
 _FORBIDDEN_META_PHRASES = ("原文链接", "来源链接", "按指定格式输出", "可核验的信息")
+_COMMON_CHINESE_COMPANY_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![A-Za-z0-9])Samsung\s+Electronics(?![A-Za-z0-9])", re.IGNORECASE), "三星电子"),
+    (re.compile(r"(?<![A-Za-z0-9])Samsung(?![A-Za-z0-9])", re.IGNORECASE), "三星"),
+    (re.compile(r"(?<![A-Za-z0-9])NVIDIA(?![A-Za-z0-9])", re.IGNORECASE), "英伟达"),
+    (re.compile(r"(?<![A-Za-z0-9])NVDA(?![A-Za-z0-9])", re.IGNORECASE), "英伟达"),
+    (re.compile(r"(?<![A-Za-z0-9])Apple(?![A-Za-z0-9])", re.IGNORECASE), "苹果"),
+    (re.compile(r"(?<![A-Za-z0-9])AAPL(?![A-Za-z0-9])", re.IGNORECASE), "苹果"),
+)
 
 
 def _strip_code_fence(value: str) -> str:
@@ -85,6 +93,8 @@ def _apply_common_replacements(value: str) -> str:
         text = text.replace("。。", "。")
     while "，，" in text:
         text = text.replace("，，", "，")
+    for pattern, replacement in _COMMON_CHINESE_COMPANY_NAMES:
+        text = pattern.sub(replacement, text)
     text = text.replace("Binance", "币安")
     text = re.sub(r"dapp", "DApp", text, flags=re.IGNORECASE)
     text = re.sub(r"(\d(?:[\d,.]*\d)?|\d)\s*USDT\b", r"\1 USDT", text, flags=re.IGNORECASE)
