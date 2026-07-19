@@ -11,7 +11,7 @@ from packages.competitor_monitor.blockbeats_key_config import (
     record_blockbeats_key_status,
     save_blockbeats_key,
 )
-from packages.competitor_monitor.fetchers import BlockbeatsQuotaError
+from packages.competitor_monitor.fetchers import BlockbeatsQuotaError, NewsflashItem
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, CompetitorRunResult
 
 
@@ -187,12 +187,50 @@ def test_non_blockbeats_failure_still_makes_competitor_heartbeat_failed():
     assert heartbeat["metadata"]["non_alerting_failed_sources"] == {"blockbeats": "quota exhausted"}
 
 
+def test_competitor_exclusion_only_checks_titles():
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅")
+    item = NewsflashItem(
+        source="panews",
+        source_item_id="bank-transfer",
+        title="BANK基金会疑似向Aster转移8400万枚BANK代币",
+        content="行情显示：BANK代币价格过去几天大幅上涨，涨幅超3倍。",
+    )
+
+    assert worker._exclude_items([item]) == [item]
+    assert worker.exclusion_matcher.checked_texts == [["BANK基金会疑似向Aster转移8400万枚BANK代币"]]
+
+
+def test_competitor_exclusion_filters_title_matches():
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅")
+    item = NewsflashItem(
+        source="panews",
+        source_item_id="btc-price",
+        title="BTC突破66000美元，日内涨幅3.09%",
+        content="BTC短线走高。",
+    )
+
+    assert worker._exclude_items([item]) == []
+
+
 class _HeartbeatRepository:
     def __init__(self) -> None:
         self.heartbeats = []
 
     def record_worker_heartbeat(self, **kwargs):
         self.heartbeats.append(kwargs)
+
+
+class _FakeExclusionMatcher:
+    def __init__(self, *, term: str) -> None:
+        self.term = term
+        self.checked_texts: list[list[str | None]] = []
+
+    def is_excluded(self, *, scopes, texts):
+        text_list = list(texts)
+        self.checked_texts.append(text_list)
+        return any(self.term in (text or "") for text in text_list)
 
 
 def _run_result(*, failed_sources: dict[str, str]) -> CompetitorRunResult:
