@@ -18,9 +18,10 @@ _MODEL_META_LINE_PATTERN = re.compile(
     r")"
 )
 _FORBIDDEN_META_PHRASES = ("原文链接", "来源链接", "按指定格式输出", "可核验的信息")
+_TITLE_REPEAT_BOUNDARIES = set("。！？；，、：,.!?;:)]）】》」”’\"' \t")
 _FIELD_LABEL_LINE_PATTERN = re.compile(
     r"^(?:\*\*)?\s*(?:"
-    r"\u6807\u9898(?:\u7b56\u7565)?|\u6b63\u6587|"
+    r"\u6807\u9898(?:\u7b56\u7565)?(?:\u4e3a|\u662f)?|\u6b63\u6587(?:\u4e3a|\u662f)?|"
     r"title(?:_strategy)?|content|matched_title_rules|feature_mode(?:_applied|_reason)?"
     r")\s*[:\uff1a]",
     re.IGNORECASE,
@@ -107,11 +108,18 @@ def _reject_contaminated_output(*, title: str, content: str) -> None:
 def _line_repeats_title(title: str, line: str) -> bool:
     compact_title = _compact_title_like(title)
     compact_line = _compact_title_like(line)
-    return bool(compact_title and compact_line == compact_title)
+    if not compact_title or not compact_line:
+        return False
+    if compact_line == compact_title:
+        return True
+    if not compact_line.startswith(compact_title):
+        return False
+    suffix = compact_line[len(compact_title) :]
+    return bool(suffix and suffix[0] in _TITLE_REPEAT_BOUNDARIES)
 
 
 def _compact_title_like(value: str) -> str:
-    stripped = value.strip("銆屻€嶃€娿€嬨€愩€慬]()锛堬級\"'鈥溾€濃€樷€?# 銆€銆傦紒锛侊紵?!.")
+    stripped = value.strip("「」《》【】[]()（）\"'“”‘’*# 　。！；，？?!.")
     return re.sub(r"\s+", "", stripped)
 
 

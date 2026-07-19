@@ -1387,10 +1387,12 @@ def build_structured_writer_prompt(
     subject_prompt = build_known_subject_prompt(known_subjects)
     subject_block = f"\n\n{subject_prompt}" if subject_prompt else ""
     return (
-        f"{build_writer_prompt(task=task, prompt=prompt)}"
+        f"{build_writer_prompt(task=task, prompt=prompt, structured_output=True)}"
         f"{subject_block}\n\n"
         "【本次系统输出契约】\n"
         "本次输出格式覆盖模板中任何旧的‘标题空一行正文’要求。只输出一个 JSON 对象，不要输出 Markdown 或解释。\n"
+        "JSON 的 title 字段只放标题文本，不要添加‘标题’或‘标题为’等标签。\n"
+        "JSON 的 content 字段只放正文文本，不要添加‘正文’、‘正文为’或‘标题为’等标签，不要复述 title，也不要添加 Odaily 刊头。\n"
         "title_strategy 只能使用 plain、speaker_anchor、entity_front、action_first、result_front、amount_front、time_window_front。\n"
         "matched_title_rules 只能使用 known_speaker_anchor、entity_front、action_first、result_change_front、amount_front、time_window_front、plain_direct、feature_subject_amplification。\n"
         "title_strategy_reason 只解释标题组织方式；不要输出事实抽取或风险分析。\n"
@@ -1398,7 +1400,17 @@ def build_structured_writer_prompt(
     )
 
 
-def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
+def build_writer_prompt(
+    *,
+    task: TaskRecord,
+    prompt: PromptTemplateVersion,
+    structured_output: bool = False,
+) -> str:
+    output_instruction = (
+        "不要输出解释。"
+        if structured_output
+        else "请严格输出一行标题、空一行、正文。不要输出解释。"
+    )
     if is_jin10_task(task):
         return (
             f"{render_prompt_content(prompt)}\n\n"
@@ -1406,7 +1418,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             f"标题：{task.title or ''}\n"
             f"正文：{task.content}\n\n"
             "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
-            "请严格输出一行标题、空一行、正文。"
+            f"{output_instruction}"
         )
     if is_non_mainstream_media_task(task) or is_ai_source_task(task):
         author_names = "、".join(task.metadata.get("author_names") or []) or "未知"
@@ -1421,7 +1433,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             f"原标题：{task.title or ''}\n"
             f"来源链接：{task.source_url or ''}\n"
             f"原文正文：{task.content}\n\n"
-            "请严格输出一行标题、空一行、正文。不要输出解释。"
+            f"{output_instruction}"
         )
     if is_mainstream_media_task(task):
         site_display_name = task.metadata.get("site_display_name") or "Crypto信源"
@@ -1433,7 +1445,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             f"原标题：{original_title}\n"
             f"来源链接：{task.source_url or ''}\n"
             f"原始快讯：{task.content}\n\n"
-            "请严格输出一行标题、空一行、正文。不要输出解释。"
+            f"{output_instruction}"
         )
     if is_competitor_task(task):
         return (
@@ -1443,7 +1455,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
             f"标题：{task.title or ''}\n"
             f"正文：{task.content}\n\n"
             "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
-            "请严格输出一行标题、空一行、正文。"
+            f"{output_instruction}"
         )
     author = (
         task.metadata.get("effective_author_name")
@@ -1458,7 +1470,7 @@ def build_writer_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> s
         f"发布人：{author}\n"
         f"来源链接：{task.source_url or ''}\n"
         f"原文内容：{task.content}\n\n"
-        "请严格输出一行标题、空一行、正文。不要输出解释。"
+        f"{output_instruction}"
     )
 
 def build_jin10_judge_prompt(*, task: TaskRecord, prompt: PromptTemplateVersion) -> str:
