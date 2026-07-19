@@ -45,6 +45,7 @@ tests/*
 !tests/test_runtime_rules.py
 !tests/test_x_processing_title_trace.py
 !tests/test_x_processing_competitor_judge.py
+!tests/test_whale_watch_hyperliquid_worker.py
 tools/
 
 data/config/*.json

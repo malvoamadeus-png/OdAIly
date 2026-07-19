@@ -261,10 +261,13 @@ class WhaleWatchHyperliquidWorker:
             print(f"[odaily] local feed write skipped whale_hyperliquid_activity_id={activity_id} error={exc}")
 
     def _record_heartbeat(self, result: HyperliquidRunResult) -> None:
+        degraded = bool(result.failed) and all(_is_hyperliquid_upstream_error(error) for error in result.failed.values())
+        success = not result.failed or degraded
+        status = "degraded" if degraded else "ok" if success else "failed"
         try:
             self._heartbeat.send(
-                status="ok" if not result.failed else "failed",
-                success=not result.failed,
+                status=status,
+                success=success,
                 error=str(result.failed) if result.failed else None,
                 metadata={
                     "addresses": result.addresses,
@@ -275,6 +278,7 @@ class WhaleWatchHyperliquidWorker:
                     "sent": result.sent,
                     "suppressed": result.suppressed,
                     "failed": result.failed,
+                    "degraded": degraded,
                 },
             )
         except Exception as exc:
@@ -404,6 +408,14 @@ def _int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_hyperliquid_upstream_error(error: str) -> bool:
+    retryable_statuses = ("500 Server Error", "502 Server Error", "503 Server Error", "504 Server Error")
+    return (
+        "Hyperliquid request failed url=https://api.hyperliquid.xyz/info" in error
+        and any(token in error for token in retryable_statuses)
+    )
 
 
 def _utc_now() -> datetime:
