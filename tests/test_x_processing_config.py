@@ -7,7 +7,14 @@ import requests
 from packages.common.config import load_auditor_settings, load_writer3_settings, load_x_processing_settings
 from packages.competitor_monitor.fetchers import extract_blockbeats_original_link, fetch_blockbeats
 from packages.editor_plugin_api import QUICK_GENERATE_WRITER_MODEL
-from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord, render_prompt_content
+from packages.x_processing.models import (
+    PROMPT_KEY_BY_NEWS_TYPE,
+    PipelineRecord,
+    PromptTemplateVersion,
+    TaskRecord,
+    render_prompt_content,
+)
+from packages.x_processing.publisher_config import build_publisher_rule_prompt, default_publisher_rule_config
 from packages.x_processing.repository import PROMPT_SEEDS
 from packages.x_processing.worker import should_omit_publish_source_url
 
@@ -119,6 +126,31 @@ def test_feature_mode_text_is_prepended_only_when_enabled() -> None:
             feature_mode_text="【标题风格】",
         )
     ) == "正文模板"
+
+
+def test_default_publisher_rules_include_soft_pr_deny_rule() -> None:
+    config = default_publisher_rule_config()
+    rule_names = [rule.name for rule in config.regular.deny_rules]
+    assert "软性商务 / 吹捧型内容" in rule_names
+
+    task = TaskRecord(
+        id=1,
+        source="blockbeats",
+        source_item_id="bb-soft-pr",
+        source_url=None,
+        title="Bitroot完成非洲社区生态轮融资",
+        content="该项目称此次生态布局是全球化战略及AI公链生态落地的重要进展。",
+    )
+    pipeline = PipelineRecord(
+        task_id=1,
+        final_title="Bitroot宣布完成非洲社区生态轮融资",
+        final_content="Bitroot宣布完成非洲社区生态轮融资，此次布局被视为生态落地的重要进展。",
+    )
+
+    prompt = build_publisher_rule_prompt(task=task, pipeline=pipeline, profile=config.regular)
+
+    assert "软性商务稿、吹捧型稿件和太虚的宣传表达" in prompt
+    assert "即使主体属于 Crypto/Web3，也必须 reject" in prompt
 
 
 def test_extract_blockbeats_original_link_prefers_external_source_url() -> None:

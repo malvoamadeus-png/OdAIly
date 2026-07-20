@@ -15,7 +15,7 @@ from .models import AI_SOURCE, PipelineRecord, TaskRecord
 PublisherProfileKey = Literal["regular", "ai_source"]
 PublisherRuleKind = Literal["allow", "deny"]
 PublisherDecision = Literal["pass", "reject"]
-CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 5
+CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 6
 
 
 class PublisherDecisionResult(BaseModel):
@@ -261,6 +261,20 @@ DEFAULT_REGULAR_DENY_RULES = [
         examples=[
             "某创始人称很高兴看到某基金会正在审慎处理关键问题",
             "某项目方表示行业终于开始理解我们的路线",
+        ],
+    ),
+    PublisherRule(
+        id="deny_soft_pr_promotional_copy",
+        name="软性商务 / 吹捧型内容",
+        description=(
+            "排除软性商务稿、吹捧型稿件和太虚的宣传表达。判断重点是语气和信息密度：如果正文主要是在强调"
+            "战略意义、生态价值、全球化布局、行业领先、重要进展、赋能、愿景、场景落地等宽泛表述，缺少可核验的"
+            "实质动作、明确结果或独立新闻价值，即使主体属于 Crypto/Web3，也必须 reject。"
+        ),
+        enabled=True,
+        examples=[
+            "某项目称其生态布局是全球化战略和公链生态落地的重要进展",
+            "某项目发布稿大量强调赋能生态、推动场景落地和行业领先，但没有实质结果",
         ],
     ),
     PublisherRule(
