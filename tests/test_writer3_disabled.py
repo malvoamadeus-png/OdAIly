@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from packages.common.config import Writer3Settings
+from packages.writer3 import confirm_worker
 from packages.writer3.confirm_worker import Writer3TelegramConfirmWorker
 from packages.writer3.worker import Writer3Worker
 
@@ -46,3 +49,22 @@ def test_writer3_confirm_worker_disabled_does_not_poll_telegram() -> None:
 
     assert result.message == "writer3 disabled"
     assert result.updates == 0
+
+
+def test_writer3_confirm_worker_disabled_sleeps_in_forever_loop(monkeypatch) -> None:
+    worker = Writer3TelegramConfirmWorker(
+        index=object(),
+        settings=Writer3Settings(enabled=False, worker_idle_sleep_seconds=7),
+    )
+    sleeps: list[float] = []
+
+    def stop_after_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise RuntimeError("stop loop")
+
+    monkeypatch.setattr(confirm_worker.time, "sleep", stop_after_sleep)
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        worker.run_forever()
+
+    assert sleeps == [7]

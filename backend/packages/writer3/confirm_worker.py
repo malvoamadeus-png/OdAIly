@@ -87,6 +87,9 @@ class Writer3TelegramConfirmWorker:
                     )
             except Exception as exc:
                 print(f"[odaily] writer3 confirm round failed: {exc}")
+            if not self.settings.enabled:
+                time.sleep(self.settings.worker_idle_sleep_seconds)
+                continue
             if self.poll_timeout_seconds == 0:
                 time.sleep(self.settings.worker_idle_sleep_seconds)
 
