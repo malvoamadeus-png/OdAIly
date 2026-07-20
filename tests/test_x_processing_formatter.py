@@ -47,14 +47,14 @@ def test_format_brief_preserves_existing_odaily_prefix_when_normalizing_content(
 
 def test_format_brief_uses_common_chinese_names_for_large_foreign_companies() -> None:
     draft = DraftBrief(
-        title="AAPL超越NVDA，成为全球市值最高公司",
-        content="AAPL超越NVDA，Samsung相关仓位同步增加。",
+        title="AAPL超越NVDA与CXMT，成为全球市值最高公司",
+        content="AAPL超越NVDA，Samsung相关仓位同步增加，ChangXin Memory Technologies也被写入正文。",
     )
 
     formatted = format_brief(draft)
 
-    assert formatted.title == "苹果超越英伟达，成为全球市值最高公司"
-    assert formatted.content == "Odaily星球日报讯 苹果超越英伟达，三星相关仓位同步增加。"
+    assert formatted.title == "苹果超越英伟达与长鑫存储，成为全球市值最高公司"
+    assert formatted.content == "Odaily星球日报讯 苹果超越英伟达，三星相关仓位同步增加，长鑫存储也被写入正文。"
 
 
 def test_parse_draft_output_rejects_markdown_link_meta_title() -> None:

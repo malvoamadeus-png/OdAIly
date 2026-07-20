@@ -31,6 +31,8 @@ def test_runtime_rules_are_versioned_complete_and_secret_free() -> None:
     assert "service_role_key" not in serialized
     assert "openai_api_key" not in serialized
     assert ".env" not in serialized
+    assert "cxmt" in serialized
+    assert "长鑫存储" in serialized
 
 
 def test_runtime_rules_known_subjects_are_displayed_as_names() -> None:

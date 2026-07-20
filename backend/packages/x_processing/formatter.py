@@ -27,6 +27,11 @@ _FIELD_LABEL_LINE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _COMMON_CHINESE_COMPANY_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![A-Za-z0-9])CXMT(?![A-Za-z0-9])", re.IGNORECASE), "长鑫存储"),
+    (
+        re.compile(r"(?<![A-Za-z0-9])ChangXin Memory Technologies(?![A-Za-z0-9])", re.IGNORECASE),
+        "长鑫存储",
+    ),
     (re.compile(r"(?<![A-Za-z0-9])Samsung\s+Electronics(?![A-Za-z0-9])", re.IGNORECASE), "三星电子"),
     (re.compile(r"(?<![A-Za-z0-9])Samsung(?![A-Za-z0-9])", re.IGNORECASE), "三星"),
     (re.compile(r"(?<![A-Za-z0-9])NVIDIA(?![A-Za-z0-9])", re.IGNORECASE), "英伟达"),
