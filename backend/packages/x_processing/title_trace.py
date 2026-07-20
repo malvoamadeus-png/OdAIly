@@ -30,40 +30,9 @@ TITLE_RULES = (
     "feature_subject_amplification",
 )
 
-KNOWN_TITLE_SUBJECTS: tuple[dict[str, Any], ...] = (
-    {
-        "key": "rune",
-        "name": "Rune",
-        "type": "kol",
-        "importance": "high",
-        "aliases": ("Rune", "RuneCrypto_", "@RuneCrypto_"),
-        "title_instruction": "观点、批评或争议内容优先保留 Rune 为发言主体，可使用“Rune：……”或“Rune称……”。",
-    },
-    {
-        "key": "cobie",
-        "name": "Cobie",
-        "type": "kol",
-        "importance": "high",
-        "aliases": ("Cobie", "@cobie"),
-        "title_instruction": "观点或判断内容优先保留 Cobie 为发言主体。",
-    },
-    {
-        "key": "vitalik",
-        "name": "Vitalik",
-        "type": "founder",
-        "importance": "high",
-        "aliases": ("Vitalik", "Vitalik Buterin", "@VitalikButerin"),
-        "title_instruction": "观点、路线或以太坊相关判断优先保留 Vitalik 为发言主体。",
-    },
-    {
-        "key": "cz",
-        "name": "CZ",
-        "type": "founder",
-        "importance": "high",
-        "aliases": ("CZ", "Changpeng Zhao", "赵长鹏", "@cz_binance"),
-        "title_instruction": "观点、回应或行业判断优先保留 CZ 为发言主体。",
-    },
-)
+DEFAULT_KNOWN_TITLE_SUBJECT_NAMES: tuple[str, ...] = ("Rune", "Cobie", "Vitalik", "CZ")
+KNOWN_TITLE_SUBJECTS: tuple[str, ...] = DEFAULT_KNOWN_TITLE_SUBJECT_NAMES
+KNOWN_TITLE_SUBJECT_SPLIT_PATTERN = re.compile(r"[、,\n\r;；，]+")
 
 
 WRITER_JSON_SCHEMA = {
@@ -104,7 +73,37 @@ class StructuredWriterResult:
     trace: dict[str, Any]
 
 
-def match_known_title_subjects(task: TaskRecord) -> list[dict[str, str]]:
+def normalize_known_title_subject_names(value: str | list[Any] | tuple[Any, ...] | None) -> list[str]:
+    if value is None:
+        raw_items: list[Any] = []
+    elif isinstance(value, str):
+        raw_items = KNOWN_TITLE_SUBJECT_SPLIT_PATTERN.split(value)
+    else:
+        raw_items = list(value)
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        name = re.sub(r"\s+", " ", str(item)).strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def match_known_title_subjects(
+    task: TaskRecord,
+    *,
+    subject_names: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, str]]:
+    names = normalize_known_title_subject_names(
+        list(DEFAULT_KNOWN_TITLE_SUBJECT_NAMES) if subject_names is None else subject_names
+    )
     metadata_values = [
         task.metadata.get("effective_author_name"),
         task.metadata.get("author_display_name"),
@@ -115,20 +114,14 @@ def match_known_title_subjects(task: TaskRecord) -> list[dict[str, str]]:
         [task.title or "", task.content, *(str(value) for value in metadata_values if value)]
     )
     matches: list[dict[str, str]] = []
-    for subject in KNOWN_TITLE_SUBJECTS:
-        matched_alias = next(
-            (alias for alias in subject["aliases"] if _alias_matches(text, str(alias))),
-            None,
-        )
-        if matched_alias is None:
+    for name in names:
+        if not _alias_matches(text, name):
             continue
         matches.append(
             {
-                "key": str(subject["key"]),
-                "name": str(subject["name"]),
-                "type": str(subject["type"]),
-                "importance": str(subject["importance"]),
-                "matched_alias": str(matched_alias),
+                "key": name.casefold(),
+                "name": name,
+                "matched_alias": name,
             }
         )
     return matches
@@ -137,12 +130,13 @@ def match_known_title_subjects(task: TaskRecord) -> list[dict[str, str]]:
 def build_known_subject_prompt(matches: list[dict[str, str]]) -> str:
     if not matches:
         return ""
-    instructions: list[str] = []
-    matched_keys = {match["key"] for match in matches}
-    for subject in KNOWN_TITLE_SUBJECTS:
-        if str(subject["key"]) in matched_keys:
-            instructions.append(f"- {subject['name']}：{subject['title_instruction']}")
-    return "【当前材料命中的知名主体】\n" + "\n".join(instructions)
+    names = normalize_known_title_subject_names([match["name"] for match in matches if match.get("name")])
+    if not names:
+        return ""
+    return (
+        f"当前材料命中知名人物：{'、'.join(names)}。"
+        "遇到这些人物观点时可使用“人名：观点”标题。"
+    )
 
 
 def parse_structured_writer_output(
@@ -203,6 +197,7 @@ def _strip_json_fence(value: str) -> str:
 
 
 def _alias_matches(text: str, alias: str) -> bool:
+    if re.search(r"[\u3400-\u9fff]", alias):
+        return alias.casefold() in text.casefold()
     escaped = re.escape(alias.casefold())
     return re.search(rf"(?<![\w]){escaped}(?![\w])", text.casefold()) is not None
-

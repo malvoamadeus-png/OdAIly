@@ -51,8 +51,8 @@ class Writer3Worker:
         self.settings = settings
         self.worker_id = worker_id or f"writer3-{os.getpid()}"
         self.start_after = parse_start_after(self.settings.start_after)
-        self.ai_client = ai_client or self._build_ai_client()
-        self.telegram_client = telegram_client or self._build_telegram_client()
+        self.ai_client = ai_client or (self._build_ai_client() if self.settings.enabled else None)
+        self.telegram_client = telegram_client or (self._build_telegram_client() if self.settings.enabled else None)
         self.feed_writer = LocalEditorPluginFeedWriter()
         self._heartbeat_throttle = HeartbeatThrottle(
             component="writer3",
@@ -68,6 +68,9 @@ class Writer3Worker:
         )
 
     def run_once(self) -> Writer3RunResult:
+        if not self.settings.enabled:
+            self._heartbeat(success=True, metadata={"processed": 0, "enabled": False})
+            return Writer3RunResult(processed=0, sent=0, skipped=0, failed=0, message="writer3 disabled")
         task = self.repository.claim_task(
             worker_id=self.worker_id,
             start_after=self.start_after,

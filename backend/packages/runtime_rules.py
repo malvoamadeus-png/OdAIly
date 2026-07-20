@@ -9,13 +9,14 @@ from packages.x_processing.formatter import (
     _COMMON_CHINESE_COMPANY_NAMES,
     _FORBIDDEN_META_PHRASES,
 )
+from packages.x_processing.known_title_subjects_config import load_known_title_subject_names
 from packages.x_processing.publisher_config import default_publisher_rule_config
 from packages.x_processing.repository import DEFAULT_FEATURE_MODE_TEXT, PUBLISHER_CHANNEL_DEFAULTS
 from packages.x_processing.title_trace import (
-    KNOWN_TITLE_SUBJECTS,
     TITLE_RULES,
     TITLE_STRATEGIES,
     WRITER_JSON_SCHEMA,
+    normalize_known_title_subject_names,
 )
 from packages.x_processing.worker import (
     AI_JUDGE_JSON_SCHEMA,
@@ -50,8 +51,11 @@ PUBLISHER_RUNTIME_POLICY = {
 }
 
 
-def build_runtime_rules_payload() -> dict[str, Any]:
+def build_runtime_rules_payload(*, known_title_subject_names: list[str] | None = None) -> dict[str, Any]:
     publisher_defaults = default_publisher_rule_config().model_dump(mode="json")
+    subject_names = normalize_known_title_subject_names(
+        load_known_title_subject_names() if known_title_subject_names is None else known_title_subject_names
+    )
     return {
         "schema_version": 1,
         "sections": [
@@ -146,10 +150,11 @@ def build_runtime_rules_payload() -> dict[str, Any]:
                         "title": "知名主体表",
                         "kind": "knowledge",
                         "scopes": ["write"],
-                        "summary": "仅把当前材料实际命中的主体提示注入 Prompt。",
-                        "content": _pretty(KNOWN_TITLE_SUBJECTS),
-                        "source_location": "backend/packages/x_processing/title_trace.py:KNOWN_TITLE_SUBJECTS",
-                        "editable": False,
+                        "summary": "仅把当前材料实际命中的知名人物姓名注入 Prompt。",
+                        "content": "、".join(subject_names),
+                        "source_location": "data/config/known_title_subjects.json",
+                        "editable": True,
+                        "editable_at": "Prompt及规则管理 / 知名人物",
                     },
                     {
                         "key": "writer-feature-mode",

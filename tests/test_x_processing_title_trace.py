@@ -8,6 +8,7 @@ from packages.x_processing.models import TaskRecord
 from packages.x_processing.title_trace import (
     build_known_subject_prompt,
     match_known_title_subjects,
+    normalize_known_title_subject_names,
     parse_structured_writer_output,
 )
 
@@ -30,14 +31,36 @@ def test_known_subject_prompt_only_injects_subjects_matched_by_current_task() ->
             title="Base users report losses",
             content="Rune says trust in the Base community has nearly disappeared.",
             metadata={"author_username": "RuneCrypto_"},
-        )
+        ),
+        subject_names=["Rune", "Cobie", "Vitalik"],
     )
     prompt = build_known_subject_prompt(matches)
 
     assert [match["key"] for match in matches] == ["rune"]
-    assert "Rune" in prompt
+    assert prompt == "当前材料命中知名人物：Rune。遇到这些人物观点时可使用“人名：观点”标题。"
     assert "Cobie" not in prompt
     assert "Vitalik" not in prompt
+    assert "title_instruction" not in prompt
+    assert "观点、批评或争议内容" not in prompt
+
+
+def test_known_subject_names_normalize_operator_input() -> None:
+    assert normalize_known_title_subject_names("CZ、Vitalik\nCZ, Rune； Cobie") == [
+        "CZ",
+        "Vitalik",
+        "Rune",
+        "Cobie",
+    ]
+    assert normalize_known_title_subject_names(["CZ", None, " ", "cz", "赵长鹏"]) == ["CZ", "赵长鹏"]
+
+
+def test_known_subject_matching_supports_cjk_names_inside_sentence() -> None:
+    matches = match_known_title_subjects(
+        _task(title="赵长鹏回应行业监管", content="币安联合创始人赵长鹏表示，监管框架仍需完善。"),
+        subject_names=["赵长鹏"],
+    )
+
+    assert matches == [{"key": "赵长鹏", "name": "赵长鹏", "matched_alias": "赵长鹏"}]
 
 
 def test_structured_writer_trace_keeps_deterministic_subjects() -> None:

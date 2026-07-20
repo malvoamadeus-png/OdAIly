@@ -1168,6 +1168,17 @@ textarea:focus {
   background: #f8fafb;
 }
 
+.knownTitleSubjectsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.knownTitleSubjectsTextarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
 .runtimeRuleBody pre,
 .taskTraceNarrative pre {
   max-height: 440px;

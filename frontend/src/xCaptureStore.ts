@@ -311,6 +311,10 @@ export type PromptVersion = {
   published_at: string | null;
 };
 
+export type KnownTitleSubjectsPayload = {
+  names: string[];
+};
+
 export type SourceExclusionScope = 'x' | 'competitor' | 'crypto_source' | 'ai_source' | 'mixed_source' | 'jin10';
 
 export type SourceExclusionRuleGroup = {
@@ -1001,6 +1005,14 @@ export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashbo
 
 export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {
   return consoleApiGet<RuntimeRulesPayload>('/console/runtime-rules/get');
+}
+
+export async function getKnownTitleSubjects(): Promise<KnownTitleSubjectsPayload> {
+  return consoleApiGet<KnownTitleSubjectsPayload>('/console/known-title-subjects/get');
+}
+
+export async function saveKnownTitleSubjects(names: string[]): Promise<KnownTitleSubjectsPayload> {
+  return consoleApiPost<KnownTitleSubjectsPayload>('/console/known-title-subjects/save', { names });
 }
 
 export async function savePublisherRuleConfig(config: PublisherRuleConfig): Promise<PublisherRuleConfigPayload> {

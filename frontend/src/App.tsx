@@ -37,6 +37,7 @@ import {
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
   getRuntimeRules,
+  getKnownTitleSubjects,
   getPublisherRuleConfig,
   getPublisherRuleConfigSnapshot,
   listSourceExclusionRuleGroups,
@@ -55,6 +56,7 @@ import {
   saveNewsflashEventNote,
   saveNewsflashItemNote,
   saveBlockbeatsKey,
+  saveKnownTitleSubjects,
   signInWithPassword,
   signOut as signOutFromSupabase,
   setNewsflashEventFavorite,
@@ -188,6 +190,22 @@ const emptyPublisherRuleConfig: PublisherRuleConfig = {
 };
 
 const emptyRuntimeRules: RuntimeRulesPayload = { schema_version: 1, sections: [] };
+
+function normalizeKnownTitleSubjectDraft(value: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  value
+    .split(/[、,\n\r;；，]+/)
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .forEach((name) => {
+      const key = name.toLocaleLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      names.push(name);
+    });
+  return names;
+}
 
 const emptyBlockbeatsKeyConfig: BlockbeatsKeyConfig = {
   api_key: '',
@@ -840,8 +858,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [promptContent, setPromptContent] = useState('');
   const [promptNote, setPromptNote] = useState('');
   const [featureModeText, setFeatureModeText] = useState('');
+  const [knownTitleSubjectsDraft, setKnownTitleSubjectsDraft] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
   const [updatingPromptFeatureMode, setUpdatingPromptFeatureMode] = useState(false);
+  const [savingKnownTitleSubjects, setSavingKnownTitleSubjects] = useState(false);
   const [deletingPromptVersionId, setDeletingPromptVersionId] = useState<number | null>(null);
   const [exclusionGroups, setExclusionGroups] = useState<SourceExclusionRuleGroup[]>([]);
   const [savingExclusionGroup, setSavingExclusionGroup] = useState(false);
@@ -1037,10 +1057,15 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   async function loadPrompts(nextSelectedKey?: string) {
     setError('');
-    const [allTemplates, rules] = await Promise.all([listPromptTemplates(), getRuntimeRules()]);
+    const [allTemplates, rules, knownSubjects] = await Promise.all([
+      listPromptTemplates(),
+      getRuntimeRules(),
+      getKnownTitleSubjects(),
+    ]);
     const templates = visiblePromptTemplates(allTemplates);
     setRuntimeRules(rules);
     setPromptTemplates(templates);
+    setKnownTitleSubjectsDraft((knownSubjects.names || []).join('、'));
     const requestedKey = nextSelectedKey || selectedPromptKey;
     const key = templates.some((template) => template.template_key === requestedKey)
       ? requestedKey || ''
@@ -1468,6 +1493,21 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function saveKnownTitleSubjectDraft() {
+    setSavingKnownTitleSubjects(true);
+    setError('');
+    try {
+      const saved = await saveKnownTitleSubjects(normalizeKnownTitleSubjectDraft(knownTitleSubjectsDraft));
+      setKnownTitleSubjectsDraft((saved.names || []).join('、'));
+      setRuntimeRules(await getRuntimeRules());
+      setMessage('知名人物名单已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingKnownTitleSubjects(false);
+    }
+  }
+
   async function removePromptVersion(version: PromptVersion) {
     const confirmed = window.confirm(
       version.id === promptTemplates.find((item) => item.template_key === version.template_key)?.active_version_id
@@ -1606,7 +1646,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         : view === 'whale'
           ? 'Whale Watch'
         : view === 'prompts'
-          ? 'Prompt'
+          ? 'Prompt及规则管理'
           : view === 'competitor'
             ? '排除词'
             : view === 'favorites'
@@ -1628,7 +1668,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         : view === 'whale'
         ? '巨鲸'
       : view === 'prompts'
-        ? 'Prompt 编制'
+        ? 'Prompt及规则管理'
         : view === 'competitor'
           ? '排除词'
           : view === 'favorites'
@@ -1713,7 +1753,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <Layers3 size={18} /> 流程展示
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
-            <FileText size={18} /> Prompt
+            <FileText size={18} /> Prompt及规则管理
           </button>
           <button className={view === 'whale' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('whale')}>
             <Wallet size={18} /> 巨鲸
@@ -2013,16 +2053,20 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             content={promptContent}
             note={promptNote}
             featureModeText={featureModeText}
+            knownTitleSubjectsDraft={knownTitleSubjectsDraft}
             saving={savingPrompt}
             featureModeSaving={updatingPromptFeatureMode}
+            knownTitleSubjectsSaving={savingKnownTitleSubjects}
             deletingVersionId={deletingPromptVersionId}
             onSelect={selectPrompt}
             onContentChange={setPromptContent}
             onNoteChange={setPromptNote}
             onFeatureModeTextChange={setFeatureModeText}
+            onKnownTitleSubjectsChange={setKnownTitleSubjectsDraft}
             onSave={savePromptVersion}
             onToggleFeatureMode={togglePromptFeatureMode}
             onSaveFeatureModeText={saveFeatureModeText}
+            onSaveKnownTitleSubjects={saveKnownTitleSubjectDraft}
             onPublish={publishExistingVersion}
             onDeleteVersion={removePromptVersion}
             onRefresh={() => loadPrompts(selectedPromptKey)}
@@ -3422,16 +3466,20 @@ function PromptPanel({
   content,
   note,
   featureModeText,
+  knownTitleSubjectsDraft,
   saving,
   featureModeSaving,
+  knownTitleSubjectsSaving,
   deletingVersionId,
   onSelect,
   onContentChange,
   onNoteChange,
   onFeatureModeTextChange,
+  onKnownTitleSubjectsChange,
   onSave,
   onToggleFeatureMode,
   onSaveFeatureModeText,
+  onSaveKnownTitleSubjects,
   onPublish,
   onDeleteVersion,
   onRefresh,
@@ -3443,21 +3491,25 @@ function PromptPanel({
   content: string;
   note: string;
   featureModeText: string;
+  knownTitleSubjectsDraft: string;
   saving: boolean;
   featureModeSaving: boolean;
+  knownTitleSubjectsSaving: boolean;
   deletingVersionId: number | null;
   onSelect: (templateKey: string) => Promise<void>;
   onContentChange: (value: string) => void;
   onNoteChange: (value: string) => void;
   onFeatureModeTextChange: (value: string) => void;
+  onKnownTitleSubjectsChange: (value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleFeatureMode: (enabled: boolean) => Promise<void>;
   onSaveFeatureModeText: () => Promise<void>;
+  onSaveKnownTitleSubjects: () => Promise<void>;
   onPublish: (version: PromptVersion) => Promise<void>;
   onDeleteVersion: (version: PromptVersion) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
-  const [panelMode, setPanelMode] = useState<'editable' | 'runtime'>('editable');
+  const [panelMode, setPanelMode] = useState<'editable' | 'runtime' | 'known'>('editable');
   const selected = templates.find((template) => template.template_key === selectedKey);
   const activeVersion = versions.find((version) => version.id === selected?.active_version_id);
 
@@ -3470,9 +3522,19 @@ function PromptPanel({
         <button className={panelMode === 'runtime' ? 'active' : ''} type="button" onClick={() => setPanelMode('runtime')}>
           内置规则
         </button>
+        <button className={panelMode === 'known' ? 'active' : ''} type="button" onClick={() => setPanelMode('known')}>
+          知名人物
+        </button>
       </div>
       {panelMode === 'runtime' ? (
         <RuntimeRulesPanel payload={runtimeRules} />
+      ) : panelMode === 'known' ? (
+        <KnownTitleSubjectsPanel
+          draft={knownTitleSubjectsDraft}
+          saving={knownTitleSubjectsSaving}
+          onDraftChange={onKnownTitleSubjectsChange}
+          onSave={onSaveKnownTitleSubjects}
+        />
       ) : (
       <section className="promptLayout">
       <aside className="promptList">
@@ -3572,6 +3634,45 @@ function PromptPanel({
     </section>
       )}
     </>
+  );
+}
+
+function KnownTitleSubjectsPanel({
+  draft,
+  saving,
+  onDraftChange,
+  onSave,
+}: {
+  draft: string;
+  saving: boolean;
+  onDraftChange: (value: string) => void;
+  onSave: () => Promise<void>;
+}) {
+  const normalized = normalizeKnownTitleSubjectDraft(draft);
+  return (
+    <section className="section knownTitleSubjectsSection">
+      <div className="sectionHeader">
+        <div>
+          <h2>知名人物</h2>
+          <span>{normalized.length} 个名称 · 顿号、逗号或换行分隔</span>
+        </div>
+        <button className="primaryButton" type="button" disabled={saving} onClick={() => void onSave()}>
+          <Save size={17} /> 保存名单
+        </button>
+      </div>
+      <textarea
+        className="knownTitleSubjectsTextarea"
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        placeholder="Rune、Cobie、Vitalik、CZ"
+        spellCheck={false}
+      />
+      <div className="traceBadgeRow">
+        {normalized.map((name) => (
+          <span className="traceBadge" key={name}>{name}</span>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -770,6 +770,7 @@ def load_pipeline_supervisor_settings() -> PipelineSupervisorSettings:
 
 
 class Writer3Settings(BaseModel):
+    enabled: bool = False
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
@@ -793,6 +794,7 @@ class Writer3Settings(BaseModel):
 def load_writer3_settings() -> Writer3Settings:
     load_dotenv()
     payload = {
+        "enabled": _env_bool("WRITER3_ENABLED", False),
         "openai_api_key": _llm_api_key(),
         "openai_base_url": _llm_base_url("WRITER3_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL"),
         "openai_api_style": _llm_api_style("WRITER3_OPENAI_API_STYLE"),

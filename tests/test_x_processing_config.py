@@ -57,6 +57,7 @@ def test_litellm_alias_defaults_route_text_llm_calls(monkeypatch) -> None:
     monkeypatch.setenv("WRITER3_OPENAI_API_STYLE", "")
     monkeypatch.setenv("WRITER3_ANALYSIS_MODEL", "")
     monkeypatch.setenv("WRITER3_WRITER_MODEL", "")
+    monkeypatch.setenv("WRITER3_ENABLED", "false")
     monkeypatch.setenv("AUDITOR_OPENAI_BASE_URL", "")
     monkeypatch.setenv("AUDITOR_OPENAI_API_STYLE", "")
     monkeypatch.setenv("AUDITOR_OPENAI_API_KEY", "")
@@ -75,11 +76,21 @@ def test_litellm_alias_defaults_route_text_llm_calls(monkeypatch) -> None:
     assert x_settings.search_ai_review_openai_api_key is None
     assert x_settings.writer_model == "odaily-gpt-writer"
     assert x_settings.publisher_model == "odaily-gpt-writer"
+    assert writer3_settings.enabled is False
     assert writer3_settings.analysis_model == "odaily-deepseek-fast"
     assert writer3_settings.writer_model == "odaily-gpt-writer"
     assert auditor_settings.model == "odaily-deepseek-auditor"
     assert auditor_settings.openai_api_key == "litellm-key"
     assert QUICK_GENERATE_WRITER_MODEL == "odaily-deepseek-fast"
+
+
+def test_writer3_can_be_enabled_explicitly(monkeypatch) -> None:
+    monkeypatch.setenv("WRITER3_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    settings = load_writer3_settings()
+
+    assert settings.enabled is True
 
 
 def test_ai_source_reuses_mainstream_media_writer_prompt_seed() -> None:

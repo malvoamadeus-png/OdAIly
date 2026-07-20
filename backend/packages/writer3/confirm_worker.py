@@ -36,11 +36,13 @@ class Writer3TelegramConfirmWorker:
     ) -> None:
         self.index = index
         self.settings = settings
-        self.telegram_client = telegram_client or self._build_telegram_client()
+        self.telegram_client = telegram_client or (self._build_telegram_client() if self.settings.enabled else None)
         self.poll_timeout_seconds = max(0, int(poll_timeout_seconds))
         self.offset: int | None = None
 
     def run_once(self) -> Writer3ConfirmRunResult:
+        if not self.settings.enabled:
+            return Writer3ConfirmRunResult(updates=0, confirmed=0, ignored=0, failed=0, message="writer3 disabled")
         result = self.telegram_client.get_updates(offset=self.offset, timeout_seconds=self.poll_timeout_seconds)
         if not result.ok:
             return Writer3ConfirmRunResult(updates=0, confirmed=0, ignored=0, failed=1, message=result.error or "getUpdates failed", exit_code=1)

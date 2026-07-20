@@ -24,6 +24,7 @@ from packages.x_capture.repository import XCaptureRepository
 
 from .ai_client import OpenAIResponsesClient, TextGenerationClient
 from .formatter import format_brief, parse_draft_output
+from .known_title_subjects_config import load_known_title_subject_names
 from .models import (
     ACTIVE_CANDIDATE_TTL,
     AI_SOURCE,
@@ -884,7 +885,10 @@ class XProcessingWorker:
         if template_key is None:
             raise ValueError("missing news_type")
         prompt = self._get_prompt(template_key)
-        known_subjects = match_known_title_subjects(task)
+        known_subjects = match_known_title_subjects(
+            task,
+            subject_names=load_known_title_subject_names(),
+        )
         input_prompt = build_structured_writer_prompt(
             task=task,
             prompt=prompt,

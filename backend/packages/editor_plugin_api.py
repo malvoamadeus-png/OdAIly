@@ -38,6 +38,10 @@ from packages.x_capture.repository import PostgresXCaptureRepository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord
+from packages.x_processing.known_title_subjects_config import (
+    load_known_title_subject_names,
+    save_known_title_subject_names,
+)
 from packages.x_processing.publisher_config import (
     PublisherRuleConfig,
     default_publisher_rule_config,
@@ -59,6 +63,7 @@ from packages.x_processing.searcher import (
     exact_duplicate_decision,
     parse_ai_review_output,
 )
+from packages.x_processing.title_trace import normalize_known_title_subject_names
 from packages.x_processing.worker import build_writer_prompt
 
 
@@ -683,7 +688,22 @@ class EditorPluginNewsGenService:
         del actor
         from packages.runtime_rules import build_runtime_rules_payload
 
-        return build_runtime_rules_payload()
+        return build_runtime_rules_payload(known_title_subject_names=load_known_title_subject_names())
+
+    def get_known_title_subjects(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return {"names": load_known_title_subject_names()}
+
+    def save_known_title_subjects(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_names = payload.get("names")
+        if isinstance(raw_names, str):
+            names = normalize_known_title_subject_names(raw_names)
+        elif isinstance(raw_names, list):
+            names = normalize_known_title_subject_names(raw_names)
+        else:
+            raise EditorPluginApiError("names 必须是字符串或字符串数组")
+        saved = save_known_title_subject_names(names, updated_by=actor.email)
+        return {"names": saved.names}
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
         self.feed_syncer.set_sync_email(actor.email)
@@ -1057,6 +1077,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
         "/console/runtime-rules/get",
+        "/console/known-title-subjects/get",
+        "/console/known-title-subjects/save",
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
     }
@@ -1076,6 +1098,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {"ok": True, "data": self.server.service.get_runtime_rules(actor)},
+                )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if self.path == "/console/known-title-subjects/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.get_known_title_subjects(actor)},
                 )
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
@@ -1103,6 +1137,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/runtime-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_runtime_rules(actor)})
+                    return
+                if self.path == "/console/known-title-subjects/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_known_title_subjects(actor)})
+                    return
+                if self.path == "/console/known-title-subjects/save":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_known_title_subjects(actor, self._read_json())})
                     return
                 if self.path == "/console/publisher-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_publisher_rules(actor)})

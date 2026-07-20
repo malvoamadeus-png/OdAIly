@@ -46,3 +46,16 @@ def test_structured_writer_prompt_uses_json_field_boundaries_only() -> None:
     assert "JSON 的 title 字段只放标题文本" in structured
     assert "JSON 的 content 字段只放正文文本" in structured
     assert "请严格输出一行标题、空一行、正文" in plain
+
+
+def test_writer_prompt_seeds_include_title_and_prediction_market_rules() -> None:
+    required = {
+        "x_regular_writer": ["分析：{直接观点}", "押注", "概率暂报"],
+        "x_onchain_writer": ["分析：{直接观点}", "未造成数据和资金损失", "押注", "概率暂报"],
+        "mainstream_media_writer": ["XX被指/被称/被认为", "未造成数据和资金损失", "押注", "概率暂报"],
+    }
+    for template_key, phrases in required.items():
+        _, path, _ = PROMPT_SEEDS[template_key]
+        content = Path(path).read_text(encoding="utf-8")
+        for phrase in phrases:
+            assert phrase in content
