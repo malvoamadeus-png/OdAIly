@@ -3882,7 +3882,13 @@ function CompetitorPanel({
     event.preventDefault();
     const terms = draft.termsText.split(/\r?\n/).map((term) => term.trim()).filter(Boolean);
     if (!draft.name.trim() || draft.scopes.length === 0 || terms.length === 0) return;
-    const savedId = await onSave(selectedId, { ...draft, name: draft.name.trim(), description: draft.description.trim(), terms });
+    const savedId = await onSave(selectedId, {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      scopes: [...draft.scopes],
+      terms,
+      enabled: draft.enabled,
+    });
     if (savedId > 0) {
       setCreating(false);
       setSelectedId(savedId);

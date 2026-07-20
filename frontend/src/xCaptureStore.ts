@@ -1699,14 +1699,18 @@ export async function listSourceExclusionRuleGroups(): Promise<SourceExclusionRu
 export async function createSourceExclusionRuleGroup(
   input: SourceExclusionRuleGroupInput,
 ): Promise<SourceExclusionRuleGroup> {
+  const payload = {
+    rule_key: crypto.randomUUID(),
+    name: input.name,
+    description: input.description,
+    scopes: [...input.scopes],
+    terms: normalizeSourceExclusionTerms(input.terms),
+    enabled: input.enabled,
+    updated_at: nowIso(),
+  };
   const { data, error } = await supabase()
     .from('source_exclusion_rule_groups')
-    .insert({
-      rule_key: crypto.randomUUID(),
-      ...input,
-      terms: normalizeSourceExclusionTerms(input.terms),
-      updated_at: nowIso(),
-    })
+    .insert(payload)
     .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
     .single();
   raise(error);
@@ -1718,10 +1722,11 @@ export async function updateSourceExclusionRuleGroup(
   input: SourceExclusionRuleGroupInput,
 ): Promise<SourceExclusionRuleGroup> {
   const payload = {
-    ...input,
     name: input.name.trim(),
     description: input.description.trim(),
+    scopes: [...input.scopes],
     terms: normalizeSourceExclusionTerms(input.terms),
+    enabled: input.enabled,
     updated_at: nowIso(),
   };
   const { data, error } = await supabase()
