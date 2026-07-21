@@ -553,14 +553,14 @@ class PostgresXProcessingRepository:
             row = conn.execute(
                 f"""
                 WITH candidate AS (
-                    SELECT id
+                    SELECT t.id
                     FROM tasks t
                     LEFT JOIN x_capture_accounts xa
                       ON t.source = 'x'
                      AND xa.username_lower = lower(COALESCE(t.metadata ->> 'account_username', t.metadata ->> 'author_username', ''))
                     WHERE {source_filter}
-                      AND (locked_until IS NULL OR locked_until < now())
-                    ORDER BY created_at ASC, id ASC
+                      AND (t.locked_until IS NULL OR t.locked_until < now())
+                    ORDER BY t.created_at ASC, t.id ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )

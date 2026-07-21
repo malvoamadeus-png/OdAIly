@@ -985,7 +985,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setError('');
     setLoadingProcessingTasks(true);
     try {
-      const nextTasks = await listRecentTasksBySources(processingTaskSources, 30);
+      const nextTasks = await listRecentTasksBySources(processingTaskSources, 80);
       setProcessingTasks(nextTasks);
     } finally {
       setLoadingProcessingTasks(false);
