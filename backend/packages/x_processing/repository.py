@@ -561,7 +561,7 @@ class PostgresXProcessingRepository:
                     WHERE {source_filter}
                       AND (t.locked_until IS NULL OR t.locked_until < now())
                     ORDER BY t.created_at ASC, t.id ASC
-                    FOR UPDATE SKIP LOCKED
+                    FOR UPDATE OF t SKIP LOCKED
                     LIMIT 1
                 )
                 UPDATE tasks t
