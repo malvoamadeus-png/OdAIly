@@ -316,6 +316,7 @@ export type KnownTitleSubjectsPayload = {
 };
 
 export type SourceExclusionScope = 'x' | 'competitor' | 'crypto_source' | 'ai_source' | 'mixed_source' | 'jin10';
+export type SourceExclusionMatchTarget = 'title' | 'all';
 
 export type SourceExclusionRuleGroup = {
   id: number;
@@ -324,6 +325,7 @@ export type SourceExclusionRuleGroup = {
   description: string;
   scopes: SourceExclusionScope[];
   terms: string[];
+  match_target: SourceExclusionMatchTarget;
   enabled: boolean;
   created_at: string;
   updated_at: string;
@@ -334,6 +336,7 @@ export type SourceExclusionRuleGroupInput = {
   description: string;
   scopes: SourceExclusionScope[];
   terms: string[];
+  match_target: SourceExclusionMatchTarget;
   enabled: boolean;
 };
 
@@ -1686,14 +1689,21 @@ export function normalizeSourceExclusionTerms(values: string[]): string[] {
     });
 }
 
+function normalizeSourceExclusionMatchTarget(value: unknown): SourceExclusionMatchTarget {
+  return value === 'all' ? 'all' : 'title';
+}
+
 export async function listSourceExclusionRuleGroups(): Promise<SourceExclusionRuleGroup[]> {
   const { data, error } = await supabase()
     .from('source_exclusion_rule_groups')
-    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
+    .select('id,rule_key,name,description,scopes,terms,match_target,enabled,created_at,updated_at')
     .order('enabled', { ascending: false })
     .order('name', { ascending: true });
   raise(error);
-  return (data ?? []) as unknown as SourceExclusionRuleGroup[];
+  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    ...(row as unknown as SourceExclusionRuleGroup),
+    match_target: normalizeSourceExclusionMatchTarget(row.match_target),
+  }));
 }
 
 export async function createSourceExclusionRuleGroup(
@@ -1705,16 +1715,18 @@ export async function createSourceExclusionRuleGroup(
     description: input.description,
     scopes: [...input.scopes],
     terms: normalizeSourceExclusionTerms(input.terms),
+    match_target: normalizeSourceExclusionMatchTarget(input.match_target),
     enabled: input.enabled,
     updated_at: nowIso(),
   };
   const { data, error } = await supabase()
     .from('source_exclusion_rule_groups')
     .insert(payload)
-    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
+    .select('id,rule_key,name,description,scopes,terms,match_target,enabled,created_at,updated_at')
     .single();
   raise(error);
-  return assertData(data as SourceExclusionRuleGroup | null, '创建排除规则组失败');
+  const group = assertData(data as SourceExclusionRuleGroup | null, '创建排除规则组失败');
+  return { ...group, match_target: normalizeSourceExclusionMatchTarget(group.match_target) };
 }
 
 export async function updateSourceExclusionRuleGroup(
@@ -1726,6 +1738,7 @@ export async function updateSourceExclusionRuleGroup(
     description: input.description.trim(),
     scopes: [...input.scopes],
     terms: normalizeSourceExclusionTerms(input.terms),
+    match_target: normalizeSourceExclusionMatchTarget(input.match_target),
     enabled: input.enabled,
     updated_at: nowIso(),
   };
@@ -1733,10 +1746,11 @@ export async function updateSourceExclusionRuleGroup(
     .from('source_exclusion_rule_groups')
     .update(payload)
     .eq('id', id)
-    .select('id,rule_key,name,description,scopes,terms,enabled,created_at,updated_at')
+    .select('id,rule_key,name,description,scopes,terms,match_target,enabled,created_at,updated_at')
     .single();
   raise(error);
-  return assertData(data as SourceExclusionRuleGroup | null, '更新排除规则组失败');
+  const group = assertData(data as SourceExclusionRuleGroup | null, '更新排除规则组失败');
+  return { ...group, match_target: normalizeSourceExclusionMatchTarget(group.match_target) };
 }
 
 export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> {

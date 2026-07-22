@@ -114,7 +114,8 @@ class Jin10MonitorWorker:
                 continue
             if self.exclusion_matcher is not None and self.exclusion_matcher.is_excluded(
                 scopes=["jin10"],
-                texts=[item.title, item.content],
+                title_texts=[item.title],
+                body_texts=[item.content],
             ):
                 self.repository.mark_seen(item.source_item_id, seeded=False)
                 continue

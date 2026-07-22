@@ -46,6 +46,7 @@ tests/*
 !tests/test_x_processing_title_trace.py
 !tests/test_x_processing_competitor_judge.py
 !tests/test_whale_watch_hyperliquid_worker.py
+!tests/test_editor_plugin_local_store.py
 tools/
 
 data/config/*.json

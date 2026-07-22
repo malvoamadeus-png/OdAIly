@@ -313,7 +313,7 @@ class XCaptureWorker:
                 exclusion_scopes.append("ai_source")
             if self.exclusion_matcher is not None and self.exclusion_matcher.is_excluded(
                 scopes=exclusion_scopes,
-                texts=[record.text],
+                title_texts=[record.text],
             ):
                 self.repository.mark_seen(account, candidate.tweet_id, seeded=False)
                 continue

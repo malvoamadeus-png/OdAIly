@@ -189,7 +189,7 @@ def test_non_blockbeats_failure_still_makes_competitor_heartbeat_failed():
 
 def test_competitor_exclusion_only_checks_titles():
     worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
-    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅")
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅", match_target="title")
     item = NewsflashItem(
         source="panews",
         source_item_id="bank-transfer",
@@ -198,12 +198,26 @@ def test_competitor_exclusion_only_checks_titles():
     )
 
     assert worker._exclude_items([item]) == [item]
-    assert worker.exclusion_matcher.checked_texts == [["BANK基金会疑似向Aster转移8400万枚BANK代币"]]
+    assert worker.exclusion_matcher.checked_title_texts == [["BANK基金会疑似向Aster转移8400万枚BANK代币"]]
+    assert worker.exclusion_matcher.checked_body_texts == [["行情显示：BANK代币价格过去几天大幅上涨，涨幅超3倍。"]]
+
+
+def test_competitor_exclusion_all_scope_filters_body_matches():
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅", match_target="all")
+    item = NewsflashItem(
+        source="panews",
+        source_item_id="bank-transfer",
+        title="BANK基金会疑似向Aster转移8400万枚BANK代币",
+        content="行情显示：BANK代币价格过去几天大幅上涨，涨幅超3倍。",
+    )
+
+    assert worker._exclude_items([item]) == []
 
 
 def test_competitor_exclusion_filters_title_matches():
     worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
-    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅")
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅", match_target="title")
     item = NewsflashItem(
         source="panews",
         source_item_id="btc-price",
@@ -212,6 +226,20 @@ def test_competitor_exclusion_filters_title_matches():
     )
 
     assert worker._exclude_items([item]) == []
+
+
+def test_competitor_exclusion_skips_odaily_reference_items():
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="涨幅", match_target="all")
+    item = NewsflashItem(
+        source="odaily",
+        source_item_id="odaily-btc-price",
+        title="BTC突破66000美元，日内涨幅3.09%",
+        content="BTC短线走高。",
+    )
+
+    assert worker._exclude_items([item]) == [item]
+    assert worker.exclusion_matcher.checked_title_texts == []
 
 
 class _HeartbeatRepository:
@@ -223,14 +251,19 @@ class _HeartbeatRepository:
 
 
 class _FakeExclusionMatcher:
-    def __init__(self, *, term: str) -> None:
+    def __init__(self, *, term: str, match_target: str) -> None:
         self.term = term
-        self.checked_texts: list[list[str | None]] = []
+        self.match_target = match_target
+        self.checked_title_texts: list[list[str | None]] = []
+        self.checked_body_texts: list[list[str | None]] = []
 
-    def is_excluded(self, *, scopes, texts):
-        text_list = list(texts)
-        self.checked_texts.append(text_list)
-        return any(self.term in (text or "") for text in text_list)
+    def is_excluded(self, *, scopes, title_texts=None, body_texts=None, texts=None):
+        title_list = list(title_texts or texts or [])
+        body_list = list(body_texts or [])
+        self.checked_title_texts.append(title_list)
+        self.checked_body_texts.append(body_list)
+        checked = title_list if self.match_target == "title" else [*title_list, *body_list]
+        return any(self.term in (text or "") for text in checked)
 
 
 def _run_result(*, failed_sources: dict[str, str]) -> CompetitorRunResult:

@@ -37,11 +37,10 @@ const NEWS_GEN_TYPES = [
   { value: "funding", label: "融资" },
   { value: "onchain", label: "链上" }
 ];
-const DEFAULT_FEED_LANE_RATIOS = { high: 60, ai: 20, low: 20 };
+const DEFAULT_FEED_LANE_RATIOS = { high: 75, ai: 25 };
 const FEED_LANES = [
-  { key: "high", title: "高频区", subtitle: "新快讯 / 审核者", empty: "暂无高频消息" },
-  { key: "ai", title: "AI区", subtitle: "AI信源", empty: "暂无 AI 信源消息" },
-  { key: "low", title: "低频区", subtitle: "此前消息 / 巨鲸", empty: "暂无低频消息" }
+  { key: "high", title: "高频区", subtitle: "新快讯 / 审核者 / 巨鲸", empty: "暂无高频消息" },
+  { key: "ai", title: "AI区", subtitle: "AI信源", empty: "暂无 AI 信源消息" }
 ];
 
 const state = {
@@ -168,20 +167,42 @@ function newsGenTypeLabel(newsType) {
   return NEWS_GEN_TYPES.find((item) => item.value === newsType)?.label || "常规";
 }
 
+function isWhaleFeedItem(item) {
+  return item.feed_kind === "whale_onchain" || item.feed_kind === "whale_hyperliquid";
+}
+
+function normalizeFeedItemLane(item) {
+  return isWhaleFeedItem(item) ? { ...item, lane: "high" } : item;
+}
+
+function feedTimeMs(item) {
+  const value = new Date(item.occurred_at).getTime();
+  return Number.isFinite(value) ? value : 0;
+}
+
+function compareFeedTimeline(left, right) {
+  return feedTimeMs(right) - feedTimeMs(left);
+}
+
+function normalizeVisibleFeedItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .map(normalizeFeedItemLane)
+    .filter((item) => item.lane === "high" || item.lane === "ai");
+}
+
 function splitFeedItems() {
   const high = [];
   const ai = [];
-  const low = [];
   for (const item of state.feedItems) {
-    if (item.lane === "low") {
-      low.push(item);
-    } else if (item.lane === "ai") {
+    if (item.lane === "ai") {
       ai.push(item);
-    } else {
+    } else if (item.lane === "high") {
       high.push(item);
     }
   }
-  return { high, ai, low };
+  high.sort(compareFeedTimeline);
+  ai.sort(compareFeedTimeline);
+  return { high, ai };
 }
 
 function feedKeyOf(feedKind, feedItemId) {
@@ -233,9 +254,7 @@ function feedLaneGridStyle() {
   return [
     `minmax(0, ${Number(ratios.high) || DEFAULT_FEED_LANE_RATIOS.high}fr)`,
     "7px",
-    `minmax(0, ${Number(ratios.ai) || DEFAULT_FEED_LANE_RATIOS.ai}fr)`,
-    "7px",
-    `minmax(0, ${Number(ratios.low) || DEFAULT_FEED_LANE_RATIOS.low}fr)`
+    `minmax(0, ${Number(ratios.ai) || DEFAULT_FEED_LANE_RATIOS.ai}fr)`
   ].join(" ");
 }
 
@@ -309,8 +328,7 @@ function renderFeedCard(item) {
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
   const isFastLane = item.lane !== "low";
-  const isExternalAlert = item.feed_kind === "external_media_alert";
-  const titleShouldLink = Boolean(detailUrlForItem(item)) && (!isFastLane || isExternalAlert);
+  const titleShouldLink = Boolean(detailUrlForItem(item)) && !isFastLane;
   const isExpanded = state.expandedFeedKeys.has(itemKey);
   const isFresh = isFreshFeedItem(item);
   const safeTitle = String(item.title || item.summary || `${item.feed_kind} 消息`);
@@ -376,7 +394,7 @@ function renderFeedCard(item) {
               : escapeHtml(safeTitle)
           }
         </h3>
-        <p class="feedCard__summary${isFastLane ? " feedCard__summary--toggle" : ""}${
+        <p class="feedCard__summary${
           isExpanded ? " feedCard__summary--expanded" : ""
         }">${linkifyText(safeSummary)}</p>
         ${
@@ -423,8 +441,6 @@ function renderFeedSection() {
       ${renderLanePanel(FEED_LANES[0], lanes.high)}
       <div class="laneResizeHandle" data-resize-before="high" data-resize-after="ai" title="拖拽调整分区高度"></div>
       ${renderLanePanel(FEED_LANES[1], lanes.ai)}
-      <div class="laneResizeHandle" data-resize-before="ai" data-resize-after="low" title="拖拽调整分区高度"></div>
-      ${renderLanePanel(FEED_LANES[2], lanes.low)}
     </div>
   `;
 }
@@ -883,7 +899,7 @@ function wireFastLaneToggles() {
     return;
   }
   for (const card of feedLayout.querySelectorAll(".lanePanel--high .feedCard, .lanePanel--ai .feedCard")) {
-    const toggleTargets = card.querySelectorAll(".feedCard__title--toggle, .feedCard__summary--toggle");
+    const toggleTargets = card.querySelectorAll(".feedCard__title--toggle");
     for (const target of toggleTargets) {
       target.addEventListener("click", () => {
         unlockNotificationSound();
@@ -981,12 +997,10 @@ function wireFeedbackButtons() {
 function normalizeLaneRatios(value) {
   const high = Math.max(10, Number(value.high) || DEFAULT_FEED_LANE_RATIOS.high);
   const ai = Math.max(10, Number(value.ai) || DEFAULT_FEED_LANE_RATIOS.ai);
-  const low = Math.max(10, Number(value.low) || DEFAULT_FEED_LANE_RATIOS.low);
-  const total = high + ai + low;
+  const total = high + ai;
   return {
     high: Math.round((high / total) * 100),
-    ai: Math.round((ai / total) * 100),
-    low: Math.max(10, 100 - Math.round((high / total) * 100) - Math.round((ai / total) * 100))
+    ai: Math.max(10, 100 - Math.round((high / total) * 100))
   };
 }
 
@@ -1183,7 +1197,7 @@ async function maybePlaySound(nextItems) {
 async function refreshFeed(shouldSound) {
   try {
     const { items, feedState } = await withSessionRetry(async () => {
-      const nextItems = await fetchFeedItems(state.settings, state.session, 120);
+      const nextItems = normalizeVisibleFeedItems(await fetchFeedItems(state.settings, state.session, 500));
       const nextFeedState = await fetchFeedState(
         state.settings,
         state.session,

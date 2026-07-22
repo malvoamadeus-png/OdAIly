@@ -18,6 +18,8 @@ SOURCE_EXCLUSION_SCOPES = (
     "jin10",
 )
 
+SOURCE_EXCLUSION_MATCH_TARGETS = ("title", "all")
+
 
 def media_source_exclusion_scopes(
     source_group: str,
@@ -43,6 +45,7 @@ class SourceExclusionRuleGroup:
     description: str
     scopes: tuple[str, ...]
     terms: tuple[str, ...]
+    match_target: str = "title"
     enabled: bool = True
 
 
@@ -55,20 +58,34 @@ def normalize_exclusion_text(value: str) -> str:
     return " ".join(normalized.split())
 
 
+def normalize_exclusion_match_target(value: str | None) -> str:
+    normalized = str(value or "").strip().casefold()
+    return normalized if normalized in SOURCE_EXCLUSION_MATCH_TARGETS else "title"
+
+
 def is_source_excluded(
     groups: Iterable[SourceExclusionRuleGroup],
     *,
     scopes: Iterable[str],
-    texts: Iterable[str | None],
+    title_texts: Iterable[str | None] | None = None,
+    body_texts: Iterable[str | None] | None = None,
+    texts: Iterable[str | None] | None = None,
 ) -> bool:
     active_scopes = {scope for scope in scopes if scope in SOURCE_EXCLUSION_SCOPES}
     if not active_scopes:
         return False
-    haystack = normalize_exclusion_text("\n".join(text or "" for text in texts))
-    if not haystack:
+    if title_texts is None and body_texts is None and texts is not None:
+        title_texts = texts
+    title_haystack = normalize_exclusion_text("\n".join(text or "" for text in (title_texts or [])))
+    body_haystack = normalize_exclusion_text("\n".join(text or "" for text in (body_texts or [])))
+    if not title_haystack and not body_haystack:
         return False
     for group in groups:
         if not group.enabled or not active_scopes.intersection(group.scopes):
+            continue
+        match_target = normalize_exclusion_match_target(getattr(group, "match_target", "title"))
+        haystack = title_haystack if match_target == "title" else normalize_exclusion_text(f"{title_haystack}\n{body_haystack}")
+        if not haystack:
             continue
         for term in group.terms:
             normalized_term = normalize_exclusion_text(term)
@@ -101,7 +118,7 @@ class PostgresSourceExclusionRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT rule_key, name, description, scopes, terms, enabled
+                SELECT rule_key, name, description, scopes, terms, match_target, enabled
                 FROM source_exclusion_rule_groups
                 WHERE enabled = true
                 ORDER BY name ASC, rule_key ASC
@@ -114,6 +131,7 @@ class PostgresSourceExclusionRepository:
                 description=str(row.get("description") or ""),
                 scopes=tuple(str(value) for value in (row.get("scopes") or [])),
                 terms=tuple(str(value) for value in (row.get("terms") or [])),
+                match_target=normalize_exclusion_match_target(row.get("match_target")),
                 enabled=bool(row.get("enabled", True)),
             )
             for row in rows
@@ -133,8 +151,21 @@ class SourceExclusionMatcher:
         self._loaded_at = 0.0
         self._lock = threading.Lock()
 
-    def is_excluded(self, *, scopes: Iterable[str], texts: Iterable[str | None]) -> bool:
-        return is_source_excluded(self._load_groups(), scopes=scopes, texts=texts)
+    def is_excluded(
+        self,
+        *,
+        scopes: Iterable[str],
+        title_texts: Iterable[str | None] | None = None,
+        body_texts: Iterable[str | None] | None = None,
+        texts: Iterable[str | None] | None = None,
+    ) -> bool:
+        return is_source_excluded(
+            self._load_groups(),
+            scopes=scopes,
+            title_texts=title_texts,
+            body_texts=body_texts,
+            texts=texts,
+        )
 
     def _load_groups(self) -> list[SourceExclusionRuleGroup]:
         now = time.monotonic()

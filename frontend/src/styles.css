@@ -1216,6 +1216,7 @@ textarea:focus {
 }
 
 .exclusionEditor label,
+.exclusionTester label,
 .exclusionScopeField {
   display: grid;
   gap: 7px;
@@ -1229,7 +1230,7 @@ textarea:focus {
 }
 
 .exclusionTester textarea {
-  min-height: 220px;
+  min-height: 112px;
 }
 
 .exclusionGroupRows,

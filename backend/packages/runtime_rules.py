@@ -110,8 +110,9 @@ def build_runtime_rules_payload(*, known_title_subject_names: list[str] | None =
                         "title": "路径化排除词匹配语义",
                         "kind": "policy",
                         "scopes": list(SOURCE_EXCLUSION_SCOPES),
-                        "summary": "Unicode NFKC 规范化、大小写不敏感、任一词子串命中；只检查标题、摘要和正文。",
+                        "summary": "Unicode NFKC 规范化、大小写不敏感、任一词子串命中；按规则组适用范围检查标题或标题+摘要+正文。",
                         "content": (
+                            "match_target=title 只检查标题类文本；match_target=all 检查标题、摘要和正文，不检查 URL。"
                             "命中规则组后在 tasks 入库前停止处理。X-AI 同时属于 x 与 ai_source；"
                             "混合信源分类前属于 mixed_source，分类后再叠加 crypto_source 或 ai_source。"
                         ),

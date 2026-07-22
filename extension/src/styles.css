@@ -591,8 +591,7 @@ body {
   text-decoration: underline;
 }
 
-.feedCard__title--toggle,
-.feedCard__summary--toggle {
+.feedCard__title--toggle {
   cursor: pointer;
 }
 

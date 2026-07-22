@@ -239,7 +239,7 @@ class NonMainstreamMediaWorker:
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
-            if self._is_excluded(source, [page.title, page.excerpt]):
+            if self._is_excluded(source, title_texts=[page.title], body_texts=[page.excerpt]):
                 self.repository.mark_seen(source, page.source_item_id, seeded=False)
                 continue
             try:
@@ -253,7 +253,7 @@ class NonMainstreamMediaWorker:
             except Exception as exc:
                 detail_errors[page.detail_url] = str(exc)
                 continue
-            if self._is_excluded(source, [article.title, article.excerpt, article.content]):
+            if self._is_excluded(source, title_texts=[article.title], body_texts=[article.excerpt, article.content]):
                 self.repository.mark_seen(source, article.canonical_url, seeded=False)
                 continue
             classified_target = None
@@ -288,7 +288,8 @@ class NonMainstreamMediaWorker:
                     article.metadata["classification_reason"] = classification.reason
             if self._is_excluded(
                 source,
-                [article.title, article.excerpt, article.content],
+                title_texts=[article.title],
+                body_texts=[article.excerpt, article.content],
                 classified_target=classified_target,
             ):
                 self.repository.mark_seen(source, article.canonical_url, seeded=False)
@@ -343,7 +344,7 @@ class NonMainstreamMediaWorker:
         for page in pages:
             if page.source_item_id not in unseen:
                 continue
-            if self._is_excluded(source, [page.title, page.excerpt]):
+            if self._is_excluded(source, title_texts=[page.title], body_texts=[page.excerpt]):
                 self.repository.mark_seen(source, page.source_item_id, seeded=False)
                 continue
             classified_target = None
@@ -387,7 +388,8 @@ class NonMainstreamMediaWorker:
                 continue
             if self._is_excluded(
                 source,
-                [prepared_page.title, prepared_page.excerpt],
+                title_texts=[prepared_page.title],
+                body_texts=[prepared_page.excerpt],
                 classified_target=classified_target,
             ):
                 self.repository.mark_seen(source, page.source_item_id, seeded=False)
@@ -478,8 +480,9 @@ class NonMainstreamMediaWorker:
     def _is_excluded(
         self,
         source: NonMainstreamMediaSource,
-        texts: list[str | None],
+        title_texts: list[str | None],
         *,
+        body_texts: list[str | None] | None = None,
         classified_target: str | None = None,
     ) -> bool:
         if self.exclusion_matcher is None:
@@ -489,7 +492,8 @@ class NonMainstreamMediaWorker:
                 source.source_group,
                 classified_target=classified_target,
             ),
-            texts=texts,
+            title_texts=title_texts,
+            body_texts=body_texts,
         )
 
     @staticmethod

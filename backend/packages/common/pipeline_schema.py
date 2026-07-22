@@ -385,9 +385,9 @@ BEGIN
         p_limit := 120;
     END IF;
 
-    v_high_limit := GREATEST(1, CEIL(p_limit * 0.6)::integer);
-    v_ai_limit := GREATEST(1, CEIL(p_limit * 0.2)::integer);
-    v_low_limit := GREATEST(1, p_limit - v_high_limit - v_ai_limit);
+    v_high_limit := GREATEST(1, CEIL(p_limit * 0.75)::integer);
+    v_ai_limit := GREATEST(1, p_limit - v_high_limit);
+    v_low_limit := 0;
     v_high_newsflash_limit := GREATEST(1, CEIL(v_high_limit * 0.45)::integer);
     v_high_auditor_limit := GREATEST(0, v_high_limit - v_high_newsflash_limit);
     IF v_high_limit > 1 AND v_high_auditor_limit = 0 THEN
@@ -622,7 +622,7 @@ BEGIN
             SELECT
                 'whale_onchain:' || a.id::text AS feed_item_id,
                 'whale_onchain'::text AS feed_kind,
-                'low'::text AS lane,
+                'high'::text AS lane,
                 52 AS priority,
                 COALESCE(NULLIF(addr.label, ''), left(addr.address, 6) || '...' || right(addr.address, 4)) AS title,
                 COALESCE(NULLIF(a.summary, ''), NULLIF(a.telegram_text, ''), '链上巨鲸信号') AS summary,
@@ -657,7 +657,7 @@ BEGIN
             SELECT
                 'whale_hyperliquid:' || a.id::text AS feed_item_id,
                 'whale_hyperliquid'::text AS feed_kind,
-                'low'::text AS lane,
+                'high'::text AS lane,
                 48 AS priority,
                 COALESCE(NULLIF(addr.label, ''), left(addr.address, 6) || '...' || right(addr.address, 4)) AS title,
                 COALESCE(NULLIF(a.summary, ''), NULLIF(a.telegram_text, ''), 'Hyperliquid 巨鲸信号') AS summary,
@@ -691,226 +691,15 @@ BEGIN
     END IF;
 
     sql := 'WITH combined AS (' || array_to_string(parts, ' UNION ALL ') || '),
-        tagged AS (
-            SELECT
-                combined.*,
-                CASE
-                    WHEN lane = ''high'' AND feed_kind = ''newsflash'' THEN ''high_newsflash''
-                    WHEN lane = ''high'' AND feed_kind = ''auditor_alert'' THEN ''high_auditor''
-                    WHEN lane = ''high'' AND feed_kind = ''external_media_alert'' THEN ''high_external_media_alert''
-                    WHEN lane = ''ai'' AND feed_kind = ''newsflash'' THEN ''ai_newsflash''
-                    WHEN lane = ''low'' AND feed_kind = ''writer3_context'' THEN ''low_writer3''
-                    WHEN lane = ''low'' AND feed_kind IN (''whale_onchain'', ''whale_hyperliquid'') THEN ''low_whale''
-                    ELSE lane || '':'' || feed_kind
-                END AS quota_group
-            FROM combined
-        ),
         ranked AS (
             SELECT
-                tagged.*,
+                combined.*,
                 ROW_NUMBER() OVER (
                     PARTITION BY lane
-                    ORDER BY priority DESC, occurred_at DESC
-                ) AS lane_rank,
-                ROW_NUMBER() OVER (
-                    PARTITION BY quota_group
-                    ORDER BY priority DESC, occurred_at DESC
-                ) AS group_rank
-            FROM tagged
-        ),
-        high_reserved AS (
-            SELECT *
-            FROM ranked
-            WHERE lane = ''high''
-              AND (
-                (quota_group = ''high_auditor'' AND group_rank <= $4)
-                OR (quota_group = ''high_newsflash'' AND group_rank <= $5)
-                OR (quota_group = ''high_external_media_alert'' AND group_rank <= GREATEST(1, CEIL($1 * 0.15)::integer))
-              )
-        ),
-        low_reserved AS (
-            SELECT *
-            FROM ranked
-            WHERE lane = ''low''
-              AND (
-                (quota_group = ''low_writer3'' AND group_rank <= $6)
-                OR (quota_group = ''low_whale'' AND group_rank <= $7)
-              )
-        ),
-        high_fill AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                quota_group,
-                lane_rank,
-                group_rank
-            FROM (
-                SELECT
-                    r.*,
-                    ROW_NUMBER() OVER (
-                        ORDER BY priority DESC, occurred_at DESC
-                    ) AS fill_rank
-                FROM ranked r
-                WHERE r.lane = ''high''
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM high_reserved h
-                    WHERE h.feed_item_id = r.feed_item_id
-                      AND h.feed_kind = r.feed_kind
-                  )
-            ) fill
-            WHERE fill_rank <= GREATEST(0, $1 - (SELECT COUNT(*) FROM high_reserved))
-        ),
-        low_fill AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                quota_group,
-                lane_rank,
-                group_rank
-            FROM (
-                SELECT
-                    r.*,
-                    ROW_NUMBER() OVER (
-                        ORDER BY priority DESC, occurred_at DESC
-                    ) AS fill_rank
-                FROM ranked r
-                WHERE r.lane = ''low''
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM low_reserved h
-                    WHERE h.feed_item_id = r.feed_item_id
-                      AND h.feed_kind = r.feed_kind
-                  )
-            ) fill
-            WHERE fill_rank <= GREATEST(0, $3 - (SELECT COUNT(*) FROM low_reserved))
-        ),
-        selected_ai AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                quota_group,
-                lane_rank,
-                group_rank
-            FROM ranked
-            WHERE lane = ''ai''
-              AND lane_rank <= $2
-        ),
-        selected_high AS (
-            SELECT * FROM high_reserved
-            UNION ALL
-            SELECT * FROM high_fill
-        ),
-        selected_low AS (
-            SELECT * FROM low_reserved
-            UNION ALL
-            SELECT * FROM low_fill
-        ),
-        ordered_high AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                ROW_NUMBER() OVER (
-                    ORDER BY group_rank, priority DESC, occurred_at DESC
-                ) AS display_rank
-            FROM selected_high
-        ),
-        ordered_ai AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                ROW_NUMBER() OVER (
-                    ORDER BY priority DESC, occurred_at DESC
-                ) AS display_rank
-            FROM selected_ai
-        ),
-        ordered_low AS (
-            SELECT
-                feed_item_id,
-                feed_kind,
-                lane,
-                priority,
-                title,
-                summary,
-                badges,
-                status_label,
-                status_tone,
-                occurred_at,
-                source_url,
-                detail_url,
-                action_schema,
-                meta_json,
-                ROW_NUMBER() OVER (
-                    ORDER BY group_rank, priority DESC, occurred_at DESC
-                ) AS display_rank
-            FROM selected_low
-        ),
-        selected AS (
-            SELECT * FROM ordered_high
-            UNION ALL
-            SELECT * FROM ordered_ai
-            UNION ALL
-            SELECT * FROM ordered_low
+                    ORDER BY occurred_at DESC
+                ) AS lane_rank
+            FROM combined
+            WHERE lane IN (''high'', ''ai'')
         )
         SELECT
             feed_item_id,
@@ -927,14 +716,16 @@ BEGIN
             detail_url,
             action_schema,
             meta_json
-        FROM selected
+        FROM ranked
+        WHERE (lane = ''high'' AND lane_rank <= $1)
+           OR (lane = ''ai'' AND lane_rank <= $2)
         ORDER BY
             CASE
                 WHEN lane = ''high'' THEN 0
                 WHEN lane = ''ai'' THEN 1
                 ELSE 2
             END,
-            display_rank
+            occurred_at DESC
         LIMIT $8';
 
     RETURN QUERY EXECUTE sql USING
@@ -1014,24 +805,44 @@ CREATE TABLE IF NOT EXISTS source_exclusion_rule_groups (
     description text NOT NULL DEFAULT '',
     scopes text[] NOT NULL,
     terms text[] NOT NULL,
+    match_target text NOT NULL DEFAULT 'title',
     enabled boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CHECK (cardinality(scopes) > 0),
     CHECK (cardinality(terms) > 0),
-    CHECK (scopes <@ ARRAY['x', 'competitor', 'crypto_source', 'ai_source', 'mixed_source', 'jin10']::text[])
+    CHECK (scopes <@ ARRAY['x', 'competitor', 'crypto_source', 'ai_source', 'mixed_source', 'jin10']::text[]),
+    CONSTRAINT source_exclusion_rule_groups_match_target_check CHECK (match_target IN ('title', 'all'))
 );
+
+ALTER TABLE source_exclusion_rule_groups
+ADD COLUMN IF NOT EXISTS match_target text NOT NULL DEFAULT 'title';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'source_exclusion_rule_groups_match_target_check'
+    ) THEN
+        ALTER TABLE source_exclusion_rule_groups
+        ADD CONSTRAINT source_exclusion_rule_groups_match_target_check
+        CHECK (match_target IN ('title', 'all'));
+    END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_source_exclusion_rule_groups_enabled
 ON source_exclusion_rule_groups(enabled, updated_at DESC);
 
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
 VALUES (
     'ripple-xrp-commercial-content',
     'Ripple / XRP 商务稿',
     '从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。',
     ARRAY['crypto_source']::text[],
     ARRAY['Ripple', 'XRP', 'RLUSD']::text[],
+    'title',
     true
 )
 ON CONFLICT (rule_key) DO NOTHING;
@@ -1078,26 +889,28 @@ ON CONFLICT (term_normalized) DO UPDATE
 SET term = EXCLUDED.term,
     updated_at = now();
 
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
 SELECT
     'legacy-competitor-enabled',
     '旧版竞品排除词',
     '由旧 competitor_filter_keywords 中启用词迁移。',
     ARRAY['competitor']::text[],
     array_agg(term ORDER BY length(term) DESC, term ASC),
+    'title',
     true
 FROM competitor_filter_keywords
 WHERE enabled = true
 HAVING count(*) > 0
 ON CONFLICT (rule_key) DO NOTHING;
 
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, enabled)
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
 SELECT
     'legacy-competitor-disabled',
     '旧版已停用竞品排除词',
     '由旧 competitor_filter_keywords 中停用词迁移，迁移后保持停用。',
     ARRAY['competitor']::text[],
     array_agg(term ORDER BY length(term) DESC, term ASC),
+    'title',
     false
 FROM competitor_filter_keywords
 WHERE enabled = false

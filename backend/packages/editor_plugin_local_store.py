@@ -38,6 +38,12 @@ def encode_json(value: Any, fallback: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def normalize_feed_lane(feed_kind: str, lane: str) -> str:
+    if feed_kind in {"whale_onchain", "whale_hyperliquid"}:
+        return "high"
+    return lane or "high"
+
+
 @dataclass(frozen=True, slots=True)
 class LocalPluginSession:
     token_hash: str
@@ -271,7 +277,7 @@ class LocalEditorPluginStore:
                     (
                         feed_item_id,
                         feed_kind,
-                        str(row.get("lane") or "high"),
+                        normalize_feed_lane(feed_kind, str(row.get("lane") or "high")),
                         int(row.get("priority") or 0),
                         str(row.get("title") or ""),
                         str(row.get("summary") or ""),
@@ -300,8 +306,13 @@ class LocalEditorPluginStore:
                 FROM editor_plugin_local_feed_items
                 WHERE occurred_at >= ?
                 ORDER BY
-                    CASE lane WHEN 'high' THEN 1 WHEN 'ai' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-                    priority DESC,
+                    CASE
+                        WHEN feed_kind IN ('whale_onchain', 'whale_hyperliquid') THEN 1
+                        WHEN lane = 'high' THEN 1
+                        WHEN lane = 'ai' THEN 2
+                        WHEN lane = 'low' THEN 3
+                        ELSE 4
+                    END,
                     occurred_at DESC,
                     updated_at DESC
                 LIMIT ?
@@ -549,10 +560,11 @@ class LocalEditorPluginStore:
 
     @staticmethod
     def _feed_row_to_payload(row: sqlite3.Row) -> dict[str, Any]:
+        feed_kind = str(row["feed_kind"])
         return {
             "feed_item_id": str(row["feed_item_id"]),
-            "feed_kind": str(row["feed_kind"]),
-            "lane": str(row["lane"]),
+            "feed_kind": feed_kind,
+            "lane": normalize_feed_lane(feed_kind, str(row["lane"])),
             "priority": int(row["priority"]),
             "title": str(row["title"]),
             "summary": str(row["summary"]),

@@ -462,28 +462,49 @@ class PostgresCompetitorMonitorRepository:
         return len(rows)
 
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]:
-        exclude_terms = terms if terms is not None else self.list_enabled_competitor_exclusion_terms()
-        normalized_terms = [normalized for term in exclude_terms if (normalized := normalize_exclude_term(term))]
-        if not normalized_terms:
-            return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}
-
         with self._connect() as conn:
             with conn.transaction():
-                matched_rows = conn.execute(
-                    """
-                    SELECT id
-                    FROM newsflash_items
-                    WHERE EXISTS (
-                        SELECT 1
-                        FROM unnest(%s::text[]) AS term
-                        WHERE strpos(
-                            lower(regexp_replace(coalesce(title, '') || E'\n' || coalesce(content, ''), '\\s+', ' ', 'g')),
-                            term
-                        ) > 0
-                    )
-                    """,
-                    (normalized_terms,),
-                ).fetchall()
+                if terms is None:
+                    matched_rows = conn.execute(
+                        """
+                        SELECT i.id
+                        FROM newsflash_items i
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM source_exclusion_rule_groups groups
+                            CROSS JOIN LATERAL unnest(groups.terms) AS term
+                            WHERE groups.enabled = true
+                              AND 'competitor' = ANY(groups.scopes)
+                              AND strpos(
+                                  CASE
+                                      WHEN COALESCE(groups.match_target, 'title') = 'all'
+                                      THEN lower(regexp_replace(coalesce(i.title, '') || E'\n' || coalesce(i.content, ''), '\\s+', ' ', 'g'))
+                                      ELSE lower(regexp_replace(coalesce(i.title, ''), '\\s+', ' ', 'g'))
+                                  END,
+                                  lower(regexp_replace(trim(term), '\\s+', ' ', 'g'))
+                              ) > 0
+                        )
+                        """
+                    ).fetchall()
+                else:
+                    normalized_terms = [normalized for term in terms if (normalized := normalize_exclude_term(term))]
+                    if not normalized_terms:
+                        return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}
+                    matched_rows = conn.execute(
+                        """
+                        SELECT id
+                        FROM newsflash_items
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM unnest(%s::text[]) AS term
+                            WHERE strpos(
+                                lower(regexp_replace(coalesce(title, '') || E'\n' || coalesce(content, ''), '\\s+', ' ', 'g')),
+                                term
+                            ) > 0
+                        )
+                        """,
+                        (normalized_terms,),
+                    ).fetchall()
                 matched_item_ids = [int(row["id"]) for row in matched_rows]
                 if not matched_item_ids:
                     return {"matched_items": 0, "removed_sources": 0, "deleted_events": 0, "updated_events": 0}

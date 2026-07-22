@@ -186,7 +186,8 @@ class CompetitorMonitorWorker:
             if item.source == "odaily"
             or not self.exclusion_matcher.is_excluded(
                 scopes=["competitor"],
-                texts=[item.title],
+                title_texts=[item.title],
+                body_texts=[item.content],
             )
         ]
 

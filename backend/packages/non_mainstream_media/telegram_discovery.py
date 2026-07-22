@@ -406,7 +406,7 @@ class TelegramDiscoveryWorker:
         )
 
     def _save_alert_page(self, source: NonMainstreamMediaSource, page: DiscoveredPage) -> None:
-        if self._is_excluded(source, [page.title, page.excerpt]):
+        if self._is_excluded(source, title_texts=[page.title], body_texts=[page.excerpt]):
             self.repository.mark_seen(source, page.source_item_id, seeded=False)
             return
         task_id = self.repository.save_alert_task(source, page)
@@ -421,7 +421,7 @@ class TelegramDiscoveryWorker:
         self.repository.mark_seen(source, page.source_item_id, seeded=False)
 
     def _save_article(self, source: NonMainstreamMediaSource, article: ParsedArticle) -> None:
-        if self._is_excluded(source, [article.title, article.excerpt, article.content]):
+        if self._is_excluded(source, title_texts=[article.title], body_texts=[article.excerpt, article.content]):
             self.repository.mark_seen(source, article.canonical_url, seeded=False)
             return
         task_id = self.repository.save_task(source, article)
@@ -435,12 +435,19 @@ class TelegramDiscoveryWorker:
         )
         self.repository.mark_seen(source, article.canonical_url, seeded=False)
 
-    def _is_excluded(self, source: NonMainstreamMediaSource, texts: list[str | None]) -> bool:
+    def _is_excluded(
+        self,
+        source: NonMainstreamMediaSource,
+        title_texts: list[str | None],
+        *,
+        body_texts: list[str | None] | None = None,
+    ) -> bool:
         if self.exclusion_matcher is None:
             return False
         return self.exclusion_matcher.is_excluded(
             scopes=media_source_exclusion_scopes(source.source_group),
-            texts=texts,
+            title_texts=title_texts,
+            body_texts=body_texts,
         )
 
     def _attempt_fetch(

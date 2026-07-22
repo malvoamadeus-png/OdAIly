@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS = {
       cooldownMs: 4000
     }
   },
-  feedLaneRatios: { high: 60, ai: 20, low: 20 }
+  feedLaneRatios: { high: 75, ai: 25 }
 };
 
 const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS);
@@ -169,18 +169,16 @@ export function sanitizeFeedLaneRatios(value) {
   }
   const high = Number(value.high);
   const ai = Number(value.ai);
-  const low = Number(value.low);
-  if (![high, ai, low].every((item) => Number.isFinite(item) && item >= 10)) {
+  if (![high, ai].every((item) => Number.isFinite(item) && item >= 10)) {
     return { ...fallback };
   }
-  const total = high + ai + low;
+  const total = high + ai;
   if (total <= 0) {
     return { ...fallback };
   }
   return {
     high: Math.round((high / total) * 100),
-    ai: Math.round((ai / total) * 100),
-    low: Math.max(10, 100 - Math.round((high / total) * 100) - Math.round((ai / total) * 100))
+    ai: Math.max(10, 100 - Math.round((high / total) * 100))
   };
 }
 

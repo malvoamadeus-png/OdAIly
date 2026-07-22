@@ -12,6 +12,7 @@ def _group(
     *,
     scopes: tuple[str, ...] = ("crypto_source",),
     terms: tuple[str, ...] = ("Ripple", "XRP", "RLUSD"),
+    match_target: str = "title",
     enabled: bool = True,
 ) -> SourceExclusionRuleGroup:
     return SourceExclusionRuleGroup(
@@ -20,6 +21,7 @@ def _group(
         description="",
         scopes=scopes,
         terms=terms,
+        match_target=match_target,
         enabled=enabled,
     )
 
@@ -28,11 +30,21 @@ def test_normalization_is_nfkc_case_insensitive_and_whitespace_stable() -> None:
     assert normalize_exclusion_text("  ＲＩＰＰＬＥ\n Labs  ") == "ripple labs"
 
 
-def test_any_term_matches_title_summary_or_body_as_a_substring() -> None:
-    assert is_source_excluded(
+def test_default_title_target_does_not_match_body_text() -> None:
+    assert not is_source_excluded(
         [_group()],
         scopes=["crypto_source"],
-        texts=["Veteran grants", "Paid in rlUsd", None],
+        title_texts=["Veteran grants"],
+        body_texts=["Paid in rlUsd", None],
+    )
+
+
+def test_all_target_matches_summary_or_body_as_a_substring() -> None:
+    assert is_source_excluded(
+        [_group(match_target="all")],
+        scopes=["crypto_source"],
+        title_texts=["Veteran grants"],
+        body_texts=["Paid in rlUsd", None],
     )
 
 
@@ -40,20 +52,43 @@ def test_disabled_group_and_unselected_scope_do_not_match() -> None:
     assert not is_source_excluded(
         [_group(enabled=False)],
         scopes=["crypto_source"],
-        texts=["Ripple funds a business program"],
+        title_texts=["Ripple funds a business program"],
     )
     assert not is_source_excluded(
         [_group()],
         scopes=["competitor"],
-        texts=["Ripple funds a business program"],
+        title_texts=["Ripple funds a business program"],
     )
 
 
 def test_ripple_group_blocks_crypto_source_without_affecting_x() -> None:
     groups = [_group()]
     text = ["Ripple commits $250,000 to veteran-owned businesses"]
-    assert is_source_excluded(groups, scopes=["crypto_source"], texts=text)
-    assert not is_source_excluded(groups, scopes=["x"], texts=text)
+    assert is_source_excluded(groups, scopes=["crypto_source"], title_texts=text)
+    assert not is_source_excluded(groups, scopes=["x"], title_texts=text)
+
+
+def test_legacy_group_without_match_target_defaults_to_title() -> None:
+    class LegacyGroup:
+        rule_key = "legacy"
+        name = "legacy"
+        description = ""
+        scopes = ("crypto_source",)
+        terms = ("Ripple",)
+        enabled = True
+
+    assert is_source_excluded(
+        [LegacyGroup()],  # type: ignore[list-item]
+        scopes=["crypto_source"],
+        title_texts=["Ripple title"],
+        body_texts=[],
+    )
+    assert not is_source_excluded(
+        [LegacyGroup()],  # type: ignore[list-item]
+        scopes=["crypto_source"],
+        title_texts=["market update"],
+        body_texts=["Ripple body"],
+    )
 
 
 def test_mixed_source_uses_raw_then_classified_target_scope() -> None:
@@ -69,11 +104,10 @@ def test_mixed_source_uses_raw_then_classified_target_scope() -> None:
     assert is_source_excluded(
         groups,
         scopes=media_source_exclusion_scopes("mixed_source"),
-        texts=["Sponsored industry update"],
+        title_texts=["Sponsored industry update"],
     )
     assert is_source_excluded(
         groups,
         scopes=media_source_exclusion_scopes("mixed_source", classified_target="crypto"),
-        texts=["Ripple business update"],
+        title_texts=["Ripple business update"],
     )
-

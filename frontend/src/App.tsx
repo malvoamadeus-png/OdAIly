@@ -105,6 +105,7 @@ import {
   type RuntimeRulesPayload,
   type SourceExclusionRuleGroup,
   type SourceExclusionRuleGroupInput,
+  type SourceExclusionMatchTarget,
   type SourceExclusionScope,
   type NewsflashEventFilter,
   type NewsflashEventSourceItem,
@@ -3811,6 +3812,11 @@ const exclusionScopeOptions: { key: SourceExclusionScope; label: string }[] = [
   { key: 'jin10', label: '金十' },
 ];
 
+const exclusionMatchTargetOptions: { key: SourceExclusionMatchTarget; label: string }[] = [
+  { key: 'title', label: '仅标题' },
+  { key: 'all', label: '标题+摘要+正文' },
+];
+
 type ExclusionGroupDraft = SourceExclusionRuleGroupInput & { termsText: string };
 
 const emptyExclusionDraft: ExclusionGroupDraft = {
@@ -3819,6 +3825,7 @@ const emptyExclusionDraft: ExclusionGroupDraft = {
   scopes: ['crypto_source'],
   terms: [],
   termsText: '',
+  match_target: 'title',
   enabled: true,
 };
 
@@ -3838,7 +3845,8 @@ function CompetitorPanel({
   const [draft, setDraft] = useState<ExclusionGroupDraft>(emptyExclusionDraft);
   const [query, setQuery] = useState('');
   const [scopeFilter, setScopeFilter] = useState<'all' | SourceExclusionScope>('all');
-  const [testText, setTestText] = useState('');
+  const [testTitleText, setTestTitleText] = useState('');
+  const [testBodyText, setTestBodyText] = useState('');
 
   useEffect(() => {
     const selected = groups.find((group) => group.id === selectedId);
@@ -3856,6 +3864,7 @@ function CompetitorPanel({
       scopes: selected.scopes,
       terms: selected.terms,
       termsText: selected.terms.join('\n'),
+      match_target: selected.match_target || 'title',
       enabled: selected.enabled,
     });
   }, [creating, groups, selectedId]);
@@ -3866,9 +3875,17 @@ function CompetitorPanel({
     const matchesQuery = !normalized || `${group.name}\n${group.description}\n${group.terms.join('\n')}`.toLocaleLowerCase().includes(normalized);
     return matchesScope && matchesQuery;
   });
-  const normalizedTest = testText.normalize('NFKC').toLocaleLowerCase();
-  const testMatches = normalizedTest
-    ? groups.filter((group) => group.enabled && group.terms.some((term) => normalizedTest.includes(term.normalize('NFKC').toLocaleLowerCase())))
+  const normalizedTestTitle = testTitleText.normalize('NFKC').toLocaleLowerCase();
+  const normalizedTestBody = testBodyText.normalize('NFKC').toLocaleLowerCase();
+  const hasTestText = Boolean(normalizedTestTitle || normalizedTestBody);
+  const testMatches = hasTestText
+    ? groups.filter((group) => {
+      if (!group.enabled) return false;
+      const haystack = group.match_target === 'all'
+        ? `${normalizedTestTitle}\n${normalizedTestBody}`
+        : normalizedTestTitle;
+      return group.terms.some((term) => haystack.includes(term.normalize('NFKC').toLocaleLowerCase()));
+    })
     : [];
 
   function toggleScope(scope: SourceExclusionScope) {
@@ -3887,6 +3904,7 @@ function CompetitorPanel({
       description: draft.description.trim(),
       scopes: [...draft.scopes],
       terms,
+      match_target: draft.match_target,
       enabled: draft.enabled,
     });
     if (savedId > 0) {
@@ -3913,7 +3931,7 @@ function CompetitorPanel({
           {visibleGroups.map((group) => (
             <button className={selectedId === group.id ? 'exclusionGroupRow active' : 'exclusionGroupRow'} type="button" key={group.id} onClick={() => { setCreating(false); setSelectedId(group.id); }}>
               <strong>{group.name}</strong>
-              <span>{group.enabled ? '启用' : '停用'} · {group.terms.length} 个词</span>
+              <span>{group.enabled ? '启用' : '停用'} · {group.terms.length} 个词 · {exclusionMatchTargetOptions.find((item) => item.key === group.match_target)?.label || '仅标题'}</span>
               <small>{group.scopes.map((scope) => exclusionScopeOptions.find((item) => item.key === scope)?.label || scope).join('、')}</small>
             </button>
           ))}
@@ -3948,16 +3966,33 @@ function CompetitorPanel({
             ))}
           </div>
         </div>
+        <div className="exclusionScopeField">
+          <span>适用范围</span>
+          <div className="scopeChecks">
+            {exclusionMatchTargetOptions.map((option) => (
+              <label key={option.key}>
+                <input
+                  type="radio"
+                  name="exclusion-match-target"
+                  checked={draft.match_target === option.key}
+                  onChange={() => setDraft({ ...draft, match_target: option.key })}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
         <label><span>词表</span><textarea className="keywordTextarea" rows={12} value={draft.termsText} onChange={(event) => setDraft({ ...draft, termsText: event.target.value })} placeholder={'每行一个词\nRipple\nXRP\nRLUSD'} spellCheck={false} /></label>
         <label className="inlineToggle"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} /><span>启用规则组</span></label>
       </form>
 
       <aside className="exclusionTester">
         <div className="sectionHeader"><h2>测试文本</h2><span>仅本地预览</span></div>
-        <textarea rows={8} value={testText} onChange={(event) => setTestText(event.target.value)} placeholder="粘贴标题或正文" />
+        <label><span>测试标题</span><textarea rows={4} value={testTitleText} onChange={(event) => setTestTitleText(event.target.value)} placeholder="粘贴标题" /></label>
+        <label><span>测试摘要 / 正文</span><textarea rows={5} value={testBodyText} onChange={(event) => setTestBodyText(event.target.value)} placeholder="粘贴摘要或正文" /></label>
         <div className="testMatchList">
-          {testText && testMatches.length === 0 && <span className="ok">未命中启用规则组</span>}
-          {testMatches.map((group) => <span className="statusPill warn" key={group.id}>{group.name}</span>)}
+          {hasTestText && testMatches.length === 0 && <span className="ok">未命中启用规则组</span>}
+          {testMatches.map((group) => <span className="statusPill warn" key={group.id}>{group.name} · {exclusionMatchTargetOptions.find((item) => item.key === group.match_target)?.label || '仅标题'}</span>)}
         </div>
       </aside>
     </section>

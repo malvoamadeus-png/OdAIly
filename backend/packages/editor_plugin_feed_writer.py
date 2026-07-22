@@ -250,7 +250,7 @@ class LocalEditorPluginFeedWriter:
                 {
                     "feed_item_id": feed_item_id,
                     "feed_kind": "whale_onchain",
-                    "lane": "low",
+                    "lane": "high",
                     "priority": 52,
                     "title": address_label or f"{address[:6]}...{address[-4:]}",
                     "summary": summary or "链上巨鲸信号",
@@ -291,7 +291,7 @@ class LocalEditorPluginFeedWriter:
                 {
                     "feed_item_id": feed_item_id,
                     "feed_kind": "whale_hyperliquid",
-                    "lane": "low",
+                    "lane": "high",
                     "priority": 48,
                     "title": address_label or f"{address[:6]}...{address[-4:]}",
                     "summary": summary or "Hyperliquid 巨鲸信号",

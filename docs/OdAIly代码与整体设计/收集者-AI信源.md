@@ -4,7 +4,7 @@
 
 AI信源是独立业务来源，底层暂时复用 `non_mainstream_media` 实现包、worker、配置表和控制台页面。
 
-创建任务前统一检查 `ai_source` 路径排除规则组。X 里的 AI信源账号由收集者-X 同时检查 `x + ai_source`；混合信源则先检查 `mixed_source`，分类为 AI 后再检查 `ai_source`。命中后不创建任务、不进入判断者，也不保留命中审计或计数。
+创建任务前统一检查 `ai_source` 路径排除规则组。`match_target = title` 只检查标题类文本，`match_target = all` 同时检查标题、摘要和正文；X 里的 AI信源账号由收集者-X 同时检查 `x + ai_source`，且 tweet 文本作为标题类文本；混合信源则先检查 `mixed_source`，分类为 AI 后再检查 `ai_source`。命中后不创建任务、不进入判断者，也不保留命中审计或计数。
 
 区分口径：
 
