@@ -353,6 +353,7 @@ class XProcessingSettings(BaseModel):
     search_ai_review_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     search_ai_review_append_json_schema_to_prompt: bool = False
     search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+    search_cache_refresh_seconds: int = Field(default=30, ge=5, le=3600)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
@@ -490,6 +491,7 @@ def load_x_processing_settings() -> XProcessingSettings:
             "SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT", False
         ),
         "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.65),
+        "search_cache_refresh_seconds": int(os.getenv("SEARCH_CACHE_REFRESH_SECONDS") or 30),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
         "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),

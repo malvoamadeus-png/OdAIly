@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from packages.common.config import (
     ExternalMediaAlertSettings,
@@ -25,6 +27,8 @@ from packages.x_processing.models import (
     TaskRecord,
 )
 from packages.x_processing.repository import PostgresXProcessingRepository
+from packages.x_processing.odaily_reference_source import fetch_odaily_reference_documents_from_api
+from packages.x_processing.searcher import SearchCache
 from packages.x_processing.worker import HandledStageError as XHandledStageError
 from packages.x_processing import XProcessingWorker
 
@@ -82,6 +86,11 @@ class LocalPipelineProcessor:
         self.worker_id = f"local_pipeline-{os.getpid()}"
         self._x_workers: dict[str, XProcessingWorker] = {}
         self._alert_workers: dict[str, ExternalMediaAlertWorker] = {}
+        if self.paths.searcher_cache_path is None:
+            raise ValueError("searcher cache path is not configured")
+        self._search_cache = SearchCache(self.paths.searcher_cache_path)
+        self._search_cache_warmer_stop = threading.Event()
+        self._search_cache_warmer_thread: threading.Thread | None = None
         self._heartbeat = HeartbeatThrottle(
             component="local_pipeline",
             worker_id=self.worker_id,
@@ -100,6 +109,55 @@ class LocalPipelineProcessor:
         self.x_repository.init_schema()
         self.x_repository.seed_prompt_templates(root_dir=self.paths.root_dir)
         self.alert_repository.init_schema()
+
+    def start_background_tasks(self) -> None:
+        if self._search_cache_warmer_thread is not None and self._search_cache_warmer_thread.is_alive():
+            return
+        self._search_cache_warmer_stop.clear()
+        self._search_cache_warmer_thread = threading.Thread(
+            target=self._run_search_cache_warmer,
+            name="search-cache-warmer",
+            daemon=True,
+        )
+        self._search_cache_warmer_thread.start()
+
+    def stop_background_tasks(self) -> None:
+        self._search_cache_warmer_stop.set()
+        thread = self._search_cache_warmer_thread
+        if thread is not None:
+            thread.join(timeout=5)
+
+    def warm_search_cache_once(self) -> int:
+        since = datetime.now(UTC) - timedelta(hours=self.x_settings.search_window_hours)
+        try:
+            documents = fetch_odaily_reference_documents_from_api(
+                since=since,
+                timeout_seconds=self.x_settings.request_timeout_seconds,
+            )
+        except Exception as exc:
+            print(f"[odaily] search cache warm odaily api failed; fallback=supabase error={exc}")
+            documents = self.x_repository.list_odaily_reference_documents(since=since)
+        self._search_cache.upsert_documents(documents)
+        return len(documents)
+
+    def _run_search_cache_warmer(self) -> None:
+        interval_seconds = self.x_settings.search_cache_refresh_seconds
+        while not self._search_cache_warmer_stop.is_set():
+            try:
+                count = self.warm_search_cache_once()
+                self.record_heartbeat(
+                    success=True,
+                    error=None,
+                    metadata={"search_cache_warm": True, "odaily_reference_count": count},
+                )
+            except Exception as exc:
+                print(f"[odaily] search cache warm failed: {exc}")
+                self.record_heartbeat(
+                    success=False,
+                    error=str(exc),
+                    metadata={"search_cache_warm": True},
+                )
+            self._search_cache_warmer_stop.wait(interval_seconds)
 
     def process(self, job: LocalPipelineJob) -> LocalPipelineRunResult:
         if job.job_type == "write_flow":

@@ -47,7 +47,6 @@ from .models import (
     TaskRecord,
     render_prompt_content,
 )
-from .odaily_reference_source import fetch_odaily_reference_documents_from_api
 from .publisher_config import (
     PUBLISHER_DECISION_SCHEMA,
     build_publisher_rule_prompt,
@@ -723,6 +722,7 @@ class XProcessingWorker:
         )
 
     def _run_search(self, task: TaskRecord) -> None:
+        started_at = time.perf_counter()
         if self.search_embedding_service is None:
             raise RuntimeError("search embedding service is not configured")
         query = SearchDocument(
@@ -741,6 +741,7 @@ class XProcessingWorker:
             cache.upsert_document(query)
         since = utc_since_hours(self.settings.search_window_hours)
         odaily_documents = self._load_odaily_reference_documents(since=since)
+        candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
         decision = exact_duplicate_decision(
             query=query,
             documents=odaily_documents,
@@ -751,7 +752,6 @@ class XProcessingWorker:
         candidate_match = None
         non_duplicate_review: SearchDecision | None = None
         if decision is None:
-            candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
             decision = exact_duplicate_decision(
                 query=query,
                 documents=candidate_documents,
@@ -770,7 +770,6 @@ class XProcessingWorker:
                 else:
                     non_duplicate_review = odaily_decision
         if decision is None:
-            candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
             if query_vector is None:
                 query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
             candidate_match = top_match(
@@ -787,9 +786,22 @@ class XProcessingWorker:
                 ):
                     non_duplicate_review = candidate_decision
         if decision and decision.is_duplicate:
-            result = decision.to_result()
+            result = {
+                **decision.to_result(),
+                **self._search_diagnostics(
+                    started_at=started_at,
+                    odaily_documents=odaily_documents,
+                    candidate_documents=candidate_documents,
+                ),
+            }
             if decision.candidate_id is not None:
-                self.repository.link_task_to_candidate(task, candidate_id=decision.candidate_id, search_result=result)
+                try:
+                    self.repository.link_task_to_candidate(task, candidate_id=decision.candidate_id, search_result=result)
+                except Exception as exc:
+                    print(
+                        "[odaily] search archive link failed "
+                        f"task_id={task.id} candidate_id={decision.candidate_id}: {exc}"
+                    )
             self.repository.complete_search_duplicate(task.id, result=result)
             return
         result = {
@@ -797,6 +809,11 @@ class XProcessingWorker:
             "duplicate_target_type": "none",
             "duplicate_target_id": None,
             "reason": non_duplicate_review.reason if non_duplicate_review is not None else "no_match",
+            **self._search_diagnostics(
+                started_at=started_at,
+                odaily_documents=odaily_documents,
+                candidate_documents=candidate_documents,
+            ),
         }
         observed_matches = [
             match_info
@@ -813,21 +830,17 @@ class XProcessingWorker:
             result["review_similarity"] = non_duplicate_review.similarity
             if non_duplicate_review.raw_ai_output:
                 result["raw_ai_output"] = non_duplicate_review.raw_ai_output
-        candidate_id, is_primary = self.repository.create_candidate_for_task(task, search_result=result)
-        if is_primary:
-            self._mirror_active_candidate(task=task, candidate_id=candidate_id)
-        if not is_primary:
-            duplicate_result = {
+        candidate_id, archive_is_primary = self.repository.create_candidate_for_task(task, search_result=result)
+        self._mirror_active_candidate(task=task, candidate_id=candidate_id)
+        self.repository.complete_search_ready(
+            task.id,
+            candidate_id=candidate_id,
+            result={
                 **result,
-                "is_duplicate": True,
-                "duplicate_target_type": "inflight_candidate",
-                "duplicate_target_id": str(candidate_id),
-                "reason": "same_event",
                 "candidate_id": candidate_id,
-            }
-            self.repository.complete_search_duplicate(task.id, result=duplicate_result)
-            return
-        self.repository.complete_search_ready(task.id, candidate_id=candidate_id, result={**result, "candidate_id": candidate_id})
+                "archive_candidate_is_primary": archive_is_primary,
+            },
+        )
 
     def _decide_match(self, *, query: SearchDocument, match, target_type: str) -> SearchDecision | None:
         if match is None:
@@ -873,6 +886,20 @@ class XProcessingWorker:
             "title": match.document.title,
             "source_url": match.document.source_url,
             "similarity": round(match.similarity, 6),
+        }
+
+    def _search_diagnostics(
+        self,
+        *,
+        started_at: float,
+        odaily_documents: list[SearchDocument],
+        candidate_documents: list[SearchDocument],
+    ) -> dict[str, Any]:
+        return {
+            "cache_source": "local_hot_cache",
+            "odaily_reference_count": len(odaily_documents),
+            "active_candidate_count": len(candidate_documents),
+            "search_duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
         }
 
     def _run_write(self, task: TaskRecord) -> None:
@@ -1112,6 +1139,10 @@ class XProcessingWorker:
             publisher_reason_code="rule_allowed" if should_publish else "rule_rejected",
             decided_at=decided_at,
         )
+        self._release_local_candidate_for_task(
+            task.id,
+            release_reason="auto_published" if should_publish else "ready_review",
+        )
 
     def _complete_manual_review_publish(
         self,
@@ -1175,6 +1206,7 @@ class XProcessingWorker:
             publisher_reason_code=reason_code,
             decided_at=decided_at,
         )
+        self._release_local_candidate_for_task(task.id, release_reason="ready_review")
 
     def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
         return skipped_telegram_result("business publish notice disabled; use editor plugin feed")
@@ -1211,51 +1243,38 @@ class XProcessingWorker:
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()
-        try:
-            remote_documents = fetch_odaily_reference_documents_from_api(
-                since=since,
-                timeout_seconds=self.settings.request_timeout_seconds,
-            )
-        except Exception as exc:
-            print(f"[odaily] search odaily api refresh failed; fallback=supabase error={exc}")
-            remote_documents = self.repository.list_odaily_reference_documents(since=since)
-        if cache is not None:
-            cache.upsert_documents(remote_documents)
-        return remote_documents
+        if cache is None:
+            return []
+        return cache.list_odaily_reference_documents(since=since)
 
     def _load_active_candidate_documents(self, *, exclude_task_id: int) -> list[SearchDocument]:
-        documents = self.repository.list_active_candidate_documents()
         cache = self._search_cache()
-        if cache is not None:
-            cache.upsert_documents(documents)
+        if cache is None:
+            return []
+        cache.prune_expired_candidates()
+        documents = cache.list_active_candidate_documents()
         return [document for document in documents if document.task_id != exclude_task_id]
 
     def _mirror_active_candidate(self, *, task: TaskRecord, candidate_id: int) -> None:
         cache = self._search_cache()
         if cache is None:
             return
-        now = datetime.now(UTC)
-        cache.upsert_document(
-            SearchDocument(
-                doc_type="candidate",
-                doc_id=str(candidate_id),
-                title=task.title,
-                content=task.content,
-                source="candidate",
-                task_id=task.id,
-                candidate_id=candidate_id,
-                status="active",
-                created_at=now,
-                updated_at=now,
-                expires_at=now + ACTIVE_CANDIDATE_TTL,
-                metadata={"source": task.source, "source_item_id": task.source_item_id, **task.metadata},
-            )
+        cache.upsert_active_candidate(
+            candidate_id=candidate_id,
+            task_id=task.id,
+            title=task.title,
+            content=task.content,
+            source=task.source,
+            source_item_id=task.source_item_id,
+            source_url=task.source_url,
+            metadata=task.metadata,
         )
 
     def _release_local_candidate_for_task(self, task_id: int, *, release_reason: str) -> None:
         cache = self._search_cache()
         if cache is None:
             return
+        cache.release_candidate_for_task(task_id=task_id, release_reason=release_reason)
         try:
             pipeline = self.repository.get_pipeline(task_id)
         except Exception:

@@ -27,6 +27,16 @@ class LocalPipelineService:
         self._last_worker_error: str | None = None
 
     def start(self) -> None:
+        if hasattr(self.processor, "start_background_tasks"):
+            try:
+                self.processor.start_background_tasks()
+            except Exception as exc:
+                print(f"[odaily] local pipeline background task start failed: {exc}")
+                self._safe_record_heartbeat(
+                    success=False,
+                    error=str(exc),
+                    metadata={"background_task_start_failed": True},
+                )
         self._ensure_worker_running()
 
     def stop(self) -> None:
@@ -35,6 +45,8 @@ class LocalPipelineService:
         worker = self._worker_thread
         if worker is not None:
             worker.join(timeout=5)
+        if hasattr(self.processor, "stop_background_tasks"):
+            self.processor.stop_background_tasks()
 
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_type = str(payload.get("job_type") or "").strip()

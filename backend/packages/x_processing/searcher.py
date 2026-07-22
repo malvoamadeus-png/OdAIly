@@ -8,7 +8,7 @@ import sqlite3
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -255,8 +255,10 @@ class SearchCache:
         self._init_or_rebuild()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_or_rebuild(self) -> None:
@@ -427,6 +429,106 @@ class SearchCache:
             """,
             (created_after, now.isoformat()),
         )
+
+    def upsert_active_candidate(
+        self,
+        *,
+        candidate_id: int,
+        task_id: int,
+        title: str | None,
+        content: str,
+        source: str,
+        source_item_id: str,
+        source_url: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        now = datetime.now(UTC)
+        self.upsert_document(
+            SearchDocument(
+                doc_type="candidate",
+                doc_id=str(candidate_id),
+                title=title,
+                content=content,
+                source="candidate",
+                source_url=source_url,
+                task_id=task_id,
+                candidate_id=candidate_id,
+                status="active",
+                created_at=now,
+                updated_at=now,
+                expires_at=now + ACTIVE_CANDIDATE_TTL,
+                metadata={"source": source, "source_item_id": source_item_id, **(metadata or {})},
+            )
+        )
+
+    def release_candidate_for_task(
+        self,
+        *,
+        task_id: int,
+        release_reason: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT cache_key, metadata_json
+                FROM documents
+                WHERE doc_type = 'candidate'
+                  AND task_id = ?
+                  AND COALESCE(status, 'active') = 'active'
+                """,
+                (task_id,),
+            ).fetchall()
+            for row in rows:
+                metadata = json.loads(str(row["metadata_json"])) if row["metadata_json"] else {}
+                metadata.update(
+                    {
+                        "released_by_task_id": task_id,
+                        "released_by_task_status": release_reason,
+                    }
+                )
+                conn.execute(
+                    """
+                    UPDATE documents
+                    SET status = 'inactive',
+                        expires_at = ?,
+                        metadata_json = ?,
+                        updated_at = ?
+                    WHERE cache_key = ?
+                    """,
+                    (
+                        now.isoformat(),
+                        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                        now.isoformat(),
+                        row["cache_key"],
+                    ),
+                )
+            conn.commit()
+
+    def prune_expired_candidates(self) -> int:
+        now = datetime.now(UTC)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE documents
+                SET status = 'inactive',
+                    updated_at = ?
+                WHERE doc_type = 'candidate'
+                  AND COALESCE(status, 'active') = 'active'
+                  AND (
+                    expires_at IS NULL
+                    OR expires_at <= ?
+                    OR created_at <= ?
+                  )
+                """,
+                (
+                    now.isoformat(),
+                    now.isoformat(),
+                    (now - ACTIVE_CANDIDATE_TTL - timedelta(minutes=1)).isoformat(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def list_notified_alert_documents(self, *, since: datetime | None = None) -> list[SearchDocument]:
         if since is None:

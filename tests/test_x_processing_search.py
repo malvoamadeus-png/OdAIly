@@ -12,9 +12,9 @@ from packages.x_processing.worker import XProcessingWorker
 
 
 class StubEmbeddingService:
-    def __init__(self, vectors: dict[str, list[float]]) -> None:
+    def __init__(self, vectors: dict[str, list[float]], *, cache=None) -> None:
         self.vectors = vectors
-        self.cache = None
+        self.cache = cache
 
     def embed_one(self, *, cache_key: str, text: str) -> list[float]:
         return self.vectors[text]
@@ -31,6 +31,14 @@ class StubAIClient:
     def generate_text(self, *, model: str, prompt: str, text_format, reasoning_effort: str | None = None) -> str:
         self.prompts.append(prompt)
         return self.raw_output
+
+
+class RemoteReadForbiddenRepository(InMemoryXProcessingRepository):
+    def list_odaily_reference_documents(self, *, since):  # pragma: no cover - fails if called
+        raise AssertionError("search must read odaily references from local cache")
+
+    def list_active_candidate_documents(self):  # pragma: no cover - fails if called
+        raise AssertionError("search must read active candidates from local cache")
 
 
 def build_settings(*, search_ai_review_threshold: float = 0.65) -> XProcessingSettings:
@@ -135,57 +143,12 @@ def test_odaily_api_reference_source_filters_window_and_converts_documents(monke
     assert documents[0].metadata["reference_source"] == "odaily_api"
 
 
-def test_run_search_falls_back_to_supabase_references_when_odaily_api_fails(monkeypatch) -> None:
-    repository = InMemoryXProcessingRepository()
+def test_run_search_marks_duplicate_after_ai_review_for_lower_similarity_match() -> None:
+    repository = RemoteReadForbiddenRepository()
     task = build_task()
     repository.add_task(task)
     repository.pipelines[task.id] = PipelineRecord(task_id=task.id)
     reference = build_reference()
-    repository.odaily_references.append(reference)
-
-    def fail_fetch(*args, **kwargs):
-        raise RuntimeError("api unavailable")
-
-    monkeypatch.setattr("packages.x_processing.worker.fetch_odaily_reference_documents_from_api", fail_fetch)
-    vectors = {
-        SearchDocument(
-            doc_type="task",
-            doc_id=str(task.id),
-            title=task.title,
-            content=task.content,
-            source=task.source,
-            source_url=task.source_url,
-            task_id=task.id,
-            published_at=task.published_at,
-            metadata=task.metadata,
-        ).embedding_text: [1.0, 0.0],
-        reference.embedding_text: [0.95, (1 - 0.95**2) ** 0.5],
-    }
-    worker = XProcessingWorker(
-        stage="search",
-        repository=repository,
-        settings=build_settings(),
-        search_embedding_service=StubEmbeddingService(vectors),
-    )
-
-    worker._run_search(task)
-
-    assert repository.tasks[task.id].status == "duplicate"
-    assert repository.pipelines[task.id].search_result["duplicate_target_id"] == reference.doc_id
-
-
-def test_run_search_marks_duplicate_after_ai_review_for_lower_similarity_match(monkeypatch) -> None:
-    repository = InMemoryXProcessingRepository()
-    task = build_task()
-    repository.add_task(task)
-    repository.pipelines[task.id] = PipelineRecord(task_id=task.id)
-    reference = build_reference()
-    repository.odaily_references.append(reference)
-
-    def fail_fetch(*args, **kwargs):
-        raise RuntimeError("api unavailable")
-
-    monkeypatch.setattr("packages.x_processing.worker.fetch_odaily_reference_documents_from_api", fail_fetch)
     vectors = {
         SearchDocument(
             doc_type="task",
@@ -217,26 +180,22 @@ def test_run_search_marks_duplicate_after_ai_review_for_lower_similarity_match(m
         search_embedding_service=StubEmbeddingService(vectors),
         search_ai_client=ai_client,
     )
+    worker._search_cache().upsert_document(reference)
 
     worker._run_search(task)
 
     assert repository.tasks[task.id].status == "duplicate"
     assert repository.pipelines[task.id].search_result["duplicate_target_id"] == reference.doc_id
+    assert repository.pipelines[task.id].search_result["cache_source"] == "local_hot_cache"
     assert ai_client.prompts
 
 
-def test_run_search_keeps_match_context_when_ai_review_rejects_duplicate(monkeypatch) -> None:
-    repository = InMemoryXProcessingRepository()
+def test_run_search_keeps_match_context_when_ai_review_rejects_duplicate() -> None:
+    repository = RemoteReadForbiddenRepository()
     task = build_task()
     repository.add_task(task)
     repository.pipelines[task.id] = PipelineRecord(task_id=task.id)
     reference = build_reference()
-    repository.odaily_references.append(reference)
-
-    def fail_fetch(*args, **kwargs):
-        raise RuntimeError("api unavailable")
-
-    monkeypatch.setattr("packages.x_processing.worker.fetch_odaily_reference_documents_from_api", fail_fetch)
     query_doc = SearchDocument(
         doc_type="task",
         doc_id=str(task.id),
@@ -267,6 +226,7 @@ def test_run_search_keeps_match_context_when_ai_review_rejects_duplicate(monkeyp
         search_embedding_service=StubEmbeddingService(vectors),
         search_ai_client=StubAIClient(raw_output),
     )
+    worker._search_cache().upsert_document(reference)
 
     worker._run_search(task)
 
@@ -276,3 +236,73 @@ def test_run_search_keeps_match_context_when_ai_review_rejects_duplicate(monkeyp
     assert result["reviewed_by_ai"] is True
     assert result["raw_ai_output"] == raw_output
     assert result["observed_matches"][0]["target_id"] == reference.doc_id
+    assert result["odaily_reference_count"] == 1
+
+
+def test_run_search_uses_local_candidate_cache_for_inflight_duplicates() -> None:
+    repository = RemoteReadForbiddenRepository()
+    first_task = build_task(task_id=1)
+    second_task = build_task(task_id=2)
+    repository.add_task(first_task)
+    repository.add_task(second_task)
+    repository.pipelines[first_task.id] = PipelineRecord(task_id=first_task.id)
+    repository.pipelines[second_task.id] = PipelineRecord(task_id=second_task.id)
+    query_doc = SearchDocument(
+        doc_type="task",
+        doc_id=str(first_task.id),
+        title=first_task.title,
+        content=first_task.content,
+        source=first_task.source,
+        source_url=first_task.source_url,
+        task_id=first_task.id,
+        published_at=first_task.published_at,
+        metadata=first_task.metadata,
+    )
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repository,
+        settings=build_settings(),
+        search_embedding_service=StubEmbeddingService({query_doc.embedding_text: [1.0, 0.0]}),
+        search_ai_client=StubAIClient("{}"),
+    )
+
+    worker._run_search(first_task)
+    worker._run_search(second_task)
+
+    result = repository.pipelines[second_task.id].search_result
+    assert repository.tasks[first_task.id].status == "deduped"
+    assert repository.tasks[second_task.id].status == "duplicate"
+    assert result["duplicate_target_type"] == "inflight_candidate"
+    assert result["active_candidate_count"] == 1
+
+
+def test_run_search_continues_when_local_cache_is_empty() -> None:
+    repository = RemoteReadForbiddenRepository()
+    task = build_task()
+    repository.add_task(task)
+    repository.pipelines[task.id] = PipelineRecord(task_id=task.id)
+    query_doc = SearchDocument(
+        doc_type="task",
+        doc_id=str(task.id),
+        title=task.title,
+        content=task.content,
+        source=task.source,
+        source_url=task.source_url,
+        task_id=task.id,
+        published_at=task.published_at,
+        metadata=task.metadata,
+    )
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repository,
+        settings=build_settings(),
+        search_embedding_service=StubEmbeddingService({query_doc.embedding_text: [1.0, 0.0]}),
+        search_ai_client=StubAIClient("{}"),
+    )
+
+    worker._run_search(task)
+
+    result = repository.pipelines[task.id].search_result
+    assert repository.tasks[task.id].status == "deduped"
+    assert result["odaily_reference_count"] == 0
+    assert worker._search_cache().list_active_candidate_documents()
