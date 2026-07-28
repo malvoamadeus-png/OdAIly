@@ -111,3 +111,18 @@ def test_mixed_source_uses_raw_then_classified_target_scope() -> None:
         scopes=media_source_exclusion_scopes("mixed_source", classified_target="crypto"),
         title_texts=["Ripple business update"],
     )
+
+
+def test_competitor_magne_ai_group_matches_body_text_case_insensitively() -> None:
+    assert is_source_excluded(
+        [
+            _group(
+                scopes=("competitor",),
+                terms=("MAGNE.AI",),
+                match_target="all",
+            )
+        ],
+        scopes=["competitor"],
+        title_texts=["Project launches a new product"],
+        body_texts=["The release mentions magne.ai in the article body."],
+    )

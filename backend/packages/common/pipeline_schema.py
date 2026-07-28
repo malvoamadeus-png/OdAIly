@@ -847,6 +847,25 @@ VALUES (
 )
 ON CONFLICT (rule_key) DO NOTHING;
 
+INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
+VALUES (
+    'competitor-magne-ai',
+    'MAGNE.AI 竞品屏蔽',
+    '从竞品入口屏蔽标题或正文出现 MAGNE.AI 的内容。',
+    ARRAY['competitor']::text[],
+    ARRAY['MAGNE.AI']::text[],
+    'all',
+    true
+)
+ON CONFLICT (rule_key) DO UPDATE
+SET name = EXCLUDED.name,
+    description = EXCLUDED.description,
+    scopes = EXCLUDED.scopes,
+    terms = EXCLUDED.terms,
+    match_target = EXCLUDED.match_target,
+    enabled = EXCLUDED.enabled,
+    updated_at = now();
+
 CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
     id bigserial PRIMARY KEY,
     term text NOT NULL UNIQUE,

@@ -17,6 +17,7 @@ from packages.common.config import XProcessingSettings
 from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
+from packages.common.source_exclusions import normalize_exclusion_text
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import PushClient
 from packages.x_capture.naming import choose_effective_author_name
@@ -305,6 +306,7 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     "jinse": "competitor",
     JIN10_SOURCE: "jin10",
 }
+PUBLISHER_HARD_BLOCK_TERMS = ("MAGNE.AI",)
 
 
 AI_JUDGE_JSON_SCHEMA = {
@@ -1082,6 +1084,10 @@ class XProcessingWorker:
             raise HandledStageError(error) from exc
 
         publisher_decision = publisher_decision_result.decision
+        hard_blocked_term = publisher_hard_blocked_term(task=task, pipeline=pipeline)
+        if hard_blocked_term is not None:
+            publisher_decision = "reject"
+            context_output["hard_blocked_term"] = hard_blocked_term
         should_publish = publisher_decision == "pass"
         push_result = self.push_client.push(
             title=pipeline.final_title,
@@ -1095,7 +1101,9 @@ class XProcessingWorker:
         publisher_output = {
             **context_output,
             "decision": publisher_decision,
-            "reason": publisher_decision_result.reason,
+            "reason": publisher_hard_block_reason(hard_blocked_term)
+            if hard_blocked_term is not None
+            else publisher_decision_result.reason,
             "raw_output": raw_output,
         }
         if not push_result.ok:
@@ -1124,7 +1132,10 @@ class XProcessingWorker:
             publisher_model=self.settings.publisher_model,
             publisher_category=None,
             publisher_decision="auto_publish" if should_publish else "manual_review",
-            publisher_reason_code="rule_allowed" if should_publish else "rule_rejected",
+            publisher_reason_code=publisher_reason_code_for_publish_decision(
+                should_publish=should_publish,
+                hard_blocked_term=hard_blocked_term,
+            ),
             publisher_output=publisher_output,
             push_result=push_payload,
             telegram_result=telegram_result.model_dump(mode="json"),
@@ -1136,7 +1147,10 @@ class XProcessingWorker:
             pipeline=pipeline,
             status="auto_published" if should_publish else "ready_review",
             publisher_decision="auto_publish" if should_publish else "manual_review",
-            publisher_reason_code="rule_allowed" if should_publish else "rule_rejected",
+            publisher_reason_code=publisher_reason_code_for_publish_decision(
+                should_publish=should_publish,
+                hard_blocked_term=hard_blocked_term,
+            ),
             decided_at=decided_at,
         )
         self._release_local_candidate_for_task(
@@ -1386,6 +1400,8 @@ def is_blockbeats_site_url(source_url: str | None) -> bool:
 
 
 def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str:
+    if reason_code == "hard_blocked_term":
+        return "稿件命中发布者硬拦截词，不能自动发布。"
     if reason_code == "source_not_eligible":
         return f"来源 {task.source} 当前没有接入自动发布规则，发布者无法按规则确认可直发，因此挂后台人工处理。"
     if reason_code == "publisher_profile_disabled":
@@ -1395,6 +1411,35 @@ def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str
     if reason_code == "publisher_no_enabled_allow_rules":
         return "对应发布者规则块没有启用任何通过规则，即使未命中排除条件也不能自动放行，因此挂后台人工处理。"
     return "发布者未获得足够明确的自动发布依据，因此挂后台人工处理。"
+
+
+def publisher_hard_blocked_term(*, task: TaskRecord, pipeline: PipelineRecord) -> str | None:
+    haystack = normalize_exclusion_text(
+        "\n".join(
+            [
+                task.title or "",
+                task.content,
+                pipeline.final_title or "",
+                pipeline.final_content or "",
+            ]
+        )
+    )
+    if not haystack:
+        return None
+    for term in PUBLISHER_HARD_BLOCK_TERMS:
+        if normalize_exclusion_text(term) in haystack:
+            return term
+    return None
+
+
+def publisher_hard_block_reason(term: str) -> str:
+    return f"稿件标题或正文命中发布者硬拦截词 {term}，不能自动发布。"
+
+
+def publisher_reason_code_for_publish_decision(*, should_publish: bool, hard_blocked_term: str | None) -> str:
+    if hard_blocked_term is not None:
+        return "hard_blocked_term"
+    return "rule_allowed" if should_publish else "rule_rejected"
 
 
 def utc_since_hours(hours: int) -> datetime:

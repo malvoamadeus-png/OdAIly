@@ -44,6 +44,7 @@ PUBLISHER_RUNTIME_POLICY = {
         "source_not_eligible": "manual review without a publisher model call",
         "publisher_profile_disabled": "manual review without a publisher model call",
         "publisher_no_enabled_allow_rules": "manual review without a publisher model call",
+        "hard_blocked_term": "manual review after deterministic publisher hard-block term match",
         "model_failed": "publisher_failed and retry through the existing pipeline mechanism",
         "push_failed": "publisher_failed and retry through the existing pipeline mechanism",
         "rule_rejected": "submit as non-published and leave ready for manual review",
