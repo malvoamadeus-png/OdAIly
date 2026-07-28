@@ -16,7 +16,7 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
-DEFAULT_GPT_AUDITOR_MODEL = "gpt-5.5"
+DEFAULT_GPT_AUDITOR_MODEL = "odaily-gpt-auditor"
 
 
 DEFAULT_WATCHLIST = [
