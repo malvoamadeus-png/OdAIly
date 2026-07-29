@@ -175,7 +175,9 @@ def _quote(symbol: str, price: str, timestamp: int) -> TickerQuote:
     )
 
 
-def test_backend_and_live_modes_keep_separate_state_and_publish_flags(tmp_path: Path) -> None:
+def test_backend_and_live_modes_share_trigger_state_but_keep_publish_flags(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "gate-market.sqlite"
     store = GateMarketStore(database_path)
     store.initialize()
@@ -207,8 +209,8 @@ def test_backend_and_live_modes_keep_separate_state_and_publish_flags(tmp_path: 
             [
                 _quote("XBRUSD", "80", base),
                 _quote("XBRUSD", "82.1", base + 60),
-                _quote("XBRUSD", "84.1", base + 120),
-                _quote("XBRUSD", "86.1", base + 180),
+                _quote("XBRUSD", "81.9", base + 120),
+                _quote("XBRUSD", "84.1", base + 180),
             ]
         ),
         push_client=fake_push,
@@ -219,8 +221,40 @@ def test_backend_and_live_modes_keep_separate_state_and_publish_flags(tmp_path: 
     assert service.process_symbol(config)["status"] == "initialized"
     assert service.process_symbol(config)["status"] == "backend_created"
     store.set_mode("live")
-    assert service.process_symbol(config)["status"] == "initialized"
+    # Crossing the same 82 line in the opposite direction after a mode switch
+    # must not create a second brief. Publish mode is not market state.
+    assert service.process_symbol(config)["status"] == "no_trigger"
     assert service.process_symbol(config)["status"] == "published"
 
     assert [call["is_publish"] for call in fake_push.calls] == [False, True]
     assert all(call["is_push"] is False and call["dry_run"] is False for call in fake_push.calls)
+
+
+def test_initialize_migrates_legacy_mode_states_and_unions_disarmed_levels(
+    tmp_path: Path,
+) -> None:
+    store = GateMarketStore(tmp_path / "gate-market.sqlite")
+    store.initialize()
+    with store._connect() as conn:
+        conn.execute("DELETE FROM symbol_state")
+        conn.execute(
+            """
+            INSERT INTO symbol_state(
+                symbol,mode,initialized,last_price,last_quote_at,disarmed_levels,
+                market_status,last_success_at,updated_at
+            ) VALUES
+                ('XAGUSD','live',1,'57.021',100,'[19]','open',100,100),
+                ('XAGUSD','backend',1,'57.010',200,'[20]','open',200,200)
+            """
+        )
+
+    store.initialize()
+
+    state = store.get_state("XAGUSD", "backend")
+    assert state.last_price == Decimal("57.010")
+    assert state.disarmed_levels == {19, 20}
+    with store._connect() as conn:
+        rows = conn.execute(
+            "SELECT mode FROM symbol_state WHERE symbol='XAGUSD'"
+        ).fetchall()
+    assert [row["mode"] for row in rows] == ["shared"]

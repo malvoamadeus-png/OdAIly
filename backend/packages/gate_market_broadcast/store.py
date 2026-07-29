@@ -13,6 +13,9 @@ from .defaults import DEFAULT_SYMBOLS, DEFAULT_TEMPLATES
 from .models import PublishMode, ReferenceMetrics, SymbolConfig, SymbolState, TickerQuote
 
 
+_SHARED_STATE_MODE = "shared"
+
+
 def _iso(timestamp: int | None) -> str | None:
     if timestamp is None:
         return None
@@ -161,6 +164,72 @@ class GateMarketStore:
                     """,
                     (key, label, title, body, now),
                 )
+            self._migrate_shared_symbol_states(conn, now)
+
+    @staticmethod
+    def _migrate_shared_symbol_states(conn: sqlite3.Connection, now: int) -> None:
+        """Collapse legacy per-publish-mode states into one market state per symbol."""
+        symbols = conn.execute(
+            "SELECT DISTINCT symbol FROM symbol_state WHERE mode<>?",
+            (_SHARED_STATE_MODE,),
+        ).fetchall()
+        for symbol_row in symbols:
+            symbol = str(symbol_row["symbol"])
+            shared = conn.execute(
+                "SELECT 1 FROM symbol_state WHERE symbol=? AND mode=?",
+                (symbol, _SHARED_STATE_MODE),
+            ).fetchone()
+            if shared is None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM symbol_state
+                    WHERE symbol=? AND mode<>?
+                    ORDER BY updated_at DESC
+                    """,
+                    (symbol, _SHARED_STATE_MODE),
+                ).fetchall()
+                source = next(
+                    (
+                        row
+                        for row in rows
+                        if bool(row["initialized"]) and row["last_price"] is not None
+                    ),
+                    rows[0],
+                )
+                disarmed_levels: set[int] = set()
+                for row in rows:
+                    try:
+                        disarmed_levels.update(
+                            int(value)
+                            for value in json.loads(str(row["disarmed_levels"] or "[]"))
+                        )
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                conn.execute(
+                    """
+                    INSERT INTO symbol_state(
+                        symbol,mode,initialized,last_price,last_quote_at,disarmed_levels,
+                        market_status,next_open_at,last_success_at,last_error,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        symbol,
+                        _SHARED_STATE_MODE,
+                        source["initialized"],
+                        source["last_price"],
+                        source["last_quote_at"],
+                        json.dumps(sorted(disarmed_levels)),
+                        source["market_status"],
+                        source["next_open_at"],
+                        source["last_success_at"],
+                        source["last_error"],
+                        now,
+                    ),
+                )
+            conn.execute(
+                "DELETE FROM symbol_state WHERE symbol=? AND mode<>?",
+                (symbol, _SHARED_STATE_MODE),
+            )
 
     def get_mode(self) -> PublishMode:
         with self._connect() as conn:
@@ -253,7 +322,7 @@ class GateMarketStore:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM symbol_state WHERE symbol=? AND mode=?",
-                (symbol, mode),
+                (symbol, _SHARED_STATE_MODE),
             ).fetchone()
         if row is None:
             return SymbolState(symbol=symbol, mode=mode)
@@ -366,7 +435,7 @@ class GateMarketStore:
                 """,
                 (
                     state.symbol,
-                    state.mode,
+                    _SHARED_STATE_MODE,
                     int(state.initialized),
                     str(state.last_price) if state.last_price is not None else None,
                     state.last_quote_at,
@@ -527,7 +596,7 @@ class GateMarketStore:
                 LEFT JOIN symbol_state s ON s.symbol=c.symbol AND s.mode=?
                 ORDER BY c.rowid
                 """,
-                (mode,),
+                (_SHARED_STATE_MODE,),
             ).fetchall()
             events = [
                 dict(row)
