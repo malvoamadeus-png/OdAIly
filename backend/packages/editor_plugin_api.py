@@ -29,6 +29,8 @@ from packages.competitor_monitor.blockbeats_key_config import (
     save_blockbeats_key,
 )
 from packages.editor_plugin_local_store import LocalEditorPluginStore
+from packages.gate_market_broadcast.settings import load_gate_market_settings
+from packages.gate_market_broadcast.store import GateMarketStore
 from packages.pipeline_timing import (
     PipelineTimingLocalStore,
     PipelineTimingSnapshotService,
@@ -469,6 +471,8 @@ class EditorPluginNewsGenService:
 
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
+        self.gate_market_store = GateMarketStore(load_gate_market_settings().database_path)
+        self.gate_market_store.initialize()
         self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
         self.console_auth_repository = PostgresConsoleAuthRepository(database_url)
         self.x_capture_repository = PostgresXCaptureRepository(database_url)
@@ -683,6 +687,10 @@ class EditorPluginNewsGenService:
     def get_pipeline_timing(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.pipeline_timing_snapshots.dashboard()
+
+    def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.gate_market_store.dashboard()
 
     def get_runtime_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
@@ -1076,6 +1084,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/publisher-rules/get",
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
+        "/console/gate-market/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
         "/console/known-title-subjects/save",
@@ -1098,6 +1107,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {"ok": True, "data": self.server.service.get_runtime_rules(actor)},
+                )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if self.path == "/console/gate-market/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.get_gate_market(actor)},
                 )
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
@@ -1134,6 +1155,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
+                    return
+                if self.path == "/console/gate-market/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_gate_market(actor)})
                     return
                 if self.path == "/console/runtime-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_runtime_rules(actor)})

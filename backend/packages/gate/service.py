@@ -118,6 +118,7 @@ def run_gate_once(
         title=brief.title,
         content=brief.content,
         dry_run=dry_run,
+        is_publish=brief.isPublish,
     )
     status = "success" if push_result.ok else "error"
     append_brief_result(
@@ -145,7 +146,7 @@ def run_gate_once(
         0,
         "success",
         kind,
-        "dry-run completed" if dry_run else "pushed with isPublish=false,isPush=false",
+        "dry-run completed" if dry_run else "pushed with isPublish=true,isPush=false",
         run_id,
         pushed=not dry_run,
     )

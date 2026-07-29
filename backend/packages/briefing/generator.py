@@ -128,7 +128,7 @@ FOOTER_TEXT = (
 class BriefPayload(BaseModel):
     title: str
     content: str
-    isPublish: bool = False
+    isPublish: bool = True
     used_symbols: list[str]
     skipped_symbols: list[str]
 
@@ -245,7 +245,7 @@ def build_brief(*, kind: BriefKind, quotes: list[MarketQuote], skipped_symbols: 
     return BriefPayload(
         title=title,
         content=content,
-        isPublish=False,
+        isPublish=True,
         used_symbols=[quote.symbol for quote in valid_quotes],
         skipped_symbols=skipped_symbols,
     )

@@ -4,7 +4,7 @@
 
 - `us-market` 任务负责生成美股相关的 MSX 快讯。
 - 当前支持 `close`、`premarket`、`open` 三种输出。
-- 生成结果通过 Push Data API 发送，默认 `isPublish=false`、`isPush=false`。
+- 生成结果通过 Push Data API 发送，默认 `isPublish=true`、`isPush=false`，即直接发布、不走后台挂审。
 - 当前股票池切换为 AI 概念股池；指数仍保留 `SPX`、`IXIC`、`DJI`、`VIX` 用于开盘/收盘正文。
 
 ## 文案与输出约定

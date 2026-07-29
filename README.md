@@ -1,7 +1,7 @@
 # OdAIly
 
 OdAIly is a Python worker that generates market briefs and sends them to the
-Push Data API with `isPublish=false` and `isPush=false`.
+Push Data API with `isPublish=true` and `isPush=false`.
 
 ## Structure
 
@@ -110,7 +110,7 @@ Every real request sends:
 {
   "title": "...",
   "content": "...",
-  "isPublish": false,
+  "isPublish": true,
   "isPush": false
 }
 ```
