@@ -1,6 +1,7 @@
 import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
+  Activity,
   Ban,
   ChevronDown,
   ChevronRight,
@@ -34,6 +35,7 @@ import {
   getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
+  getGateMarketDashboard,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
   getRuntimeRules,
@@ -112,8 +114,10 @@ import {
   type NewsflashSourceSummary,
   type NewsflashEventSummary,
   type ConsoleAdmin,
+  type GateMarketDashboard,
   processingTaskSources,
 } from './xCaptureStore';
+import { GateMarketPanel } from './GateMarketPanel';
 import {
   workflowFilters,
   workflowGroups,
@@ -130,6 +134,7 @@ type ConsoleView =
   | SourceManagementView
   | 'tasks'
   | 'timing'
+  | 'gate_market'
   | 'publisher'
   | 'workflow'
   | 'whale'
@@ -808,6 +813,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [publisherPromptPreview, setPublisherPromptPreview] = useState('');
   const [publisherLoadWarning, setPublisherLoadWarning] = useState('');
   const [pipelineTiming, setPipelineTiming] = useState<PipelineTimingDashboard>(emptyPipelineTimingDashboard);
+  const [gateMarket, setGateMarket] = useState<GateMarketDashboard | null>(null);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
@@ -821,6 +827,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
   const [loadingPipelineTiming, setLoadingPipelineTiming] = useState(true);
+  const [loadingGateMarket, setLoadingGateMarket] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [loadingPublisher, setLoadingPublisher] = useState(true);
   const [loadingJin10, setLoadingJin10] = useState(true);
@@ -1004,6 +1011,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function loadGateMarket() {
+    setError('');
+    setLoadingGateMarket(true);
+    try {
+      setGateMarket(await getGateMarketDashboard());
+    } finally {
+      setLoadingGateMarket(false);
+    }
+  }
+
   async function loadPublisherAll() {
     setError('');
     setPublisherLoadWarning('');
@@ -1148,6 +1165,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         case 'timing':
           await loadPipelineTiming();
           return;
+        case 'gate_market':
+          await loadGateMarket();
+          return;
         case 'non_mainstream':
         case 'ai_source':
         case 'mixed_source':
@@ -1182,6 +1202,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setLoading(false);
       setLoadingProcessingTasks(false);
       setLoadingPipelineTiming(false);
+      setLoadingGateMarket(false);
       setLoadingNonMainstream(false);
       setLoadingPublisher(false);
       setLoadingJin10(false);
@@ -1638,6 +1659,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Cycle Monitor'
       : view === 'timing'
         ? 'Timing'
+      : view === 'gate_market'
+        ? 'Gate Market'
       : view === 'publisher'
         ? 'Publisher'
       : view === 'jin10'
@@ -1660,6 +1683,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '信息周期监控'
       : view === 'timing'
         ? '耗时看板'
+      : view === 'gate_market'
+        ? 'Gate行情播报'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'jin10'
@@ -1682,6 +1707,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${visibleProcessingTasks.length} / ${processingTasks.length} 条最近任务 · 发布者说明随任务展示`
       : view === 'timing'
         ? `本地快照${pipelineTiming.generated_at ? ` · ${fmtTime(pipelineTiming.generated_at)}` : '生成中'} · 每小时刷新`
+      : view === 'gate_market'
+        ? `${gateMarket?.symbols.length || 0} 个标的 · ${gateMarket?.mode === 'live' ? '正式发布' : '后台生成'} · 只读`
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
@@ -1702,6 +1729,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadProcessingTasks()
       : view === 'timing'
         ? loadPipelineTiming()
+      : view === 'gate_market'
+        ? loadGateMarket()
       : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
       : view === 'blockbeats_key'
@@ -1743,6 +1772,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'timing' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('timing')}>
             <Timer size={18} /> 耗时看板
+          </button>
+          <button className={view === 'gate_market' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('gate_market')}>
+            <Activity size={18} /> Gate行情播报
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1956,6 +1988,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'timing' ? (
           <PipelineTimingPanel dashboard={pipelineTiming} loading={loadingPipelineTiming} />
+        ) : view === 'gate_market' ? (
+          <GateMarketPanel dashboard={gateMarket} loading={loadingGateMarket} />
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}

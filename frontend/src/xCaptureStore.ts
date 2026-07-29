@@ -1006,6 +1006,64 @@ export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashbo
   return consoleApiPost<PipelineTimingDashboard>('/console/pipeline-timing/get');
 }
 
+export type GateMarketMode = 'backend' | 'live';
+
+export type GateMarketSymbol = {
+  symbol: string;
+  display_name: string;
+  threshold: string;
+  price_precision: number;
+  unit: string;
+  enabled: boolean;
+  initialized: boolean;
+  last_price: string | null;
+  last_quote_at: string | null;
+  disarmed_levels: string | null;
+  market_status: string | null;
+  next_open_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+};
+
+export type GateMarketTemplate = {
+  template_key: string;
+  label: string;
+  title_template: string;
+  body_template: string;
+  updated_at: string | null;
+};
+
+export type GateMarketEvent = {
+  id: number;
+  mode: GateMarketMode;
+  symbol: string;
+  direction: 'up' | 'down';
+  trigger_level: string;
+  current_price: string;
+  reference_kind: string | null;
+  change_percent: string | null;
+  status: string;
+  title: string | null;
+  content: string | null;
+  error: string | null;
+  observed_at: string;
+  created_at: string;
+};
+
+export type GateMarketDashboard = {
+  mode: GateMarketMode;
+  poll_interval_seconds: number;
+  database_path: string;
+  symbols: GateMarketSymbol[];
+  templates: GateMarketTemplate[];
+  recent_events: GateMarketEvent[];
+  generated_at: string;
+};
+
+export async function getGateMarketDashboard(): Promise<GateMarketDashboard> {
+  return consoleApiGet<GateMarketDashboard>('/console/gate-market/get');
+}
+
 export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {
   return consoleApiGet<RuntimeRulesPayload>('/console/runtime-rules/get');
 }

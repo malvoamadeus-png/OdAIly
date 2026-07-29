@@ -388,6 +388,115 @@ h2 {
   margin-top: 18px;
 }
 
+.gateMarketLayout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.gateMarketSymbolGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gateMarketSymbolCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dce3e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.gateMarketSymbolCard header,
+.gateMarketEventList article,
+.gateMarketTemplateList article {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.gateMarketSymbolCard header div,
+.gateMarketEventList article div {
+  display: grid;
+  gap: 4px;
+}
+
+.gateMarketSymbolCard header span,
+.gateMarketEventList span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.gateMarketSymbolCard dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.gateMarketSymbolCard dl div {
+  display: grid;
+  gap: 3px;
+}
+
+.gateMarketSymbolCard dt {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.gateMarketSymbolCard dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #1f2933;
+  font-weight: 650;
+}
+
+.gateMarketError {
+  margin: 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.gateMarketTemplateList,
+.gateMarketEventList {
+  display: grid;
+  gap: 10px;
+}
+
+.gateMarketTemplateList article,
+.gateMarketEventList article {
+  padding: 12px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.gateMarketTemplateList article {
+  display: grid;
+  justify-content: stretch;
+}
+
+.gateMarketTemplateList code {
+  overflow-wrap: anywhere;
+  color: #0f6f4f;
+  font-size: 12px;
+}
+
+.gateMarketTemplateList p,
+.gateMarketEventList p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.gateMarketEventList article {
+  align-items: center;
+}
+
 .publisherLayout {
   display: grid;
   gap: 18px;
@@ -2487,6 +2596,7 @@ textarea:focus {
   .exclusionLayout,
   .runtimeRuleSummary,
   .taskTraceGrid,
+  .gateMarketSymbolGrid,
   .workflowCardHeader,
   .workflowRoute,
   .workflowSideNoteGrid {

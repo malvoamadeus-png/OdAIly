@@ -9,7 +9,7 @@ from .models import GateAssetQuote
 class GateBriefPayload(BaseModel):
     title: str
     content: str
-    isPublish: bool = False
+    isPublish: bool = True
     used_symbols: list[str]
     skipped_symbols: list[str]
 
@@ -189,7 +189,7 @@ def build_gate_brief(*, quotes: dict[str, GateAssetQuote]) -> GateBriefPayload |
     return GateBriefPayload(
         title=_title_for(title_quote),
         content=content,
-        isPublish=False,
+        isPublish=True,
         used_symbols=used,
         skipped_symbols=skipped,
     )

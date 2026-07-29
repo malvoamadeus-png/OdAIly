@@ -340,6 +340,29 @@ def parse_args() -> argparse.Namespace:
         help="Age in days before trimming payload fields from completed records.",
     )
 
+    gate_market = subparsers.add_parser(
+        "gate-market",
+        help="Manage or run the standalone Gate market broadcast module.",
+    )
+    gate_market_subparsers = gate_market.add_subparsers(dest="gate_market_action", required=True)
+    gate_market_subparsers.add_parser("init-db", help="Initialize the local Gate market SQLite database.")
+    gate_market_subparsers.add_parser("status", help="Print current Gate market configuration and state.")
+    gate_market_run = gate_market_subparsers.add_parser("run", help="Run the Gate market worker.")
+    gate_market_run.add_argument("--once", action="store_true", help="Run one polling cycle and exit.")
+    gate_market_mode = gate_market_subparsers.add_parser("set-mode", help="Set backend or live publishing mode.")
+    gate_market_mode.add_argument("mode", choices=["backend", "live"])
+    gate_market_threshold = gate_market_subparsers.add_parser(
+        "set-threshold",
+        help="Set one symbol threshold and reset that symbol's runtime state.",
+    )
+    gate_market_threshold.add_argument("symbol")
+    gate_market_threshold.add_argument("threshold")
+    gate_market_backtest = gate_market_subparsers.add_parser(
+        "backtest",
+        help="Replay historical one-minute closes using current SQLite thresholds.",
+    )
+    gate_market_backtest.add_argument("--days", type=int, default=90)
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -1197,6 +1220,50 @@ def maintenance_cleanup_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def gate_market_command(args: argparse.Namespace) -> int:
+    from packages.gate_market_broadcast import (
+        GateMarketBroadcastService,
+        GateMarketStore,
+        load_gate_market_settings,
+    )
+
+    settings = load_gate_market_settings()
+    store = GateMarketStore(settings.database_path)
+    store.initialize()
+    action = args.gate_market_action
+    if action == "init-db":
+        print(f"[gate-market] initialized db={settings.database_path}")
+        return 0
+    if action == "status":
+        print(json.dumps(store.dashboard(), ensure_ascii=False, indent=2))
+        return 0
+    if action == "set-mode":
+        mode = store.set_mode(args.mode)
+        print(f"[gate-market] mode={mode}")
+        return 0
+    if action == "set-threshold":
+        config = store.set_threshold(args.symbol, args.threshold)
+        print(
+            f"[gate-market] symbol={config.symbol} threshold={config.threshold_text} "
+            "state=reset"
+        )
+        return 0
+
+    service = GateMarketBroadcastService(settings=settings, store=store)
+    if action == "run":
+        if args.once:
+            print(json.dumps(service.run_once(), ensure_ascii=False, indent=2))
+            return 0
+        service.run_forever()
+        return 0
+    if action == "backtest":
+        if args.days < 1 or args.days > 365:
+            raise ValueError("--days must be between 1 and 365")
+        print(json.dumps(service.backtest(days=args.days), ensure_ascii=False, indent=2))
+        return 0
+    raise ValueError(f"Unknown gate-market action: {action}")
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -1296,6 +1363,8 @@ def main() -> int:
             return auditor_worker_command(args)
         if args.command == "maintenance-cleanup":
             return maintenance_cleanup_command(args)
+        if args.command == "gate-market":
+            return gate_market_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:
