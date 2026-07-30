@@ -4,9 +4,28 @@ import json
 from typing import Any
 
 import requests
-from packages.common.config import load_auditor_settings, load_writer3_settings, load_x_processing_settings
+from packages.common.config import (
+    XProcessingSettings,
+    load_auditor_settings,
+    load_writer3_settings,
+    load_x_processing_settings,
+)
 from packages.competitor_monitor.fetchers import extract_blockbeats_original_link, fetch_blockbeats
 from packages.editor_plugin_api import QUICK_GENERATE_WRITER_MODEL
+from packages.local_pipeline.processor import LocalPipelineProcessor
+from packages.non_mainstream_media.fetcher import (
+    JINA_REQUEST_HEADERS,
+    REQUEST_HEADERS,
+    fetch_html,
+    request_headers_for_url,
+)
+from packages.non_mainstream_media.models import (
+    NonMainstreamMediaSource,
+    SiteDefinition,
+    SourceRunStats,
+)
+from packages.non_mainstream_media.repository import InMemoryNonMainstreamMediaRepository
+from packages.non_mainstream_media.worker import NonMainstreamMediaWorker
 from packages.x_processing.models import (
     PROMPT_KEY_BY_NEWS_TYPE,
     PipelineRecord,
@@ -16,7 +35,7 @@ from packages.x_processing.models import (
 )
 from packages.x_processing.publisher_config import build_publisher_rule_prompt, default_publisher_rule_config
 from packages.x_processing.repository import PROMPT_SEEDS
-from packages.x_processing.worker import should_omit_publish_source_url
+from packages.x_processing.worker import XProcessingWorker, should_omit_publish_source_url
 
 
 def test_load_x_processing_settings_uses_search_ai_review_overrides(monkeypatch) -> None:
@@ -231,3 +250,147 @@ def test_blockbeats_external_original_link_is_not_hidden_from_publisher() -> Non
 
 def test_blockbeats_site_link_is_hidden_from_publisher() -> None:
     assert should_omit_publish_source_url(_blockbeats_task("https://www.theblockbeats.info/flash/123")) is True
+
+
+def test_jina_requests_do_not_reuse_browser_headers(monkeypatch) -> None:
+    seen_headers: list[dict[str, str]] = []
+
+    def fake_get(*args: Any, **kwargs: Any) -> requests.Response:
+        seen_headers.append(kwargs["headers"])
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b"ok"
+        return response
+
+    monkeypatch.setattr("packages.non_mainstream_media.fetcher.requests.get", fake_get)
+
+    fetch_html(
+        "https://r.jina.ai/http://https://example.test/article",
+        timeout_seconds=1,
+        max_attempts=1,
+    )
+    fetch_html(
+        "https://example.test/article",
+        timeout_seconds=1,
+        max_attempts=1,
+    )
+
+    assert seen_headers == [JINA_REQUEST_HEADERS, REQUEST_HEADERS]
+    assert "User-Agent" not in request_headers_for_url("https://r.jina.ai/http://example.test")
+
+
+def _heartbeat_test_worker(repository: InMemoryNonMainstreamMediaRepository) -> NonMainstreamMediaWorker:
+    return NonMainstreamMediaWorker(
+        repository=repository,
+        site_registry={
+            "test": SiteDefinition(
+                site_key="test",
+                display_name="Test",
+                homepage_url="https://example.test",
+                list_url="https://example.test/feed",
+                capture_method="html_request",
+                pipeline_mode="write_flow",
+            )
+        },
+        mixed_classifier=object(),  # type: ignore[arg-type]
+    )
+
+
+def _heartbeat_test_source(source_id: int, site_key: str) -> NonMainstreamMediaSource:
+    return NonMainstreamMediaSource(
+        id=source_id,
+        site_key=site_key,
+        display_name=site_key,
+        homepage_url=f"https://{site_key}.test",
+        capture_method="html_request",
+    )
+
+
+def test_partial_source_failure_records_degraded_success_heartbeat() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    worker = _heartbeat_test_worker(repository)
+
+    worker._record_heartbeat(
+        stats=[
+            SourceRunStats(source=_heartbeat_test_source(1, "healthy"), status="success"),
+            SourceRunStats(
+                source=_heartbeat_test_source(2, "failed"),
+                status="fetch_failed",
+                error="blocked",
+                metadata={"detail_errors": {"https://failed.test/item": "403 forbidden"}},
+            ),
+        ],
+        source_count=2,
+    )
+
+    heartbeat = repository.heartbeats[-1]
+    assert heartbeat["success"] is True
+    assert heartbeat["status"] == "degraded"
+    assert heartbeat["error"] == "blocked"
+    assert heartbeat["metadata"]["failed_sources"] == 1
+    assert heartbeat["metadata"]["sites"][1]["failure_details"] == {
+        "https://failed.test/item": "403 forbidden"
+    }
+
+
+def test_all_source_failures_still_record_failed_heartbeat() -> None:
+    repository = InMemoryNonMainstreamMediaRepository()
+    worker = _heartbeat_test_worker(repository)
+
+    worker._record_heartbeat(
+        stats=[
+            SourceRunStats(
+                source=_heartbeat_test_source(1, "failed"),
+                status="fetch_failed",
+                error="blocked",
+            )
+        ],
+        source_count=1,
+    )
+
+    assert repository.heartbeats[-1]["success"] is False
+    assert repository.heartbeats[-1]["status"] == "failed"
+
+
+def test_failed_pipeline_statuses_resume_at_the_failed_stage() -> None:
+    processor = object.__new__(LocalPipelineProcessor)
+    task = TaskRecord(
+        id=1,
+        source="panews",
+        source_item_id="item-1",
+        source_url=None,
+        title="Title",
+        content="Content",
+        status="write_failed",
+    )
+
+    assert processor._remaining_write_flow_sequence(task) == [
+        "write",
+        "format_publish",
+        "publish",
+    ]
+    assert processor._remaining_alert_sequence("domain_failed") == [
+        "domain_judge",
+        "search",
+        "notify",
+    ]
+    assert processor._remaining_alert_sequence("search_failed") == ["search", "notify"]
+    assert processor._remaining_alert_sequence("notify_failed") == ["notify"]
+
+
+def test_writer_timeout_exceeds_litellm_request_window(monkeypatch) -> None:
+    settings = XProcessingSettings()
+    captured: dict[str, Any] = {}
+
+    def fake_client(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("packages.x_processing.worker.OpenAIResponsesClient", fake_client)
+    worker = object.__new__(XProcessingWorker)
+    worker.settings = XProcessingSettings(openai_api_key="test-key")
+    worker._build_ai_client()
+
+    assert settings.request_timeout_seconds == 30.0
+    assert settings.writer_request_timeout_seconds == 150.0
+    assert captured["timeout_seconds"] == 150.0

@@ -334,7 +334,7 @@ class NonMainstreamMediaWorker:
         unseen = self.repository.unseen_source_item_ids(source.site_key, [page.source_item_id for page in pages])
         new_count = 0
         saved_count = 0
-        enqueue_errors: dict[str, str] = {}
+        item_errors: dict[str, str] = {}
         stale_count = 0
         classified_counts = {
             "classified_crypto": 0,
@@ -351,7 +351,7 @@ class NonMainstreamMediaWorker:
             classification_metadata: dict[str, Any] | None = None
             if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
                 if self.mixed_classifier is None:
-                    enqueue_errors[page.source_item_id] = self._mixed_classifier_init_error or "mixed source classifier unavailable"
+                    item_errors[page.source_item_id] = self._mixed_classifier_init_error or "mixed source classifier unavailable"
                     continue
                 try:
                     classification = self.mixed_classifier.classify_headline_excerpt(
@@ -362,7 +362,7 @@ class NonMainstreamMediaWorker:
                         metadata={},
                     )
                 except Exception as exc:
-                    enqueue_errors[page.source_item_id] = f"mixed classification failed: {exc}"
+                    item_errors[page.source_item_id] = f"mixed classification failed: {exc}"
                     continue
                 classified_counts[f"classified_{classification.target}"] += 1
                 if classification.target == "discard":
@@ -379,7 +379,7 @@ class NonMainstreamMediaWorker:
             try:
                 prepared_page = self._prepare_alert_page(source, page)
             except Exception as exc:
-                enqueue_errors[page.source_item_id] = f"detail enrichment failed: {exc}"
+                item_errors[page.source_item_id] = f"detail enrichment failed: {exc}"
                 continue
             if prepared_page is None:
                 if self.repository.mark_seen(source, page.source_item_id, seeded=False):
@@ -416,21 +416,21 @@ class NonMainstreamMediaWorker:
                     source_item_id=page.source_item_id,
                 )
             except Exception as exc:
-                enqueue_errors[page.source_item_id] = str(exc)
+                item_errors[page.source_item_id] = f"local pipeline enqueue failed: {exc}"
                 continue
             if self.repository.mark_seen(source, page.source_item_id, seeded=False):
                 new_count += 1
                 saved_count += 1
-        status = "success" if not enqueue_errors else "parse_failed"
+        status = "success" if not item_errors else "parse_failed"
         return SourceRunStats(
             source=source,
             status=status,
             candidate_count=len(pages),
             new_count=new_count,
             saved_count=saved_count,
-            error=f"{len(enqueue_errors)} local pipeline enqueue(s) failed" if enqueue_errors else None,
+            error=f"{len(item_errors)} alert item(s) failed" if item_errors else None,
             metadata={
-                "enqueue_errors": enqueue_errors,
+                "item_errors": item_errors,
                 "stale_count": stale_count,
                 **(classified_counts if source.source_group == SOURCE_GROUP_MIXED_SOURCE else {}),
             },
@@ -524,7 +524,9 @@ class NonMainstreamMediaWorker:
         if not hasattr(self.repository, "record_worker_heartbeat"):
             return
         failed = [item for item in stats if item.status != "success"]
-        ok = success if success is not None else not failed
+        succeeded = [item for item in stats if item.status == "success"]
+        ok = success if success is not None else not stats or bool(succeeded)
+        status = "ok" if not failed else ("degraded" if ok else "failed")
         heartbeat_error = error or ("; ".join(item.error or item.status for item in failed) if failed else None)
         metadata: dict[str, Any] = {
             "sources": source_count,
@@ -545,6 +547,7 @@ class NonMainstreamMediaWorker:
                     "new_count": item.new_count,
                     "saved_count": item.saved_count,
                     "error": item.error,
+                    "failure_details": heartbeat_failure_details(item),
                     "classified_crypto": int(item.metadata.get("classified_crypto", 0)),
                     "classified_ai": int(item.metadata.get("classified_ai", 0)),
                     "classified_discard": int(item.metadata.get("classified_discard", 0)),
@@ -554,13 +557,27 @@ class NonMainstreamMediaWorker:
         }
         try:
             self._heartbeat.send(
-                status="ok" if ok else "failed",
+                status=status,
                 success=ok,
                 error=heartbeat_error,
                 metadata=metadata,
             )
         except Exception as exc:
             print(f"[odaily] non-mainstream media heartbeat failed: {exc}")
+
+
+def heartbeat_failure_details(stats: SourceRunStats, *, limit: int = 5) -> dict[str, str]:
+    raw = (
+        stats.metadata.get("detail_errors")
+        or stats.metadata.get("item_errors")
+        or {}
+    )
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key)[:500]: str(value)[:500]
+        for key, value in list(raw.items())[:limit]
+    }
 
 
 def source_interval_seconds(source: NonMainstreamMediaSource, settings: NonMainstreamMediaSettings) -> int:

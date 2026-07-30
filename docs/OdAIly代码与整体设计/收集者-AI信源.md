@@ -49,6 +49,8 @@ search -> judge_ai -> write -> format_publish -> publish
 - 阶段结果仍分别写入 `x_task_pipeline` 或 `external_media_alert_pipeline`。
 - 本地流水线入队失败时不 mark seen，下一轮继续重试。
 
+底层 worker 的站点直抓与 Jina fallback 使用不同请求头：TheElec、CTEE、Hankyung 等原站仍使用浏览器兼容请求头，`r.jina.ai` 只发送最小 `Accept` 头，避免浏览器头组合触发 Jina `403`。部分 AI 信源失败时 worker 写 degraded 成功心跳并保留失败站点明细，不再把仍正常工作的统一收集器误报为整体失活。
+
 ## 抓取频率
 
 AI信源默认使用站点级频率 `interval_seconds = 300`，即 5 分钟抓取一次。worker 调度优先使用站点级频率，没有配置时才回退到全局频率。

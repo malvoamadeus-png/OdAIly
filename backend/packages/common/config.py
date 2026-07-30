@@ -357,6 +357,7 @@ class XProcessingSettings(BaseModel):
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
     request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
+    writer_request_timeout_seconds: float = Field(default=150.0, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -495,6 +496,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
         "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),
+        "writer_request_timeout_seconds": float(
+            os.getenv("X_PROCESS_WRITER_REQUEST_TIMEOUT_SECONDS") or 150.0
+        ),
         "retry": {
             "max_attempts": int(os.getenv("X_PROCESS_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("X_PROCESS_BACKOFF_SECONDS") or 1.0),

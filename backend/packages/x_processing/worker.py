@@ -420,7 +420,7 @@ class XProcessingWorker:
             api_key=self.settings.openai_api_key,
             base_url=str(self.settings.openai_base_url),
             api_style=self.settings.openai_api_style,
-            timeout_seconds=self.settings.request_timeout_seconds,
+            timeout_seconds=self.settings.writer_request_timeout_seconds,
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
         )

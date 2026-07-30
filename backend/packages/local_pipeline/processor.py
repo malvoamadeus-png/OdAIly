@@ -41,11 +41,6 @@ X_TERMINAL_STATUSES: set[str] = {
     "discarded",
     "duplicate",
     "expired",
-    "publisher_failed",
-    "judge_failed",
-    "search_failed",
-    "write_failed",
-    "format_failed",
     "legacy_skipped",
 }
 
@@ -53,9 +48,6 @@ ALERT_TERMINAL_STATUSES: set[str] = {
     "discarded",
     "duplicate",
     "notified",
-    "domain_failed",
-    "search_failed",
-    "notify_failed",
     "legacy_skipped",
 }
 
@@ -268,6 +260,19 @@ class LocalPipelineProcessor:
             return "format_publish"
         if status in {"publisher_pending", "publishing"}:
             return "publish"
+        if status == "judge_failed":
+            for judge_stage in ("judge_crypto", "judge_ai", "judge_jin10", "judge"):
+                if judge_stage in sequence:
+                    return judge_stage
+            return sequence[0]
+        if status == "search_failed":
+            return "search"
+        if status == "write_failed":
+            return "write"
+        if status == "format_failed":
+            return "format_publish"
+        if status == "publisher_failed":
+            return "publish"
         return None
 
     def _remaining_alert_sequence(self, status: str) -> list[str]:
@@ -277,6 +282,12 @@ class LocalPipelineProcessor:
         if status in {"classified", "deduping"}:
             return sequence[1:]
         if status in {"deduped", "notifying"}:
+            return sequence[2:]
+        if status == "domain_failed":
+            return sequence
+        if status == "search_failed":
+            return sequence[1:]
+        if status == "notify_failed":
             return sequence[2:]
         return sequence
 

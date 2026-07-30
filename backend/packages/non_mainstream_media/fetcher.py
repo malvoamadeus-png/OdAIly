@@ -31,6 +31,9 @@ REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/json,*/*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+JINA_REQUEST_HEADERS = {
+    "Accept": "text/plain,*/*",
+}
 
 A16Z_CONTENT_TYPES = {"article", "podcast", "videos", "listicles", "papers"}
 A16Z_BASE_URL = "https://a16zcrypto.com"
@@ -540,7 +543,7 @@ def fetch_html(
     last_error: Exception | None = None
     for attempt in range(1, max(1, max_attempts) + 1):
         try:
-            response = requests.get(url, headers=REQUEST_HEADERS, timeout=timeout_seconds)
+            response = requests.get(url, headers=request_headers_for_url(url), timeout=timeout_seconds)
             response.raise_for_status()
             return response.text
         except Exception as exc:
@@ -561,7 +564,7 @@ def fetch_json(
     last_error: Exception | None = None
     for attempt in range(1, max(1, max_attempts) + 1):
         try:
-            response = requests.get(url, headers=REQUEST_HEADERS, timeout=timeout_seconds)
+            response = requests.get(url, headers=request_headers_for_url(url), timeout=timeout_seconds)
             response.raise_for_status()
             return response.json()
         except Exception as exc:
@@ -597,6 +600,13 @@ def fetch_html_with_fallbacks(
 
 def build_jina_proxy_url(url: str) -> str:
     return f"{JINA_PROXY_URL_PREFIX}{url}"
+
+
+def request_headers_for_url(url: str) -> dict[str, str]:
+    host = urlparse(url).netloc.lower()
+    if host == "r.jina.ai" or host.endswith(".r.jina.ai"):
+        return JINA_REQUEST_HEADERS
+    return REQUEST_HEADERS
 
 
 def extract_jina_markdown_payload(payload: str) -> str:
