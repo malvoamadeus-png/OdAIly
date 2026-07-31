@@ -178,7 +178,19 @@ class LocalPipelineProcessor:
             if task.status in X_TERMINAL_STATUSES:
                 return LocalPipelineRunResult(task.id, task.status, f"stopped at {task.status}")
             worker = self._x_worker(stage)
-            task = worker._resolve_task_author_name(task)
+            claimed_task = self.x_repository.claim_task_by_id(
+                stage,  # type: ignore[arg-type]
+                task_id=task.id,
+                worker_id=worker.worker_id,
+            )
+            if claimed_task is None:
+                current = self.x_repository.get_task(task.id)
+                if current.status in X_TERMINAL_STATUSES:
+                    return LocalPipelineRunResult(current.id, current.status, f"stopped at {current.status}")
+                raise RuntimeError(
+                    f"task {task.id} stage {stage} is owned by another worker; current_status={current.status}"
+                )
+            task = worker._resolve_task_author_name(claimed_task)
             if worker._expire_task_if_stale(task):
                 task = self.x_repository.get_task(job.task_id)
                 return LocalPipelineRunResult(task.id, task.status, "expired")

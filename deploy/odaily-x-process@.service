@@ -9,7 +9,7 @@ WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py x-process-worker --stage %i
-Restart=always
+Restart=on-failure
 RestartSec=10
 
 [Install]

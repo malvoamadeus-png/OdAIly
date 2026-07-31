@@ -797,6 +797,19 @@ def x_process_worker_command(args: argparse.Namespace) -> int:
     from packages.x_capture.repository import PostgresXCaptureRepository
     from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
 
+    legacy_enabled = (os.getenv("ENABLE_LEGACY_X_PROCESS_WORKERS") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not legacy_enabled:
+        print(
+            "[odaily] legacy x-processing worker disabled; "
+            "set ENABLE_LEGACY_X_PROCESS_WORKERS=true only for an intentional rollback"
+        )
+        return 0
+
     ensure_runtime_dirs(get_paths())
     x_capture_repository = PostgresXCaptureRepository(args.database_url)
     repository = PostgresXProcessingRepository(args.database_url)

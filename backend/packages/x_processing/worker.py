@@ -388,7 +388,9 @@ class XProcessingWorker:
         self.push_client = push_client or PushClient(
             endpoint=str(settings.push_endpoint),
             timeout_seconds=settings.request_timeout_seconds,
-            max_attempts=settings.retry.max_attempts,
+            # The endpoint creates a backend record. Retrying an ambiguous
+            # timeout can duplicate a request the upstream already committed.
+            max_attempts=1,
             backoff_seconds=settings.retry.backoff_seconds,
         )
         self.telegram_client = telegram_client or TelegramClient(
@@ -1096,6 +1098,7 @@ class XProcessingWorker:
             source_url=None if should_omit_publish_source_url(task) else task.source_url,
             is_publish=should_publish,
             is_push=False,
+            idempotency_key=f"odaily-task-{task.id}",
         )
         push_payload = push_result.model_dump(mode="json")
         publisher_output = {
@@ -1179,6 +1182,7 @@ class XProcessingWorker:
             source_url=None if should_omit_publish_source_url(task) else task.source_url,
             is_publish=False,
             is_push=False,
+            idempotency_key=f"odaily-task-{task.id}",
         )
         if not push_result.ok:
             error = push_result.error or "push failed"

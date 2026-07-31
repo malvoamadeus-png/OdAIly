@@ -178,6 +178,14 @@ PUBLISHER_CHANNEL_DEFAULTS: tuple[tuple[str, str, bool], ...] = (
 
 class XProcessingRepository(Protocol):
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None: ...
+    def claim_task_by_id(
+        self,
+        stage: ProcessingStage,
+        *,
+        task_id: int,
+        worker_id: str,
+        lock_seconds: int = 300,
+    ) -> TaskRecord | None: ...
     def get_pipeline(self, task_id: int) -> PipelineRecord: ...
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion: ...
     def complete_judge(
@@ -492,6 +500,26 @@ class PostgresXProcessingRepository:
             conn.commit()
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds)
+
+    def claim_task_by_id(
+        self,
+        stage: ProcessingStage,
+        *,
+        task_id: int,
+        worker_id: str,
+        lock_seconds: int = 300,
+    ) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds, task_id=task_id)
+
+    def _claim_task(
+        self,
+        stage: ProcessingStage,
+        *,
+        worker_id: str,
+        lock_seconds: int = 300,
+        task_id: int | None = None,
+    ) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         sources = tuple(WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES)
         source_filter = "t.source = ANY(%(sources)s)"
@@ -559,6 +587,7 @@ class PostgresXProcessingRepository:
                       ON t.source = 'x'
                      AND xa.username_lower = lower(COALESCE(t.metadata ->> 'account_username', t.metadata ->> 'author_username', ''))
                     WHERE {source_filter}
+                      AND (%(task_id)s IS NULL OR t.id = %(task_id)s)
                       AND (t.locked_until IS NULL OR t.locked_until < now())
                     ORDER BY t.created_at ASC, t.id ASC
                     FOR UPDATE OF t SKIP LOCKED
@@ -577,6 +606,7 @@ class PostgresXProcessingRepository:
                 {
                     "claim_status": spec.claim_status,
                     "processing_status": spec.processing_status,
+                    "task_id": task_id,
                     "worker_id": worker_id,
                     "lock_seconds": lock_seconds,
                     "sources": list(sources),
@@ -1265,9 +1295,31 @@ class InMemoryXProcessingRepository:
         self.tasks[task.id] = task
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds)
+
+    def claim_task_by_id(
+        self,
+        stage: ProcessingStage,
+        *,
+        task_id: int,
+        worker_id: str,
+        lock_seconds: int = 300,
+    ) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds, task_id=task_id)
+
+    def _claim_task(
+        self,
+        stage: ProcessingStage,
+        *,
+        worker_id: str,
+        lock_seconds: int = 300,
+        task_id: int | None = None,
+    ) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         allowed_sources = WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
+            if task_id is not None and task.id != task_id:
+                continue
             if task.source not in allowed_sources:
                 continue
             claim_status = spec.claim_status

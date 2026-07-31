@@ -37,6 +37,7 @@ class PushClient:
         source_url: str | None = None,
         is_publish: bool = False,
         is_push: bool = False,
+        idempotency_key: str | None = None,
     ) -> PushResult:
         payload = {
             "title": title,
@@ -52,10 +53,13 @@ class PushClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
+                headers = {"Content-Type": "application/json"}
+                if idempotency_key:
+                    headers["Idempotency-Key"] = idempotency_key
                 response = requests.post(
                     self.endpoint,
                     json=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
