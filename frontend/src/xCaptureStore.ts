@@ -1586,6 +1586,33 @@ export async function listRecentJin10Tasks(limit = 30): Promise<TaskItem[]> {
   return listRecentTasksBySources(['jin10'], limit);
 }
 
+export type ProcessingTaskPage = {
+  tasks: TaskItem[];
+  hasNextPage: boolean;
+};
+
+export async function listProcessingTaskPage(
+  sources: readonly string[],
+  page: number,
+  pageSize: number,
+): Promise<ProcessingTaskPage> {
+  const normalizedPage = Math.max(0, Math.trunc(page));
+  const normalizedPageSize = Math.min(Math.max(Math.trunc(pageSize), 1), 50);
+  const targetSources = sources.length > 0 ? [...sources] : [...processingTaskSources];
+  const { data, error } = await localApi()
+    .from('tasks')
+    .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
+    .in('source', targetSources)
+    .order('created_at', { ascending: false })
+    .range(normalizedPage * normalizedPageSize, (normalizedPage + 1) * normalizedPageSize);
+  raise(error);
+  const rows = ((data ?? []) as unknown as TaskRowWithPipeline[]).map(normalizeTaskRow);
+  return {
+    tasks: rows.slice(0, normalizedPageSize),
+    hasNextPage: rows.length > normalizedPageSize,
+  };
+}
+
 export async function listRecentTasksBySources(sources: readonly string[], limit = 80): Promise<TaskItem[]> {
   const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 80);
   const targetSources = sources.length > 0 ? [...sources] : [...processingTaskSources];

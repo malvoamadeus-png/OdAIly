@@ -4,6 +4,7 @@ import {
   Activity,
   Ban,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Database,
   FileText,
@@ -45,7 +46,7 @@ import {
   listSourceExclusionRuleGroups,
   listNewsflashEventSources,
   listNewsflashEvents,
-  listRecentTasksBySources,
+  listProcessingTaskPage,
   listRecentJin10Tasks,
   loadDashboard,
   loadWhaleWatchDashboard,
@@ -819,6 +820,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [processingTasks, setProcessingTasks] = useState<TaskItem[]>([]);
+  const [processingTaskPage, setProcessingTaskPage] = useState(0);
+  const [hasNextProcessingTaskPage, setHasNextProcessingTaskPage] = useState(false);
   const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -989,12 +992,19 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setLoadingNonMainstream(false);
   }
 
-  async function loadProcessingTasks() {
+  async function loadProcessingTasks(nextPage = processingTaskPage) {
     setError('');
     setLoadingProcessingTasks(true);
     try {
-      const nextTasks = await listRecentTasksBySources(processingTaskSources, 80);
-      setProcessingTasks(nextTasks);
+      const result = await listProcessingTaskPage(processingTaskSources, nextPage, 50);
+      if (nextPage > 0 && result.tasks.length === 0) {
+        const previousPage = nextPage - 1;
+        setProcessingTaskPage(previousPage);
+        await loadProcessingTasks(previousPage);
+        return;
+      }
+      setProcessingTasks(result.tasks);
+      setHasNextProcessingTaskPage(result.hasNextPage);
     } finally {
       setLoadingProcessingTasks(false);
     }
@@ -1704,7 +1714,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     sourceManagementActive
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
       : view === 'tasks'
-        ? `${visibleProcessingTasks.length} / ${processingTasks.length} 条最近任务 · 发布者说明随任务展示`
+        ? `第 ${processingTaskPage + 1} 页 · ${visibleProcessingTasks.length} / ${processingTasks.length} 条当前页任务 · 发布者说明随任务展示`
       : view === 'timing'
         ? `本地快照${pipelineTiming.generated_at ? ` · ${fmtTime(pipelineTiming.generated_at)}` : '生成中'} · 每小时刷新`
       : view === 'gate_market'
@@ -1980,11 +1990,18 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <TaskOverviewPanel
             tasks={visibleProcessingTasks}
             totalCount={processingTasks.length}
+            page={processingTaskPage}
+            pageSize={50}
+            hasNextPage={hasNextProcessingTaskPage}
             loading={loadingProcessingTasks}
             filter={taskOverviewFilter}
             onFilterChange={setTaskOverviewFilter}
             query={taskOverviewQuery}
             onQueryChange={setTaskOverviewQuery}
+            onPageChange={(nextPage) => {
+              setProcessingTaskPage(nextPage);
+              void loadProcessingTasks(nextPage);
+            }}
           />
         ) : view === 'timing' ? (
           <PipelineTimingPanel dashboard={pipelineTiming} loading={loadingPipelineTiming} />
@@ -2149,19 +2166,27 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 function TaskOverviewPanel({
   tasks,
   totalCount,
+  page,
+  pageSize,
+  hasNextPage,
   loading,
   filter,
   onFilterChange,
   query,
   onQueryChange,
+  onPageChange,
 }: {
   tasks: TaskItem[];
   totalCount: number;
+  page: number;
+  pageSize: number;
+  hasNextPage: boolean;
   loading: boolean;
   filter: TaskOverviewFilter;
   onFilterChange: (filter: TaskOverviewFilter) => void;
   query: string;
   onQueryChange: (query: string) => void;
+  onPageChange: (page: number) => void;
 }) {
   const [strategyFilter, setStrategyFilter] = useState('all');
   const [featureOnly, setFeatureOnly] = useState(false);
@@ -2205,10 +2230,19 @@ function TaskOverviewPanel({
       <section className="section">
         <div className="sectionHeader">
           <h2>最近信息</h2>
-          <span>{loading ? '加载中' : `${traceFilteredTasks.length} 条显示 / ${totalCount} 条最近任务 · ${publisherCount} 条到发布者`}</span>
+          <span>{loading ? '加载中' : `${traceFilteredTasks.length} 条显示 / ${totalCount} 条当前页任务 · ${publisherCount} 条到发布者`}</span>
         </div>
         <TaskTable tasks={traceFilteredTasks} emptyText={loading ? '正在加载最近任务。' : '当前筛选没有任务。'} />
       </section>
+      <div className="paginationBar">
+        <button className="filterButton" type="button" disabled={page === 0 || loading} onClick={() => onPageChange(Math.max(0, page - 1))}>
+          <ChevronLeft size={16} /> 上一页
+        </button>
+        <span>第 {page + 1} 页 · 每页 {pageSize} 条</span>
+        <button className="filterButton" type="button" disabled={loading || !hasNextPage} onClick={() => onPageChange(page + 1)}>
+          下一页 <ChevronRight size={16} />
+        </button>
+      </div>
     </section>
   );
 }
