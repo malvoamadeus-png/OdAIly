@@ -9,7 +9,6 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
-from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from packages.common.storage import connect_sqlite, load_storage_settings
 
 
@@ -39,35 +38,6 @@ FLOW_LABELS: dict[str, str] = {
 FLOW_ORDER = ("x_regular", "x_ai_source_account", "competitor", "non_mainstream_media", "ai_source", "jin10")
 
 
-PIPELINE_TIMING_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS pipeline_timing_snapshots (
-    id bigserial PRIMARY KEY,
-    window_hours integer NOT NULL,
-    generated_at timestamptz NOT NULL,
-    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (window_hours, generated_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_pipeline_timing_snapshots_generated
-ON pipeline_timing_snapshots(generated_at DESC, window_hours);
-
-ALTER TABLE pipeline_timing_snapshots ENABLE ROW LEVEL SECURITY;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON TABLE pipeline_timing_snapshots FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE pipeline_timing_snapshots_id_seq FROM anon;
-    END IF;
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        REVOKE ALL PRIVILEGES ON TABLE pipeline_timing_snapshots FROM authenticated;
-        REVOKE ALL PRIVILEGES ON SEQUENCE pipeline_timing_snapshots_id_seq FROM authenticated;
-    END IF;
-END $$;
-"""
-
-
 @dataclass(frozen=True)
 class PipelineTimingRow:
     task_id: int
@@ -83,16 +53,6 @@ class PipelineTimingRow:
     format_completed_at: datetime | None
     publisher_decided_at: datetime | None
     publish_completed_at: datetime | None
-
-
-def _import_psycopg():
-    try:
-        import psycopg
-        from psycopg.rows import dict_row
-        from psycopg.types.json import Jsonb
-    except Exception as exc:  # pragma: no cover - dependency guard.
-        raise RuntimeError("psycopg is required for pipeline timing snapshots") from exc
-    return psycopg, dict_row, Jsonb
 
 
 def _iso(value: datetime) -> str:
@@ -317,91 +277,6 @@ class PipelineTimingLocalStore:
             conn.commit()
 
 
-class PostgresPipelineTimingRepository:
-    def __init__(self, database_url: str | None = None) -> None:
-        self.database_url = database_url or load_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
-        self.application_name = "odaily-pipeline-timing"
-
-    def _connect(self, *, autocommit: bool = False):
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
-
-    def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(PIPELINE_TIMING_SCHEMA_SQL)
-            conn.commit()
-
-    def list_recent_rows(self, *, max_hours: int = max(PIPELINE_TIMING_WINDOWS)) -> list[PipelineTimingRow]:
-        with self._connect(autocommit=True) as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    t.id AS task_id,
-                    t.source,
-                    t.status,
-                    t.created_at,
-                    t.metadata,
-                    p.news_type,
-                    p.publisher_decision,
-                    p.judge_completed_at,
-                    p.search_completed_at,
-                    p.write_completed_at,
-                    p.format_completed_at,
-                    p.publisher_decided_at,
-                    p.publish_completed_at
-                FROM tasks t
-                LEFT JOIN x_task_pipeline p ON p.task_id = t.id
-                WHERE t.created_at >= now() - (%(max_hours)s || ' hours')::interval
-                  AND t.source = ANY(%(sources)s)
-                ORDER BY t.created_at DESC, t.id DESC
-                """,
-                {"max_hours": max_hours, "sources": list(PIPELINE_TIMING_SOURCES)},
-            ).fetchall()
-        return [
-            PipelineTimingRow(
-                task_id=int(row["task_id"]),
-                source=str(row["source"]),
-                status=str(row["status"]),
-                created_at=row["created_at"],
-                metadata=row.get("metadata") or {},
-                news_type=row.get("news_type"),
-                publisher_decision=row.get("publisher_decision"),
-                judge_completed_at=row.get("judge_completed_at"),
-                search_completed_at=row.get("search_completed_at"),
-                write_completed_at=row.get("write_completed_at"),
-                format_completed_at=row.get("format_completed_at"),
-                publisher_decided_at=row.get("publisher_decided_at"),
-                publish_completed_at=row.get("publish_completed_at"),
-            )
-            for row in rows
-        ]
-
-    def archive_dashboard(self, payload: dict[str, Any]) -> None:
-        generated_at = parse_iso_datetime(payload.get("generated_at")) or datetime.now(UTC)
-        with self._connect() as conn:
-            for window in payload.get("windows") or []:
-                window_hours = int(window.get("hours") or 0)
-                if window_hours <= 0:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO pipeline_timing_snapshots (window_hours, generated_at, payload)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (window_hours, generated_at) DO UPDATE
-                    SET payload = EXCLUDED.payload
-                    """,
-                    (window_hours, generated_at, self._Jsonb(window)),
-                )
-            conn.commit()
-
-
 class SQLitePipelineTimingRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -441,7 +316,7 @@ class PipelineTimingSnapshotService:
         self,
         *,
         local_store: PipelineTimingLocalStore,
-        repository: PostgresPipelineTimingRepository,
+        repository: SQLitePipelineTimingRepository,
         refresh_interval_seconds: float = 3600.0,
     ) -> None:
         self.local_store = local_store

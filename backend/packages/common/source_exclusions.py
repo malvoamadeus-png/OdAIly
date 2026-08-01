@@ -7,7 +7,6 @@ import json
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
-from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from packages.common.storage import connect_sqlite, load_storage_settings
 
 
@@ -94,50 +93,6 @@ def is_source_excluded(
             if normalized_term and normalized_term in haystack:
                 return True
     return False
-
-
-class PostgresSourceExclusionRepository:
-    def __init__(self, database_url: str | None = None) -> None:
-        self.database_url = database_url or load_database_url()
-        self.application_name = "odaily-source-exclusions"
-
-    def _connect(self):
-        try:
-            import psycopg
-            from psycopg.rows import dict_row
-        except Exception as exc:  # pragma: no cover - dependency guard.
-            raise RuntimeError("psycopg is required for source exclusion rules") from exc
-        return psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=dict_row,
-                autocommit=True,
-                application_name=self.application_name,
-            ),
-        )
-
-    def list_enabled_rule_groups(self) -> list[SourceExclusionRuleGroup]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT rule_key, name, description, scopes, terms, match_target, enabled
-                FROM source_exclusion_rule_groups
-                WHERE enabled = true
-                ORDER BY name ASC, rule_key ASC
-                """
-            ).fetchall()
-        return [
-            SourceExclusionRuleGroup(
-                rule_key=str(row["rule_key"]),
-                name=str(row["name"]),
-                description=str(row.get("description") or ""),
-                scopes=tuple(str(value) for value in (row.get("scopes") or [])),
-                terms=tuple(str(value) for value in (row.get("terms") or [])),
-                match_target=normalize_exclusion_match_target(row.get("match_target")),
-                enabled=bool(row.get("enabled", True)),
-            )
-            for row in rows
-        ]
 
 
 class SQLiteSourceExclusionRepository:

@@ -129,7 +129,7 @@ class LocalPipelineProcessor:
                 timeout_seconds=self.x_settings.request_timeout_seconds,
             )
         except Exception as exc:
-            print(f"[odaily] search cache warm odaily api failed; fallback=supabase error={exc}")
+            print(f"[odaily] search cache warm odaily api failed; fallback=local-sqlite error={exc}")
             documents = self.x_repository.list_odaily_reference_documents(since=since)
         self._search_cache.upsert_documents(documents)
         return len(documents)

@@ -17,3 +17,8 @@ Linux 主机上的 `data/database/odaily.sqlite` 是全部业务事实的唯一�
 旧 Supabase 数据、切换前 commit 与旧环境文件共同组成回切基线。新版本没有 Postgres 运行开关；灾难回切必须停止全部新服务并恢复完整旧版本。SQLite 接管后的新增记录无需回灌旧库。
 
 具体操作、磁盘门槛、备份和搜索缓存维护见 `SQLite主存储迁移.md`。
+# 运行时代码边界补充
+
+- 包入口只暴露 SQLite repository factory / SQLite repository / worker / protocol，不暴露 `Postgres*Repository`。
+- `packages.common.postgres` 和 `psycopg` 只属于一次性旧库导入或旧版本回切审计；新版本常驻服务导入包时不得加载它们。
+- X 处理链与标题提醒链不再保留数据库 `LISTEN/NOTIFY` 分支，也不接受 `*_ENABLE_NOTIFY_LISTENER` 环境变量。

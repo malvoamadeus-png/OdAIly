@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
+from packages.common.console_auth import create_console_auth_repository
 from packages.common.storage import load_storage_settings
 from packages.console_data_api import ConsoleDataApi
 from packages.common.editor_plugin_auth import (
@@ -355,6 +356,7 @@ class EditorPluginNewsGenService:
         self.paths = get_paths()
         ensure_runtime_dirs(self.paths)
 
+        create_console_auth_repository(database_url).init_schema()
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         self.console_data = ConsoleDataApi(load_storage_settings().sqlite_path)
         self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")

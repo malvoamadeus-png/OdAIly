@@ -16,7 +16,7 @@ from packages.x_processing.telegram import TelegramClient, skipped_telegram_resu
 
 from .hyperliquid_client import HyperliquidClient
 from .hyperliquid_detector import detect_hyperliquid_activity, format_money
-from .hyperliquid_repository import WhaleWatchHyperliquidRepository
+from .hyperliquid_sqlite_repository import WhaleWatchHyperliquidRepository
 from .models import HyperliquidActivity, HyperliquidRunResult, HyperliquidRuntimeSettings, HyperliquidWindowEntry
 
 

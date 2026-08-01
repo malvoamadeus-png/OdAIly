@@ -9,7 +9,6 @@ from packages.common.attempt_sampling import (
     should_sample_x_capture_attempt,
     x_capture_attempt_fingerprint,
 )
-from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.common.storage import load_storage_settings
 
@@ -87,6 +86,8 @@ UNSET = _Unset()
 
 
 def get_database_url() -> str:
+    from packages.common.postgres import load_database_url
+
     return load_database_url()
 
 
@@ -135,11 +136,14 @@ def _row_to_account(row: dict[str, Any]) -> XCaptureAccount:
 
 class PostgresXCaptureRepository:
     def __init__(self, database_url: str | None = None) -> None:
+        raise RuntimeError("PostgresXCaptureRepository is retired; use create_x_capture_repository() for SQLite storage")
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
         self.application_name = "odaily-x-capture"
 
     def _connect(self, *, autocommit: bool = False):
+        from packages.common.postgres import build_psycopg_connect_kwargs
+
         return self._psycopg.connect(
             self.database_url,
             **build_psycopg_connect_kwargs(

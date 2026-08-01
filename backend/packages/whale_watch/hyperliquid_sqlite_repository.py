@@ -4,13 +4,93 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from packages.common.storage import connect_sqlite, load_storage_settings
 
-from .hyperliquid_repository import _deserialize_window_entries, _serialize_window_entries
 from .models import HyperliquidActivity, HyperliquidAddress, HyperliquidRuntimeSettings, HyperliquidState, HyperliquidWindowEntry
 from .sqlite_repository import _dt, _iso, record_heartbeat
+
+
+class WhaleWatchHyperliquidRepository(Protocol):
+    def init_schema(self) -> None: ...
+    def get_runtime_settings(
+        self,
+        *,
+        default_single_fill_min_notional_usd: Decimal,
+        default_aggregate_min_notional_usd: Decimal,
+        default_aggregate_window_seconds: int,
+    ) -> HyperliquidRuntimeSettings: ...
+    def list_addresses(self, *, include_disabled: bool = False) -> list[HyperliquidAddress]: ...
+    def get_state(self, *, address_id: int) -> HyperliquidState | None: ...
+    def mark_seeded(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool = False,
+    ) -> None: ...
+    def record_success(
+        self,
+        *,
+        address_id: int,
+        last_seen_time: int | None,
+        polled_at: datetime,
+        aggregate_window_entries: list[HyperliquidWindowEntry] | None = None,
+        aggregate_alert_active: bool | None = None,
+    ) -> None: ...
+    def record_error(self, *, address_id: int, error: str, polled_at: datetime) -> None: ...
+    def save_activity(self, *, whale: HyperliquidAddress, activity: HyperliquidActivity) -> int | None: ...
+    def update_activity_telegram_result(self, *, fill_key: str, telegram_result: dict[str, Any]) -> None: ...
+    def record_worker_heartbeat(
+        self,
+        *,
+        component: str,
+        worker_id: str,
+        status: str,
+        success: bool,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+
+
+def _serialize_window_entries(entries: list[HyperliquidWindowEntry]) -> list[dict[str, Any]]:
+    return [
+        {
+            "fill_key": entry.fill_key,
+            "fill_time_ms": entry.fill_time_ms,
+            "notional_usd": str(entry.notional_usd),
+            "summary": entry.summary,
+            "direction": entry.direction,
+            "coin": entry.coin,
+        }
+        for entry in entries
+    ]
+
+
+def _deserialize_window_entries(value: Any) -> list[HyperliquidWindowEntry]:
+    if not isinstance(value, list):
+        return []
+    entries: list[HyperliquidWindowEntry] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            entries.append(
+                HyperliquidWindowEntry(
+                    fill_key=str(item.get("fill_key") or ""),
+                    fill_time_ms=int(item.get("fill_time_ms") or 0),
+                    notional_usd=Decimal(str(item.get("notional_usd") or "0")),
+                    summary=str(item.get("summary") or ""),
+                    direction=str(item.get("direction") or "Aggregate"),
+                    coin=str(item.get("coin") or ""),
+                )
+            )
+        except Exception:
+            continue
+    return [entry for entry in entries if entry.fill_key and entry.fill_time_ms > 0]
 
 
 class SQLiteWhaleWatchHyperliquidRepository:

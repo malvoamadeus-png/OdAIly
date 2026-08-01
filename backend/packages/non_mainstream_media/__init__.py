@@ -12,9 +12,9 @@ from .models import (
 from .repository import (
     InMemoryNonMainstreamMediaRepository,
     NonMainstreamMediaRepository,
-    PostgresNonMainstreamMediaRepository,
     create_non_mainstream_media_repository,
 )
+from .sqlite_repository import SQLiteNonMainstreamMediaRepository
 from .worker import NonMainstreamMediaWorker
 from .telegram_discovery import TelegramDiscoveryWorker
 
@@ -28,7 +28,7 @@ __all__ = [
     "NonMainstreamMediaWorker",
     "ParsedArticle",
     "PipelineMode",
-    "PostgresNonMainstreamMediaRepository",
+    "SQLiteNonMainstreamMediaRepository",
     "create_non_mainstream_media_repository",
     "SiteDefinition",
     "SourceRunStats",

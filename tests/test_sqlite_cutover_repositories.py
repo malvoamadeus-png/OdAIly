@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import sqlite3
@@ -31,6 +33,23 @@ def test_complete_schema_and_console_mutation(monkeypatch, tmp_path):
     with connect_sqlite(path) as conn:
         names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"tasks", "auditor_checks", "writer3_contexts", "whale_watch_activities", "pipeline_alerts"} <= names
+
+    admins = ConsoleDataApi(path).execute({
+        "table": "console_admins",
+        "operation": "select",
+        "select": "email,created_at,updated_at",
+        "limit": 1,
+    })
+    assert admins
+    try:
+        ConsoleDataApi(path).execute({
+            "table": "console_admins",
+            "operation": "delete",
+        })
+    except ValueError as exc:
+        assert "read-only" in str(exc)
+    else:
+        raise AssertionError("console_admins must not be mutable through /console/data")
 
     rows = ConsoleDataApi(path).execute({
         "table": "whale_watch_addresses",
@@ -142,3 +161,54 @@ def test_shared_sqlite_context_closes_connection(tmp_path):
         assert "closed" in str(exc).lower()
     else:
         raise AssertionError("SQLite connection should close after its context exits")
+
+
+def test_runtime_package_exports_do_not_expose_postgres_repositories():
+    package_names = [
+        "packages.auditor",
+        "packages.competitor_monitor",
+        "packages.external_media_alert",
+        "packages.jin10_monitor",
+        "packages.maintenance",
+        "packages.non_mainstream_media",
+        "packages.pipeline_supervisor",
+        "packages.whale_watch",
+        "packages.writer3",
+        "packages.x_processing",
+    ]
+    sys.modules.pop("packages.common.postgres", None)
+
+    for package_name in package_names:
+        module = importlib.import_module(package_name)
+        exported = set(getattr(module, "__all__", ()))
+        assert not any("Postgres" in name for name in exported)
+
+    assert "packages.common.postgres" not in sys.modules
+
+
+def test_retired_postgres_repositories_cannot_be_constructed():
+    retired = [
+        ("packages.auditor.repository", "PostgresAuditorRepository"),
+        ("packages.competitor_monitor.repository", "PostgresCompetitorMonitorRepository"),
+        ("packages.external_media_alert.repository", "PostgresExternalMediaAlertRepository"),
+        ("packages.jin10_monitor.repository", "PostgresJin10MonitorRepository"),
+        ("packages.maintenance.repository", "PostgresMaintenanceRepository"),
+        ("packages.non_mainstream_media.repository", "PostgresNonMainstreamMediaRepository"),
+        ("packages.pipeline_supervisor.repository", "PostgresPipelineSupervisorRepository"),
+        ("packages.whale_watch.repository", "PostgresWhaleWatchRepository"),
+        ("packages.writer3.repository", "PostgresWriter3Repository"),
+        ("packages.x_capture.repository", "PostgresXCaptureRepository"),
+        ("packages.x_processing.repository", "PostgresXProcessingRepository"),
+    ]
+    sys.modules.pop("packages.common.postgres", None)
+
+    for module_name, class_name in retired:
+        cls = getattr(importlib.import_module(module_name), class_name)
+        try:
+            cls()
+        except RuntimeError as exc:
+            assert "retired" in str(exc)
+        else:
+            raise AssertionError(f"{class_name} should not be constructable")
+
+    assert "packages.common.postgres" not in sys.modules

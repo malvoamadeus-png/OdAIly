@@ -8,7 +8,8 @@ from .models import (
     MAINSTREAM_MEDIA_TASK_SOURCE,
     StageRunResult,
 )
-from .repository import ExternalMediaAlertRepository, InMemoryExternalMediaAlertRepository, PostgresExternalMediaAlertRepository, create_external_media_alert_repository
+from .repository import ExternalMediaAlertRepository, InMemoryExternalMediaAlertRepository, create_external_media_alert_repository
+from .sqlite_repository import SQLiteExternalMediaAlertRepository
 from .worker import ExternalMediaAlertWorker, build_alert_notice, normalize_title_key
 
 __all__ = [
@@ -22,7 +23,7 @@ __all__ = [
     "ExternalMediaAlertRepository",
     "ExternalMediaAlertWorker",
     "InMemoryExternalMediaAlertRepository",
-    "PostgresExternalMediaAlertRepository",
+    "SQLiteExternalMediaAlertRepository",
     "create_external_media_alert_repository",
     "StageRunResult",
     "build_alert_notice",

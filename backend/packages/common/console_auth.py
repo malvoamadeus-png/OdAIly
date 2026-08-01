@@ -26,10 +26,20 @@ class SQLiteConsoleAuthRepository:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or load_storage_settings().sqlite_path
-        LocalAuthRepository(self.path)
+        self.init_schema()
 
     def init_schema(self) -> None:
         LocalAuthRepository(self.path)
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                """
+                CREATE VIEW IF NOT EXISTS console_admins AS
+                SELECT email, created_at, updated_at
+                FROM local_auth_users
+                WHERE enabled = 1
+                """
+            )
+            conn.commit()
 
     def upsert_admin(self, email: str) -> ConsoleAdminRecord:
         normalized = normalize_console_admin_email(email)

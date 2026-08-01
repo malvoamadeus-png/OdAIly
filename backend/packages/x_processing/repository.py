@@ -5,11 +5,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from packages.common.postgres import (
-    build_psycopg_connect_kwargs,
-    get_postgres_connect_timeout_seconds as _get_postgres_connect_timeout_seconds,
-    load_database_url,
-)
 from packages.common.pipeline_schema import (
     CONSOLE_AUTH_SCHEMA_SQL,
     COMPETITOR_FILTER_SCHEMA_SQL,
@@ -278,6 +273,8 @@ def utc_now() -> datetime:
 
 
 def get_database_url() -> str:
+    from packages.common.postgres import load_database_url
+
     return load_database_url()
 
 
@@ -292,6 +289,8 @@ def _import_psycopg():
 
 
 def get_postgres_connect_timeout_seconds() -> int:
+    from packages.common.postgres import get_postgres_connect_timeout_seconds as _get_postgres_connect_timeout_seconds
+
     return _get_postgres_connect_timeout_seconds()
 
 
@@ -395,11 +394,14 @@ def _row_to_publisher_channel(row: dict[str, Any]) -> PublisherChannelRecord:
 
 class PostgresXProcessingRepository:
     def __init__(self, database_url: str | None = None) -> None:
+        raise RuntimeError("PostgresXProcessingRepository is retired; use create_x_processing_repository() for SQLite storage")
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
         self.application_name = "odaily-x-processing"
 
     def _connect(self, *, autocommit: bool = False):
+        from packages.common.postgres import build_psycopg_connect_kwargs
+
         return self._psycopg.connect(
             self.database_url,
             **build_psycopg_connect_kwargs(

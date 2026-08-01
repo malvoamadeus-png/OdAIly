@@ -277,7 +277,7 @@ def classify_error(sample_error: str, *, status: str) -> str:
 
 def action_hint_for_category(category: str) -> str:
     return {
-        "database_connection": "检查 Supabase 连接槽、idle in transaction、锁等待和相关服务连接释放。",
+        "database_connection": "检查本地 SQLite WAL、busy timeout、长事务、锁等待和相关服务连接释放。",
         "external_ai_billing": "检查 AI/embedding 服务余额、额度和账单状态；程序只能等待外部服务恢复。",
         "external_rate_limit": "检查外部服务限流，必要时降低并发或等待窗口恢复。",
         "external_auth": "检查外部 API token、权限和环境变量配置。",

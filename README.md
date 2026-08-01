@@ -347,8 +347,9 @@ DashScope embedding remains configured
 separately and does not go through LiteLLM.
 
 The Vite console also includes Prompt editing and publishing. Publishing a
-prompt version updates `prompt_templates.active_version_id`; workers listen for
-`prompt_config_changed` and refresh prompt cache.
+prompt version updates `prompt_templates.active_version_id`; workers refresh
+prompt cache through local SQLite reads and do not use a remote database
+listener.
 
 After deploying the competitor event console, verify the database and workers:
 

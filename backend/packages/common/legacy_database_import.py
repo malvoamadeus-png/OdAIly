@@ -13,6 +13,7 @@ from uuid import UUID
 from dotenv import load_dotenv
 
 from packages.auditor import create_auditor_repository
+from packages.common.console_auth import create_console_auth_repository
 from packages.common.editor_plugin_auth import create_editor_plugin_auth_repository
 from packages.common.source_exclusions import create_source_exclusion_repository
 from packages.common.storage import connect_sqlite, load_storage_settings
@@ -65,7 +66,7 @@ def initialize_sqlite_schema() -> Path:
         create_competitor_monitor_repository(), create_jin10_monitor_repository(),
         create_whale_watch_repository(), create_whale_watch_hyperliquid_repository(),
         create_writer3_repository(), create_auditor_repository(), create_pipeline_supervisor_repository(),
-        create_editor_plugin_auth_repository(), create_pipeline_timing_repository(),
+        create_console_auth_repository(), create_editor_plugin_auth_repository(), create_pipeline_timing_repository(),
     )
     for repository in repositories:
         initialize = getattr(repository, "init_schema", None)

@@ -4,7 +4,6 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Protocol
 
-from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.common.storage import load_storage_settings
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
@@ -128,11 +127,14 @@ def _row_to_source(row: dict[str, Any]) -> NonMainstreamMediaSource:
 
 class PostgresNonMainstreamMediaRepository:
     def __init__(self, database_url: str | None = None) -> None:
+        raise RuntimeError("PostgresNonMainstreamMediaRepository is retired; use create_non_mainstream_media_repository() for SQLite storage")
         self.database_url = database_url or get_database_url()
         self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
         self.application_name = "odaily-non-mainstream-media"
 
     def _connect(self, *, autocommit: bool = False):
+        from packages.common.postgres import build_psycopg_connect_kwargs
+
         return self._psycopg.connect(
             self.database_url,
             **build_psycopg_connect_kwargs(

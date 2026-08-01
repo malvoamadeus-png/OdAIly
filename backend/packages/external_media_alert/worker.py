@@ -4,7 +4,6 @@ import json
 import os
 import random
 import re
-import select
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -38,7 +37,7 @@ from .models import (
     MAINSTREAM_MEDIA_TASK_SOURCE,
     StageRunResult,
 )
-from .repository import PROMPT_NOTIFY_CHANNEL, TASK_NOTIFY_CHANNEL, ExternalMediaAlertRepository, PostgresExternalMediaAlertRepository, utc_now
+from .repository import ExternalMediaAlertRepository, utc_now
 
 
 class HandledStageError(RuntimeError):
@@ -104,14 +103,12 @@ class ExternalMediaAlertWorker:
         telegram_client: TelegramClient | None = None,
         worker_id: str | None = None,
         idle_sleep_seconds: float = 5.0,
-        notify_wait_seconds: float = 5.0,
     ) -> None:
         self.stage = stage
         self.repository = repository
         self.settings = settings
         self.worker_id = worker_id or f"{stage}-{os.getpid()}-{uuid4().hex[:8]}"
         self.idle_sleep_seconds = idle_sleep_seconds
-        self.notify_wait_seconds = notify_wait_seconds
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
@@ -398,46 +395,10 @@ class ExternalMediaAlertWorker:
             print(f"[odaily] local feed write skipped external_alert_task_id={task.id} error={exc}")
 
     def _start_notify_listener(self) -> threading.Thread | None:
-        if not isinstance(self.repository, PostgresExternalMediaAlertRepository):
-            return None
-        if not self.settings.enable_notify_listener:
-            print(f"[odaily] external media alert stage={self.stage} notify listener disabled; using polling only")
-            return None
-        thread = threading.Thread(
-            target=self._listen_for_changes,
-            name=f"external-media-alert-{self.stage}-listener",
-            daemon=True,
-        )
-        thread.start()
-        return thread
+        return None
 
     def _listen_for_changes(self) -> None:
-        repository = self.repository
-        if not isinstance(repository, PostgresExternalMediaAlertRepository):
-            return
-        channels = [TASK_NOTIFY_CHANNEL]
-        if self.stage == "domain_judge":
-            channels.append(PROMPT_NOTIFY_CHANNEL)
-        while not self._stop_event.is_set():
-            try:
-                with repository._connect() as conn:
-                    conn.autocommit = True
-                    for channel in channels:
-                        conn.execute(f"LISTEN {channel}")
-                    self._wake_event.set()
-                    print(f"[odaily] external media alert stage={self.stage} listening for {','.join(channels)}")
-                    while not self._stop_event.is_set():
-                        if select.select([conn], [], [], self.notify_wait_seconds)[0]:
-                            for notify in conn.notifies(timeout=0, stop_after=100):
-                                if getattr(notify, "channel", "") == PROMPT_NOTIFY_CHANNEL:
-                                    self._prompt_cache.clear()
-                                self._wake_event.set()
-            except Exception as exc:
-                if self._stop_event.is_set():
-                    break
-                print(f"[odaily] external media alert listener reconnecting stage={self.stage}: {exc}")
-                self._wake_event.set()
-                self._stop_event.wait(self.notify_wait_seconds)
+        return None
 
     def _load_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         cache = self._search_cache()
@@ -637,6 +598,6 @@ def strip_code_fence(value: str) -> str:
 
 def _search_cache_path_for_repository(repository: Any):
     paths = get_paths()
-    if type(repository).__name__.startswith("Postgres"):
+    if type(repository).__name__.startswith("SQLite"):
         return paths.searcher_cache_path
     return paths.processed_dir / "searcher" / f"test-alert-searcher-{uuid4().hex}.sqlite"

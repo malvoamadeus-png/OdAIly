@@ -68,3 +68,8 @@ python -m src.main storage-backup --destination /var/backups/odaily/odaily-YYYYM
 ```
 
 命令使用 SQLite backup API，能够包含已提交的 WAL 数据，并生成 `.manifest.json`。回切 Supabase 不依赖该备份；它用于 SQLite 自身故障恢复和迁移审计。
+# 运行时代码边界补充
+
+- 迁移后的包入口不导出 `Postgres*Repository`，也不在常驻导入路径加载 `packages.common.postgres`。
+- `psycopg` 仅用于 `storage-import-legacy` 读取冻结旧库；生产导入完成后，网页、插件、worker、监督者、维护命令和 repository factory 都不能连接 Supabase/Postgres。
+- `X_PROCESS_ENABLE_NOTIFY_LISTENER` 与 `EXTERNAL_MEDIA_ALERT_ENABLE_NOTIFY_LISTENER` 已废弃；阶段交接依赖本地队列、短事务和轮询。

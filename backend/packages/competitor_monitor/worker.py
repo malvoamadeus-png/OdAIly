@@ -347,6 +347,6 @@ def _event_assignment_deadline(timeout_seconds: int) -> Iterator[None]:
 
 def _search_cache_path_for_repository(repository) -> Any:
     paths = get_paths()
-    if type(repository).__name__.startswith("Postgres"):
+    if type(repository).__name__.startswith("SQLite"):
         return paths.searcher_cache_path
     return paths.processed_dir / "searcher" / f"test-competitor-searcher-{uuid4().hex}.sqlite"
