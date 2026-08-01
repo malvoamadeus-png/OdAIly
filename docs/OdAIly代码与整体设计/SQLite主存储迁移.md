@@ -18,6 +18,7 @@
 - SQLite 在线备份、完整性校验、SHA-256 manifest。
 - 网页和插件统一使用本地单账号认证；业务查询统一经过 `/console/data` 或插件 API，不再由浏览器直连数据库。
 - `storage-import-legacy` 一次性流式导入冻结旧库，并逐表核对行数、执行 SQLite `integrity_check`。
+- 导入器会把旧 `media_newsflash.title_key` 的历史空值规范化；同源同标题的重复旧行使用带旧 ID 的稳定后缀保留，避免唯一约束吞行。旧 `writer3_contexts.current_content` 空值转换为空字符串。
 
 `psycopg` 仅在执行一次性旧库导入命令时临时需要，不属于新版本服务依赖。生产导入完成并移除旧数据库 URL 后，任何常驻服务都不连接旧库。
 

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from packages.auditor.sqlite_repository import SQLiteAuditorRepository
-from packages.common.legacy_database_import import initialize_sqlite_schema
+from packages.common.legacy_database_import import _encode_import_row, initialize_sqlite_schema
 from packages.common.storage import connect_sqlite
 from packages.console_data_api import ConsoleDataApi
 from packages.pipeline_supervisor.sqlite_repository import SQLitePipelineSupervisorRepository
@@ -70,3 +70,30 @@ def test_writer_auditor_whale_and_supervisor_repositories(monkeypatch, tmp_path)
     assert any(row["component"] == "x_capture" for row in stale)
     assert supervisor.claim_alert(alert_key="test", message="test", dedup_cutoff=datetime.now(UTC) - timedelta(hours=1))
     assert not supervisor.claim_alert(alert_key="test", message="test", dedup_cutoff=datetime.now(UTC) - timedelta(hours=1))
+
+
+def test_legacy_nulls_are_normalized_without_collapsing_media_rows():
+    columns = ("id", "source", "title", "title_key")
+    seen: set[tuple[str, str]] = set()
+    first = _encode_import_row(
+        "media_newsflash",
+        {"id": 1, "source": "example", "title": "Same title", "title_key": None},
+        columns,
+        media_title_keys=seen,
+    )
+    duplicate = _encode_import_row(
+        "media_newsflash",
+        {"id": 2, "source": "example", "title": "Same title", "title_key": None},
+        columns,
+        media_title_keys=seen,
+    )
+    writer = _encode_import_row(
+        "writer3_contexts",
+        {"id": 3, "current_content": None},
+        ("id", "current_content"),
+        media_title_keys=set(),
+    )
+
+    assert first[3] == "sametitle"
+    assert duplicate[3] == "sametitle::legacy:2"
+    assert writer == (3, "")

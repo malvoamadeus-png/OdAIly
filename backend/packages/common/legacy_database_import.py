@@ -18,6 +18,7 @@ from packages.common.source_exclusions import create_source_exclusion_repository
 from packages.common.storage import connect_sqlite, load_storage_settings
 from packages.competitor_monitor import create_competitor_monitor_repository
 from packages.external_media_alert import create_external_media_alert_repository
+from packages.external_media_alert.repository import normalize_media_title_key
 from packages.jin10_monitor.repository import create_jin10_monitor_repository
 from packages.non_mainstream_media import create_non_mainstream_media_repository
 from packages.pipeline_supervisor import create_pipeline_supervisor_repository
@@ -95,6 +96,29 @@ def _encode(value: Any) -> Any:
     return str(value)
 
 
+def _encode_import_row(
+    table: str,
+    row: dict[str, Any],
+    columns: tuple[str, ...],
+    *,
+    media_title_keys: set[tuple[str, str]],
+) -> tuple[Any, ...]:
+    values = dict(row)
+    if table == "media_newsflash":
+        source = str(values.get("source") or "")
+        title_key = values.get("title_key")
+        if title_key is None:
+            normalized = normalize_media_title_key(str(values.get("title") or ""))
+            title_key = normalized
+            if (source, title_key) in media_title_keys:
+                title_key = f"{normalized}::legacy:{values.get('id')}"
+            values["title_key"] = title_key
+        media_title_keys.add((source, str(title_key)))
+    if table == "writer3_contexts" and values.get("current_content") is None:
+        values["current_content"] = ""
+    return tuple(_encode(values[column]) for column in columns)
+
+
 def import_legacy_database(
     *, execute: bool, truncate: bool = False, batch_size: int = 1000, sample_rows_per_table: int | None = None
 ) -> list[ImportTableResult]:
@@ -140,11 +164,32 @@ def import_legacy_database(
                     quoted = ",".join(f'"{column}"' for column in columns)
                     placeholders = ",".join("?" for _ in columns)
                     insert_sql = f'INSERT OR REPLACE INTO "{table}" ({quoted}) VALUES ({placeholders})'
+                    media_title_keys = (
+                        {
+                            (str(row["source"]), str(row["title_key"]))
+                            for row in destination.execute(
+                                "SELECT source, title_key FROM media_newsflash"
+                            ).fetchall()
+                        }
+                        if table == "media_newsflash"
+                        else set()
+                    )
                     with source.cursor(name=f"import_{table}") as cursor:
                         limit_sql = f" LIMIT {int(sample_rows_per_table)}" if sample_rows_per_table is not None else ""
                         cursor.execute(f'SELECT {quoted} FROM "{table}"{limit_sql}')
                         while batch := cursor.fetchmany(batch_size):
-                            destination.executemany(insert_sql, [tuple(_encode(row[column]) for column in columns) for row in batch])
+                            destination.executemany(
+                                insert_sql,
+                                [
+                                    _encode_import_row(
+                                        table,
+                                        row,
+                                        columns,
+                                        media_title_keys=media_title_keys,
+                                    )
+                                    for row in batch
+                                ],
+                            )
                             imported += len(batch)
                     destination.commit()
                 destination_count = int(destination.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0])
