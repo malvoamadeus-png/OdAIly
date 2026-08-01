@@ -488,8 +488,6 @@ class EditorPluginNewsGenService:
             },
             "syncer": {
                 "enabled": syncer_status["enabled"],
-                "feed_backfill_enabled": syncer_status["feed_backfill_enabled"],
-                "has_sync_email": bool(syncer_status["sync_email"]),
                 "last_feed_sync_at": syncer_status["last_feed_sync_at"],
                 "last_error": syncer_status["last_error"],
             },
@@ -566,7 +564,6 @@ class EditorPluginNewsGenService:
         return {"names": saved.names}
 
     def feed(self, actor: AuthenticatedEditor, limit: int = 120) -> list[dict[str, Any]]:
-        self.feed_syncer.set_sync_email(actor.email)
         return self.local_store.list_feed_items(
             limit=limit,
             max_age_hours=self.api_settings.local_feed_max_age_hours,
@@ -592,7 +589,6 @@ class EditorPluginNewsGenService:
             session_id=payload.get("p_session_id"),
             extra_json=payload.get("p_extra_json") if isinstance(payload.get("p_extra_json"), dict) else {},
         )
-        self.feed_syncer.set_sync_email(actor.email)
         self.feed_syncer.wake()
         return result
 

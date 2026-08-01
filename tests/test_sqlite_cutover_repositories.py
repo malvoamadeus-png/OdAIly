@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from packages.auditor.sqlite_repository import SQLiteAuditorRepository
 from packages.common.legacy_database_import import _encode_import_row, initialize_sqlite_schema
 from packages.common.storage import connect_sqlite
 from packages.console_data_api import ConsoleDataApi
+from packages.editor_plugin_api import EditorPluginNewsGenService
 from packages.pipeline_supervisor.sqlite_repository import SQLitePipelineSupervisorRepository
 from packages.whale_watch.hyperliquid_sqlite_repository import SQLiteWhaleWatchHyperliquidRepository
 from packages.whale_watch.sqlite_repository import SQLiteWhaleWatchRepository
@@ -97,3 +99,32 @@ def test_legacy_nulls_are_normalized_without_collapsing_media_rows():
     assert first[3] == "sametitle"
     assert duplicate[3] == "sametitle::legacy:2"
     assert writer == (3, "")
+
+
+def test_editor_plugin_health_has_no_removed_remote_sync_fields():
+    service = EditorPluginNewsGenService.__new__(EditorPluginNewsGenService)
+    service.feed_syncer = SimpleNamespace(
+        status=lambda: {
+            "enabled": True,
+            "last_feed_sync_at": None,
+            "last_error": None,
+        }
+    )
+    service.local_store = SimpleNamespace(
+        stats=lambda **_kwargs: {
+            "max_age_hours": 2,
+            "feed_items": {"recent": 1, "latest_occurred_at": None, "by_lane": {}},
+            "feedbacks": {"pending": 0, "failed": 0},
+            "sessions": {"active": 0},
+        }
+    )
+    service.api_settings = SimpleNamespace(local_feed_max_age_hours=2)
+
+    health = service.local_feed_health()
+
+    assert health["ok"] is True
+    assert health["syncer"] == {
+        "enabled": True,
+        "last_feed_sync_at": None,
+        "last_error": None,
+    }

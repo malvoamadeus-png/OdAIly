@@ -560,10 +560,6 @@ def editor_plugin_local_feed_status_command(args: argparse.Namespace) -> int:
     store = LocalEditorPluginStore(paths.runtime_dir / "editor_plugin_local.sqlite")
     payload = store.stats(max_age_hours=max_age_hours)
     payload["settings"] = {
-        "local_feed_sync_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_ENABLED") or "true").lower()
-        not in {"0", "false", "no", "off"},
-        "local_feed_backfill_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED") or "false").lower()
-        not in {"0", "false", "no", "off"},
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": local_feed_max_age_hours,
     }
