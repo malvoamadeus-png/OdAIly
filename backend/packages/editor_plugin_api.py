@@ -11,15 +11,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal
 
-import requests
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
-from packages.common.console_auth import PostgresConsoleAuthRepository
+from packages.common.storage import load_storage_settings
+from packages.console_data_api import ConsoleDataApi
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
-    PostgresEditorPluginAuthRepository,
+    create_editor_plugin_auth_repository,
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
@@ -34,9 +34,9 @@ from packages.gate_market_broadcast.store import GateMarketStore
 from packages.pipeline_timing import (
     PipelineTimingLocalStore,
     PipelineTimingSnapshotService,
-    PostgresPipelineTimingRepository,
+    create_pipeline_timing_repository,
 )
-from packages.x_capture.repository import PostgresXCaptureRepository
+from packages.x_capture.repository import create_x_capture_repository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord
@@ -51,7 +51,7 @@ from packages.x_processing.publisher_config import (
     publisher_rule_config_payload,
     save_publisher_rule_config,
 )
-from packages.x_processing.repository import PostgresXProcessingRepository
+from packages.x_processing.repository import create_x_processing_repository
 from packages.x_processing.searcher import (
     AI_REVIEW_SCHEMA,
     CachedEmbeddingService,
@@ -158,17 +158,11 @@ class EditorPluginLoginRequestModel(BaseModel):
 class EditorPluginApiSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
-    supabase_url: HttpUrl
-    supabase_key: str
-    auth_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
     session_ttl_hours: float = Field(default=168.0, gt=0.0, le=720.0)
     generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
-    local_feed_sync_enabled: bool = True
-    local_feed_backfill_enabled: bool = False
     local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
-    local_feed_sync_email: str | None = None
     pipeline_timing_refresh_interval_seconds: float = Field(default=3600.0, ge=60.0, le=86400.0)
 
 
@@ -184,13 +178,10 @@ class EditorPluginLocalFeedSyncer:
         self,
         *,
         settings: EditorPluginApiSettings,
-        repository: PostgresEditorPluginAuthRepository,
         local_store: LocalEditorPluginStore,
     ) -> None:
         self.settings = settings
-        self.repository = repository
         self.local_store = local_store
-        self._sync_email = (settings.local_feed_sync_email or "").strip().lower() or None
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._lock = threading.Lock()
@@ -199,8 +190,6 @@ class EditorPluginLocalFeedSyncer:
         self._last_feed_sync_at: datetime | None = None
 
     def start(self) -> None:
-        if not self.settings.local_feed_sync_enabled:
-            return
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -213,22 +202,12 @@ class EditorPluginLocalFeedSyncer:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
-    def set_sync_email(self, email: str | None) -> None:
-        normalized = (email or "").strip().lower()
-        if not normalized:
-            return
-        if self._sync_email != normalized:
-            self._sync_email = normalized
-            self._wake_event.set()
-
     def wake(self) -> None:
         self._wake_event.set()
 
     def status(self) -> dict[str, Any]:
         return {
-            "enabled": self.settings.local_feed_sync_enabled,
-            "feed_backfill_enabled": self.settings.local_feed_backfill_enabled,
-            "sync_email": self._sync_email,
+            "enabled": True,
             "last_feed_sync_at": self._last_feed_sync_at,
             "last_error": self._last_error,
         }
@@ -246,40 +225,11 @@ class EditorPluginLocalFeedSyncer:
             self._wake_event.clear()
 
     def _sync_once(self) -> None:
-        self._sync_pending_feedbacks()
-        if self.settings.local_feed_backfill_enabled and self._sync_email:
-            rows = self.repository.call_plugin_function(
-                email=self._sync_email,
-                function_name="editor_plugin_feed",
-                args=(120,),
-            )
-            normalized = [EditorPluginNewsGenService.normalize_feed_row(row) for row in rows]
-            count = self.local_store.upsert_feed_items(normalized)
-            self._last_feed_sync_at = datetime.now(UTC)
-            print(f"[odaily] editor plugin local feed synced count={count}")
+        self._last_feed_sync_at = datetime.now(UTC)
         self.local_store.prune_old(
             feed_retention_hours=max(24, self.settings.local_feed_max_age_hours * 4),
             synced_feedback_retention_days=90,
         )
-
-    def _sync_pending_feedbacks(self) -> None:
-        for item in self.local_store.list_pending_feedbacks(limit=50):
-            try:
-                self.repository.call_plugin_json_function(
-                    email=item.actor_email,
-                    function_name="editor_plugin_submit_feedback",
-                    args=(
-                        item.feed_item_id,
-                        item.feed_kind,
-                        item.feedback,
-                        item.session_id,
-                        json.dumps(item.extra_json, ensure_ascii=False),
-                    ),
-                )
-            except Exception as exc:
-                self.local_store.mark_feedback_failed(item.id, error=str(exc))
-                continue
-            self.local_store.mark_feedback_synced(item.id)
 
 
 def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None = None) -> EditorPluginApiSettings:
@@ -287,19 +237,11 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
     payload = {
         "host": host or os.getenv("EDITOR_PLUGIN_API_HOST") or "127.0.0.1",
         "port": port or int(os.getenv("EDITOR_PLUGIN_API_PORT") or 8765),
-        "supabase_url": os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL"),
-        "supabase_key": os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY"),
-        "auth_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_AUTH_TIMEOUT_SECONDS") or 15.0),
         "session_ttl_hours": float(os.getenv("EDITOR_PLUGIN_API_SESSION_TTL_HOURS") or 168.0),
         "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
-        "local_feed_sync_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_ENABLED") or "true").lower()
-        not in {"0", "false", "no", "off"},
-        "local_feed_backfill_enabled": str(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_BACKFILL_ENABLED") or "false").lower()
-        not in {"0", "false", "no", "off"},
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),
-        "local_feed_sync_email": os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_EMAIL"),
         "pipeline_timing_refresh_interval_seconds": float(os.getenv("PIPELINE_TIMING_REFRESH_INTERVAL_SECONDS") or 3600.0),
     }
     try:
@@ -334,12 +276,12 @@ def format_validation_error(error: ValidationError) -> str:
     return message
 
 
-class SupabaseEditorPluginAuthenticator:
+class LocalEditorPluginAuthenticator:
     def __init__(
         self,
         *,
         settings: EditorPluginApiSettings,
-        repository: PostgresEditorPluginAuthRepository,
+        repository: Any,
         local_store: LocalEditorPluginStore,
     ) -> None:
         self.settings = settings
@@ -348,7 +290,7 @@ class SupabaseEditorPluginAuthenticator:
 
     def login(self, request: EditorPluginLoginRequestModel) -> tuple[str, datetime, AuthenticatedEditor]:
         try:
-            user_id, email = self.repository.verify_supabase_password(request.email, request.password)
+            user_id, email = self.repository.verify_local_password(request.email, request.password)
         except ValueError as exc:
             raise EditorPluginUnauthorizedError("邮箱或密码错误") from exc
         record = self.repository.get_enabled_user(email)
@@ -397,63 +339,7 @@ class SupabaseEditorPluginAuthenticator:
                 display_name=local_session.display_name or local_session.email.split("@", 1)[0],
             )
 
-        session = self.repository.get_session(token_hash)
-        if session is not None:
-            record = self.repository.get_enabled_user(session.email)
-            if record is None:
-                raise EditorPluginForbiddenError("当前账号未加入插件白名单或已被停用")
-            display_name = record.display_name or session.display_name or record.email.split("@", 1)[0]
-            self.local_store.upsert_session(
-                token_hash=token_hash,
-                user_id=session.user_id,
-                email=record.email,
-                display_name=display_name,
-                expires_at=session.expires_at,
-            )
-            return AuthenticatedEditor(
-                user_id=session.user_id,
-                email=record.email,
-                display_name=display_name,
-            )
-
-        try:
-            response = requests.get(
-                f"{str(self.settings.supabase_url).rstrip('/')}/auth/v1/user",
-                headers={
-                    "apikey": self.settings.supabase_key,
-                    "Authorization": f"Bearer {token}",
-                },
-                timeout=self.settings.auth_timeout_seconds,
-            )
-        except requests.RequestException as exc:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
-
-        if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-            raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
-        if not response.ok:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试")
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
-        email = str(payload.get("email") or "").strip().lower()
-        if not email:
-            raise EditorPluginUnauthorizedError("当前登录态缺少邮箱信息")
-
-        record = self.repository.get_enabled_user(email)
-        if record is None:
-            raise EditorPluginForbiddenError("当前账号未加入插件白名单或已被停用")
-
-        metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
-        display_name = (
-            record.display_name
-            or str(metadata.get("display_name") or "").strip()
-            or str(metadata.get("name") or "").strip()
-            or email.split("@", 1)[0]
-        )
-        user_id = str(payload.get("id") or "").strip() or None
-        return AuthenticatedEditor(user_id=user_id, email=record.email, display_name=display_name)
+        raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
 
 
 class EditorPluginNewsGenService:
@@ -470,23 +356,22 @@ class EditorPluginNewsGenService:
         ensure_runtime_dirs(self.paths)
 
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
+        self.console_data = ConsoleDataApi(load_storage_settings().sqlite_path)
         self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
         self.gate_market_store = GateMarketStore(load_gate_market_settings().database_path)
         self.gate_market_store.initialize()
-        self.auth_repository = PostgresEditorPluginAuthRepository(database_url)
-        self.console_auth_repository = PostgresConsoleAuthRepository(database_url)
-        self.x_capture_repository = PostgresXCaptureRepository(database_url)
-        self.x_repository = PostgresXProcessingRepository(database_url)
-        self.pipeline_timing_repository = PostgresPipelineTimingRepository(database_url)
+        self.auth_repository = create_editor_plugin_auth_repository(database_url)
+        self.x_capture_repository = create_x_capture_repository(database_url)
+        self.x_repository = create_x_processing_repository(database_url)
+        self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
 
-        self.authenticator = SupabaseEditorPluginAuthenticator(
+        self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
             repository=self.auth_repository,
             local_store=self.local_store,
         )
         self.feed_syncer = EditorPluginLocalFeedSyncer(
             settings=api_settings,
-            repository=self.auth_repository,
             local_store=self.local_store,
         )
         self.pipeline_timing_snapshots = PipelineTimingSnapshotService(
@@ -550,49 +435,13 @@ class EditorPluginNewsGenService:
 
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         actor = self.authenticator.authenticate(authorization_header)
-        self.feed_syncer.set_sync_email(actor.email)
         return actor
 
     def authenticate_console_admin(self, authorization_header: str | None) -> AuthenticatedEditor:
-        token = parse_bearer_token(authorization_header)
-        try:
-            response = requests.get(
-                f"{str(self.api_settings.supabase_url).rstrip('/')}/auth/v1/user",
-                headers={
-                    "apikey": self.api_settings.supabase_key,
-                    "Authorization": f"Bearer {token}",
-                },
-                timeout=self.api_settings.auth_timeout_seconds,
-            )
-        except requests.RequestException as exc:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
-
-        if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-            raise EditorPluginUnauthorizedError("登录状态已失效，请重新登录")
-        if not response.ok:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试")
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise EditorPluginUpstreamError("Supabase 用户校验失败，请稍后再试") from exc
-        email = str(payload.get("email") or "").strip().lower()
-        if not email:
-            raise EditorPluginUnauthorizedError("当前登录态缺少邮箱信息")
-        record = self.console_auth_repository.get_admin(email)
-        if record is None:
-            raise EditorPluginForbiddenError("当前账号未加入控制台管理员白名单")
-        metadata = payload.get("user_metadata") if isinstance(payload.get("user_metadata"), dict) else {}
-        display_name = str(metadata.get("display_name") or "").strip() or str(metadata.get("name") or "").strip()
-        return AuthenticatedEditor(
-            user_id=str(payload.get("id") or "").strip() or None,
-            email=record.email,
-            display_name=display_name or record.email.split("@", 1)[0],
-        )
+        return self.authenticate(authorization_header)
 
     def login(self, request: EditorPluginLoginRequestModel) -> dict[str, Any]:
         token, expires_at, actor = self.authenticator.login(request)
-        self.feed_syncer.set_sync_email(actor.email)
         self.feed_syncer.wake()
         return {
             "access_token": token,
@@ -613,6 +462,9 @@ class EditorPluginNewsGenService:
             "display_name": actor.display_name or actor.email.split("@", 1)[0],
             "enabled": True,
         }
+
+    def execute_console_data(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        return self.console_data.execute(payload)
 
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
@@ -1081,6 +933,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     FEED_PATHS = {"/plugin/feed/items", "/plugin/feed/state", "/plugin/feed/mark-seen", "/plugin/feed/feedback"}
     NEWS_GEN_PATHS = {"/plugin/news-gen/search", "/plugin/news-gen/generate", "/plugin/news-gen/quick-generate"}
     CONSOLE_PATHS = {
+        "/console/data",
         "/console/publisher-rules/get",
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
@@ -1153,6 +1006,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
 
             if self.path in self.CONSOLE_PATHS:
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                if self.path == "/console/data":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_console_data(actor, self._read_json())})
+                    return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
                     return

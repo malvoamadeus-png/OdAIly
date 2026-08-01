@@ -14,7 +14,7 @@ function Quote-BashSingle([string]$Value) {
     return "'" + $Value.Replace("'", "'\''") + "'"
 }
 
-$script = ($input | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+$script = ($input | ForEach-Object { ([string]$_).TrimEnd("`r") }) -join "`n"
 if ([string]::IsNullOrWhiteSpace($script)) {
     throw "No Python script received on stdin."
 }

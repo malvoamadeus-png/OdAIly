@@ -82,12 +82,11 @@ curl -i https://47.76.243.147.sslip.io/plugin/auth/profile -X POST
 
 ## 5. 登录
 
-值班编辑使用各自的 Supabase Auth 邮箱密码登录。浏览器会把邮箱密码提交给插件轻服务，由轻服务校验 Supabase Auth 用户和插件白名单后签发插件专用 session；浏览器不再直接调用 Supabase Auth token 接口。
+网页和插件统一使用固定本地操作者账号 `odaily2026@gmail.com`。浏览器把邮箱密码提交给插件轻服务，由轻服务校验主 SQLite 中的 bcrypt 密码哈希并签发本地 session。
 
-只有加入 `editor_plugin_users` 白名单且 `enabled=true` 的用户可以读取信息流并提交反馈。
+只有该本地操作者可以读取信息流并提交反馈。
 
 注意：
 
-- `console_admins` 和 `editor_plugin_users` 不是同一张白名单。
-- 能登录控制台，不代表自动有插件权限。
-- 需要额外执行 `editor-plugin-grant-user` 把对应邮箱加入插件白名单。
+- 插件安装包不包含数据库地址或数据库密钥。
+- 登录服务在非 localhost 环境必须使用 HTTPS。

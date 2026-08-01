@@ -106,7 +106,7 @@ def test_litellm_alias_defaults_route_text_llm_calls(monkeypatch) -> None:
     assert writer3_settings.enabled is False
     assert writer3_settings.analysis_model == "odaily-deepseek-fast"
     assert writer3_settings.writer_model == "odaily-gpt-writer"
-    assert auditor_settings.model == "gpt-5.5"
+    assert auditor_settings.model == "odaily-gpt-auditor"
     assert auditor_settings.reasoning_effort == "medium"
     assert auditor_settings.openai_api_key == "litellm-key"
     assert QUICK_GENERATE_WRITER_MODEL == "odaily-deepseek-fast"

@@ -69,7 +69,7 @@ class LocalPipelineService:
         )
         self._ensure_worker_running()
         self._wake_event.set()
-        return {"id": job.id, "status": job.status}
+        return {"id": job.id, "status": job.status, "storage_epoch": job.storage_epoch}
 
     def health(self) -> dict[str, Any]:
         self._ensure_worker_running()
@@ -77,7 +77,9 @@ class LocalPipelineService:
         worker_alive = worker is not None and worker.is_alive()
         return {
             "ok": worker_alive,
+            "storage_epoch": self.queue.storage_epoch,
             "queue": self._safe_queue_stats(),
+            "queue_by_epoch": self.queue.stats_by_epoch(),
             "worker_alive": worker_alive,
             "worker_restarts": self._worker_restart_count,
             "last_worker_error": self._last_worker_error,

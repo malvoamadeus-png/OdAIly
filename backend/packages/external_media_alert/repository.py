@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.storage import load_storage_settings
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.repository import _import_psycopg, get_database_url
 from packages.x_processing.searcher import SearchDocument
@@ -602,6 +603,12 @@ class PostgresExternalMediaAlertRepository:
             """,
             (status, task_id),
         )
+
+
+def create_external_media_alert_repository(database_url: str | None = None) -> ExternalMediaAlertRepository:
+    del database_url
+    from .sqlite_repository import SQLiteExternalMediaAlertRepository
+    return SQLiteExternalMediaAlertRepository(load_storage_settings().sqlite_path)
 
 
 class InMemoryExternalMediaAlertRepository:

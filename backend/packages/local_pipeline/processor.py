@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -11,13 +12,13 @@ from packages.common.config import (
 )
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import ensure_runtime_dirs, get_paths
-from packages.external_media_alert import PostgresExternalMediaAlertRepository
+from packages.external_media_alert import create_external_media_alert_repository
 from packages.external_media_alert.models import (
     AI_SOURCE_ALERT_TASK_SOURCE,
     ALERT_TASK_SOURCE,
 )
 from packages.external_media_alert.worker import ExternalMediaAlertWorker, HandledStageError as AlertHandledStageError
-from packages.x_capture.repository import PostgresXCaptureRepository
+from packages.x_capture.repository import create_x_capture_repository
 from packages.x_processing.models import (
     AI_SOURCE,
     COMPETITOR_SOURCES,
@@ -26,7 +27,7 @@ from packages.x_processing.models import (
     SEARCH_FIRST_SOURCES,
     TaskRecord,
 )
-from packages.x_processing.repository import PostgresXProcessingRepository
+from packages.x_processing.repository import create_x_processing_repository
 from packages.x_processing.odaily_reference_source import fetch_odaily_reference_documents_from_api
 from packages.x_processing.searcher import SearchCache
 from packages.x_processing.worker import HandledStageError as XHandledStageError
@@ -70,9 +71,9 @@ class LocalPipelineProcessor:
         self.database_url = database_url
         self.paths = get_paths()
         ensure_runtime_dirs(self.paths)
-        self.x_repository = PostgresXProcessingRepository(database_url)
-        self.alert_repository = PostgresExternalMediaAlertRepository(database_url)
-        self.x_capture_repository = PostgresXCaptureRepository(database_url)
+        self.x_repository = create_x_processing_repository(database_url)
+        self.alert_repository = create_external_media_alert_repository(database_url)
+        self.x_capture_repository = create_x_capture_repository(database_url)
         self.x_settings = x_settings
         self.alert_settings = alert_settings
         self.worker_id = f"local_pipeline-{os.getpid()}"
@@ -83,6 +84,7 @@ class LocalPipelineProcessor:
         self._search_cache = SearchCache(self.paths.searcher_cache_path)
         self._search_cache_warmer_stop = threading.Event()
         self._search_cache_warmer_thread: threading.Thread | None = None
+        self._search_cache_last_maintenance_monotonic = 0.0
         self._heartbeat = HeartbeatThrottle(
             component="local_pipeline",
             worker_id=self.worker_id,
@@ -137,6 +139,7 @@ class LocalPipelineProcessor:
         while not self._search_cache_warmer_stop.is_set():
             try:
                 count = self.warm_search_cache_once()
+                self._maintain_search_cache_if_due()
                 self.record_heartbeat(
                     success=True,
                     error=None,
@@ -150,6 +153,28 @@ class LocalPipelineProcessor:
                     metadata={"search_cache_warm": True},
                 )
             self._search_cache_warmer_stop.wait(interval_seconds)
+
+    def _maintain_search_cache_if_due(self) -> None:
+        now = time.monotonic()
+        if (
+            self._search_cache_last_maintenance_monotonic > 0
+            and now - self._search_cache_last_maintenance_monotonic
+            < self.x_settings.search_cache_cleanup_interval_seconds
+        ):
+            return
+        result = self._search_cache.maintain(
+            dry_run=False,
+            short_retention_days=self.x_settings.search_cache_short_retention_days,
+            reference_retention_days=self.x_settings.search_cache_reference_retention_days,
+            convert_legacy=False,
+            compact=False,
+        )
+        self._search_cache_last_maintenance_monotonic = now
+        print(
+            "[odaily] search cache maintenance "
+            f"deleted_documents={result.deleted_documents} "
+            f"deleted_embeddings={result.deleted_embeddings}"
+        )
 
     def process(self, job: LocalPipelineJob) -> LocalPipelineRunResult:
         if job.job_type == "write_flow":

@@ -10,6 +10,7 @@ from statistics import mean, median
 from typing import Any
 
 from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
+from packages.common.storage import connect_sqlite, load_storage_settings
 
 
 PIPELINE_TIMING_WINDOWS = (24, 72, 168)
@@ -399,6 +400,40 @@ class PostgresPipelineTimingRepository:
                     (window_hours, generated_at, self._Jsonb(window)),
                 )
             conn.commit()
+
+
+class SQLitePipelineTimingRepository:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def init_schema(self) -> None:
+        return None
+
+    def list_recent_rows(self, *, max_hours: int = max(PIPELINE_TIMING_WINDOWS)) -> list[PipelineTimingRow]:
+        cutoff = (datetime.now(UTC) - timedelta(hours=max_hours)).isoformat()
+        placeholders = ",".join("?" for _ in PIPELINE_TIMING_SOURCES)
+        with connect_sqlite(self.path) as conn:
+            rows = conn.execute(
+                f"SELECT t.id task_id,t.source,t.status,t.created_at,t.metadata,p.news_type,p.publisher_decision,p.judge_completed_at,p.search_completed_at,p.write_completed_at,p.format_completed_at,p.publisher_decided_at,p.publish_completed_at FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id WHERE t.created_at>=? AND t.source IN ({placeholders}) ORDER BY t.created_at DESC,t.id DESC",
+                (cutoff, *PIPELINE_TIMING_SOURCES),
+            ).fetchall()
+        return [PipelineTimingRow(
+            task_id=int(row["task_id"]), source=str(row["source"]), status=str(row["status"]),
+            created_at=parse_iso_datetime(row["created_at"]) or datetime.now(UTC),
+            metadata=json.loads(row["metadata"] or "{}"), news_type=row["news_type"],
+            publisher_decision=row["publisher_decision"], judge_completed_at=parse_iso_datetime(row["judge_completed_at"]),
+            search_completed_at=parse_iso_datetime(row["search_completed_at"]), write_completed_at=parse_iso_datetime(row["write_completed_at"]),
+            format_completed_at=parse_iso_datetime(row["format_completed_at"]), publisher_decided_at=parse_iso_datetime(row["publisher_decided_at"]),
+            publish_completed_at=parse_iso_datetime(row["publish_completed_at"]),
+        ) for row in rows]
+
+    def archive_dashboard(self, payload: dict[str, Any]) -> None:
+        return None
+
+
+def create_pipeline_timing_repository(database_url: str | None = None):
+    del database_url
+    return SQLitePipelineTimingRepository(load_storage_settings().sqlite_path)
 
 
 class PipelineTimingSnapshotService:

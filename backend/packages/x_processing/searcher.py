@@ -5,6 +5,7 @@ import json
 import math
 import re
 import sqlite3
+import struct
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -24,6 +25,20 @@ except ImportError:  # pragma: no cover - optional runtime acceleration
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def encode_embedding_blob(vector: list[float]) -> bytes:
+    if not vector:
+        return b""
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def decode_embedding_blob(payload: bytes, dimensions: int) -> list[float]:
+    if dimensions < 0 or len(payload) != dimensions * 4:
+        raise ValueError("invalid float32 embedding payload")
+    if dimensions == 0:
+        return []
+    return list(struct.unpack(f"<{dimensions}f", payload))
 
 
 def normalize_for_embedding(*, title: str | None, content: str) -> str:
@@ -185,6 +200,15 @@ class SearchDecision:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SearchCacheMaintenanceResult:
+    dry_run: bool
+    deleted_documents: int
+    deleted_embeddings: int
+    converted_embeddings: int
+    compacted: bool
+
+
 def normalize_compare_url(value: str | None) -> str:
     if not value:
         return ""
@@ -279,7 +303,9 @@ class SearchCache:
                     cache_key text PRIMARY KEY,
                     model text NOT NULL,
                     content_hash text NOT NULL,
-                    vector_json text NOT NULL,
+                    vector_json text NOT NULL DEFAULT '',
+                    vector_blob blob,
+                    dimensions integer,
                     updated_at text NOT NULL
                 )
                 """
@@ -308,6 +334,14 @@ class SearchCache:
             )
             existing_columns = {
                 str(row["name"])
+                for row in conn.execute("PRAGMA table_info(embeddings)").fetchall()
+            }
+            if "vector_blob" not in existing_columns:
+                conn.execute("ALTER TABLE embeddings ADD COLUMN vector_blob blob")
+            if "dimensions" not in existing_columns:
+                conn.execute("ALTER TABLE embeddings ADD COLUMN dimensions integer")
+            existing_columns = {
+                str(row["name"])
                 for row in conn.execute("PRAGMA table_info(documents)").fetchall()
             }
             if "status" not in existing_columns:
@@ -323,28 +357,172 @@ class SearchCache:
     def get_embedding(self, *, cache_key: str, model: str, text_hash: str) -> list[float] | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT vector_json FROM embeddings WHERE cache_key = ? AND model = ? AND content_hash = ?",
+                """
+                SELECT vector_json, vector_blob, dimensions
+                FROM embeddings
+                WHERE cache_key = ? AND model = ? AND content_hash = ?
+                """,
                 (cache_key, model, text_hash),
             ).fetchone()
         if row is None:
             return None
+        if row["vector_blob"] is not None and row["dimensions"] is not None:
+            return decode_embedding_blob(bytes(row["vector_blob"]), int(row["dimensions"]))
         return [float(value) for value in json.loads(str(row["vector_json"]))]
 
     def set_embedding(self, *, cache_key: str, model: str, text_hash: str, vector: list[float]) -> None:
+        vector_blob = encode_embedding_blob(vector)
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO embeddings (cache_key, model, content_hash, vector_json, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO embeddings (
+                    cache_key, model, content_hash, vector_json, vector_blob, dimensions, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET
                     model = excluded.model,
                     content_hash = excluded.content_hash,
                     vector_json = excluded.vector_json,
+                    vector_blob = excluded.vector_blob,
+                    dimensions = excluded.dimensions,
                     updated_at = excluded.updated_at
                 """,
-                (cache_key, model, text_hash, json.dumps(vector), datetime.now(UTC).isoformat()),
+                (cache_key, model, text_hash, "", vector_blob, len(vector), datetime.now(UTC).isoformat()),
             )
             conn.commit()
+
+    def maintain(
+        self,
+        *,
+        dry_run: bool = True,
+        short_retention_days: int = 2,
+        reference_retention_days: int = 8,
+        convert_legacy: bool = True,
+        compact: bool = False,
+    ) -> SearchCacheMaintenanceResult:
+        if short_retention_days < 1 or reference_retention_days < short_retention_days:
+            raise ValueError("search cache retention requires reference days >= short days >= 1")
+        now = datetime.now(UTC)
+        short_cutoff = (now - timedelta(days=short_retention_days)).isoformat()
+        reference_cutoff = (now - timedelta(days=reference_retention_days)).isoformat()
+        stale_document_where = """
+            (
+                doc_type IN ('task', 'newsflash_item', 'editor_plugin_query', 'external_media_alert')
+                AND COALESCE(published_at, created_at, updated_at) < ?
+            )
+            OR (
+                doc_type = 'candidate'
+                AND COALESCE(status, 'inactive') <> 'active'
+                AND COALESCE(expires_at, updated_at) < ?
+            )
+            OR (
+                doc_type IN ('odaily_reference', 'external_media_alert_history')
+                AND COALESCE(published_at, created_at, updated_at) < ?
+            )
+            OR (
+                doc_type NOT IN (
+                    'task', 'newsflash_item', 'editor_plugin_query', 'external_media_alert',
+                    'candidate', 'odaily_reference', 'external_media_alert_history'
+                )
+                AND updated_at < ?
+            )
+        """
+        document_params = (short_cutoff, short_cutoff, reference_cutoff, reference_cutoff)
+        # Some producers intentionally use a query-specific cache key that differs
+        # from the document key. Keep all vectors for the longest active search
+        # window instead of assuming a join between both tables.
+        stale_embedding_where = "updated_at < ?"
+        embedding_params = (reference_cutoff,)
+
+        with self._connect() as conn:
+            deleted_documents = int(
+                conn.execute(
+                    f"SELECT count(*) FROM documents WHERE {stale_document_where}",
+                    document_params,
+                ).fetchone()[0]
+            )
+            deleted_embeddings = int(
+                conn.execute(
+                    f"SELECT count(*) FROM embeddings WHERE {stale_embedding_where}",
+                    embedding_params,
+                ).fetchone()[0]
+            )
+            converted_embeddings = 0
+            if convert_legacy:
+                converted_embeddings = int(
+                    conn.execute(
+                        """
+                        SELECT count(*)
+                        FROM embeddings
+                        WHERE vector_blob IS NULL
+                          AND vector_json <> ''
+                        """
+                    ).fetchone()[0]
+                )
+            if dry_run:
+                return SearchCacheMaintenanceResult(
+                    dry_run=True,
+                    deleted_documents=deleted_documents,
+                    deleted_embeddings=deleted_embeddings,
+                    converted_embeddings=converted_embeddings,
+                    compacted=False,
+                )
+
+            conn.execute("BEGIN IMMEDIATE")
+            document_cursor = conn.execute(
+                f"DELETE FROM documents WHERE {stale_document_where}",
+                document_params,
+            )
+            embedding_cursor = conn.execute(
+                f"DELETE FROM embeddings WHERE {stale_embedding_where}",
+                embedding_params,
+            )
+            converted_embeddings = self._convert_legacy_embeddings(conn) if convert_legacy else 0
+            conn.commit()
+            deleted_documents = int(document_cursor.rowcount or 0)
+            deleted_embeddings = int(embedding_cursor.rowcount or 0)
+
+        if compact:
+            with self._connect() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+        return SearchCacheMaintenanceResult(
+            dry_run=False,
+            deleted_documents=deleted_documents,
+            deleted_embeddings=deleted_embeddings,
+            converted_embeddings=converted_embeddings,
+            compacted=compact,
+        )
+
+    @staticmethod
+    def _convert_legacy_embeddings(conn: sqlite3.Connection, *, batch_size: int = 250) -> int:
+        converted = 0
+        while True:
+            rows = conn.execute(
+                """
+                SELECT cache_key, vector_json
+                FROM embeddings
+                WHERE vector_blob IS NULL
+                  AND vector_json <> ''
+                LIMIT ?
+                """,
+                (batch_size,),
+            ).fetchall()
+            if not rows:
+                return converted
+            updates: list[tuple[bytes, int, str]] = []
+            for row in rows:
+                vector = [float(value) for value in json.loads(str(row["vector_json"]))]
+                updates.append((encode_embedding_blob(vector), len(vector), str(row["cache_key"])))
+            conn.executemany(
+                """
+                UPDATE embeddings
+                SET vector_json = '', vector_blob = ?, dimensions = ?
+                WHERE cache_key = ?
+                """,
+                updates,
+            )
+            converted += len(updates)
 
     def upsert_document(self, document: SearchDocument) -> None:
         self.upsert_documents([document])

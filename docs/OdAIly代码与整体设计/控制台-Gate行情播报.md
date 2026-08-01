@@ -1,4 +1,4 @@
-# 控制台-Gate行情播报
+﻿# 控制台-Gate行情播报
 
 ## 职责与边界
 
@@ -116,7 +116,7 @@ SQLite，不再从旧 Gate JSON 配置读取。
 - `trigger_events`：仅保留最近100条诊断结果。
 - `alert_state`：Telegram 故障告警去重与恢复状态。
 
-不保存每分钟原始 JSON，不把行情、触发或配置写入 Supabase。
+不保存每分钟原始 JSON，行情、触发和配置只写独立本地 SQLite。
 
 ## CLI
 
@@ -158,13 +158,13 @@ python backend/src/main.py gate-market backtest --days 90
 开市状态连续5分钟无法成功取得 ticker、历史回填失败、发布失败、
 SQLite/worker 异常和磁盘剩余空间低于默认500MB时发送 Telegram 系统
 告警；同一故障30分钟去重，恢复后发送一次恢复通知。模块不写现有
-Supabase 监督者心跳。
+主 SQLite 监督者心跳。
 
 ## 控制台
 
 控制台新增只读一级页面 `Gate行情播报`，通过
 `GET /console/gate-market/get` 读取 SQLite 快照。接口继续使用现有
-Supabase Auth token 与 `console_admins` 白名单校验，但返回的业务数据
+本地操作者 session 校验，但返回的业务数据
 完全来自 Linux SQLite。
 
 页面只展示运行模式、轮询周期、8个标的的阈值/现价/状态、四类文本模板

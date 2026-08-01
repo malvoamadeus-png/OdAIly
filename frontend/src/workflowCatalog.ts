@@ -1,4 +1,4 @@
-export type WorkflowNodeKind = 'collector' | 'dedupe' | 'judge' | 'writer' | 'formatter' | 'publisher' | 'notify' | 'split';
+﻿export type WorkflowNodeKind = 'collector' | 'dedupe' | 'judge' | 'writer' | 'formatter' | 'publisher' | 'notify' | 'split';
 
 export type WorkflowNode = {
   id: string;
@@ -580,7 +580,7 @@ export const workflowPrinciples = [
   },
   {
     title: 'tasks 是档案库',
-    body: '生产主链路由 local_pipeline 串联执行，Supabase/Postgres 保存输入、阶段结果、最终状态和失败原因。',
+    body: '生产主链路由 local_pipeline 串联执行，Linux SQLite 保存输入、阶段结果、最终状态和失败原因。',
   },
   {
     title: '本地 job 唯一键',

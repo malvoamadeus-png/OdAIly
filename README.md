@@ -122,21 +122,16 @@ and no flow sends `imageUrl` unless it is explicitly added later.
 
 ## X Capture Console
 
-The first X capture module stores raw public X/Twitter posts into Postgres
-`tasks` with `status='pending'`. It uses `SUPABASE_DB_URL` or `DATABASE_URL`
-for direct Postgres access in the backend worker. The browser console is a
-Vite static app that connects to Supabase with `VITE_SUPABASE_URL` and
-`VITE_SUPABASE_ANON_KEY`, then authenticates operators with Supabase Auth
-email/password before any console table access is allowed.
+The X capture module stores raw public X/Twitter posts in the Linux primary
+SQLite `tasks` table. All backend modules use `ODAILY_SQLITE_PATH`; the Vite
+console reaches allowlisted data through the authenticated HTTPS API and never
+connects to a database directly.
 
 ```powershell
 pip install -r backend\requirements.txt
 python backend\src\main.py x-init-db
 python backend\src\main.py x-capture-worker
 ```
-
-If you initialize Supabase manually, run `supabase/x_capture_schema.sql` once
-in the Supabase SQL Editor before deploying the frontend.
 
 For frontend development and Vercel deployment:
 
@@ -146,11 +141,8 @@ npm install
 npm run dev
 ```
 
-Bootstrap a console admin after schema initialization:
-
-```powershell
-python backend\src\main.py console-grant-admin --email your-admin@example.com
-```
+The console and extension use the fixed local operator account documented in
+`docs/OdAIly代码与整体设计/控制台.md`.
 
 ## Editor Feed Extension
 
@@ -159,16 +151,14 @@ side-panel extension. It consumes the same upstream notifications as Telegram
 and adds seen tracking, accept/reject feedback, and optional new-item sound
 alerts.
 
-Initialize the plugin schema and whitelist one editor:
+Initialize the local plugin schema and inspect the configured operator:
 
 ```powershell
 python backend\src\main.py editor-plugin-init-db
-python backend\src\main.py editor-plugin-grant-user --email editor@example.com --display-name "Night Editor"
 python backend\src\main.py editor-plugin-list-users
 ```
 
-The current plugin package already embeds the Supabase URL and publishable key,
-so editors do not need to fill connection parameters manually.
+The plugin package embeds only the HTTPS service URL; it contains no database credentials.
 
 Then load `extension/` in `chrome://extensions` as an unpacked extension.
 Detailed setup and behavior live in
@@ -176,9 +166,8 @@ Detailed setup and behavior live in
 [`extension/README-install.md`](extension/README-install.md).
 
 The deployed frontend writes `x_capture_settings` and `x_capture_accounts`
-directly through Supabase, but only for authenticated emails present in
-`console_admins`. The worker listens on Postgres `x_capture_config_changed`
-notifications and does not expose a console port.
+through the authenticated `/console/data` API. Workers reload local SQLite
+configuration without a remote database listener.
 
 ## Collectors And Processing Pipeline
 
@@ -231,7 +220,7 @@ The `巨鲸` console tab now contains two monitors:
 - `链上`: EVM address monitoring through Blockscout-compatible explorers.
 - `Hyperliquid`: open/close fill monitoring through the Hyperliquid `info` API.
 
-The browser writes only address configuration and labels into Supabase. Backend
+The browser writes address configuration and labels through the local API. Backend
 workers poll the upstream APIs every 60 seconds, dedupe new activity, and send
 Telegram alerts. The first poll for an address seeds current state and does
 not alert historical activity.

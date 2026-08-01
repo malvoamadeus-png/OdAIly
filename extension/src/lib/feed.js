@@ -1,4 +1,4 @@
-import { rpc } from "./supabase.js";
+﻿import { rpc } from "./local-api.js";
 
 export async function fetchEditorProfile(config, session) {
   const profile = await rpc(config, session, "editor_plugin_profile");

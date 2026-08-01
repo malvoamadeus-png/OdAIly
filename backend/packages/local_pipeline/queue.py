@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from packages.common.storage import load_storage_settings
+
 
 LocalPipelineJobType = Literal["write_flow", "alert_only"]
 
@@ -39,11 +41,13 @@ class LocalPipelineJob:
     status: str
     attempt_count: int
     payload: dict[str, Any]
+    storage_epoch: str
 
 
 class LocalPipelineQueue:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, storage_epoch: str | None = None) -> None:
         self.path = path
+        self.storage_epoch = storage_epoch or load_storage_settings().epoch
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
@@ -67,6 +71,7 @@ class LocalPipelineQueue:
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     payload TEXT NOT NULL DEFAULT '{}',
+                    storage_epoch TEXT NOT NULL DEFAULT 'postgres-legacy',
                     locked_by TEXT,
                     locked_at TEXT,
                     next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -77,10 +82,15 @@ class LocalPipelineQueue:
                 )
                 """
             )
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(local_pipeline_jobs)")}
+            if "storage_epoch" not in columns:
+                conn.execute(
+                    "ALTER TABLE local_pipeline_jobs ADD COLUMN storage_epoch TEXT NOT NULL DEFAULT 'postgres-legacy'"
+                )
             conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_local_pipeline_jobs_status_next
-                ON local_pipeline_jobs(status, next_attempt_at, created_at)
+                CREATE INDEX IF NOT EXISTS idx_local_pipeline_jobs_epoch_status_next
+                ON local_pipeline_jobs(storage_epoch, status, next_attempt_at, created_at)
                 """
             )
 
@@ -99,9 +109,10 @@ class LocalPipelineQueue:
             conn.execute(
                 """
                 INSERT INTO local_pipeline_jobs (
-                    job_type, task_id, source, source_item_id, payload, status, next_attempt_at, updated_at
+                    job_type, task_id, source, source_item_id, payload, storage_epoch,
+                    status, next_attempt_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 ON CONFLICT(source, source_item_id) DO UPDATE SET
                     job_type = excluded.job_type,
                     task_id = excluded.task_id,
@@ -115,8 +126,9 @@ class LocalPipelineQueue:
                         ELSE excluded.next_attempt_at
                     END,
                     updated_at = excluded.updated_at
+                WHERE local_pipeline_jobs.storage_epoch = excluded.storage_epoch
                 """,
-                (job_type, task_id, source, source_item_id, encoded_payload, now, now),
+                (job_type, task_id, source, source_item_id, encoded_payload, self.storage_epoch, now, now),
             )
             row = conn.execute(
                 """
@@ -137,11 +149,12 @@ class LocalPipelineQueue:
                 SELECT *
                 FROM local_pipeline_jobs
                 WHERE status IN ('pending', 'failed')
+                  AND storage_epoch = ?
                   AND next_attempt_at <= ?
                 ORDER BY created_at ASC, id ASC
                 LIMIT 1
                 """,
-                (now,),
+                (self.storage_epoch, now),
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -179,10 +192,11 @@ class LocalPipelineQueue:
                     next_attempt_at = ?,
                     updated_at = ?
                 WHERE status = 'running'
+                  AND storage_epoch = ?
                   AND locked_at IS NOT NULL
                   AND locked_at < ?
                 """,
-                (now, now, cutoff),
+                (now, now, self.storage_epoch, cutoff),
             )
             return int(cursor.rowcount or 0)
 
@@ -227,10 +241,27 @@ class LocalPipelineQueue:
                 """
                 SELECT status, count(*) AS count
                 FROM local_pipeline_jobs
+                WHERE storage_epoch = ?
                 GROUP BY status
-                """
+                """,
+                (self.storage_epoch,),
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def stats_by_epoch(self) -> dict[str, dict[str, int]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT storage_epoch, status, count(*) AS count
+                FROM local_pipeline_jobs
+                GROUP BY storage_epoch, status
+                ORDER BY storage_epoch, status
+                """
+            ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for row in rows:
+            result.setdefault(str(row["storage_epoch"]), {})[str(row["status"])] = int(row["count"])
+        return result
 
     @staticmethod
     def _row_to_job(row: sqlite3.Row) -> LocalPipelineJob:
@@ -243,4 +274,5 @@ class LocalPipelineQueue:
             status=str(row["status"]),
             attempt_count=int(row["attempt_count"]),
             payload=decode_payload(row["payload"]),
+            storage_epoch=str(row["storage_epoch"]),
         )

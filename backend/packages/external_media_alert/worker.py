@@ -450,7 +450,7 @@ class ExternalMediaAlertWorker:
                 cache.upsert_documents(api_documents)
             return api_documents
         except Exception as exc:
-            print(f"[odaily] external alert odaily api refresh failed; fallback=supabase/cache error={exc}")
+            print(f"[odaily] external alert odaily api refresh failed; fallback=local-sqlite-cache error={exc}")
         if cache is None:
             return self.repository.list_odaily_reference_documents(since=since)
         local_documents = cache.list_odaily_reference_documents(since=since)

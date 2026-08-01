@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.storage import load_storage_settings
 from packages.x_processing.repository import _import_psycopg, get_database_url
 
 from .models import DEFAULT_JIN10_ENDPOINT_URL, DEFAULT_JIN10_HEADERS, JIN10_SOURCE, Jin10Item, Jin10RunResult, Jin10Settings
@@ -269,6 +270,12 @@ class PostgresJin10MonitorRepository:
                 ),
             )
             conn.commit()
+
+
+def create_jin10_monitor_repository(database_url: str | None = None) -> Jin10MonitorRepository:
+    del database_url
+    from .sqlite_repository import SQLiteJin10MonitorRepository
+    return SQLiteJin10MonitorRepository(load_storage_settings().sqlite_path)
 
 
 class InMemoryJin10MonitorRepository:

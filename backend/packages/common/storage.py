@@ -1,12 +1,74 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
+import os
+import re
+import sqlite3
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from .paths import AppPaths
+from dotenv import load_dotenv
+
+from .paths import AppPaths, get_paths
 from .time_utils import today_key
+
+
+StorageBackend = Literal["sqlite"]
+STORAGE_EPOCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+@dataclass(frozen=True, slots=True)
+class StorageSettings:
+    backend: StorageBackend
+    epoch: str
+    sqlite_path: Path
+
+
+def load_storage_settings() -> StorageSettings:
+    load_dotenv()
+    raw_backend = (os.getenv("ODAILY_STORAGE_BACKEND") or "sqlite").strip().lower()
+    if raw_backend != "sqlite":
+        raise ValueError("ODAILY_STORAGE_BACKEND must be sqlite in this version")
+    backend: StorageBackend = raw_backend  # type: ignore[assignment]
+    epoch = (os.getenv("ODAILY_STORAGE_EPOCH") or "sqlite-primary").strip()
+    if not STORAGE_EPOCH_PATTERN.fullmatch(epoch):
+        raise ValueError("ODAILY_STORAGE_EPOCH contains unsupported characters")
+    default_path = get_paths().data_dir / "database" / "odaily.sqlite"
+    sqlite_path = Path(os.getenv("ODAILY_SQLITE_PATH") or default_path).expanduser().resolve()
+    return StorageSettings(backend=backend, epoch=epoch, sqlite_path=sqlite_path)
+
+
+def connect_sqlite(path: Path, *, timeout_seconds: float = 30.0) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=timeout_seconds)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=FULL")
+    return conn
+
+
+def initialize_storage_metadata(path: Path) -> None:
+    with connect_sqlite(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS storage_schema_migrations (
+                version integer PRIMARY KEY,
+                name text NOT NULL,
+                applied_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS storage_runtime (
+                singleton_key text PRIMARY KEY CHECK (singleton_key = 'global'),
+                active_backend text NOT NULL CHECK (active_backend = 'sqlite'),
+                active_epoch text NOT NULL,
+                updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.commit()
 
 
 def _json_default(value: Any) -> Any:

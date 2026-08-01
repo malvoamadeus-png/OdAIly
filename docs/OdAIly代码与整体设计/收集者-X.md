@@ -1,4 +1,4 @@
-# 收集者-X
+﻿# 收集者-X
 
 ## 职责
 
@@ -6,7 +6,7 @@
 
 ## 配置来源
 
-控制台通过 Supabase 维护：
+控制台通过认证后的本地 API 维护主 SQLite：
 
 - `x_capture_settings`
 - `x_capture_accounts`
@@ -53,7 +53,7 @@ worker 启动时加载配置。运行中不再保留专门的数据库监听连�
 
 ## 本地流水线交接
 
-收集者-X 不再依赖 Supabase 的 `tasks.status + worker claim + LISTEN/NOTIFY` 把任务交给多个处理 worker。
+收集者-X 写入主 SQLite，并通过本地流水线 job 交给处理链；不使用数据库 `LISTEN/NOTIFY`。
 
 当前交接规则：
 
@@ -141,4 +141,4 @@ python backend\src\main.py x-init-db
 python backend\src\main.py x-capture-worker
 ```
 
-`x-capture-worker` 是常驻运行命令，启动时不自动执行 schema 初始化。首次部署或 schema 变更后，必须先单独执行 `x-init-db`，再启动或重启 worker，避免常驻服务重启时在 Supabase 上反复触发 DDL 锁等待。
+`x-capture-worker` 是常驻运行命令，启动时不自动执行 schema 初始化。首次部署或 schema 变更后，必须先单独执行 `x-init-db`，再启动或重启 worker，避免常驻服务重启时反复执行 schema 变更。

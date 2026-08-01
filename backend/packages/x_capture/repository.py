@@ -11,6 +11,7 @@ from packages.common.attempt_sampling import (
 )
 from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.storage import load_storage_settings
 
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
@@ -603,6 +604,12 @@ class PostgresXCaptureRepository:
                 ),
             )
             conn.commit()
+
+
+def create_x_capture_repository(database_url: str | None = None) -> XCaptureRepository:
+    del database_url
+    from .sqlite_repository import SQLiteXCaptureRepository
+    return SQLiteXCaptureRepository(load_storage_settings().sqlite_path)
 
 
 class InMemoryXCaptureRepository:

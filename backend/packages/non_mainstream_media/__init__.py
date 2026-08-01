@@ -13,6 +13,7 @@ from .repository import (
     InMemoryNonMainstreamMediaRepository,
     NonMainstreamMediaRepository,
     PostgresNonMainstreamMediaRepository,
+    create_non_mainstream_media_repository,
 )
 from .worker import NonMainstreamMediaWorker
 from .telegram_discovery import TelegramDiscoveryWorker
@@ -28,6 +29,7 @@ __all__ = [
     "ParsedArticle",
     "PipelineMode",
     "PostgresNonMainstreamMediaRepository",
+    "create_non_mainstream_media_repository",
     "SiteDefinition",
     "SourceRunStats",
     "TelegramDiscoveryWorker",

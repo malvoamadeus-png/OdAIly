@@ -3,10 +3,12 @@ from __future__ import annotations
 import threading
 import time
 import unicodedata
+import json
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
 from packages.common.postgres import build_psycopg_connect_kwargs, load_database_url
+from packages.common.storage import connect_sqlite, load_storage_settings
 
 
 SOURCE_EXCLUSION_SCOPES = (
@@ -136,6 +138,52 @@ class PostgresSourceExclusionRepository:
             )
             for row in rows
         ]
+
+
+class SQLiteSourceExclusionRepository:
+    def __init__(self, path) -> None:
+        self.path = path
+        with connect_sqlite(path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS source_exclusion_rule_groups (
+                    id integer PRIMARY KEY AUTOINCREMENT,
+                    rule_key text NOT NULL UNIQUE,
+                    name text NOT NULL UNIQUE,
+                    description text NOT NULL DEFAULT '',
+                    scopes text NOT NULL,
+                    terms text NOT NULL,
+                    match_target text NOT NULL DEFAULT 'title',
+                    enabled integer NOT NULL DEFAULT 1,
+                    created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+
+    def list_enabled_rule_groups(self) -> list[SourceExclusionRuleGroup]:
+        with connect_sqlite(self.path) as conn:
+            rows = conn.execute(
+                "SELECT rule_key, name, description, scopes, terms, match_target, enabled FROM source_exclusion_rule_groups WHERE enabled=1 ORDER BY name, rule_key"
+            ).fetchall()
+        return [
+            SourceExclusionRuleGroup(
+                rule_key=str(row["rule_key"]),
+                name=str(row["name"]),
+                description=str(row["description"] or ""),
+                scopes=tuple(str(value) for value in json.loads(row["scopes"])),
+                terms=tuple(str(value) for value in json.loads(row["terms"])),
+                match_target=normalize_exclusion_match_target(row["match_target"]),
+                enabled=bool(row["enabled"]),
+            )
+            for row in rows
+        ]
+
+
+def create_source_exclusion_repository(database_url: str | None = None) -> SourceExclusionRepository:
+    del database_url
+    return SQLiteSourceExclusionRepository(load_storage_settings().sqlite_path)
 
 
 class SourceExclusionMatcher:

@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.common.time_utils import SHANGHAI_TZ
+from packages.common.storage import load_storage_settings
 from packages.x_processing.repository import SCHEMA_SQL, _import_psycopg, get_database_url
 from packages.x_processing.searcher import content_hash, normalize_for_embedding
 
@@ -686,6 +687,12 @@ class PostgresCompetitorMonitorRepository:
                 ),
             )
             conn.commit()
+
+
+def create_competitor_monitor_repository(database_url: str | None = None) -> CompetitorMonitorRepository:
+    del database_url
+    from .sqlite_repository import SQLiteCompetitorMonitorRepository
+    return SQLiteCompetitorMonitorRepository(load_storage_settings().sqlite_path)
 
 
 RAW_PUBLISHED_AT_FIELDS: dict[str, tuple[str, ...]] = {

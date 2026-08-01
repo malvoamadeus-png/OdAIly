@@ -1,4 +1,4 @@
-import {
+﻿import {
   fetchEditorProfile,
   fetchFeedItems,
   fetchFeedState,
@@ -27,7 +27,7 @@ import {
   refreshAuthSession,
   signInWithPassword,
   signOut
-} from "./lib/supabase.js";
+} from "./lib/local-api.js";
 
 const app = document.getElementById("app");
 const FEED_TAB = "feed";
@@ -681,7 +681,7 @@ function renderConfigGate() {
       <section class="panel gatePanel">
         <p class="eyebrow">OdAIly</p>
         <h1>插件内置配置缺失</h1>
-        <p class="helperText">当前包内没有可用的 Supabase 或快讯生成连接参数，请联系管理员重新打包插件。</p>
+        <p class="helperText">当前包内没有可用的本地服务或快讯生成连接参数，请联系管理员重新打包插件。</p>
         ${state.error ? `<div class="inlineError">${escapeHtml(state.error)}</div>` : ""}
         <button id="openOptionsButton" class="primaryButton">打开设置</button>
       </section>
@@ -1265,7 +1265,7 @@ function startPolling() {
 }
 
 function render() {
-  if (!state.settings?.supabaseUrl || !state.settings?.supabaseAnonKey || !state.settings?.pluginApiBaseUrl) {
+  if (!state.settings?.pluginApiBaseUrl) {
     renderConfigGate();
     return;
   }
@@ -1287,7 +1287,7 @@ async function boot() {
   state.activeTopTab = sanitizeTopTab(await getActiveTopTab());
   state.newsGenDraft = sanitizeNewsGenDraft(await getNewsGenDraft());
   state.newsGenResult = await getNewsGenResult();
-  if (!state.settings.supabaseUrl || !state.settings.supabaseAnonKey || !state.settings.pluginApiBaseUrl) {
+  if (!state.settings.pluginApiBaseUrl) {
     render();
     return;
   }
@@ -1322,7 +1322,7 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
   if (changes.feedLaneRatios) {
     state.feedLaneRatios = await getFeedLaneRatios();
   }
-  const authConfigChanged = Boolean(changes.supabaseUrl || changes.supabaseAnonKey || changes.pluginApiBaseUrl);
+  const authConfigChanged = Boolean(changes.pluginApiBaseUrl);
   if (
     authConfigChanged ||
     changes.pollIntervalSeconds ||

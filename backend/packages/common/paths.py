@@ -16,6 +16,8 @@ class AppPaths:
     config_dir: Path
     market_brief_config_path: Path
     gate_tradfi_config_path: Path
+    database_dir: Path | None = None
+    primary_database_path: Path | None = None
     searcher_dir: Path | None = None
     searcher_cache_path: Path | None = None
     competitor_monitor_dir: Path | None = None
@@ -25,6 +27,8 @@ class AppPaths:
     runtime_dir: Path | None = None
 
     def __post_init__(self) -> None:
+        database_dir = self.database_dir or self.data_dir / "database"
+        primary_database_path = self.primary_database_path or database_dir / "odaily.sqlite"
         searcher_dir = self.searcher_dir or self.processed_dir / "searcher"
         searcher_cache_path = self.searcher_cache_path or searcher_dir / "searcher.sqlite"
         competitor_monitor_dir = self.competitor_monitor_dir or self.processed_dir / "competitor_monitor"
@@ -33,6 +37,8 @@ class AppPaths:
         writer3_index_path = self.writer3_index_path or writer3_dir / "writer3.sqlite"
         runtime_dir = self.runtime_dir or self.data_dir / "runtime"
         object.__setattr__(self, "searcher_dir", searcher_dir)
+        object.__setattr__(self, "database_dir", database_dir)
+        object.__setattr__(self, "primary_database_path", primary_database_path)
         object.__setattr__(self, "searcher_cache_path", searcher_cache_path)
         object.__setattr__(self, "competitor_monitor_dir", competitor_monitor_dir)
         object.__setattr__(self, "competitor_monitor_db_path", competitor_monitor_db_path)
@@ -54,6 +60,8 @@ def get_paths() -> AppPaths:
         processed_dir=data_dir / "processed",
         exports_dir=data_dir / "exports",
         config_dir=config_dir,
+        database_dir=data_dir / "database",
+        primary_database_path=data_dir / "database" / "odaily.sqlite",
         runtime_dir=data_dir / "runtime",
         market_brief_config_path=config_dir / "market_brief.json",
         gate_tradfi_config_path=config_dir / "gate_tradfi.json",
@@ -76,6 +84,7 @@ def ensure_runtime_dirs(paths: AppPaths) -> None:
         paths.exports_dir,
         paths.runtime_dir,
         paths.config_dir,
+        paths.database_dir,
         paths.raw_dir / "market_quotes",
         paths.raw_dir / "gate_quotes",
         paths.processed_dir / "briefs",

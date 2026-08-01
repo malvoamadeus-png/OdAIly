@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from packages.common.postgres import build_psycopg_connect_kwargs
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.storage import load_storage_settings
 from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
 
 from .models import (
@@ -528,6 +529,12 @@ class PostgresNonMainstreamMediaRepository:
                 ),
             )
             conn.commit()
+
+
+def create_non_mainstream_media_repository(database_url: str | None = None) -> NonMainstreamMediaRepository:
+    del database_url
+    from .sqlite_repository import SQLiteNonMainstreamMediaRepository
+    return SQLiteNonMainstreamMediaRepository(load_storage_settings().sqlite_path)
 
 
 class InMemoryNonMainstreamMediaRepository:

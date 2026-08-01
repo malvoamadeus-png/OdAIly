@@ -1,4 +1,4 @@
-import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
+﻿import { createLocalClient, type LocalApiClient, type Session } from './localApiClient';
 
 export type Settings = {
   global_interval_seconds: number;
@@ -603,23 +603,18 @@ const reservedPaths = new Set([
   'compose',
 ]);
 
-let client: SupabaseClient | null = null;
+let client: LocalApiClient | null = null;
 
-function supabase(): SupabaseClient {
+function localApi(): LocalApiClient {
   if (client) {
     return client;
   }
-  const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-  if (!url || !anonKey) {
-    throw new Error('缺少 VITE_SUPABASE_URL 或 VITE_SUPABASE_ANON_KEY');
-  }
-  client = createClient(url, anonKey);
+  client = createLocalClient();
   return client;
 }
 
 export async function getCurrentSession(): Promise<Session | null> {
-  const { data, error } = await supabase().auth.getSession();
+  const { data, error } = await localApi().auth.getSession();
   raise(error);
   return data.session;
 }
@@ -650,14 +645,14 @@ async function consoleApiPost<T>(path: string, body: Record<string, unknown> = {
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
   const {
     data: { subscription },
-  } = supabase().auth.onAuthStateChange((_event, session) => {
+  } = localApi().auth.onAuthStateChange((_event, session) => {
     listener(session);
   });
   return () => subscription.unsubscribe();
 }
 
 export async function signInWithPassword(email: string, password: string): Promise<void> {
-  const { error } = await supabase().auth.signInWithPassword({
+  const { error } = await localApi().auth.signInWithPassword({
     email: email.trim().toLowerCase(),
     password,
   });
@@ -665,12 +660,12 @@ export async function signInWithPassword(email: string, password: string): Promi
 }
 
 export async function signOut(): Promise<void> {
-  const { error } = await supabase().auth.signOut();
+  const { error } = await localApi().auth.signOut();
   raise(error);
 }
 
 export async function getCurrentConsoleAdmin(): Promise<ConsoleAdmin | null> {
-  const { data, error } = await supabase().from('console_admins').select('email,created_at,updated_at').limit(1).maybeSingle();
+  const { data, error } = await localApi().from('console_admins').select('email,created_at,updated_at').limit(1).maybeSingle();
   raise(error);
   return (data ?? null) as ConsoleAdmin | null;
 }
@@ -782,7 +777,7 @@ export async function loadWhaleWatchDashboard(): Promise<WhaleWatchDashboardPayl
 }
 
 export async function getSettings(): Promise<Settings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('x_capture_settings')
     .select('global_interval_seconds,max_concurrency,jitter_seconds,updated_at')
     .eq('singleton_key', 'global')
@@ -792,7 +787,7 @@ export async function getSettings(): Promise<Settings> {
     return data as Settings;
   }
 
-  const created = await supabase()
+  const created = await localApi()
     .from('x_capture_settings')
     .upsert(
       {
@@ -811,7 +806,7 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export async function updateSettings(payload: Omit<Settings, 'updated_at'>): Promise<Settings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('x_capture_settings')
     .upsert(
       {
@@ -830,7 +825,7 @@ export async function updateSettings(payload: Omit<Settings, 'updated_at'>): Pro
 }
 
 export async function getNonMainstreamSettings(): Promise<NonMainstreamSettings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('non_mainstream_media_settings')
     .select('global_interval_seconds,jitter_seconds,updated_at')
     .eq('singleton_key', 'global')
@@ -840,7 +835,7 @@ export async function getNonMainstreamSettings(): Promise<NonMainstreamSettings>
     return data as NonMainstreamSettings;
   }
 
-  const created = await supabase()
+  const created = await localApi()
     .from('non_mainstream_media_settings')
     .upsert(
       {
@@ -860,7 +855,7 @@ export async function getNonMainstreamSettings(): Promise<NonMainstreamSettings>
 export async function updateNonMainstreamSettings(
   payload: Omit<NonMainstreamSettings, 'updated_at'>,
 ): Promise<NonMainstreamSettings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('non_mainstream_media_settings')
     .upsert(
       {
@@ -879,7 +874,7 @@ export async function updateNonMainstreamSettings(
 
 export async function getPublisherSettings(): Promise<PublisherSettings> {
   const selectFields = 'enabled,timezone,window_start_local,window_end_local,updated_at';
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('publisher_settings')
     .select(selectFields)
     .eq('singleton_key', 'global')
@@ -889,7 +884,7 @@ export async function getPublisherSettings(): Promise<PublisherSettings> {
     return normalizePublisherSettings(data as PublisherSettings);
   }
 
-  const created = await supabase()
+  const created = await localApi()
     .from('publisher_settings')
     .upsert(
       {
@@ -909,7 +904,7 @@ export async function getPublisherSettings(): Promise<PublisherSettings> {
 }
 
 async function seedPublisherChannels(): Promise<void> {
-  const { error } = await supabase()
+  const { error } = await localApi()
     .from('publisher_channels')
     .upsert(
       defaultPublisherChannels.map((item) => ({
@@ -925,7 +920,7 @@ async function seedPublisherChannels(): Promise<void> {
 
 export async function listPublisherChannels(): Promise<PublisherChannel[]> {
   const selectFields = 'channel_key,display_name,enabled,updated_at';
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('publisher_channels')
     .select(selectFields)
     .order('channel_key', { ascending: true });
@@ -935,7 +930,7 @@ export async function listPublisherChannels(): Promise<PublisherChannel[]> {
   }
 
   await seedPublisherChannels();
-  const seeded = await supabase()
+  const seeded = await localApi()
     .from('publisher_channels')
     .select(selectFields)
     .order('channel_key', { ascending: true });
@@ -946,7 +941,7 @@ export async function listPublisherChannels(): Promise<PublisherChannel[]> {
 export async function updatePublisherSettings(
   payload: Pick<PublisherSettings, 'enabled' | 'window_start_local' | 'window_end_local'>,
 ): Promise<PublisherSettings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('publisher_settings')
     .upsert(
       {
@@ -966,7 +961,7 @@ export async function updatePublisherSettings(
 }
 
 export async function updatePublisherChannel(channelKey: PublisherChannelKey, enabled: boolean): Promise<PublisherChannel> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('publisher_channels')
     .update({
       enabled,
@@ -1089,7 +1084,7 @@ export async function saveBlockbeatsKey(apiKey: string): Promise<BlockbeatsKeyCo
 }
 
 export async function getPublisherRuleConfigSnapshot(): Promise<PublisherRuleConfigPayload | null> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('publisher_rule_config')
     .select('config_json,prompt_text')
     .eq('singleton_key', 'global')
@@ -1128,12 +1123,12 @@ export async function getJin10Settings(): Promise<Jin10Settings> {
     'last_error',
     'updated_at',
   ].join(',');
-  const { data, error } = await supabase().from('jin10_settings').select(selectFields).eq('singleton_key', 'global').maybeSingle();
+  const { data, error } = await localApi().from('jin10_settings').select(selectFields).eq('singleton_key', 'global').maybeSingle();
   raise(error);
   if (data) {
     return normalizeJin10Settings(data as unknown as Jin10Settings);
   }
-  const created = await supabase()
+  const created = await localApi()
     .from('jin10_settings')
     .upsert(
       {
@@ -1156,7 +1151,7 @@ export async function getJin10Settings(): Promise<Jin10Settings> {
 export async function updateJin10Settings(
   patch: Pick<Jin10Settings, 'enabled' | 'interval_seconds' | 'endpoint_url' | 'channel' | 'request_headers'>,
 ): Promise<Jin10Settings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('jin10_settings')
     .upsert(
       {
@@ -1189,7 +1184,7 @@ export async function updateJin10Settings(
 }
 
 export async function listAccounts(): Promise<Account[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('x_capture_accounts')
     .select(
       [
@@ -1215,7 +1210,7 @@ export async function listAccounts(): Promise<Account[]> {
 }
 
 export async function listNonMainstreamSources(): Promise<NonMainstreamSource[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('non_mainstream_media_sources')
     .select(
       [
@@ -1245,7 +1240,7 @@ export async function createAccount(input: AccountCreateInput): Promise<Account>
   const username = normalizeUsername(input.username_or_url);
   const displayName = input.display_name?.trim() || null;
   const writeName = input.write_name?.trim() || null;
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('x_capture_accounts')
     .upsert(
       {
@@ -1287,7 +1282,7 @@ export async function updateAccount(accountId: number, patch: AccountPatch): Pro
     payload.is_ai_source = patch.is_ai_source;
   }
 
-  const { data, error } = await supabase().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();
+  const { data, error } = await localApi().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();
   raise(error);
   return assertData(data as Account | null, '更新账号失败');
 }
@@ -1302,7 +1297,7 @@ export async function updateNonMainstreamSource(
   if ('enabled' in patch && patch.enabled !== undefined) {
     payload.enabled = patch.enabled;
   }
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('non_mainstream_media_sources')
     .update(payload)
     .eq('id', sourceId)
@@ -1330,12 +1325,12 @@ export async function updateNonMainstreamSource(
 }
 
 export async function deleteAccount(accountId: number): Promise<void> {
-  const { error } = await supabase().from('x_capture_accounts').delete().eq('id', accountId);
+  const { error } = await localApi().from('x_capture_accounts').delete().eq('id', accountId);
   raise(error);
 }
 
 export async function listWhaleWatchAddresses(): Promise<WhaleWatchAddress[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_addresses')
     .select('id,address,address_lower,label,enabled,created_at,updated_at')
     .order('enabled', { ascending: false })
@@ -1345,7 +1340,7 @@ export async function listWhaleWatchAddresses(): Promise<WhaleWatchAddress[]> {
 }
 
 export async function listWhaleWatchChainStates(): Promise<WhaleWatchChainState[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_chain_states')
     .select('address_id,chain_key,seeded_at,last_polled_at,last_success_at,last_error,last_seen_block')
     .order('chain_key', { ascending: true });
@@ -1354,7 +1349,7 @@ export async function listWhaleWatchChainStates(): Promise<WhaleWatchChainState[
 }
 
 export async function listWhaleWatchActivities(limit: number): Promise<WhaleWatchActivity[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_activities')
     .select('id,address_id,chain_key,tx_hash,activity_type,direction,summary,telegram_text,tx_url,created_at')
     .order('created_at', { ascending: false })
@@ -1369,7 +1364,7 @@ export async function createWhaleWatchAddress(input: WhaleWatchAddressCreateInpu
   if (!label) {
     throw new Error('自定义标签不能为空');
   }
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_addresses')
     .upsert(
       {
@@ -1404,7 +1399,7 @@ export async function updateWhaleWatchAddress(
   if ('enabled' in patch && patch.enabled !== undefined) {
     payload.enabled = patch.enabled;
   }
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_addresses')
     .update(payload)
     .eq('id', addressId)
@@ -1415,12 +1410,12 @@ export async function updateWhaleWatchAddress(
 }
 
 export async function deleteWhaleWatchAddress(addressId: number): Promise<void> {
-  const { error } = await supabase().from('whale_watch_addresses').delete().eq('id', addressId);
+  const { error } = await localApi().from('whale_watch_addresses').delete().eq('id', addressId);
   raise(error);
 }
 
 export async function listWhaleWatchHyperliquidAddresses(): Promise<WhaleWatchHyperliquidAddress[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_addresses')
     .select('id,address,address_lower,label,enabled,created_at,updated_at')
     .order('enabled', { ascending: false })
@@ -1430,7 +1425,7 @@ export async function listWhaleWatchHyperliquidAddresses(): Promise<WhaleWatchHy
 }
 
 export async function getWhaleWatchHyperliquidSettings(): Promise<WhaleWatchHyperliquidSettings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_settings')
     .select('single_fill_min_notional_usd,aggregate_min_notional_usd,aggregate_window_seconds,updated_at')
     .eq('singleton_key', 'global')
@@ -1440,7 +1435,7 @@ export async function getWhaleWatchHyperliquidSettings(): Promise<WhaleWatchHype
     return data as WhaleWatchHyperliquidSettings;
   }
 
-  const created = await supabase()
+  const created = await localApi()
     .from('whale_watch_hyperliquid_settings')
     .upsert(
       {
@@ -1459,7 +1454,7 @@ export async function getWhaleWatchHyperliquidSettings(): Promise<WhaleWatchHype
 }
 
 export async function listWhaleWatchHyperliquidStates(): Promise<WhaleWatchHyperliquidState[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_states')
     .select('address_id,seeded_at,last_polled_at,last_success_at,last_error,last_seen_time')
     .order('address_id', { ascending: true });
@@ -1468,7 +1463,7 @@ export async function listWhaleWatchHyperliquidStates(): Promise<WhaleWatchHyper
 }
 
 export async function listWhaleWatchHyperliquidActivities(limit: number): Promise<WhaleWatchHyperliquidActivity[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_activities')
     .select('id,address_id,fill_key,coin,direction,notional_usd,closed_pnl,summary,telegram_text,tx_url,created_at')
     .order('created_at', { ascending: false })
@@ -1485,7 +1480,7 @@ export async function createWhaleWatchHyperliquidAddress(
   if (!label) {
     throw new Error('自定义标签不能为空');
   }
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_addresses')
     .upsert(
       {
@@ -1520,7 +1515,7 @@ export async function updateWhaleWatchHyperliquidAddress(
   if ('enabled' in patch && patch.enabled !== undefined) {
     payload.enabled = patch.enabled;
   }
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_addresses')
     .update(payload)
     .eq('id', addressId)
@@ -1531,14 +1526,14 @@ export async function updateWhaleWatchHyperliquidAddress(
 }
 
 export async function deleteWhaleWatchHyperliquidAddress(addressId: number): Promise<void> {
-  const { error } = await supabase().from('whale_watch_hyperliquid_addresses').delete().eq('id', addressId);
+  const { error } = await localApi().from('whale_watch_hyperliquid_addresses').delete().eq('id', addressId);
   raise(error);
 }
 
 export async function updateWhaleWatchHyperliquidSettings(
   patch: WhaleWatchHyperliquidSettingsPatch,
 ): Promise<WhaleWatchHyperliquidSettings> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('whale_watch_hyperliquid_settings')
     .upsert(
       {
@@ -1565,7 +1560,7 @@ export function normalizeEvmAddress(value: string): string {
 }
 
 async function listRecentAttempts(limit: number): Promise<Attempt[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('x_capture_attempts')
     .select(
       [
@@ -1595,7 +1590,7 @@ export async function listRecentTasksBySources(sources: readonly string[], limit
   const normalizedLimit = Math.min(Math.max(Math.trunc(limit), 1), 80);
   const targetSources = sources.length > 0 ? [...sources] : [...processingTaskSources];
   const fetchSourceTasks = async (source: string) => {
-    const { data, error } = await supabase()
+    const { data, error } = await localApi()
       .from('tasks')
       .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
       .eq('source', source)
@@ -1612,7 +1607,7 @@ export async function listRecentTasksBySources(sources: readonly string[], limit
 }
 
 export async function listPromptTemplates(): Promise<PromptTemplate[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('prompt_templates')
     .select('template_key,display_name,active_version_id,feature_mode_enabled,feature_mode_text,updated_at')
     .order('template_key', { ascending: true });
@@ -1621,7 +1616,7 @@ export async function listPromptTemplates(): Promise<PromptTemplate[]> {
 }
 
 export async function listPromptVersions(templateKey: string): Promise<PromptVersion[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('prompt_template_versions')
     .select('id,template_key,version_number,content,note,created_at,published_at')
     .eq('template_key', templateKey)
@@ -1636,7 +1631,7 @@ export async function createPromptVersion(
   content: string,
   note: string | null,
 ): Promise<PromptVersion> {
-  const { data: latestVersionRow, error: latestVersionError } = await supabase()
+  const { data: latestVersionRow, error: latestVersionError } = await localApi()
     .from('prompt_template_versions')
     .select('version_number')
     .eq('template_key', templateKey)
@@ -1645,7 +1640,7 @@ export async function createPromptVersion(
     .maybeSingle();
   raise(latestVersionError);
   const nextVersion = Number(latestVersionRow?.version_number ?? 0) + 1;
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('prompt_template_versions')
     .insert({
       template_key: templateKey,
@@ -1660,13 +1655,13 @@ export async function createPromptVersion(
 }
 
 export async function publishPromptVersion(templateKey: string, versionId: number): Promise<PromptTemplate> {
-  const published = await supabase()
+  const published = await localApi()
     .from('prompt_template_versions')
     .update({ published_at: nowIso() })
     .eq('id', versionId);
   raise(published.error);
 
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('prompt_templates')
     .update({
       active_version_id: versionId,
@@ -1684,7 +1679,7 @@ export async function updatePromptTemplateFeatureMode(
   enabled: boolean,
   featureModeText: string,
 ): Promise<PromptTemplate> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('prompt_templates')
     .update({
       feature_mode_enabled: enabled,
@@ -1714,7 +1709,7 @@ export async function deletePromptVersion(templateKey: string, versionId: number
     if (!fallback) {
       throw new Error('cannot delete the active prompt version');
     }
-    const { error: updateError } = await supabase()
+    const { error: updateError } = await localApi()
       .from('prompt_templates')
       .update({
         active_version_id: fallback.id,
@@ -1724,7 +1719,7 @@ export async function deletePromptVersion(templateKey: string, versionId: number
     raise(updateError);
   }
 
-  const { error } = await supabase()
+  const { error } = await localApi()
     .from('prompt_template_versions')
     .update({
       deleted_at: nowIso(),
@@ -1752,7 +1747,7 @@ function normalizeSourceExclusionMatchTarget(value: unknown): SourceExclusionMat
 }
 
 export async function listSourceExclusionRuleGroups(): Promise<SourceExclusionRuleGroup[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('source_exclusion_rule_groups')
     .select('id,rule_key,name,description,scopes,terms,match_target,enabled,created_at,updated_at')
     .order('enabled', { ascending: false })
@@ -1777,7 +1772,7 @@ export async function createSourceExclusionRuleGroup(
     enabled: input.enabled,
     updated_at: nowIso(),
   };
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('source_exclusion_rule_groups')
     .insert(payload)
     .select('id,rule_key,name,description,scopes,terms,match_target,enabled,created_at,updated_at')
@@ -1800,7 +1795,7 @@ export async function updateSourceExclusionRuleGroup(
     enabled: input.enabled,
     updated_at: nowIso(),
   };
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('source_exclusion_rule_groups')
     .update(payload)
     .eq('id', id)
@@ -1812,7 +1807,7 @@ export async function updateSourceExclusionRuleGroup(
 }
 
 export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> {
-  const { error } = await supabase().from('source_exclusion_rule_groups').delete().eq('id', id);
+  const { error } = await localApi().from('source_exclusion_rule_groups').delete().eq('id', id);
   raise(error);
 }
 
@@ -1821,7 +1816,7 @@ export async function listNewsflashEvents(
   limit = 100,
   offset = 0,
 ): Promise<NewsflashEventSummary[]> {
-  let query = supabase()
+  let query = localApi()
     .from('newsflash_event_summary')
     .select(
       [
@@ -1873,7 +1868,7 @@ export async function listNewsflashEvents(
 }
 
 export async function listNewsflashEventSources(eventId: string): Promise<NewsflashEventSourceItem[]> {
-  const { data, error } = await supabase()
+  const { data, error } = await localApi()
     .from('newsflash_event_sources')
     .select(
       [
@@ -1897,8 +1892,8 @@ export async function listNewsflashEventSources(eventId: string): Promise<Newsfl
   let notesByItem = new Map<number, string>();
   if (itemIds.length > 0) {
     const [items, notes] = await Promise.all([
-      supabase().from('newsflash_items').select('id,title,content,source_url,published_at').in('id', itemIds),
-      supabase().from('newsflash_item_notes').select('item_id,note').in('item_id', itemIds),
+      localApi().from('newsflash_items').select('id,title,content,source_url,published_at').in('id', itemIds),
+      localApi().from('newsflash_item_notes').select('item_id,note').in('item_id', itemIds),
     ]);
     raise(items.error);
     raise(notes.error);
@@ -1924,24 +1919,24 @@ export async function listNewsflashEventSources(eventId: string): Promise<Newsfl
 
 export async function setNewsflashEventFavorite(eventId: string, favorite: boolean): Promise<void> {
   if (favorite) {
-    const { error } = await supabase()
+    const { error } = await localApi()
       .from('newsflash_event_favorites')
       .upsert({ event_id: eventId, favorite: true, updated_at: nowIso() }, { onConflict: 'event_id' });
     raise(error);
     return;
   }
-  const { error } = await supabase().from('newsflash_event_favorites').delete().eq('event_id', eventId);
+  const { error } = await localApi().from('newsflash_event_favorites').delete().eq('event_id', eventId);
   raise(error);
 }
 
 export async function saveNewsflashItemNote(itemId: number, note: string): Promise<void> {
   const trimmed = note.trim();
   if (!trimmed) {
-    const { error } = await supabase().from('newsflash_item_notes').delete().eq('item_id', itemId);
+    const { error } = await localApi().from('newsflash_item_notes').delete().eq('item_id', itemId);
     raise(error);
     return;
   }
-  const { error } = await supabase()
+  const { error } = await localApi()
     .from('newsflash_item_notes')
     .upsert({ item_id: itemId, note: trimmed, updated_at: nowIso() }, { onConflict: 'item_id' });
   raise(error);
@@ -1950,11 +1945,11 @@ export async function saveNewsflashItemNote(itemId: number, note: string): Promi
 export async function saveNewsflashEventNote(eventId: string, note: string): Promise<void> {
   const trimmed = note.trim();
   if (!trimmed) {
-    const { error } = await supabase().from('newsflash_event_notes').delete().eq('event_id', eventId);
+    const { error } = await localApi().from('newsflash_event_notes').delete().eq('event_id', eventId);
     raise(error);
     return;
   }
-  const { error } = await supabase()
+  const { error } = await localApi()
     .from('newsflash_event_notes')
     .upsert({ event_id: eventId, note: trimmed, updated_at: nowIso() }, { onConflict: 'event_id' });
   raise(error);

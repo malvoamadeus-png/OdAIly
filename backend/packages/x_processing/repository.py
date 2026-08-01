@@ -16,6 +16,7 @@ from packages.common.pipeline_schema import (
     NEWSFLASH_EVENT_SCHEMA_SQL,
     PIPELINE_MONITORING_SCHEMA_SQL,
 )
+from packages.common.storage import load_storage_settings
 
 from .models import (
     ACTIVE_CANDIDATE_TTL,
@@ -1254,6 +1255,12 @@ class PostgresXProcessingRepository:
                 row["id"],
             ),
         )
+
+
+def create_x_processing_repository(database_url: str | None = None) -> XProcessingRepository:
+    del database_url
+    from .sqlite_repository import SQLiteXProcessingRepository
+    return SQLiteXProcessingRepository(load_storage_settings().sqlite_path)
 
 
 class InMemoryXProcessingRepository:

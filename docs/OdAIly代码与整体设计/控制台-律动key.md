@@ -1,10 +1,10 @@
-# 控制台-律动key
+﻿# 控制台-律动key
 
 ## 职责
 
 `信源管理 / 律动key` 子页用于查看和明文编辑 BlockBeats API Key，并展示最近一次抓取得到的 key 状态。
 
-BlockBeats API Key 明文保存，便于在临时邮箱批量注册的 key 之间手工切换。该 key 只用于只读抓取，不进入 Supabase。
+BlockBeats API Key 明文保存，便于在临时邮箱批量注册的 key 之间手工切换。该 key 只用于只读抓取，不进入业务主 SQLite。
 
 ## 数据边界
 
@@ -31,7 +31,7 @@ BlockBeats API Key 与运行状态写入 Linux 本地 JSON：
 - 保存新 key。
 - 查看 BlockBeats 最近检查、最近成功、额度不足时间和最近错误摘要。
 
-保存新 BlockBeats key 时，后端会清空旧错误、旧额度不足时间，并把状态重置为 `unknown`。读取和保存都走 `editor-plugin-api-server`，接口继续使用控制台 Supabase Auth 会话与 `console_admins` 白名单；只是 key 数据本身不写入 Supabase。
+保存新 BlockBeats key 时，后端会清空旧错误、旧额度不足时间，并把状态重置为 `unknown`。读取和保存都走 `editor-plugin-api-server`，接口使用本地操作者 session；key 数据本身不写入业务主 SQLite。
 
 ## 生效方式
 

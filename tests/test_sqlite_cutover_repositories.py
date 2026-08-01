@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from packages.auditor.sqlite_repository import SQLiteAuditorRepository
+from packages.common.legacy_database_import import initialize_sqlite_schema
+from packages.common.storage import connect_sqlite
+from packages.console_data_api import ConsoleDataApi
+from packages.pipeline_supervisor.sqlite_repository import SQLitePipelineSupervisorRepository
+from packages.whale_watch.hyperliquid_sqlite_repository import SQLiteWhaleWatchHyperliquidRepository
+from packages.whale_watch.sqlite_repository import SQLiteWhaleWatchRepository
+from packages.writer3.models import OdailyReference
+from packages.writer3.sqlite_repository import SQLiteWriter3Repository
+
+
+def configure(monkeypatch, tmp_path):
+    path = tmp_path / "odaily.sqlite"
+    monkeypatch.setenv("ODAILY_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("ODAILY_STORAGE_EPOCH", "test")
+    monkeypatch.setenv("ODAILY_SQLITE_PATH", str(path))
+    initialize_sqlite_schema()
+    return path
+
+
+def test_complete_schema_and_console_mutation(monkeypatch, tmp_path):
+    path = configure(monkeypatch, tmp_path)
+    with connect_sqlite(path) as conn:
+        names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"tasks", "auditor_checks", "writer3_contexts", "whale_watch_activities", "pipeline_alerts"} <= names
+
+    rows = ConsoleDataApi(path).execute({
+        "table": "whale_watch_addresses",
+        "operation": "insert",
+        "select": "*",
+        "data": {"address": "0x" + "1" * 40, "address_lower": "0x" + "1" * 40, "label": "test"},
+    })
+    assert len(rows) == 1
+    assert rows[0]["label"] == "test"
+
+
+def test_writer_auditor_whale_and_supervisor_repositories(monkeypatch, tmp_path):
+    path = configure(monkeypatch, tmp_path)
+    published = datetime.now(UTC) - timedelta(minutes=1)
+    writer = SQLiteWriter3Repository(path)
+    writer.upsert_odaily_references([
+        OdailyReference("ref-1", "https://example.com/1", "Title", "Body", published)
+    ])
+    task = writer.claim_task(worker_id="writer", start_after=published - timedelta(days=1), freshness_window_seconds=3600)
+    assert task is not None
+    writer.complete_skipped(task, reason="test")
+
+    auditor = SQLiteAuditorRepository(path)
+    audit_task = auditor.claim_task(worker_id="auditor", prompt_version="v1", lookback_minutes=60)
+    assert audit_task is not None
+    auditor.complete_passed(audit_task, model="test", prompt_version="v1", raw_output="{}", result={"has_issue": False})
+
+    whale = SQLiteWhaleWatchRepository(path)
+    assert len(whale.list_addresses(include_disabled=True)) == 0
+    hyper = SQLiteWhaleWatchHyperliquidRepository(path)
+    settings = hyper.get_runtime_settings(
+        default_single_fill_min_notional_usd=Decimal("500000"),
+        default_aggregate_min_notional_usd=Decimal("1000000"),
+        default_aggregate_window_seconds=600,
+    )
+    assert settings.aggregate_window_seconds == 600
+
+    supervisor = SQLitePipelineSupervisorRepository(path)
+    stale = supervisor.list_stale_heartbeats(cutoff=datetime.now(UTC))
+    assert any(row["component"] == "x_capture" for row in stale)
+    assert supervisor.claim_alert(alert_key="test", message="test", dedup_cutoff=datetime.now(UTC) - timedelta(hours=1))
+    assert not supervisor.claim_alert(alert_key="test", message="test", dedup_cutoff=datetime.now(UTC) - timedelta(hours=1))

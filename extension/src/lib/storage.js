@@ -1,12 +1,8 @@
 import {
-  BUILTIN_EDITOR_PLUGIN_API_BASE_URL,
-  BUILTIN_SUPABASE_PUBLISHABLE_KEY,
-  BUILTIN_SUPABASE_URL
+  BUILTIN_EDITOR_PLUGIN_API_BASE_URL
 } from "./runtime-config.js";
 
 export const DEFAULT_SETTINGS = {
-  supabaseUrl: BUILTIN_SUPABASE_URL,
-  supabaseAnonKey: BUILTIN_SUPABASE_PUBLISHABLE_KEY,
   pluginApiBaseUrl: BUILTIN_EDITOR_PLUGIN_API_BASE_URL,
   pollIntervalSeconds: 15,
   soundEnabled: true,
@@ -59,8 +55,6 @@ export async function getSettings() {
     ...DEFAULT_SETTINGS,
     ...data,
     soundProfiles: sanitizeSoundProfiles(data.soundProfiles),
-    supabaseUrl: BUILTIN_SUPABASE_URL,
-    supabaseAnonKey: BUILTIN_SUPABASE_PUBLISHABLE_KEY,
     pluginApiBaseUrl: BUILTIN_EDITOR_PLUGIN_API_BASE_URL
   };
 }

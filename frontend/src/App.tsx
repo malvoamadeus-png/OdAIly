@@ -1,5 +1,5 @@
-import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import type { Session } from '@supabase/supabase-js';
+﻿import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import type { Session } from './localApiClient';
 import {
   Activity,
   Ban,
@@ -28,7 +28,7 @@ import {
   createWhaleWatchAddress,
   createWhaleWatchHyperliquidAddress,
   deleteSourceExclusionRuleGroup,
-  deleteAccount as deleteAccountFromSupabase,
+  deleteAccount as deleteLocalAccount,
   deleteWhaleWatchAddress,
   deleteWhaleWatchHyperliquidAddress,
   getWhaleWatchHyperliquidSettings,
@@ -60,7 +60,7 @@ import {
   saveBlockbeatsKey,
   saveKnownTitleSubjects,
   signInWithPassword,
-  signOut as signOutFromSupabase,
+  signOut as signOutLocal,
   setNewsflashEventFavorite,
   loadNonMainstreamDashboard,
   updateSourceExclusionRuleGroup,
@@ -737,7 +737,7 @@ export function App() {
   async function handleSignOut() {
     setSigningOut(true);
     try {
-      await signOutFromSupabase();
+      await signOutLocal();
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -749,7 +749,7 @@ export function App() {
 
   if (!authReady || authChecking) {
     return (
-      <AuthShell title="验证控制台访问权限" subtitle="正在检查 Supabase 登录状态和管理员白名单。">
+      <AuthShell title="验证控制台访问权限" subtitle="正在检查 本地登录状态和单账号权限。">
         <div className="emptyState">正在验证，请稍候。</div>
       </AuthShell>
     );
@@ -757,7 +757,7 @@ export function App() {
 
   if (!session) {
     return (
-      <AuthShell title="登录控制台" subtitle="使用 Supabase 邮箱密码登录。仅已加入管理员白名单的邮箱可以访问。">
+      <AuthShell title="登录控制台" subtitle="使用本地单账号密码登录。">
         <form className="authForm" onSubmit={handleSignIn}>
           <label>
             <span>邮箱</span>
@@ -1037,7 +1037,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         if (snapshot) {
           setPublisherRules(snapshot.config);
           setPublisherPromptPreview(snapshot.prompt_text);
-          setPublisherLoadWarning(`发布者接口加载失败，已回退显示 Supabase 快照：${message}`);
+          setPublisherLoadWarning(`发布者接口加载失败，已回退显示 本地数据库快照：${message}`);
           setLoadingPublisher(false);
           return;
         }
@@ -1344,7 +1344,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   async function deleteAccount(account: Account) {
     setError('');
     try {
-      await deleteAccountFromSupabase(account.id);
+      await deleteLocalAccount(account.id);
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -52,40 +52,34 @@ def parse_args() -> argparse.Namespace:
     worker = subparsers.add_parser("run-worker", help="Run the scheduled worker.")
     add_common(worker)
 
-    x_init_db = subparsers.add_parser("x-init-db", help="Initialize X capture Postgres tables.")
-    x_init_db.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    x_init_db = subparsers.add_parser("x-init-db", help="Initialize X capture SQLite tables.")
 
     console_grant_admin = subparsers.add_parser(
         "console-grant-admin",
-        help="Grant one email access to the Supabase-backed console.",
+        help="Grant one email access to the local SQLite console.",
     )
-    console_grant_admin.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     console_grant_admin.add_argument("--email", required=True, help="Admin email address.")
 
     console_revoke_admin = subparsers.add_parser(
         "console-revoke-admin",
-        help="Revoke one email from the Supabase-backed console.",
+        help="Revoke one email from the local SQLite console.",
     )
-    console_revoke_admin.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     console_revoke_admin.add_argument("--email", required=True, help="Admin email address.")
 
     console_list_admins = subparsers.add_parser(
         "console-list-admins",
-        help="List console admin emails from Supabase.",
+        help="List console admin emails from local SQLite.",
     )
-    console_list_admins.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     editor_plugin_init = subparsers.add_parser(
         "editor-plugin-init-db",
-        help="Initialize editor plugin Supabase tables and RPC functions.",
+        help="Initialize editor plugin SQLite tables.",
     )
-    editor_plugin_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     editor_plugin_grant = subparsers.add_parser(
         "editor-plugin-grant-user",
         help="Grant one email access to the editor plugin.",
     )
-    editor_plugin_grant.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     editor_plugin_grant.add_argument("--email", required=True, help="Editor email address.")
     editor_plugin_grant.add_argument("--display-name", help="Optional display name shown in the plugin.")
 
@@ -93,26 +87,23 @@ def parse_args() -> argparse.Namespace:
         "editor-plugin-revoke-user",
         help="Revoke one email from the editor plugin whitelist.",
     )
-    editor_plugin_revoke.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     editor_plugin_revoke.add_argument("--email", required=True, help="Editor email address.")
 
     editor_plugin_list = subparsers.add_parser(
         "editor-plugin-list-users",
-        help="List editor plugin whitelist emails from Supabase.",
+        help="List editor plugin whitelist emails from local SQLite.",
     )
-    editor_plugin_list.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     editor_plugin_api = subparsers.add_parser(
         "editor-plugin-api-server",
         help="Run the editor plugin news generation HTTP server.",
     )
-    editor_plugin_api.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     editor_plugin_api.add_argument("--host", help="Bind host. Defaults to EDITOR_PLUGIN_API_HOST or 127.0.0.1.")
     editor_plugin_api.add_argument("--port", type=int, help="Bind port. Defaults to EDITOR_PLUGIN_API_PORT or 8765.")
 
     editor_plugin_local_feed_status = subparsers.add_parser(
         "editor-plugin-local-feed-status",
-        help="Print local editor plugin feed store diagnostics without connecting to Supabase.",
+        help="Print local editor plugin feed store diagnostics using only local storage.",
     )
     editor_plugin_local_feed_status.add_argument(
         "--max-age-hours",
@@ -125,7 +116,6 @@ def parse_args() -> argparse.Namespace:
         "local-pipeline-server",
         help="Run the local SQLite-backed content pipeline server.",
     )
-    local_pipeline.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     local_pipeline.add_argument("--host", default="127.0.0.1", help="Bind host. Defaults to 127.0.0.1.")
     local_pipeline.add_argument("--port", type=int, default=8776, help="Bind port. Defaults to 8776.")
 
@@ -133,43 +123,36 @@ def parse_args() -> argparse.Namespace:
         "local-pipeline-skip-legacy",
         help="Mark pre-cutover unfinished DB tasks as legacy_skipped.",
     )
-    local_pipeline_skip.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     local_pipeline_skip.add_argument("--execute", action="store_true", help="Actually update tasks. Defaults to dry-run.")
 
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
-    x_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
 
     non_mainstream_init = subparsers.add_parser(
         "non-mainstream-media-init-db",
-        help="Initialize non-mainstream media Postgres tables.",
+        help="Initialize non-mainstream media SQLite tables.",
     )
-    non_mainstream_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     non_mainstream_worker = subparsers.add_parser(
         "non-mainstream-media-worker",
         help="Run the non-mainstream media capture worker.",
     )
-    non_mainstream_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     non_mainstream_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
 
     telegram_discovery_worker = subparsers.add_parser(
         "telegram-discovery-worker",
         help="Run the Telegram-first non-mainstream media discovery worker.",
     )
-    telegram_discovery_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     external_alert_init = subparsers.add_parser(
         "external-media-alert-init-db",
-        help="Initialize external media alert Postgres tables.",
+        help="Initialize external media alert SQLite tables.",
     )
-    external_alert_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     external_alert_worker = subparsers.add_parser(
         "external-media-alert-worker",
         help="Run the external media alert worker.",
     )
-    external_alert_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     external_alert_worker.add_argument(
         "--stage",
         choices=["domain_judge", "search", "notify"],
@@ -181,18 +164,14 @@ def parse_args() -> argparse.Namespace:
         "external-media-alert-fetcher",
         help="Run the external media newsflash fetcher.",
     )
-    external_alert_fetcher.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     external_alert_fetcher.add_argument("--once", action="store_true", help="Run one fetch pass and exit.")
 
-    jin10_init = subparsers.add_parser("jin10-init-db", help="Initialize Jin10 monitor Postgres tables.")
-    jin10_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    jin10_init = subparsers.add_parser("jin10-init-db", help="Initialize Jin10 monitor SQLite tables.")
 
     jin10_worker = subparsers.add_parser("jin10-monitor-worker", help="Run Jin10 newsflash monitor.")
-    jin10_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     jin10_worker.add_argument("--once", action="store_true", help="Run one Jin10 monitor pass and exit.")
 
-    x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing Postgres tables.")
-    x_process_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    x_process_init = subparsers.add_parser("x-process-init-db", help="Initialize X processing SQLite tables.")
     x_process_init.add_argument(
         "--skip-clear-pending",
         action="store_true",
@@ -205,7 +184,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     x_process_worker = subparsers.add_parser("x-process-worker", help="Run an X processing stage worker.")
-    x_process_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     x_process_worker.add_argument(
         "--stage",
         choices=["judge", "judge_crypto", "judge_ai", "judge_jin10", "search", "write", "format_publish", "publish"],
@@ -213,37 +191,29 @@ def parse_args() -> argparse.Namespace:
     )
     x_process_worker.add_argument("--once", action="store_true", help="Process one available task and exit.")
 
-    competitor_init = subparsers.add_parser("competitor-init-db", help="Initialize competitor monitor/searcher Postgres tables.")
-    competitor_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    competitor_init = subparsers.add_parser("competitor-init-db", help="Initialize competitor monitor/searcher SQLite tables.")
 
     competitor_prune = subparsers.add_parser("competitor-prune-excluded-events", help="Remove excluded newsflash items from event analysis.")
-    competitor_prune.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     competitor_prune_orphans = subparsers.add_parser(
         "competitor-prune-orphan-events",
         help="Delete newsflash events that have no linked source items.",
     )
-    competitor_prune_orphans.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     competitor_repair_time = subparsers.add_parser("competitor-repair-newsflash-time", help="Repair newsflash published_at timezone interpretation.")
-    competitor_repair_time.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
 
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
-    competitor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
 
-    whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch Postgres tables.")
-    whale_watch_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch SQLite tables.")
 
     whale_watch_worker = subparsers.add_parser("whale-watch-worker", help="Run whale onchain activity monitor.")
-    whale_watch_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_worker.add_argument("--once", action="store_true", help="Run one whale watch pass and exit.")
 
     whale_watch_list_addresses = subparsers.add_parser(
         "whale-watch-list-addresses",
         help="List whale onchain addresses for audit or cleanup.",
     )
-    whale_watch_list_addresses.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_list_addresses.add_argument(
         "--created-since-hours",
         type=int,
@@ -259,7 +229,6 @@ def parse_args() -> argparse.Namespace:
         "whale-watch-delete-addresses",
         help="Delete whale onchain addresses by id or recent creation window. Defaults to dry-run.",
     )
-    whale_watch_delete_addresses.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_delete_addresses.add_argument(
         "--ids",
         nargs="+",
@@ -281,11 +250,9 @@ def parse_args() -> argparse.Namespace:
         "whale-watch-hyperliquid-worker",
         help="Run whale Hyperliquid activity monitor.",
     )
-    whale_watch_hyperliquid_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     whale_watch_hyperliquid_worker.add_argument("--once", action="store_true", help="Run one Hyperliquid whale pass and exit.")
 
     supervisor = subparsers.add_parser("pipeline-supervisor", help="Run pipeline health checks and Telegram alerts.")
-    supervisor.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     supervisor.add_argument("--once", action="store_true", help="Run one supervisor pass and exit.")
 
     telegram_test = subparsers.add_parser("telegram-test", help="Send a Telegram test message.")
@@ -295,19 +262,15 @@ def parse_args() -> argparse.Namespace:
     telegram_topic = subparsers.add_parser("telegram-create-topic", help="Create a Telegram forum topic and print message_thread_id.")
     telegram_topic.add_argument("--name", default="系统告警", help="Telegram forum topic name.")
 
-    writer3_init = subparsers.add_parser("writer3-init-db", help="Initialize Writer3 Postgres tables.")
-    writer3_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_init = subparsers.add_parser("writer3-init-db", help="Initialize Writer3 SQLite tables.")
 
     writer3_backfill = subparsers.add_parser("writer3-backfill-odaily", help="Backfill Odaily references for Writer3.")
-    writer3_backfill.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     writer3_backfill.add_argument("--days", type=int, default=90)
 
-    writer3_sync = subparsers.add_parser("writer3-sync-index", help="Sync Writer3 local Odaily index from Supabase.")
-    writer3_sync.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    writer3_sync = subparsers.add_parser("writer3-sync-index", help="Sync Writer3 local Odaily index from local SQLite.")
     writer3_sync.add_argument("--days", type=int, default=90)
 
     writer3_worker = subparsers.add_parser("writer3-worker", help="Run Writer3 Telegram topic worker.")
-    writer3_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     writer3_worker.add_argument("--once", action="store_true", help="Process one Writer3 task and exit.")
 
     writer3_confirm_worker = subparsers.add_parser("writer3-confirm-worker", help="Run Writer3 Telegram confirmation button worker.")
@@ -315,21 +278,17 @@ def parse_args() -> argparse.Namespace:
     writer3_confirm_worker.add_argument("--poll-timeout", type=int, default=20, help="Telegram getUpdates timeout in seconds.")
 
     writer3_reset = subparsers.add_parser("writer3-reset-task", help="Reset one Writer3 task for retry.")
-    writer3_reset.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     writer3_reset.add_argument("--task-id", type=int, required=True)
 
-    auditor_init = subparsers.add_parser("auditor-init-db", help="Initialize Auditor Postgres tables.")
-    auditor_init.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    auditor_init = subparsers.add_parser("auditor-init-db", help="Initialize Auditor SQLite tables.")
 
     auditor_worker = subparsers.add_parser("auditor-worker", help="Run Odaily published-news auditor worker.")
-    auditor_worker.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     auditor_worker.add_argument("--once", action="store_true", help="Process one auditor task and exit.")
 
     maintenance_cleanup = subparsers.add_parser(
         "maintenance-cleanup",
         help="Clean old runtime logs and trim completed payload fields. Defaults to dry-run.",
     )
-    maintenance_cleanup.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
     maintenance_cleanup.add_argument("--execute", action="store_true", help="Actually delete/update rows. Omit for dry-run.")
     maintenance_cleanup.add_argument("--retention-days", type=int, default=7, help="Runtime log retention in days.")
     maintenance_cleanup.add_argument("--feedback-retention-days", type=int, default=90, help="Editor feedback retention in days.")
@@ -339,6 +298,37 @@ def parse_args() -> argparse.Namespace:
         default=7,
         help="Age in days before trimming payload fields from completed records.",
     )
+
+    search_cache_maintenance = subparsers.add_parser(
+        "search-cache-maintenance",
+        help="Prune and optionally compact the local embedding search cache. Defaults to dry-run.",
+    )
+    search_cache_maintenance.add_argument("--path", help="Override the configured searcher SQLite path.")
+    search_cache_maintenance.add_argument("--execute", action="store_true", help="Delete stale cache rows and convert vectors.")
+    search_cache_maintenance.add_argument(
+        "--compact",
+        action="store_true",
+        help="Checkpoint and VACUUM after cleanup. Requires --execute and temporary free disk space.",
+    )
+    storage_backup = subparsers.add_parser(
+        "storage-backup",
+        help="Create and integrity-check an online backup of the active SQLite primary database.",
+    )
+    storage_backup.add_argument("--destination", type=Path, required=True)
+    storage_import = subparsers.add_parser(
+        "storage-import-legacy",
+        help="One-time import from the frozen legacy database into the SQLite primary database.",
+    )
+    storage_import.add_argument("--execute", action="store_true", help="Perform the import; otherwise print source/destination counts.")
+    storage_import.add_argument("--truncate", action="store_true", help="Clear each destination table before importing it.")
+    storage_import.add_argument("--batch-size", type=int, default=1000)
+    storage_import.add_argument(
+        "--sample-rows-per-table",
+        type=int,
+        help="Import at most this many rows per table for schema/type validation; never use for cutover.",
+    )
+    search_cache_maintenance.add_argument("--short-retention-days", type=int, default=2)
+    search_cache_maintenance.add_argument("--reference-retention-days", type=int, default=8)
 
     gate_market = subparsers.add_parser(
         "gate-market",
@@ -456,18 +446,18 @@ def doctor_command(args: argparse.Namespace) -> int:
 
 
 def x_init_db_command(args: argparse.Namespace) -> int:
-    from packages.x_capture.repository import PostgresXCaptureRepository
+    from packages.x_capture.repository import create_x_capture_repository
 
-    repository = PostgresXCaptureRepository(args.database_url)
+    repository = create_x_capture_repository(None)
     repository.init_schema()
     print("[odaily] x-capture database schema initialized")
     return 0
 
 
 def console_grant_admin_command(args: argparse.Namespace) -> int:
-    from packages.common.console_auth import PostgresConsoleAuthRepository
+    from packages.common.console_auth import create_console_auth_repository
 
-    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository = create_console_auth_repository(None)
     repository.init_schema()
     record = repository.upsert_admin(args.email)
     print(f"[odaily] console admin granted email={record.email}")
@@ -475,9 +465,9 @@ def console_grant_admin_command(args: argparse.Namespace) -> int:
 
 
 def console_revoke_admin_command(args: argparse.Namespace) -> int:
-    from packages.common.console_auth import PostgresConsoleAuthRepository
+    from packages.common.console_auth import create_console_auth_repository
 
-    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository = create_console_auth_repository(None)
     repository.init_schema()
     removed = repository.delete_admin(args.email)
     print(f"[odaily] console admin revoked email={args.email.strip().lower()} removed={removed}")
@@ -485,9 +475,9 @@ def console_revoke_admin_command(args: argparse.Namespace) -> int:
 
 
 def console_list_admins_command(args: argparse.Namespace) -> int:
-    from packages.common.console_auth import PostgresConsoleAuthRepository
+    from packages.common.console_auth import create_console_auth_repository
 
-    repository = PostgresConsoleAuthRepository(args.database_url)
+    repository = create_console_auth_repository(None)
     repository.init_schema()
     admins = repository.list_admins()
     for admin in admins:
@@ -497,22 +487,22 @@ def console_list_admins_command(args: argparse.Namespace) -> int:
 
 
 def editor_plugin_init_command(args: argparse.Namespace) -> int:
-    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
-    from packages.pipeline_timing import PostgresPipelineTimingRepository
-    from packages.x_capture.repository import PostgresXCaptureRepository
+    from packages.common.editor_plugin_auth import create_editor_plugin_auth_repository
+    from packages.pipeline_timing import create_pipeline_timing_repository
+    from packages.x_capture.repository import create_x_capture_repository
 
-    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository = create_editor_plugin_auth_repository(None)
     repository.init_schema()
-    PostgresXCaptureRepository(args.database_url).init_schema()
-    PostgresPipelineTimingRepository(args.database_url).init_schema()
+    create_x_capture_repository(None).init_schema()
+    create_pipeline_timing_repository(None).init_schema()
     print("[odaily] editor plugin database schema initialized")
     return 0
 
 
 def editor_plugin_grant_user_command(args: argparse.Namespace) -> int:
-    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+    from packages.common.editor_plugin_auth import create_editor_plugin_auth_repository
 
-    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository = create_editor_plugin_auth_repository(None)
     repository.init_schema()
     record = repository.upsert_user(args.email, args.display_name, enabled=True)
     print(
@@ -523,9 +513,9 @@ def editor_plugin_grant_user_command(args: argparse.Namespace) -> int:
 
 
 def editor_plugin_revoke_user_command(args: argparse.Namespace) -> int:
-    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+    from packages.common.editor_plugin_auth import create_editor_plugin_auth_repository
 
-    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository = create_editor_plugin_auth_repository(None)
     repository.init_schema()
     removed = repository.delete_user(args.email)
     print(f"[odaily] editor plugin user revoked email={args.email.strip().lower()} removed={removed}")
@@ -533,9 +523,9 @@ def editor_plugin_revoke_user_command(args: argparse.Namespace) -> int:
 
 
 def editor_plugin_list_users_command(args: argparse.Namespace) -> int:
-    from packages.common.editor_plugin_auth import PostgresEditorPluginAuthRepository
+    from packages.common.editor_plugin_auth import create_editor_plugin_auth_repository
 
-    repository = PostgresEditorPluginAuthRepository(args.database_url)
+    repository = create_editor_plugin_auth_repository(None)
     repository.init_schema()
     users = repository.list_users()
     for user in users:
@@ -551,7 +541,7 @@ def editor_plugin_api_server_command(args: argparse.Namespace) -> int:
     from packages.editor_plugin_api import run_editor_plugin_api_server
 
     return run_editor_plugin_api_server(
-        database_url=args.database_url,
+        database_url=None,
         host=args.host,
         port=args.port,
     )
@@ -585,7 +575,7 @@ def local_pipeline_server_command(args: argparse.Namespace) -> int:
     from packages.local_pipeline import run_local_pipeline_server
 
     run_local_pipeline_server(
-        database_url=args.database_url,
+        database_url=None,
         host=args.host,
         port=args.port,
     )
@@ -593,9 +583,9 @@ def local_pipeline_server_command(args: argparse.Namespace) -> int:
 
 
 def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
-    from packages.x_processing.repository import PostgresXProcessingRepository
+    from packages.x_processing.repository import create_x_processing_repository
 
-    repository = PostgresXProcessingRepository(args.database_url)
+    repository = create_x_processing_repository(None)
     if not args.execute:
         count = repository.count_legacy_unfinished_tasks()
         print(
@@ -609,20 +599,20 @@ def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
 
 
 def x_capture_worker_command(args: argparse.Namespace) -> int:
-    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
     from packages.local_pipeline import LocalPipelineClient
     from packages.x_capture import FXTwitterClient, XCaptureWorker
-    from packages.x_capture.repository import PostgresXCaptureRepository
+    from packages.x_capture.repository import create_x_capture_repository
 
     settings = load_x_capture_worker_settings()
-    repository = PostgresXCaptureRepository(args.database_url)
+    repository = create_x_capture_repository(None)
     worker = XCaptureWorker(
         repository=repository,
         client=FXTwitterClient(),
         attempt_retention_days=settings.attempt_retention_days,
         freshness_window_seconds=settings.processing_freshness_window_seconds,
         pipeline_client=LocalPipelineClient(),
-        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
     )
     if args.once:
         stats = worker.run_once()
@@ -633,9 +623,9 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
 
 
 def non_mainstream_media_init_db_command(args: argparse.Namespace) -> int:
-    from packages.non_mainstream_media import PostgresNonMainstreamMediaRepository, get_site_registry
+    from packages.non_mainstream_media import create_non_mainstream_media_repository, get_site_registry
 
-    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    repository = create_non_mainstream_media_repository(None)
     repository.init_schema()
     repository.sync_sources(list(get_site_registry().values()))
     print("[odaily] non-mainstream media database schema initialized")
@@ -643,15 +633,15 @@ def non_mainstream_media_init_db_command(args: argparse.Namespace) -> int:
 
 
 def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
-    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
     from packages.local_pipeline import LocalPipelineClient
-    from packages.non_mainstream_media import NonMainstreamMediaWorker, PostgresNonMainstreamMediaRepository
+    from packages.non_mainstream_media import NonMainstreamMediaWorker, create_non_mainstream_media_repository
 
-    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    repository = create_non_mainstream_media_repository(None)
     worker = NonMainstreamMediaWorker(
         repository=repository,
         pipeline_client=LocalPipelineClient(),
-        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
     )
     if args.once:
         stats = worker.run_once()
@@ -662,40 +652,40 @@ def non_mainstream_media_worker_command(args: argparse.Namespace) -> int:
 
 
 def telegram_discovery_worker_command(args: argparse.Namespace) -> int:
-    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
     from packages.local_pipeline import LocalPipelineClient
-    from packages.non_mainstream_media import PostgresNonMainstreamMediaRepository, TelegramDiscoveryWorker
+    from packages.non_mainstream_media import TelegramDiscoveryWorker, create_non_mainstream_media_repository
 
-    repository = PostgresNonMainstreamMediaRepository(args.database_url)
+    repository = create_non_mainstream_media_repository(None)
     worker = TelegramDiscoveryWorker(
         repository=repository,
         settings=load_telegram_discovery_settings(),
         pipeline_client=LocalPipelineClient(),
-        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
     )
     asyncio.run(worker.run_forever())
     return 0
 
 
 def external_media_alert_init_db_command(args: argparse.Namespace) -> int:
-    from packages.external_media_alert import PostgresExternalMediaAlertRepository
-    from packages.x_processing.repository import PostgresXProcessingRepository
+    from packages.external_media_alert import create_external_media_alert_repository
+    from packages.x_processing.repository import create_x_processing_repository
 
     paths = get_paths()
-    x_repository = PostgresXProcessingRepository(args.database_url)
+    x_repository = create_x_processing_repository(None)
     x_repository.init_schema()
     x_repository.seed_prompt_templates(root_dir=paths.root_dir)
-    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    repository = create_external_media_alert_repository(None)
     repository.init_schema()
     print("[odaily] external media alert database schema initialized")
     return 0
 
 
 def external_media_alert_worker_command(args: argparse.Namespace) -> int:
-    from packages.external_media_alert import ExternalMediaAlertWorker, PostgresExternalMediaAlertRepository
+    from packages.external_media_alert import ExternalMediaAlertWorker, create_external_media_alert_repository
 
     ensure_runtime_dirs(get_paths())
-    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    repository = create_external_media_alert_repository(None)
     worker = ExternalMediaAlertWorker(
         stage=args.stage,
         repository=repository,
@@ -713,10 +703,10 @@ def external_media_alert_worker_command(args: argparse.Namespace) -> int:
 
 
 def external_media_alert_fetcher_command(args: argparse.Namespace) -> int:
-    from packages.external_media_alert import ExternalMediaFetcher, PostgresExternalMediaAlertRepository
+    from packages.external_media_alert import ExternalMediaFetcher, create_external_media_alert_repository
 
     settings = load_external_media_alert_settings()
-    repository = PostgresExternalMediaAlertRepository(args.database_url)
+    repository = create_external_media_alert_repository(None)
     fetcher = ExternalMediaFetcher(
         repository=repository,
         request_timeout_seconds=settings.request_timeout_seconds,
@@ -736,30 +726,31 @@ def external_media_alert_fetcher_command(args: argparse.Namespace) -> int:
 
 
 def jin10_init_db_command(args: argparse.Namespace) -> int:
-    from packages.jin10_monitor import PostgresJin10MonitorRepository
-    from packages.x_capture.repository import PostgresXCaptureRepository
-    from packages.x_processing.repository import PostgresXProcessingRepository
+    from packages.jin10_monitor.repository import create_jin10_monitor_repository
+    from packages.x_capture.repository import create_x_capture_repository
+    from packages.x_processing.repository import create_x_processing_repository
 
     paths = get_paths()
-    PostgresXCaptureRepository(args.database_url).init_schema()
-    x_repository = PostgresXProcessingRepository(args.database_url)
+    create_x_capture_repository(None).init_schema()
+    x_repository = create_x_processing_repository(None)
     x_repository.init_schema()
     x_repository.seed_prompt_templates(root_dir=paths.root_dir)
-    PostgresJin10MonitorRepository(args.database_url).init_schema()
+    create_jin10_monitor_repository(None).init_schema()
     print("[odaily] Jin10 monitor database schema initialized")
     return 0
 
 
 def jin10_monitor_worker_command(args: argparse.Namespace) -> int:
-    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
-    from packages.jin10_monitor import Jin10MonitorWorker, PostgresJin10MonitorRepository
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
+    from packages.jin10_monitor import Jin10MonitorWorker
+    from packages.jin10_monitor.repository import create_jin10_monitor_repository
     from packages.local_pipeline import LocalPipelineClient
 
-    repository = PostgresJin10MonitorRepository(args.database_url)
+    repository = create_jin10_monitor_repository(None)
     worker = Jin10MonitorWorker(
         repository=repository,
         pipeline_client=LocalPipelineClient(),
-        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
     )
     if args.once:
         result = worker.run_once()
@@ -774,12 +765,12 @@ def jin10_monitor_worker_command(args: argparse.Namespace) -> int:
 
 
 def x_process_init_db_command(args: argparse.Namespace) -> int:
-    from packages.x_capture.repository import PostgresXCaptureRepository
-    from packages.x_processing.repository import PostgresXProcessingRepository
+    from packages.x_capture.repository import create_x_capture_repository
+    from packages.x_processing.repository import create_x_processing_repository
 
     paths = get_paths()
-    PostgresXCaptureRepository(args.database_url).init_schema()
-    repository = PostgresXProcessingRepository(args.database_url)
+    create_x_capture_repository(None).init_schema()
+    repository = create_x_processing_repository(None)
     repository.init_schema()
     repository.seed_prompt_templates(root_dir=paths.root_dir)
     deleted = 0 if args.skip_clear_pending else repository.clear_old_pending_x_tasks()
@@ -794,8 +785,9 @@ def publisher_init_config_command(args: argparse.Namespace) -> int:
 
 
 def x_process_worker_command(args: argparse.Namespace) -> int:
-    from packages.x_capture.repository import PostgresXCaptureRepository
-    from packages.x_processing import PostgresXProcessingRepository, XProcessingWorker
+    from packages.x_capture.repository import create_x_capture_repository
+    from packages.x_processing import XProcessingWorker
+    from packages.x_processing.repository import create_x_processing_repository
 
     legacy_enabled = (os.getenv("ENABLE_LEGACY_X_PROCESS_WORKERS") or "").strip().lower() in {
         "1",
@@ -811,8 +803,8 @@ def x_process_worker_command(args: argparse.Namespace) -> int:
         return 0
 
     ensure_runtime_dirs(get_paths())
-    x_capture_repository = PostgresXCaptureRepository(args.database_url)
-    repository = PostgresXProcessingRepository(args.database_url)
+    x_capture_repository = create_x_capture_repository(None)
+    repository = create_x_processing_repository(None)
     worker = XProcessingWorker(
         stage=args.stage,
         repository=repository,
@@ -831,18 +823,18 @@ def x_process_worker_command(args: argparse.Namespace) -> int:
 
 
 def competitor_init_db_command(args: argparse.Namespace) -> int:
-    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+    from packages.competitor_monitor import create_competitor_monitor_repository
 
-    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository = create_competitor_monitor_repository(None)
     repository.init_schema()
     print("[odaily] competitor/searcher database schema initialized")
     return 0
 
 
 def competitor_prune_excluded_events_command(args: argparse.Namespace) -> int:
-    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+    from packages.competitor_monitor import create_competitor_monitor_repository
 
-    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository = create_competitor_monitor_repository(None)
     result = repository.prune_excluded_event_sources()
     print(
         "[odaily] competitor excluded events pruned "
@@ -855,18 +847,18 @@ def competitor_prune_excluded_events_command(args: argparse.Namespace) -> int:
 
 
 def competitor_prune_orphan_events_command(args: argparse.Namespace) -> int:
-    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+    from packages.competitor_monitor import create_competitor_monitor_repository
 
-    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository = create_competitor_monitor_repository(None)
     deleted = repository.prune_orphan_events()
     print(f"[odaily] competitor orphan events pruned deleted_events={deleted}")
     return 0
 
 
 def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
-    from packages.competitor_monitor import PostgresCompetitorMonitorRepository
+    from packages.competitor_monitor import create_competitor_monitor_repository
 
-    repository = PostgresCompetitorMonitorRepository(args.database_url)
+    repository = create_competitor_monitor_repository(None)
     result = repository.repair_newsflash_timestamps()
     print(
         "[odaily] competitor newsflash timestamps repaired "
@@ -877,27 +869,19 @@ def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
 
 
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
-    from packages.common.source_exclusions import PostgresSourceExclusionRepository, SourceExclusionMatcher
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
     from packages.local_pipeline import LocalPipelineClient
     from packages.competitor_monitor import (
         CompetitorMonitorWorker,
-        LocalFirstCompetitorMonitorRepository,
-        PostgresCompetitorMonitorRepository,
+        create_competitor_monitor_repository,
     )
-    from packages.competitor_monitor.local_state import CompetitorEventStateStore
 
-    paths = get_paths()
-    ensure_runtime_dirs(paths)
-    remote_repository = PostgresCompetitorMonitorRepository(args.database_url)
-    repository = LocalFirstCompetitorMonitorRepository(
-        remote=remote_repository,
-        state_store=CompetitorEventStateStore(paths.competitor_monitor_db_path),
-    )
+    repository = create_competitor_monitor_repository(None)
     worker = CompetitorMonitorWorker(
         repository=repository,
         settings=load_competitor_monitor_settings(),
         pipeline_client=LocalPipelineClient(),
-        exclusion_matcher=SourceExclusionMatcher(PostgresSourceExclusionRepository(args.database_url)),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
     )
     if args.once:
         result = worker.run_once()
@@ -917,18 +901,18 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
 
 
 def whale_watch_init_db_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import PostgresWhaleWatchHyperliquidRepository, PostgresWhaleWatchRepository
+    from packages.whale_watch import create_whale_watch_hyperliquid_repository, create_whale_watch_repository
 
-    PostgresWhaleWatchRepository(args.database_url).init_schema()
-    PostgresWhaleWatchHyperliquidRepository(args.database_url).init_schema()
+    create_whale_watch_repository(None).init_schema()
+    create_whale_watch_hyperliquid_repository(None).init_schema()
     print("[odaily] whale watch database schema initialized")
     return 0
 
 
 def whale_watch_worker_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import PostgresWhaleWatchRepository, WhaleWatchWorker
+    from packages.whale_watch import WhaleWatchWorker, create_whale_watch_repository
 
-    repository = PostgresWhaleWatchRepository(args.database_url)
+    repository = create_whale_watch_repository(None)
     worker = WhaleWatchWorker(repository=repository, settings=load_whale_watch_settings())
     if args.once:
         result = worker.run_once()
@@ -946,9 +930,9 @@ def whale_watch_worker_command(args: argparse.Namespace) -> int:
 def whale_watch_list_addresses_command(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
-    from packages.whale_watch import PostgresWhaleWatchRepository
+    from packages.whale_watch import create_whale_watch_repository
 
-    repository = PostgresWhaleWatchRepository(args.database_url)
+    repository = create_whale_watch_repository(None)
     if args.created_since_hours is not None:
         since = datetime.now(UTC) - timedelta(hours=args.created_since_hours)
         addresses = repository.list_addresses_created_since(since=since)
@@ -967,9 +951,9 @@ def whale_watch_list_addresses_command(args: argparse.Namespace) -> int:
 def whale_watch_delete_addresses_command(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
-    from packages.whale_watch import PostgresWhaleWatchRepository
+    from packages.whale_watch import create_whale_watch_repository
 
-    repository = PostgresWhaleWatchRepository(args.database_url)
+    repository = create_whale_watch_repository(None)
     selected_ids: list[int] = []
     if args.ids:
         selected_ids.extend(args.ids)
@@ -995,9 +979,9 @@ def whale_watch_delete_addresses_command(args: argparse.Namespace) -> int:
 
 
 def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import PostgresWhaleWatchHyperliquidRepository, WhaleWatchHyperliquidWorker
+    from packages.whale_watch import WhaleWatchHyperliquidWorker, create_whale_watch_hyperliquid_repository
 
-    repository = PostgresWhaleWatchHyperliquidRepository(args.database_url)
+    repository = create_whale_watch_hyperliquid_repository(None)
     worker = WhaleWatchHyperliquidWorker(repository=repository, settings=load_whale_watch_hyperliquid_settings())
     if args.once:
         result = worker.run_once()
@@ -1013,9 +997,9 @@ def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
 
 
 def pipeline_supervisor_command(args: argparse.Namespace) -> int:
-    from packages.pipeline_supervisor import PipelineSupervisorWorker, PostgresPipelineSupervisorRepository
+    from packages.pipeline_supervisor import PipelineSupervisorWorker, create_pipeline_supervisor_repository
 
-    repository = PostgresPipelineSupervisorRepository(args.database_url)
+    repository = create_pipeline_supervisor_repository(None)
     worker = PipelineSupervisorWorker(repository=repository, settings=load_pipeline_supervisor_settings())
     if args.once:
         result = worker.run_once()
@@ -1087,19 +1071,19 @@ def telegram_create_topic_command(args: argparse.Namespace) -> int:
 
 
 def writer3_init_db_command(args: argparse.Namespace) -> int:
-    from packages.writer3 import PostgresWriter3Repository
+    from packages.writer3 import create_writer3_repository
 
-    repository = PostgresWriter3Repository(args.database_url)
+    repository = create_writer3_repository(None)
     repository.init_schema()
     print("[odaily] writer3 database schema initialized")
     return 0
 
 
 def writer3_backfill_odaily_command(args: argparse.Namespace) -> int:
-    from packages.writer3 import PostgresWriter3Repository, backfill_odaily_references
+    from packages.writer3 import backfill_odaily_references, create_writer3_repository
 
     settings = load_writer3_settings()
-    repository = PostgresWriter3Repository(args.database_url)
+    repository = create_writer3_repository(None)
     repository.init_schema()
     result = backfill_odaily_references(
         repository=repository,
@@ -1116,11 +1100,11 @@ def writer3_backfill_odaily_command(args: argparse.Namespace) -> int:
 def writer3_sync_index_command(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
-    from packages.writer3 import PostgresWriter3Repository, Writer3Index
+    from packages.writer3 import Writer3Index, create_writer3_repository
 
     paths = get_paths()
     ensure_runtime_dirs(paths)
-    repository = PostgresWriter3Repository(args.database_url)
+    repository = create_writer3_repository(None)
     index = Writer3Index(paths.writer3_index_path)
     since = datetime.now(UTC) - timedelta(days=args.days)
     references = repository.list_odaily_references(since=since)
@@ -1131,11 +1115,11 @@ def writer3_sync_index_command(args: argparse.Namespace) -> int:
 
 
 def writer3_worker_command(args: argparse.Namespace) -> int:
-    from packages.writer3 import PostgresWriter3Repository, Writer3Index, Writer3Worker
+    from packages.writer3 import Writer3Index, Writer3Worker, create_writer3_repository
 
     paths = get_paths()
     ensure_runtime_dirs(paths)
-    repository = PostgresWriter3Repository(args.database_url)
+    repository = create_writer3_repository(None)
     index = Writer3Index(paths.writer3_index_path)
     settings = load_writer3_settings()
     worker = Writer3Worker(repository=repository, index=index, settings=settings)
@@ -1172,27 +1156,27 @@ def writer3_confirm_worker_command(args: argparse.Namespace) -> int:
 
 
 def writer3_reset_task_command(args: argparse.Namespace) -> int:
-    from packages.writer3 import PostgresWriter3Repository
+    from packages.writer3 import create_writer3_repository
 
-    repository = PostgresWriter3Repository(args.database_url)
+    repository = create_writer3_repository(None)
     changed = repository.reset_task(args.task_id)
     print(f"[odaily] writer3 reset task_id={args.task_id} changed={changed}")
     return 0 if changed else 1
 
 
 def auditor_init_db_command(args: argparse.Namespace) -> int:
-    from packages.auditor import PostgresAuditorRepository
+    from packages.auditor import create_auditor_repository
 
-    repository = PostgresAuditorRepository(args.database_url)
+    repository = create_auditor_repository(None)
     repository.init_schema()
     print("[odaily] auditor database schema initialized")
     return 0
 
 
 def auditor_worker_command(args: argparse.Namespace) -> int:
-    from packages.auditor import AuditorWorker, PostgresAuditorRepository
+    from packages.auditor import AuditorWorker, create_auditor_repository
 
-    repository = PostgresAuditorRepository(args.database_url)
+    repository = create_auditor_repository(None)
     settings = load_auditor_settings()
     worker = AuditorWorker(repository=repository, settings=settings)
     if args.once:
@@ -1208,11 +1192,11 @@ def auditor_worker_command(args: argparse.Namespace) -> int:
 
 
 def maintenance_cleanup_command(args: argparse.Namespace) -> int:
-    from packages.maintenance import PostgresMaintenanceRepository
+    from packages.maintenance import create_maintenance_repository
 
     if args.retention_days < 1 or args.feedback_retention_days < 1 or args.completed_field_retention_days < 1:
         raise ValueError("retention day values must be >= 1")
-    repository = PostgresMaintenanceRepository(args.database_url)
+    repository = create_maintenance_repository(None)
     result = repository.cleanup(
         dry_run=not args.execute,
         retention_days=args.retention_days,
@@ -1230,6 +1214,71 @@ def maintenance_cleanup_command(args: argparse.Namespace) -> int:
         print(f"delete\t{name}\t{count}")
     for name, count in sorted(result.cleared.items()):
         print(f"clear\t{name}\t{count}")
+    return 0
+
+
+def search_cache_maintenance_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.searcher import SearchCache
+
+    if args.compact and not args.execute:
+        raise ValueError("--compact requires --execute")
+    paths = get_paths()
+    cache_path = Path(args.path).expanduser().resolve() if args.path else paths.searcher_cache_path
+    if cache_path is None:
+        raise ValueError("searcher cache path is not configured")
+    before_bytes = cache_path.stat().st_size if cache_path.exists() else 0
+    result = SearchCache(cache_path).maintain(
+        dry_run=not args.execute,
+        short_retention_days=args.short_retention_days,
+        reference_retention_days=args.reference_retention_days,
+        convert_legacy=True,
+        compact=args.compact,
+    )
+    after_bytes = cache_path.stat().st_size if cache_path.exists() else 0
+    print(
+        "[odaily] search cache maintenance "
+        f"mode={'execute' if args.execute else 'dry-run'} path={cache_path} "
+        f"short_retention_days={args.short_retention_days} "
+        f"reference_retention_days={args.reference_retention_days} "
+        f"deleted_documents={result.deleted_documents} "
+        f"deleted_embeddings={result.deleted_embeddings} "
+        f"converted_embeddings={result.converted_embeddings} "
+        f"compacted={result.compacted} before_bytes={before_bytes} after_bytes={after_bytes}"
+    )
+    return 0
+
+
+def storage_backup_command(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+
+    from packages.common.sqlite_backup import create_sqlite_backup
+    from packages.common.storage import load_storage_settings
+
+    settings = load_storage_settings()
+    if settings.backend != "sqlite":
+        raise ValueError("storage-backup requires ODAILY_STORAGE_BACKEND=sqlite")
+    manifest = create_sqlite_backup(settings.sqlite_path, args.destination.expanduser().resolve())
+    print(json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
+    return 0
+
+
+def storage_import_legacy_command(args: argparse.Namespace) -> int:
+    from packages.common.legacy_database_import import import_legacy_database
+
+    if args.truncate and not args.execute:
+        raise ValueError("--truncate requires --execute")
+    results = import_legacy_database(
+        execute=args.execute,
+        truncate=args.truncate,
+        batch_size=args.batch_size,
+        sample_rows_per_table=args.sample_rows_per_table,
+    )
+    for item in results:
+        print(
+            f"{item.table}\tsource={item.source_rows}\timported={item.imported_rows}"
+            f"\tdestination={item.destination_rows}\tcolumns={len(item.shared_columns)}"
+        )
+    print(f"[odaily] legacy database import mode={'execute' if args.execute else 'preflight'} tables={len(results)}")
     return 0
 
 
@@ -1376,6 +1425,12 @@ def main() -> int:
             return auditor_worker_command(args)
         if args.command == "maintenance-cleanup":
             return maintenance_cleanup_command(args)
+        if args.command == "search-cache-maintenance":
+            return search_cache_maintenance_command(args)
+        if args.command == "storage-backup":
+            return storage_backup_command(args)
+        if args.command == "storage-import-legacy":
+            return storage_import_legacy_command(args)
         if args.command == "gate-market":
             return gate_market_command(args)
         if args.command == "doctor":
