@@ -57,6 +57,7 @@ data/raw/**
 data/processed/**
 data/exports/**
 data/runtime/**
+data/database/**
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/exports/.gitkeep

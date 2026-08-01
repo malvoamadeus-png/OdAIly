@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import sqlite3
 from types import SimpleNamespace
 
 from packages.auditor.sqlite_repository import SQLiteAuditorRepository
@@ -128,3 +129,16 @@ def test_editor_plugin_health_has_no_removed_remote_sync_fields():
         "last_feed_sync_at": None,
         "last_error": None,
     }
+
+
+def test_shared_sqlite_context_closes_connection(tmp_path):
+    connection = connect_sqlite(tmp_path / "closed.sqlite")
+    with connection as active:
+        active.execute("CREATE TABLE sample(id integer PRIMARY KEY)")
+
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError as exc:
+        assert "closed" in str(exc).lower()
+    else:
+        raise AssertionError("SQLite connection should close after its context exits")

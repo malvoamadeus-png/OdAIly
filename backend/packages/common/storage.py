@@ -39,12 +39,24 @@ def load_storage_settings() -> StorageSettings:
     return StorageSettings(backend=backend, epoch=epoch, sqlite_path=sqlite_path)
 
 
+class ClosingSQLiteConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite3.Connection, then release the file handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 def connect_sqlite(path: Path, *, timeout_seconds: float = 30.0) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=timeout_seconds)
+    conn = sqlite3.connect(path, timeout=timeout_seconds, factory=ClosingSQLiteConnection)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
+    current_journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    if current_journal_mode != "wal":
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=FULL")
     return conn
