@@ -71,19 +71,36 @@ class SQLitePipelineSupervisorRepository:
         return _rows(rows)
 
     def list_old_claimable_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]:
-        return self._task_groups("status='pending' AND updated_at < ?", (cutoff.astimezone(UTC).isoformat(),), False)
+        return self._task_groups(
+            "status='pending' AND julianday(updated_at) < julianday(?)",
+            (cutoff.astimezone(UTC).isoformat(),),
+            False,
+        )
 
     def list_stuck_processing_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat()
-        return self._task_groups("status='running' AND (updated_at < ? OR locked_until < ?)", (cutoff.astimezone(UTC).isoformat(), now), True)
+        return self._task_groups(
+            "status='running' AND (julianday(updated_at) < julianday(?) OR julianday(locked_until) < julianday(?))",
+            (cutoff.astimezone(UTC).isoformat(), now),
+            True,
+        )
 
     def _task_groups(self, where: str, args: tuple[Any, ...], include_lock: bool) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in MONITORED_TASK_SOURCES)
-        lock_column = ", MIN(locked_until) AS oldest_locked_until" if include_lock else ", MIN(created_at) AS oldest_created_at"
+        lock_column = (
+            ", MIN(datetime(locked_until)) AS oldest_locked_until"
+            if include_lock
+            else ", MIN(datetime(created_at)) AS oldest_created_at"
+        )
         with connect_sqlite(self.path) as conn:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
                 return []
-            rows = conn.execute(f"SELECT source,status,COUNT(*) count,MIN(updated_at) oldest_updated_at{lock_column} FROM tasks WHERE source IN ({placeholders}) AND {where} GROUP BY source,status ORDER BY oldest_updated_at", (*MONITORED_TASK_SOURCES, *args)).fetchall()
+            rows = conn.execute(
+                f"SELECT source,status,COUNT(*) count,MIN(datetime(updated_at)) oldest_updated_at{lock_column} "
+                f"FROM tasks WHERE source IN ({placeholders}) AND {where} "
+                "GROUP BY source,status ORDER BY julianday(oldest_updated_at)",
+                (*MONITORED_TASK_SOURCES, *args),
+            ).fetchall()
         return _rows(rows)
 
     def list_recent_failed_tasks(self, *, since: datetime, threshold: int) -> list[dict[str, Any]]:

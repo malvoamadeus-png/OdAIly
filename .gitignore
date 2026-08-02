@@ -49,6 +49,7 @@ tests/*
 !tests/test_whale_watch_hyperliquid_worker.py
 !tests/test_editor_plugin_local_store.py
 !tests/test_publish_idempotency.py
+!tests/test_pipeline_supervisor_sqlite.py
 tools/
 
 data/config/*.json
