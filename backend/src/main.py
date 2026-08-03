@@ -353,6 +353,41 @@ def parse_args() -> argparse.Namespace:
     )
     gate_market_backtest.add_argument("--days", type=int, default=90)
 
+    meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
+    meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
+    meme_scan = meme_subparsers.add_parser("scan", help="Scan GMGN BSC launch tokens and generate Meme drafts.")
+    meme_scan.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
+    meme_scan.add_argument("--audit-dir", default=str(get_paths().exports_dir / "meme_scanner"))
+    meme_scan.add_argument("--limit", type=int, default=80)
+    meme_scan.add_argument("--interval", type=int, default=60)
+    meme_scan.add_argument("--milestone-interval", type=int, default=300)
+    meme_scan.add_argument("--once", action="store_true")
+    meme_scan.add_argument("--send", action="store_true")
+    meme_scan.add_argument("--push-timeout", type=int, default=20)
+    meme_scan.add_argument("--narrative-timeout", type=int, default=180)
+    meme_scan.add_argument("--narrative-command")
+    meme_scan.add_argument("--force-contract")
+
+    meme_tg = meme_subparsers.add_parser("tg-watch", help="Listen for repeated CA mentions in Telegram chats.")
+    meme_tg.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
+    meme_tg.add_argument("--config", default=str(get_paths().config_dir / "meme_telegram.txt"))
+    meme_tg.add_argument(
+        "--session",
+        default=os.getenv("MEME_TELEGRAM_WATCH_SESSION") or str(get_paths().processed_dir / "meme_telegram_watch"),
+    )
+    meme_tg.add_argument("--allowed-chats", default=str(get_paths().config_dir / "meme_whitelist.txt"))
+    meme_tg.add_argument("--blocked-senders", default=str(get_paths().config_dir / "meme_blocked_senders.txt"))
+    meme_tg.add_argument("--window-minutes", type=int, default=20)
+    meme_tg.add_argument("--cooldown-hours", type=int, default=6)
+    meme_tg.add_argument("--retention-days", type=int, default=90)
+    meme_tg.add_argument("--backfill-minutes", type=int, default=20)
+    meme_tg.add_argument("--backfill-limit", type=int, default=200)
+    meme_tg.add_argument("--check", action="store_true")
+    meme_tg.add_argument("--dialogs-limit", type=int, default=300)
+    meme_tg.add_argument("--proxy", default="auto")
+    meme_tg.add_argument("--timeout", type=int, default=20)
+    meme_tg.add_argument("--connection-retries", type=int, default=3)
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -1322,6 +1357,18 @@ def gate_market_command(args: argparse.Namespace) -> int:
     raise ValueError(f"Unknown gate-market action: {action}")
 
 
+def meme_command(args: argparse.Namespace) -> int:
+    if args.meme_action == "scan":
+        from packages.meme_scanner import scanner
+
+        return scanner.run(args)
+    if args.meme_action == "tg-watch":
+        from packages.meme_scanner import tg_watcher
+
+        return asyncio.run(tg_watcher.run(args))
+    raise ValueError(f"Unknown meme action: {args.meme_action}")
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -1429,6 +1476,8 @@ def main() -> int:
             return storage_import_legacy_command(args)
         if args.command == "gate-market":
             return gate_market_command(args)
+        if args.command == "meme":
+            return meme_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:

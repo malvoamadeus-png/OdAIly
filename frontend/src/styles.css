@@ -497,6 +497,145 @@ h2 {
   align-items: center;
 }
 
+.memeLayout {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.memeSummaryBand {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.memeSummaryBand div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid #e8edf2;
+}
+
+.memeSummaryBand div:last-child {
+  border-right: 0;
+}
+
+.memeSummaryBand span,
+.memeItemHeader time,
+.memeMetaGrid span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.memeSummaryBand strong {
+  font-size: 20px;
+}
+
+.memeList {
+  display: grid;
+  gap: 10px;
+}
+
+.memeItem {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.memeItemHeader,
+.memeTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memeItemHeader {
+  justify-content: space-between;
+}
+
+.memeItemHeader > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.memeTitleRow {
+  flex-wrap: wrap;
+}
+
+.memeTitleRow > strong {
+  font-size: 17px;
+}
+
+.memeTitleRow > span:not(.statusPill) {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.memeMarketCap {
+  white-space: nowrap;
+  font-size: 18px;
+}
+
+.memeMetaGrid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.5fr) minmax(160px, 0.7fr) minmax(190px, 0.8fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #edf0f3;
+  border-bottom: 1px solid #edf0f3;
+}
+
+.memeMetaGrid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.memeMetaGrid strong,
+.memeMetaGrid a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #394150;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.memeAddressMeta a {
+  color: #0f684a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.memeGeneratedText {
+  display: grid;
+  gap: 7px;
+}
+
+.memeGeneratedText h2 {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.memeGeneratedText p {
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.statusPill.neutral {
+  border-color: #d5dbe2;
+  background: #f5f7f9;
+  color: #4b5563;
+}
+
 .publisherLayout {
   display: grid;
   gap: 18px;
@@ -2597,6 +2736,8 @@ textarea:focus {
   .runtimeRuleSummary,
   .taskTraceGrid,
   .gateMarketSymbolGrid,
+  .memeSummaryBand,
+  .memeMetaGrid,
   .workflowCardHeader,
   .workflowRoute,
   .workflowSideNoteGrid {

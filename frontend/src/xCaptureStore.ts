@@ -1059,6 +1059,39 @@ export async function getGateMarketDashboard(): Promise<GateMarketDashboard> {
   return consoleApiGet<GateMarketDashboard>('/console/gate-market/get');
 }
 
+export type MemeDashboardItem = {
+  id: number;
+  address: string;
+  chain: 'bsc';
+  platform: string;
+  name: string;
+  symbol: string;
+  market_cap: number | null;
+  volume_24h: number | null;
+  trigger_kind: 'market_cap_milestone' | 'tg_burst' | 'manual_replay' | 'startup_seen' | string;
+  trigger_level: number | null;
+  mention_count: number | null;
+  chat_count: number | null;
+  sender_count: number | null;
+  status: string;
+  reason: string;
+  title: string;
+  content: string;
+  queued_at: string;
+  updated_at: string;
+};
+
+export type MemeDashboard = {
+  available: boolean;
+  generated_at: string;
+  items: MemeDashboardItem[];
+  last_error: string | null;
+};
+
+export async function getMemeDashboard(): Promise<MemeDashboard> {
+  return consoleApiGet<MemeDashboard>('/console/meme/get');
+}
+
 export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {
   return consoleApiGet<RuntimeRulesPayload>('/console/runtime-rules/get');
 }
