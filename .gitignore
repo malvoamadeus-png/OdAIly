@@ -54,6 +54,9 @@ tools/
 
 data/config/*.json
 !data/config/*.example.json
+data/config/meme_telegram.txt
+data/config/meme_whitelist.txt
+data/config/meme_blocked_senders.txt
 data/raw/**
 data/processed/**
 data/exports/**
