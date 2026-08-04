@@ -105,12 +105,7 @@ def register_blockbeats_key(
 
 def _create_disposable_mailbox(session: requests.Session, timeout_seconds: float) -> DisposableMailbox:
     domains = _json_request(session, "GET", f"{MAIL_API}/domains?page=1", timeout_seconds=timeout_seconds)
-    if isinstance(domains, dict):
-        members = domains.get("hydra:member") or []
-    elif isinstance(domains, list):
-        members = domains
-    else:
-        raise BlockbeatsRegistrationError("mail.tm returned an invalid domains payload")
+    members = _collection_members(domains, "domains")
     if not members:
         raise BlockbeatsRegistrationError("mail.tm returned no active domains")
 
@@ -133,6 +128,8 @@ def _create_disposable_mailbox(session: requests.Session, timeout_seconds: float
         body={"address": address, "password": password},
         timeout_seconds=timeout_seconds,
     )
+    if not isinstance(token_response, dict):
+        raise BlockbeatsRegistrationError("mail.tm returned an invalid token payload")
     token = str(token_response.get("token") or "")
     if not token:
         raise BlockbeatsRegistrationError("mail.tm did not return a token")
@@ -148,13 +145,14 @@ def _wait_for_verification_code(
 ) -> str:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        messages = _json_request(
+        messages_payload = _json_request(
             session,
             "GET",
             f"{MAIL_API}/messages?page=1",
             headers={"Authorization": f"Bearer {mailbox.token}"},
             timeout_seconds=request_timeout_seconds,
-        ).get("hydra:member") or []
+        )
+        messages = _collection_members(messages_payload, "messages")
         for message in messages:
             sender = (message.get("from") or {}).get("address", "")
             text = " ".join(str(message.get(field) or "") for field in ("subject", "intro"))
@@ -215,6 +213,16 @@ def _json_request(
         timeout=timeout_seconds,
     )
     return _parse_response(response, context=f"{method.upper()} {url}")
+
+
+def _collection_members(payload: Any, name: str) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        members = payload.get("hydra:member") or payload.get("members") or payload.get("items") or []
+    elif isinstance(payload, list):
+        members = payload
+    else:
+        raise BlockbeatsRegistrationError(f"mail.tm returned an invalid {name} payload")
+    return [item for item in members if isinstance(item, dict)]
 
 
 def _parse_response(response: requests.Response, *, context: str) -> Any:

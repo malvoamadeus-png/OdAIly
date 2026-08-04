@@ -59,6 +59,21 @@ class _ListDomainSession(_Session):
         return super().request(method, url, **kwargs)
 
 
+class _ListMessageSession(_Session):
+    def request(self, method, url, **kwargs):
+        if url.endswith("/messages?page=1"):
+            return _Response(
+                [
+                    {
+                        "from": {"address": "system@theblockbeats.org"},
+                        "subject": "验证码 123456",
+                        "intro": "",
+                    }
+                ]
+            )
+        return super().request(method, url, **kwargs)
+
+
 def test_register_blockbeats_key_runs_registration_and_verification_flow():
     session = _Session()
 
@@ -81,6 +96,16 @@ def test_register_blockbeats_key_accepts_list_domain_payload():
         verification_timeout_seconds=1,
         request_timeout_seconds=1,
         session=_ListDomainSession(),
+    )
+
+    assert result.api_key == "new-key"
+
+
+def test_register_blockbeats_key_accepts_list_message_payload():
+    result = register_blockbeats_key(
+        verification_timeout_seconds=1,
+        request_timeout_seconds=1,
+        session=_ListMessageSession(),
     )
 
     assert result.api_key == "new-key"
