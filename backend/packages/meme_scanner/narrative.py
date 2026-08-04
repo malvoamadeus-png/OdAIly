@@ -1,93 +1,64 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
-import requests
+from packages.common.config import DEFAULT_GPT_WRITER_MODEL
+from packages.common.paths import get_paths
 
-from packages.common.config import DEFAULT_GPT_WRITER_MODEL, DEFAULT_OPENAI_BASE_URL
-from packages.x_processing.ai_client import OpenAIResponsesClient
-
-
-def _output_text(payload: dict[str, Any]) -> str:
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"].strip()
-    parts: list[str] = []
-    for item in payload.get("output") or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content") or []:
-            if isinstance(content, dict) and isinstance(content.get("text"), str):
-                parts.append(content["text"])
-    return "\n".join(part.strip() for part in parts if part.strip()).strip()
+from . import narrative_v2
 
 
-def _telegram_materials(path: Path, address: str, evidence: dict[str, Any] | None) -> list[dict[str, Any]]:
-    messages = list((evidence or {}).get("messages") or [])
-    if path.exists():
-        try:
-            with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5) as connection:
-                connection.row_factory = sqlite3.Row
-                rows = connection.execute(
-                    """SELECT chat_id,message_id,sender_key,sent_at,text_excerpt
-                    FROM ca_mentions WHERE address=? ORDER BY sent_at DESC LIMIT 30""",
-                    (address,),
-                ).fetchall()
-            messages.extend(dict(row) for row in rows)
-        except sqlite3.Error:
-            pass
-    deduped: dict[tuple[Any, Any], dict[str, Any]] = {}
-    for message in messages:
-        if isinstance(message, dict):
-            deduped[(message.get("chat_id"), message.get("message_id"))] = message
-    return list(deduped.values())[:30]
+PATHS = get_paths()
+DEFAULT_AUDIT_DIR = PATHS.exports_dir / "meme_scanner"
+DEFAULT_TELEGRAM_CONFIG = PATHS.config_dir / "meme_telegram.txt"
+DEFAULT_TELEGRAM_SESSION = PATHS.processed_dir / "meme_telegram_narrative"
+DEFAULT_ALLOWED_CHATS = PATHS.config_dir / "meme_whitelist.txt"
 
 
-def _grok_material(address: str, symbol: str, timeout: int) -> str:
-    api_key = os.getenv("MEME_GROK_API_KEY") or os.getenv("GROK_API_KEY")
-    base_url = (os.getenv("MEME_GROK_BASE_URL") or os.getenv("GROK_BASE_URL") or "").rstrip("/")
-    if not api_key or not base_url:
-        return ""
-    prompt = (
-        f"Search X for current, source-backed discussion of BSC token {symbol} with contract {address}. "
-        "Return concise Chinese research notes. Identify who said what and preserve uncertainty. "
-        "Do not invent an official relationship, origin story, endorsement, or wallet attribution."
-    )
-    response = requests.post(
-        f"{base_url}/responses",
-        json={
-            "model": os.getenv("MEME_GROK_MODEL") or "grok-4.1-fast",
-            "input": prompt,
-            "tools": [{"type": "x_search"}],
+def _run(factory: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    raise RuntimeError("Meme narrative V2 cannot run inside an active event loop")
+
+
+def _settings(audit_output: Path | None, timeout: int) -> Any:
+    output = audit_output or DEFAULT_AUDIT_DIR / "narrative-v2.json"
+    return type("NarrativeArgs", (), {
+        "chain": "bsc",
+        "contract": "",
+        "output_dir": str(output.parent),
+        "output": str(output),
+        "gpt_model": os.getenv("MEME_WRITER_MODEL") or DEFAULT_GPT_WRITER_MODEL,
+        "grok_model": os.getenv("MEME_GROK_MODEL") or os.getenv("GROK_MODEL") or narrative_v2.DEFAULT_GROK_MODEL,
+        "gpt_timeout": timeout,
+        "grok_timeout": timeout,
+        "telegram_config": os.getenv("MEME_TELEGRAM_CONFIG") or str(DEFAULT_TELEGRAM_CONFIG),
+        "telegram_session": os.getenv("MEME_TELEGRAM_NARRATIVE_SESSION")
+        or os.getenv("MEME_TELEGRAM_WATCH_SESSION")
+        or str(DEFAULT_TELEGRAM_SESSION),
+        "allowed_chats": os.getenv("MEME_TELEGRAM_ALLOWED_CHATS") or str(DEFAULT_ALLOWED_CHATS),
+        "dialogs_limit": int(os.getenv("MEME_TELEGRAM_DIALOGS_LIMIT") or 300),
+        "proxy": os.getenv("MEME_TELEGRAM_PROXY") or "auto",
+        "telegram_timeout": int(os.getenv("MEME_TELEGRAM_TIMEOUT") or 20),
+        "connection_retries": int(os.getenv("MEME_TELEGRAM_CONNECTION_RETRIES") or 3),
+    })()
+
+
+def _grok_text(result: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "source_actions": result.get("grok_research", {}).get("source_actions", []),
+            "narrative_materials": result.get("grok_research", {}).get("narrative_materials", []),
+            "supplemental_information": result.get("grok_research", {}).get("supplemental_information", []),
         },
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        timeout=timeout,
+        ensure_ascii=False,
     )
-    response.raise_for_status()
-    return _output_text(response.json())
-
-
-def _fallback_reader_text(messages: list[dict[str, Any]], grok_text: str, trigger_kind: str) -> str:
-    if grok_text:
-        return " ".join(grok_text.split())[:600]
-    if not messages:
-        return ""
-    if trigger_kind == "tg_burst":
-        return "Telegram 白名单社群中，多名用户正在围绕该代币展开讨论。"
-    return "Telegram 白名单社群中已有用户提及该代币。"
-
-
-def _llm_settings() -> dict[str, Any]:
-    base_url = os.getenv("ODAILY_LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL
-    return {
-        "api_key": os.getenv("ODAILY_LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
-        "base_url": base_url,
-        "api_style": os.getenv("ODAILY_LLM_API_STYLE") or ("chat_completions" if os.getenv("ODAILY_LLM_BASE_URL") else "responses"),
-        "model": os.getenv("MEME_WRITER_MODEL") or (DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.5"),
-    }
 
 
 def generate_reader_text(
@@ -98,45 +69,35 @@ def generate_reader_text(
     database_path: Path,
     evidence: dict[str, Any] | None,
     timeout: int,
+    audit_output: Path | None = None,
 ) -> dict[str, Any]:
-    messages = _telegram_materials(database_path, address, evidence)
+    del symbol, database_path, evidence
+    args = _settings(audit_output, timeout)
+    args.contract = address
+    args.trigger_kind = trigger_kind
     try:
-        grok_text = _grok_material(address, symbol, timeout)
-        grok_error = None
+        result = _run(lambda: narrative_v2.run_async(args))
     except Exception as exc:
-        grok_text = ""
-        grok_error = str(exc)
-    if not messages and not grok_text:
-        return {"reader_text": "", "telegram_messages": [], "grok_text": "", "grok_error": grok_error}
+        return {
+            "reader_text": "",
+            "telegram_contexts": [],
+            "telegram_messages": [],
+            "x_posts": [],
+            "grok_research": {},
+            "grok_diagnostics": [{"stage": "narrative_v2", "error": str(exc)}],
+            "grok_text": "",
+            "grok_error": str(exc),
+        }
 
-    settings = _llm_settings()
-    prompt = (
-        "你是 OdAIly 快讯编辑。根据下列已保存材料写 1 到 2 句中文新闻正文，只陈述材料支持的事实。"
-        "不要复述市值、链、CA 或标题外壳；不要写风险提示、投资建议、监控过程、发射时长；"
-        "不要把社区说法写成官方事实。直接输出正文，不要 Markdown。\n\n"
-        f"代币：{symbol}\nCA：{address}\n触发类型：{trigger_kind}\n"
-        f"Telegram 材料：{json.dumps(messages, ensure_ascii=False)}\n"
-        f"Grok X Search 材料：{grok_text or '无'}"
-    )
-    reader_text = ""
-    if settings["api_key"]:
-        try:
-            client = OpenAIResponsesClient(
-                api_key=settings["api_key"],
-                base_url=settings["base_url"],
-                api_style=settings["api_style"],
-                timeout_seconds=float(timeout),
-                max_attempts=2,
-                backoff_seconds=1,
-            )
-            reader_text = client.generate_text(model=settings["model"], prompt=prompt).strip()
-        except Exception:
-            reader_text = ""
-    if not reader_text:
-        reader_text = _fallback_reader_text(messages, grok_text, trigger_kind)
     return {
-        "reader_text": reader_text,
-        "telegram_messages": messages,
-        "grok_text": grok_text,
-        "grok_error": grok_error,
+        **result,
+        "grok_text": _grok_text(result),
+        "grok_error": next(
+            (
+                str(item.get("http_status"))
+                for item in result.get("grok_diagnostics", [])
+                if isinstance(item, dict) and int(item.get("http_status", 0) or 0) >= 400
+            ),
+            None,
+        ),
     }

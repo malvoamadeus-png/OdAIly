@@ -395,6 +395,26 @@ def parse_args() -> argparse.Namespace:
     meme_tg.add_argument("--timeout", type=int, default=20)
     meme_tg.add_argument("--connection-retries", type=int, default=3)
 
+    meme_discovery = meme_subparsers.add_parser(
+        "tg-discover",
+        help="Search non-whitelist Telegram groups/channels for 0x-style references.",
+    )
+    meme_discovery.add_argument("--config", default=str(get_paths().config_dir / "meme_telegram.txt"))
+    meme_discovery.add_argument(
+        "--session",
+        default=os.getenv("MEME_TELEGRAM_DISCOVERY_SESSION")
+        or str(get_paths().processed_dir / "meme_telegram_discovery"),
+    )
+    meme_discovery.add_argument("--allowed-chats", default=str(get_paths().config_dir / "meme_whitelist.txt"))
+    meme_discovery.add_argument("--dialogs-limit", type=int, default=300)
+    meme_discovery.add_argument("--search", default="0x")
+    meme_discovery.add_argument("--limit", type=int, default=2000)
+    meme_discovery.add_argument("--samples-per-chat", type=int, default=5)
+    meme_discovery.add_argument("--output-dir", default=str(get_paths().exports_dir / "meme_non_whitelist_0x"))
+    meme_discovery.add_argument("--proxy", default="auto")
+    meme_discovery.add_argument("--timeout", type=int, default=20)
+    meme_discovery.add_argument("--connection-retries", type=int, default=3)
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -1404,6 +1424,10 @@ def meme_command(args: argparse.Namespace) -> int:
         from packages.meme_scanner import tg_watcher
 
         return asyncio.run(tg_watcher.run(args))
+    if args.meme_action == "tg-discover":
+        from packages.meme_scanner import discovery
+
+        return asyncio.run(discovery.run(args))
     raise ValueError(f"Unknown meme action: {args.meme_action}")
 
 

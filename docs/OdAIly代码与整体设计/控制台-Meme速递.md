@@ -12,7 +12,7 @@
 - 普通新币市值达到 50 万美元后才进入播报候选，后续里程碑为 100 万和 300 万美元。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者，且查询时市值达到 30 万美元。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。
-- 叙事材料优先使用 watcher 已保存的 CA 消息；配置 Grok 时补充 X Search 材料，再通过 OdAIly LLM 客户端整理为读者正文。无任何可用材料时任务标记为 `no_usable_narrative`，不生成机械占位稿。
+- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；Grok 分别收集精确 CA 的 X 原帖和独立研究材料，最后由 GPT writer 生成读者正文。无任何可用材料时任务标记为 `no_usable_narrative`，不生成机械占位稿。
 
 ## 文本口径
 
@@ -60,7 +60,8 @@ python backend/src/main.py meme tg-watch
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
-- Grok X Search：可选 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`。
+- 叙事 Telegram 配置：`MEME_TELEGRAM_CONFIG`、`MEME_TELEGRAM_NARRATIVE_SESSION`、`MEME_TELEGRAM_ALLOWED_CHATS`；默认读取 `data/config/meme_telegram.txt`、`data/processed/meme_telegram_narrative` 和 `data/config/meme_whitelist.txt`。
+- Grok X Search：读取 `GROK_BASE_URL`、`GROK_API_KEY`、`GROK_MODEL`，也兼容 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`；默认模型为 `grok-4.5`。
 - 正文整理复用 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`，模型可由 `MEME_WRITER_MODEL` 覆盖。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
 
@@ -86,3 +87,11 @@ python backend/src/main.py meme tg-watch
 - 首次进入页面时读取一次。
 - 顶部刷新按钮只刷新本页。
 - 页面不自动轮询，不触发 GMGN、Telegram、叙事模型或发布接口。
+
+## 叙事契约
+
+内部审计保存 `telegram_contexts`、`telegram_messages`、`x_posts`、`grok_research`、`entity_supplements` 和性能诊断；读者正文只输出最终炒作角度：来源、字眼、事件、身份或具体说法。命中频次、群组数量、用户情绪、税务或官网链接、机器人卡片和检索过程不能进入正文。没有可用角度时任务标记为 `no_usable_narrative`，不生成机械占位稿。详细规则见 控制台-Meme速递叙事规范.md。
+
+## 白名单外发现
+
+执行 meme tg-discover 可通过 Telegram 全局搜索 0x，列出当前账号可见且不在白名单中的群组/频道、真人、机器人和频道帖子命中数及代表性消息。命令只输出 JSON 和 Markdown 报告，不自动修改白名单。

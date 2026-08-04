@@ -318,3 +318,21 @@ class MemeScannerTests(unittest.TestCase):
             scanner.validate_reader_text("项目页面将 Brodie 描述为办公室狗。"),
             "forbidden_reader_text_phrase:项目页面将",
         )
+
+    def test_reader_text_with_monitoring_summary_is_discarded(self) -> None:
+        self.assertEqual(
+            scanner.validate_reader_text(
+                "TSHIRT 今日在 Telegram 社群出现集中提及，相关消息来自两个群组的多名用户。"
+            ),
+            "not_final_angle_phrase:今日在 Telegram 社群出现集中提及",
+        )
+        self.assertEqual(
+            scanner.validate_reader_text("Telegram 中多条消息重复提及 bStonkBroker。"),
+            "not_final_angle_phrase:Telegram 中多条消息重复提及",
+        )
+        self.assertEqual(
+            scanner.validate_reader_text(
+                "群聊 A 表示它是“知了”，也说“就是大金啊”；还有人感叹“卧槽真能飞啊”。"
+            ),
+            "not_final_angle_phrase:还有人感叹“卧槽真能飞",
+        )

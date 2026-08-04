@@ -48,6 +48,15 @@ READER_TEXT_FORBIDDEN = re.compile(
     r"风险提示|谨慎参与|DYOR",
     re.IGNORECASE,
 )
+READER_TEXT_NOT_AN_ANGLE = re.compile(
+    r"(?:今日|近日|当前).*Telegram.*(?:集中提及|出现.*提及)|"
+    r"Telegram.{0,10}(?:多条|多份).*消息.*重复提及|"
+    r"(?:多条|多份).*消息.*重复提及|"
+    r"(?:来自|涉及).{0,30}(?:两个|多个|若干)群组.{0,20}(?:多名|多位|用户)|"
+    r"(?:有人|还有人|用户).{0,20}(?:感叹|惊呼).{0,30}(?:卧槽|真能飞|起飞)|"
+    r"(?:税务|官网).{0,20}(?:链接|页面)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -553,6 +562,7 @@ def collect_narrative(
             database_path=database_path or DEFAULT_DB,
             evidence=evidence,
             timeout=timeout,
+            audit_output=output,
         )
         output.write_text(json.dumps(narrative, ensure_ascii=False, indent=2), encoding="utf-8")
         return {
@@ -639,6 +649,9 @@ def validate_reader_text(value: str) -> str | None:
     match = READER_TEXT_FORBIDDEN.search(value)
     if match:
         return f"forbidden_reader_text_phrase:{match.group(0)}"
+    angle_match = READER_TEXT_NOT_AN_ANGLE.search(value)
+    if angle_match:
+        return f"not_final_angle_phrase:{angle_match.group(0)}"
     return None
 
 
