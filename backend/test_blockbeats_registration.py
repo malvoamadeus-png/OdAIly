@@ -13,6 +13,15 @@ class _Response:
         return self._payload
 
 
+class _EmptyResponse(_Response):
+    def __init__(self, status_code: int = 201) -> None:
+        super().__init__(None, status_code)
+        self.text = ""
+
+    def json(self):
+        raise ValueError("empty response")
+
+
 class _Session:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict]] = []
@@ -74,6 +83,13 @@ class _ListMessageSession(_Session):
         return super().request(method, url, **kwargs)
 
 
+class _EmptyAccountResponseSession(_Session):
+    def request(self, method, url, **kwargs):
+        if url.endswith("/accounts"):
+            return _EmptyResponse()
+        return super().request(method, url, **kwargs)
+
+
 def test_register_blockbeats_key_runs_registration_and_verification_flow():
     session = _Session()
 
@@ -108,6 +124,16 @@ def test_register_blockbeats_key_accepts_list_message_payload():
         verification_timeout_seconds=1,
         request_timeout_seconds=1,
         session=_ListMessageSession(),
+    )
+
+    assert result.api_key == "new-key"
+
+
+def test_register_blockbeats_key_accepts_empty_account_creation_response():
+    result = register_blockbeats_key(
+        verification_timeout_seconds=1,
+        request_timeout_seconds=1,
+        session=_EmptyAccountResponseSession(),
     )
 
     assert result.api_key == "new-key"

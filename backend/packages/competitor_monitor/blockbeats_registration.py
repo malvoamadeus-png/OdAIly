@@ -240,6 +240,8 @@ def _parse_response(response: requests.Response, *, context: str) -> Any:
     try:
         payload = response.json()
     except ValueError as exc:
+        if 200 <= response.status_code < 300 and not response.text.strip():
+            return {}
         raise BlockbeatsRegistrationError(f"{context} returned non-JSON: {response.text[:500]}") from exc
     if response.status_code >= 400:
         raise BlockbeatsRegistrationError(f"{context} failed with HTTP {response.status_code}: {payload}")
