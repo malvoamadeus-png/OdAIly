@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Read-only diagnostics for the frozen legacy Supabase/Postgres database.
+
+This tool is not a current-production health check. Current OdAIly runtime
+diagnostics must inspect the Linux SQLite primary database instead.
+"""
 from __future__ import annotations
 
 import argparse
@@ -353,6 +358,11 @@ def print_json(sections: list[Section]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run read-only Supabase/Postgres diagnostics for OdAIly.")
     parser.add_argument("--database-url", help="Override SUPABASE_DB_URL/DATABASE_URL.")
+    parser.add_argument(
+        "--legacy-supabase",
+        action="store_true",
+        help="Explicitly opt into diagnostics for the frozen legacy Supabase database.",
+    )
     parser.add_argument("--env-file", default=".env", help="Env file to load before reading SUPABASE_DB_URL.")
     parser.add_argument("--statement-timeout-seconds", type=int, default=15)
     parser.add_argument(
@@ -366,6 +376,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if not args.legacy_supabase:
+        raise SystemExit(
+            "Current OdAIly production uses local SQLite. "
+            "Use the normal local SQLite diagnostics; pass --legacy-supabase only for explicit legacy audit."
+        )
     load_env_file(Path(args.env_file))
     dsn = args.database_url or os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
     if not dsn:

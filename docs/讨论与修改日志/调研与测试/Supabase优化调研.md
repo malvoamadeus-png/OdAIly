@@ -1,10 +1,12 @@
 # Supabase 优化调研
 
+> 历史资料说明：本文记录的是 SQLite cutover 前后的 Supabase/Postgres 调研与回切背景。自 SQLite 主存储迁移完成后，当前生产不再把 Supabase 作为业务库、配置库、心跳库或实时诊断入口；本文保留用于迁移审计、灾难回切和历史问题复盘。
+
 ## 目的
 
 这份文档用于记录 Supabase CPU、memory、disk 占用较高时的调研方向、讨论结论和待拍板事项。
 
-当前阶段只做方向梳理和只读诊断规划；未确认前不直接修改生产数据库结构、不清理生产数据、不调整 worker 行为。
+本文中的生产数据库、worker 连接和 Supabase 诊断描述属于历史快照，不代表当前 SQLite 运行时；当前生产变更必须遵守 `SQLite主存储迁移.md` 与 `SQLite本地主存储架构.md`。
 
 ## 已拍板约束
 
@@ -26,7 +28,7 @@
 - 最近窗口：业务只关心最近一段时间的数据，例如插件信息流只展示最近 2 小时。
 - feed / 信息流：Chrome 插件侧边栏里显示的卡片列表，不是浏览器缓存，也不是 X feed。
 
-## 当前主要方向
+## 迁移前历史问题与已完成复盘
 
 ### 1. 插件信息流查询
 
@@ -262,12 +264,12 @@ worker 不是只用来监听“配置有没有变”。它们主要承担两类�
 本地脚本：
 
 ```bash
-python tools/supabase_readonly_diagnostics.py
+python tools/supabase_readonly_diagnostics.py --legacy-supabase
 ```
 
 默认行为：
 
-- 从 `.env` 读取 `SUPABASE_DB_URL` 或 `DATABASE_URL`。
+- 只有显式传入 `--legacy-supabase` 时，才从 `.env` 读取冻结旧库的 `SUPABASE_DB_URL` 或 `DATABASE_URL`。
 - 设置只读事务模式和查询超时。
 - 输出数据库总大小、连接状态、大表、大索引、表活动、可疑大字段、`pg_stat_statements` 热 SQL。
 - 不执行删除、更新、建索引、VACUUM 或结构变更。
@@ -275,7 +277,7 @@ python tools/supabase_readonly_diagnostics.py
 可选精确统计：
 
 ```bash
-python tools/supabase_readonly_diagnostics.py --include-counts
+python tools/supabase_readonly_diagnostics.py --legacy-supabase --include-counts
 ```
 
 `--include-counts` 会统计部分保留期候选数量，仍然只读，但可能扫描较大的历史表；优先在低峰期执行。
@@ -285,7 +287,7 @@ python tools/supabase_readonly_diagnostics.py --include-counts
 执行方式：
 
 ```bash
-python tools/supabase_readonly_diagnostics.py --statement-timeout-seconds 15
+python tools/supabase_readonly_diagnostics.py --legacy-supabase --statement-timeout-seconds 15
 ```
 
 实际通过生产服务器 `.env` 中的 `SUPABASE_DB_URL` 运行，只读查询，不修改数据。

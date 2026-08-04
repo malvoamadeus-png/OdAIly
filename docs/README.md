@@ -27,4 +27,6 @@
 本机私有目录，已由 `.gitignore` 忽略，不提交到 GitHub。用于 Linux / Codex 访问、部署操作、连接槽与 session 排障、临时运维命令和其他可能包含环境细节的资料。
 
 - 现有资料：`CODEX_LINUX_ACCESS.md`、`agent-operations-runbook.md`、`Supabase连接槽与Session排障.md`。
+
+Supabase 相关资料保留为冻结旧库的迁移、回切和历史排障记录；当前生产唯一活动存储是 Linux 本地 SQLite，不能把这些资料当作当前运行入口。
 - 新增此类资料一律放在这里；如需公开通用原则，应提炼为不包含部署细节的新文档再放入前两类目录。
