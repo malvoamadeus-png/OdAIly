@@ -5,6 +5,7 @@ import signal
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from types import FrameType
 from typing import Iterator
 from uuid import uuid4
@@ -17,7 +18,14 @@ from packages.common.source_exclusions import SourceExclusionMatcher
 from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.searcher import SearchCache, SearchDocument
 
-from .blockbeats_key_config import error_payload_summary, load_blockbeats_key_config, record_blockbeats_key_status
+from .blockbeats_key_config import (
+    error_payload_summary,
+    load_blockbeats_key_config,
+    record_blockbeats_auto_register_status,
+    record_blockbeats_key_status,
+    save_blockbeats_key,
+)
+from .blockbeats_registration import register_blockbeats_key
 from .fetchers import BlockbeatsQuotaError, NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
 from .events import NewsflashEventAggregator
@@ -197,9 +205,59 @@ class CompetitorMonitorWorker:
         if not api_key:
             error = "Missing BLOCKBEATS_API_KEY"
             record_blockbeats_key_status("missing_key", error=error)
-            raise RuntimeError(error)
+            return self._register_and_fetch_blockbeats(
+                failure=RuntimeError(error),
+                reason="missing_key",
+            )
         try:
             items = fetch_blockbeats(api_key=api_key, timeout_seconds=self.settings.request_timeout_seconds)
+        except BlockbeatsQuotaError as exc:
+            record_blockbeats_key_status(
+                "quota_exhausted",
+                error=str(exc),
+                error_payload=error_payload_summary(exc.payload),
+            )
+            return self._register_and_fetch_blockbeats(failure=exc, reason="quota_exhausted")
+        except Exception as exc:
+            record_blockbeats_key_status("request_failed", error=str(exc))
+            raise
+        record_blockbeats_key_status("ok")
+        return items
+
+    def _register_and_fetch_blockbeats(
+        self,
+        *,
+        failure: Exception,
+        reason: str,
+    ) -> list[NewsflashItem]:
+        if not self.settings.blockbeats_auto_register_enabled:
+            status = "missing_key" if reason == "missing_key" else "quota_exhausted"
+            record_blockbeats_key_status(status, error=str(failure), error_payload=error_payload_summary(getattr(failure, "payload", None)))
+            raise failure
+        if not self._auto_register_allowed():
+            raise failure
+
+        record_blockbeats_auto_register_status("running")
+        try:
+            result = register_blockbeats_key(
+                verification_timeout_seconds=self.settings.blockbeats_registration_timeout_seconds,
+                request_timeout_seconds=self.settings.request_timeout_seconds,
+            )
+            save_blockbeats_key(result.api_key, updated_by="competitor-monitor-worker")
+            record_blockbeats_auto_register_status("succeeded")
+        except Exception as exc:
+            record_blockbeats_auto_register_status(
+                "failed",
+                error=str(exc),
+                error_payload=error_payload_summary(getattr(exc, "payload", None)),
+            )
+            raise RuntimeError(f"Automatic BlockBeats key registration failed: {exc}") from exc
+
+        try:
+            items = fetch_blockbeats(
+                api_key=result.api_key,
+                timeout_seconds=self.settings.request_timeout_seconds,
+            )
         except BlockbeatsQuotaError as exc:
             record_blockbeats_key_status(
                 "quota_exhausted",
@@ -212,6 +270,17 @@ class CompetitorMonitorWorker:
             raise
         record_blockbeats_key_status("ok")
         return items
+
+    def _auto_register_allowed(self) -> bool:
+        config = load_blockbeats_key_config()
+        if config.auto_register_status != "failed" or not config.last_auto_register_at:
+            return True
+        try:
+            last_attempt = datetime.fromisoformat(config.last_auto_register_at)
+            elapsed = (datetime.now(UTC) - last_attempt).total_seconds()
+        except ValueError:
+            return True
+        return elapsed >= self.settings.blockbeats_auto_register_cooldown_seconds
 
     def _filter_items_for_tasks(self, items: list[NewsflashItem]) -> tuple[list[NewsflashItem], int, dict[str, int]]:
         kept: list[NewsflashItem] = []

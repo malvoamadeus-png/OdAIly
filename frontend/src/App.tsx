@@ -229,6 +229,10 @@ const emptyBlockbeatsKeyConfig: BlockbeatsKeyConfig = {
   last_error_payload: null,
   updated_at: null,
   updated_by: null,
+  auto_register_status: 'idle',
+  last_auto_register_at: null,
+  last_auto_register_error: null,
+  last_auto_register_error_payload: null,
 };
 
 const emptyPipelineTimingDashboard: PipelineTimingDashboard = {
@@ -3949,13 +3953,28 @@ function BlockbeatsKeyPanel({
           </span>
           <span>最近检查 {fmtTime(config.last_checked_at)}</span>
           <span>最近成功 {fmtTime(config.last_success_at)}</span>
+          <span>自动换 key {blockbeatsAutoRegisterStatusLabel(config.auto_register_status)} · {fmtTime(config.last_auto_register_at)}</span>
           {config.last_quota_error_at && <span className="bad">额度不足 {fmtTime(config.last_quota_error_at)}</span>}
           {config.last_error && <span className="bad">{config.last_error}</span>}
+          {config.last_auto_register_error && <span className="bad">自动申请失败：{config.last_auto_register_error}</span>}
           {payloadText && <code>{payloadText}</code>}
         </div>
       </form>
     </section>
   );
+}
+
+function blockbeatsAutoRegisterStatusLabel(status: BlockbeatsKeyConfig['auto_register_status']): string {
+  switch (status) {
+    case 'running':
+      return '申请中';
+    case 'succeeded':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    default:
+      return '未触发';
+  }
 }
 
 function RuntimeRulesPanel({ payload }: { payload: RuntimeRulesPayload }) {

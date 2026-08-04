@@ -8,10 +8,12 @@ from packages.common.config import CompetitorMonitorSettings
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.competitor_monitor.blockbeats_key_config import (
     load_blockbeats_key_config,
+    record_blockbeats_auto_register_status,
     record_blockbeats_key_status,
     save_blockbeats_key,
 )
 from packages.competitor_monitor.fetchers import BlockbeatsQuotaError, NewsflashItem
+from packages.competitor_monitor.blockbeats_registration import BlockbeatsRegistrationResult
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, CompetitorRunResult
 
 
@@ -59,7 +61,7 @@ def test_worker_records_missing_key(monkeypatch, tmp_path):
     path = tmp_path / "blockbeats_key.json"
     monkeypatch.setenv("BLOCKBEATS_KEY_CONFIG_PATH", str(path))
     worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
-    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None)
+    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None, blockbeats_auto_register_enabled=False)
 
     with pytest.raises(RuntimeError, match="Missing BLOCKBEATS_API_KEY"):
         worker._fetch_blockbeats_items()
@@ -67,6 +69,81 @@ def test_worker_records_missing_key(monkeypatch, tmp_path):
     config = load_blockbeats_key_config(path=path)
     assert config.status == "missing_key"
     assert config.last_error == "Missing BLOCKBEATS_API_KEY"
+
+
+def test_worker_registers_new_key_after_quota_error(monkeypatch, tmp_path):
+    path = tmp_path / "blockbeats_key.json"
+    monkeypatch.setenv("BLOCKBEATS_KEY_CONFIG_PATH", str(path))
+    save_blockbeats_key("old-key", path=path)
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None)
+    calls: list[str] = []
+
+    def fetch(*, api_key, **kwargs):
+        calls.append(api_key)
+        if len(calls) == 1:
+            raise BlockbeatsQuotaError("quota exhausted", payload={"message": "quota exhausted"})
+        return [NewsflashItem("blockbeats", "item-1", "title", "content")]
+
+    monkeypatch.setattr("packages.competitor_monitor.worker.fetch_blockbeats", fetch)
+    monkeypatch.setattr(
+        "packages.competitor_monitor.worker.register_blockbeats_key",
+        lambda **kwargs: BlockbeatsRegistrationResult(api_key="new-key", api_quota=100),
+    )
+
+    assert worker._fetch_blockbeats_items()[0].source_item_id == "item-1"
+    assert calls == ["old-key", "new-key"]
+    config = load_blockbeats_key_config(path=path)
+    assert config.api_key == "new-key"
+    assert config.status == "ok"
+    assert config.auto_register_status == "succeeded"
+    assert config.last_auto_register_at is not None
+
+
+def test_worker_registration_failure_keeps_old_key(monkeypatch, tmp_path):
+    path = tmp_path / "blockbeats_key.json"
+    monkeypatch.setenv("BLOCKBEATS_KEY_CONFIG_PATH", str(path))
+    save_blockbeats_key("old-key", path=path)
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None)
+
+    monkeypatch.setattr(
+        "packages.competitor_monitor.worker.fetch_blockbeats",
+        lambda **kwargs: (_ for _ in ()).throw(BlockbeatsQuotaError("quota exhausted")),
+    )
+    monkeypatch.setattr(
+        "packages.competitor_monitor.worker.register_blockbeats_key",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("mail provider unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="Automatic BlockBeats key registration failed"):
+        worker._fetch_blockbeats_items()
+
+    config = load_blockbeats_key_config(path=path)
+    assert config.api_key == "old-key"
+    assert config.status == "quota_exhausted"
+    assert config.auto_register_status == "failed"
+    assert config.last_auto_register_error == "mail provider unavailable"
+
+
+def test_worker_does_not_register_again_during_cooldown(monkeypatch, tmp_path):
+    path = tmp_path / "blockbeats_key.json"
+    monkeypatch.setenv("BLOCKBEATS_KEY_CONFIG_PATH", str(path))
+    save_blockbeats_key("old-key", path=path)
+    record_blockbeats_auto_register_status("failed", error="previous failure", path=path)
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None)
+
+    monkeypatch.setattr(
+        "packages.competitor_monitor.worker.fetch_blockbeats",
+        lambda **kwargs: (_ for _ in ()).throw(BlockbeatsQuotaError("quota exhausted")),
+    )
+    monkeypatch.setattr(
+        "packages.competitor_monitor.worker.register_blockbeats_key",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("registration should be cooled down")),
+    )
+    with pytest.raises(BlockbeatsQuotaError):
+        worker._fetch_blockbeats_items()
 
 
 def test_worker_records_success(monkeypatch, tmp_path):
@@ -90,7 +167,7 @@ def test_worker_records_quota_error(monkeypatch, tmp_path):
     monkeypatch.setenv("BLOCKBEATS_KEY_CONFIG_PATH", str(path))
     save_blockbeats_key("local-key", path=path)
     worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
-    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None)
+    worker.settings = CompetitorMonitorSettings(blockbeats_api_key=None, blockbeats_auto_register_enabled=False)
 
     def fail_quota(**kwargs):
         raise BlockbeatsQuotaError("quota exhausted", payload={"message": "quota exhausted"})

@@ -619,6 +619,9 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
 
 class CompetitorMonitorSettings(BaseModel):
     blockbeats_api_key: str | None = None
+    blockbeats_auto_register_enabled: bool = True
+    blockbeats_registration_timeout_seconds: int = Field(default=120, ge=30, le=900)
+    blockbeats_auto_register_cooldown_seconds: int = Field(default=3600, ge=60, le=86400)
     fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)
     request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
     event_assignment_timeout_seconds: int = Field(default=240, ge=30, le=1800)
@@ -644,6 +647,9 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
     load_dotenv()
     payload = {
         "blockbeats_api_key": os.getenv("BLOCKBEATS_API_KEY") or None,
+        "blockbeats_auto_register_enabled": _env_bool("BLOCKBEATS_AUTO_REGISTER_ENABLED", default=True),
+        "blockbeats_registration_timeout_seconds": int(os.getenv("BLOCKBEATS_REGISTRATION_TIMEOUT_SECONDS") or 120),
+        "blockbeats_auto_register_cooldown_seconds": int(os.getenv("BLOCKBEATS_AUTO_REGISTER_COOLDOWN_SECONDS") or 3600),
         "fetch_interval_seconds": int(os.getenv("COMPETITOR_FETCH_INTERVAL_SECONDS") or 60),
         "request_timeout_seconds": float(os.getenv("COMPETITOR_REQUEST_TIMEOUT_SECONDS") or 20.0),
         "event_assignment_timeout_seconds": int(os.getenv("COMPETITOR_EVENT_ASSIGNMENT_TIMEOUT_SECONDS") or 240),

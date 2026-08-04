@@ -12,6 +12,7 @@ from packages.common.paths import ensure_runtime_dirs, get_paths
 
 
 BlockbeatsKeyStatus = Literal["unknown", "ok", "quota_exhausted", "request_failed", "missing_key"]
+BlockbeatsAutoRegisterStatus = Literal["idle", "running", "succeeded", "failed"]
 
 
 class BlockbeatsKeyConfig(BaseModel):
@@ -24,6 +25,10 @@ class BlockbeatsKeyConfig(BaseModel):
     last_error_payload: dict[str, Any] | None = None
     updated_at: str | None = None
     updated_by: str | None = None
+    auto_register_status: BlockbeatsAutoRegisterStatus = "idle"
+    last_auto_register_at: str | None = None
+    last_auto_register_error: str | None = None
+    last_auto_register_error_payload: dict[str, Any] | None = None
 
     @field_validator("api_key")
     @classmethod
@@ -82,8 +87,30 @@ def save_blockbeats_key(api_key: str, *, updated_by: str | None = None, path: Pa
         last_error_payload=None,
         updated_at=now,
         updated_by=updated_by,
+        auto_register_status="idle",
+        last_auto_register_error=None,
+        last_auto_register_error_payload=None,
     )
     return save_blockbeats_key_config(config, path=path)
+
+
+def record_blockbeats_auto_register_status(
+    status: BlockbeatsAutoRegisterStatus,
+    *,
+    error: str | None = None,
+    error_payload: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> BlockbeatsKeyConfig:
+    now = _now_iso()
+    current = load_blockbeats_key_config(path=path)
+    update: dict[str, Any] = {
+        "auto_register_status": status,
+        "last_auto_register_at": now,
+        "last_auto_register_error": error,
+        "last_auto_register_error_payload": error_payload,
+        "updated_at": now,
+    }
+    return save_blockbeats_key_config(current.model_copy(update=update), path=path)
 
 
 def record_blockbeats_key_status(

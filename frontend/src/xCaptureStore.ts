@@ -74,6 +74,10 @@ export type BlockbeatsKeyConfig = {
   last_error_payload: Record<string, unknown> | null;
   updated_at: string | null;
   updated_by: string | null;
+  auto_register_status: 'idle' | 'running' | 'succeeded' | 'failed';
+  last_auto_register_at: string | null;
+  last_auto_register_error: string | null;
+  last_auto_register_error_payload: Record<string, unknown> | null;
 };
 
 export type PipelineTimingMetric = {
