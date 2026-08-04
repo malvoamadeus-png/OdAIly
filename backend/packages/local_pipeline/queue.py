@@ -45,9 +45,12 @@ class LocalPipelineJob:
 
 
 class LocalPipelineQueue:
-    def __init__(self, path: Path, *, storage_epoch: str | None = None) -> None:
+    def __init__(self, path: Path, *, storage_epoch: str | None = None, max_attempts: int = 3) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self.path = path
         self.storage_epoch = storage_epoch or load_storage_settings().epoch
+        self.max_attempts = max_attempts
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
@@ -149,12 +152,13 @@ class LocalPipelineQueue:
                 SELECT *
                 FROM local_pipeline_jobs
                 WHERE status IN ('pending', 'failed')
+                  AND attempt_count < ?
                   AND storage_epoch = ?
                   AND next_attempt_at <= ?
                 ORDER BY created_at ASC, id ASC
                 LIMIT 1
                 """,
-                (self.storage_epoch, now),
+                (self.max_attempts, self.storage_epoch, now),
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -182,7 +186,7 @@ class LocalPipelineQueue:
             cursor = conn.execute(
                 """
                 UPDATE local_pipeline_jobs
-                SET status = 'failed',
+                SET status = CASE WHEN attempt_count >= ? THEN 'exhausted' ELSE 'failed' END,
                     locked_by = NULL,
                     locked_at = NULL,
                     last_error = CASE
@@ -196,7 +200,7 @@ class LocalPipelineQueue:
                   AND locked_at IS NOT NULL
                   AND locked_at < ?
                 """,
-                (now, now, self.storage_epoch, cutoff),
+                (self.max_attempts, now, now, self.storage_epoch, cutoff),
             )
             return int(cursor.rowcount or 0)
 
@@ -224,16 +228,76 @@ class LocalPipelineQueue:
             conn.execute(
                 """
                 UPDATE local_pipeline_jobs
-                SET status = 'failed',
+                SET status = CASE WHEN ? >= ? THEN 'exhausted' ELSE 'failed' END,
                     locked_by = NULL,
                     locked_at = NULL,
                     last_error = ?,
-                    next_attempt_at = ?,
+                    next_attempt_at = CASE WHEN ? >= ? THEN ? ELSE ? END,
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (error[:2000], next_attempt_at, now, job_id),
+                (
+                    attempt_count,
+                    self.max_attempts,
+                    error[:2000],
+                    attempt_count,
+                    self.max_attempts,
+                    now,
+                    next_attempt_at,
+                    now,
+                    job_id,
+                ),
             )
+
+    def list_over_limit_jobs(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, job_type, task_id, source, source_item_id, status,
+                       attempt_count, last_error, updated_at
+                FROM local_pipeline_jobs
+                WHERE storage_epoch = ?
+                  AND status IN ('failed', 'running')
+                  AND attempt_count >= ?
+                ORDER BY updated_at ASC, id ASC
+                """,
+                (self.storage_epoch, self.max_attempts),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def exhaust_over_limit_jobs(self) -> int:
+        now = encode_dt()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE local_pipeline_jobs
+                SET status = 'exhausted',
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    next_attempt_at = ?,
+                    updated_at = ?
+                WHERE storage_epoch = ?
+                  AND status IN ('failed', 'running')
+                  AND attempt_count >= ?
+                """,
+                (now, now, self.storage_epoch, self.max_attempts),
+            )
+            return int(cursor.rowcount or 0)
+
+    def list_exhausted_jobs(self, *, limit: int = 5) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, job_type, task_id, source, source_item_id,
+                       attempt_count, last_error, updated_at
+                FROM local_pipeline_jobs
+                WHERE storage_epoch = ? AND status = 'exhausted'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (self.storage_epoch, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def stats(self) -> dict[str, int]:
         with self._connect() as conn:

@@ -53,6 +53,7 @@ MONITORED_TASK_SOURCES = [
 
 class PipelineSupervisorRepository(Protocol):
     def init_schema(self) -> None: ...
+    def get_latest_heartbeat(self, *, component: str) -> dict[str, Any] | None: ...
     def list_stale_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
     def list_stale_success_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
     def list_old_claimable_tasks(self, *, cutoff: datetime) -> list[dict[str, Any]]: ...
@@ -117,6 +118,20 @@ class PostgresPipelineSupervisorRepository:
                 (EXPECTED_HEARTBEAT_COMPONENTS, cutoff),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_latest_heartbeat(self, *, component: str) -> dict[str, Any] | None:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute(
+                """
+                SELECT component, worker_id, status, last_seen_at, last_success_at, last_error, metadata
+                FROM pipeline_worker_heartbeats
+                WHERE component = %s
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """,
+                (component,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_stale_success_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         with self._connect() as conn:

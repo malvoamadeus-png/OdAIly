@@ -17,6 +17,7 @@ from packages.common.config import (  # noqa: E402
     load_auditor_settings,
     load_competitor_monitor_settings,
     load_gate_settings,
+    load_local_pipeline_settings,
     load_pipeline_supervisor_settings,
     load_settings,
     load_telegram_discovery_settings,
@@ -124,6 +125,12 @@ def parse_args() -> argparse.Namespace:
         help="Mark pre-cutover unfinished DB tasks as legacy_skipped.",
     )
     local_pipeline_skip.add_argument("--execute", action="store_true", help="Actually update tasks. Defaults to dry-run.")
+
+    local_pipeline_exhaust = subparsers.add_parser(
+        "local-pipeline-exhaust",
+        help="Mark over-limit local pipeline jobs as exhausted. Defaults to dry-run.",
+    )
+    local_pipeline_exhaust.add_argument("--execute", action="store_true", help="Actually update queue rows. Omit for dry-run.")
 
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
@@ -626,6 +633,37 @@ def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
         return 0
     count = repository.mark_legacy_unfinished_tasks_skipped()
     print(f"[odaily] local pipeline legacy tasks skipped count={count}")
+    return 0
+
+
+def local_pipeline_exhaust_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline.queue import LocalPipelineQueue
+
+    paths = get_paths()
+    settings = load_local_pipeline_settings()
+    queue = LocalPipelineQueue(paths.runtime_dir / "local_pipeline.sqlite", max_attempts=settings.max_attempts)
+    candidates = queue.list_over_limit_jobs()
+    if not args.execute:
+        print(
+            json.dumps(
+                {
+                    "storage_epoch": queue.storage_epoch,
+                    "max_attempts": queue.max_attempts,
+                    "count": len(candidates),
+                    "jobs": candidates,
+                    "execute_hint": "Re-run with --execute to mark these queue rows exhausted.",
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+    count = queue.exhaust_over_limit_jobs()
+    print(
+        f"[odaily] local pipeline over-limit jobs exhausted count={count} "
+        f"max_attempts={queue.max_attempts} storage_epoch={queue.storage_epoch}"
+    )
     return 0
 
 
@@ -1400,6 +1438,8 @@ def main() -> int:
             return local_pipeline_server_command(args)
         if args.command == "local-pipeline-skip-legacy":
             return local_pipeline_skip_legacy_command(args)
+        if args.command == "local-pipeline-exhaust":
+            return local_pipeline_exhaust_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
         if args.command == "non-mainstream-media-init-db":

@@ -45,6 +45,22 @@ X_TERMINAL_STATUSES: set[str] = {
     "legacy_skipped",
 }
 
+X_FAILURE_STATUSES: set[str] = {
+    "judge_failed",
+    "search_failed",
+    "write_failed",
+    "format_failed",
+    "publisher_failed",
+}
+
+X_PROCESSING_STATUSES: set[str] = {
+    "judging",
+    "deduping",
+    "writing",
+    "formatting",
+    "publishing",
+}
+
 ALERT_TERMINAL_STATUSES: set[str] = {
     "discarded",
     "duplicate",
@@ -212,6 +228,16 @@ class LocalPipelineProcessor:
                 current = self.x_repository.get_task(task.id)
                 if current.status in X_TERMINAL_STATUSES:
                     return LocalPipelineRunResult(current.id, current.status, f"stopped at {current.status}")
+                if current.status in X_FAILURE_STATUSES:
+                    raise RuntimeError(
+                        f"task {task.id} stage {stage} failed task could not be reclaimed; "
+                        f"current_status={current.status}"
+                    )
+                if current.status not in X_PROCESSING_STATUSES:
+                    raise RuntimeError(
+                        f"task {task.id} stage {stage} is not eligible for claim; "
+                        f"current_status={current.status}"
+                    )
                 raise RuntimeError(
                     f"task {task.id} stage {stage} is owned by another worker; current_status={current.status}"
                 )

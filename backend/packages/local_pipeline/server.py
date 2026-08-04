@@ -8,7 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from packages.common.config import load_external_media_alert_settings, load_x_processing_settings
+from packages.common.config import (
+    load_external_media_alert_settings,
+    load_local_pipeline_settings,
+    load_x_processing_settings,
+)
 from packages.common.paths import ensure_runtime_dirs, get_paths
 
 from .processor import LocalPipelineProcessor
@@ -159,7 +163,15 @@ class LocalPipelineService:
 
     def _safe_record_heartbeat(self, *, success: bool, error: str | None, metadata: dict[str, Any]) -> None:
         try:
-            self.processor.record_heartbeat(success=success, error=error, metadata=metadata)
+            queue_stats = self._safe_queue_stats()
+            heartbeat_metadata = {
+                **metadata,
+                "queue": queue_stats,
+                "queue_exhausted_count": queue_stats.get("exhausted", 0),
+            }
+            if queue_stats.get("exhausted", 0):
+                heartbeat_metadata["queue_exhausted_jobs"] = self.queue.list_exhausted_jobs(limit=5)
+            self.processor.record_heartbeat(success=success, error=error, metadata=heartbeat_metadata)
         except Exception as exc:
             print(f"[odaily] local pipeline heartbeat write failed: {exc}")
 
@@ -221,7 +233,11 @@ def run_local_pipeline_server(
 ) -> None:
     paths = get_paths()
     ensure_runtime_dirs(paths)
-    queue = LocalPipelineQueue(queue_path or paths.runtime_dir / "local_pipeline.sqlite")
+    settings = load_local_pipeline_settings()
+    queue = LocalPipelineQueue(
+        queue_path or paths.runtime_dir / "local_pipeline.sqlite",
+        max_attempts=settings.max_attempts,
+    )
     requeued = queue.requeue_stale_running_jobs(stale_before=datetime.now(UTC) - timedelta(minutes=30))
     processor = LocalPipelineProcessor(
         database_url=database_url,

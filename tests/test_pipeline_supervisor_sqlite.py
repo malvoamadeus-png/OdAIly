@@ -112,3 +112,32 @@ def test_running_task_uses_normalized_lock_and_update_times(tmp_path) -> None:
     )
 
     assert rows == []
+
+
+def test_latest_heartbeat_decodes_queue_metadata(tmp_path) -> None:
+    path = tmp_path / "odaily.sqlite"
+    repository = SQLitePipelineSupervisorRepository(path)
+    repository.init_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO pipeline_worker_heartbeats
+                (component, worker_id, status, last_seen_at, last_success_at, last_error, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "local_pipeline",
+                "local-pipeline-1",
+                "ok",
+                "2026-08-04T00:00:00+00:00",
+                "2026-08-04T00:00:00+00:00",
+                None,
+                '{"queue_exhausted_count": 1, "queue_exhausted_jobs": [{"id": 7}]}',
+            ),
+        )
+
+    heartbeat = repository.get_latest_heartbeat(component="local_pipeline")
+
+    assert heartbeat is not None
+    assert heartbeat["metadata"]["queue_exhausted_count"] == 1
+    assert heartbeat["metadata"]["queue_exhausted_jobs"] == [{"id": 7}]

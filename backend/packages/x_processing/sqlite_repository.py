@@ -145,19 +145,26 @@ class SQLiteXProcessingRepository:
     def _eligible(self, stage: ProcessingStage, task: dict[str, Any], is_ai_source: bool) -> bool:
         source, status = str(task["source"]), str(task["status"])
         spec = STAGE_SPECS[stage]
+        retryable_statuses = {spec.processing_status, spec.failure_status}
         if source not in (WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES):
             return False
         if stage == "judge_crypto":
-            return ((source == "x" and not is_ai_source and status == "pending") or (source in CRYPTO_SEARCH_FIRST_SOURCES and status == "searched") or status == spec.processing_status)
+            return (
+                (source == "x" and not is_ai_source and (status == "pending" or status in retryable_statuses))
+                or (source in CRYPTO_SEARCH_FIRST_SOURCES and (status == "searched" or status in retryable_statuses))
+            )
         if stage == "judge_ai":
-            return ((source == "x" and is_ai_source and status == "pending") or (source == AI_SOURCE and status == "searched") or status == spec.processing_status)
+            return (
+                (source == "x" and is_ai_source and (status == "pending" or status in retryable_statuses))
+                or (source == AI_SOURCE and (status == "searched" or status in retryable_statuses))
+            )
         if stage == "judge_jin10":
-            return source == JIN10_SOURCE and status in {"pending", spec.processing_status}
+            return source == JIN10_SOURCE and status in {"pending", *retryable_statuses}
         if stage == "judge":
-            return status in {spec.claim_status, spec.processing_status} or (source in SEARCH_FIRST_SOURCES and status == "searched")
+            return status in {spec.claim_status, *retryable_statuses} or (source in SEARCH_FIRST_SOURCES and status in {"searched", *retryable_statuses})
         if stage == "search":
-            return status in {spec.claim_status, spec.processing_status} or (source in SEARCH_FIRST_SOURCES and status == "pending")
-        return status in {spec.claim_status, spec.processing_status}
+            return status in {spec.claim_status, *retryable_statuses} or (source in SEARCH_FIRST_SOURCES and status in {"pending", *retryable_statuses})
+        return status in {spec.claim_status, *retryable_statuses}
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds)

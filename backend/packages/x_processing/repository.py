@@ -529,57 +529,56 @@ class PostgresXProcessingRepository:
         if stage in {"judge", "judge_crypto"}:
             source_filter = """
                 (
-                    (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false) AND t.status = %(claim_status)s)
-                    OR (t.source = ANY(%(crypto_search_first_sources)s) AND t.status = 'searched')
+                    (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false) AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    OR (t.source = ANY(%(crypto_search_first_sources)s) AND t.status IN ('searched', %(processing_status)s, %(failure_status)s))
                     OR (
                         (
                             (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false))
                             OR t.source = ANY(%(crypto_search_first_sources)s)
                         )
-                        AND t.status = %(processing_status)s
+                        AND t.status IN (%(processing_status)s, %(failure_status)s)
                     )
                 )
             """
             if stage == "judge":
                 source_filter = """
                     (
-                        (t.source = 'x' AND t.status = %(claim_status)s)
-                        OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'searched')
-                        OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                        (t.source = 'x' AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                        OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('searched', %(processing_status)s, %(failure_status)s))
+                        OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                     )
                 """
         elif stage == "judge_ai":
             source_filter = """
                 (
-                    (t.source = 'x' AND COALESCE(xa.is_ai_source, false) AND t.status = %(claim_status)s)
-                    OR (t.source = %(ai_source)s AND t.status = 'searched')
+                    (t.source = 'x' AND COALESCE(xa.is_ai_source, false) AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    OR (t.source = %(ai_source)s AND t.status IN ('searched', %(processing_status)s, %(failure_status)s))
                     OR (
                         (
                             (t.source = 'x' AND COALESCE(xa.is_ai_source, false))
                             OR t.source = %(ai_source)s
                         )
-                        AND t.status = %(processing_status)s
+                        AND t.status IN (%(processing_status)s, %(failure_status)s)
                     )
                 )
             """
         elif stage == "judge_jin10":
             source_filter = """
                 (
-                    (t.source = %(jin10_source)s AND t.status = %(claim_status)s)
-                    OR (t.source = %(jin10_source)s AND t.status = %(processing_status)s)
+                    (t.source = %(jin10_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                 )
             """
         elif stage == "search":
             source_filter = """
                 (
-                    (t.source = 'x' AND t.status = %(claim_status)s)
-                    OR (t.source = %(jin10_source)s AND t.status = %(claim_status)s)
-                    OR (t.source = ANY(%(search_first_sources)s) AND t.status = 'pending')
-                    OR (t.source = ANY(%(sources)s) AND t.status = %(processing_status)s)
+                    (t.source = 'x' AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    OR (t.source = %(jin10_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
+                    OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                 )
             """
         else:
-            source_filter = "t.source = ANY(%(sources)s) AND t.status IN (%(claim_status)s, %(processing_status)s)"
+            source_filter = "t.source = ANY(%(sources)s) AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s)"
         with self._connect() as conn:
             row = conn.execute(
                 f"""
@@ -609,6 +608,7 @@ class PostgresXProcessingRepository:
                 {
                     "claim_status": spec.claim_status,
                     "processing_status": spec.processing_status,
+                    "failure_status": spec.failure_status,
                     "task_id": task_id,
                     "worker_id": worker_id,
                     "lock_seconds": lock_seconds,
@@ -1342,7 +1342,7 @@ class InMemoryXProcessingRepository:
                 continue
             if stage == "judge_jin10" and task.source != JIN10_SOURCE:
                 continue
-            if task.status not in {claim_status, spec.processing_status} or task.id in self._locks:
+            if task.status not in {claim_status, spec.processing_status, spec.failure_status} or task.id in self._locks:
                 continue
             self._locks.add(task.id)
             updated = TaskRecord(**{**asdict(task), "status": spec.processing_status, "updated_at": utc_now()})

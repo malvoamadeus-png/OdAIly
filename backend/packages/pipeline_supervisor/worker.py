@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -119,6 +120,45 @@ class PipelineSupervisorWorker:
                     metadata=dict(row),
                 )
             )
+
+        local_pipeline_heartbeat = self.repository.get_latest_heartbeat(component="local_pipeline")
+        if local_pipeline_heartbeat:
+            metadata = local_pipeline_heartbeat.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            if isinstance(metadata, dict):
+                exhausted_count = int(metadata.get("queue_exhausted_count") or 0)
+                if exhausted_count > 0:
+                    samples = metadata.get("queue_exhausted_jobs") or []
+                    sample_text = "；".join(
+                        (
+                            f"job_id={item.get('id')} task_id={item.get('task_id')} "
+                            f"source={item.get('source')} attempts={item.get('attempt_count')} "
+                            f"error={str(item.get('last_error') or '-')[:240]}"
+                        )
+                        for item in samples[:5]
+                        if isinstance(item, dict)
+                    )
+                    alerts.append(
+                        PipelineAlert(
+                            alert_key="local_pipeline:exhausted",
+                            message=(
+                                "OdAIly 流水线告警\n"
+                                "类型：本地队列任务已停止自动重试\n"
+                                f"对象：local_pipeline\n"
+                                f"详情：exhausted={exhausted_count}\n"
+                                f"样例：{sample_text or '-'}\n"
+                                "动作：检查最后错误；业务任务未删除，需要人工判断后处理"
+                            ),
+                            metadata={
+                                "queue_exhausted_count": exhausted_count,
+                                "queue_exhausted_jobs": samples[:5],
+                            },
+                        )
+                    )
 
         for row in self.repository.list_old_claimable_tasks(cutoff=task_cutoff):
             source = str(row["source"])

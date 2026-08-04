@@ -373,6 +373,21 @@ class XProcessingSettings(BaseModel):
     )
 
 
+class LocalPipelineSettings(BaseModel):
+    max_attempts: int = Field(default=3, ge=1, le=100)
+
+
+def load_local_pipeline_settings() -> LocalPipelineSettings:
+    load_dotenv()
+    payload = {
+        "max_attempts": int(os.getenv("LOCAL_PIPELINE_MAX_ATTEMPTS") or 3),
+    }
+    try:
+        return LocalPipelineSettings.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid local pipeline settings: {exc}") from exc
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:

@@ -57,6 +57,21 @@ class SQLitePipelineSupervisorRepository:
                 for component in EXPECTED_HEARTBEAT_COMPONENTS
                 if component not in latest or str(latest[component]["last_seen_at"]) < cutoff_text]
 
+    def get_latest_heartbeat(self, *, component: str) -> dict[str, Any] | None:
+        self.init_schema()
+        with connect_sqlite(self.path) as conn:
+            row = conn.execute(
+                """
+                SELECT component, worker_id, status, last_seen_at, last_success_at, last_error, metadata
+                FROM pipeline_worker_heartbeats
+                WHERE component = ?
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """,
+                (component,),
+            ).fetchone()
+        return _rows([row])[0] if row else None
+
     def list_stale_success_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         cutoff_text = cutoff.astimezone(UTC).isoformat()
         self.init_schema()

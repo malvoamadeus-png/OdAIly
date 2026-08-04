@@ -51,6 +51,7 @@ tests/*
 !tests/test_editor_plugin_local_store.py
 !tests/test_publish_idempotency.py
 !tests/test_pipeline_supervisor_sqlite.py
+!tests/test_local_pipeline_retry_limit.py
 tools/
 
 data/config/*.json
