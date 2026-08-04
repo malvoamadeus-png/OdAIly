@@ -89,6 +89,8 @@ def test_register_blockbeats_key_runs_registration_and_verification_flow():
     blockbeats_calls = [call for call in session.calls if "api.blockbeats.cn" in call[1]]
     assert [call[0] for call in blockbeats_calls] == ["POST", "POST", "GET"]
     assert all("X-Signature" in call[2]["headers"] for call in blockbeats_calls)
+    assert all(call[2].get("json") is None for call in blockbeats_calls)
+    assert all(call[2].get("data") is not None for call in blockbeats_calls[:2])
 
 
 def test_register_blockbeats_key_accepts_list_domain_payload():

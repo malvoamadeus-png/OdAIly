@@ -173,14 +173,25 @@ def _blockbeats_request(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     path = f"/v2{endpoint}"
+    request_headers = _signed_headers(method, path, body=body, token=token)
+    request_body = None
+    if body is not None:
+        request_body = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+        request_headers["Content-Type"] = "application/json"
     response = session.request(
         method.upper(),
         f"{BLOCKBEATS_API}{path}",
-        json=body,
-        headers=_signed_headers(method, path, body=body, token=token),
+        data=request_body,
+        headers=request_headers,
         timeout=timeout_seconds,
     )
-    return _parse_response(response, context=f"BlockBeats {method.upper()} {endpoint}")
+    payload = _parse_response(response, context=f"BlockBeats {method.upper()} {endpoint}")
+    if not isinstance(payload, dict):
+        raise BlockbeatsRegistrationError(f"BlockBeats {method.upper()} {endpoint} returned an invalid JSON object")
+    code = payload.get("code")
+    if code not in (None, 0):
+        raise BlockbeatsRegistrationError(f"BlockBeats {method.upper()} {endpoint} failed: {payload}")
+    return payload
 
 
 def _verify_api_key(session: requests.Session, api_key: str, timeout_seconds: float) -> dict[str, Any]:
