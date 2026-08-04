@@ -41,17 +41,6 @@ docs/_private/
 docs/工具运维私有/
 docs/工具与运维私有/
 tests/
-!tests/
-tests/*
-!tests/test_source_exclusions.py
-!tests/test_runtime_rules.py
-!tests/test_x_processing_title_trace.py
-!tests/test_x_processing_competitor_judge.py
-!tests/test_whale_watch_hyperliquid_worker.py
-!tests/test_editor_plugin_local_store.py
-!tests/test_publish_idempotency.py
-!tests/test_pipeline_supervisor_sqlite.py
-!tests/test_local_pipeline_retry_limit.py
 tools/
 
 data/config/*.json
