@@ -105,7 +105,12 @@ def register_blockbeats_key(
 
 def _create_disposable_mailbox(session: requests.Session, timeout_seconds: float) -> DisposableMailbox:
     domains = _json_request(session, "GET", f"{MAIL_API}/domains?page=1", timeout_seconds=timeout_seconds)
-    members = domains.get("hydra:member") or []
+    if isinstance(domains, dict):
+        members = domains.get("hydra:member") or []
+    elif isinstance(domains, list):
+        members = domains
+    else:
+        raise BlockbeatsRegistrationError("mail.tm returned an invalid domains payload")
     if not members:
         raise BlockbeatsRegistrationError("mail.tm returned no active domains")
 
@@ -201,7 +206,7 @@ def _json_request(
     body: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float,
-) -> dict[str, Any]:
+) -> Any:
     response = session.request(
         method.upper(),
         url,
@@ -212,13 +217,11 @@ def _json_request(
     return _parse_response(response, context=f"{method.upper()} {url}")
 
 
-def _parse_response(response: requests.Response, *, context: str) -> dict[str, Any]:
+def _parse_response(response: requests.Response, *, context: str) -> Any:
     try:
         payload = response.json()
     except ValueError as exc:
         raise BlockbeatsRegistrationError(f"{context} returned non-JSON: {response.text[:500]}") from exc
-    if not isinstance(payload, dict):
-        raise BlockbeatsRegistrationError(f"{context} returned an invalid JSON object")
     if response.status_code >= 400:
         raise BlockbeatsRegistrationError(f"{context} failed with HTTP {response.status_code}: {payload}")
     return payload

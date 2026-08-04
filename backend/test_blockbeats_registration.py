@@ -52,6 +52,13 @@ class _Session:
         return _Response({"status": 0, "data": {"data": [{"id": 1}]}})
 
 
+class _ListDomainSession(_Session):
+    def request(self, method, url, **kwargs):
+        if url.endswith("/domains?page=1"):
+            return _Response([{"domain": "example.test"}])
+        return super().request(method, url, **kwargs)
+
+
 def test_register_blockbeats_key_runs_registration_and_verification_flow():
     session = _Session()
 
@@ -67,3 +74,13 @@ def test_register_blockbeats_key_runs_registration_and_verification_flow():
     blockbeats_calls = [call for call in session.calls if "api.blockbeats.cn" in call[1]]
     assert [call[0] for call in blockbeats_calls] == ["POST", "POST", "GET"]
     assert all("X-Signature" in call[2]["headers"] for call in blockbeats_calls)
+
+
+def test_register_blockbeats_key_accepts_list_domain_payload():
+    result = register_blockbeats_key(
+        verification_timeout_seconds=1,
+        request_timeout_seconds=1,
+        session=_ListDomainSession(),
+    )
+
+    assert result.api_key == "new-key"
