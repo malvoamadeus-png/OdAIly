@@ -185,7 +185,12 @@ class NonMainstreamMediaWorker:
         return deadline - now
 
     def _process_sources(self, sources: list[NonMainstreamMediaSource]) -> list[SourceRunStats]:
-        return [self.process_source(source) for source in sources]
+        stats: list[SourceRunStats] = []
+        for source in sources:
+            self._record_processing_heartbeat(source=source, processed_items=len(stats))
+            stats.append(self.process_source(source))
+            self._record_processing_heartbeat(source=source, processed_items=len(stats))
+        return stats
 
     def process_source(self, source: NonMainstreamMediaSource) -> SourceRunStats:
         started_at = utc_now()
@@ -237,6 +242,7 @@ class NonMainstreamMediaWorker:
             "classified_discard": 0,
         }
         for page in pages:
+            self._record_processing_heartbeat(source=source, processed_items=new_count + len(detail_errors))
             if page.source_item_id not in unseen:
                 continue
             if self._is_excluded(source, title_texts=[page.title], body_texts=[page.excerpt]):
@@ -342,6 +348,7 @@ class NonMainstreamMediaWorker:
             "classified_discard": 0,
         }
         for page in pages:
+            self._record_processing_heartbeat(source=source, processed_items=new_count + len(item_errors))
             if page.source_item_id not in unseen:
                 continue
             if self._is_excluded(source, title_texts=[page.title], body_texts=[page.excerpt]):
@@ -564,6 +571,21 @@ class NonMainstreamMediaWorker:
             )
         except Exception as exc:
             print(f"[odaily] non-mainstream media heartbeat failed: {exc}")
+
+    def _record_processing_heartbeat(self, *, source: NonMainstreamMediaSource, processed_items: int) -> None:
+        """Keep long serial source batches visible to the supervisor."""
+        try:
+            self._heartbeat.send(
+                status="ok",
+                success=True,
+                metadata={
+                    "phase": "processing",
+                    "current_site": source.site_key,
+                    "processed_items": processed_items,
+                },
+            )
+        except Exception as exc:
+            print(f"[odaily] non-mainstream media processing heartbeat failed: {exc}")
 
 
 def heartbeat_failure_details(stats: SourceRunStats, *, limit: int = 5) -> dict[str, str]:
