@@ -270,7 +270,7 @@ ODAILY_LLM_BASE_URL=http://127.0.0.1:4000/v1
 ODAILY_LLM_API_KEY=
 ODAILY_LLM_API_STYLE=chat_completions
 LITELLM_MASTER_KEY=
-OPENAI_RELAY_BASE_URL=https://api.penguinsaichat.dpdns.org/v1
+OPENAI_RELAY_BASE_URL=https://sadai.cc/v1
 OPENAI_RELAY_API_KEY=
 DASHSCOPE_API_KEY=
 BLOCKBEATS_API_KEY=
@@ -295,12 +295,12 @@ SEARCH_EMBEDDING_MODEL=text-embedding-v4
 SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 SEARCH_WINDOW_HOURS=6
 SEARCH_DUPLICATE_THRESHOLD=0.88
-SEARCH_AI_REVIEW_MODEL=odaily-deepseek-review
-SEARCH_AI_REVIEW_REASONING_EFFORT=low
+SEARCH_AI_REVIEW_MODEL=gpt-5.6-luna
+SEARCH_AI_REVIEW_REASONING_EFFORT=medium
 SEARCH_AI_REVIEW_OPENAI_API_KEY=
-SEARCH_AI_REVIEW_OPENAI_BASE_URL=
-SEARCH_AI_REVIEW_OPENAI_API_STYLE=
-SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=true
+SEARCH_AI_REVIEW_OPENAI_BASE_URL=https://sadai.cc/v1
+SEARCH_AI_REVIEW_OPENAI_API_STYLE=chat_completions
+SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT=false
 SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE=json_object
 SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 SEARCH_AI_REVIEW_THRESHOLD=0.65
@@ -338,11 +338,14 @@ WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 Production text LLM calls go through the local LiteLLM proxy at
 `ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
 proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
-`odaily-deepseek-review`, `odaily-gpt-auditor`, and `odaily-deepseek-auditor`. The former fast GPT path has been removed; fast
-classification, review, analysis, and browser-plugin quick generation now use
-DeepSeek through LiteLLM. For DeepSeek JSON tasks, use `chat_completions`,
+`odaily-deepseek-review`, `odaily-gpt-auditor`, and `odaily-deepseek-auditor`. The
+searcher AI review is explicitly configured as `gpt-5.6-luna` with `medium`
+reasoning through `https://sadai.cc/v1`; the former fast GPT path has been
+removed. Fast classification, review, analysis, and browser-plugin quick
+generation now use DeepSeek through LiteLLM. For DeepSeek JSON tasks, use `chat_completions`,
 `json_object`, and append the JSON Schema to the prompt; the auditor sends
-`AUDITOR_REASONING_EFFORT=max`, while judge/search review omit reasoning effort.
+`AUDITOR_REASONING_EFFORT=max`; the direct searcher GPT review sends
+`SEARCH_AI_REVIEW_REASONING_EFFORT=medium`.
 DashScope embedding remains configured
 separately and does not go through LiteLLM.
 
