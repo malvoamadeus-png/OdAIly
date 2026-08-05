@@ -1,11 +1,71 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+import argparse
+import asyncio
+import json
+from unittest.mock import AsyncMock, patch
 
 from packages.meme_scanner import narrative, narrative_v2
 
 
 ADDRESS = "0x1111111111111111111111111111111111111111"
+
+
+def narrative_args(output):
+    return argparse.Namespace(
+        chain="bsc",
+        contract=ADDRESS,
+        output=str(output),
+        output_dir=str(output.parent),
+        gpt_model="gpt-test",
+        grok_model="grok-test",
+        gpt_timeout=1,
+        grok_timeout=1,
+        telegram_config="telegram.txt",
+        telegram_session="telegram.session",
+        allowed_chats="whitelist.txt",
+        dialogs_limit=1,
+        proxy="auto",
+        telegram_timeout=1,
+        connection_retries=1,
+    )
+
+
+def test_run_async_returns_json_safe_output_path(tmp_path):
+    output = tmp_path / "narrative.json"
+    telegram = {
+        "contexts": [{
+            "chat_title": "A",
+            "context": [{"message_id": 1, "text": "A concrete claim", "sender_username": "user"}],
+        }],
+    }
+    grok = {
+        "raw": {},
+        "source_actions": [],
+        "narrative_materials": [{"id": "grok:narrative:1", "statement": "A concrete claim"}],
+        "supplemental_information": [],
+        "type_hypothesis": "pure_meme",
+        "diagnostic": {"stage": "ca_research", "http_status": 200},
+    }
+    x_source = {"posts": [], "raw": {}, "diagnostic": {"stage": "x_ca_collection", "http_status": 200}}
+    writer_results = [
+        ({"entity_candidates": []}, {}),
+        ({
+            "primary_type": "pure_meme",
+            "angle_material_ids": ["grok:narrative:1"],
+            "reader_text": "A concrete claim",
+            "used_material_ids": ["grok:narrative:1"],
+        }, {}),
+    ]
+    with patch.object(narrative_v2, "collect_telegram_contexts", new=AsyncMock(return_value=telegram)), patch.object(
+        narrative_v2, "collect_x_posts", return_value=x_source
+    ), patch.object(narrative_v2, "collect_grok_material", return_value=grok), patch.object(
+        narrative_v2, "chat_completion_json_with_metrics", side_effect=writer_results
+    ):
+        result = asyncio.run(narrative_v2.run_async(narrative_args(output)))
+
+    assert result["output_path"] == str(output)
+    json.dumps(result)
 
 
 def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_path) -> None:

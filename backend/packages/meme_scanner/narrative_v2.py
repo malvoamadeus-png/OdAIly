@@ -980,7 +980,8 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     }
     output_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     telegram_path.unlink(missing_ok=True)
-    return {"output_path": output_path, **result}
+    # The caller persists this return value as JSON; keep the path JSON-safe.
+    return {"output_path": str(output_path), **result}
 
 
 def run(args: argparse.Namespace) -> int:
