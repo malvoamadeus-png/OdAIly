@@ -737,7 +737,9 @@ class XProcessingWorker:
             cache.upsert_document(query)
         since = utc_since_hours(self.settings.search_window_hours)
         odaily_documents = self._load_odaily_reference_documents(since=since)
-        candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
+        active_candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
+        recent_processed_documents = self._load_recent_processed_documents(exclude_task_id=task.id)
+        candidate_documents = active_candidate_documents + recent_processed_documents
         decision = exact_duplicate_decision(
             query=query,
             documents=odaily_documents,
@@ -750,8 +752,14 @@ class XProcessingWorker:
         if decision is None:
             decision = exact_duplicate_decision(
                 query=query,
-                documents=candidate_documents,
+                documents=active_candidate_documents,
                 target_type="inflight_candidate",
+            )
+        if decision is None:
+            decision = exact_duplicate_decision(
+                query=query,
+                documents=recent_processed_documents,
+                target_type="recent_processed",
             )
         if decision is None:
             query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
@@ -772,7 +780,16 @@ class XProcessingWorker:
                 query_vector,
                 self.search_embedding_service.embed_documents(candidate_documents),
             )
-            candidate_decision = self._decide_match(query=query, match=candidate_match, target_type="inflight_candidate")
+            candidate_target_type = (
+                "recent_processed"
+                if candidate_match is not None and candidate_match.document.doc_type == "recent_processed"
+                else "inflight_candidate"
+            )
+            candidate_decision = self._decide_match(
+                query=query,
+                match=candidate_match,
+                target_type=candidate_target_type,
+            )
             if candidate_decision is not None:
                 if candidate_decision.is_duplicate:
                     decision = candidate_decision
@@ -787,7 +804,8 @@ class XProcessingWorker:
                 **self._search_diagnostics(
                     started_at=started_at,
                     odaily_documents=odaily_documents,
-                    candidate_documents=candidate_documents,
+                    active_candidate_documents=active_candidate_documents,
+                    recent_processed_documents=recent_processed_documents,
                 ),
             }
             if decision.candidate_id is not None:
@@ -808,14 +826,20 @@ class XProcessingWorker:
             **self._search_diagnostics(
                 started_at=started_at,
                 odaily_documents=odaily_documents,
-                candidate_documents=candidate_documents,
+                active_candidate_documents=active_candidate_documents,
+                recent_processed_documents=recent_processed_documents,
             ),
         }
+        candidate_target_type = (
+            "recent_processed"
+            if candidate_match is not None and candidate_match.document.doc_type == "recent_processed"
+            else "inflight_candidate"
+        )
         observed_matches = [
             match_info
             for match_info in (
                 self._serialize_search_match(odaily_match, target_type="odaily_published"),
-                self._serialize_search_match(candidate_match, target_type="inflight_candidate"),
+                self._serialize_search_match(candidate_match, target_type=candidate_target_type),
             )
             if match_info is not None
         ]
@@ -889,12 +913,14 @@ class XProcessingWorker:
         *,
         started_at: float,
         odaily_documents: list[SearchDocument],
-        candidate_documents: list[SearchDocument],
+        active_candidate_documents: list[SearchDocument],
+        recent_processed_documents: list[SearchDocument],
     ) -> dict[str, Any]:
         return {
             "cache_source": "local_hot_cache",
             "odaily_reference_count": len(odaily_documents),
-            "active_candidate_count": len(candidate_documents),
+            "active_candidate_count": len(active_candidate_documents),
+            "recent_processed_count": len(recent_processed_documents),
             "search_duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
         }
 
@@ -1265,6 +1291,13 @@ class XProcessingWorker:
         documents = cache.list_active_candidate_documents()
         return [document for document in documents if document.task_id != exclude_task_id]
 
+    def _load_recent_processed_documents(self, *, exclude_task_id: int) -> list[SearchDocument]:
+        cache = self._search_cache()
+        if cache is None:
+            return []
+        documents = cache.list_recent_processed_documents()
+        return [document for document in documents if document.task_id != exclude_task_id]
+
     def _mirror_active_candidate(self, *, task: TaskRecord, candidate_id: int) -> None:
         cache = self._search_cache()
         if cache is None:
@@ -1284,12 +1317,20 @@ class XProcessingWorker:
         cache = self._search_cache()
         if cache is None:
             return
-        cache.release_candidate_for_task(task_id=task_id, release_reason=release_reason)
+        retain_for_recent_search = release_reason in {"auto_published", "ready_review"}
+        if retain_for_recent_search:
+            cache.promote_candidate_for_task(
+                task_id=task_id,
+                retention_seconds=self.settings.search_recent_processed_seconds,
+                release_reason=release_reason,
+            )
+        else:
+            cache.release_candidate_for_task(task_id=task_id, release_reason=release_reason)
         try:
             pipeline = self.repository.get_pipeline(task_id)
         except Exception:
             return
-        if pipeline.candidate_id is None:
+        if pipeline.candidate_id is None or retain_for_recent_search:
             return
         cache.mark_document_status(
             cache_key=f"candidate:{pipeline.candidate_id}",

@@ -411,6 +411,10 @@ class SearchCache:
                 AND COALESCE(published_at, created_at, updated_at) < ?
             )
             OR (
+                doc_type = 'recent_processed'
+                AND COALESCE(expires_at, updated_at) < ?
+            )
+            OR (
                 doc_type = 'candidate'
                 AND COALESCE(status, 'inactive') <> 'active'
                 AND COALESCE(expires_at, updated_at) < ?
@@ -422,12 +426,12 @@ class SearchCache:
             OR (
                 doc_type NOT IN (
                     'task', 'newsflash_item', 'editor_plugin_query', 'external_media_alert',
-                    'candidate', 'odaily_reference', 'external_media_alert_history'
+                    'candidate', 'recent_processed', 'odaily_reference', 'external_media_alert_history'
                 )
                 AND updated_at < ?
             )
         """
-        document_params = (short_cutoff, short_cutoff, reference_cutoff, reference_cutoff)
+        document_params = (short_cutoff, now.isoformat(), short_cutoff, reference_cutoff, reference_cutoff)
         # Some producers intentionally use a query-specific cache key that differs
         # from the document key. Keep all vectors for the longest active search
         # window instead of assuming a join between both tables.
@@ -608,6 +612,20 @@ class SearchCache:
             (created_after, now.isoformat()),
         )
 
+    def list_recent_processed_documents(self) -> list[SearchDocument]:
+        now = datetime.now(UTC)
+        return self._list_documents(
+            """
+            SELECT *
+            FROM documents
+            WHERE doc_type = 'recent_processed'
+              AND COALESCE(status, 'active') = 'active'
+              AND expires_at > ?
+            ORDER BY updated_at DESC
+            """,
+            (now.isoformat(),),
+        )
+
     def upsert_active_candidate(
         self,
         *,
@@ -676,6 +694,54 @@ class SearchCache:
                     """,
                     (
                         now.isoformat(),
+                        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                        now.isoformat(),
+                        row["cache_key"],
+                    ),
+                )
+            conn.commit()
+
+    def promote_candidate_for_task(
+        self,
+        *,
+        task_id: int,
+        retention_seconds: int,
+        release_reason: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=max(60, int(retention_seconds)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT cache_key, metadata_json
+                FROM documents
+                WHERE doc_type = 'candidate'
+                  AND task_id = ?
+                  AND COALESCE(status, 'active') = 'active'
+                """,
+                (task_id,),
+            ).fetchall()
+            for row in rows:
+                metadata = json.loads(str(row["metadata_json"])) if row["metadata_json"] else {}
+                metadata.update(
+                    {
+                        "released_by_task_id": task_id,
+                        "released_by_task_status": release_reason,
+                        "recent_processed_expires_at": expires_at.isoformat(),
+                    }
+                )
+                conn.execute(
+                    """
+                    UPDATE documents
+                    SET doc_type = 'recent_processed',
+                        status = 'active',
+                        expires_at = ?,
+                        metadata_json = ?,
+                        updated_at = ?
+                    WHERE cache_key = ?
+                    """,
+                    (
+                        expires_at.isoformat(),
                         json.dumps(metadata, ensure_ascii=False, sort_keys=True),
                         now.isoformat(),
                         row["cache_key"],
@@ -904,7 +970,7 @@ AI_REVIEW_SCHEMA = {
             "is_duplicate": {"type": "boolean"},
             "duplicate_target_type": {
                 "type": "string",
-                "enum": ["odaily_published", "inflight_candidate", "none"],
+                "enum": ["odaily_published", "inflight_candidate", "recent_processed", "none"],
             },
             "duplicate_target_id": {"type": "string"},
             "reason": {
@@ -920,6 +986,7 @@ AI_REVIEW_SCHEMA = {
 
 def build_ai_review_prompt(*, query: SearchDocument, match: SearchMatch) -> str:
     return (
+        "duplicate_target_type may be recent_processed when the candidate was recently processed.\n"
         "你是 Odaily 快讯搜索者。判断两条材料是否是同一个新闻事件。\n"
         "同一事件要求主体、核心动作、关键结果基本一致；同一主体的新进展或不同动作不是重复。\n"
         "只输出 JSON，不输出解释。\n\n"
