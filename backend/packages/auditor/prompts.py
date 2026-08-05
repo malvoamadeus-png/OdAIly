@@ -7,12 +7,13 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v9"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v10"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
 HEADLINE_QUANTIFIER_PREFIXES = ("一个", "一名", "一位", "一家", "一则", "一笔", "一处", "一项")
 CHAIN_TRANSFER_ACTION_WORDS = ("提出", "转出", "转入", "提取", "存入")
+BORROW_LEND_ACTION_WORDS = ("借入", "借出")
 TRADING_ACTION_WORDS = ("购入", "买入", "加仓")
 ENTITY_CORRECTION_KEYWORDS = (
     "人名",
@@ -100,6 +101,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 可省略的结构助词“的”，例如“14.25%消费税”“应 Shielded Labs 请求”这类表达不要提示补“的”。
 - 新闻标题中的常见省略式表达，例如“一男子”“一女子”“一地址”“一新创建地址”等标题体量词省略，不按语法残缺处理。
 - 链上、钱包、地址、交易所资金流转语境中的动作词误判；对“提出 / 转出 / 转入 / 提取 / 存入”等表述，若上下文可解释为 transfer、withdraw、deposit 等链上动作，不要擅自改成“买入 / 购入 / 加仓”。
+- DeFi 借贷语境中的“借入 / 借出”用法不作为问题检查，不要仅因这些词而建议改成“买入 / 购入 / 加仓”或其他交易动作词。
 - 风格润色、标题吸引力、表达是否更优雅。
 - 事实真伪、价格数据、链上数据、来源可靠性。
 - 加密行业项目名、交易所名、代币名、英文缩写或链名是否应翻译。
@@ -364,6 +366,8 @@ def _is_headline_quantifier_expansion_issue(*, location: str, original: str, sug
 def _is_chain_transfer_action_issue(*, original: str, suggested: str) -> bool:
     original_text = _normalize_for_de_check(original)
     suggested_text = _normalize_for_de_check(suggested)
+    if any(word in original_text or word in suggested_text for word in BORROW_LEND_ACTION_WORDS):
+        return True
     if not any(original_text.startswith(word) for word in CHAIN_TRANSFER_ACTION_WORDS):
         return False
     return any(suggested_text.startswith(word) for word in TRADING_ACTION_WORDS)

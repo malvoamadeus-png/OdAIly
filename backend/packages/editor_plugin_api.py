@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Literal
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -550,6 +551,10 @@ class EditorPluginNewsGenService:
         del actor
         return self.meme_dashboard_store.dashboard()
 
+    def get_meme_narrative_detail(self, actor: AuthenticatedEditor, job_id: int) -> dict[str, Any] | None:
+        del actor
+        return self.meme_dashboard_store.narrative_detail(job_id)
+
     def get_runtime_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         from packages.runtime_rules import build_runtime_rules_payload
@@ -983,13 +988,33 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
             return
-        if self.path == "/console/meme/get":
+        parsed_path = urlparse(self.path)
+        if parsed_path.path == "/console/meme/get":
             try:
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
                 self._send_json(
                     HTTPStatus.OK,
                     {"ok": True, "data": self.server.service.get_meme_dashboard(actor)},
                 )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if parsed_path.path == "/console/meme/detail":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                raw_job_id = (parse_qs(parsed_path.query).get("id") or [""])[0]
+                try:
+                    job_id = int(raw_job_id)
+                except (TypeError, ValueError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "缺少有效的 Meme job id"})
+                    return
+                detail = self.server.service.get_meme_narrative_detail(actor, job_id)
+                if detail is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Meme 任务不存在或叙事详情不可用"})
+                    return
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": detail})
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
             except Exception as exc:

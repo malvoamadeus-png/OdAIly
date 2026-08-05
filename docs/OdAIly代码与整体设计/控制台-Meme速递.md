@@ -12,7 +12,7 @@
 - 普通新币市值达到 50 万美元后才进入播报候选，后续里程碑为 100 万和 300 万美元。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者，且查询时市值达到 30 万美元。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。
-- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；Grok 分别收集精确 CA 的 X 原帖和独立研究材料，最后由 GPT writer 生成读者正文。无任何可用材料时任务标记为 `no_usable_narrative`，不生成机械占位稿。
+- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；Grok 分别收集精确 CA 的 X 原帖和独立研究材料，最后由 GPT writer 生成读者正文。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 文本口径
 
@@ -38,6 +38,8 @@ Meme速递：BSC上{symbol}社群热议中，市值{market_cap}万美元
 - 默认生产路径：`/opt/OdAIly/data/processed/meme_scanner.sqlite3`。
 - 覆盖变量：`MEME_SCANNER_DB_PATH`。
 - 返回最近 100 条 `jobs`，并为 `tg_burst` 关联 `tg_candidates` 的命中数、群数和发送者数。
+- 列表响应仅增加叙事摘要：`narrative_available`、`narrative_status`、`failure_stage`、`failure_code`、`primary_type`、`type_hypothesis`；不把 Telegram 上下文塞入列表。
+- `GET /console/meme/detail?id=<job_id>` 按需返回单条任务的完整 `narrative_json`。旧库或旧任务没有该字段时返回 `available=false`，不影响列表。
 - 数据库不存在、不可读或 schema 不兼容时，接口返回 `available=false` 和错误文本，不创建空库。
 
 ## 命令与服务
@@ -81,6 +83,9 @@ python backend/src/main.py meme tg-watch
 - 社群热议的命中数、不同发送者数和群数。
 - 任务状态、未播报原因、排队和更新时间。
 - 已生成标题和正文；尚未生成时展示当前状态或失败原因。
+- 叙事审计入口默认收起，点击后懒加载详情；顶层分组同一时间只展开一个：失败诊断/运行状态、最终判断、Telegram 消息、Grok X 搜索、Grok 叙事材料、性能与调用诊断。
+- Telegram 分组再分为最老 20 条和最新 20 条命中，每条命中单独展开查看命中消息、发送者、群组、时间及前 2/后 15 条上下文。
+- 最终判断显示 Grok 类型假设、最终类型、source/angle/supplement、使用/丢弃材料、`decision_code`、`decision_reason` 和 `reader_text`；为空时显示“未判断/未形成”和确定性原因。
 
 ## 读取策略
 
@@ -90,7 +95,7 @@ python backend/src/main.py meme tg-watch
 
 ## 叙事契约
 
-内部审计保存 `telegram_contexts`、`telegram_messages`、`x_posts`、`grok_research`、`entity_supplements` 和性能诊断；读者正文只输出最终炒作角度：来源、字眼、事件、身份或具体说法。命中频次、群组数量、用户情绪、税务或官网链接、机器人卡片和检索过程不能进入正文。没有可用角度时任务标记为 `no_usable_narrative`，不生成机械占位稿。详细规则见 控制台-Meme速递叙事规范.md。
+内部审计保存 `status`、`failure_stage`、`failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`、`telegram_contexts`、`telegram_messages`、`x_posts`、`grok_research`、`entity_supplements`、最终分类材料、使用/丢弃材料、`reader_text` 和性能诊断；读者正文只输出最终炒作角度：来源、字眼、事件、身份或具体说法。命中频次、群组数量、用户情绪、税务或官网链接、机器人卡片和检索过程不能进入正文。详细规则见 控制台-Meme速递叙事规范.md。
 
 ## 白名单外发现
 

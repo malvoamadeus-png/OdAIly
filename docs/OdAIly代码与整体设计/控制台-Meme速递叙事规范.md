@@ -2,7 +2,7 @@
 
 本文件定义 Meme速递的读者正文契约：最终输出必须是具体炒作角度，不是 Telegram 监控摘要。
 
-没有可用角度时，正文必须为空，任务进入 no_usable_narrative。
+没有可用角度时，正文必须为空，任务进入 no_usable_narrative；外部 API、模型、JSON 和最终校验异常不归入该原因，而是持久化阶段诊断并进入重试。
 
 ## 最终输出
 
@@ -37,6 +37,20 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 生成后必须拒绝 Telegram 集中提及、消息重复提及、多个群组或多名用户的统计摘要；也必须拒绝只有情绪反应的句子，以及把税务或官网链接作为炒作理由的句子。
 
 拒绝后不能改写成另一句占位正文，直接按 no_usable_narrative 处理。
+
+## 叙事审计
+
+叙事流程继续复用 `jobs.narrative_json`，不新增表。每次流程至少记录：
+
+- `status`：`success`、`empty` 或 `error`。
+- `failure_stage`：`telegram_collection`、`x_ca_collection`、`grok_ca_research`、`telegram_entity_extraction`、`grok_entity_lookup`、`final_writer`、`final_validation` 等。
+- `failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`。
+- Telegram 最老/最新命中及每条命中的前 2、后 15 条上下文；X 原帖；Grok `source_actions`、`narrative_materials`、`supplemental_information`、`type_hypothesis`；实体补充、性能和调用诊断。
+- 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
+
+`decision_code` 使用确定性值：`no_materials`、`materials_but_no_type`、`type_selected_but_empty_reader_text`、`writer_returned_empty`、`no_usable_angle`、`final_validation_error`、`completed`。`no_usable_narrative` 只表示最终确实没有可用叙事材料；阶段异常保留具体阶段并触发重试。
+
+控制台列表只读叙事摘要，详情通过 `GET /console/meme/detail?id=<job_id>` 懒加载。详情页默认全部收起，顶层分组单开；Telegram 内部按最老 20 条/最新 20 条分组，单条命中再展开上下文。旧任务没有 `narrative_json` 时显示暂无审计详情，不回补历史材料。
 
 ## 本次坏例
 

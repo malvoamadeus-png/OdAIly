@@ -185,7 +185,7 @@ def build_runtime_rules_payload(*, known_title_subject_names: list[str] | None =
                             {
                                 "companies": _pattern_mappings(_COMMON_CHINESE_COMPANY_NAMES),
                                 "accounts": _pattern_mappings(_COMMON_ACCOUNT_NAMES),
-                                "fixed": {"Binance": "币安", "dapp": "DApp", "美金": "美元"},
+                                "fixed": {"Binance": "币安", "dapp": "DApp", "美金": "美元", ":native": ""},
                             }
                         ),
                         "source_location": "backend/packages/x_processing/formatter.py",

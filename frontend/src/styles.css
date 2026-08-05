@@ -630,6 +630,356 @@ h2 {
   white-space: pre-wrap;
 }
 
+.memeAudit {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #edf0f3;
+  padding-top: 10px;
+}
+
+.memeAuditTrigger,
+.memeAuditSectionHeader,
+.memeAuditNestedTab,
+.memeAuditHitHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: #27313d;
+  cursor: pointer;
+  text-align: left;
+}
+
+.memeAuditTrigger {
+  width: fit-content;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid #d8e1e6;
+  border-radius: 6px;
+  background: #f8fafb;
+  font-size: 13px;
+}
+
+.memeAuditTrigger:hover,
+.memeAuditTrigger.active {
+  border-color: #96c7b2;
+  background: #eef8f3;
+  color: #0f684a;
+}
+
+.memeAuditTrigger em {
+  color: #6b7280;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.memeAuditPanel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-left: 2px solid #cfe6db;
+  background: #fbfcfc;
+}
+
+.memeAuditSections {
+  display: grid;
+  gap: 5px;
+}
+
+.memeAuditSections section {
+  border: 1px solid #e3e8eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.memeAuditSectionHeader {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: #334155;
+}
+
+.memeAuditSectionHeader:hover {
+  background: #f5f8f8;
+}
+
+.memeAuditSectionBody {
+  display: grid;
+  gap: 14px;
+  padding: 10px;
+  border-top: 1px solid #edf0f3;
+}
+
+.memeAuditDiagnosticGrid,
+.memeAuditDecisionGrid,
+.memeAuditCounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.memeAuditDiagnosticGrid span,
+.memeAuditDecisionGrid span,
+.memeAuditCounts span,
+.memeAuditIds span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e8edf0;
+  background: #fafcfc;
+  color: #4b5563;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.memeAuditDiagnosticGrid b,
+.memeAuditDecisionGrid b,
+.memeAuditCounts b,
+.memeAuditIds b {
+  color: #7b8794;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.memeAuditReason,
+.memeAuditMuted,
+.memeAuditError,
+.memeAuditReaderText p,
+.memeAuditContextBlock p {
+  margin: 0;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.memeAuditError {
+  color: #a33a32;
+}
+
+.memeAuditMuted {
+  color: #7b8794;
+}
+
+.memeAuditMaterialGroup,
+.memeAuditTelegram {
+  display: grid;
+  gap: 8px;
+}
+
+.memeAuditSubheading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+}
+
+.memeAuditSubheading span,
+.memeAuditNestedTab span {
+  color: #7b8794;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.memeAuditMaterialList,
+.memeAuditHitList {
+  display: grid;
+  gap: 6px;
+}
+
+.memeAuditMaterial {
+  display: grid;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 1px solid #e5eaed;
+  background: #ffffff;
+}
+
+.memeAuditMaterialHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #374151;
+  cursor: pointer;
+  text-align: left;
+}
+
+.memeAuditMaterialHeader > strong {
+  color: #374151;
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.memeAuditMaterialFields {
+  display: grid;
+  gap: 3px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.memeAuditMaterialFields span {
+  display: block;
+}
+
+.memeAuditMaterialFields b {
+  display: inline-block;
+  min-width: 92px;
+  color: #8a95a0;
+  font-weight: 500;
+}
+
+.memeAuditMaterialSummary,
+.memeAuditIds {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.memeAuditIds {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.memeAuditReaderText,
+.memeAuditContextBlock,
+.memeAuditTypeHypothesis {
+  display: grid;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid #e5eaed;
+  background: #ffffff;
+}
+
+.memeAuditReaderText strong,
+.memeAuditContextBlock strong,
+.memeAuditTypeHypothesis b,
+.memeAuditContextColumns strong {
+  color: #64707c;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.memeAuditNestedTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memeAuditNestedTab {
+  min-height: 31px;
+  padding: 5px 8px;
+  border: 1px solid #dce5e8;
+  border-radius: 5px;
+  background: #f8fafb;
+  font-size: 12px;
+}
+
+.memeAuditNestedTab.active {
+  border-color: #96c7b2;
+  background: #eef8f3;
+  color: #0f684a;
+}
+
+.memeAuditHit {
+  border: 1px solid #e1e7ea;
+  background: #ffffff;
+}
+
+.memeAuditHit.open {
+  border-color: #b8d7c8;
+}
+
+.memeAuditHitHeader {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  color: #374151;
+  font-size: 12px;
+}
+
+.memeAuditHitHeader time {
+  margin-left: auto;
+  color: #7b8794;
+  font-size: 11px;
+}
+
+.memeAuditHitHeader b {
+  color: #8a95a0;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.memeAuditHitBody {
+  display: grid;
+  gap: 10px;
+  padding: 9px;
+  border-top: 1px solid #edf0f3;
+}
+
+.memeAuditHitMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: #7b8794;
+  font-size: 11px;
+}
+
+.memeAuditContextColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.memeAuditContextColumns > div {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.memeAuditContextColumns p {
+  margin: 0;
+  padding: 6px 7px;
+  border-left: 2px solid #e3e8eb;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.memeAuditContextColumns small {
+  display: block;
+  margin-bottom: 2px;
+  color: #9aa4ad;
+  font-size: 10px;
+}
+
+.memeAuditPre {
+  max-height: 260px;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  border: 1px solid #e5eaed;
+  background: #f8fafb;
+  color: #4b5563;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .statusPill.neutral {
   border-color: #d5dbe2;
   background: #f5f7f9;
@@ -2738,6 +3088,12 @@ textarea:focus {
   .gateMarketSymbolGrid,
   .memeSummaryBand,
   .memeMetaGrid,
+  .memeAuditDiagnosticGrid,
+  .memeAuditDecisionGrid,
+  .memeAuditCounts,
+  .memeAuditMaterialSummary,
+  .memeAuditIds,
+  .memeAuditContextColumns,
   .workflowCardHeader,
   .workflowRoute,
   .workflowSideNoteGrid {
@@ -2754,6 +3110,21 @@ textarea:focus {
 
   .workflowHeroStats {
     grid-template-columns: 1fr;
+  }
+
+  .memeAuditPanel {
+    padding: 8px;
+  }
+
+  .memeAuditHitHeader {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .memeAuditHitHeader time {
+    margin-left: 0;
+    width: 100%;
+    padding-left: 22px;
   }
 
   .workflowHeroStats div {

@@ -54,9 +54,72 @@ def test_meme_dashboard_reads_generated_text_and_tg_counts(tmp_path) -> None:
     assert dashboard["items"][0]["market_cap"] == 360000
     assert dashboard["items"][0]["mention_count"] == 5
     assert dashboard["items"][0]["title"].endswith("市值36万美元")
+    assert dashboard["items"][0]["narrative_available"] is False
+
+    detail = MemeDashboardStore(path).narrative_detail(1)
+    assert detail is not None
+    assert detail["available"] is False
+    assert detail["narrative"] is None
 
 
 def test_meme_dashboard_reports_missing_database(tmp_path) -> None:
     dashboard = MemeDashboardStore(tmp_path / "missing.sqlite3").dashboard()
     assert dashboard["available"] is False
     assert dashboard["items"] == []
+
+
+def test_meme_dashboard_exposes_narrative_summary_and_lazy_detail(tmp_path) -> None:
+    path = tmp_path / "meme.sqlite3"
+    narrative = {
+        "status": "empty",
+        "failure_stage": None,
+        "failure_code": None,
+        "decision_code": "materials_but_no_type",
+        "decision_reason": "no valid type",
+        "grok_research": {"type_hypothesis": ""},
+        "telegram_contexts": [{"chat_title": "Alpha", "message_id": 9, "context": []}],
+        "x_posts": [{"id": "x:1", "text": "source"}],
+        "reader_text": "",
+    }
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE jobs (
+              id INTEGER PRIMARY KEY,address TEXT,trigger_key TEXT,trigger_level REAL,
+              payload_json TEXT,trigger_kind TEXT,queued_at TEXT,status TEXT,reason TEXT,
+              narrative_json TEXT,title TEXT,content TEXT,updated_at TEXT
+            );
+            CREATE TABLE tg_candidates (
+              id INTEGER PRIMARY KEY,mention_count INTEGER,chat_count INTEGER,sender_count INTEGER
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "0x2222222222222222222222222222222222222222",
+                "tg_burst:1",
+                0,
+                "{}",
+                "tg_burst",
+                "2026-08-05T00:00:00+00:00",
+                "discarded",
+                "no_usable_narrative",
+                json.dumps(narrative),
+                "",
+                "",
+                "2026-08-05T00:01:00+00:00",
+            ),
+        )
+
+    dashboard = MemeDashboardStore(path).dashboard()
+    item = dashboard["items"][0]
+    assert item["narrative_available"] is True
+    assert item["narrative_status"] == "empty"
+    assert item["failure_code"] == "materials_but_no_type"
+    assert item["type_hypothesis"] is None
+
+    detail = MemeDashboardStore(path).narrative_detail(1)
+    assert detail is not None
+    assert detail["available"] is True
+    assert detail["narrative"]["x_posts"][0]["id"] == "x:1"

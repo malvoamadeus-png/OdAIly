@@ -1083,6 +1083,12 @@ export type MemeDashboardItem = {
   content: string;
   queued_at: string;
   updated_at: string;
+  narrative_available: boolean;
+  narrative_status: string | null;
+  failure_stage: string | null;
+  failure_code: string | null;
+  primary_type: string | null;
+  type_hypothesis: string | null;
 };
 
 export type MemeDashboard = {
@@ -1094,6 +1100,47 @@ export type MemeDashboard = {
 
 export async function getMemeDashboard(): Promise<MemeDashboard> {
   return consoleApiGet<MemeDashboard>('/console/meme/get');
+}
+
+export type MemeNarrativeMaterial = Record<string, unknown>;
+
+export type MemeNarrativeDetail = {
+  available: boolean;
+  job: MemeDashboardItem;
+  narrative: {
+    status?: string;
+    failure_stage?: string | null;
+    failure_code?: string | null;
+    failure_message?: string | null;
+    material_counts?: Record<string, number>;
+    decision_code?: string | null;
+    decision_reason?: string | null;
+    telegram_contexts?: MemeNarrativeMaterial[];
+    telegram_messages?: MemeNarrativeMaterial[];
+    x_posts?: MemeNarrativeMaterial[];
+    grok_research?: {
+      source_actions?: MemeNarrativeMaterial[];
+      narrative_materials?: MemeNarrativeMaterial[];
+      supplemental_information?: MemeNarrativeMaterial[];
+      type_hypothesis?: string | null;
+    };
+    entity_supplements?: MemeNarrativeMaterial[];
+    grok_diagnostics?: MemeNarrativeMaterial[];
+    performance?: Record<string, unknown>;
+    type_hypothesis?: string | null;
+    primary_type?: string | null;
+    source_materials?: MemeNarrativeMaterial[];
+    angle_materials?: MemeNarrativeMaterial[];
+    supplemental_information?: MemeNarrativeMaterial[];
+    used_material_ids?: string[];
+    discarded_material_ids?: string[];
+    reader_text?: string | null;
+    [key: string]: unknown;
+  } | null;
+};
+
+export async function getMemeNarrativeDetail(jobId: number): Promise<MemeNarrativeDetail> {
+  return consoleApiGet<MemeNarrativeDetail>(`/console/meme/detail?id=${encodeURIComponent(jobId)}`);
 }
 
 export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {

@@ -39,6 +39,7 @@ import {
   getCurrentSession,
   getGateMarketDashboard,
   getMemeDashboard,
+  getMemeNarrativeDetail,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
   getRuntimeRules,
@@ -120,6 +121,8 @@ import {
   type GateMarketDashboard,
   type MemeDashboard,
   type MemeDashboardItem,
+  type MemeNarrativeDetail,
+  type MemeNarrativeMaterial,
   processingTaskSources,
 } from './xCaptureStore';
 import { GateMarketPanel } from './GateMarketPanel';
@@ -2764,6 +2767,350 @@ function memeStatusLabel(item: MemeDashboardItem): string {
   }
 }
 
+type MemeAuditSection = 'diagnostic' | 'final' | 'telegram' | 'grok_x' | 'grok_narrative' | 'performance';
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function listValue(value: unknown): MemeNarrativeMaterial[] {
+  return Array.isArray(value) ? value.map(recordValue).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function textValue(value: unknown, fallback = ''): string {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  return fallback;
+}
+
+function narrativeStageLabel(stage: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    telegram_collection: 'Telegram 搜索',
+    x_ca_collection: 'X 搜索',
+    grok_ca_research: 'Grok 研究',
+    ca_research: 'Grok 研究',
+    telegram_entity_extraction: 'Telegram 实体提取',
+    grok_entity_lookup: '实体补充',
+    entity_lookup: '实体补充',
+    final_writer: '最终写作',
+    final_validation: '结果校验',
+    narrative_pipeline: '叙事流程',
+  };
+  return stage ? labels[stage] || stage : '未记录';
+}
+
+function narrativeDecisionLabel(code: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    no_materials: '没有可用材料',
+    materials_but_no_type: '有材料但未选出类型',
+    type_selected_but_empty_reader_text: '已选类型但正文为空',
+    writer_returned_empty: '最终写作者返回空正文',
+    no_usable_angle: '没有可用叙事角度',
+    final_validation_error: '最终结果校验失败',
+    completed: '已完成',
+    narrative_error: '叙事流程异常',
+  };
+  return code ? labels[code] || code : '未记录';
+}
+
+function primaryTypeLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    pure_meme: '纯 Meme',
+    celebrity_anchor: '人物锚点',
+    app_linked: '应用关联',
+  };
+  return value ? labels[value] || value : '未判断/未形成';
+}
+
+function materialPreview(material: MemeNarrativeMaterial, index: number): string {
+  return textValue(
+    material.statement
+      || material.claim
+      || material.text
+      || material.quote
+      || material.action
+      || material.id,
+    `材料 ${index + 1}`,
+  );
+}
+
+function MaterialList({ title, materials }: { title: string; materials: MemeNarrativeMaterial[] }) {
+  const [openMaterials, setOpenMaterials] = useState<Record<string, boolean>>({});
+  return (
+    <div className="memeAuditMaterialGroup">
+      <div className="memeAuditSubheading"><strong>{title}</strong><span>{materials.length} 条</span></div>
+      {materials.length === 0 ? (
+        <p className="memeAuditMuted">未形成。</p>
+      ) : (
+        <div className="memeAuditMaterialList">
+          {materials.map((material, index) => (
+            <article className="memeAuditMaterial" key={textValue(material.id, `${title}-${index}`)}>
+              {(() => {
+                const materialKey = textValue(material.id, `${title}-${index}`);
+                const isOpen = Boolean(openMaterials[materialKey]);
+                return (
+                  <>
+                    <button
+                      className="memeAuditMaterialHeader"
+                      type="button"
+                      aria-expanded={isOpen}
+                      onClick={() => setOpenMaterials((current) => ({ ...current, [materialKey]: !isOpen }))}
+                    >
+                      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      <strong>{materialPreview(material, index)}</strong>
+                    </button>
+                    {isOpen && (
+                      <div className="memeAuditMaterialFields">
+                        {Object.entries(material).map(([key, value]) => (
+                          <span key={key}><b>{key}</b>{typeof value === 'object' ? JSON.stringify(value) : textValue(value, '-')}</span>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TelegramAudit({ contexts }: { contexts: MemeNarrativeMaterial[] }) {
+  const [bucket, setBucket] = useState<'oldest' | 'newest' | null>(null);
+  const [openHits, setOpenHits] = useState<Record<string, boolean>>({});
+  const sorted = [...contexts].sort((left, right) => textValue(left.sent_at).localeCompare(textValue(right.sent_at)));
+  const oldest = sorted.slice(0, 20);
+  const newest = sorted.slice(-20).reverse();
+  const activeContexts = bucket === 'oldest' ? oldest : bucket === 'newest' ? newest : [];
+
+  return (
+    <div className="memeAuditTelegram">
+      <div className="memeAuditSubheading"><strong>Telegram 命中</strong><span>{contexts.length} 条</span></div>
+      {contexts.length === 0 ? <p className="memeAuditMuted">没有 Telegram 命中。</p> : (
+        <>
+          <div className="memeAuditNestedTabs">
+            {(['oldest', 'newest'] as const).map((key) => (
+              <button
+                className={bucket === key ? 'memeAuditNestedTab active' : 'memeAuditNestedTab'}
+                key={key}
+                type="button"
+                aria-expanded={bucket === key}
+                onClick={() => setBucket(bucket === key ? null : key)}
+              >
+                {key === 'oldest' ? '最老 20 条命中' : '最新 20 条命中'}
+                <span>{key === 'oldest' ? oldest.length : newest.length}</span>
+              </button>
+            ))}
+          </div>
+          {activeContexts.length > 0 && (
+            <div className="memeAuditHitList">
+              {activeContexts.map((hit, index) => {
+                const contextRows = listValue(hit.context);
+                const hitRow = contextRows.find((row) => Number(row.offset) === 0) || contextRows[0] || {};
+                const key = `${textValue(hit.chat_title, 'chat')}:${textValue(hit.message_id, String(index))}`;
+                const open = Boolean(openHits[key]);
+                return (
+                  <article className={open ? 'memeAuditHit open' : 'memeAuditHit'} key={key}>
+                    <button
+                      className="memeAuditHitHeader"
+                      type="button"
+                      aria-expanded={open}
+                      onClick={() => setOpenHits((current) => ({ ...current, [key]: !open }))}
+                    >
+                      {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      <span>{textValue(hit.chat_title, '未命名群组')}</span>
+                      <time>{textValue(hit.sent_at, '时间未知')}</time>
+                      <b>#{textValue(hit.message_id, '-')}</b>
+                    </button>
+                    {open && (
+                      <div className="memeAuditHitBody">
+                        <div className="memeAuditHitMeta">
+                          <span>发送者：{textValue(hitRow.sender_username || hitRow.sender_name, '未知')}</span>
+                          <span>匹配词：{Array.isArray(hit.matched_terms) ? hit.matched_terms.join('、') : '未记录'}</span>
+                        </div>
+                        <div className="memeAuditContextBlock">
+                          <strong>命中消息</strong>
+                          <p>{textValue(hitRow.text, '未保存命中消息')}</p>
+                        </div>
+                        <div className="memeAuditContextColumns">
+                          <div>
+                            <strong>前 2 条上下文</strong>
+                            {contextRows.filter((row) => Number(row.offset) < 0).map((row, rowIndex) => (
+                              <p key={`${key}-before-${rowIndex}`}><small>{textValue(row.sent_at)}</small>{textValue(row.text, '-')}</p>
+                            ))}
+                          </div>
+                          <div>
+                            <strong>后 15 条上下文</strong>
+                            {contextRows.filter((row) => Number(row.offset) > 0).map((row, rowIndex) => (
+                              <p key={`${key}-after-${rowIndex}`}><small>{textValue(row.sent_at)}</small>{textValue(row.text, '-')}</p>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
+  const [detail, setDetail] = useState<MemeNarrativeDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
+  const [section, setSection] = useState<MemeAuditSection | null>(null);
+
+  const loadDetail = async () => {
+    if (detail || loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const nextDetail = await getMemeNarrativeDetail(item.id);
+      setDetail(nextDetail);
+      if (nextDetail.narrative?.status === 'error' || nextDetail.narrative?.status === 'empty' || item.status === 'retry_wait' || item.status === 'discarded') {
+        setSection('diagnostic');
+      }
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleAudit = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) void loadDetail();
+  };
+
+  const narrative = detail?.narrative;
+  const grokResearch = recordValue(narrative?.grok_research);
+  const counts = recordValue(narrative?.material_counts) as Record<string, number>;
+  const typeHypothesis = textValue(narrative?.type_hypothesis || grokResearch.type_hypothesis || item.type_hypothesis);
+  const toggleSection = (key: MemeAuditSection) => setSection(section === key ? null : key);
+
+  const sectionButton = (key: MemeAuditSection, label: string) => (
+    <button className="memeAuditSectionHeader" type="button" aria-expanded={section === key} onClick={() => toggleSection(key)}>
+      <span>{section === key ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+      <strong>{label}</strong>
+    </button>
+  );
+
+  return (
+    <div className="memeAudit">
+      <button className={open ? 'memeAuditTrigger active' : 'memeAuditTrigger'} type="button" onClick={toggleAudit} aria-expanded={open}>
+        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        <span>叙事审计</span>
+        {item.narrative_available && <em>{item.narrative_status || '已记录'}</em>}
+      </button>
+      {open && (
+        <div className="memeAuditPanel">
+          {loading && <p className="memeAuditMuted">正在加载叙事详情...</p>}
+          {error && <p className="memeAuditError">详情加载失败：{error}</p>}
+          {!loading && !error && detail?.narrative && (
+            <>
+              <div className="memeAuditSections">
+                <section>
+                  {sectionButton('diagnostic', '失败诊断 / 运行状态')}
+                  {section === 'diagnostic' && (
+                    <div className="memeAuditSectionBody">
+                      <div className="memeAuditDiagnosticGrid">
+                        <span><b>任务状态</b>{memeStatusLabel(item)}</span>
+                        <span><b>叙事状态</b>{textValue(narrative?.status || item.narrative_status, '未记录')}</span>
+                        <span><b>失败阶段</b>{narrativeStageLabel(narrative?.failure_stage || item.failure_stage)}</span>
+                        <span><b>失败码</b>{textValue(narrative?.failure_code || item.failure_code, '无')}</span>
+                        <span><b>决策码</b>{narrativeDecisionLabel(narrative?.decision_code)}</span>
+                        <span><b>任务原因</b>{item.reason || '无'}</span>
+                      </div>
+                      <p className="memeAuditReason">{textValue(narrative?.failure_message || narrative?.decision_reason, item.reason || '暂无具体诊断原因。')}</p>
+                    </div>
+                  )}
+                </section>
+                <section>
+                  {sectionButton('final', '最终判断')}
+                  {section === 'final' && (
+                    <div className="memeAuditSectionBody">
+                      <div className="memeAuditDecisionGrid">
+                        <span><b>Grok 类型假设</b>{typeHypothesis || '未判断/未形成'}</span>
+                        <span><b>最终类型</b>{primaryTypeLabel(textValue(narrative?.primary_type || item.primary_type))}</span>
+                        <span><b>类型字段</b>{textValue(narrative?.primary_type || item.primary_type, '未判断/未形成')}</span>
+                        <span><b>决策原因</b>{narrativeDecisionLabel(narrative?.decision_code)}</span>
+                      </div>
+                      <p className="memeAuditReason">{textValue(narrative?.decision_reason, '未记录确定性判断原因。')}</p>
+                      <div className="memeAuditMaterialSummary">
+                        <span>source {listValue(narrative?.source_materials).length ? '已形成' : '未形成'}</span>
+                        <span>angle {listValue(narrative?.angle_materials).length ? '已形成' : '未形成'}</span>
+                        <span>supplement {listValue(narrative?.supplemental_information).length ? '已形成' : '未形成'}</span>
+                      </div>
+                      <MaterialList title="Source 材料" materials={listValue(narrative?.source_materials)} />
+                      <MaterialList title="Angle 材料" materials={listValue(narrative?.angle_materials)} />
+                      <MaterialList title="Supplement 材料" materials={listValue(narrative?.supplemental_information)} />
+                      <div className="memeAuditIds">
+                        <span><b>使用材料</b>{(narrative?.used_material_ids || []).join('、') || '无'}</span>
+                        <span><b>丢弃材料</b>{(narrative?.discarded_material_ids || []).join('、') || '无'}</span>
+                      </div>
+                      <div className="memeAuditReaderText">
+                        <strong>最终 reader_text</strong>
+                        <p>{textValue(narrative?.reader_text, '未形成可读正文。')}</p>
+                      </div>
+                    </div>
+                  )}
+                </section>
+                <section>
+                  {sectionButton('telegram', 'Telegram 消息')}
+                  {section === 'telegram' && <div className="memeAuditSectionBody"><TelegramAudit contexts={listValue(narrative?.telegram_contexts)} /></div>}
+                </section>
+                <section>
+                  {sectionButton('grok_x', 'Grok X 搜索')}
+                  {section === 'grok_x' && (
+                    <div className="memeAuditSectionBody">
+                      <MaterialList title="X 原帖" materials={listValue(narrative?.x_posts)} />
+                      <MaterialList title="Grok source actions" materials={listValue(grokResearch.source_actions)} />
+                    </div>
+                  )}
+                </section>
+                <section>
+                  {sectionButton('grok_narrative', 'Grok 叙事材料')}
+                  {section === 'grok_narrative' && (
+                    <div className="memeAuditSectionBody">
+                      <div className="memeAuditTypeHypothesis"><b>类型假设</b>{typeHypothesis || '未判断/未形成'}</div>
+                      <MaterialList title="叙事材料" materials={listValue(grokResearch.narrative_materials)} />
+                      <MaterialList title="补充信息" materials={listValue(grokResearch.supplemental_information)} />
+                      <MaterialList title="实体补充" materials={listValue(narrative?.entity_supplements)} />
+                    </div>
+                  )}
+                </section>
+                <section>
+                  {sectionButton('performance', '性能与调用诊断')}
+                  {section === 'performance' && (
+                    <div className="memeAuditSectionBody">
+                      <div className="memeAuditCounts">
+                        {Object.entries(counts).map(([key, value]) => <span key={key}><b>{key}</b>{String(value)}</span>)}
+                      </div>
+                      <MaterialList title="Grok / API 诊断" materials={listValue(narrative?.grok_diagnostics)} />
+                      <pre className="memeAuditPre">{JSON.stringify(narrative?.performance || {}, null, 2)}</pre>
+                    </div>
+                  )}
+                </section>
+              </div>
+            </>
+          )}
+          {!loading && !error && detail && !detail.available && (
+            <p className="memeAuditMuted">这条任务没有保存叙事审计详情，通常是旧任务或尚未进入叙事流程。</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard | null; loading: boolean }) {
   const items = dashboard?.items || [];
   const generatedCount = items.filter((item) => item.title || item.content).length;
@@ -2838,6 +3185,7 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
                 {item.title ? <h2>{item.title}</h2> : <h2>尚未生成标题</h2>}
                 {item.content ? <p>{item.content}</p> : <p>{item.reason || '任务仍在处理中。'}</p>}
               </div>
+              <MemeNarrativeAudit item={item} />
             </article>
           );
         })}

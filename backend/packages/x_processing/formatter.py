@@ -45,6 +45,7 @@ _COMMON_ACCOUNT_NAMES: tuple[tuple[re.Pattern[str], str], ...] = (
         "“先定10个大目标”",
     ),
 )
+_NATIVE_ASSET_SUFFIX_PATTERN = re.compile(r":native(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
 def _strip_code_fence(value: str) -> str:
@@ -130,6 +131,7 @@ def _compact_title_like(value: str) -> str:
 
 def _apply_common_replacements(value: str) -> str:
     text = value.replace("美金", "美元")
+    text = _NATIVE_ASSET_SUFFIX_PATTERN.sub("", text)
     while "。。" in text:
         text = text.replace("。。", "。")
     while "，，" in text:
@@ -140,7 +142,6 @@ def _apply_common_replacements(value: str) -> str:
         text = pattern.sub(replacement, text)
     text = text.replace("Binance", "币安")
     text = re.sub(r"dapp", "DApp", text, flags=re.IGNORECASE)
-    text = re.sub(r"(\d(?:[\d,.]*\d)?|\d)\s*USDT\b", r"\1 USDT", text, flags=re.IGNORECASE)
     return text
 
 
@@ -172,6 +173,10 @@ def _normalize_content_spaces(value: str) -> str:
     return text
 
 
+def _normalize_numeric_asset_spaces(value: str) -> str:
+    return re.sub(r"(\d(?:[\d,.]*\d)?|\d)\s*USDT\b", r"\1 USDT", value, flags=re.IGNORECASE)
+
+
 def _ensure_prefix(content: str) -> str:
     stripped = normalize_multiline_text(content)
     if stripped.startswith(ODAILY_PREFIX):
@@ -193,10 +198,12 @@ def _ensure_paragraph_punctuation(content: str) -> str:
 
 
 def format_brief(draft: DraftBrief) -> DraftBrief:
-    title = _restore_fixed_account_names(_normalize_title_spaces(_apply_common_replacements(draft.title.strip())))
+    title = _normalize_title_spaces(_apply_common_replacements(draft.title.strip()))
+    title = _restore_fixed_account_names(_normalize_numeric_asset_spaces(title))
     prefix, content_body = _split_existing_prefix(draft.content)
     content = _apply_common_replacements(content_body)
-    content = _restore_fixed_account_names(_normalize_content_spaces(content))
+    content = _normalize_content_spaces(content)
+    content = _restore_fixed_account_names(_normalize_numeric_asset_spaces(content))
     if prefix:
         content = f"{prefix}{content}"
     content = _ensure_prefix(content)

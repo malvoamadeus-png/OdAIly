@@ -78,7 +78,16 @@ def generate_reader_text(
     try:
         result = _run(lambda: narrative_v2.run_async(args))
     except Exception as exc:
+        stage = str(getattr(exc, "stage", "narrative_pipeline") or "narrative_pipeline")
+        message = str(exc) or exc.__class__.__name__
         return {
+            "status": "error",
+            "failure_stage": stage,
+            "failure_code": "stage_failed",
+            "failure_message": message[:1000],
+            "material_counts": {},
+            "decision_code": "final_validation_error" if stage == "final_validation" else "narrative_error",
+            "decision_reason": f"叙事流程在 {stage} 阶段失败：{message[:500]}",
             "reader_text": "",
             "telegram_contexts": [],
             "telegram_messages": [],
@@ -87,6 +96,14 @@ def generate_reader_text(
             "grok_diagnostics": [{"stage": "narrative_v2", "error": str(exc)}],
             "grok_text": "",
             "grok_error": str(exc),
+            "transient_error": f"narrative_{stage}_failed",
+        }
+
+    if result.get("status") == "error":
+        stage = str(result.get("failure_stage") or "narrative_pipeline")
+        result = {
+            **result,
+            "transient_error": f"narrative_{stage}_failed",
         }
 
     return {

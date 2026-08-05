@@ -655,6 +655,21 @@ def validate_reader_text(value: str) -> str | None:
     return None
 
 
+def log_narrative_result(job: sqlite3.Row, token: Token, narrative: dict[str, Any]) -> None:
+    counts = narrative.get("material_counts") if isinstance(narrative.get("material_counts"), dict) else {}
+    print(
+        "[meme-scan] narrative "
+        f"job_id={job['id']} address={token.address} "
+        f"status={narrative.get('status') or 'unknown'} "
+        f"failure_stage={narrative.get('failure_stage') or '-'} "
+        f"failure_code={narrative.get('failure_code') or narrative.get('decision_code') or '-'} "
+        f"telegram={counts.get('telegram_messages', 0)} "
+        f"x_posts={counts.get('x_posts', 0)} "
+        f"grok_materials={counts.get('grok_narrative_materials', 0)} "
+        f"reader_text={'yes' if str(narrative.get('reader_text') or '').strip() else 'no'}"
+    )
+
+
 def push_pending(
     title: str,
     content: str,
@@ -710,6 +725,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         evidence=json.loads(job["evidence_json"]) if job["evidence_json"] else None,
         trigger_kind=str(job["trigger_kind"]),
     )
+    log_narrative_result(job, token, narrative)
     reader_text = str(narrative.get("reader_text") or "").strip()
     if narrative.get("transient_error"):
         return store.retry_job(job, str(narrative["transient_error"]), narrative=narrative)

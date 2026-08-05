@@ -35,6 +35,67 @@ def _number(value: Any) -> float | None:
     return result if result >= 0 else None
 
 
+def _narrative_summary(value: Any) -> dict[str, Any]:
+    payload = _json_object(value)
+    if not payload:
+        return {
+            "narrative_available": False,
+            "narrative_status": None,
+            "failure_stage": None,
+            "failure_code": None,
+            "primary_type": None,
+            "type_hypothesis": None,
+        }
+    grok_research = payload.get("grok_research") if isinstance(payload.get("grok_research"), dict) else {}
+    status = str(payload.get("status") or ("success" if str(payload.get("reader_text") or "").strip() else "empty"))
+    return {
+        "narrative_available": True,
+        "narrative_status": status,
+        "failure_stage": str(payload.get("failure_stage") or "") or None,
+        "failure_code": str(payload.get("failure_code") or payload.get("decision_code") or "") or None,
+        "primary_type": str(payload.get("primary_type") or "") or None,
+        "type_hypothesis": str(payload.get("type_hypothesis") or grok_research.get("type_hypothesis") or "") or None,
+    }
+
+
+def _job_columns(connection: sqlite3.Connection) -> str:
+    columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)")}
+    return "narrative_json" if "narrative_json" in columns else "NULL AS narrative_json"
+
+
+def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    payload = _json_object(row["payload_json"])
+    candidate: dict[str, Any] = {}
+    if row["trigger_kind"] == "tg_burst":
+        try:
+            candidate_id = int(str(row["trigger_key"]).split(":", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            candidate_id = 0
+        candidate = candidates.get(candidate_id, {})
+    return {
+        "id": int(row["id"]),
+        "address": str(row["address"]),
+        "chain": "bsc",
+        "platform": str(payload.get("launchpad_platform") or payload.get("launchpad") or "telegram"),
+        "name": str(payload.get("name") or ""),
+        "symbol": str(payload.get("symbol") or payload.get("name") or "?"),
+        "market_cap": _number(payload.get("usd_market_cap") or payload.get("market_cap")),
+        "volume_24h": _number(payload.get("volume_24h")),
+        "trigger_kind": str(row["trigger_kind"]),
+        "trigger_level": _number(row["trigger_level"]),
+        "mention_count": candidate.get("mention_count"),
+        "chat_count": candidate.get("chat_count"),
+        "sender_count": candidate.get("sender_count"),
+        "status": str(row["status"]),
+        "reason": str(row["reason"] or ""),
+        "title": str(row["title"] or ""),
+        "content": str(row["content"] or ""),
+        "queued_at": str(row["queued_at"]),
+        "updated_at": str(row["updated_at"]),
+        **_narrative_summary(row["narrative_json"]),
+    }
+
+
 class MemeDashboardStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = (path or load_meme_scanner_database_path()).expanduser().resolve()
@@ -58,9 +119,9 @@ class MemeDashboardStore:
         try:
             with self._connect() as connection:
                 jobs = connection.execute(
-                    """
+                    f"""
                     SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,
-                           queued_at,status,reason,title,content,updated_at
+                           queued_at,status,reason,title,content,updated_at,{_job_columns(connection)}
                     FROM jobs
                     ORDER BY updated_at DESC,id DESC
                     LIMIT ?
@@ -88,40 +149,45 @@ class MemeDashboardStore:
         candidates = {int(row["id"]): dict(row) for row in candidate_rows}
         items: list[dict[str, Any]] = []
         for row in jobs:
-            payload = _json_object(row["payload_json"])
-            candidate: dict[str, Any] = {}
-            if row["trigger_kind"] == "tg_burst":
-                try:
-                    candidate_id = int(str(row["trigger_key"]).split(":", 1)[1])
-                except (IndexError, TypeError, ValueError):
-                    candidate_id = 0
-                candidate = candidates.get(candidate_id, {})
-            items.append(
-                {
-                    "id": int(row["id"]),
-                    "address": str(row["address"]),
-                    "chain": "bsc",
-                    "platform": str(payload.get("launchpad_platform") or payload.get("launchpad") or "telegram"),
-                    "name": str(payload.get("name") or ""),
-                    "symbol": str(payload.get("symbol") or payload.get("name") or "?"),
-                    "market_cap": _number(payload.get("usd_market_cap") or payload.get("market_cap")),
-                    "volume_24h": _number(payload.get("volume_24h")),
-                    "trigger_kind": str(row["trigger_kind"]),
-                    "trigger_level": _number(row["trigger_level"]),
-                    "mention_count": candidate.get("mention_count"),
-                    "chat_count": candidate.get("chat_count"),
-                    "sender_count": candidate.get("sender_count"),
-                    "status": str(row["status"]),
-                    "reason": str(row["reason"] or ""),
-                    "title": str(row["title"] or ""),
-                    "content": str(row["content"] or ""),
-                    "queued_at": str(row["queued_at"]),
-                    "updated_at": str(row["updated_at"]),
-                }
-            )
+            items.append(_row_item(row, candidates))
         return {
             "available": True,
             "generated_at": generated_at,
             "items": items,
             "last_error": None,
+        }
+
+    def narrative_detail(self, job_id: int) -> dict[str, Any] | None:
+        if not self.path.exists():
+            return None
+        try:
+            with self._connect() as connection:
+                narrative_column = _job_columns(connection)
+                row = connection.execute(
+                    f"""
+                    SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,
+                           queued_at,status,reason,title,content,updated_at,{narrative_column}
+                    FROM jobs WHERE id=?
+                    """,
+                    (int(job_id),),
+                ).fetchone()
+                if row is None:
+                    return None
+                candidate_rows = connection.execute(
+                    """
+                    SELECT id,mention_count,chat_count,sender_count
+                    FROM tg_candidates
+                    WHERE id = CAST(SUBSTR(?, 10) AS INTEGER)
+                    """,
+                    (str(row["trigger_key"] or ""),),
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return None
+
+        candidates = {int(item["id"]): dict(item) for item in candidate_rows}
+        payload = _json_object(row["narrative_json"])
+        return {
+            "available": bool(payload),
+            "job": _row_item(row, candidates),
+            "narrative": payload if payload else None,
         }

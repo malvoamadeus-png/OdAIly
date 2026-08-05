@@ -65,6 +65,13 @@ READER_TEXT_FORBIDDEN = re.compile(
 )
 
 
+class NarrativeStageError(RuntimeError):
+    def __init__(self, stage: str, error: BaseException) -> None:
+        self.stage = stage
+        self.original_error = error
+        super().__init__(str(error) or error.__class__.__name__)
+
+
 def setup_stdout() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -742,10 +749,104 @@ def validate_final_result(
     }
 
 
+def _material_counts(
+    *,
+    contexts: list[dict[str, Any]],
+    telegram_messages: list[dict[str, Any]],
+    x_posts: list[dict[str, Any]],
+    grok_source_actions: list[dict[str, Any]],
+    grok_narrative_materials: list[dict[str, Any]],
+    grok_supplemental_information: list[dict[str, Any]],
+    entity_supplements: list[dict[str, Any]],
+) -> dict[str, int]:
+    counts = {
+        "telegram_contexts": len(contexts),
+        "telegram_messages": len(telegram_messages),
+        "x_posts": len(x_posts),
+        "grok_source_actions": len(grok_source_actions),
+        "grok_narrative_materials": len(grok_narrative_materials),
+        "grok_supplemental_information": len(grok_supplemental_information),
+        "entity_supplements": len(entity_supplements),
+    }
+    counts["total_materials"] = sum(
+        value for key, value in counts.items() if key != "telegram_contexts"
+    )
+    return counts
+
+
+def _decision_metadata(
+    *,
+    result: dict[str, Any],
+    counts: dict[str, int],
+    type_hypothesis: str,
+) -> tuple[str, str, str]:
+    reader_text = str(result.get("reader_text") or "").strip()
+    primary_type = str(result.get("primary_type") or "").strip()
+    grouped_materials = sum(
+        len(result.get(field) or [])
+        for field in ("source_materials", "angle_materials", "supplemental_information")
+        if isinstance(result.get(field), list)
+    )
+    if counts["total_materials"] == 0:
+        return "empty", "no_materials", "没有找到可供最终写作者使用的 Telegram、X 或 Grok 材料。"
+    if not reader_text and primary_type:
+        return "empty", "type_selected_but_empty_reader_text", "已选出叙事类型，但最终写作者没有生成可用正文。"
+    if not reader_text:
+        if grouped_materials:
+            return "empty", "writer_returned_empty", "最终写作者已经分类了部分材料，但没有生成可读正文。"
+        hypothesis_note = "Grok 类型假设也为空。" if not type_hypothesis else f"Grok 类型假设为 {type_hypothesis}。"
+        return "empty", "materials_but_no_type", f"存在候选材料，但没有形成有效的最终类型或分类材料；{hypothesis_note}"
+    if not primary_type:
+        hypothesis_note = "Grok 类型假设为空。" if not type_hypothesis else f"Grok 类型假设为 {type_hypothesis}。"
+        return "success", "materials_but_no_type", f"已生成正文，但最终写作者没有返回有效的叙事类型；{hypothesis_note}"
+    if not result.get("angle_materials"):
+        return "success", "no_usable_angle", "已经选出类型并生成正文，但没有形成可用的叙事角度材料。"
+    return "success", "completed", "已生成正文并返回有效的叙事类型。"
+
+
+def _failure_stage_for_empty(decision_code: str, counts: dict[str, int]) -> str | None:
+    if decision_code == "no_materials":
+        if counts.get("telegram_contexts", 0) == 0 and counts.get("telegram_messages", 0) == 0:
+            return "telegram_collection"
+        if counts.get("x_posts", 0) == 0:
+            return "x_ca_collection"
+        if counts.get("grok_source_actions", 0) == 0 and counts.get("grok_narrative_materials", 0) == 0:
+            return "grok_ca_research"
+    if decision_code in {"writer_returned_empty", "type_selected_but_empty_reader_text", "materials_but_no_type"}:
+        return "final_writer"
+    return None
+
+
+def _diagnostic_failure(diagnostics: list[dict[str, Any]]) -> tuple[str, str, str] | None:
+    stage_aliases = {
+        "ca_research": "grok_ca_research",
+        "entity_lookup": "grok_entity_lookup",
+    }
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        try:
+            http_status = int(diagnostic.get("http_status") or 0)
+        except (TypeError, ValueError):
+            http_status = 0
+        if http_status < 400:
+            continue
+        raw_stage = str(diagnostic.get("stage") or "narrative_pipeline")
+        stage = stage_aliases.get(raw_stage, raw_stage)
+        code = f"http_{http_status}"
+        return stage, code, f"{raw_stage} 返回 HTTP {http_status}。"
+    return None
+
+
 async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     async def timed(stage: str, awaitable: Any) -> tuple[Any, dict[str, Any]]:
         started_at = time.perf_counter()
-        value = await awaitable
+        try:
+            value = await awaitable
+        except NarrativeStageError:
+            raise
+        except Exception as exc:
+            raise NarrativeStageError(stage, exc) from exc
         raw = value.get("raw") if isinstance(value, dict) else None
         return value, performance_entry(stage, started_at, raw)
 
@@ -761,11 +862,14 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     grok_task = timed("grok_ca_research", asyncio.to_thread(collect_grok_material, args.contract, model=args.grok_model, timeout=args.grok_timeout))
     (telegram_source, telegram_performance), (x_source, x_performance), (grok_source, grok_performance) = await asyncio.gather(telegram_task, x_posts_task, grok_task)
     contexts = list(telegram_source.get("contexts") or [])
-    extraction, entity_extraction_performance = chat_completion_json_with_metrics(
-        build_telegram_entity_prompt(args.contract, contexts),
-        model=args.gpt_model,
-        timeout=args.gpt_timeout,
-    )
+    try:
+        extraction, entity_extraction_performance = chat_completion_json_with_metrics(
+            build_telegram_entity_prompt(args.contract, contexts),
+            model=args.gpt_model,
+            timeout=args.gpt_timeout,
+        )
+    except Exception as exc:
+        raise NarrativeStageError("telegram_entity_extraction", exc) from exc
     entity_extraction_performance["stage"] = "telegram_entity_extraction"
     telegram_messages = telegram_messages_from_contexts(contexts)
     entity_candidates = normalize_entity_candidates(extraction.get("entity_candidates"), contexts)
@@ -789,31 +893,70 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
         item["id"]: item
         for item in telegram_messages + x_posts + grok_source_actions + grok_narrative_materials + grok_supplemental_information + entity_supplements
     }
-    final, final_writer_performance = chat_completion_json_with_metrics(
-        build_final_writer_prompt_v2(
-            args.contract,
-            args.chain,
-            telegram_messages,
-            x_posts,
-            grok_source_actions,
-            grok_narrative_materials,
-            grok_supplemental_information,
-            entity_supplements,
-            grok_source["type_hypothesis"],
-        ),
-        model=args.gpt_model,
-        timeout=args.gpt_timeout,
-    )
+    try:
+        final, final_writer_performance = chat_completion_json_with_metrics(
+            build_final_writer_prompt_v2(
+                args.contract,
+                args.chain,
+                telegram_messages,
+                x_posts,
+                grok_source_actions,
+                grok_narrative_materials,
+                grok_supplemental_information,
+                entity_supplements,
+                grok_source["type_hypothesis"],
+            ),
+            model=args.gpt_model,
+            timeout=args.gpt_timeout,
+        )
+    except Exception as exc:
+        raise NarrativeStageError("final_writer", exc) from exc
     final_writer_performance["stage"] = "final_writer"
-    result = validate_final_result(final, material_by_id)
+    try:
+        result = validate_final_result(final, material_by_id)
+    except Exception as exc:
+        raise NarrativeStageError("final_validation", exc) from exc
+    counts = _material_counts(
+        contexts=contexts,
+        telegram_messages=telegram_messages,
+        x_posts=x_posts,
+        grok_source_actions=grok_source_actions,
+        grok_narrative_materials=grok_narrative_materials,
+        grok_supplemental_information=grok_supplemental_information,
+        entity_supplements=entity_supplements,
+    )
+    status, decision_code, decision_reason = _decision_metadata(
+        result=result,
+        counts=counts,
+        type_hypothesis=str(grok_source["type_hypothesis"] or "").strip(),
+    )
+    diagnostics = [x_source["diagnostic"], grok_source["diagnostic"], entity_lookup["diagnostic"]]
+    diagnostic_failure = _diagnostic_failure(diagnostics)
+    if diagnostic_failure:
+        failure_stage, failure_code, failure_message = diagnostic_failure
+        status = "error"
+        decision_code = "narrative_error"
+        decision_reason = failure_message
+    else:
+        failure_stage = _failure_stage_for_empty(decision_code, counts) if status == "empty" else None
+        failure_code = decision_code if status == "empty" else None
+        failure_message = decision_reason if status == "empty" else None
     output = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "chain": args.chain,
         "contract": args.contract,
+        "status": status,
+        "failure_stage": failure_stage,
+        "failure_code": failure_code,
+        "failure_message": failure_message,
+        "material_counts": counts,
+        "decision_code": decision_code,
+        "decision_reason": decision_reason,
         "telegram_contexts": contexts,
         "telegram_messages": telegram_messages,
         "entity_candidates": entity_candidates,
         "x_posts": x_posts,
+        "type_hypothesis": grok_source["type_hypothesis"],
         "grok_research": {
             "source_actions": grok_source_actions,
             "narrative_materials": grok_narrative_materials,
@@ -821,7 +964,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
             "type_hypothesis": grok_source["type_hypothesis"],
         },
         "entity_supplements": entity_supplements,
-        "grok_diagnostics": [x_source["diagnostic"], grok_source["diagnostic"], entity_lookup["diagnostic"]],
+        "grok_diagnostics": diagnostics,
         "performance": {
             "total_duration_ms": round((time.perf_counter() - started_at) * 1000),
             "calls": [
