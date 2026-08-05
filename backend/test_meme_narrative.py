@@ -3,6 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from packages.meme_scanner import narrative, narrative_v2
@@ -29,6 +33,36 @@ def narrative_args(output):
         telegram_timeout=1,
         connection_retries=1,
     )
+
+
+def test_grok_requests_are_serialized_for_shared_proxy():
+    state_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_post(*args, **kwargs):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with state_lock:
+            active -= 1
+        return SimpleNamespace(status_code=200)
+
+    with patch.object(narrative_v2.requests, "post", side_effect=fake_post):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(
+                lambda _: narrative_v2.post_grok_response(
+                    base_url="http://proxy",
+                    api_key="test",
+                    payload={},
+                    timeout=1,
+                ),
+                range(2),
+            ))
+
+    assert max_active == 1
 
 
 def test_run_async_returns_json_safe_output_path(tmp_path):

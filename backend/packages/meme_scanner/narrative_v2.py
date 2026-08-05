@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,9 @@ DEFAULT_GPT_MODEL = DEFAULT_GPT_WRITER_MODEL
 DEFAULT_GROK_MODEL = grok_x_search.DEFAULT_MODEL
 DEFAULT_OUTPUT_DIR = EXPORTS_DATA_DIR / "narrative"
 GROK_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+# CLIProxyAPI's xAI OAuth route is not reliable with concurrent requests from
+# the same account, so all narrative Grok calls share one process-local slot.
+GROK_REQUEST_LOCK = threading.Lock()
 
 # These are the numeric senders behind the bot examples supplied for this pipeline.
 # They are used only in memory to remove the messages before any source material is saved.
@@ -155,17 +159,18 @@ def post_grok_response(
     timeout: int,
 ) -> tuple[requests.Response, int]:
     """Retry a transient xAI failure once; callers retain a diagnostic on failure."""
-    response: requests.Response | None = None
-    for attempt in range(1, 3):
-        response = requests.post(
-            f"{base_url}/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=timeout,
-        )
-        if response.status_code not in GROK_TRANSIENT_STATUS_CODES or attempt == 2:
-            return response, attempt
-        time.sleep(2)
+    with GROK_REQUEST_LOCK:
+        response: requests.Response | None = None
+        for attempt in range(1, 3):
+            response = requests.post(
+                f"{base_url}/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+            if response.status_code not in GROK_TRANSIENT_STATUS_CODES or attempt == 2:
+                return response, attempt
+            time.sleep(2)
     raise AssertionError("unreachable")
 
 

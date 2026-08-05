@@ -30,6 +30,8 @@ Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任�
 
 Grok 分两路执行：第一路用精确 CA 搜索最多 30 条 X 原帖，保留原文、作者、链接和时间；第二路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`。最终 writer 只接收这些结构化材料和 Telegram 原话，不接收搜索过程摘要。
 
+两路 Grok 请求共用同一个 xAI/CLIProxyAPI 代理时必须串行占用请求槽；X 搜索和独立研究仍是两个独立阶段，但不能并发打到同一 OAuth 代理账号。阶段请求失败时保留具体诊断并按阶段重试。
+
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 
 ## 确定性校验
