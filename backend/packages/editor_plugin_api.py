@@ -13,7 +13,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
 from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
 from packages.common.console_auth import create_console_auth_repository
