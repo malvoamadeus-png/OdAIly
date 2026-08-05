@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production runs on Linux
+    fcntl = None  # type: ignore[assignment]
 
 from packages.common.config import (
     load_external_media_alert_settings,
@@ -17,6 +23,42 @@ from packages.common.paths import ensure_runtime_dirs, get_paths
 
 from .processor import LocalPipelineProcessor
 from .queue import LocalPipelineQueue
+
+
+class LocalPipelineInstanceLock:
+    """Keep an orphaned server process from overlapping a new instance."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._handle: Any | None = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a+", encoding="ascii")
+        if fcntl is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                handle.seek(0)
+                owner_pid = handle.read().strip() or "unknown"
+                handle.close()
+                raise RuntimeError(
+                    f"local pipeline instance already running; owner_pid={owner_pid} lock={self.path}"
+                ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+        self._handle = handle
+
+    def release(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 class LocalPipelineService:
@@ -233,26 +275,31 @@ def run_local_pipeline_server(
 ) -> None:
     paths = get_paths()
     ensure_runtime_dirs(paths)
-    settings = load_local_pipeline_settings()
-    queue = LocalPipelineQueue(
-        queue_path or paths.runtime_dir / "local_pipeline.sqlite",
-        max_attempts=settings.max_attempts,
-    )
-    requeued = queue.requeue_stale_running_jobs(stale_before=datetime.now(UTC) - timedelta(minutes=30))
-    processor = LocalPipelineProcessor(
-        database_url=database_url,
-        x_settings=load_x_processing_settings(),
-        alert_settings=load_external_media_alert_settings(),
-    )
-    service = LocalPipelineService(queue=queue, processor=processor)
-    service.start()
-    server = LocalPipelineHTTPServer((host, port), LocalPipelineHandler)
-    server.service = service
-    print(f"[odaily] local pipeline server listening on {host}:{port}")
-    if requeued:
-        print(f"[odaily] local pipeline requeued stale running jobs count={requeued}")
+    instance_lock = LocalPipelineInstanceLock(paths.runtime_dir / "local_pipeline.lock")
+    instance_lock.acquire()
     try:
-        server.serve_forever()
+        settings = load_local_pipeline_settings()
+        queue = LocalPipelineQueue(
+            queue_path or paths.runtime_dir / "local_pipeline.sqlite",
+            max_attempts=settings.max_attempts,
+        )
+        requeued = queue.requeue_stale_running_jobs(stale_before=datetime.now(UTC) - timedelta(minutes=30))
+        processor = LocalPipelineProcessor(
+            database_url=database_url,
+            x_settings=load_x_processing_settings(),
+            alert_settings=load_external_media_alert_settings(),
+        )
+        service = LocalPipelineService(queue=queue, processor=processor)
+        service.start()
+        server = LocalPipelineHTTPServer((host, port), LocalPipelineHandler)
+        server.service = service
+        print(f"[odaily] local pipeline server listening on {host}:{port}")
+        if requeued:
+            print(f"[odaily] local pipeline requeued stale running jobs count={requeued}")
+        try:
+            server.serve_forever()
+        finally:
+            server.server_close()
+            service.stop()
     finally:
-        server.server_close()
-        service.stop()
+        instance_lock.release()
