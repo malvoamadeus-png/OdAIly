@@ -246,7 +246,12 @@ const emptyPipelineTimingDashboard: PipelineTimingDashboard = {
 
 function fmtTime(value: string | null | undefined): string {
   if (!value) return '-';
-  const date = new Date(value);
+  const raw = value.trim();
+  // SQLite CURRENT_TIMESTAMP is UTC but has no timezone suffix.
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return '-';
   return new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
