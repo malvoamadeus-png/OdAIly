@@ -103,7 +103,11 @@ class ConsoleDataApi:
         where, params = self._where(payload)
         order_parts = []
         for item in payload.get("orders") or []:
-            order_parts.append(f"{_identifier(item.get('column'))} {'ASC' if item.get('ascending', True) else 'DESC'}")
+            column = _identifier(item.get("column"))
+            # Tasks contain both SQLite CURRENT_TIMESTAMP values and ISO-8601
+            # values with a `T` separator. Normalize them before pagination.
+            expression = "datetime(created_at)" if table == "tasks" and column == "created_at" else column
+            order_parts.append(f"{expression} {'ASC' if item.get('ascending', True) else 'DESC'}")
         sql = f"SELECT {columns} FROM {table}{where}"
         if order_parts:
             sql += " ORDER BY " + ",".join(order_parts)

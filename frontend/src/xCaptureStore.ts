@@ -1688,6 +1688,7 @@ export async function listProcessingTaskPage(
     .select(`${taskSelectFields},x_task_pipeline(${taskPipelineSelectFields})`)
     .in('source', targetSources)
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
     .range(normalizedPage * normalizedPageSize, (normalizedPage + 1) * normalizedPageSize);
   raise(error);
   const rows = ((data ?? []) as unknown as TaskRowWithPipeline[]).map(normalizeTaskRow);
