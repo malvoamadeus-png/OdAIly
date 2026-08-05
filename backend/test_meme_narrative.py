@@ -99,6 +99,9 @@ def test_run_async_returns_json_safe_output_path(tmp_path):
         result = asyncio.run(narrative_v2.run_async(narrative_args(output)))
 
     assert result["output_path"] == str(output)
+    assert result["status"] == "success"
+    assert result["material_counts"]["grok_narrative_materials"] == 1
+    assert result["grok_research"]["narrative_materials"] == [{"id": "grok:narrative:1", "statement": "A concrete claim"}]
     json.dumps(result)
 
 

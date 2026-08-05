@@ -50,7 +50,7 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 - Telegram 最老/最新命中及每条命中的前 2、后 15 条上下文；X 原帖；Grok `source_actions`、`narrative_materials`、`supplemental_information`、`type_hypothesis`；实体补充、性能和调用诊断。
 - 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
 
-叙事生成器返回的 `output_path` 必须是字符串路径；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。
+叙事生成器返回的 `output_path` 必须是字符串路径，并且返回值要包含写入文件的完整审计对象；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型，也不能用精简的最终正文对象覆盖审计文件。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。
 
 `decision_code` 使用确定性值：`no_materials`、`materials_but_no_type`、`type_selected_but_empty_reader_text`、`writer_returned_empty`、`no_usable_angle`、`final_validation_error`、`completed`。`no_usable_narrative` 只表示最终确实没有可用叙事材料；阶段异常保留具体阶段并触发重试。
 
