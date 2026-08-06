@@ -24,6 +24,8 @@
 
 内部审计区分 source_materials、angle_materials 和 supplemental_information。三组都可以为空，不能为了填满某一组而用频次、情绪或模型常识补写。原始字眼或明确人物动作本身已经足够时，角度可以为空。
 
+正文归属按来源区分：Telegram 使用“群聊 A 表示/提到……”或“多个群聊表示……”；X 使用“X 上有人/多名用户表示/提到……”。Grok 叙事材料作为主要内容时使用“Grok 指出/表示/提到……”。`grok_supplemental_information` 和 `entity_supplements` 如果被采用，必须单独成段并以 `Grok材料补充：` 开头，多个事实用分号连接，不得用“Grok 还称”把不同材料组串起来。实体核验只输出规范化后的直接事实，例如“英伟达CEO黄仁勋账号关注了 RTX 社区成员”或“加密KOL王大有正在推动并建设 RTX 社区”，不得输出“王大友是王大有”这类身份映射过程。
+
 ## 运行顺序
 
 Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事生成不使用 watcher 的 CA-only 摘要作为唯一输入，而是按 CommunityMonitor V2 对精确 CA 做白名单全历史 Telegram 搜索。程序全局选择最早 20 条和最新 20 条命中，并对每个命中回读前 2 条、后 15 条上下文。机器人在保存前过滤，原话按 `chat + message_id` 去重。

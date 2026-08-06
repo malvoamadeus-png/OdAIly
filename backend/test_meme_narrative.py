@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from packages.meme_scanner import narrative, narrative_v2
 
 
@@ -103,6 +105,36 @@ def test_run_async_returns_json_safe_output_path(tmp_path):
     assert result["material_counts"]["grok_narrative_materials"] == 1
     assert result["grok_research"]["narrative_materials"] == [{"id": "grok:narrative:1", "statement": "A concrete claim"}]
     json.dumps(result)
+
+
+def test_final_writer_prompt_separates_grok_supplements():
+    prompt = narrative_v2.build_final_writer_prompt_v2(
+        ADDRESS,
+        "bsc",
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        "",
+    )
+
+    assert "Grok材料补充：" in prompt
+    assert "Grok 还称" in prompt
+    assert "王大友是王大有" in prompt
+
+
+def test_validate_final_result_requires_grok_supplement_marker():
+    material = {"grok:supplement:1": {"id": "grok:supplement:1", "statement": "A fact"}}
+    result = {
+        "primary_type": "pure_meme",
+        "supplemental_information_ids": ["grok:supplement:1"],
+        "reader_text": "Grok 提到 A fact。",
+    }
+
+    with pytest.raises(RuntimeError, match="Grok supplemental material"):
+        narrative_v2.validate_final_result(result, material)
 
 
 def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_path) -> None:
