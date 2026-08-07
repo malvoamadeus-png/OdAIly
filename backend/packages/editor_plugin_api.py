@@ -75,7 +75,7 @@ from packages.x_processing.worker import build_writer_prompt
 
 QUICK_GENERATE_WRITER_MODEL = DEFAULT_DEEPSEEK_FAST_MODEL
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
-GENERATE_WRITER_REASONING_EFFORT = "low"
+GENERATE_WRITER_REASONING_EFFORT = "high"
 PluginNewsType = Literal["regular", "funding", "onchain"]
 PluginGenerationMode = Literal["x", "external_media"]
 PluginGenerationRoute = Literal["regular", "funding", "onchain", "external_media"]

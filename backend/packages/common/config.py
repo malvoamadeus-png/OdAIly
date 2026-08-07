@@ -336,9 +336,9 @@ class XProcessingSettings(BaseModel):
     judge_model: str = DEFAULT_DEEPSEEK_REVIEW_MODEL
     judge_reasoning_effort: str = "low"
     writer_model: str = DEFAULT_GPT_WRITER_MODEL
-    writer_reasoning_effort: str = "low"
+    writer_reasoning_effort: str = "high"
     publisher_model: str = DEFAULT_GPT_WRITER_MODEL
-    publisher_reasoning_effort: str = "low"
+    publisher_reasoning_effort: str = "high"
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -433,7 +433,7 @@ def _llm_writer_model(*specific_names: str) -> str:
         value = os.getenv(name)
         if value:
             return value
-    return DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.5"
+    return DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.6-luna"
 
 
 def _llm_deepseek_review_model(*specific_names: str) -> str:
@@ -480,9 +480,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         "judge_model": judge_model,
         "judge_reasoning_effort": os.getenv("X_PROCESS_JUDGE_REASONING_EFFORT") or "low",
         "writer_model": _llm_writer_model("X_PROCESS_WRITER_MODEL"),
-        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "low",
+        "writer_reasoning_effort": os.getenv("X_PROCESS_WRITER_REASONING_EFFORT") or "high",
         "publisher_model": _llm_writer_model("X_PROCESS_PUBLISHER_MODEL"),
-        "publisher_reasoning_effort": os.getenv("X_PROCESS_PUBLISHER_REASONING_EFFORT") or "low",
+        "publisher_reasoning_effort": os.getenv("X_PROCESS_PUBLISHER_REASONING_EFFORT") or "high",
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "search_embedding_base_url": os.getenv("SEARCH_EMBEDDING_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -811,7 +811,7 @@ class Writer3Settings(BaseModel):
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     analysis_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     writer_model: str = DEFAULT_GPT_WRITER_MODEL
-    writer_reasoning_effort: str = "medium"
+    writer_reasoning_effort: str = "high"
     history_days: int = Field(default=90, ge=1, le=365)
     candidate_limit: int = Field(default=20, ge=1, le=100)
     context_candidates: int = Field(default=5, ge=1, le=20)
@@ -835,7 +835,7 @@ def load_writer3_settings() -> Writer3Settings:
         "openai_api_style": _llm_api_style("WRITER3_OPENAI_API_STYLE"),
         "analysis_model": _llm_fast_model("WRITER3_ANALYSIS_MODEL"),
         "writer_model": _llm_writer_model("WRITER3_WRITER_MODEL"),
-        "writer_reasoning_effort": os.getenv("WRITER3_WRITER_REASONING_EFFORT") or "medium",
+        "writer_reasoning_effort": os.getenv("WRITER3_WRITER_REASONING_EFFORT") or "high",
         "history_days": int(os.getenv("WRITER3_HISTORY_DAYS") or 90),
         "candidate_limit": int(os.getenv("WRITER3_CANDIDATE_LIMIT") or 20),
         "context_candidates": int(os.getenv("WRITER3_CONTEXT_CANDIDATES") or 5),

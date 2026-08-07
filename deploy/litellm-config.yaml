@@ -1,7 +1,7 @@
 model_list:
   - model_name: odaily-gpt-writer
     litellm_params:
-      model: openai/gpt-5.5
+      model: openai/gpt-5.6-luna
       api_base: os.environ/OPENAI_RELAY_BASE_URL
       api_key: os.environ/OPENAI_RELAY_API_KEY
 
