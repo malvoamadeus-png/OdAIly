@@ -8,6 +8,8 @@ Linux 主机上的 `data/database/odaily.sqlite` 是全部业务事实的唯一�
 
 所有主库连接启用 WAL、30 秒 `busy_timeout`、外键约束和 `synchronous=FULL`。WAL 模式只在数据库尚未进入 WAL 时设置，避免每次建连重复争用模式切换锁；仓储方法退出连接上下文时同时提交或回滚并关闭文件句柄，禁止常驻 worker 累积闲置连接。
 
+所有表示绝对时刻的 Python `datetime` 在写入 SQLite 前统一转换为 UTC ISO 8601（`+00:00`）。来源原始 payload 可以保留原始时区文本，但 `published_at`、窗口边界、锁时间和缓存过期时间不得继续保存非 UTC 偏移。由于历史库同时存在 `CURRENT_TIMESTAMP` 空格格式、UTC ISO 和旧 `+08:00` 数据，时间窗口与排序必须使用 `datetime(...)` 或 `julianday(...)` 解析，不得直接比较 TEXT；面向编辑的时间再转换为 `Asia/Shanghai`。
+
 ## 一次性迁移
 
 切换时停止所有旧写入服务，使用 `storage-import-legacy --execute --truncate` 从冻结旧库流式导入已建模业务表，逐表核对行数并执行 `PRAGMA integrity_check`。旧认证 session 不导入；新版本使用部署内置的单操作者 bcrypt 密码哈希。

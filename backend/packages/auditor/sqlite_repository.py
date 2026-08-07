@@ -16,7 +16,10 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _dt(value: str | None) -> datetime | None:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC)
 
 
 class SQLiteAuditorRepository:
@@ -61,7 +64,8 @@ class SQLiteAuditorRepository:
             candidates = conn.execute(
                 "SELECT source_item_id, source_url, title, content, published_at, metadata "
                 "FROM odaily_reference_items WHERE content <> '' AND published_at IS NOT NULL "
-                "AND published_at >= ? AND published_at <= ? ORDER BY published_at, source_item_id",
+                "AND julianday(published_at) >= julianday(?) AND julianday(published_at) <= julianday(?) "
+                "ORDER BY julianday(published_at), source_item_id",
                 (cutoff, _iso(now)),
             ).fetchall()
             selected = None

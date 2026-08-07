@@ -15,6 +15,8 @@ from typing import Any, Protocol
 
 import requests
 
+from packages.common.time_utils import utc_iso
+
 from .models import ACTIVE_CANDIDATE_TTL
 
 try:
@@ -408,34 +410,34 @@ class SearchCache:
         stale_document_where = """
             (
                 doc_type IN ('task', 'newsflash_item', 'editor_plugin_query', 'external_media_alert')
-                AND COALESCE(published_at, created_at, updated_at) < ?
+                AND julianday(COALESCE(published_at, created_at, updated_at)) < julianday(?)
             )
             OR (
                 doc_type = 'recent_processed'
-                AND COALESCE(expires_at, updated_at) < ?
+                AND julianday(COALESCE(expires_at, updated_at)) < julianday(?)
             )
             OR (
                 doc_type = 'candidate'
                 AND COALESCE(status, 'inactive') <> 'active'
-                AND COALESCE(expires_at, updated_at) < ?
+                AND julianday(COALESCE(expires_at, updated_at)) < julianday(?)
             )
             OR (
                 doc_type IN ('odaily_reference', 'external_media_alert_history')
-                AND COALESCE(published_at, created_at, updated_at) < ?
+                AND julianday(COALESCE(published_at, created_at, updated_at)) < julianday(?)
             )
             OR (
                 doc_type NOT IN (
                     'task', 'newsflash_item', 'editor_plugin_query', 'external_media_alert',
                     'candidate', 'recent_processed', 'odaily_reference', 'external_media_alert_history'
                 )
-                AND updated_at < ?
+                AND julianday(updated_at) < julianday(?)
             )
         """
         document_params = (short_cutoff, now.isoformat(), short_cutoff, reference_cutoff, reference_cutoff)
         # Some producers intentionally use a query-specific cache key that differs
         # from the document key. Keep all vectors for the longest active search
         # window instead of assuming a join between both tables.
-        stale_embedding_where = "updated_at < ?"
+        stale_embedding_where = "julianday(updated_at) < julianday(?)"
         embedding_params = (reference_cutoff,)
 
         with self._connect() as conn:
@@ -571,13 +573,13 @@ class SearchCache:
                         document.title,
                         document.content,
                         document.source_url,
-                        document.published_at.isoformat() if document.published_at else None,
+                        utc_iso(document.published_at),
                         document.status,
-                        document.created_at.isoformat() if document.created_at else None,
-                        document.expires_at.isoformat() if document.expires_at else None,
+                        utc_iso(document.created_at),
+                        utc_iso(document.expires_at),
                         json.dumps(document.metadata, ensure_ascii=False, sort_keys=True),
                         content_hash(document.embedding_text),
-                        (document.updated_at or now).isoformat(),
+                        utc_iso(document.updated_at or now),
                     )
                     for document in documents
                 ],
@@ -590,10 +592,10 @@ class SearchCache:
             SELECT *
             FROM documents
             WHERE doc_type = 'odaily_reference'
-              AND (published_at IS NULL OR published_at >= ?)
-            ORDER BY published_at IS NULL ASC, published_at DESC, updated_at DESC
+              AND (published_at IS NULL OR julianday(published_at) >= julianday(?))
+            ORDER BY published_at IS NULL ASC, julianday(published_at) DESC, julianday(updated_at) DESC
             """,
-            (since.isoformat(),),
+            (utc_iso(since),),
         )
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
@@ -605,9 +607,9 @@ class SearchCache:
             FROM documents
             WHERE doc_type = 'candidate'
               AND COALESCE(status, 'active') = 'active'
-              AND created_at > ?
-              AND expires_at > ?
-            ORDER BY updated_at DESC
+              AND julianday(created_at) > julianday(?)
+              AND julianday(expires_at) > julianday(?)
+            ORDER BY julianday(updated_at) DESC
             """,
             (created_after, now.isoformat()),
         )
@@ -620,8 +622,8 @@ class SearchCache:
             FROM documents
             WHERE doc_type = 'recent_processed'
               AND COALESCE(status, 'active') = 'active'
-              AND expires_at > ?
-            ORDER BY updated_at DESC
+              AND julianday(expires_at) > julianday(?)
+            ORDER BY julianday(updated_at) DESC
             """,
             (now.isoformat(),),
         )
@@ -761,14 +763,14 @@ class SearchCache:
                   AND COALESCE(status, 'active') = 'active'
                   AND (
                     expires_at IS NULL
-                    OR expires_at <= ?
-                    OR created_at <= ?
+                    OR julianday(expires_at) <= julianday(?)
+                    OR julianday(created_at) <= julianday(?)
                   )
                 """,
                 (
-                    now.isoformat(),
-                    now.isoformat(),
-                    (now - ACTIVE_CANDIDATE_TTL - timedelta(minutes=1)).isoformat(),
+                    utc_iso(now),
+                    utc_iso(now),
+                    utc_iso(now - ACTIVE_CANDIDATE_TTL - timedelta(minutes=1)),
                 ),
             )
             conn.commit()
@@ -792,10 +794,10 @@ class SearchCache:
             FROM documents
             WHERE doc_type = 'external_media_alert_history'
               AND COALESCE(status, 'notified') = 'notified'
-              AND (created_at IS NULL OR created_at >= ?)
-            ORDER BY created_at IS NULL ASC, created_at DESC, updated_at DESC
+              AND (created_at IS NULL OR julianday(created_at) >= julianday(?))
+            ORDER BY created_at IS NULL ASC, julianday(created_at) DESC, julianday(updated_at) DESC
             """,
-            (since.isoformat(),),
+            (utc_iso(since),),
         )
 
     def mark_document_status(
@@ -827,7 +829,7 @@ class SearchCache:
                 """,
                 (
                     status,
-                    expires_at.isoformat() if expires_at else None,
+                    utc_iso(expires_at),
                     json.dumps(metadata, ensure_ascii=False, sort_keys=True),
                     datetime.now(UTC).isoformat(),
                     cache_key,

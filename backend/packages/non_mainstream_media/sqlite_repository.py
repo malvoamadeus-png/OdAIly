@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.common.time_utils import utc_iso
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL, _dt, _json
 
 from .models import DiscoveredPage, NonMainstreamMediaSettings, NonMainstreamMediaSource, ParsedArticle, SiteDefinition, SourceRunStats
@@ -55,7 +56,7 @@ class SQLiteNonMainstreamMediaRepository:
         with connect_sqlite(self.path) as conn:rows=conn.execute(f"SELECT source_item_id FROM non_mainstream_media_seen_items WHERE site_key=? AND source_item_id IN ({','.join('?' for _ in source_item_ids)})",(site_key,*source_item_ids)).fetchall()
         return set(source_item_ids)-{r["source_item_id"] for r in rows}
     def _save(self,*,task_source:str,source_item_id:str,source_url:str|None,title:str|None,content:str,published_at:datetime|None,raw_payload:dict,metadata:dict)->int|None:
-        with connect_sqlite(self.path) as conn: conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')",(task_source,source_item_id,source_url,title,content,published_at.isoformat() if published_at else None,_json(raw_payload),_json(metadata)));r=conn.execute("SELECT id FROM tasks WHERE source=? AND source_item_id=?",(task_source,source_item_id)).fetchone();conn.commit();return int(r["id"]) if r else None
+        with connect_sqlite(self.path) as conn: conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')",(task_source,source_item_id,source_url,title,content,utc_iso(published_at),_json(raw_payload),_json(metadata)));r=conn.execute("SELECT id FROM tasks WHERE source=? AND source_item_id=?",(task_source,source_item_id)).fetchone();conn.commit();return int(r["id"]) if r else None
     def save_task(self,source:NonMainstreamMediaSource,article:ParsedArticle,*,classified_target:str|None=None)->int|None:
         task_source=write_flow_task_source_for_target(classified_target) if classified_target in {"crypto","ai"} else write_flow_task_source(source); metadata={**article.metadata,"site_key":source.site_key,"site_display_name":source.display_name,"capture_method":source.capture_method,"pipeline_mode":source.pipeline_mode,"source_group":source.source_group,"discovery_mode":source.discovery_mode,"source_label":source_group_label(source.source_group),"content_format":article.content_format,"author_names":article.author_names,"tags":article.tags,"categories":article.categories,"excerpt":article.excerpt,"canonical_url":article.canonical_url,"source_kind":task_source}
         if classified_target in {"crypto","ai"}:metadata.update(origin_source_group=source.source_group,classified_target=classified_target)

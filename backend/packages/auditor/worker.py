@@ -7,6 +7,7 @@ from typing import Any
 
 from packages.common.config import AuditorSettings
 from packages.common.heartbeat import HeartbeatThrottle
+from packages.common.time_utils import shanghai_iso
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.telegram import TelegramClient, skipped_telegram_result
@@ -196,7 +197,7 @@ def build_telegram_text(task: AuditorTask, audit: AuditorResult) -> str:
         f"标题：{task.title or '(无标题)'}",
     ]
     if task.published_at:
-        lines.append(f"发布时间：{task.published_at.isoformat()}")
+        lines.append(f"发布时间：{shanghai_iso(task.published_at)}")
     lines.append(f"链接：{odaily_newsflash_url(task)}")
     if audit.summary:
         lines.append(f"摘要：{audit.summary}")

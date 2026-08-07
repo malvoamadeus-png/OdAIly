@@ -188,7 +188,8 @@ class CompetitorEventSummaryTest(unittest.TestCase):
             event = conn.execute("SELECT * FROM newsflash_events WHERE event_id=?", (event_id,)).fetchone()
         self.assertEqual(json.loads(event["first_sources"]), ["blockbeats", "odaily"])
         self.assertEqual(event["representative_title"], "Odaily")
-        self.assertTrue(event["first_published_at"].startswith("2026-07-20T10:00:00"))
+        self.assertTrue(event["first_published_at"].startswith("2026-07-20T02:00:00"))
+        self.assertTrue(event["first_published_at"].endswith("+00:00"))
 
     def test_odaily_exclusion_is_removed_from_events_but_retained_for_pipeline(self) -> None:
         class Matcher:

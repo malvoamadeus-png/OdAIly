@@ -1034,10 +1034,10 @@ class NewsflashOperationsRepository:
         date_from = str(payload.get("date_from") or "").strip()
         date_to = str(payload.get("date_to") or "").strip()
         if date_from:
-            clauses.append("e.event_time>=?")
+            clauses.append("datetime(e.event_time)>=datetime(?)")
             params.append(date_from)
         if date_to:
-            clauses.append("e.event_time<?")
+            clauses.append("datetime(e.event_time)<datetime(?)")
             params.append((date.fromisoformat(date_to) + timedelta(days=1)).isoformat())
         where = " AND ".join(clauses)
         with connect_sqlite(self.path) as conn:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.common.time_utils import utc_iso
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL
 
 from .models import DEFAULT_JIN10_ENDPOINT_URL, DEFAULT_JIN10_HEADERS, JIN10_SOURCE, Jin10Item, Jin10RunResult, Jin10Settings
@@ -59,7 +60,7 @@ class SQLiteJin10MonitorRepository:
 
     def save_task(self, item: Jin10Item) -> int | None:
         with connect_sqlite(self.path) as conn:
-            conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')", (JIN10_SOURCE,item.source_item_id,item.source_url,item.title,item.content,item.published_at.isoformat() if item.published_at else None,json.dumps(item.raw_payload,ensure_ascii=False),json.dumps({**item.metadata,"source_kind":JIN10_SOURCE},ensure_ascii=False)))
+            conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')", (JIN10_SOURCE,item.source_item_id,item.source_url,item.title,item.content,utc_iso(item.published_at),json.dumps(item.raw_payload,ensure_ascii=False),json.dumps({**item.metadata,"source_kind":JIN10_SOURCE},ensure_ascii=False)))
             row=conn.execute("SELECT id FROM tasks WHERE source=? AND source_item_id=?",(JIN10_SOURCE,item.source_item_id)).fetchone(); conn.commit(); return int(row["id"]) if row else None
 
     def record_run(self, result: Jin10RunResult, *, finished_at: datetime) -> None:

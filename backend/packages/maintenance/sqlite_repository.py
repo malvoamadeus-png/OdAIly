@@ -30,14 +30,14 @@ class SQLiteMaintenanceRepository:
                 deleted[table]=self._delete(conn,table,column,cutoff,dry_run)
             cleared["tasks_payloads"]=self._clear_tasks(conn,fields,dry_run)
             for key,table in (("odaily_reference_items_payloads","odaily_reference_items"),("newsflash_items_payloads","newsflash_items")):
-                cleared[key]=self._clear(conn,table,"raw_payload='{}',metadata='{}',updated_at=CURRENT_TIMESTAMP","updated_at<? AND (raw_payload<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"raw_payload","metadata","updated_at"})
+                cleared[key]=self._clear(conn,table,"raw_payload='{}',metadata='{}',updated_at=CURRENT_TIMESTAMP","julianday(updated_at)<julianday(?) AND (raw_payload<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"raw_payload","metadata","updated_at"})
             cleared["x_task_pipeline_outputs"]=self._clear(conn,"x_task_pipeline","judge_output='{}',search_result='{}',writer_output='{}',publisher_output='{}',push_result='{}',telegram_result='{}',updated_at=CURRENT_TIMESTAMP",
-                f"updated_at<? AND task_id IN (SELECT id FROM tasks WHERE status IN ({','.join('?' for _ in COMPLETED)})) AND (judge_output<>'{{}}' OR search_result<>'{{}}' OR writer_output<>'{{}}' OR publisher_output<>'{{}}' OR push_result<>'{{}}' OR telegram_result<>'{{}}')",
+                f"julianday(updated_at)<julianday(?) AND task_id IN (SELECT id FROM tasks WHERE status IN ({','.join('?' for _ in COMPLETED)})) AND (judge_output<>'{{}}' OR search_result<>'{{}}' OR writer_output<>'{{}}' OR publisher_output<>'{{}}' OR push_result<>'{{}}' OR telegram_result<>'{{}}')",
                 (fields,*COMPLETED),dry_run,{"judge_output","search_result","writer_output","publisher_output","push_result","telegram_result"})
             cleared["auditor_checks_outputs"]=self._clear(conn,"auditor_checks","raw_output=NULL,telegram_result='{}',metadata='{}',updated_at=CURRENT_TIMESTAMP",
-                "updated_at<? AND status IN ('passed','flagged','failed') AND (raw_output IS NOT NULL OR telegram_result<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"raw_output","telegram_result","metadata"})
+                "julianday(updated_at)<julianday(?) AND status IN ('passed','flagged','failed') AND (raw_output IS NOT NULL OR telegram_result<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"raw_output","telegram_result","metadata"})
             cleared["writer3_contexts_outputs"]=self._clear(conn,"writer3_contexts","telegram_result='{}',metadata='{}',updated_at=CURRENT_TIMESTAMP",
-                "updated_at<? AND status IN ('sent','skipped','failed') AND (telegram_result<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"telegram_result","metadata"})
+                "julianday(updated_at)<julianday(?) AND status IN ('sent','skipped','failed') AND (telegram_result<>'{}' OR metadata<>'{}')",(fields,),dry_run,{"telegram_result","metadata"})
             conn.rollback() if dry_run else conn.commit()
         return MaintenanceCleanupResult(dry_run=dry_run,retention_days=retention_days,feedback_retention_days=feedback_retention_days,
             completed_field_retention_days=completed_field_retention_days,deleted=deleted,cleared=cleared)
@@ -49,7 +49,7 @@ class SQLiteMaintenanceRepository:
 
     def _delete(self,conn,table:str,column:str|None,cutoff:str|None,dry_run:bool)->int:
         if not self._exists(conn,table):return 0
-        where=f"{column}<?" if column else "1=1"; args=(cutoff,) if column else ()
+        where=f"julianday({column})<julianday(?)" if column else "1=1"; args=(cutoff,) if column else ()
         count=int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}",args).fetchone()[0])
         if not dry_run:conn.execute(f"DELETE FROM {table} WHERE {where}",args)
         return count
@@ -62,7 +62,7 @@ class SQLiteMaintenanceRepository:
 
     def _clear_tasks(self,conn,cutoff:str,dry_run:bool)->int:
         if not self._exists(conn,"tasks") or not {"raw_payload","metadata","status","updated_at"}.issubset(self._columns(conn,"tasks")):return 0
-        marks=','.join('?' for _ in COMPLETED); rows=conn.execute(f"SELECT id,raw_payload,metadata FROM tasks WHERE updated_at<? AND status IN ({marks}) AND (raw_payload<>'{{}}' OR metadata<>'{{}}')",(cutoff,*COMPLETED)).fetchall()
+        marks=','.join('?' for _ in COMPLETED); rows=conn.execute(f"SELECT id,raw_payload,metadata FROM tasks WHERE julianday(updated_at)<julianday(?) AND status IN ({marks}) AND (raw_payload<>'{{}}' OR metadata<>'{{}}')",(cutoff,*COMPLETED)).fetchall()
         if not dry_run:
             for row in rows:
                 source=json.loads(row["metadata"] or "{}"); kept={k:source[k] for k in KEEP_METADATA if k in source and source[k] is not None}

@@ -289,7 +289,7 @@ class SQLitePipelineTimingRepository:
         placeholders = ",".join("?" for _ in PIPELINE_TIMING_SOURCES)
         with connect_sqlite(self.path) as conn:
             rows = conn.execute(
-                f"SELECT t.id task_id,t.source,t.status,t.created_at,t.metadata,p.news_type,p.publisher_decision,p.judge_completed_at,p.search_completed_at,p.write_completed_at,p.format_completed_at,p.publisher_decided_at,p.publish_completed_at FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id WHERE t.created_at>=? AND t.source IN ({placeholders}) ORDER BY t.created_at DESC,t.id DESC",
+                f"SELECT t.id task_id,t.source,t.status,t.created_at,t.metadata,p.news_type,p.publisher_decision,p.judge_completed_at,p.search_completed_at,p.write_completed_at,p.format_completed_at,p.publisher_decided_at,p.publish_completed_at FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id WHERE julianday(t.created_at)>=julianday(?) AND t.source IN ({placeholders}) ORDER BY julianday(t.created_at) DESC,t.id DESC",
                 (cutoff, *PIPELINE_TIMING_SOURCES),
             ).fetchall()
         return [PipelineTimingRow(

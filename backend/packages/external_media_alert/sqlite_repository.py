@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.common.time_utils import utc_iso
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.searcher import SearchDocument
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL, _dt, _json, _record
@@ -93,14 +94,15 @@ class SQLiteExternalMediaAlertRepository:
                 key=normalize_media_title_key(item.title)
                 if not key: duplicate+=1; continue
                 published=item.published_at or _now()
+                published_text = utc_iso(published)
                 try:
-                    conn.execute("INSERT INTO media_newsflash(source,title,content,source_url,title_key,published_at) VALUES (?,?,?,?,?,?)",(item.source,item.title,item.content,item.source_url,key,published.isoformat()))
+                    conn.execute("INSERT INTO media_newsflash(source,title,content,source_url,title_key,published_at) VALUES (?,?,?,?,?,?)",(item.source,item.title,item.content,item.source_url,key,published_text))
                 except Exception as exc:
                     if "UNIQUE constraint failed" in str(exc): duplicate+=1; continue
                     raise
                 source_id=build_mainstream_media_task_source_item_id(source=item.source,source_url=item.source_url,title=item.title)
                 metadata={**item.metadata,"source_kind":MAINSTREAM_MEDIA_TASK_SOURCE,"origin_source":item.source,"media_source_item_id":source_id,"original_title":item.title,"excerpt":item.content}
-                conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')",(MAINSTREAM_MEDIA_TASK_SOURCE,source_id,item.source_url,item.title,item.content,published.isoformat(),_json(item.raw_payload),_json(metadata)))
+                conn.execute("INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status) VALUES (?,?,?,?,?,?,?,?, 'pending')",(MAINSTREAM_MEDIA_TASK_SOURCE,source_id,item.source_url,item.title,item.content,published_text,_json(item.raw_payload),_json(metadata)))
                 saved+=1
             conn.commit()
         return saved,duplicate
@@ -133,13 +135,13 @@ class SQLiteExternalMediaAlertRepository:
         with connect_sqlite(self.path) as conn: conn.execute("UPDATE external_media_alert_pipeline SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE task_id=?",(error[:2000],task_id)); self._set_status(conn,task_id,status or STAGE_SPECS[stage].failure_status); conn.commit()
 
     def list_odaily_reference_documents(self,*,since:datetime)->list[SearchDocument]:
-        with connect_sqlite(self.path) as conn: rows=conn.execute("SELECT * FROM odaily_reference_items WHERE published_at IS NULL OR published_at>=? ORDER BY published_at DESC,updated_at DESC",(since.isoformat(),)).fetchall()
+        with connect_sqlite(self.path) as conn: rows=conn.execute("SELECT * FROM odaily_reference_items WHERE published_at IS NULL OR julianday(published_at)>=julianday(?) ORDER BY julianday(published_at) DESC,updated_at DESC",(utc_iso(since),)).fetchall()
         return [SearchDocument(doc_type="odaily_reference",doc_id=str(r["source_item_id"]),title=r["title"],content=str(r["content"]),source="odaily",source_url=r["source_url"],published_at=_dt(r["published_at"]),metadata=json.loads(r["metadata"] or "{}")) for r in rows]
 
     def list_notified_alert_documents(self,*,since:datetime|None=None)->list[SearchDocument]:
         sources=(*ALERT_NOTIFY_TASK_SOURCES,MAINSTREAM_MEDIA_TASK_SOURCE); params:list[Any]=list(sources); sql=f"SELECT * FROM tasks WHERE source IN ({','.join('?' for _ in sources)}) AND status IN ('notified','ready_review')"
-        if since: sql+=" AND created_at>=?"; params.append(since.isoformat())
-        sql+=" ORDER BY created_at DESC,id DESC"
+        if since: sql+=" AND julianday(created_at)>=julianday(?)"; params.append(utc_iso(since))
+        sql+=" ORDER BY julianday(created_at) DESC,id DESC"
         with connect_sqlite(self.path) as conn: rows=conn.execute(sql,params).fetchall()
         docs=[]
         for r in rows:

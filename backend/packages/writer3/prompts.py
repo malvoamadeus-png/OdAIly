@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from packages.common.time_utils import shanghai_iso
+
 from .matching import clean_alias, clean_text, dedupe_aliases
 from .models import AnalysisResult, ContextResult, FocusSubject, Writer3Candidate, Writer3Task
 
@@ -122,7 +124,7 @@ def build_context_prompt(task: Writer3Task, analysis: AnalysisResult, candidates
             f"""候选 {index}
 source_item_id: {candidate.source_item_id}
 候选分数: {candidate.score:.2f}
-时间: {candidate.published_at.isoformat() if candidate.published_at else ""}
+时间: {shanghai_iso(candidate.published_at) or ""}
 标题: {candidate.title or ""}
 命中别名: {"、".join(candidate.matched_aliases)}
 命中前序类型: {"、".join(candidate.matched_prior_types)}
@@ -146,7 +148,7 @@ source_item_id: {candidate.source_item_id}
 - evidence_source_item_ids: string[]
 
 【当前快讯】
-时间: {task.published_at.isoformat() if task.published_at else ""}
+时间: {shanghai_iso(task.published_at) or ""}
 事件类型: {analysis.current_event_type}
 焦点主体: {analysis.focus_subject.name}
 事项锚点: {analysis.matter_key}

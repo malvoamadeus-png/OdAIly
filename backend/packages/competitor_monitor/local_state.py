@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from packages.common.time_utils import utc_iso
+
 from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord
 
 
@@ -107,8 +109,8 @@ class CompetitorEventStateStore:
                         record.source_url,
                         record.title,
                         record.content,
-                        record.published_at.isoformat() if record.published_at else None,
-                        record.first_seen_at.isoformat() if record.first_seen_at else None,
+                        utc_iso(record.published_at),
+                        utc_iso(record.first_seen_at),
                         json.dumps(record.metadata, ensure_ascii=False, sort_keys=True),
                         now,
                     )
@@ -200,7 +202,7 @@ class CompetitorEventStateStore:
         return [_row_to_event_source(row) for row in rows]
 
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]:
-        params: list[Any] = [since.isoformat()]
+        params: list[Any] = [utc_iso(since)]
         exclude_sql = ""
         if exclude_item_ids:
             placeholders = ",".join("?" for _ in exclude_item_ids)
@@ -222,9 +224,9 @@ class CompetitorEventStateStore:
                     i.metadata_json
                 FROM event_sources s
                 JOIN newsflash_items i ON i.id = s.item_id
-                WHERE COALESCE(i.published_at, i.first_seen_at) >= ?
+                WHERE julianday(COALESCE(i.published_at, i.first_seen_at)) >= julianday(?)
                   {exclude_sql}
-                ORDER BY COALESCE(i.published_at, i.first_seen_at) DESC, i.id DESC
+                ORDER BY julianday(COALESCE(i.published_at, i.first_seen_at)) DESC, i.id DESC
                 """,
                 tuple(params),
             ).fetchall()

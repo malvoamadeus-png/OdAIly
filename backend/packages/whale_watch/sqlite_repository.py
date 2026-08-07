@@ -76,7 +76,7 @@ class SQLiteWhaleWatchRepository:
     def list_addresses_created_since(self, *, since: datetime) -> list[WhaleAddress]:
         self.init_schema()
         with connect_sqlite(self.path) as conn:
-            rows = conn.execute("SELECT * FROM whale_watch_addresses WHERE created_at>=? ORDER BY created_at DESC,id DESC", (_iso(since),)).fetchall()
+            rows = conn.execute("SELECT * FROM whale_watch_addresses WHERE julianday(created_at)>=julianday(?) ORDER BY julianday(created_at) DESC,id DESC", (_iso(since),)).fetchall()
         return [self._address(row) for row in rows]
 
     def delete_addresses(self, *, ids: list[int]) -> int:

@@ -313,20 +313,20 @@ class SQLiteXProcessingRepository:
 
     def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM odaily_reference_items WHERE published_at IS NULL OR published_at>=? ORDER BY published_at DESC, updated_at DESC", (_iso(since),)).fetchall()
+            rows = conn.execute("SELECT * FROM odaily_reference_items WHERE published_at IS NULL OR julianday(published_at)>=julianday(?) ORDER BY julianday(published_at) DESC, updated_at DESC", (_iso(since),)).fetchall()
         return [SearchDocument(doc_type="odaily_reference", doc_id=str(r["source_item_id"]), title=r["title"], content=str(r["content"]), source="odaily", source_url=r["source_url"], published_at=_dt(r["published_at"]), metadata=_decode(r["metadata"])) for r in rows]
 
     def list_active_candidate_documents(self) -> list[SearchDocument]:
         cutoff, now = _iso(_now() - ACTIVE_CANDIDATE_TTL), _iso()
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM search_event_candidates WHERE status='active' AND created_at>? AND expires_at>? ORDER BY updated_at DESC", (cutoff, now)).fetchall()
+            rows = conn.execute("SELECT * FROM search_event_candidates WHERE status='active' AND julianday(created_at)>julianday(?) AND julianday(expires_at)>julianday(?) ORDER BY julianday(updated_at) DESC", (cutoff, now)).fetchall()
         return [SearchDocument(doc_type="candidate", doc_id=str(r["id"]), title=r["title"], content=str(r["content"]), source="candidate", task_id=r["primary_task_id"], candidate_id=int(r["id"]), status=r["status"], created_at=_dt(r["created_at"]), updated_at=_dt(r["updated_at"]), expires_at=_dt(r["expires_at"]), metadata=_decode(r["metadata"])) for r in rows]
 
     def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]:
         digest = content_hash(f"{task.title or ''}\n{task.content}".strip())
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            existing = conn.execute("SELECT id, primary_task_id FROM search_event_candidates WHERE content_hash=? AND status='active' AND created_at>? AND expires_at>? ORDER BY created_at LIMIT 1", (digest, _iso(_now() - ACTIVE_CANDIDATE_TTL), _iso())).fetchone()
+            existing = conn.execute("SELECT id, primary_task_id FROM search_event_candidates WHERE content_hash=? AND status='active' AND julianday(created_at)>julianday(?) AND julianday(expires_at)>julianday(?) ORDER BY julianday(created_at) LIMIT 1", (digest, _iso(_now() - ACTIVE_CANDIDATE_TTL), _iso())).fetchone()
             if existing:
                 candidate_id = int(existing["id"])
                 primary = int(existing["primary_task_id"]) == task.id

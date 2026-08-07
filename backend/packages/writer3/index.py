@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
+from packages.common.time_utils import utc_iso
+
 from .matching import score_candidate
 from .models import AnalysisResult, OdailyReference, Writer3Candidate
 
@@ -68,7 +70,7 @@ class Writer3Index:
                 item.source_url,
                 item.title,
                 item.content,
-                item.published_at.isoformat() if item.published_at else None,
+                utc_iso(item.published_at),
                 json.dumps(item.metadata, ensure_ascii=False, sort_keys=True),
                 json.dumps(item.raw_payload, ensure_ascii=False, sort_keys=True),
                 datetime.now(UTC).isoformat(),
@@ -102,8 +104,8 @@ class Writer3Index:
     def prune_before(self, cutoff: datetime) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
-                "DELETE FROM odaily_references WHERE published_at IS NOT NULL AND published_at < ?",
-                (cutoff.isoformat(),),
+                "DELETE FROM odaily_references WHERE published_at IS NOT NULL AND julianday(published_at) < julianday(?)",
+                (utc_iso(cutoff),),
             )
             conn.commit()
             return int(cursor.rowcount or 0)
@@ -225,10 +227,10 @@ class Writer3Index:
                 """
                 SELECT source_item_id, source_url, title, content, published_at, metadata_json, raw_payload_json
                 FROM odaily_references
-                WHERE published_at >= ? AND published_at < ?
-                ORDER BY published_at DESC
+                WHERE julianday(published_at) >= julianday(?) AND julianday(published_at) < julianday(?)
+                ORDER BY julianday(published_at) DESC
                 """,
-                (lower.isoformat(), upper.isoformat()),
+                (utc_iso(lower), utc_iso(upper)),
             ).fetchall()
         return [_row_to_reference(row) for row in rows]
 

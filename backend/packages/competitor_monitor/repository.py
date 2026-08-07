@@ -718,7 +718,8 @@ def parse_datetime(value: Any):
     if not value:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=SHANGHAI_TZ)
+        parsed = value if value.tzinfo is not None else value.replace(tzinfo=SHANGHAI_TZ)
+        return parsed.astimezone(UTC)
     if isinstance(value, (int, float)) and value > 1000000000:
         return datetime.fromtimestamp(float(value), tz=UTC)
     text = str(value).strip()
@@ -732,12 +733,13 @@ def parse_datetime(value: Any):
         pass
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=SHANGHAI_TZ)
+        parsed = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=SHANGHAI_TZ)
+        return parsed.astimezone(UTC)
     except ValueError:
         pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=SHANGHAI_TZ)
+            return datetime.strptime(text, fmt).replace(tzinfo=SHANGHAI_TZ).astimezone(UTC)
         except ValueError:
             pass
     return None

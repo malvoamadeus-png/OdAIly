@@ -128,6 +128,22 @@ def utc_timestamp_to_iso(value: int | float | None) -> str | None:
     return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(timespec="seconds")
 
 
+def utc_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def shanghai_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(SHANGHAI_TZ).isoformat()
+
+
 def parse_date_key(value: str | None) -> date | None:
     if not value:
         return None

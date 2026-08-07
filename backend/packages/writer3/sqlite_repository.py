@@ -19,7 +19,7 @@ def _iso(value: datetime | None) -> str | None:
 def _dt(value: str | None) -> datetime | None:
     if not value: return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+    return (parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed).astimezone(UTC)
 
 
 class SQLiteWriter3Repository:
@@ -53,9 +53,10 @@ class SQLiteWriter3Repository:
             conn.execute("BEGIN IMMEDIATE")
             row=conn.execute("""SELECT r.*,w.id context_id,w.status context_status,w.locked_until context_locked_until FROM odaily_reference_items r
                 LEFT JOIN writer3_contexts w ON w.current_source=? AND w.current_source_item_id=r.source_item_id
-                WHERE r.published_at IS NOT NULL AND r.content<>'' AND r.published_at>=? AND r.published_at<=?
-                AND (w.id IS NULL OR (w.status IN ('pending','processing') AND (w.locked_until IS NULL OR w.locked_until<?)))
-                ORDER BY r.published_at,r.source_item_id LIMIT 1""",(WRITER3_CURRENT_SOURCE,_iso(cutoff),_iso(now),_iso(now))).fetchone()
+                WHERE r.published_at IS NOT NULL AND r.content<>''
+                AND julianday(r.published_at)>=julianday(?) AND julianday(r.published_at)<=julianday(?)
+                AND (w.id IS NULL OR (w.status IN ('pending','processing') AND (w.locked_until IS NULL OR julianday(w.locked_until)<julianday(?))))
+                ORDER BY julianday(r.published_at),r.source_item_id LIMIT 1""",(WRITER3_CURRENT_SOURCE,_iso(cutoff),_iso(now),_iso(now))).fetchone()
             if row is None: conn.commit(); return None
             final_content=str(row["content"])
             conn.execute("""INSERT INTO writer3_contexts(task_id,current_source,current_source_item_id,current_source_url,current_title,current_content,current_published_at,status,locked_by,locked_until,attempt_count)
@@ -70,7 +71,7 @@ class SQLiteWriter3Repository:
 
     def list_odaily_references(self, *, since: datetime) -> list[OdailyReference]:
         self.init_schema()
-        with connect_sqlite(self.path) as conn: rows=conn.execute("SELECT * FROM odaily_reference_items WHERE published_at>=? ORDER BY published_at DESC,updated_at DESC",(_iso(since),)).fetchall()
+        with connect_sqlite(self.path) as conn: rows=conn.execute("SELECT * FROM odaily_reference_items WHERE julianday(published_at)>=julianday(?) ORDER BY julianday(published_at) DESC,updated_at DESC",(_iso(since),)).fetchall()
         return [OdailyReference(source_item_id=r["source_item_id"],source_url=r["source_url"],title=r["title"],content=r["content"],published_at=_dt(r["published_at"]),
             metadata=json.loads(r["metadata"] or "{}"),raw_payload=json.loads(r["raw_payload"] or "{}")) for r in rows]
 

@@ -122,10 +122,10 @@ class SQLitePipelineSupervisorRepository:
         placeholders = ",".join("?" for _ in MONITORED_TASK_SOURCES)
         statuses = ",".join("?" for _ in FAILURE_STATUSES)
         with connect_sqlite(self.path) as conn:
-            rows = conn.execute(f"""SELECT t.source,t.status,COUNT(*) count,MAX(t.updated_at) latest_updated_at,
+            rows = conn.execute(f"""SELECT t.source,t.status,COUNT(*) count,MAX(datetime(t.updated_at)) latest_updated_at,
                 SUBSTR(MAX(COALESCE(x.last_error,e.last_error,'')),1,500) sample_error FROM tasks t
                 LEFT JOIN x_task_pipeline x ON x.task_id=t.id LEFT JOIN external_media_alert_pipeline e ON e.task_id=t.id
-                WHERE t.source IN ({placeholders}) AND t.status IN ({statuses}) AND t.updated_at>=?
+                WHERE t.source IN ({placeholders}) AND t.status IN ({statuses}) AND julianday(t.updated_at)>=julianday(?)
                 GROUP BY t.source,t.status HAVING COUNT(*)>=? ORDER BY count DESC,latest_updated_at DESC""",
                 (*MONITORED_TASK_SOURCES, *FAILURE_STATUSES, since.astimezone(UTC).isoformat(), threshold)).fetchall()
         return _rows(rows)
