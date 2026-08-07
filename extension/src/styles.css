@@ -225,7 +225,7 @@ body {
 }
 
 .newsGenMenuButton {
-  min-width: 76px;
+  min-width: 0;
 }
 
 .newsGenActionMenu__options {
@@ -619,15 +619,24 @@ body {
 }
 
 .newsGenLayout {
+  height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: minmax(210px, 1fr) minmax(210px, 1fr);
   gap: 10px;
+  overflow: hidden;
 }
 
 .newsGenSourcePanel,
 .newsGenResultPanel {
+  min-height: 0;
   padding: 12px;
+}
+
+.newsGenSourcePanel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .newsGenSection__head,
@@ -636,6 +645,27 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
+}
+
+.newsGenSection__head {
+  display: flex;
+  align-items: center;
+}
+
+.newsGenSection__head .formActions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 3px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.newsGenSection__head .primaryButton,
+.newsGenSection__head .secondaryButton {
+  padding: 5px 6px;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .newsGenSection__head h2,
@@ -655,24 +685,44 @@ body {
 
 .newsGenSourceText {
   margin-top: 10px;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
   font-size: 11px;
   line-height: 1.5;
   white-space: pre-wrap;
-  max-height: 34vh;
+  resize: vertical;
   overflow: auto;
   padding: 10px;
+  font-family: inherit;
+  color: #334155;
   border-radius: 8px;
   border: 1px solid rgba(226, 232, 240, 0.9);
   background: #f8fafc;
 }
 
+.newsGenSourceText:focus {
+  outline: 2px solid rgba(14, 165, 233, 0.2);
+  border-color: rgba(14, 165, 233, 0.55);
+}
+
 .newsGenResultArea {
   min-height: 0;
+  overflow: hidden;
+}
+
+.newsGenGeneratedResultPanel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
 }
 
 .newsGenResultStack {
+  height: 100%;
+  min-height: 0;
   display: grid;
   gap: 10px;
+  overflow-y: auto;
 }
 
 .newsGenCandidates {
@@ -720,11 +770,15 @@ body {
 }
 
 .newsGenGenerated {
+  min-height: 0;
   margin-top: 10px;
   padding: 10px;
   border-radius: 8px;
   background: #f8fafc;
   border: 1px solid rgba(226, 232, 240, 0.9);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .newsGenGenerated h4 {
@@ -734,11 +788,14 @@ body {
 }
 
 .newsGenGenerated__content {
+  min-height: 0;
   margin: 0 0 10px;
   font-size: 11px;
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .rejectButton {

@@ -43,7 +43,7 @@ from packages.pipeline_timing import (
 from packages.x_capture.repository import create_x_capture_repository
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
-from packages.x_processing.models import PROMPT_KEY_BY_NEWS_TYPE, PromptTemplateVersion, TaskRecord
+from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.known_title_subjects_config import (
     load_known_title_subject_names,
     save_known_title_subject_names,
@@ -77,6 +77,14 @@ QUICK_GENERATE_WRITER_MODEL = DEFAULT_DEEPSEEK_FAST_MODEL
 QUICK_GENERATE_WRITER_REASONING_EFFORT = "low"
 GENERATE_WRITER_REASONING_EFFORT = "low"
 PluginNewsType = Literal["regular", "funding", "onchain"]
+PluginGenerationMode = Literal["x", "external_media"]
+PluginGenerationRoute = Literal["regular", "funding", "onchain", "external_media"]
+PLUGIN_PROMPT_KEY_BY_ROUTE: dict[PluginGenerationRoute, str] = {
+    "regular": "x_regular_writer",
+    "funding": "x_funding_writer",
+    "onchain": "x_onchain_writer",
+    "external_media": "mainstream_media_writer",
+}
 
 
 class EditorPluginApiError(RuntimeError):
@@ -105,6 +113,7 @@ class EditorPluginRequestModel(BaseModel):
     author_handle: str | None = None
     posted_at: datetime | None = None
     news_type: PluginNewsType | None = None
+    generation_mode: PluginGenerationMode = "x"
 
     @field_validator("source_type")
     @classmethod
@@ -713,12 +722,12 @@ class EditorPluginNewsGenService:
         writer_model: str,
         writer_reasoning_effort: str,
     ) -> dict[str, Any]:
-        task = self._build_task_record(request)
         route: str | None = None
         result_payload: dict[str, Any] | None = None
         try:
-            route = self._require_news_type(request)
-            prompt = self._get_prompt(PROMPT_KEY_BY_NEWS_TYPE[route])
+            route = self._resolve_generation_route(request)
+            task = self._build_task_record(request, route=route)
+            prompt = self._get_prompt(PLUGIN_PROMPT_KEY_BY_ROUTE[route])
             writer_prompt = build_writer_prompt(task=task, prompt=prompt)
             raw_output = self._build_writer_ai_client(model=writer_model).generate_text(
                 model=writer_model,
@@ -728,6 +737,7 @@ class EditorPluginNewsGenService:
             final = format_brief(parse_draft_output(raw_output))
             result_payload = {
                 "kind": "generate",
+                "action": action,
                 "route": route,
                 "title": final.title,
                 "content": final.content,
@@ -771,7 +781,12 @@ class EditorPluginNewsGenService:
             },
         )
 
-    def _build_task_record(self, request: EditorPluginRequestModel) -> TaskRecord:
+    def _build_task_record(
+        self,
+        request: EditorPluginRequestModel,
+        *,
+        route: PluginNewsType | None = None,
+    ) -> TaskRecord:
         source_item_id = request.post_id or hashlib.sha1(request.post_text.encode("utf-8")).hexdigest()[:16]
         effective_author_name = self.x_capture_repository.resolve_effective_author_name(
             author_username=request.author_handle,
@@ -779,7 +794,7 @@ class EditorPluginNewsGenService:
         )
         return TaskRecord(
             id=0,
-            source="x",
+            source="mainstream_media" if route == "external_media" else "x",
             source_item_id=source_item_id,
             source_url=str(request.post_url) if request.post_url else None,
             title=None,
@@ -789,12 +804,19 @@ class EditorPluginNewsGenService:
                 "author_display_name": request.author_display_name,
                 "author_username": request.author_handle,
                 "effective_author_name": effective_author_name,
+                "site_display_name": "外媒" if route == "external_media" else None,
+                "original_title": None,
             },
         )
 
+    def _resolve_generation_route(self, request: EditorPluginRequestModel) -> PluginGenerationRoute:
+        if request.generation_mode == "external_media":
+            return "external_media"
+        return self._require_news_type(request)
+
     def _require_news_type(self, request: EditorPluginRequestModel) -> PluginNewsType:
         if request.news_type is None:
-            raise EditorPluginApiError("请选择生成类型：常规、融资或链上")
+            raise EditorPluginApiError("请选择 X 生成类型：常规、融资或链上")
         return request.news_type
 
     def _get_prompt(self, template_key: str) -> PromptTemplateVersion:

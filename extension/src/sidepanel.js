@@ -20,6 +20,7 @@ import {
   getSettings,
   saveActiveTopTab,
   saveFeedLaneRatios,
+  saveNewsGenDraft,
   saveNewsGenResult
 } from "./lib/storage.js";
 import {
@@ -37,6 +38,12 @@ const NEWS_GEN_TYPES = [
   { value: "funding", label: "融资" },
   { value: "onchain", label: "链上" }
 ];
+const NEWS_GEN_ROUTE_LABELS = {
+  regular: "常规",
+  funding: "融资",
+  onchain: "链上",
+  external_media: "外媒"
+};
 const DEFAULT_FEED_LANE_RATIOS = { high: 75, ai: 25 };
 const FEED_LANES = [
   { key: "high", title: "高频区", subtitle: "新快讯 / 审核者 / 巨鲸", empty: "暂无高频消息" },
@@ -164,7 +171,7 @@ function renderBadges(item) {
 }
 
 function newsGenTypeLabel(newsType) {
-  return NEWS_GEN_TYPES.find((item) => item.value === newsType)?.label || "常规";
+  return NEWS_GEN_TYPES.find((item) => item.value === newsType)?.label || NEWS_GEN_ROUTE_LABELS[newsType] || "常规";
 }
 
 function isWhaleFeedItem(item) {
@@ -482,15 +489,17 @@ function renderNewsGenResult() {
       requestState.mode === "search"
         ? "执行 AI 查重"
         : requestState.mode === "quick_generate"
-          ? `快速生成${typeText}`
-          : `生成快讯${typeText}`;
+          ? `X快速生成${typeText}`
+          : requestState.mode === "external_generate"
+            ? "外媒常速生成"
+            : `X常速生成${typeText}`;
     return `<div class="emptyState">正在${escapeHtml(loadingText)}...</div>`;
   }
   if (requestState.error) {
     return `<div class="inlineError">${escapeHtml(requestState.error)}</div>`;
   }
   if (!state.newsGenResult) {
-    return `<div class="emptyState">点击上方按钮开始 AI 查重、快速生成或生成快讯</div>`;
+    return `<div class="emptyState">点击上方按钮开始 AI 查重或生成快讯</div>`;
   }
 
   if (state.newsGenResult.kind === "search") {
@@ -518,9 +527,15 @@ function renderNewsGenResult() {
   }
 
   return `
-    <section class="panel newsGenResultPanel">
+    <section class="panel newsGenResultPanel newsGenGeneratedResultPanel">
       <div class="newsGenResultPanel__head">
-        <h3>生成快讯</h3>
+        <h3>${escapeHtml(
+          state.newsGenResult.action === "quick_generate"
+            ? "X快速生成结果"
+            : state.newsGenResult.route === "external_media"
+              ? "外媒常速生成结果"
+              : "X常速生成结果"
+        )}</h3>
         <span class="statusChip statusChip--info">${escapeHtml(newsGenTypeLabel(state.newsGenResult.route))}</span>
       </div>
       <div class="newsGenGenerated">
@@ -564,7 +579,7 @@ function renderNewsGenTypeMenu({ id, label, mode, primary, disabled }) {
 
 function renderNewsGenSection() {
   const draft = state.newsGenDraft;
-  const hasDraft = Boolean(draft?.post_text);
+  const hasDraft = Boolean(draft?.post_text?.trim());
   const actionDisabled = !hasDraft || state.newsGenRequestState.loading;
   return `
     ${
@@ -577,51 +592,58 @@ function renderNewsGenSection() {
         <div class="newsGenSection__head">
           <div>
             <h2>原文</h2>
-            <p class="helperText">来自 X 平台按钮抽取</p>
           </div>
           <div class="formActions">
             <button id="newsGenSearchButton" class="secondaryButton" ${actionDisabled ? "disabled" : ""}>AI查重</button>
             ${renderNewsGenTypeMenu({
               id: "newsGenQuickGenerateButton",
-              label: "快速生成",
+              label: "X快速生成",
               mode: "quick_generate",
               primary: false,
               disabled: actionDisabled
             })}
             ${renderNewsGenTypeMenu({
               id: "newsGenGenerateButton",
-              label: "生成快讯",
+              label: "X常速生成",
               mode: "generate",
-              primary: true,
+              primary: false,
               disabled: actionDisabled
             })}
+            <button
+              id="newsGenExternalGenerateButton"
+              type="button"
+              class="secondaryButton"
+              data-news-gen-action="external_generate"
+              ${actionDisabled ? "disabled" : ""}
+            >外媒常速生成</button>
           </div>
         </div>
-        ${
-          hasDraft
-            ? `
+        ${`
               <div class="newsGenMeta">
-                <span>${escapeHtml(draft.author_display_name || "未知作者")}</span>
+                <span>${escapeHtml(draft?.author_display_name || "手动输入")}</span>
                 ${
-                  draft.author_handle
+                  draft?.author_handle
                     ? `<span class="subtleText">${escapeHtml(draft.author_handle)}</span>`
                     : ""
                 }
                 ${
-                  draft.posted_at
+                  draft?.posted_at
                     ? `<span class="subtleText">${escapeHtml(shanghaiTime(draft.posted_at))}</span>`
                     : ""
                 }
                 ${
-                  draft.post_url
+                  draft?.post_url
                     ? `<a class="newsGenLink" href="${escapeHtml(draft.post_url)}" target="_blank" rel="noreferrer">打开 X 原文</a>`
                     : ""
                 }
               </div>
-              <div class="newsGenSourceText">${linkifyText(draft.post_text)}</div>
-            `
-            : `<div class="emptyState">请先在 X 帖文操作区点击 Odaily 按钮抽取正文</div>`
-        }
+              <textarea
+                id="newsGenSourceInput"
+                class="newsGenSourceText"
+                placeholder="可直接输入或粘贴原文，也可以在 X 帖文操作区点击 Odaily 图标自动引入"
+                spellcheck="false"
+              >${escapeHtml(draft?.post_text || "")}</textarea>
+            `}
       </section>
       <div class="newsGenResultArea">
         ${renderNewsGenResult()}
@@ -1068,7 +1090,7 @@ function wireFeedInteractions() {
 
 async function runNewsGenAction(mode, newsType = null) {
   const draft = state.newsGenDraft;
-  if (!draft?.post_text || state.newsGenRequestState.loading) {
+  if (!draft?.post_text?.trim() || state.newsGenRequestState.loading) {
     return;
   }
   state.newsGenRequestState = { mode, newsType, loading: true, error: "" };
@@ -1078,9 +1100,12 @@ async function runNewsGenAction(mode, newsType = null) {
     const payload = sanitizeNewsGenDraft(draft);
     if (mode === "generate" || mode === "quick_generate") {
       payload.news_type = newsType;
+    } else if (mode === "external_generate") {
+      payload.generation_mode = "external_media";
+      delete payload.news_type;
     }
     const result = await withSessionRetry(async () => {
-      if (mode === "generate") {
+      if (mode === "generate" || mode === "external_generate") {
         return await generateNewsflash(state.settings, state.session, payload);
       }
       if (mode === "quick_generate") {
@@ -1104,14 +1129,37 @@ async function runNewsGenAction(mode, newsType = null) {
 }
 
 function wireNewsGenInteractions() {
+  const sourceInput = document.getElementById("newsGenSourceInput");
+  sourceInput?.addEventListener("input", (event) => {
+    const postText = event.currentTarget.value;
+    state.newsGenDraft = {
+      ...(state.newsGenDraft || {
+        source_type: "x_post",
+        platform: "x",
+        post_url: null,
+        post_id: null,
+        author_display_name: null,
+        author_handle: null,
+        posted_at: null
+      }),
+      post_text: postText
+    };
+  });
+  sourceInput?.addEventListener("blur", async () => {
+    try {
+      await saveNewsGenDraft(state.newsGenDraft);
+    } catch {
+      state.error = "原文暂未保存，请稍后重试";
+    }
+  });
   document.getElementById("newsGenSearchButton")?.addEventListener("click", async () => {
     unlockNotificationSound();
     await runNewsGenAction("search");
   });
-  for (const button of app.querySelectorAll("[data-news-gen-action][data-news-type]")) {
+  for (const button of app.querySelectorAll("[data-news-gen-action]")) {
     button.addEventListener("click", async () => {
       unlockNotificationSound();
-      await runNewsGenAction(button.dataset.newsGenAction, button.dataset.newsType);
+      await runNewsGenAction(button.dataset.newsGenAction, button.dataset.newsType || null);
     });
   }
   document.getElementById("copyGeneratedButton")?.addEventListener("click", async () => {
