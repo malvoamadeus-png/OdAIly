@@ -342,8 +342,21 @@ class Store:
     def observation(self, address: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM observations WHERE address=?", (address,)).fetchone()
 
-    def upsert_observation(self, token: Token, *, triggered_at: str | None = None, published_at: str | None = None) -> None:
+    def upsert_observation(
+        self,
+        token: Token,
+        *,
+        triggered_at: str | None = None,
+        published_at: str | None = None,
+        advance_market_cap_high_watermark: bool = True,
+    ) -> None:
         old = self.observation(token.address)
+        if advance_market_cap_high_watermark:
+            observed_high = token.market_cap
+        elif old:
+            observed_high = float(old["highest_market_cap"] or 0)
+        else:
+            observed_high = 0.0
         self.conn.execute(
             """INSERT INTO observations(address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at, triggered_at, published_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -352,7 +365,7 @@ class Store:
               highest_market_cap=MAX(observations.highest_market_cap, excluded.highest_market_cap),
               triggered_at=COALESCE(excluded.triggered_at, observations.triggered_at),
               published_at=COALESCE(excluded.published_at, observations.published_at)""",
-            (token.address, token.platform, token.symbol, token.market_cap, token.market_cap, now_iso(), triggered_at or (old["triggered_at"] if old else None), published_at or (old["published_at"] if old else None)),
+            (token.address, token.platform, token.symbol, token.market_cap, observed_high, now_iso(), triggered_at or (old["triggered_at"] if old else None), published_at or (old["published_at"] if old else None)),
         )
         self.conn.commit()
 
@@ -749,7 +762,11 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     )
     if pushed["ok"]:
         store.update_job(job["id"], "publisher_pending", publish=pushed)
-        store.upsert_observation(token, published_at=now_iso())
+        store.upsert_observation(
+            token,
+            published_at=now_iso(),
+            advance_market_cap_high_watermark=str(job["trigger_kind"]) != "tg_burst",
+        )
         return "publisher_pending"
     else:
         store.update_job(job["id"], "publish_failed", publish=pushed)
@@ -862,7 +879,11 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         trigger_level=TG_MARKET_CAP_GATE,
         evidence=evidence,
     )
-    store.upsert_observation(token, triggered_at=now_iso())
+    store.upsert_observation(
+        token,
+        triggered_at=now_iso(),
+        advance_market_cap_high_watermark=False,
+    )
     store.update_tg_candidate(candidate["id"], "queued", market_cap=token.market_cap)
     return (int(inserted), 0)
 

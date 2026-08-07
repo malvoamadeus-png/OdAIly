@@ -148,6 +148,42 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:1000000", 1_000_000.0))
             store.close()
 
+    def test_tg_burst_does_not_consume_market_cap_milestone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            store.mark_initialized()
+            store.set_meta("milestone_initialized")
+            address = "0xburst-milestone"
+            first = token(address, 400_000, 300_000)
+            burst = token(address, 1_100_000, 700_000)
+            current = token(address, 1_200_000, 800_000)
+            self.assertEqual(scanner.evaluate_market_token(store, first, bootstrap=False), (0, 0))
+            stamp = scanner.now_iso()
+            store.conn.execute(
+                """INSERT INTO tg_candidates(
+                  address, detected_at, window_start, mention_count, chat_count,
+                  sender_count, evidence_json, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (address, stamp, stamp, 5, 2, 3, "{}", stamp),
+            )
+            store.conn.commit()
+            with patch.object(scanner, "fetch_token_info", return_value=burst):
+                self.assertEqual(scanner.process_tg_candidate(store), (1, 0))
+            observation = store.conn.execute(
+                "SELECT last_market_cap, highest_market_cap FROM observations WHERE address=?",
+                (address,),
+            ).fetchone()
+            self.assertEqual((observation["last_market_cap"], observation["highest_market_cap"]), (1_100_000.0, 400_000.0))
+            self.assertEqual(scanner.evaluate_market_token(store, current, bootstrap=False), (1, 0))
+            row = store.conn.execute(
+                "SELECT trigger_kind, trigger_key, trigger_level FROM jobs WHERE trigger_kind='market_cap_milestone'"
+            ).fetchone()
+            self.assertEqual(
+                (row["trigger_kind"], row["trigger_key"], row["trigger_level"]),
+                ("market_cap_milestone", "market_cap:1000000", 1_000_000.0),
+            )
+            store.close()
+
     def test_collect_narrative_uses_odaily_internal_generator(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
