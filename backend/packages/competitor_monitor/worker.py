@@ -107,19 +107,22 @@ class CompetitorMonitorWorker:
                 except Exception as exc:
                     failed[source] = str(exc)
                     print(f"[odaily] competitor monitor source failed source={source} error={exc}")
-            filtered_items = self._exclude_items(items)
+            event_items, excluded_event_items = self._split_event_items(items)
+            pipeline_items = self._exclude_pipeline_items(items)
+            if excluded_event_items and hasattr(self.repository, "record_event_exclusions"):
+                self.repository.record_event_exclusions(excluded_event_items)
             event_elapsed_seconds = 0.0
             event_error = None
             event_started = time.monotonic()
             try:
-                event_ids = self._assign_events(filtered_items)
+                event_ids = self._assign_events(event_items)
             except Exception as exc:
                 event_error = str(exc)
                 event_ids = set()
                 print(f"[odaily] competitor event aggregation failed error={exc}")
             finally:
                 event_elapsed_seconds = time.monotonic() - event_started
-            task_items, expired_for_tasks, expired_for_tasks_by_source = self._filter_items_for_tasks(filtered_items)
+            task_items, expired_for_tasks, expired_for_tasks_by_source = self._filter_items_for_tasks(pipeline_items)
             if self.pipeline_client is None:
                 task_count, reference_count = self.repository.save_items(task_items)
             else:
@@ -185,7 +188,21 @@ class CompetitorMonitorWorker:
                 print(f"[odaily] competitor monitor round failed: {exc}")
             time.sleep(self.settings.fetch_interval_seconds)
 
-    def _exclude_items(self, items: list[NewsflashItem]) -> list[NewsflashItem]:
+    def _split_event_items(self, items: list[NewsflashItem]) -> tuple[list[NewsflashItem], list[NewsflashItem]]:
+        if self.exclusion_matcher is None:
+            return items, []
+        included: list[NewsflashItem] = []
+        excluded: list[NewsflashItem] = []
+        for item in items:
+            matched = self.exclusion_matcher.is_excluded(
+                scopes=["competitor"],
+                title_texts=[item.title],
+                body_texts=[item.content],
+            )
+            (excluded if matched else included).append(item)
+        return included, excluded
+
+    def _exclude_pipeline_items(self, items: list[NewsflashItem]) -> list[NewsflashItem]:
         if self.exclusion_matcher is None:
             return items
         return [
@@ -198,6 +215,10 @@ class CompetitorMonitorWorker:
                 body_texts=[item.content],
             )
         ]
+
+    def _exclude_items(self, items: list[NewsflashItem]) -> list[NewsflashItem]:
+        """Compatibility wrapper for callers that still expect task-pipeline filtering."""
+        return self._exclude_pipeline_items(items)
 
     def _fetch_blockbeats_items(self) -> list[NewsflashItem]:
         config = load_blockbeats_key_config()

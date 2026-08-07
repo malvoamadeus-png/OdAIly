@@ -11,6 +11,7 @@ import {
   Globe2,
   Layers3,
   Megaphone,
+  Newspaper,
   Pause,
   Plus,
   Radio,
@@ -22,6 +23,7 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
+import NewsflashOperationsPanel from './NewsflashOperationsPanel';
 import {
   createSourceExclusionRuleGroup,
   createAccount,
@@ -138,6 +140,7 @@ type ConsoleView =
   | 'whale'
   | 'prompts'
   | 'competitor'
+  | 'newsflash'
   | 'jin10';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
@@ -802,6 +805,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [view, setView] = useState<ConsoleView>('x');
+  const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
@@ -1557,6 +1561,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? 'Source Management'
       : view === 'tasks'
         ? 'Cycle Monitor'
+      : view === 'newsflash'
+        ? 'Newsflash Operations'
       : view === 'timing'
         ? 'Timing'
       : view === 'gate_market'
@@ -1579,6 +1585,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? '信源管理'
       : view === 'tasks'
         ? '信息周期监控'
+      : view === 'newsflash'
+        ? '快讯及数据总览'
       : view === 'timing'
         ? '耗时看板'
       : view === 'gate_market'
@@ -1601,6 +1609,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
       : view === 'tasks'
         ? `第 ${processingTaskPage + 1} 页 · ${visibleProcessingTasks.length} / ${processingTasks.length} 条当前页任务 · 发布者说明随任务展示`
+      : view === 'newsflash'
+        ? '快讯、排班、值班绩效、贡献和首发事件统一工作区'
       : view === 'timing'
         ? `本地快照${pipelineTiming.generated_at ? ` · ${fmtTime(pipelineTiming.generated_at)}` : '生成中'} · 每小时刷新`
       : view === 'gate_market'
@@ -1621,6 +1631,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
+      : view === 'newsflash'
+        ? (setNewsflashRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'tasks'
         ? loadProcessingTasks()
       : view === 'timing'
@@ -1665,6 +1677,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
             <Database size={18} /> 信息周期监控
+          </button>
+          <button className={view === 'newsflash' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('newsflash')}>
+            <Newspaper size={18} /> 快讯及数据总览
           </button>
           <button className={view === 'timing' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('timing')}>
             <Timer size={18} /> 耗时看板
@@ -1769,7 +1784,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </section>
         )}
 
-        {view === 'x' ? (
+        {view === 'newsflash' ? (
+          <NewsflashOperationsPanel refreshToken={newsflashRefreshToken} />
+        ) : view === 'x' ? (
           <>
             <section className="toolbarBand">
               <form className="settingsForm" onSubmit={saveSettings}>

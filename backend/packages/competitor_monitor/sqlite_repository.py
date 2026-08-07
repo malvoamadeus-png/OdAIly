@@ -22,13 +22,17 @@ class SQLiteCompetitorMonitorRepository:
             CREATE TABLE IF NOT EXISTS newsflash_items(id integer PRIMARY KEY AUTOINCREMENT,source text NOT NULL,source_item_id text NOT NULL,source_url text,title text,content text NOT NULL,content_hash text NOT NULL,published_at text,first_seen_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,raw_payload text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(source,source_item_id));
             CREATE TABLE IF NOT EXISTS newsflash_events(event_id text PRIMARY KEY,representative_item_id integer,representative_title text,event_time text,first_source text,first_published_at text,source_count integer NOT NULL DEFAULT 0,competitor_source_count integer NOT NULL DEFAULT 0,has_odaily integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'active',needs_review integer NOT NULL DEFAULT 0,metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS newsflash_event_sources(id integer PRIMARY KEY AUTOINCREMENT,event_id text NOT NULL REFERENCES newsflash_events(event_id) ON DELETE CASCADE,item_id integer NOT NULL UNIQUE REFERENCES newsflash_items(id) ON DELETE CASCADE,source text NOT NULL,source_item_id text NOT NULL,role text NOT NULL,match_method text NOT NULL,similarity real,matched_item_id integer,ai_result text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS newsflash_event_exclusions(source text NOT NULL,source_item_id text NOT NULL,title text,matched_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(source,source_item_id));
             DROP VIEW IF EXISTS newsflash_event_summary;
             DROP TABLE IF EXISTS newsflash_event_favorites;
             DROP TABLE IF EXISTS newsflash_event_notes;
             DROP TABLE IF EXISTS newsflash_item_notes;
             CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_time ON newsflash_items(source,published_at DESC);
             CREATE INDEX IF NOT EXISTS idx_newsflash_event_sources_event ON newsflash_event_sources(event_id);
-            """);conn.commit()
+            """)
+            event_columns={row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
+            if "first_sources" not in event_columns:conn.execute("ALTER TABLE newsflash_events ADD COLUMN first_sources text NOT NULL DEFAULT '[]'")
+            conn.commit()
     def list_enabled_competitor_exclusion_terms(self)->list[str]:
         with connect_sqlite(self.path) as conn:
             try:rows=conn.execute("SELECT scopes,terms FROM source_exclusion_rule_groups WHERE enabled=1").fetchall()
@@ -65,6 +69,13 @@ class SQLiteCompetitorMonitorRepository:
                 records.append(self._item(conn.execute("SELECT * FROM newsflash_items WHERE source=? AND source_item_id=?",(item.source,item.source_item_id)).fetchone()))
             conn.commit()
         return records
+    def record_event_exclusions(self,items:list[NewsflashItem])->None:
+        with connect_sqlite(self.path) as conn:
+            for item in items:
+                existing=conn.execute("SELECT 1 FROM newsflash_items i JOIN newsflash_event_sources s ON s.item_id=i.id WHERE i.source=? AND i.source_item_id=?",(item.source,item.source_item_id)).fetchone()
+                if existing:continue
+                conn.execute("INSERT INTO newsflash_event_exclusions(source,source_item_id,title) VALUES (?,?,?) ON CONFLICT(source,source_item_id) DO NOTHING",(item.source,item.source_item_id,item.title))
+            conn.commit()
     def _sources(self,where:str,params:tuple)->list[EventSourceRecord]:
         with connect_sqlite(self.path) as conn:rows=conn.execute("SELECT s.event_id,i.* FROM newsflash_event_sources s JOIN newsflash_items i ON i.id=s.item_id JOIN newsflash_events e ON e.event_id=s.event_id WHERE e.status='active' AND "+where+" ORDER BY COALESCE(i.published_at,i.first_seen_at) DESC,i.id DESC",params).fetchall()
         return [EventSourceRecord(event_id=r["event_id"],item=self._item(r)) for r in rows]
@@ -76,11 +87,11 @@ class SQLiteCompetitorMonitorRepository:
         if exclude_item_ids:where+=f" AND i.id NOT IN ({','.join('?' for _ in exclude_item_ids)})";params.extend(sorted(exclude_item_ids))
         return self._sources(where,tuple(params))
     def create_event_with_source(self,item:NewsflashItemRecord,*,needs_review:bool=False)->str:
-        event_id=generate_event_id();event_time=item.published_at or item.first_seen_at
+        event_id=generate_event_id();event_time=item.published_at
         with connect_sqlite(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE");existing=conn.execute("SELECT event_id FROM newsflash_event_sources WHERE item_id=?",(item.id,)).fetchone()
             if existing:conn.commit();return str(existing["event_id"])
-            conn.execute("INSERT INTO newsflash_events(event_id,representative_item_id,representative_title,event_time,first_source,first_published_at,source_count,competitor_source_count,has_odaily,needs_review,metadata) VALUES (?,?,?,?,?,?,1,?,?,?,?)",(event_id,item.id,item.title,event_time.isoformat() if event_time else None,item.source,event_time.isoformat() if event_time else None,0 if item.source=="odaily" else 1,int(item.source=="odaily"),int(needs_review),_json({"created_from":{"source":item.source,"source_item_id":item.source_item_id}})))
+            conn.execute("INSERT INTO newsflash_events(event_id,representative_item_id,representative_title,event_time,first_source,first_published_at,first_sources,source_count,competitor_source_count,has_odaily,needs_review,metadata) VALUES (?,?,?,?,?,?,?,1,?,?,?,?)",(event_id,item.id,item.title,event_time.isoformat() if event_time else None,item.source if event_time else None,event_time.isoformat() if event_time else None,_json([item.source] if event_time else []),0 if item.source=="odaily" else 1,int(item.source=="odaily"),int(needs_review),_json({"created_from":{"source":item.source,"source_item_id":item.source_item_id}})))
             conn.execute("INSERT INTO newsflash_event_sources(event_id,item_id,source,source_item_id,role,match_method,metadata) VALUES (?,?,?,?, 'primary','new_event',?)",(event_id,item.id,item.source,item.source_item_id,_json({"needs_review":needs_review})));conn.commit()
         return event_id
     def assign_item_to_event(self,a:EventAssignment)->None:
@@ -96,10 +107,17 @@ class SQLiteCompetitorMonitorRepository:
     def update_event_summaries(self,event_ids:set[str])->None:
         with connect_sqlite(self.path) as conn:
             for eid in event_ids:
-                rows=conn.execute("SELECT i.* FROM newsflash_event_sources s JOIN newsflash_items i ON i.id=s.item_id WHERE s.event_id=? ORDER BY COALESCE(i.published_at,i.first_seen_at),i.id",(eid,)).fetchall()
+                rows=conn.execute("SELECT i.* FROM newsflash_event_sources s JOIN newsflash_items i ON i.id=s.item_id WHERE s.event_id=? ORDER BY CASE WHEN i.published_at IS NULL THEN 1 ELSE 0 END,datetime(i.published_at),i.id",(eid,)).fetchall()
                 if not rows:continue
-                first=rows[0];representative=next((r for r in reversed(rows) if r["source"]=="odaily"),rows[-1]);times=[r["published_at"] or r["first_seen_at"] for r in rows if r["published_at"] or r["first_seen_at"]]
-                conn.execute("UPDATE newsflash_events SET representative_item_id=?,representative_title=?,event_time=?,first_source=?,first_published_at=?,source_count=?,competitor_source_count=?,has_odaily=?,updated_at=CURRENT_TIMESTAMP WHERE event_id=?",(representative["id"],representative["title"],max(times) if times else None,first["source"],first["published_at"] or first["first_seen_at"],len(rows),sum(r["source"]!="odaily" for r in rows),int(any(r["source"]=="odaily" for r in rows)),eid))
+                published_rows=[r for r in rows if r["published_at"]]
+                representative=published_rows[0] if published_rows else min(rows,key=lambda r:(r["first_seen_at"],r["id"]))
+                first_time=_dt(published_rows[0]["published_at"]) if published_rows else None
+                first_sources=[]
+                if first_time:
+                    first_second=first_time.replace(microsecond=0)
+                    first_sources=sorted({r["source"] for r in published_rows if _dt(r["published_at"]).replace(microsecond=0)==first_second})
+                times=[r["published_at"] for r in published_rows]
+                conn.execute("UPDATE newsflash_events SET representative_item_id=?,representative_title=?,event_time=?,first_source=?,first_published_at=?,first_sources=?,source_count=?,competitor_source_count=?,has_odaily=?,updated_at=CURRENT_TIMESTAMP WHERE event_id=?",(representative["id"],representative["title"],max(times) if times else None,first_sources[0] if first_sources else None,first_time.isoformat() if first_time else None,_json(first_sources),len(rows),sum(r["source"]!="odaily" for r in rows),int(any(r["source"]=="odaily" for r in rows)),eid))
             conn.commit()
     def prune_orphan_events(self)->int:
         with connect_sqlite(self.path) as conn:cur=conn.execute("DELETE FROM newsflash_events WHERE NOT EXISTS(SELECT 1 FROM newsflash_event_sources s WHERE s.event_id=newsflash_events.event_id)");conn.commit();return cur.rowcount

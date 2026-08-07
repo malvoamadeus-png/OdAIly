@@ -16,6 +16,636 @@ body {
   min-height: 100vh;
 }
 
+.newsflashWorkspace {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.newsflashTabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.newsflashTabs button {
+  min-width: max-content;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #59636e;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.newsflashTabs button.active {
+  border-bottom-color: #08775a;
+  color: #075f49;
+}
+
+.newsflashSection {
+  min-width: 0;
+}
+
+.newsflashFilters {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #dce2e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.newsflashFilters label,
+.sectionCommandBar label,
+.weekAssignmentBand label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.newsflashFilters label > span,
+.sectionCommandBar label > span,
+.weekAssignmentBand label > span {
+  color: #66717d;
+  font-size: 12px;
+}
+
+.newsflashFilters input,
+.newsflashFilters select,
+.sectionCommandBar input,
+.sectionCommandBar select,
+.weekAssignmentBand select,
+.shiftList select,
+.rosterRow input,
+.newPersonBar input,
+.inlineSelect {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #cfd7de;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #25303b;
+}
+
+.newsflashFilters input,
+.sectionCommandBar input,
+.rosterRow input,
+.newPersonBar input {
+  padding: 7px 9px;
+}
+
+.newsflashFilters select,
+.sectionCommandBar select,
+.weekAssignmentBand select,
+.shiftList select,
+.inlineSelect {
+  padding: 6px 28px 6px 8px;
+}
+
+.inputWithIcon {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  padding-left: 9px;
+  border: 1px solid #cfd7de;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #7b8793;
+}
+
+.inputWithIcon input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+}
+
+.filterButton,
+.iconTextButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.iconTextButton {
+  padding: 0 12px;
+  border: 1px solid #cfd7de;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #394653;
+  cursor: pointer;
+}
+
+.tableMeta,
+.sectionCommandBar,
+.contributionGroupHeader,
+.drawerHeader,
+.newPersonBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tableMeta {
+  margin: 12px 2px 7px;
+  color: #66717d;
+  font-size: 12px;
+}
+
+.newsflashTableWrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #dce2e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.newsflashTable {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.newsflashTable th,
+.newsflashTable td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e6eaee;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.newsflashTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f3f6f7;
+  color: #53606c;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.newsflashTable tbody tr:hover {
+  background: #f8fbfa;
+}
+
+.newsflashTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.newsflashTable .titleColumn {
+  width: 34%;
+  min-width: 300px;
+}
+
+.newsflashTable a,
+.eventSources a {
+  color: #146c94;
+  text-decoration: none;
+}
+
+.newsflashTable a:hover,
+.eventSources a:hover {
+  text-decoration: underline;
+}
+
+.monoCell {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.numberCell {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.numberCell small {
+  color: #8a5962;
+}
+
+.inlineSelect {
+  min-width: 104px;
+  min-height: 30px;
+  font-size: 12px;
+}
+
+.newsflashTable td small {
+  display: block;
+  margin-top: 3px;
+  color: #78838e;
+  font-size: 11px;
+}
+
+.unavailable {
+  color: #8b949e;
+  cursor: help;
+}
+
+.statusText {
+  display: inline-block;
+  color: #52606c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.statusText.ready {
+  color: #08775a;
+}
+
+.statusText.excluded {
+  color: #a23e48;
+}
+
+.statusText.insufficient,
+.statusText.unmatched {
+  color: #7d6535;
+}
+
+.emptyCell,
+.emptyInline {
+  padding: 22px !important;
+  color: #7b8793;
+  text-align: center !important;
+}
+
+.sectionCommandBar {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #dce2e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.sectionCommandBar label {
+  grid-template-columns: auto minmax(160px, 220px);
+  align-items: center;
+}
+
+.weekAssignmentBand {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 10px 0;
+}
+
+.weekAssignmentBand label {
+  flex: 0 0 190px;
+  padding: 9px;
+  border-left: 3px solid #5b7083;
+  background: #f5f7f9;
+}
+
+.calendarHeader,
+.scheduleCalendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(150px, 1fr));
+  min-width: 1050px;
+}
+
+.calendarHeader {
+  margin-top: 4px;
+  border: 1px solid #dce2e7;
+  border-bottom: 0;
+  background: #eaf0f2;
+}
+
+.calendarHeader span {
+  padding: 8px;
+  color: #53606c;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.scheduleCalendar {
+  overflow: hidden;
+  border-top: 1px solid #dce2e7;
+  border-left: 1px solid #dce2e7;
+}
+
+.newsflashSection:has(.scheduleCalendar) {
+  overflow-x: auto;
+}
+
+.calendarSpacer,
+.scheduleDay {
+  min-height: 190px;
+  border-right: 1px solid #dce2e7;
+  border-bottom: 1px solid #dce2e7;
+  background: #ffffff;
+}
+
+.calendarSpacer {
+  background: #f4f6f8;
+}
+
+.scheduleDay {
+  padding: 8px;
+}
+
+.scheduleDayHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scheduleDayHeader strong {
+  font-size: 15px;
+}
+
+.modeToggle,
+.segmentedControl {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #cfd7de;
+  border-radius: 6px;
+  background: #f3f5f7;
+}
+
+.modeToggle button,
+.segmentedControl button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #66717d;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.segmentedControl button {
+  min-width: 64px;
+  font-size: 13px;
+}
+
+.modeToggle button.active,
+.segmentedControl button.active {
+  background: #ffffff;
+  color: #075f49;
+  box-shadow: 0 1px 3px rgba(30, 41, 51, 0.12);
+}
+
+.shiftList {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.shiftList label {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.shiftList label span {
+  color: #66717d;
+  font-size: 11px;
+}
+
+.shiftList select {
+  min-width: 0;
+  min-height: 31px;
+  font-size: 12px;
+}
+
+.aiDuty {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px dashed #d8dee4;
+  color: #59636e;
+  font-size: 11px;
+}
+
+.drawerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(28, 36, 44, 0.28);
+}
+
+.rosterDrawer {
+  width: min(720px, 96vw);
+  height: 100%;
+  overflow: auto;
+  padding: 18px;
+  background: #ffffff;
+  box-shadow: -12px 0 28px rgba(28, 36, 44, 0.14);
+}
+
+.drawerHeader {
+  padding-bottom: 14px;
+  border-bottom: 1px solid #dce2e7;
+}
+
+.drawerHeader p {
+  margin-top: 4px;
+  color: #66717d;
+  font-size: 12px;
+}
+
+.rosterList {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.rosterRow {
+  display: grid;
+  grid-template-columns: 110px minmax(180px, 1fr) repeat(3, auto) 34px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #edf0f2;
+}
+
+.rosterRow label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #59636e;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.newPersonBar {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #dce2e7;
+}
+
+.newPersonBar input {
+  flex: 1;
+}
+
+.subsectionTitle {
+  margin: 18px 0 8px;
+}
+
+.contributionGroups {
+  display: grid;
+  gap: 18px;
+}
+
+.contributionGroup {
+  padding-top: 4px;
+  border-top: 2px solid #cfd7de;
+}
+
+.contributionGroupHeader {
+  padding: 8px 2px;
+}
+
+.contributionGroupHeader div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: #66717d;
+  font-size: 12px;
+}
+
+.contributionGroupHeader strong {
+  margin-left: 10px;
+  color: #25303b;
+  font-size: 16px;
+}
+
+.eventFilters {
+  grid-template-columns: minmax(260px, 2fr) repeat(3, minmax(140px, 1fr)) auto;
+}
+
+.eventList {
+  border: 1px solid #dce2e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.eventRow + .eventRow {
+  border-top: 1px solid #e4e8eb;
+}
+
+.eventMain {
+  display: grid;
+  grid-template-columns: 20px minmax(260px, 1fr) 150px 120px 90px;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: #53606c;
+  cursor: pointer;
+  text-align: left;
+}
+
+.eventMain:hover {
+  background: #f7faf9;
+}
+
+.eventTitle {
+  overflow: hidden;
+  color: #25303b;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventMain svg {
+  transition: transform 120ms ease;
+}
+
+.eventMain svg.rotated {
+  transform: rotate(180deg);
+}
+
+.eventSources {
+  display: grid;
+  gap: 8px;
+  padding: 10px 14px 14px 44px;
+  background: #f6f8f9;
+}
+
+.eventSources > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) 130px;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.eventSources time {
+  color: #66717d;
+  text-align: right;
+}
+
+@media (max-width: 1180px) {
+  .newsflashFilters,
+  .eventFilters {
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+  }
+
+  .wideFilter {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .newsflashFilters,
+  .eventFilters {
+    grid-template-columns: 1fr;
+  }
+
+  .wideFilter {
+    grid-column: auto;
+  }
+
+  .sectionCommandBar,
+  .contributionGroupHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sectionCommandBar label {
+    grid-template-columns: 1fr;
+  }
+
+  .rosterRow {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .eventMain {
+    grid-template-columns: 20px minmax(220px, 1fr) 120px;
+    min-width: 600px;
+  }
+
+  .eventMain span:nth-last-child(-n + 2) {
+    display: none;
+  }
+
+  .eventList {
+    overflow-x: auto;
+  }
+}
+
 button,
 input,
 textarea {

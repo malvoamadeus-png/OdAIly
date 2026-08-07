@@ -212,6 +212,13 @@ def parse_args() -> argparse.Namespace:
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
 
+    subparsers.add_parser("newsflash-ops-init-db", help="Initialize newsflash operations SQLite tables.")
+    newsflash_import = subparsers.add_parser("newsflash-ops-import-xlsx", help="Import one confirmed Odaily XLSX date range into existing newsflash rows.")
+    newsflash_import.add_argument("--path", required=True, help="Path to the Odaily XLSX export.")
+    newsflash_import.add_argument("--start-date", required=True, help="Inclusive Beijing date, YYYY-MM-DD.")
+    newsflash_import.add_argument("--end-date", required=True, help="Exclusive Beijing date, YYYY-MM-DD.")
+    subparsers.add_parser("newsflash-ops-seed-confirmed-week", help="Seed the confirmed 2026-07-20 duty schedule and July reporting assignment.")
+
     whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch SQLite tables.")
 
     whale_watch_worker = subparsers.add_parser("whale-watch-worker", help="Run whale onchain activity monitor.")
@@ -920,6 +927,51 @@ def competitor_init_db_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def newsflash_ops_init_db_command(args: argparse.Namespace) -> int:
+    from packages.common.storage import load_storage_settings
+    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.x_processing.repository import create_x_processing_repository
+
+    create_x_processing_repository(None).init_schema()
+    NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    print("[odaily] newsflash operations database schema initialized")
+    return 0
+
+
+def newsflash_ops_import_xlsx_command(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from packages.common.storage import load_storage_settings
+    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.x_processing.repository import create_x_processing_repository
+
+    create_x_processing_repository(None).init_schema()
+    repository = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    result = repository.import_xlsx(
+        Path(args.path).expanduser().resolve(),
+        start_date=date.fromisoformat(args.start_date),
+        end_date=date.fromisoformat(args.end_date),
+    )
+    print(
+        "[odaily] newsflash operations XLSX imported "
+        f"read={result['read']} matched={result['matched']} skipped={result['skipped']} "
+        f"reconciled_odaily={result['reconciled_odaily']}"
+    )
+    return 0
+
+
+def newsflash_ops_seed_confirmed_week_command(args: argparse.Namespace) -> int:
+    from packages.common.storage import load_storage_settings
+    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.x_processing.repository import create_x_processing_repository
+
+    create_x_processing_repository(None).init_schema()
+    repository = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    repository.seed_confirmed_week()
+    print("[odaily] confirmed duty schedule seeded week_start=2026-07-20 report_month=2026-07")
+    return 0
+
+
 def competitor_prune_excluded_events_command(args: argparse.Namespace) -> int:
     from packages.competitor_monitor import create_competitor_monitor_repository
 
@@ -1498,6 +1550,12 @@ def main() -> int:
             return competitor_repair_newsflash_time_command(args)
         if args.command == "competitor-monitor-worker":
             return competitor_monitor_worker_command(args)
+        if args.command == "newsflash-ops-init-db":
+            return newsflash_ops_init_db_command(args)
+        if args.command == "newsflash-ops-import-xlsx":
+            return newsflash_ops_import_xlsx_command(args)
+        if args.command == "newsflash-ops-seed-confirmed-week":
+            return newsflash_ops_seed_confirmed_week_command(args)
         if args.command == "whale-watch-init-db":
             return whale_watch_init_db_command(args)
         if args.command == "whale-watch-worker":

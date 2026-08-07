@@ -34,6 +34,7 @@ from packages.editor_plugin_local_store import LocalEditorPluginStore
 from packages.gate_market_broadcast.settings import load_gate_market_settings
 from packages.gate_market_broadcast.store import GateMarketStore
 from packages.meme_dashboard import MemeDashboardStore
+from packages.newsflash_operations import NewsflashOperationsRepository
 from packages.pipeline_timing import (
     PipelineTimingLocalStore,
     PipelineTimingSnapshotService,
@@ -369,6 +370,7 @@ class EditorPluginNewsGenService:
         self.x_capture_repository = create_x_capture_repository(database_url)
         self.x_repository = create_x_processing_repository(database_url)
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
+        self.newsflash_operations = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
 
         self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
@@ -470,6 +472,10 @@ class EditorPluginNewsGenService:
 
     def execute_console_data(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         return self.console_data.execute(payload)
+
+    def execute_newsflash_operations(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        action = str(payload.get("action") or "")
+        return self.newsflash_operations.execute(action, payload, actor_email=actor.email)
 
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
@@ -953,6 +959,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/known-title-subjects/save",
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
+        "/console/newsflash-operations",
     }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -1050,6 +1057,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
                 if self.path == "/console/data":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_console_data(actor, self._read_json())})
+                    return
+                if self.path == "/console/newsflash-operations":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_newsflash_operations(actor, self._read_json())})
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
