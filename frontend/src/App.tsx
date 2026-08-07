@@ -9,7 +9,6 @@ import {
   Database,
   FileText,
   Globe2,
-  Inbox,
   Layers3,
   Megaphone,
   Pause,
@@ -18,7 +17,6 @@ import {
   RefreshCcw,
   Save,
   Send,
-  Star,
   Timer,
   Trash2,
   Wallet,
@@ -47,8 +45,6 @@ import {
   getPublisherRuleConfig,
   getPublisherRuleConfigSnapshot,
   listSourceExclusionRuleGroups,
-  listNewsflashEventSources,
-  listNewsflashEvents,
   listProcessingTaskPage,
   listRecentJin10Tasks,
   loadDashboard,
@@ -59,13 +55,10 @@ import {
   createPromptVersion,
   deletePromptVersion,
   publishPromptVersion,
-  saveNewsflashEventNote,
-  saveNewsflashItemNote,
   saveBlockbeatsKey,
   saveKnownTitleSubjects,
   signInWithPassword,
   signOut as signOutLocal,
-  setNewsflashEventFavorite,
   loadNonMainstreamDashboard,
   updateSourceExclusionRuleGroup,
   updateAccount,
@@ -113,10 +106,6 @@ import {
   type SourceExclusionRuleGroupInput,
   type SourceExclusionMatchTarget,
   type SourceExclusionScope,
-  type NewsflashEventFilter,
-  type NewsflashEventSourceItem,
-  type NewsflashSourceSummary,
-  type NewsflashEventSummary,
   type ConsoleAdmin,
   type GateMarketDashboard,
   type MemeDashboard,
@@ -149,8 +138,6 @@ type ConsoleView =
   | 'whale'
   | 'prompts'
   | 'competitor'
-  | 'events'
-  | 'favorites'
   | 'jin10';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
@@ -548,35 +535,6 @@ function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string 
   );
 }
 
-const sourceNames: Record<string, string> = {
-  odaily: 'Odaily',
-  blockbeats: 'BlockBeats',
-  panews: 'PANews',
-  jinse: '金色',
-};
-
-const eventSourceColumns = [
-  { key: 'odaily', label: 'Odaily' },
-  { key: 'blockbeats', label: 'BlockBeats' },
-  { key: 'panews', label: 'PANews' },
-  { key: 'jinse', label: '金色' },
-] as const;
-
-const eventFilters: { key: NewsflashEventFilter; label: string }[] = [
-  { key: 'all', label: '全部' },
-  { key: 'multi', label: '多家共同' },
-  { key: 'with_odaily', label: '我们也发' },
-  { key: 'high_value', label: '含Odaily群发' },
-  { key: 'competitor_only', label: '竞品有我方无' },
-  { key: 'competitor_consensus_missing', label: '竞品共识缺口' },
-  { key: 'odaily_only', label: '仅我方' },
-  { key: 'odaily_late', label: '我方晚发' },
-  { key: 'odaily_first', label: '我方首发' },
-  { key: 'favorite', label: '已收藏' },
-];
-
-const eventPageSize = 100;
-
 function visiblePromptTemplates(templates: PromptTemplate[]): PromptTemplate[] {
   return templates.filter((template) => !['non_mainstream_media_writer', 'ai_source_writer'].includes(template.template_key));
 }
@@ -899,15 +857,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [blockbeatsKeyConfig, setBlockbeatsKeyConfig] = useState<BlockbeatsKeyConfig>(emptyBlockbeatsKeyConfig);
   const [blockbeatsKeyDraft, setBlockbeatsKeyDraft] = useState('');
   const [savingBlockbeatsKey, setSavingBlockbeatsKey] = useState(false);
-  const [eventFilter, setEventFilter] = useState<NewsflashEventFilter>('all');
-  const [eventPage, setEventPage] = useState(0);
-  const [events, setEvents] = useState<NewsflashEventSummary[]>([]);
-  const [hasNextEventPage, setHasNextEventPage] = useState(false);
-  const [eventSources, setEventSources] = useState<Record<string, NewsflashEventSourceItem[]>>({});
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [loadingEvents, setLoadingEvents] = useState(false);
-  const [loadingEventDetails, setLoadingEventDetails] = useState<Record<string, boolean>>({});
-  const [eventDetailErrors, setEventDetailErrors] = useState<Record<string, string>>({});
   const [taskOverviewFilter, setTaskOverviewFilter] = useState<TaskOverviewFilter>('all');
   const [taskOverviewQuery, setTaskOverviewQuery] = useState('');
   const loadedViewsRef = useRef<Set<string>>(new Set());
@@ -1157,39 +1106,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setBlockbeatsKeyDraft(blockbeatsConfig.api_key);
   }
 
-  async function loadEvents(nextFilter = eventFilter, nextView = view, nextPage = eventPage) {
-    setError('');
-    setLoadingEvents(true);
-    const effectiveFilter = nextView === 'favorites' ? 'favorite' : nextFilter;
-    try {
-      const rows = await listNewsflashEvents(effectiveFilter, eventPageSize + 1, nextPage * eventPageSize);
-      const pageRows = rows.slice(0, eventPageSize);
-      if (nextPage > 0 && pageRows.length === 0) {
-        setEventPage(Math.max(0, nextPage - 1));
-        return;
-      }
-      setHasNextEventPage(rows.length > eventPageSize);
-      setEvents(pageRows);
-      setEventSources((current) => {
-        const next = { ...current };
-        for (const event of pageRows) {
-          if (!next[event.event_id] || next[event.event_id].length === 0) {
-            next[event.event_id] = summarySourcesToDetails(event);
-          }
-        }
-        return next;
-      });
-    } finally {
-      setLoadingEvents(false);
-    }
-  }
-
   useEffect(() => {
     const loadCurrentView = async () => {
-      if (view === 'events' || view === 'favorites') {
-        await loadEvents(eventFilter, view, eventPage);
-        return;
-      }
       if (loadedViewsRef.current.has(view)) {
         return;
       }
@@ -1251,7 +1169,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setLoadingJin10(false);
       setLoadingWhaleWatch(false);
     });
-  }, [view, eventFilter, eventPage]);
+  }, [view]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1336,10 +1254,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   }
 
   function switchView(nextView: typeof view) {
-    if (nextView === 'events' || nextView === 'favorites') {
-      setEventPage(0);
-      setSelectedEventId(null);
-    }
     setView(nextView);
   }
 
@@ -1638,63 +1552,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function openEvent(eventId: string) {
-    let shouldOpen = true;
-    setSelectedEventId((current) => {
-      shouldOpen = current !== eventId;
-      return shouldOpen ? eventId : null;
-    });
-    if (!shouldOpen) return;
-
-    setEventDetailErrors((current) => ({ ...current, [eventId]: '' }));
-    if (!eventSources[eventId]?.some((source) => source.content)) {
-      setLoadingEventDetails((current) => ({ ...current, [eventId]: true }));
-      try {
-        const rows = await listNewsflashEventSources(eventId);
-        setEventSources((current) => ({ ...current, [eventId]: rows.length > 0 ? rows : current[eventId] || [] }));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setEventDetailErrors((current) => ({ ...current, [eventId]: message }));
-      } finally {
-        setLoadingEventDetails((current) => ({ ...current, [eventId]: false }));
-      }
-    }
-  }
-
-  async function toggleEventFavorite(event: NewsflashEventSummary) {
-    setError('');
-    try {
-      await setNewsflashEventFavorite(event.event_id, !event.favorite);
-      await loadEvents(eventFilter, view);
-      setMessage(event.favorite ? '已取消收藏' : '已收藏');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function saveItemNote(item: NewsflashEventSourceItem, note: string) {
-    setError('');
-    try {
-      await saveNewsflashItemNote(item.item_id, note);
-      const rows = await listNewsflashEventSources(item.event_id);
-      setEventSources((current) => ({ ...current, [item.event_id]: rows }));
-      setMessage('备注已保存');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function saveEventNote(event: NewsflashEventSummary, note: string) {
-    setError('');
-    try {
-      await saveNewsflashEventNote(event.event_id, note);
-      setEvents((current) => current.map((item) => (item.event_id === event.event_id ? { ...item, note: note.trim() } : item)));
-      setMessage('事件备注已保存');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   const productLabel =
     sourceManagementActive
       ? 'Source Management'
@@ -1716,11 +1573,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           ? 'Whale Watch'
         : view === 'prompts'
           ? 'Prompt及规则管理'
-          : view === 'competitor'
-            ? '排除词'
-            : view === 'favorites'
-              ? '收藏'
-              : '事件';
+        : '排除词';
   const titleLabel =
     sourceManagementActive
       ? '信源管理'
@@ -1742,11 +1595,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '巨鲸'
       : view === 'prompts'
         ? 'Prompt及规则管理'
-        : view === 'competitor'
-          ? '排除词'
-          : view === 'favorites'
-            ? '收藏事件'
-            : '事件复盘';
+        : '排除词';
   const subtitle =
     sourceManagementActive
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
@@ -1768,9 +1617,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
-        : view === 'competitor'
-          ? `${exclusionGroups.filter((item) => item.enabled).length} 个启用规则组`
-          : `${events.length} 个事件`;
+        : `${exclusionGroups.filter((item) => item.enabled).length} 个启用规则组`;
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
@@ -1796,9 +1643,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadWhaleWatchAll()
       : view === 'prompts'
         ? loadPrompts(selectedPromptKey)
-        : view === 'competitor'
-          ? loadCompetitorKeywords()
-          : loadEvents(eventFilter, view, eventPage);
+        : loadCompetitorKeywords();
 
   return (
     <div className="shell">
@@ -1847,12 +1692,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('competitor')}>
             <Ban size={18} /> 排除词
-          </button>
-          <button className={view === 'events' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('events')}>
-            <Inbox size={18} /> 事件
-          </button>
-          <button className={view === 'favorites' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('favorites')}>
-            <Star size={18} /> 收藏
           </button>
         </nav>
       </aside>
@@ -2176,34 +2015,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSave={saveExclusionGroup}
             onDelete={removeExclusionGroup}
           />
-        ) : (
-          <EventsPanel
-            events={events}
-            selectedEventId={selectedEventId}
-            sourcesByEvent={eventSources}
-            loadingDetails={loadingEventDetails}
-            detailErrors={eventDetailErrors}
-            filter={view === 'favorites' ? 'favorite' : eventFilter}
-            page={eventPage}
-            pageSize={eventPageSize}
-            hasNextPage={hasNextEventPage}
-            loading={loadingEvents}
-            favoritesOnly={view === 'favorites'}
-            onFilterChange={(nextFilter) => {
-              setEventPage(0);
-              setSelectedEventId(null);
-              setEventFilter(nextFilter);
-            }}
-            onPageChange={(nextPage) => {
-              setEventPage(nextPage);
-              setSelectedEventId(null);
-            }}
-            onOpen={openEvent}
-            onToggleFavorite={toggleEventFavorite}
-            onSaveEventNote={saveEventNote}
-            onSaveNote={saveItemNote}
-          />
-        )}
+        ) : null}
       </main>
     </div>
   );
@@ -4578,256 +4390,6 @@ function CompetitorPanel({
         </div>
       </aside>
     </section>
-  );
-}
-
-function EventsPanel({
-  events,
-  selectedEventId,
-  sourcesByEvent,
-  loadingDetails,
-  detailErrors,
-  filter,
-  page,
-  pageSize,
-  hasNextPage,
-  loading,
-  favoritesOnly,
-  onFilterChange,
-  onPageChange,
-  onOpen,
-  onToggleFavorite,
-  onSaveEventNote,
-  onSaveNote,
-}: {
-  events: NewsflashEventSummary[];
-  selectedEventId: string | null;
-  sourcesByEvent: Record<string, NewsflashEventSourceItem[]>;
-  loadingDetails: Record<string, boolean>;
-  detailErrors: Record<string, string>;
-  filter: NewsflashEventFilter;
-  page: number;
-  pageSize: number;
-  hasNextPage: boolean;
-  loading: boolean;
-  favoritesOnly: boolean;
-  onFilterChange: (filter: NewsflashEventFilter) => void;
-  onPageChange: (page: number) => void;
-  onOpen: (eventId: string) => Promise<void>;
-  onToggleFavorite: (event: NewsflashEventSummary) => Promise<void>;
-  onSaveEventNote: (event: NewsflashEventSummary, note: string) => Promise<void>;
-  onSaveNote: (item: NewsflashEventSourceItem, note: string) => Promise<void>;
-}) {
-  return (
-    <section className="eventsLayout">
-      {!favoritesOnly && (
-        <div className="filterBar">
-          {eventFilters.map((item) => (
-            <button
-              key={item.key}
-              className={filter === item.key ? 'filterButton active' : 'filterButton'}
-              type="button"
-              onClick={() => onFilterChange(item.key)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="eventTable">
-        <div className="eventHeader">
-          <span>时间</span>
-          <span>事件</span>
-          {eventSourceColumns.map((source) => (
-            <span key={source.key}>{source.label}</span>
-          ))}
-          <span>共同发布</span>
-          <span>首发</span>
-          <span>状态</span>
-          <span>备注</span>
-          <span />
-        </div>
-        {loading && <div className="emptyState">事件加载中。</div>}
-        {!loading && events.length === 0 && <div className="emptyState">暂无事件。</div>}
-        {events.map((event) => {
-          const sources = event.sources || [];
-          const sourcesByName = pickEventSources(sources);
-          const sourceNamesText = sources.map((source) => sourceNames[source.source] || source.source).join(' / ');
-          const status = event.needs_review
-            ? '待确认'
-            : event.has_odaily && event.source_count >= 2
-              ? '含Odaily群发'
-              : event.has_odaily
-                ? '仅我方'
-                : event.competitor_source_count >= 2
-                  ? '竞品共识缺口'
-                  : '竞品线索';
-          return (
-            <article className="eventRowWrap" key={event.event_id}>
-              <div className="eventRow">
-                <button className="eventTimeButton" type="button" onClick={() => onOpen(event.event_id)}>
-                  {fmtTime(event.event_time)}
-                </button>
-                <button className="eventTitleButton" type="button" onClick={() => onOpen(event.event_id)}>
-                  <strong>{shortEventId(event.event_id)}</strong>
-                  <span>{event.representative_title || event.event_id}</span>
-                </button>
-                {eventSourceColumns.map((source) => {
-                  const item = sourcesByName[source.key];
-                  return (
-                    <button
-                      className={item ? 'eventSourceCell filled' : 'eventSourceCell'}
-                      key={source.key}
-                      type="button"
-                      onClick={() => onOpen(event.event_id)}
-                    >
-                      {item?.title || ''}
-                    </button>
-                  );
-                })}
-                <div className="sourceCount" title={sourceNamesText || '无来源'}>
-                  {event.source_count}
-                </div>
-                <div className="firstSource">
-                  <strong>{event.first_source ? sourceNames[event.first_source] || event.first_source : '-'}</strong>
-                  <span>{fmtTime(event.first_published_at)}</span>
-                </div>
-                <span className={event.needs_review ? 'statusPill warn' : 'statusPill'}>{status}</span>
-                <textarea
-                  className="eventNoteInput"
-                  defaultValue={event.note}
-                  maxLength={120}
-                  placeholder="备注"
-                  onClick={(mouseEvent) => mouseEvent.stopPropagation()}
-                  onBlur={(blurEvent) => onSaveEventNote(event, blurEvent.currentTarget.value)}
-                />
-                <button
-                  className={event.favorite ? 'iconButton favorite active' : 'iconButton favorite'}
-                  type="button"
-                  onClick={() => onToggleFavorite(event)}
-                  title={event.favorite ? '取消收藏' : '收藏'}
-                >
-                  <Star size={17} />
-                </button>
-              </div>
-              {selectedEventId === event.event_id && (
-                <EventDetail
-                  event={event}
-                  sources={sourcesByEvent[event.event_id] || []}
-                  loading={Boolean(loadingDetails[event.event_id])}
-                  error={detailErrors[event.event_id] || ''}
-                  onSaveNote={onSaveNote}
-                />
-              )}
-            </article>
-          );
-        })}
-      </div>
-      <div className="paginationBar">
-        <button className="filterButton" type="button" disabled={page === 0 || loading} onClick={() => onPageChange(Math.max(0, page - 1))}>
-          上一页
-        </button>
-        <span>
-          第 {page + 1} 页 · 每页 {pageSize} 条
-        </span>
-        <button className="filterButton" type="button" disabled={loading || !hasNextPage} onClick={() => onPageChange(page + 1)}>
-          下一页
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function summarySourcesToDetails(event: NewsflashEventSummary): NewsflashEventSourceItem[] {
-  return (event.sources || []).map((source, index) => ({
-    id: source.id ?? -index - 1,
-    event_id: event.event_id,
-    item_id: source.item_id ?? -index - 1,
-    source: source.source,
-    source_item_id: source.source_item_id ?? '',
-    role: index === 0 ? 'primary' : 'supporting',
-    match_method: 'summary',
-    similarity: null,
-    title: source.title,
-    content: source.content ?? '',
-    source_url: source.source_url,
-    published_at: source.published_at,
-    note: '',
-  }));
-}
-
-function pickEventSources(sources: NewsflashSourceSummary[]) {
-  const result: Record<string, NewsflashSourceSummary | undefined> = {};
-  for (const source of [...sources].sort(compareSourceSummary)) {
-    if (!result[source.source]) {
-      result[source.source] = source;
-    }
-  }
-  return result;
-}
-
-function compareSourceSummary(left: NewsflashSourceSummary, right: NewsflashSourceSummary) {
-  const leftTime = left.published_at ? new Date(left.published_at).getTime() : Number.MAX_SAFE_INTEGER;
-  const rightTime = right.published_at ? new Date(right.published_at).getTime() : Number.MAX_SAFE_INTEGER;
-  if (leftTime !== rightTime) return leftTime - rightTime;
-  return (left.title || '').localeCompare(right.title || '');
-}
-
-function shortEventId(eventId: string) {
-  const normalized = eventId.replace(/^evt_/, '');
-  return `事件${normalized.slice(-6) || eventId}`;
-}
-
-function EventDetail({
-  event,
-  sources,
-  loading,
-  error,
-  onSaveNote,
-}: {
-  event: NewsflashEventSummary;
-  sources: NewsflashEventSourceItem[];
-  loading: boolean;
-  error: string;
-  onSaveNote: (item: NewsflashEventSourceItem, note: string) => Promise<void>;
-}) {
-  return (
-    <div className="eventDetail">
-      <div className="eventDetailMeta">
-        <span>{event.event_id}</span>
-        <span>{event.source_count} 个来源</span>
-        <span>首发 {event.first_source ? sourceNames[event.first_source] || event.first_source : '-'}</span>
-        {loading && <span>详情加载中</span>}
-        {error && <span className="bad">详情加载失败：{error}</span>}
-      </div>
-      {sources.length === 0 && <div className="emptyState compact">暂无详情来源。</div>}
-      {sources.map((item) => (
-        <article className="sourceDetail" key={item.id}>
-          <div className="sourceDetailHead">
-            <div>
-              <strong>{sourceNames[item.source] || item.source}</strong>
-              <span>{fmtTime(item.published_at)} · {item.match_method}{item.similarity != null ? ` · ${item.similarity.toFixed(3)}` : ''}</span>
-            </div>
-            {item.source_url && (
-              <a href={item.source_url} target="_blank" rel="noreferrer">
-                原文
-              </a>
-            )}
-          </div>
-          <h3>{item.title || item.source_item_id}</h3>
-          {item.content ? <p>{item.content}</p> : <p className="detailPending">{loading ? '正文加载中。' : '正文暂未加载。'}</p>}
-          {item.item_id > 0 && (
-            <textarea
-              className="noteInput"
-              defaultValue={item.note}
-              placeholder="来源备注"
-              onBlur={(event) => onSaveNote(item, event.currentTarget.value)}
-            />
-          )}
-        </article>
-      ))}
-    </div>
   );
 }
 

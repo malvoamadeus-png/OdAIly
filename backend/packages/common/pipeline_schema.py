@@ -1023,27 +1023,6 @@ CREATE TABLE IF NOT EXISTS newsflash_event_sources (
     UNIQUE (item_id)
 );
 
-CREATE TABLE IF NOT EXISTS newsflash_event_favorites (
-    event_id text PRIMARY KEY REFERENCES newsflash_events(event_id) ON DELETE CASCADE,
-    favorite boolean NOT NULL DEFAULT true,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS newsflash_event_notes (
-    event_id text PRIMARY KEY REFERENCES newsflash_events(event_id) ON DELETE CASCADE,
-    note text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS newsflash_item_notes (
-    item_id bigint PRIMARY KEY REFERENCES newsflash_items(id) ON DELETE CASCADE,
-    note text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_published
 ON newsflash_items(source, published_at DESC NULLS LAST, first_seen_at DESC);
 
@@ -1105,78 +1084,27 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW
 EXECUTE FUNCTION prune_empty_newsflash_event_after_source_change();
 
-CREATE OR REPLACE VIEW newsflash_event_summary AS
-SELECT
-    e.event_id,
-    e.representative_title,
-    e.event_time,
-    e.first_source,
-    e.first_published_at,
-    e.source_count,
-    e.competitor_source_count,
-    e.has_odaily,
-    e.status,
-    e.needs_review,
-    COALESCE(f.favorite, false) AS favorite,
-    COALESCE(
-        jsonb_agg(
-            DISTINCT jsonb_build_object(
-                'source', s.source,
-                'title', i.title,
-                'published_at', i.published_at,
-                'source_url', i.source_url
-            )
-        ) FILTER (WHERE s.id IS NOT NULL),
-        '[]'::jsonb
-    ) AS sources,
-    COALESCE(n.note, '') AS note
-FROM newsflash_events e
-JOIN newsflash_event_sources s ON s.event_id = e.event_id
-JOIN newsflash_items i ON i.id = s.item_id
-LEFT JOIN newsflash_event_favorites f ON f.event_id = e.event_id AND f.favorite = true
-LEFT JOIN newsflash_event_notes n ON n.event_id = e.event_id
-GROUP BY e.event_id, f.favorite, n.note;
-
-DO $$
-BEGIN
-    IF current_setting('server_version_num')::integer >= 150000 THEN
-        EXECUTE 'ALTER VIEW newsflash_event_summary SET (security_invoker = true)';
-    END IF;
-END
-$$;
-
 ALTER TABLE newsflash_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsflash_event_sources ENABLE ROW LEVEL SECURITY;
-ALTER TABLE newsflash_event_favorites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE newsflash_event_notes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE newsflash_item_notes ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS newsflash_items_anon_select ON newsflash_items;
 DROP POLICY IF EXISTS newsflash_events_anon_select ON newsflash_events;
 DROP POLICY IF EXISTS newsflash_event_sources_anon_select ON newsflash_event_sources;
-DROP POLICY IF EXISTS newsflash_event_favorites_anon_all ON newsflash_event_favorites;
-DROP POLICY IF EXISTS newsflash_event_notes_anon_all ON newsflash_event_notes;
-DROP POLICY IF EXISTS newsflash_item_notes_anon_all ON newsflash_item_notes;
 DROP POLICY IF EXISTS newsflash_items_console_admin_select ON newsflash_items;
 DROP POLICY IF EXISTS newsflash_events_console_admin_select ON newsflash_events;
 DROP POLICY IF EXISTS newsflash_event_sources_console_admin_select ON newsflash_event_sources;
-DROP POLICY IF EXISTS newsflash_event_favorites_console_admin_all ON newsflash_event_favorites;
-DROP POLICY IF EXISTS newsflash_event_notes_console_admin_all ON newsflash_event_notes;
-DROP POLICY IF EXISTS newsflash_item_notes_console_admin_all ON newsflash_item_notes;
 
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary FROM anon;
-        REVOKE ALL PRIVILEGES ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes FROM anon;
+        REVOKE ALL PRIVILEGES ON newsflash_items, newsflash_events, newsflash_event_sources FROM anon;
         REVOKE ALL PRIVILEGES ON SEQUENCE newsflash_event_sources_id_seq FROM anon;
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
         GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources, newsflash_event_summary TO authenticated;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON newsflash_event_favorites, newsflash_event_notes, newsflash_item_notes TO authenticated;
+        GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources TO authenticated;
         GRANT USAGE, SELECT ON SEQUENCE newsflash_event_sources_id_seq TO authenticated;
 
         EXECUTE 'CREATE POLICY newsflash_items_console_admin_select ON newsflash_items
@@ -1185,12 +1113,6 @@ BEGIN
             FOR SELECT TO authenticated USING (is_console_admin())';
         EXECUTE 'CREATE POLICY newsflash_event_sources_console_admin_select ON newsflash_event_sources
             FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY newsflash_event_favorites_console_admin_all ON newsflash_event_favorites
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY newsflash_event_notes_console_admin_all ON newsflash_event_notes
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY newsflash_item_notes_console_admin_all ON newsflash_item_notes
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
     END IF;
 END
 $$;

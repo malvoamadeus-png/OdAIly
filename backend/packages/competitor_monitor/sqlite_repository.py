@@ -22,17 +22,12 @@ class SQLiteCompetitorMonitorRepository:
             CREATE TABLE IF NOT EXISTS newsflash_items(id integer PRIMARY KEY AUTOINCREMENT,source text NOT NULL,source_item_id text NOT NULL,source_url text,title text,content text NOT NULL,content_hash text NOT NULL,published_at text,first_seen_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,raw_payload text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(source,source_item_id));
             CREATE TABLE IF NOT EXISTS newsflash_events(event_id text PRIMARY KEY,representative_item_id integer,representative_title text,event_time text,first_source text,first_published_at text,source_count integer NOT NULL DEFAULT 0,competitor_source_count integer NOT NULL DEFAULT 0,has_odaily integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'active',needs_review integer NOT NULL DEFAULT 0,metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS newsflash_event_sources(id integer PRIMARY KEY AUTOINCREMENT,event_id text NOT NULL REFERENCES newsflash_events(event_id) ON DELETE CASCADE,item_id integer NOT NULL UNIQUE REFERENCES newsflash_items(id) ON DELETE CASCADE,source text NOT NULL,source_item_id text NOT NULL,role text NOT NULL,match_method text NOT NULL,similarity real,matched_item_id integer,ai_result text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS newsflash_event_favorites(event_id text PRIMARY KEY REFERENCES newsflash_events(event_id) ON DELETE CASCADE,created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS newsflash_event_notes(event_id text PRIMARY KEY REFERENCES newsflash_events(event_id) ON DELETE CASCADE,note text NOT NULL,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS newsflash_item_notes(item_id integer PRIMARY KEY REFERENCES newsflash_items(id) ON DELETE CASCADE,note text NOT NULL,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            DROP VIEW IF EXISTS newsflash_event_summary;
+            DROP TABLE IF EXISTS newsflash_event_favorites;
+            DROP TABLE IF EXISTS newsflash_event_notes;
+            DROP TABLE IF EXISTS newsflash_item_notes;
             CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_time ON newsflash_items(source,published_at DESC);
             CREATE INDEX IF NOT EXISTS idx_newsflash_event_sources_event ON newsflash_event_sources(event_id);
-            DROP VIEW IF EXISTS newsflash_event_summary;
-            CREATE VIEW newsflash_event_summary AS
-            SELECT e.event_id,e.representative_title,e.event_time,e.first_source,e.first_published_at,e.source_count,e.competitor_source_count,e.has_odaily,e.status,e.needs_review,
-                   CASE WHEN f.event_id IS NULL THEN 0 ELSE 1 END favorite,COALESCE(n.note,'') note,
-                   COALESCE((SELECT json_group_array(json_object('id',s.id,'item_id',s.item_id,'source',s.source,'source_item_id',s.source_item_id,'role',s.role,'match_method',s.match_method,'similarity',s.similarity)) FROM newsflash_event_sources s WHERE s.event_id=e.event_id),'[]') sources
-            FROM newsflash_events e LEFT JOIN newsflash_event_favorites f ON f.event_id=e.event_id LEFT JOIN newsflash_event_notes n ON n.event_id=e.event_id;
             """);conn.commit()
     def list_enabled_competitor_exclusion_terms(self)->list[str]:
         with connect_sqlite(self.path) as conn:

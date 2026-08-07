@@ -10,8 +10,7 @@ from packages.common.storage import connect_sqlite
 
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ALLOWED_TABLES = {
-    "console_admins", "jin10_settings", "newsflash_event_favorites", "newsflash_event_notes",
-    "newsflash_event_sources", "newsflash_event_summary", "newsflash_item_notes",
+    "console_admins", "jin10_settings",
     "newsflash_items", "non_mainstream_media_settings", "non_mainstream_media_sources",
     "prompt_template_versions", "prompt_templates", "publisher_channels",
     "publisher_rule_config", "publisher_settings", "source_exclusion_rule_groups", "tasks",

@@ -2100,12 +2100,6 @@ textarea:focus {
   font-size: 12px;
 }
 
-.eventsLayout {
-  display: grid;
-  gap: 12px;
-  margin-top: 18px;
-}
-
 .filterBar {
   display: flex;
   flex-wrap: wrap;
@@ -2144,15 +2138,6 @@ textarea:focus {
   margin-left: auto;
 }
 
-.eventTable {
-  display: grid;
-  max-height: calc(100vh - 210px);
-  overflow: auto;
-  border: 1px solid #e1e5e9;
-  border-radius: 8px;
-  background: #ffffff;
-}
-
 .paginationBar {
   display: flex;
   align-items: center;
@@ -2161,114 +2146,6 @@ textarea:focus {
   padding: 10px 2px 0;
   color: #6b7280;
   font-size: 12px;
-}
-
-.eventHeader,
-.eventRow {
-  display: grid;
-  grid-template-columns: 112px 190px repeat(4, minmax(220px, 1fr)) 74px 128px 118px 176px 42px;
-  gap: 8px;
-  align-items: start;
-  min-width: 1600px;
-}
-
-.eventHeader {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  padding: 9px 12px;
-  border-bottom: 1px solid #e1e5e9;
-  background: #f8fafb;
-  color: #6b7280;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.eventRowWrap {
-  border-bottom: 1px solid #edf0f3;
-}
-
-.eventRowWrap:last-child {
-  border-bottom: 0;
-}
-
-.eventRow {
-  min-height: 86px;
-  padding: 12px;
-}
-
-.eventTimeButton,
-.eventTitleButton {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: #1f2933;
-  cursor: pointer;
-  text-align: left;
-}
-
-.eventTimeButton {
-  color: #4b5563;
-  font-size: 12px;
-}
-
-.eventTitleButton strong,
-.firstSource strong,
-.firstSource span {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.eventTitleButton span,
-.firstSource span,
-.eventDetailMeta,
-.sourceDetailHead span {
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.eventSourceCell {
-  min-width: 0;
-  min-height: 48px;
-  padding: 7px 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: #f7f9fb;
-  color: #1f2933;
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1.38;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  text-align: left;
-}
-
-.eventSourceCell:empty {
-  cursor: default;
-}
-
-.eventSourceCell.filled:hover {
-  border-color: #b7d7c7;
-  background: #f1faf5;
-}
-
-.sourceCount {
-  display: inline-grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 999px;
-  background: #eef3f7;
-  color: #24313f;
-  font-weight: 700;
-}
-
-.firstSource {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
 }
 
 .statusPill {
@@ -2293,83 +2170,6 @@ textarea:focus {
 .statusPill.bad {
   background: #fff1f0;
   color: #b42318;
-}
-
-.iconButton.favorite.active {
-  border-color: #d5a300;
-  background: #fff9db;
-  color: #a15c00;
-}
-
-.eventDetail {
-  display: grid;
-  gap: 10px;
-  padding: 0 12px 12px;
-  background: #fbfcfd;
-}
-
-.eventDetailMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #edf0f3;
-}
-
-.sourceDetail {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid #e5e8ec;
-  border-radius: 8px;
-  background: #fafbfc;
-}
-
-.sourceDetailHead {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.sourceDetailHead strong,
-.sourceDetailHead span {
-  display: block;
-}
-
-.sourceDetailHead a {
-  color: #0f684a;
-  font-size: 13px;
-  text-decoration: none;
-}
-
-.sourceDetail h3 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.sourceDetail p {
-  color: #394150;
-  font-size: 14px;
-  line-height: 1.55;
-}
-
-.detailPending {
-  color: #8a94a3;
-}
-
-.eventNoteInput {
-  min-height: 68px;
-  max-height: 96px;
-  padding: 8px;
-  background: #ffffff;
-  font-size: 12px;
-  line-height: 1.45;
-  resize: vertical;
-}
-
-.noteInput {
-  min-height: 68px;
-  background: #ffffff;
 }
 
 .promptTab {
@@ -3001,10 +2801,6 @@ textarea:focus {
     padding: 0;
   }
 
-  .eventTable {
-    max-height: calc(100vh - 190px);
-  }
-
   .workflowHero,
   .workflowToolbar,
   .timingSummaryGrid,
@@ -3048,8 +2844,7 @@ textarea:focus {
     border-radius: 14px;
   }
 
-  .sidebar,
-  .eventTable {
+  .sidebar {
     position: static;
     height: auto;
   }
@@ -3057,10 +2852,6 @@ textarea:focus {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid #e3e6ea;
-  }
-
-  .eventTable {
-    max-height: none;
   }
 
   nav {
