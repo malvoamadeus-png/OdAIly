@@ -73,6 +73,7 @@ body {
 .weekAssignmentBand label > span {
   color: #66717d;
   font-size: 12px;
+  text-align: center;
 }
 
 .newsflashFilters input,
@@ -99,12 +100,20 @@ body {
   padding: 7px 9px;
 }
 
+.newsflashFilters input[type="date"],
+.sectionCommandBar input[type="date"],
+.sectionCommandBar input[type="month"] {
+  text-align: center;
+}
+
 .newsflashFilters select,
 .sectionCommandBar select,
 .weekAssignmentBand select,
 .shiftList select,
 .inlineSelect {
   padding: 6px 28px 6px 8px;
+  text-align: center;
+  text-align-last: center;
 }
 
 .inputWithIcon {
@@ -179,7 +188,7 @@ body {
 .newsflashTable td {
   padding: 9px 10px;
   border-bottom: 1px solid #e6eaee;
-  text-align: left;
+  text-align: center;
   vertical-align: middle;
 }
 
@@ -205,6 +214,7 @@ body {
 .newsflashTable .titleColumn {
   width: 34%;
   min-width: 300px;
+  text-align: left;
 }
 
 .newsflashTable a,
@@ -224,7 +234,7 @@ body {
 }
 
 .numberCell {
-  text-align: right !important;
+  text-align: center !important;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -237,6 +247,12 @@ body {
   min-width: 104px;
   min-height: 30px;
   font-size: 12px;
+}
+
+.inlineSelect:disabled {
+  color: #8b949e;
+  background: #f4f6f8;
+  cursor: not-allowed;
 }
 
 .newsflashTable td small {
@@ -292,6 +308,20 @@ body {
   align-items: center;
 }
 
+.weekPicker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: min(100%, 520px);
+}
+
+.periodHint {
+  color: #25303b;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .weekAssignmentBand {
   display: flex;
   gap: 10px;
@@ -304,6 +334,7 @@ body {
   padding: 9px;
   border-left: 3px solid #5b7083;
   background: #f5f7f9;
+  text-align: center;
 }
 
 .calendarHeader,
@@ -414,6 +445,7 @@ body {
 .shiftList label span {
   color: #66717d;
   font-size: 11px;
+  text-align: center;
 }
 
 .shiftList select {
@@ -425,6 +457,7 @@ body {
 .aiDuty {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   margin-top: 9px;
   padding-top: 7px;
@@ -517,6 +550,7 @@ body {
 .contributionGroupHeader div {
   display: flex;
   align-items: baseline;
+  justify-content: center;
   gap: 6px;
   color: #66717d;
   font-size: 12px;
@@ -622,6 +656,16 @@ body {
   .contributionGroupHeader {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .weekPicker {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .periodHint {
+    white-space: normal;
+    text-align: center;
   }
 
   .sectionCommandBar label {

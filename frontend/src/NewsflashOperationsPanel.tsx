@@ -64,6 +64,27 @@ function mondayKey(value = new Date()): string {
   return `${shanghai.getFullYear()}-${String(shanghai.getMonth() + 1).padStart(2, '0')}-${String(shanghai.getDate()).padStart(2, '0')}`;
 }
 
+function dateKey(value: string, days = 0): string {
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(year, month - 1, day, 12);
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatMonthLabel(value: string): string {
+  const [year, month] = value.split('-').map(Number);
+  return `${year}年${month}月`;
+}
+
+function formatWeekLabel(weekStart: string, weekEnd = dateKey(weekStart, 6)): string {
+  const [year, month, day] = weekStart.split('-').map(Number);
+  const firstDay = new Date(year, month - 1, 1, 12);
+  const mondayOffset = (firstDay.getDay() + 6) % 7;
+  const weekOfMonth = Math.floor((mondayOffset + day - 1) / 7) + 1;
+  const [, endMonth, endDay] = weekEnd.split('-').map(Number);
+  return `${year}年${month}月第${weekOfMonth}周（${month}月${day}日 - ${endMonth}月${endDay}日）`;
+}
+
 function coverage(value: { known: number; total: number } | undefined): string {
   if (!value || value.total === 0 || value.known === value.total) return '';
   return `${value.known}/${value.total}`;
@@ -114,7 +135,7 @@ function Overview({
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({
     search: '', date_from: '', date_to: '', publisher_kind: '', publisher_person_key: '',
-    is_pushed: '', is_contribution: '', contributor_person_key: '', contribution_type: '', first_status: '', first_source: '',
+    is_pushed: '', contributor_person_key: '', contribution_type: '', first_status: '', first_source: '',
   });
 
   async function load(nextPage = page) {
@@ -157,7 +178,6 @@ function Overview({
         <label><span>发布类型</span><select value={filters.publisher_kind} onChange={(event) => setFilters({ ...filters, publisher_kind: event.target.value })}><option value="">全部</option><option value="human">人类</option><option value="human_unmapped">未映射</option><option value="odaily_ai">OdAIly</option><option value="other_ai">其他 AI</option></select></label>
         <label><span>操作人</span><select value={filters.publisher_person_key} onChange={(event) => setFilters({ ...filters, publisher_person_key: event.target.value })}><option value="">全部</option>{activePeople.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></label>
         <label><span>推送</span><select value={filters.is_pushed} onChange={(event) => setFilters({ ...filters, is_pushed: event.target.value })}><option value="">全部</option><option value="1">是</option><option value="0">否</option></select></label>
-        <label><span>贡献</span><select value={filters.is_contribution} onChange={(event) => setFilters({ ...filters, is_contribution: event.target.value })}><option value="">全部</option><option value="1">是</option><option value="0">否</option></select></label>
         <label><span>贡献者</span><select value={filters.contributor_person_key} onChange={(event) => setFilters({ ...filters, contributor_person_key: event.target.value })}><option value="">全部</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></label>
         <label><span>贡献类型</span><select value={filters.contribution_type} onChange={(event) => setFilters({ ...filters, contribution_type: event.target.value })}><option value="">全部</option><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></label>
         <label><span>首发状态</span><select value={filters.first_status} onChange={(event) => setFilters({ ...filters, first_status: event.target.value })}><option value="">全部</option><option value="ready">已计算</option><option value="unmatched">未匹配事件</option><option value="insufficient">数据不足</option><option value="excluded">已排除</option></select></label>
@@ -167,7 +187,7 @@ function Overview({
       <div className="tableMeta"><span>{loading ? '加载中…' : `${data.total} 条快讯`}</span><span>每页 50 条</span></div>
       <div className="newsflashTableWrap">
         <table className="newsflashTable">
-          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead>
+          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead>
           <tbody>
             {data.items.map((row) => (
               <tr key={row.source_item_id}>
@@ -188,16 +208,12 @@ function Overview({
                   {row.publisher_kind && row.publisher_kind !== 'human' && <small>{publisherLabels[row.publisher_kind] || row.publisher_kind}</small>}
                 </td>
                 <td className="numberCell">{row.view_count == null ? <Unavailable /> : row.view_count.toLocaleString()}</td>
-                <td><input type="checkbox" checked={row.is_contribution} onChange={(event) => {
-                  if (event.target.checked && !row.contributor_person_key) { onError('请先选择贡献者'); return; }
-                  void patchRow(row, { is_contribution: event.target.checked });
-                }} disabled={['odaily_ai', 'other_ai', 'pending_ai'].includes(row.publisher_kind || '')} /></td>
-                <td><select className="inlineSelect" value={row.contributor_person_key || ''} onChange={(event) => void patchRow(row, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td>
+                <td><select className="inlineSelect" value={row.contributor_person_key || ''} onChange={(event) => void patchRow(row, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })} disabled={['odaily_ai', 'other_ai', 'pending_ai'].includes(row.publisher_kind || '')}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td>
                 <td><select className="inlineSelect" value={row.contribution_type || 'regular'} onChange={(event) => void patchRow(row, { contribution_type: event.target.value })} disabled={!row.is_contribution}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td>
                 <td><span className={`statusText ${row.first_publication.status}`}>{row.first_publication.label}</span></td>
               </tr>
             ))}
-            {!loading && data.items.length === 0 && <tr><td colSpan={10} className="emptyCell">没有符合条件的快讯</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={9} className="emptyCell">没有符合条件的快讯</td></tr>}
           </tbody>
         </table>
       </div>
@@ -242,9 +258,9 @@ function Schedule({ refreshToken, onPeople, onError, onMessage }: { refreshToken
     <section className="newsflashSection">
       <div className="sectionCommandBar"><label><span>月份</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label><button className="iconTextButton" type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /> 人员设置</button></div>
       <div className="weekAssignmentBand">
-        {(data?.weeks || []).map((week, index) => {
+        {(data?.weeks || []).map((week) => {
           const months = Array.from(new Set([week.week_start.slice(0, 7), week.week_end.slice(0, 7)]));
-          return <label key={week.week_start}><span>第 {index + 1} 周 · {week.week_start.slice(5)}–{week.week_end.slice(5)}</span><select value={week.report_month || ''} onChange={async (event) => { const result = await newsflashOperations<{ week_start: string; report_month: string }>('save_week_month', { week_start: week.week_start, report_month: event.target.value }); setData((current) => current ? { ...current, weeks: current.weeks.map((item) => item.week_start === result.week_start ? { ...item, report_month: result.report_month, report_month_manual: true } : item) } : current); }}><option value="">未归属</option>{months.map((value) => <option value={value} key={value}>{value}</option>)}</select></label>;
+          return <label key={week.week_start}><span>{formatWeekLabel(week.week_start, week.week_end)}</span><select aria-label={`${formatWeekLabel(week.week_start, week.week_end)}归属月份`} value={week.report_month || ''} onChange={async (event) => { const result = await newsflashOperations<{ week_start: string; report_month: string }>('save_week_month', { week_start: week.week_start, report_month: event.target.value }); setData((current) => current ? { ...current, weeks: current.weeks.map((item) => item.week_start === result.week_start ? { ...item, report_month: result.report_month, report_month_manual: true } : item) } : current); }}><option value="">未归属</option>{months.map((value) => <option value={value} key={value}>{formatMonthLabel(value)}</option>)}</select></label>;
         })}
       </div>
       <div className="calendarHeader">{['周一','周二','周三','周四','周五','周六','周日'].map((label) => <span key={label}>{label}</span>)}</div>
@@ -282,7 +298,7 @@ function Summary({ refreshToken, onError }: { refreshToken: number; onError: (va
   const [data, setData] = useState<SummaryPayload | null>(null);
   async function load() { try { setData(await newsflashOperations<SummaryPayload>('summary', mode === 'week' ? { week_start: week } : { report_month: month })); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
   useEffect(() => { void load(); }, [mode, week, month, refreshToken]);
-  return <section className="newsflashSection"><div className="sectionCommandBar"><div className="segmentedControl"><button type="button" className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>按周</button><button type="button" className={mode === 'month' ? 'active' : ''} onClick={() => setMode('month')}>按月</button></div>{mode === 'week' ? <label><span>自然周周一</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label> : <label><span>统计月份</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>}</div>{data?.unassigned_count ? <div className="notice error">{data.unassigned_count} 条人类快讯未能归入排班。</div> : null}<h2 className="subsectionTitle">人员汇总</h2><MetricTable rows={data?.people || []} /><h2 className="subsectionTitle">班次明细</h2><div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>日期</th><th>班次</th><th>值班人</th><th>发布数量</th><th>推送数量</th><th>平均浏览量</th><th>推送浏览量</th></tr></thead><tbody>{(data?.rows || []).map((row) => <tr key={`${row.date}:${row.shift_key}:${row.person_key}`}><td>{row.date}</td><td>{row.shift_label}</td><td>{row.person_name}</td><MetricCells row={row} /></tr>)}</tbody></table></div></section>;
+  return <section className="newsflashSection"><div className="sectionCommandBar"><div className="segmentedControl"><button type="button" className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>按周</button><button type="button" className={mode === 'month' ? 'active' : ''} onClick={() => setMode('month')}>按月</button></div>{mode === 'week' ? <div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div> : <label><span>统计月份</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>}</div>{data?.unassigned_count ? <div className="notice error">{data.unassigned_count} 条人类快讯未能归入排班。</div> : null}<h2 className="subsectionTitle">人员汇总</h2><MetricTable rows={data?.people || []} /><h2 className="subsectionTitle">班次明细</h2><div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>日期</th><th>班次</th><th>值班人</th><th>发布数量</th><th>推送数量</th><th>平均浏览量</th><th>推送浏览量</th></tr></thead><tbody>{(data?.rows || []).map((row) => <tr key={`${row.date}:${row.shift_key}:${row.person_key}`}><td>{row.date}</td><td>{row.shift_label}</td><td>{row.person_name}</td><MetricCells row={row} /></tr>)}</tbody></table></div></section>;
 }
 
 function MetricTable({ rows }: { rows: SummaryPayload['people'] }) { return <div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>人员</th><th>发布数量</th><th>推送数量</th><th>平均浏览量</th><th>推送浏览量</th></tr></thead><tbody>{rows.map((row) => <tr key={row.person_key}><td>{row.person_name}</td><MetricCells row={row} /></tr>)}</tbody></table></div>; }
@@ -295,7 +311,7 @@ function Contributions({ people, refreshToken, onError, onMessage }: { people: P
   useEffect(() => { void load(); }, [week, refreshToken]);
   async function patch(sourceItemId: string, patchValue: Record<string, unknown>) { try { await newsflashOperations('update', { source_item_id: sourceItemId, patch: patchValue }); onMessage(`快讯 ${sourceItemId} 已保存`); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
   const contributors = people.filter((person) => person.active && person.contributor_enabled);
-  return <section className="newsflashSection"><div className="sectionCommandBar"><label><span>自然周周一</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label>{data?.in_progress && <span className="statusText ready">本周进行中</span>}</div><div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}><div className="contributionGroupHeader"><h2>{group.display_name}</h2><div><strong>{group.count}</strong><span>条</span><strong>{group.total_views.toLocaleString()}</strong><span>总浏览量</span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong><span>平均</span></div></div>{group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>贡献</th><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td><input type="checkbox" checked onChange={(event) => { if (!event.target.checked) void patch(item.source_item_id, { is_contribution: false }); }} /></td><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, { contributor_person_key: event.target.value })}>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}</section>)}</div></section>;
+  return <section className="newsflashSection"><div className="sectionCommandBar"><div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div>{data?.in_progress && <span className="statusText ready">本周进行中</span>}</div><div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}><div className="contributionGroupHeader"><h2>{group.display_name}</h2><div><strong>{group.count}</strong><span>条</span><strong>{group.total_views.toLocaleString()}</strong><span>总浏览量</span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong><span>平均</span></div></div>{group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}</section>)}</div></section>;
 }
 
 function Events({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {
