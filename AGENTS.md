@@ -51,7 +51,11 @@
   ```
 
 - 同步后检查 `git rev-parse --short HEAD`、`git status --short` 和相关 systemd 服务状态。后端代码或服务配置变化时，按对应模块要求重启服务；纯前端变化由 GitHub 连接的前端部署流程负责，不要把服务器目录当作前端发布入口。
-- GitHub 的 `core.sshCommand` 只用于 GitHub，不代表生产服务器 SSH 配置；生产连接始终使用 `jibai-prod`。
+- GitHub 的 `core.sshCommand` 只用于 GitHub，不代表生产服务器 SSH 配置；生产连接始终使用 `jibai-prod`。如果 WSL 的 GitHub SSH 连接超时，使用 Windows SSH fallback 推送：
+
+  ```bash
+  git -c core.sshCommand="/mnt/c/WINDOWS/System32/OpenSSH/ssh.exe -F C:/Users/A/.ssh/config" push origin main
+  ```
 
 ## AI 可操作范围
 
