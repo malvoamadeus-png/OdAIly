@@ -505,7 +505,6 @@ def doctor_command(args: argparse.Namespace) -> int:
     print(f"[odaily] us-market dry_run={market_settings.dry_run}")
     print(f"[odaily] gate-tradfi config={paths.gate_tradfi_config_path}")
     print(f"[odaily] gate-tradfi tradfi_symbols={','.join(gate_settings.tradfi_symbols)}")
-    print(f"[odaily] gate-tradfi futures_symbols={','.join(gate_settings.futures_symbols)}")
     print(f"[odaily] gate-tradfi push_endpoint={gate_settings.push_endpoint}")
     print(f"[odaily] gate-tradfi dry_run={gate_settings.dry_run}")
     for task_id, task in TASKS.items():

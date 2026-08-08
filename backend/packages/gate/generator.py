@@ -143,8 +143,6 @@ def build_gate_brief(*, quotes: dict[str, GateAssetQuote]) -> GateBriefPayload |
 
     gold = _line_quote(quotes, "XAUUSD")
     silver = _line_quote(quotes, "XAGUSD")
-    bvix = _line_quote(quotes, "BVIXUSDT")
-    evix = _line_quote(quotes, "EVIXUSDT")
     usdcnh = _line_quote(quotes, "USDCNH")
     usdjpy = _line_quote(quotes, "USDJPY")
     wti = _line_quote(quotes, "XTIUSD")
@@ -155,8 +153,6 @@ def build_gate_brief(*, quotes: dict[str, GateAssetQuote]) -> GateBriefPayload |
 
     gold_price, gold_change, gold_action, gold_trend, gold_simple = _quote_values(gold)
     silver_price, silver_change, _silver_action, silver_trend, _silver_simple = _quote_values(silver)
-    bvix_price, bvix_change, _bvix_action, bvix_trend, _bvix_simple = _quote_values(bvix)
-    evix_price, evix_change, _evix_action, evix_trend, _evix_simple = _quote_values(evix)
     usdcnh_price, usdcnh_change, usdcnh_action, _usdcnh_trend, _usdcnh_simple = _quote_values(usdcnh)
     usdjpy_price, usdjpy_change, usdjpy_action, _usdjpy_trend, _usdjpy_simple = _quote_values(usdjpy)
     wti_price, wti_change, wti_action, _wti_trend, _wti_simple = _quote_values(wti)
@@ -169,8 +165,6 @@ def build_gate_brief(*, quotes: dict[str, GateAssetQuote]) -> GateBriefPayload |
         f"据 Gate 最新数据，黄金价格{gold_action}至 {gold_price} 美元/盎司，"
         f"日内{gold_trend}达 {gold_change}。白银价格{gold_simple}至 {silver_price} 美元/盎司，"
         f"日内{silver_trend}达 {silver_change}。\n\n"
-        f"BVIX（BTC 波动率指数）最新报价 {bvix_price}，日内{bvix_trend}为 {bvix_change}。"
-        f"EVIX（ETH 波动率指数）最新报价 {evix_price}，日内{evix_trend}为 {evix_change}。\n\n"
         f"外汇方面，美元兑离岸人民币（USD/CNH）日内{usdcnh_action} {usdcnh_change}，当前汇率为 {usdcnh_price}。"
         f"美元兑日元（USD/JPY）日内{usdjpy_action} {usdjpy_change}，当前汇率为 {usdjpy_price}。\n\n"
         f"全球股指方面，欧洲50指数（EUSTX50）日内{stoxx50_action} {stoxx50_change}，报 {stoxx50_price} 点；"

@@ -248,30 +248,9 @@ DEFAULT_GATE_TRADFI_SYMBOLS = {
     "XBRUSD": "布伦特原油",
 }
 
-DEFAULT_GATE_FUTURES_SYMBOLS = {
-    "BVIXUSDT": {"contract": "BVIX_USDT", "display_name": "BVIX"},
-    "EVIXUSDT": {"contract": "EVIX_USDT", "display_name": "EVIX"},
-}
-
-
-class GateFuturesSymbolSettings(BaseModel):
-    contract: str
-    display_name: str
-
-    @field_validator("contract")
-    @classmethod
-    def normalize_contract(cls, value: str) -> str:
-        return value.strip().upper()
-
 
 class GateTradfiSettings(BaseModel):
     tradfi_symbols: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_GATE_TRADFI_SYMBOLS))
-    futures_symbols: dict[str, GateFuturesSymbolSettings] = Field(
-        default_factory=lambda: {
-            key: GateFuturesSymbolSettings.model_validate(value)
-            for key, value in DEFAULT_GATE_FUTURES_SYMBOLS.items()
-        }
-    )
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = True
     request_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
@@ -285,14 +264,6 @@ class GateTradfiSettings(BaseModel):
         if not result:
             raise ValueError("tradfi_symbols cannot be empty")
         return result
-
-    @field_validator("futures_symbols")
-    @classmethod
-    def normalize_futures_symbols(
-        cls,
-        value: dict[str, GateFuturesSymbolSettings],
-    ) -> dict[str, GateFuturesSymbolSettings]:
-        return {key.strip().upper(): item for key, item in value.items() if key}
 
 
 def _apply_common_env(payload: dict) -> dict:

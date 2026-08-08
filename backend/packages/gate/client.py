@@ -106,43 +106,13 @@ class GateClient:
             },
         )
 
-    def fetch_futures_tickers(self) -> dict[str, dict[str, Any]]:
-        rows = self._get_json("/futures/usdt/tickers")
-        return {
-            str(row.get("contract")): row
-            for row in rows
-            if isinstance(row, dict) and row.get("contract")
-        }
-
-    def fetch_futures_quote(
-        self,
-        *,
-        symbol: str,
-        contract: str,
-        display_name: str,
-        ticker_rows: dict[str, dict[str, Any]],
-    ) -> GateAssetQuote:
-        row = ticker_rows.get(contract)
-        if row is None:
-            raise RuntimeError(f"Gate Futures ticker not found: {contract}")
-        return GateAssetQuote(
-            symbol=symbol,
-            display_name=display_name,
-            price=_to_float(row.get("last")),
-            change_percent=_to_float(row.get("change_percentage")),
-            source="gate-futures",
-            source_symbol=contract,
-            raw=row,
-        )
-
     def fetch_batch(
         self,
         *,
         tradfi_symbols: dict[str, str],
-        futures_symbols: dict[str, dict[str, str]],
     ) -> GateQuoteBatch:
         quotes: dict[str, GateAssetQuote] = {}
-        raw_response: dict[str, Any] = {"tradfi": {}, "futures": {}}
+        raw_response: dict[str, Any] = {"tradfi": {}}
         errors: dict[str, str] = {}
 
         for symbol, display_name in tradfi_symbols.items():
@@ -157,44 +127,6 @@ class GateClient:
                     display_name=display_name,
                     source="gate-tradfi",
                     source_symbol=symbol,
-                    error=str(exc),
-                )
-
-        ticker_rows: dict[str, dict[str, Any]] = {}
-        if futures_symbols:
-            try:
-                ticker_rows = self.fetch_futures_tickers()
-                raw_response["futures"]["tickers_count"] = len(ticker_rows)
-            except Exception as exc:
-                for symbol in futures_symbols:
-                    errors[symbol] = str(exc)
-
-        for symbol, item in futures_symbols.items():
-            if symbol in errors:
-                quotes[symbol] = GateAssetQuote(
-                    symbol=symbol,
-                    display_name=item["display_name"],
-                    source="gate-futures",
-                    source_symbol=item["contract"],
-                    error=errors[symbol],
-                )
-                continue
-            try:
-                quote = self.fetch_futures_quote(
-                    symbol=symbol,
-                    contract=item["contract"],
-                    display_name=item["display_name"],
-                    ticker_rows=ticker_rows,
-                )
-                quotes[symbol] = quote
-                raw_response["futures"][symbol] = quote.raw
-            except Exception as exc:
-                errors[symbol] = str(exc)
-                quotes[symbol] = GateAssetQuote(
-                    symbol=symbol,
-                    display_name=item["display_name"],
-                    source="gate-futures",
-                    source_symbol=item["contract"],
                     error=str(exc),
                 )
 

@@ -73,12 +73,8 @@ def run_gate_once(
         max_attempts=settings.retry.max_attempts,
         backoff_seconds=settings.retry.backoff_seconds,
     )
-    futures_symbols = {
-        key: item.model_dump(mode="json") for key, item in settings.futures_symbols.items()
-    }
     batch = client.fetch_batch(
         tradfi_symbols=settings.tradfi_symbols,
-        futures_symbols=futures_symbols,
     )
     quote_path = save_gate_quotes(
         paths,

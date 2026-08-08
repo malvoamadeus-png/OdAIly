@@ -10,16 +10,6 @@
     "XTIUSD": "WTI 原油",
     "XBRUSD": "布伦特原油"
   },
-  "futures_symbols": {
-    "BVIXUSDT": {
-      "contract": "BVIX_USDT",
-      "display_name": "BVIX"
-    },
-    "EVIXUSDT": {
-      "contract": "EVIX_USDT",
-      "display_name": "EVIX"
-    }
-  },
   "push_endpoint": "http://47.113.217.70:8501/push/data",
   "dry_run": true,
   "request_timeout_seconds": 10,
