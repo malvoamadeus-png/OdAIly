@@ -32,6 +32,27 @@
 - 服务器允许长期只保留本地运行资产，例如 `.env`、`.venv/`、`data/raw/`、`data/processed/`、`data/exports/`、`data/config/market_brief.json`；这些文件不纳入 Git。
 - 服务器上的 `.codex-backups/`、`.env.codex-*`、临时脚本、调试输出和历史手工副本不应长期留在工作区；完成排障或清理后应移出 repo 工作树或删除。
 
+## 生产服务器 SSH 操作
+
+- 生产服务器 SSH 主机别名为 `jibai-prod`，目录为 `/opt/OdAIly`；Windows SSH 配置位于 `C:\Users\A\.ssh\config`。
+- 当前 Codex 通常运行在 WSL 中。生产连接必须使用 Windows OpenSSH 和 Windows SSH 配置：
+
+  ```bash
+  /mnt/c/WINDOWS/System32/OpenSSH/ssh.exe -F 'C:/Users/A/.ssh/config' jibai-prod
+  ```
+
+- WSL 的 `/usr/bin/ssh` 不要直接读取 `/mnt/c/Users/A/.ssh` 下的私钥。NTFS 挂载会显示过宽权限，OpenSSH 会忽略私钥；Windows SSH 是生产连接的标准入口。
+- 本地完成构建、提交并推送后，服务器只执行：
+
+  ```bash
+  cd /opt/OdAIly
+  git fetch origin
+  git pull --ff-only origin main
+  ```
+
+- 同步后检查 `git rev-parse --short HEAD`、`git status --short` 和相关 systemd 服务状态。后端代码或服务配置变化时，按对应模块要求重启服务；纯前端变化由 GitHub 连接的前端部署流程负责，不要把服务器目录当作前端发布入口。
+- GitHub 的 `core.sshCommand` 只用于 GitHub，不代表生产服务器 SSH 配置；生产连接始终使用 `jibai-prod`。
+
 ## AI 可操作范围
 
 - 按 `docs/OdAIly代码与整体设计/控制台.md` 等控制台文档说明，AI 可以操作前端。
