@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +31,14 @@ MARKET_CAP_GATE = 500_000.0
 MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
 TG_MARKET_CAP_GATE = 300_000.0
 VOLUME_RATIO_GATE = 0.5
+TRACKING_WINDOW_SECONDS = 7 * 24 * 60 * 60
+COMPLETED_SCAN_INTERVAL_SECONDS = 300
+TOKEN_INFO_HIGH_INTERVAL_SECONDS = 300
+TOKEN_INFO_LOW_INTERVAL_SECONDS = 3600
+TOKEN_INFO_MIN_GAP_SECONDS = 3
+TRACKING_STATUS_ACTIVE = "active"
+TRACKING_STATUS_EXPIRED = "expired"
+TRACKING_STATUS_LEGACY = "legacy_untracked"
 QUEUE_EXPIRY_SECONDS = 3600
 MAX_JOB_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = (60, 300, 900)
@@ -57,6 +67,7 @@ READER_TEXT_NOT_AN_ANGLE = re.compile(
     r"(?:税务|官网).{0,20}(?:链接|页面)",
     re.IGNORECASE,
 )
+RATE_LIMIT_REMAINING_SECONDS = re.compile(r"~(\d+)s remaining")
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,39 @@ class Token:
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+    except ValueError:
+        return None
+
+
+def tracking_interval(market_cap: float, args: argparse.Namespace) -> int:
+    return (
+        int(getattr(args, "token_info_high_interval", TOKEN_INFO_HIGH_INTERVAL_SECONDS))
+        if market_cap >= MARKET_CAP_GATE
+        else int(getattr(args, "token_info_low_interval", TOKEN_INFO_LOW_INTERVAL_SECONDS))
+    )
+
+
+def tracking_phase_seconds(address: str, interval_seconds: int) -> int:
+    digest = hashlib.sha256(f"meme-token-info:{address}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % max(interval_seconds, 1)
+
+
+def next_tracking_time(address: str, current: datetime, interval_seconds: int) -> str:
+    interval = max(int(interval_seconds), 1)
+    phase = tracking_phase_seconds(address, interval)
+    anchor = int(current.timestamp()) // interval * interval + interval
+    candidate = datetime.fromtimestamp(anchor + phase, tz=UTC)
+    if candidate <= current:
+        candidate += timedelta(seconds=interval)
+    return candidate.isoformat()
 
 
 def number(value: Any) -> float:
@@ -125,40 +169,6 @@ def fetch_completed_tokens(limit: int) -> list[Token]:
     rows = data.get("completed", []) if isinstance(data, dict) else []
     tokens = [token for row in rows if isinstance(row, dict) if (token := token_from_row(row))]
     return sorted(tokens, key=lambda item: item.created_timestamp or 0, reverse=True)
-
-
-def fetch_market_cap_band(minimum: float, maximum: float | None, limit: int) -> list[Token]:
-    if not ensure_cli_ready():
-        raise RuntimeError("GMGN CLI is not ready")
-    command = [
-        GMGN,
-        "market",
-        "trenches",
-        "--chain",
-        CHAIN,
-        "--type",
-        "completed",
-        "--limit",
-        str(limit),
-        "--sort-by",
-        "usd_market_cap",
-        "--direction",
-        "asc",
-        "--min-marketcap",
-        str(minimum),
-        "--raw",
-    ]
-    if maximum is not None:
-        command.extend(("--max-marketcap", str(maximum)))
-    for platform in PLATFORMS:
-        command.extend(("--launchpad-platform", platform))
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN market-cap query failed")
-    payload = json.loads(result.stdout)
-    data = payload.get("data", payload) if isinstance(payload, dict) else {}
-    rows = data.get("completed", []) if isinstance(data, dict) else []
-    return [token for row in rows if isinstance(row, dict) if (token := token_from_row(row))]
 
 
 def _find_token_info_row(value: Any, address: str) -> dict[str, Any] | None:
@@ -250,8 +260,14 @@ class Store:
             CREATE TABLE IF NOT EXISTS observations (
               address TEXT PRIMARY KEY, platform TEXT NOT NULL, symbol TEXT NOT NULL,
               last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
-              last_seen_at TEXT NOT NULL,
-              triggered_at TEXT, published_at TEXT
+              last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
+              tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked',
+              tracking_started_at TEXT, tracking_expires_at TEXT,
+              last_completed_seen_at TEXT, last_token_info_at TEXT,
+              next_token_info_at TEXT, tracking_interval_seconds INTEGER,
+              tracking_source TEXT, last_volume_24h REAL NOT NULL DEFAULT 0,
+              token_info_failures INTEGER NOT NULL DEFAULT 0,
+              last_token_info_error TEXT
             );
             CREATE TABLE IF NOT EXISTS tg_candidates (
               id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL,
@@ -269,6 +285,30 @@ class Store:
         if "highest_market_cap" not in observation_columns:
             self.conn.execute("ALTER TABLE observations ADD COLUMN highest_market_cap REAL NOT NULL DEFAULT 0")
             self.conn.execute("UPDATE observations SET highest_market_cap=last_market_cap")
+        observation_migrations = {
+            "tracking_status": "TEXT NOT NULL DEFAULT 'legacy_untracked'",
+            "tracking_started_at": "TEXT",
+            "tracking_expires_at": "TEXT",
+            "last_completed_seen_at": "TEXT",
+            "last_token_info_at": "TEXT",
+            "next_token_info_at": "TEXT",
+            "tracking_interval_seconds": "INTEGER",
+            "tracking_source": "TEXT",
+            "last_volume_24h": "REAL NOT NULL DEFAULT 0",
+            "token_info_failures": "INTEGER NOT NULL DEFAULT 0",
+            "last_token_info_error": "TEXT",
+        }
+        for column, definition in observation_migrations.items():
+            if column not in observation_columns:
+                self.conn.execute(f"ALTER TABLE observations ADD COLUMN {column} {definition}")
+        self.conn.execute(
+            "UPDATE observations SET tracking_status='legacy_untracked', tracking_source=COALESCE(tracking_source, 'legacy') "
+            "WHERE tracking_status IS NULL OR tracking_status=''"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_observations_tracking_due "
+            "ON observations(tracking_status, next_token_info_at, tracking_expires_at)"
+        )
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(jobs)")}
         if "attempts" not in columns:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
@@ -358,16 +398,172 @@ class Store:
         else:
             observed_high = 0.0
         self.conn.execute(
-            """INSERT INTO observations(address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at, triggered_at, published_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO observations(
+              address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
+              triggered_at, published_at, tracking_status, tracking_source, last_volume_24h
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(address) DO UPDATE SET platform=excluded.platform, symbol=excluded.symbol,
               last_market_cap=excluded.last_market_cap, last_seen_at=excluded.last_seen_at,
+              last_volume_24h=excluded.last_volume_24h,
               highest_market_cap=MAX(observations.highest_market_cap, excluded.highest_market_cap),
               triggered_at=COALESCE(excluded.triggered_at, observations.triggered_at),
               published_at=COALESCE(excluded.published_at, observations.published_at)""",
-            (token.address, token.platform, token.symbol, token.market_cap, observed_high, now_iso(), triggered_at or (old["triggered_at"] if old else None), published_at or (old["published_at"] if old else None)),
+            (
+                token.address,
+                token.platform,
+                token.symbol,
+                token.market_cap,
+                observed_high,
+                now_iso(),
+                triggered_at or (old["triggered_at"] if old else None),
+                published_at or (old["published_at"] if old else None),
+                TRACKING_STATUS_LEGACY,
+                "legacy",
+                token.volume_24h,
+            ),
         )
         self.conn.commit()
+
+    def start_or_observe_completed(
+        self,
+        token: Token,
+        *,
+        observed_at: str,
+        tracking_window_seconds: int,
+        args: argparse.Namespace,
+    ) -> tuple[float, bool, str]:
+        """Register a completed discovery or refresh an already active window."""
+        old = self.observation(token.address)
+        previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0) if old else 0.0
+        expires_at = parse_iso(old["tracking_expires_at"]) if old else None
+        observed_time = parse_iso(observed_at) or datetime.now(UTC)
+        if old and old["tracking_status"] == TRACKING_STATUS_ACTIVE and expires_at and expires_at <= observed_time:
+            self.expire_tracking(observed_at)
+            old = self.observation(token.address)
+
+        status = str(old["tracking_status"]) if old else None
+        if old and status in (TRACKING_STATUS_LEGACY, TRACKING_STATUS_EXPIRED):
+            self.conn.execute(
+                """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
+                  last_completed_seen_at=?, last_volume_24h=? WHERE address=?""",
+                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, token.volume_24h, token.address),
+            )
+            self.conn.commit()
+            return previous_high, False, status
+
+        interval = tracking_interval(token.market_cap, args)
+        next_at = next_tracking_time(token.address, observed_time, interval)
+        if old:
+            started_at = str(old["tracking_started_at"])
+            expires = str(old["tracking_expires_at"])
+            self.conn.execute(
+                """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
+                  last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
+                  tracking_source='completed', last_volume_24h=?, token_info_failures=0,
+                  last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
+                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, next_at, interval, token.volume_24h, token.address),
+            )
+        else:
+            started_at = observed_at
+            expires = (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat()
+            self.conn.execute(
+                """INSERT INTO observations(
+                  address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
+                  tracking_status, tracking_started_at, tracking_expires_at, last_completed_seen_at,
+                  next_token_info_at, tracking_interval_seconds, tracking_source, last_volume_24h
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'completed', ?)""",
+                (token.address, token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, started_at, expires, observed_at, next_at, interval, token.volume_24h),
+            )
+        self.conn.commit()
+        return previous_high, old is None, TRACKING_STATUS_ACTIVE
+
+    def observe_token_info(
+        self,
+        token: Token,
+        *,
+        observed_at: str,
+        args: argparse.Namespace,
+    ) -> float | None:
+        old = self.observation(token.address)
+        if old is None or old["tracking_status"] != TRACKING_STATUS_ACTIVE:
+            return None
+        previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0)
+        expires_at = parse_iso(old["tracking_expires_at"])
+        observed_time = parse_iso(observed_at) or datetime.now(UTC)
+        if expires_at and expires_at <= observed_time:
+            self.expire_tracking(observed_at)
+            return None
+        interval = tracking_interval(token.market_cap, args)
+        self.conn.execute(
+            """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+              highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
+              last_token_info_at=?, next_token_info_at=?, tracking_interval_seconds=?,
+              tracking_source='token_info', last_volume_24h=?, token_info_failures=0,
+              last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
+            (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, next_tracking_time(token.address, observed_time, interval), interval, token.volume_24h, token.address),
+        )
+        self.conn.commit()
+        return previous_high
+
+    def mark_tracking_triggered(self, address: str) -> None:
+        self.conn.execute("UPDATE observations SET triggered_at=COALESCE(triggered_at, ?) WHERE address=?", (now_iso(), address))
+        self.conn.commit()
+
+    def expire_tracking(self, now: str | None = None) -> int:
+        stamp = now or now_iso()
+        cursor = self.conn.execute(
+            """UPDATE observations SET tracking_status='expired', next_token_info_at=NULL,
+              tracking_interval_seconds=NULL WHERE tracking_status='active'
+              AND tracking_expires_at IS NOT NULL AND tracking_expires_at<=?""",
+            (stamp,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def due_token_info(self, *, now: str, latest_completed_seen_at: str | None) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """SELECT * FROM observations WHERE tracking_status='active'
+              AND tracking_expires_at>? AND (next_token_info_at IS NULL OR next_token_info_at<=?)
+              AND (last_completed_seen_at IS NULL OR last_completed_seen_at<>?)
+              ORDER BY COALESCE(next_token_info_at, '') ASC, address ASC LIMIT 1""",
+            (now, now, latest_completed_seen_at or ""),
+        ).fetchone()
+
+    def token_info_backlog(self, *, now: str, latest_completed_seen_at: str | None) -> int:
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS count FROM observations WHERE tracking_status='active'
+              AND tracking_expires_at>? AND (next_token_info_at IS NULL OR next_token_info_at<=?)
+              AND (last_completed_seen_at IS NULL OR last_completed_seen_at<>?)""",
+            (now, now, latest_completed_seen_at or ""),
+        ).fetchone()
+        return int(row["count"] or 0)
+
+    def record_token_info_failure(self, address: str, *, error: str, next_at: str, observed_at: str) -> None:
+        self.conn.execute(
+            """UPDATE observations SET token_info_failures=token_info_failures+1,
+              last_token_info_error=?, next_token_info_at=?, last_token_info_at=?, last_seen_at=?
+              WHERE address=? AND tracking_status='active'""",
+            (error[:1000], next_at, observed_at, observed_at, address),
+        )
+        self.conn.commit()
+
+    def token_info_request_allowed(self, now: datetime, min_gap_seconds: int) -> tuple[bool, float]:
+        value = self.meta("token_info_last_request_at")
+        last = parse_iso(value)
+        remaining = max(0.0, float(min_gap_seconds) - ((now - last).total_seconds() if last else float("inf")))
+        return remaining <= 0, remaining
+
+    def token_info_backoff_remaining(self, now: datetime) -> float:
+        until = parse_iso(self.meta("token_info_backoff_until"))
+        return max(0.0, (until - now).total_seconds()) if until else 0.0
+
+    def set_token_info_backoff(self, until: datetime) -> None:
+        self.set_meta("token_info_backoff_until", until.isoformat())
+
+    def mark_token_info_request(self, now: datetime) -> None:
+        self.set_meta("token_info_last_request_at", now.isoformat())
 
     def add_job(
         self,
@@ -778,35 +974,25 @@ def milestone_level(previous_high: float, current: float) -> float | None:
     return max(crossed) if crossed else None
 
 
-def milestone_scan_due(store: Store, interval_seconds: int) -> bool:
-    value = store.meta("milestone_scan_at")
-    if not value:
-        return True
-    try:
-        last = datetime.fromisoformat(value)
-    except ValueError:
-        return True
-    return (datetime.now(UTC) - last).total_seconds() >= interval_seconds
+def completed_scan_due(store: Store, interval_seconds: int) -> bool:
+    last = parse_iso(store.meta("completed_scan_at"))
+    return last is None or (datetime.now(UTC) - last).total_seconds() >= max(int(interval_seconds), 1)
 
 
-def fetch_milestone_tokens(limit: int) -> tuple[list[Token], list[str]]:
-    bounds = list(zip(MARKET_CAP_LEVELS, (*MARKET_CAP_LEVELS[1:], None)))
-    by_address: dict[str, Token] = {}
-    saturated: list[str] = []
-    for minimum, maximum in bounds:
-        rows = fetch_market_cap_band(minimum, maximum, limit)
-        if len(rows) >= limit:
-            saturated.append(f"{int(minimum)}-{int(maximum) if maximum else 'up'}")
-        for token in rows:
-            by_address[token.address] = token
-    return list(by_address.values()), saturated
-
-
-def evaluate_market_token(store: Store, token: Token, *, bootstrap: bool) -> tuple[int, int]:
+def evaluate_market_token(
+    store: Store,
+    token: Token,
+    *,
+    bootstrap: bool,
+    previous_high: float | None = None,
+    persist_observation: bool = True,
+) -> tuple[int, int]:
     observed = store.observation(token.address)
-    previous_high = float(observed["highest_market_cap"] or observed["last_market_cap"] or 0) if observed else 0.0
+    if previous_high is None:
+        previous_high = float(observed["highest_market_cap"] or observed["last_market_cap"] or 0) if observed else 0.0
     if bootstrap:
-        store.upsert_observation(token)
+        if persist_observation:
+            store.upsert_observation(token)
         if token.market_cap >= MARKET_CAP_GATE:
             inserted = store.add_job(
                 token,
@@ -818,7 +1004,10 @@ def evaluate_market_token(store: Store, token: Token, *, bootstrap: bool) -> tup
             return (0, int(inserted))
         return (0, 0)
     level = milestone_level(previous_high, token.market_cap)
-    store.upsert_observation(token, triggered_at=now_iso() if level else None)
+    if persist_observation:
+        store.upsert_observation(token, triggered_at=now_iso() if level else None)
+    elif level:
+        store.mark_tracking_triggered(token.address)
     if level is None:
         return (0, 0)
     trigger_key = f"market_cap:{int(level)}"
@@ -840,6 +1029,78 @@ def evaluate_market_token(store: Store, token: Token, *, bootstrap: bool) -> tup
         trigger_level=level,
     )
     return (int(inserted), 0)
+
+
+def rate_limit_delay_seconds(error: str) -> int:
+    match = RATE_LIMIT_REMAINING_SECONDS.search(error)
+    if match:
+        return int(match.group(1))
+    retry_after = re.search(r"retry[- ]after\D+(\d+)", error, re.IGNORECASE)
+    return int(retry_after.group(1)) if retry_after else 0
+
+
+def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, Any]:
+    """Run at most one persisted token_info task; the caller provides serialization."""
+    now = datetime.now(UTC)
+    stamp = now.isoformat()
+    expired = store.expire_tracking(stamp)
+    backoff_remaining = store.token_info_backoff_remaining(now)
+    if backoff_remaining > 0:
+        return {"status": "rate_limited_server", "remaining": backoff_remaining, "expired": expired}
+    latest_completed = store.meta("completed_scan_at")
+    row = store.due_token_info(now=stamp, latest_completed_seen_at=latest_completed)
+    if row is None:
+        return {"status": "idle", "expired": expired}
+    allowed, remaining = store.token_info_request_allowed(
+        now,
+        int(getattr(args, "token_info_min_gap", TOKEN_INFO_MIN_GAP_SECONDS)),
+    )
+    if not allowed:
+        return {"status": "rate_limited_local", "remaining": remaining, "expired": expired}
+
+    address = str(row["address"])
+    backlog = store.token_info_backlog(now=stamp, latest_completed_seen_at=latest_completed)
+    if backlog > 1:
+        print(f"[meme-scan] token_info backlog={backlog}", file=sys.stderr)
+    store.mark_token_info_request(now)
+    try:
+        token = fetch_token_info(address)
+        if token is None:
+            raise RuntimeError("token_info returned no usable market cap")
+    except Exception as exc:
+        error = str(exc)
+        interval = int(row["tracking_interval_seconds"] or TOKEN_INFO_LOW_INTERVAL_SECONDS)
+        next_at = (now + timedelta(seconds=interval)).isoformat()
+        server_delay = rate_limit_delay_seconds(error)
+        if server_delay:
+            backoff_until = now + timedelta(seconds=server_delay)
+            store.set_token_info_backoff(backoff_until)
+            next_at = max(next_at, backoff_until.isoformat())
+            print(f"[meme-scan] token_info rate limited address={address} retry={server_delay}s", file=sys.stderr)
+        failures = int(row["token_info_failures"] or 0) + 1
+        store.record_token_info_failure(address, error=error, next_at=next_at, observed_at=stamp)
+        print(f"[meme-scan] token_info failed address={address} failures={failures}: {error}", file=sys.stderr)
+        return {"status": "failed", "address": address, "failures": failures, "error": error, "backlog": backlog, "expired": expired}
+
+    previous_high = store.observe_token_info(token, observed_at=stamp, args=args)
+    if previous_high is None:
+        return {"status": "expired", "address": address, "expired": expired + 1}
+    queued, discarded = evaluate_market_token(
+        store,
+        token,
+        bootstrap=False,
+        previous_high=previous_high,
+        persist_observation=False,
+    )
+    return {
+        "status": "observed",
+        "address": address,
+        "market_cap": token.market_cap,
+        "queued": queued,
+        "discarded": discarded,
+        "backlog": backlog,
+        "expired": expired,
+    }
 
 
 def process_tg_candidate(store: Store) -> tuple[int, int]:
@@ -889,8 +1150,41 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
 
 
 def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
-    recent_tokens = fetch_completed_tokens(args.limit)
+    completed_interval = int(
+        getattr(args, "completed_interval", getattr(args, "interval", COMPLETED_SCAN_INTERVAL_SECONDS))
+    )
     forced_address = str(getattr(args, "force_contract", "") or "").strip().lower()
+    should_scan_completed = bool(getattr(args, "once", False) or forced_address or completed_scan_due(store, completed_interval))
+    recent_tokens: list[Token] = []
+    scan_stamp: str | None = None
+    queued = 0
+    discarded = 0
+    first_run = not store.initialized()
+    if should_scan_completed:
+        recent_tokens = fetch_completed_tokens(args.limit)
+        scan_stamp = now_iso()
+        expired = store.expire_tracking(scan_stamp)
+        for token in {item.address: item for item in recent_tokens}.values():
+            previous_high, _, status = store.start_or_observe_completed(
+                token,
+                observed_at=scan_stamp,
+                tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
+                args=args,
+            )
+            if status == TRACKING_STATUS_ACTIVE:
+                added_queued, added_discarded = evaluate_market_token(
+                    store,
+                    token,
+                    bootstrap=False,
+                    previous_high=previous_high,
+                    persist_observation=False,
+                )
+                queued += added_queued
+                discarded += added_discarded
+        store.set_meta("completed_scan_at", scan_stamp)
+    else:
+        expired = store.expire_tracking()
+
     forced_token = next((token for token in recent_tokens if token.address == forced_address), None) if forced_address else None
     if forced_address and forced_token is None:
         forced_token = fetch_token_info(forced_address)
@@ -898,27 +1192,8 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"forced contract was not found on BSC: {forced_address}")
     if forced_token and (forced_token.market_cap < MARKET_CAP_GATE or forced_token.volume_ratio < VOLUME_RATIO_GATE):
         raise RuntimeError(f"forced contract does not meet gates: {forced_address}")
-    first_run = not store.initialized()
-    milestone_bootstrap = store.meta("milestone_initialized") is None
-    queued = 0
-    discarded = 0
-    saturated: list[str] = []
-    market_tokens: dict[str, Token] = {token.address: token for token in recent_tokens}
-    if milestone_scan_due(store, int(getattr(args, "milestone_interval", 300))):
-        band_tokens, saturated = fetch_milestone_tokens(args.limit)
-        market_tokens.update({token.address: token for token in band_tokens})
-        store.set_meta("milestone_scan_at")
-    bootstrap = first_run or milestone_bootstrap
-    for token in market_tokens.values():
-        if forced_token and token.address == forced_token.address:
-            continue
-        added_queued, added_discarded = evaluate_market_token(store, token, bootstrap=bootstrap)
-        queued += added_queued
-        discarded += added_discarded
     if first_run:
         store.mark_initialized()
-    if milestone_bootstrap:
-        store.set_meta("milestone_initialized")
     tg_queued, tg_discarded = process_tg_candidate(store)
     queued += tg_queued
     discarded += tg_discarded
@@ -926,8 +1201,9 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         store.force_requeue(forced_token)
     return {
         "completed": len(recent_tokens),
-        "market_observed": len(market_tokens),
-        "saturated_bands": saturated,
+        "market_observed": len(recent_tokens),
+        "completed_scanned": bool(scan_stamp),
+        "expired": expired,
         "startup": first_run,
         "queued": queued,
         "discarded": discarded,
@@ -937,11 +1213,12 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
 
 def scan_once(store: Store, args: argparse.Namespace) -> None:
     summary = discover_once(store, args)
+    token_info_result = process_due_token_info(store, args)
     result = process_one(store, args, address=summary["forced_address"])
     print(
         f"[meme-scan] completed={summary['completed']} startup={summary['startup']} "
         f"market_observed={summary['market_observed']} queued={summary['queued']} "
-        f"discarded={summary['discarded']} saturated={summary['saturated_bands'] or 'none'} "
+        f"discarded={summary['discarded']} token_info={token_info_result['status']} "
         f"processed={result or 'none'}"
     )
 
@@ -950,6 +1227,19 @@ def process_from_db(db_path: str, args: argparse.Namespace) -> str | None:
     worker_store = Store(Path(db_path))
     try:
         return process_one(worker_store, args)
+    finally:
+        worker_store.close()
+
+
+def token_info_worker(db_path: str, args: argparse.Namespace, stop_event: Any) -> None:
+    worker_store = Store(Path(db_path))
+    try:
+        while not stop_event.is_set():
+            result = process_due_token_info(worker_store, args)
+            if result["status"] in ("rate_limited_local", "rate_limited_server"):
+                stop_event.wait(min(float(result["remaining"]), 1.0))
+            else:
+                stop_event.wait(1.0)
     finally:
         worker_store.close()
 
@@ -964,31 +1254,48 @@ def run(args: argparse.Namespace) -> int:
         if args.once:
             scan_once(store, args)
             return 0
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="narrative-worker") as executor:
+        stop_event = threading.Event()
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="narrative-worker") as executor, ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="token-info-worker"
+        ) as tracking_executor:
+            tracking_future = tracking_executor.submit(token_info_worker, args.db, args, stop_event)
             worker: Future[str | None] | None = None
-            while True:
-                started = time.monotonic()
-                processed: str | None = None
-                if worker is not None and worker.done():
+            try:
+                while True:
+                    started = time.monotonic()
+                    processed: str | None = None
+                    if tracking_future.done():
+                        try:
+                            tracking_future.result()
+                        except Exception as exc:
+                            print(f"[meme-scan] token_info worker failed: {exc}", file=sys.stderr)
+                        tracking_future = tracking_executor.submit(token_info_worker, args.db, args, stop_event)
+                    if worker is not None and worker.done():
+                        try:
+                            processed = worker.result()
+                        except Exception as exc:
+                            print(f"[meme-scan] worker failed: {exc}", file=sys.stderr)
+                        worker = None
                     try:
-                        processed = worker.result()
+                        summary = discover_once(store, args)
+                        if worker is None:
+                            worker = executor.submit(process_from_db, args.db, args)
+                        print(
+                            f"[meme-scan] completed={summary['completed']} scanned={summary['completed_scanned']} "
+                            f"startup={summary['startup']} market_observed={summary['market_observed']} "
+                            f"queued={summary['queued']} discarded={summary['discarded']} "
+                            f"expired={summary['expired']} processed={processed or 'none'} "
+                            f"worker={'busy' if worker else 'idle'}"
+                        )
                     except Exception as exc:
-                        print(f"[meme-scan] worker failed: {exc}", file=sys.stderr)
-                    worker = None
-                try:
-                    summary = discover_once(store, args)
-                    if worker is None:
-                        worker = executor.submit(process_from_db, args.db, args)
-                    print(
-                        f"[meme-scan] completed={summary['completed']} startup={summary['startup']} "
-                        f"market_observed={summary['market_observed']} queued={summary['queued']} "
-                        f"discarded={summary['discarded']} saturated={summary['saturated_bands'] or 'none'} "
-                        f"processed={processed or 'none'} worker={'busy' if worker else 'idle'}"
+                        print(f"[meme-scan] poll failed: {exc}", file=sys.stderr)
+                    completed_interval = int(
+                        getattr(args, "completed_interval", getattr(args, "interval", COMPLETED_SCAN_INTERVAL_SECONDS))
                     )
-                except Exception as exc:
-                    print(f"[meme-scan] poll failed: {exc}", file=sys.stderr)
-                sleep_for = max(0.0, args.interval - (time.monotonic() - started))
-                time.sleep(sleep_for)
+                    time.sleep(max(0.0, completed_interval - (time.monotonic() - started)))
+            finally:
+                stop_event.set()
+                tracking_future.result(timeout=10)
     finally:
         store.close()
 
@@ -998,8 +1305,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--audit-dir", default=str(DEFAULT_AUDIT_DIR))
     parser.add_argument("--limit", type=int, default=80, help="GMGN completed rows per poll.")
-    parser.add_argument("--interval", type=int, default=60, help="Polling interval in seconds.")
-    parser.add_argument("--milestone-interval", type=int, default=300, help="Seconds between full market-cap band scans.")
+    parser.add_argument("--completed-interval", type=int, default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or COMPLETED_SCAN_INTERVAL_SECONDS), help="Seconds between completed discovery scans.")
+    parser.add_argument("--token-info-high-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or TOKEN_INFO_HIGH_INTERVAL_SECONDS))
+    parser.add_argument("--token-info-low-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or TOKEN_INFO_LOW_INTERVAL_SECONDS))
+    parser.add_argument("--tracking-window", type=int, default=int(os.getenv("MEME_TRACKING_WINDOW_SECONDS") or TRACKING_WINDOW_SECONDS))
+    parser.add_argument("--token-info-min-gap", type=int, default=int(os.getenv("MEME_TOKEN_INFO_MIN_GAP_SECONDS") or TOKEN_INFO_MIN_GAP_SECONDS))
     parser.add_argument("--once", action="store_true", help="Run one poll and process at most one queued job.")
     parser.add_argument("--send", action="store_true", help="Create an OdAIly publisher_pending draft. Default is dry-run.")
     parser.add_argument("--push-timeout", type=int, default=20)

@@ -7,9 +7,11 @@
 
 ## 上游链路
 
-- `odaily-meme-scanner.service` 定期读取 GMGN BSC `completed` 发射代币列表和市值区间。
+- `odaily-meme-scanner.service` 每 5 分钟无市值筛选读取 GMGN BSC `completed` 发射代币列表；`completed` 只承担首次发现窗口，不是完整的市值扫描源。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
-- 普通新币市值达到 50 万美元后才进入播报候选，后续里程碑为 100 万和 300 万美元。
+- 普通新币首次进入 `completed` 即建立 7 天跟踪窗口，市值达到 50 万美元后进入播报候选，后续里程碑为 100 万和 300 万美元；首次发现已跨多档时只触发最高档。
+- 仍在最近一次 `completed` 列表中的代币直接使用列表市值，不调用 `token_info`。滚出列表但仍在 7 天窗口内的代币由持久化调度器调用 `token_info`：市值低于 50 万美元每小时一次，达到 50 万美元每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程请求用于错峰限流。
+- 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 `completed` 也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者，且查询时市值达到 30 万美元。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。
@@ -60,6 +62,7 @@ python backend/src/main.py meme tg-watch
 ## 配置
 
 - GMGN：`GMGN_API_KEY`，可选 `GMGN_HTTPS_PROXY`；服务器需安装 `gmgn-cli`。
+- 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
@@ -74,6 +77,8 @@ python backend/src/main.py meme tg-watch
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
+- `token_info` 成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不推进市值水位。429 会记录服务端退避时间并暂停全局 `token_info` 请求；调度积压写入 worker 日志。
+- `observations` 的跟踪字段包括 `tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
 
 ## 页面字段

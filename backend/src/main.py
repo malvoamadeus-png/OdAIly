@@ -373,8 +373,31 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
     meme_scan.add_argument("--audit-dir", default=str(get_paths().exports_dir / "meme_scanner"))
     meme_scan.add_argument("--limit", type=int, default=80)
-    meme_scan.add_argument("--interval", type=int, default=60)
-    meme_scan.add_argument("--milestone-interval", type=int, default=300)
+    meme_scan.add_argument(
+        "--completed-interval",
+        type=int,
+        default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or 300),
+    )
+    meme_scan.add_argument(
+        "--token-info-high-interval",
+        type=int,
+        default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or 300),
+    )
+    meme_scan.add_argument(
+        "--token-info-low-interval",
+        type=int,
+        default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or 3600),
+    )
+    meme_scan.add_argument(
+        "--tracking-window",
+        type=int,
+        default=int(os.getenv("MEME_TRACKING_WINDOW_SECONDS") or 604800),
+    )
+    meme_scan.add_argument(
+        "--token-info-min-gap",
+        type=int,
+        default=int(os.getenv("MEME_TOKEN_INFO_MIN_GAP_SECONDS") or 3),
+    )
     meme_scan.add_argument("--once", action="store_true")
     meme_scan.add_argument("--send", action="store_true")
     meme_scan.add_argument("--push-timeout", type=int, default=20)

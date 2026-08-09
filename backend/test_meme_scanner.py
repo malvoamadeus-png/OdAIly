@@ -36,7 +36,11 @@ def args(root: Path) -> argparse.Namespace:
     return argparse.Namespace(
         db=str(root / "scanner.sqlite3"),
         limit=80,
-        milestone_interval=300,
+        completed_interval=300,
+        token_info_high_interval=300,
+        token_info_low_interval=3600,
+        tracking_window=604800,
+        token_info_min_gap=3,
         audit_dir=str(root / "audit"),
         narrative_command=None,
         narrative_timeout=1,
@@ -46,6 +50,17 @@ def args(root: Path) -> argparse.Namespace:
 
 
 class MemeScannerTests(unittest.TestCase):
+    def test_completed_request_has_no_market_cap_filters(self) -> None:
+        payload = {"data": {"completed": []}}
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
+            scanner.subprocess, "run", return_value=completed
+        ) as run:
+            scanner.fetch_completed_tokens(80)
+        command = run.call_args.args[0]
+        self.assertNotIn("--min-marketcap", command)
+        self.assertNotIn("--max-marketcap", command)
+
     def test_token_info_accepts_nested_market_payload_without_repeated_address(self) -> None:
         payload = {
             "data": {
@@ -170,7 +185,7 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_token_info", return_value=burst):
                 self.assertEqual(scanner.process_tg_candidate(store), (1, 0))
             observation = store.conn.execute(
-                "SELECT last_market_cap, highest_market_cap FROM observations WHERE address=?",
+                "SELECT last_market_cap, highest_market_cap, tracking_status FROM observations WHERE address=?",
                 (address,),
             ).fetchone()
             self.assertEqual((observation["last_market_cap"], observation["highest_market_cap"]), (1_100_000.0, 400_000.0))
@@ -182,6 +197,224 @@ class MemeScannerTests(unittest.TestCase):
                 (row["trigger_kind"], row["trigger_key"], row["trigger_level"]),
                 ("market_cap_milestone", "market_cap:1000000", 1_000_000.0),
             )
+            self.assertEqual(observation["tracking_status"], "legacy_untracked")
+            store.close()
+
+    def test_legacy_observations_are_not_backfilled_into_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            conn = sqlite3.connect(path)
+            conn.execute(
+                """CREATE TABLE observations (
+                  address TEXT PRIMARY KEY, platform TEXT NOT NULL, symbol TEXT NOT NULL,
+                  last_market_cap REAL NOT NULL, last_seen_at TEXT NOT NULL,
+                  triggered_at TEXT, published_at TEXT
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO observations(address, platform, symbol, last_market_cap, last_seen_at)
+                VALUES ('0xold', 'fourmeme', 'OLD', 400000, '2026-08-01T00:00:00+00:00')"""
+            )
+            conn.commit()
+            conn.close()
+            store = scanner.Store(path)
+            row = store.observation("0xold")
+            self.assertEqual(row["tracking_status"], "legacy_untracked")
+            self.assertIsNone(row["tracking_started_at"])
+            store.close()
+
+    def test_first_discovery_at_three_million_queues_only_three_million(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xthree", 3_200_000, 2_000_000)
+            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]):
+                scanner.discover_once(store, args(root))
+            rows = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchall()
+            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:3000000"])
+            store.close()
+
+    def test_completed_token_does_not_call_token_info_while_in_latest_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xin-list", 600_000, 400_000)
+            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(
+                scanner, "fetch_token_info"
+            ) as token_info:
+                scanner.discover_once(store, args(root))
+                result = scanner.process_due_token_info(store, args(root))
+            self.assertEqual(result["status"], "idle")
+            token_info.assert_not_called()
+            store.close()
+
+    def test_out_of_list_low_cap_uses_hour_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xlow", 400_000, 300_000)
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
+                ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args = args(root)
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", return_value=token("0xlow", 400_000, 300_000)) as token_info:
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "observed")
+            token_info.assert_called_once_with(current.address)
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 3600)
+            store.close()
+
+    def test_out_of_list_high_cap_uses_five_minute_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xhigh", 800_000, 500_000)
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
+                ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args = args(root)
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", return_value=token("0xhigh", 800_000, 500_000)):
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "observed")
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 300)
+            store.close()
+
+    def test_crossing_five_hundred_thousand_switches_to_high_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xcross", 400_000, 300_000)
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
+                ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args = args(root)
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", return_value=token("0xcross", 600_000, 400_000)):
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "observed")
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 300)
+            store.close()
+
+    def test_completed_reappearance_suppresses_due_token_info(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xback", 800_000, 500_000)
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute("UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00' WHERE address=?", (current.address,))
+            store.conn.commit()
+            run_args = args(root)
+            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(
+                scanner, "fetch_token_info"
+            ) as token_info:
+                scanner.discover_once(store, run_args)
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "idle")
+            token_info.assert_not_called()
+            store.close()
+
+    def test_expired_tracking_does_not_poll_or_reactivate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xexpire", 800_000, 500_000)
+            store.start_or_observe_completed(current, observed_at=scanner.now_iso(), tracking_window_seconds=1, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET tracking_expires_at='2000-01-01T00:00:00+00:00', next_token_info_at='2000-01-01T00:00:00+00:00' WHERE address=?",
+                (current.address,),
+            )
+            store.conn.commit()
+            with patch.object(scanner, "fetch_token_info") as token_info:
+                result = scanner.process_due_token_info(store, args(root))
+                _, _, status = store.start_or_observe_completed(
+                    current, observed_at=scanner.now_iso(), tracking_window_seconds=604800, args=args(root)
+                )
+            self.assertEqual(result["status"], "idle")
+            self.assertEqual(status, "expired")
+            self.assertEqual(store.observation(current.address)["tracking_status"], "expired")
+            token_info.assert_not_called()
+            store.close()
+
+    def test_token_info_failure_preserves_high_watermark(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xfail", 1_200_000, 800_000)
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00', last_completed_seen_at='old-scan' WHERE address=?",
+                (current.address,),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args = args(root)
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", side_effect=RuntimeError("429 ~12s remaining")):
+                result = scanner.process_due_token_info(store, run_args)
+            row = store.observation(current.address)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(row["highest_market_cap"], 1_200_000.0)
+            self.assertEqual(row["last_market_cap"], 1_200_000.0)
+            self.assertEqual(row["token_info_failures"], 1)
+            self.assertIn("429", row["last_token_info_error"])
+            store.close()
+
+    def test_jitter_is_stable_and_minimum_gap_is_enforced(self) -> None:
+        first = scanner.next_tracking_time("0xphase-a", scanner.datetime.now(scanner.UTC), 300)
+        second = scanner.next_tracking_time("0xphase-b", scanner.datetime.now(scanner.UTC), 300)
+        self.assertNotEqual(scanner.tracking_phase_seconds("0xphase-a", 300), scanner.tracking_phase_seconds("0xphase-b", 300))
+        self.assertNotEqual(first, second)
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            moment = scanner.datetime.now(scanner.UTC)
+            store.mark_token_info_request(moment)
+            allowed, remaining = store.token_info_request_allowed(moment + scanner.timedelta(seconds=2), 3)
+            self.assertFalse(allowed)
+            self.assertGreater(remaining, 0)
+            allowed, _ = store.token_info_request_allowed(moment + scanner.timedelta(seconds=3), 3)
+            self.assertTrue(allowed)
+            store.close()
+
+    def test_thirty_first_token_remains_observable_after_completed_rollover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            run_args = args(root)
+            tokens = [token(f"0xroll-{index}", 800_000, 500_000) for index in range(31)]
+            observed_at = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            for current in tokens:
+                store.start_or_observe_completed(current, observed_at=observed_at, tracking_window_seconds=604800, args=run_args)
+            oldest = tokens[-1]
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00', last_completed_seen_at='old-scan' WHERE address=?",
+                (oldest.address,),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", return_value=oldest) as token_info:
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "observed")
+            token_info.assert_called_once_with(oldest.address)
             store.close()
 
     def test_collect_narrative_uses_odaily_internal_generator(self) -> None:
@@ -202,16 +435,23 @@ class MemeScannerTests(unittest.TestCase):
             self.assertTrue(Path(result["output_path"]).exists())
             generate.assert_called_once()
 
-    def test_first_poll_marks_existing_token_without_queuing(self) -> None:
+    def test_first_poll_starts_seven_day_tracking_and_queues_highest_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xaaa", 600_000, 400_000)
-            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "fetch_milestone_tokens", return_value=([current], [])):
+            narrative = {"returncode": 0, "reader_text": "A usable source narrative."}
+            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(
+                scanner, "collect_narrative", return_value=narrative
+            ):
                 scanner.scan_once(store, args(root))
-            job = store.conn.execute("SELECT status, reason FROM jobs WHERE address=?", (current.address,)).fetchone()
-            self.assertEqual((job["status"], job["reason"]), ("discarded", "startup_seen"))
-            self.assertIsNotNone(store.observation(current.address))
+            job = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchone()
+            observation = store.observation(current.address)
+            self.assertEqual(job["trigger_key"], "market_cap:500000")
+            self.assertEqual(observation["tracking_status"], "active")
+            self.assertEqual(observation["tracking_source"], "completed")
+            self.assertTrue(observation["tracking_started_at"])
+            self.assertTrue(observation["tracking_expires_at"])
             store.close()
 
     def test_new_token_below_volume_ratio_is_archived_without_narrative(self) -> None:
