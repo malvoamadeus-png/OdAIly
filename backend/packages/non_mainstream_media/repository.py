@@ -64,7 +64,13 @@ class NonMainstreamMediaRepository(Protocol):
         jitter_seconds: int | None = None,
     ) -> NonMainstreamMediaSettings: ...
     def list_sources(self, *, include_disabled: bool = False) -> list[NonMainstreamMediaSource]: ...
-    def update_source(self, source_id: int, *, enabled: bool | None = None) -> NonMainstreamMediaSource: ...
+    def update_source(
+        self,
+        source_id: int,
+        *,
+        enabled: bool | None = None,
+        display_name: str | None = None,
+    ) -> NonMainstreamMediaSource: ...
     def mark_source_seeded(self, source: NonMainstreamMediaSource, source_item_ids: list[str]) -> None: ...
     def mark_seen(self, source: NonMainstreamMediaSource, source_item_id: str, *, seeded: bool) -> bool: ...
     def unseen_source_item_ids(self, site_key: str, source_item_ids: list[str]) -> set[str]: ...
@@ -162,7 +168,6 @@ class PostgresNonMainstreamMediaRepository:
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true)
                     ON CONFLICT (site_key) DO UPDATE SET
-                        display_name = EXCLUDED.display_name,
                         homepage_url = EXCLUDED.homepage_url,
                         capture_method = EXCLUDED.capture_method,
                         pipeline_mode = EXCLUDED.pipeline_mode,
@@ -170,8 +175,7 @@ class PostgresNonMainstreamMediaRepository:
                         discovery_mode = EXCLUDED.discovery_mode,
                         interval_seconds = EXCLUDED.interval_seconds,
                         updated_at = now()
-                    WHERE non_mainstream_media_sources.display_name IS DISTINCT FROM EXCLUDED.display_name
-                       OR non_mainstream_media_sources.homepage_url IS DISTINCT FROM EXCLUDED.homepage_url
+                    WHERE non_mainstream_media_sources.homepage_url IS DISTINCT FROM EXCLUDED.homepage_url
                        OR non_mainstream_media_sources.capture_method IS DISTINCT FROM EXCLUDED.capture_method
                        OR non_mainstream_media_sources.pipeline_mode IS DISTINCT FROM EXCLUDED.pipeline_mode
                        OR non_mainstream_media_sources.source_group IS DISTINCT FROM EXCLUDED.source_group
@@ -256,19 +260,26 @@ class PostgresNonMainstreamMediaRepository:
             ).fetchall()
         return [_row_to_source(row) for row in rows]
 
-    def update_source(self, source_id: int, *, enabled: bool | None = None) -> NonMainstreamMediaSource:
-        if enabled is None:
+    def update_source(
+        self,
+        source_id: int,
+        *,
+        enabled: bool | None = None,
+        display_name: str | None = None,
+    ) -> NonMainstreamMediaSource:
+        if enabled is None and display_name is None:
             raise ValueError("no fields to update")
         with self._connect() as conn:
             row = conn.execute(
                 """
                 UPDATE non_mainstream_media_sources
-                SET enabled = %s,
+                SET enabled = COALESCE(%s, enabled),
+                    display_name = COALESCE(%s, display_name),
                     updated_at = now()
                 WHERE id = %s
                 RETURNING *
                 """,
-                (enabled, source_id),
+                (enabled, display_name, source_id),
             ).fetchone()
             if row is None:
                 raise ValueError(f"non mainstream media source not found: {source_id}")
@@ -573,7 +584,6 @@ class InMemoryNonMainstreamMediaRepository:
             self.sources[existing.id] = NonMainstreamMediaSource(
                 **{
                     **asdict(existing),
-                    "display_name": site.display_name,
                     "homepage_url": site.homepage_url,
                     "capture_method": site.capture_method,
                     "pipeline_mode": site.pipeline_mode,
@@ -608,12 +618,21 @@ class InMemoryNonMainstreamMediaRepository:
             sources = [source for source in sources if source.enabled]
         return sorted(sources, key=lambda item: (not item.enabled, item.display_name, item.site_key))
 
-    def update_source(self, source_id: int, *, enabled: bool | None = None) -> NonMainstreamMediaSource:
+    def update_source(
+        self,
+        source_id: int,
+        *,
+        enabled: bool | None = None,
+        display_name: str | None = None,
+    ) -> NonMainstreamMediaSource:
         source = self.sources[source_id]
+        if enabled is None and display_name is None:
+            raise ValueError("no fields to update")
         updated = NonMainstreamMediaSource(
             **{
                 **asdict(source),
                 "enabled": source.enabled if enabled is None else enabled,
+                "display_name": source.display_name if display_name is None else display_name,
                 "updated_at": utc_now(),
             }
         )

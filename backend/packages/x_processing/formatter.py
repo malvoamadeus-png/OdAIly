@@ -5,6 +5,7 @@ import re
 from packages.common.text import normalize_multiline_text
 
 from .models import DraftBrief
+from .source_attribution import append_source_attribution
 
 
 ODAILY_PREFIX = "Odaily星球日报讯 "
@@ -197,7 +198,13 @@ def _ensure_paragraph_punctuation(content: str) -> str:
     return "\n".join(paragraphs).strip()
 
 
-def format_brief(draft: DraftBrief) -> DraftBrief:
+def format_brief(
+    draft: DraftBrief,
+    *,
+    source_url: str | None = None,
+    source_display_name: str | None = None,
+    append_source_suffix: bool = False,
+) -> DraftBrief:
     title = _normalize_title_spaces(_apply_common_replacements(draft.title.strip()))
     title = _restore_fixed_account_names(_normalize_numeric_asset_spaces(title))
     prefix, content_body = _split_existing_prefix(draft.content)
@@ -208,5 +215,11 @@ def format_brief(draft: DraftBrief) -> DraftBrief:
         content = f"{prefix}{content}"
     content = _ensure_prefix(content)
     content = _ensure_paragraph_punctuation(content)
+    if append_source_suffix:
+        content = append_source_attribution(
+            content,
+            source_url=source_url,
+            configured_name=source_display_name,
+        )
     _reject_contaminated_output(title=title, content=content)
     return DraftBrief(title=title, content=content)

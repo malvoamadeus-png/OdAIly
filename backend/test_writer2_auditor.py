@@ -44,6 +44,39 @@ def test_writer2_reapplies_fixed_account_spacing_exception() -> None:
     assert result.content == "Odaily星球日报讯 “先定10个大目标”表示 100 USDT。"
 
 
+def test_writer2_appends_hard_matched_source_site_name() -> None:
+    result = format_brief(
+        DraftBrief(
+            title="Hyperliquid RWA交易飙升但手续费被外部开发者分走",
+            content="Hyperliquid 的 RWA 永续合约交易正在快速增长，但平台收入却持续下降。",
+        ),
+        source_url="https://www.coindesk.com/markets/2026/07/13/hyperliquid-rwa/",
+        append_source_suffix=True,
+    )
+
+    assert result.content.endswith("平台收入却持续下降。（CoinDesk）")
+
+
+def test_writer2_uses_configured_source_site_name_for_new_domain() -> None:
+    result = format_brief(
+        DraftBrief(title="AI芯片进展", content="新站点发布了产品进展"),
+        source_url="https://future-source.example/news/1",
+        source_display_name="Future Source",
+        append_source_suffix=True,
+    )
+
+    assert result.content == "Odaily星球日报讯 新站点发布了产品进展。（Future Source）"
+
+
+def test_writer2_does_not_append_source_without_explicit_non_x_mode() -> None:
+    result = format_brief(
+        DraftBrief(title="X上的消息", content="作者表示市场正在变化"),
+        source_url="https://www.coindesk.com/markets/2026/07/13/example/",
+    )
+
+    assert result.content == "Odaily星球日报讯 作者表示市场正在变化。"
+
+
 def test_auditor_ignores_borrow_lend_word_usage() -> None:
     task = _task("即用户重复抵押资产、借入稳定币并再次部署资金")
     raw_output = json.dumps(

@@ -1302,6 +1302,16 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function renameNonMainstreamSource(source: NonMainstreamSource, displayName: string) {
+    setError('');
+    try {
+      await updateNonMainstreamSource(source.id, { display_name: displayName.trim() });
+      await loadNonMainstreamAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function deleteAccount(account: Account) {
     setError('');
     try {
@@ -1920,6 +1930,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
+            onRenameSource={renameNonMainstreamSource}
           />
         ) : view === 'ai_source' ? (
           <NonMainstreamPanel
@@ -1932,6 +1943,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
+            onRenameSource={renameNonMainstreamSource}
           />
         ) : view === 'mixed_source' ? (
           <NonMainstreamPanel
@@ -1944,6 +1956,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             onSettingChange={updateNonMainstreamSetting}
             onSave={saveNonMainstreamSettings}
             onToggleSource={patchNonMainstreamSource}
+            onRenameSource={renameNonMainstreamSource}
           />
         ) : view === 'blockbeats_key' ? (
           <BlockbeatsKeyPanel
@@ -3438,6 +3451,7 @@ function NonMainstreamPanel({
   onSettingChange,
   onSave,
   onToggleSource,
+  onRenameSource,
 }: {
   settings: NonMainstreamSettings;
   sources: NonMainstreamSource[];
@@ -3448,6 +3462,7 @@ function NonMainstreamPanel({
   onSettingChange: (key: 'global_interval_seconds' | 'jitter_seconds', value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
+  onRenameSource: (source: NonMainstreamSource, displayName: string) => Promise<void>;
 }) {
   const writeFlowSources = sources.filter((source) => source.pipeline_mode !== 'alert_only');
   const alertOnlySources = sources.filter((source) => source.pipeline_mode === 'alert_only');
@@ -3495,7 +3510,7 @@ function NonMainstreamPanel({
               <span>{writeFlowSources.length} 个站点</span>
             </div>
             {writeFlowSources.map((source) => (
-              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} />
+              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} onRenameSource={onRenameSource} />
             ))}
           </>
         )}
@@ -3506,7 +3521,7 @@ function NonMainstreamPanel({
               <span>{alertOnlySources.length} 个站点</span>
             </div>
             {alertOnlySources.map((source) => (
-              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} />
+              <NonMainstreamSourceRow key={source.id} source={source} settings={settings} onToggleSource={onToggleSource} onRenameSource={onRenameSource} />
             ))}
           </>
         )}
@@ -3812,11 +3827,14 @@ function NonMainstreamSourceRow({
   source,
   settings,
   onToggleSource,
+  onRenameSource,
 }: {
   source: NonMainstreamSource;
   settings: NonMainstreamSettings;
   onToggleSource: (source: NonMainstreamSource, enabled: boolean) => Promise<void>;
+  onRenameSource: (source: NonMainstreamSource, displayName: string) => Promise<void>;
 }) {
+  const [displayName, setDisplayName] = useState(source.display_name);
   const effectiveInterval = source.interval_seconds ?? settings.global_interval_seconds;
   const discoveryLabel =
     source.discovery_mode === 'telegram_primary_direct_fallback' ? 'Telegram 优先 · 直抓兜底' : '站点直抓';
@@ -3826,7 +3844,18 @@ function NonMainstreamSourceRow({
       <div className="sourceIdentity">
         <div className="statusDot" />
         <div>
-          <strong>{source.display_name}</strong>
+          <div className="sourceNameEditor">
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} aria-label={`${source.site_key}标准名称`} />
+            <button
+              className="iconButton"
+              type="button"
+              onClick={() => void onRenameSource(source, displayName)}
+              disabled={!displayName.trim() || displayName.trim() === source.display_name}
+              title="保存标准名称"
+            >
+              <Save size={15} />
+            </button>
+          </div>
           <span>{source.site_key}</span>
         </div>
       </div>

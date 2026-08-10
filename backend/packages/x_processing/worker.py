@@ -971,7 +971,12 @@ class XProcessingWorker:
             self._release_local_candidate_for_task(task.id, release_reason="format_failed")
             raise HandledStageError("missing draft title or content")
         try:
-            final = format_brief(parse_draft_output(f"{pipeline.draft_title}\n\n{pipeline.draft_content}"))
+            final = format_brief(
+                parse_draft_output(f"{pipeline.draft_title}\n\n{pipeline.draft_content}"),
+                source_url=task.source_url,
+                source_display_name=task.metadata.get("site_display_name"),
+                append_source_suffix=is_non_x_media_writer_task(task),
+            )
         except Exception as exc:
             self.repository.fail_task(task.id, stage=self.stage, error=str(exc), status="format_failed")
             self._release_local_candidate_for_task(task.id, release_reason="format_failed")
@@ -1388,6 +1393,12 @@ def is_ai_judge_task(task: TaskRecord) -> bool:
 
 def is_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == MAINSTREAM_MEDIA_SOURCE
+
+
+def is_non_x_media_writer_task(task: TaskRecord) -> bool:
+    """Whether writer2 should append the source-site attribution suffix."""
+
+    return is_non_mainstream_media_task(task) or is_ai_source_task(task) or is_mainstream_media_task(task)
 
 
 def is_jin10_task(task: TaskRecord) -> bool:

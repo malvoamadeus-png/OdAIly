@@ -30,7 +30,7 @@ class SQLiteNonMainstreamMediaRepository:
         return NonMainstreamMediaSource(id=int(r["id"]),site_key=r["site_key"],display_name=r["display_name"],homepage_url=r["homepage_url"],capture_method=r["capture_method"],pipeline_mode=r["pipeline_mode"],source_group=r["source_group"],discovery_mode=r["discovery_mode"],interval_seconds=r["interval_seconds"],enabled=bool(r["enabled"]),seeded_at=_dt(r["seeded_at"]),last_polled_at=_dt(r["last_polled_at"]),last_success_at=_dt(r["last_success_at"]),last_error=r["last_error"],created_at=_dt(r["created_at"]),updated_at=_dt(r["updated_at"]))
     def sync_sources(self,site_definitions:list[SiteDefinition])->None:
         with connect_sqlite(self.path) as conn:
-            for s in site_definitions: conn.execute("INSERT INTO non_mainstream_media_sources(site_key,display_name,homepage_url,capture_method,pipeline_mode,source_group,discovery_mode,interval_seconds,enabled) VALUES (?,?,?,?,?,?,?,?,1) ON CONFLICT(site_key) DO UPDATE SET display_name=excluded.display_name,homepage_url=excluded.homepage_url,capture_method=excluded.capture_method,pipeline_mode=excluded.pipeline_mode,source_group=excluded.source_group,discovery_mode=excluded.discovery_mode,interval_seconds=excluded.interval_seconds,updated_at=CURRENT_TIMESTAMP",(s.site_key,s.display_name,s.homepage_url,s.capture_method,s.pipeline_mode,s.source_group,s.discovery_mode,s.interval_seconds)); conn.commit()
+            for s in site_definitions: conn.execute("INSERT INTO non_mainstream_media_sources(site_key,display_name,homepage_url,capture_method,pipeline_mode,source_group,discovery_mode,interval_seconds,enabled) VALUES (?,?,?,?,?,?,?,?,1) ON CONFLICT(site_key) DO UPDATE SET homepage_url=excluded.homepage_url,capture_method=excluded.capture_method,pipeline_mode=excluded.pipeline_mode,source_group=excluded.source_group,discovery_mode=excluded.discovery_mode,interval_seconds=excluded.interval_seconds,updated_at=CURRENT_TIMESTAMP",(s.site_key,s.display_name,s.homepage_url,s.capture_method,s.pipeline_mode,s.source_group,s.discovery_mode,s.interval_seconds)); conn.commit()
     def notify_config_changed(self)->None: return None
     def get_settings(self)->NonMainstreamMediaSettings:
         with connect_sqlite(self.path) as conn:r=conn.execute("SELECT * FROM non_mainstream_media_settings WHERE singleton_key='global'").fetchone()
@@ -42,9 +42,9 @@ class SQLiteNonMainstreamMediaRepository:
     def list_sources(self,*,include_disabled:bool=False)->list[NonMainstreamMediaSource]:
         with connect_sqlite(self.path) as conn:rows=conn.execute("SELECT * FROM non_mainstream_media_sources"+("" if include_disabled else " WHERE enabled=1")+" ORDER BY enabled DESC,pipeline_mode,display_name,site_key").fetchall()
         return [self._source(r) for r in rows]
-    def update_source(self,source_id:int,*,enabled:bool|None=None)->NonMainstreamMediaSource:
-        if enabled is None: raise ValueError("no fields to update")
-        with connect_sqlite(self.path) as conn: conn.execute("UPDATE non_mainstream_media_sources SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(int(enabled),source_id)); r=conn.execute("SELECT * FROM non_mainstream_media_sources WHERE id=?",(source_id,)).fetchone(); conn.commit()
+    def update_source(self,source_id:int,*,enabled:bool|None=None,display_name:str|None=None)->NonMainstreamMediaSource:
+        if enabled is None and display_name is None: raise ValueError("no fields to update")
+        with connect_sqlite(self.path) as conn: conn.execute("UPDATE non_mainstream_media_sources SET enabled=COALESCE(?,enabled),display_name=COALESCE(?,display_name),updated_at=CURRENT_TIMESTAMP WHERE id=?",(None if enabled is None else int(enabled),display_name,source_id)); r=conn.execute("SELECT * FROM non_mainstream_media_sources WHERE id=?",(source_id,)).fetchone(); conn.commit()
         if not r: raise ValueError(f"non mainstream media source not found: {source_id}")
         return self._source(r)
     def mark_source_seeded(self,source:NonMainstreamMediaSource,source_item_ids:list[str])->None:

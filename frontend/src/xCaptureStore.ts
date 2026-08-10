@@ -393,6 +393,7 @@ export type AccountPatch = {
 };
 
 export type NonMainstreamSourcePatch = {
+  display_name?: string;
   enabled?: boolean;
 };
 
@@ -1304,6 +1305,13 @@ export async function updateNonMainstreamSource(
   const payload: Record<string, string | boolean> = {
     updated_at: nowIso(),
   };
+  if ('display_name' in patch && patch.display_name !== undefined) {
+    const displayName = patch.display_name.trim();
+    if (!displayName) {
+      throw new Error('站点标准名称不能为空');
+    }
+    payload.display_name = displayName;
+  }
   if ('enabled' in patch && patch.enabled !== undefined) {
     payload.enabled = patch.enabled;
   }
