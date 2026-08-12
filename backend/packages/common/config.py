@@ -12,7 +12,7 @@ from .freshness import DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
 from .paths import get_paths
 
 
-DEFAULT_OPENAI_BASE_URL = "https://sadai.cc/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
@@ -296,7 +296,7 @@ GateBriefKind = Literal["morning", "open"]
 
 class XProcessingSettings(BaseModel):
     openai_api_key: str | None = None
-    openai_base_url: HttpUrl = "https://sadai.cc/v1"
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     judge_openai_api_key: str | None = None
     judge_openai_base_url: HttpUrl | None = None
@@ -516,7 +516,7 @@ def load_x_processing_settings() -> XProcessingSettings:
 
 class ExternalMediaAlertSettings(BaseModel):
     openai_api_key: str | None = None
-    openai_base_url: HttpUrl = "https://sadai.cc/v1"
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     domain_judge_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     dashscope_api_key: str | None = None
@@ -600,7 +600,7 @@ class CompetitorMonitorSettings(BaseModel):
     event_assignment_timeout_seconds: int = Field(default=240, ge=30, le=1800)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     openai_api_key: str | None = None
-    openai_base_url: HttpUrl = "https://sadai.cc/v1"
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     event_review_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     dashscope_api_key: str | None = None
@@ -778,7 +778,7 @@ def load_pipeline_supervisor_settings() -> PipelineSupervisorSettings:
 class Writer3Settings(BaseModel):
     enabled: bool = False
     openai_api_key: str | None = None
-    openai_base_url: HttpUrl = "https://sadai.cc/v1"
+    openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
     analysis_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
     writer_model: str = DEFAULT_GPT_WRITER_MODEL

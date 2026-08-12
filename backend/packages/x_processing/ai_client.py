@@ -27,7 +27,7 @@ class OpenAIResponsesClient:
         self,
         *,
         api_key: str,
-        base_url: str = "https://sadai.cc/v1",
+        base_url: str = "https://api.openai.com/v1",
         api_style: OpenAIApiStyle = "responses",
         timeout_seconds: float,
         max_attempts: int,
