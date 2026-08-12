@@ -266,7 +266,7 @@ Required runtime env:
 
 ```text
 OPENAI_API_KEY=
-ODAILY_LLM_BASE_URL=http://127.0.0.1:4000/v1
+ODAILY_LLM_BASE_URL=https://sadai.cc/v1
 ODAILY_LLM_API_KEY=
 ODAILY_LLM_API_STYLE=chat_completions
 LITELLM_MASTER_KEY=
@@ -279,13 +279,13 @@ BLOCKBEATS_REGISTRATION_TIMEOUT_SECONDS=120
 BLOCKBEATS_AUTO_REGISTER_COOLDOWN_SECONDS=3600
 X_CAPTURE_ATTEMPT_RETENTION_DAYS=3
 PROCESSING_FRESHNESS_WINDOW_SECONDS=1200
-X_PROCESS_OPENAI_BASE_URL=http://127.0.0.1:4000/v1
+X_PROCESS_OPENAI_BASE_URL=https://sadai.cc/v1
 X_PROCESS_OPENAI_API_STYLE=chat_completions
 COMPETITOR_OPENAI_API_STYLE=
 DEEPSEEK_API_KEY=
 X_PROCESS_JUDGE_MODEL=odaily-deepseek-review
 X_PROCESS_JUDGE_REASONING_EFFORT=low
-X_PROCESS_JUDGE_OPENAI_BASE_URL=
+X_PROCESS_JUDGE_OPENAI_BASE_URL=https://sadai.cc/v1
 X_PROCESS_JUDGE_OPENAI_API_STYLE=
 X_PROCESS_JUDGE_OMIT_REASONING_EFFORT=true
 X_PROCESS_JUDGE_CHAT_RESPONSE_FORMAT_MODE=json_object
@@ -339,9 +339,9 @@ WRITER3_CURRENT_FRESHNESS_WINDOW_SECONDS=600
 WRITER3_TELEGRAM_MESSAGE_THREAD_ID=
 ```
 
-Production text LLM calls go through the local LiteLLM proxy at
+Production text LLM calls use the OpenAI-compatible relay at
 `ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
-proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
+relay and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
 `odaily-deepseek-review`, `odaily-gpt-auditor`, and `odaily-deepseek-auditor`. The
 searcher AI review is explicitly configured as `gpt-5.6-luna` with `medium`
 reasoning through `https://sadai.cc/v1`; the former fast GPT path has been
