@@ -5,6 +5,7 @@ import {
 export const DEFAULT_SETTINGS = {
   pluginApiBaseUrl: BUILTIN_EDITOR_PLUGIN_API_BASE_URL,
   pollIntervalSeconds: 15,
+  textLensHotkey: "Alt",
   soundEnabled: true,
   soundProfiles: {
     newsflash_backstage: {
@@ -36,6 +37,18 @@ export const DEFAULT_SETTINGS = {
       preset: "beep_short",
       volume: 0.45,
       cooldownMs: 4000
+    },
+    gate_market: {
+      enabled: true,
+      preset: "beep_double",
+      volume: 0.58,
+      cooldownMs: 3500
+    },
+    meme_digest: {
+      enabled: true,
+      preset: "beep_triple",
+      volume: 0.62,
+      cooldownMs: 3500
     }
   },
   feedLaneRatios: { high: 75, ai: 25 }
@@ -54,6 +67,7 @@ export async function getSettings() {
   return {
     ...DEFAULT_SETTINGS,
     ...data,
+    textLensHotkey: sanitizeTextLensHotkey(data.textLensHotkey),
     soundProfiles: sanitizeSoundProfiles(data.soundProfiles),
     pluginApiBaseUrl: BUILTIN_EDITOR_PLUGIN_API_BASE_URL
   };
@@ -61,6 +75,9 @@ export async function getSettings() {
 
 export async function saveSettings(values) {
   const nextValues = { ...values };
+  if ("textLensHotkey" in nextValues) {
+    nextValues.textLensHotkey = sanitizeTextLensHotkey(nextValues.textLensHotkey);
+  }
   if ("soundProfiles" in nextValues) {
     nextValues.soundProfiles = sanitizeSoundProfiles(nextValues.soundProfiles);
   }
@@ -69,6 +86,84 @@ export async function saveSettings(values) {
 
 export async function resetSettings() {
   await chrome.storage.local.set(DEFAULT_SETTINGS);
+}
+
+const HOTKEY_MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"];
+
+export function sanitizeTextLensHotkey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return DEFAULT_SETTINGS.textLensHotkey;
+  }
+  const parts = raw.split("+").map((part) => part.trim()).filter(Boolean);
+  const modifiers = HOTKEY_MODIFIERS.filter((modifier) => parts.includes(modifier));
+  const mainKey = parts.find((part) => !HOTKEY_MODIFIERS.includes(part));
+  if (!mainKey && modifiers.length !== 1) {
+    return DEFAULT_SETTINGS.textLensHotkey;
+  }
+  return [...modifiers, mainKey].filter(Boolean).join("+") || DEFAULT_SETTINGS.textLensHotkey;
+}
+
+function keyboardKeyLabel(event) {
+  if (event.key === " ") {
+    return "Space";
+  }
+  if (event.code?.startsWith("Key")) {
+    return event.code.slice(3).toUpperCase();
+  }
+  if (event.code?.startsWith("Digit")) {
+    return event.code.slice(5);
+  }
+  if (event.key && event.key.length === 1) {
+    return event.key.toUpperCase();
+  }
+  return event.key || event.code || "";
+}
+
+export function textLensHotkeyFromEvent(event) {
+  const modifiers = [];
+  if (event.ctrlKey || event.key === "Control") modifiers.push("Ctrl");
+  if (event.altKey || event.key === "Alt") modifiers.push("Alt");
+  if (event.shiftKey || event.key === "Shift") modifiers.push("Shift");
+  if (event.metaKey || event.key === "Meta") modifiers.push("Meta");
+
+  const modifierKey = HOTKEY_MODIFIERS.find((modifier) => event.key === modifier ||
+    (modifier === "Ctrl" && event.key === "Control"));
+  if (modifierKey && modifiers.length === 1) {
+    return modifierKey;
+  }
+  const mainKey = keyboardKeyLabel(event);
+  if (!mainKey || HOTKEY_MODIFIERS.includes(mainKey)) {
+    return modifiers.join("+");
+  }
+  return [...modifiers, mainKey].filter(Boolean).join("+");
+}
+
+function hotkeyParts(value) {
+  return sanitizeTextLensHotkey(value).split("+");
+}
+
+export function matchesTextLensHotkeyKeydown(event, value) {
+  const parts = hotkeyParts(value);
+  if (parts.length === 1 && HOTKEY_MODIFIERS.includes(parts[0])) {
+    return event.key === parts[0] || (parts[0] === "Ctrl" && event.key === "Control");
+  }
+  const mainKey = parts.at(-1);
+  const expectedModifiers = new Set(parts.slice(0, -1));
+  if (expectedModifiers.has("Ctrl") !== Boolean(event.ctrlKey)) return false;
+  if (expectedModifiers.has("Alt") !== Boolean(event.altKey)) return false;
+  if (expectedModifiers.has("Shift") !== Boolean(event.shiftKey)) return false;
+  if (expectedModifiers.has("Meta") !== Boolean(event.metaKey)) return false;
+  return keyboardKeyLabel(event) === mainKey;
+}
+
+export function matchesTextLensHotkeyKeyup(event, value) {
+  const parts = hotkeyParts(value);
+  if (parts.length === 1) {
+    return event.key === parts[0] || (parts[0] === "Ctrl" && event.key === "Control");
+  }
+  const releasedKey = keyboardKeyLabel(event);
+  return parts.includes(releasedKey) || (releasedKey === "Control" && parts.includes("Ctrl"));
 }
 
 function sanitizeSoundProfile(profile, fallback) {
@@ -94,7 +189,9 @@ export function sanitizeSoundProfiles(value) {
     newsflash_direct: sanitizeSoundProfile(value.newsflash_direct, fallback.newsflash_direct),
     auditor_alert: sanitizeSoundProfile(value.auditor_alert, fallback.auditor_alert),
     writer3_context: sanitizeSoundProfile(value.writer3_context, fallback.writer3_context),
-    whale: sanitizeSoundProfile(value.whale, fallback.whale)
+    whale: sanitizeSoundProfile(value.whale, fallback.whale),
+    gate_market: sanitizeSoundProfile(value.gate_market, fallback.gate_market),
+    meme_digest: sanitizeSoundProfile(value.meme_digest, fallback.meme_digest)
   };
 }
 

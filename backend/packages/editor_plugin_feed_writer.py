@@ -313,3 +313,93 @@ class LocalEditorPluginFeedWriter:
                 }
             ]
         )
+
+    def upsert_gate_market(
+        self,
+        *,
+        event_id: int,
+        symbol: str,
+        display_name: str,
+        title: str,
+        content: str,
+        mode: str,
+        trigger_level: str,
+        direction: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        is_live = mode == "live"
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": f"gate_market:{event_id}",
+                    "feed_kind": "gate_market",
+                    "lane": "high",
+                    "priority": 84,
+                    "title": title,
+                    "summary": content,
+                    "badges": [
+                        {"label": "标的", "value": f"{display_name} · {symbol}", "tone": "neutral"},
+                        {"label": "方向", "value": "上破" if direction == "up" else "下破", "tone": "accent"},
+                    ],
+                    "status_label": "行情直发" if is_live else "行情挂后台",
+                    "status_tone": "market",
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": None,
+                    "detail_url": None,
+                    "action_schema": {"type": "read"},
+                    "meta_json": {
+                        "event_id": event_id,
+                        "source": "gate_market",
+                        "symbol": symbol,
+                        "mode": mode,
+                        "trigger_level": trigger_level,
+                        "direction": direction,
+                    },
+                }
+            ]
+        )
+
+    def upsert_meme_digest(
+        self,
+        *,
+        job_id: int,
+        address: str,
+        platform: str,
+        symbol: str,
+        title: str,
+        content: str,
+        trigger_kind: str,
+        market_cap: float,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": f"meme_digest:{job_id}",
+                    "feed_kind": "meme_digest",
+                    "lane": "high",
+                    "priority": 82,
+                    "title": title,
+                    "summary": content,
+                    "badges": [
+                        {"label": "代币", "value": symbol, "tone": "accent"},
+                        {"label": "触发", "value": "社群热议" if trigger_kind == "tg_burst" else "市值突破", "tone": "neutral"},
+                    ],
+                    "status_label": "Meme挂后台",
+                    "status_tone": "meme",
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": None,
+                    "detail_url": None,
+                    "action_schema": {"type": "read"},
+                    "meta_json": {
+                        "job_id": job_id,
+                        "source": "meme_scanner",
+                        "address": address,
+                        "platform": platform,
+                        "symbol": symbol,
+                        "trigger_kind": trigger_kind,
+                        "market_cap": market_cap,
+                    },
+                }
+            ]
+        )

@@ -2,7 +2,9 @@ import {
   DEFAULT_SETTINGS,
   getSettings,
   resetSettings,
-  saveSettings
+  saveSettings,
+  sanitizeTextLensHotkey,
+  textLensHotkeyFromEvent
 } from "./lib/storage.js";
 import { playNotificationSound, SOUND_PRESETS, unlockNotificationSound } from "./lib/sound.js";
 
@@ -10,13 +12,16 @@ const form = document.getElementById("optionsForm");
 const saveHint = document.getElementById("saveHint");
 const resetButton = document.getElementById("resetButton");
 const soundProfilesContainer = document.getElementById("soundProfiles");
+const textLensHotkeyInput = document.getElementById("textLensHotkey");
 
 const SOUND_PROFILE_META = [
   { key: "newsflash_backstage", label: "挂后台新快讯" },
   { key: "newsflash_direct", label: "直发新快讯" },
   { key: "auditor_alert", label: "审核者" },
   { key: "writer3_context", label: "此前消息" },
-  { key: "whale", label: "巨鲸" }
+  { key: "whale", label: "巨鲸" },
+  { key: "gate_market", label: "Gate行情" },
+  { key: "meme_digest", label: "Meme速递" }
 ];
 
 function percentText(value) {
@@ -122,8 +127,27 @@ function collectSoundProfile(key) {
 function fillForm(settings) {
   document.getElementById("pollIntervalSeconds").value = String(settings.pollIntervalSeconds);
   document.getElementById("soundEnabled").checked = Boolean(settings.soundEnabled);
+  textLensHotkeyInput.value = settings.textLensHotkey;
   renderSoundProfiles(settings);
 }
+
+textLensHotkeyInput.addEventListener("keydown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const hotkey = textLensHotkeyFromEvent(event);
+  if (hotkey) {
+    textLensHotkeyInput.value = sanitizeTextLensHotkey(hotkey);
+  }
+});
+
+textLensHotkeyInput.addEventListener("keyup", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+});
+
+textLensHotkeyInput.addEventListener("blur", () => {
+  textLensHotkeyInput.value = sanitizeTextLensHotkey(textLensHotkeyInput.value);
+});
 
 async function boot() {
   fillForm(await getSettings());
@@ -134,6 +158,7 @@ form.addEventListener("submit", async (event) => {
   const formData = new FormData(form);
   const values = {
     pollIntervalSeconds: Math.max(10, Math.min(120, Number(formData.get("pollIntervalSeconds") || DEFAULT_SETTINGS.pollIntervalSeconds))),
+    textLensHotkey: sanitizeTextLensHotkey(textLensHotkeyInput.value),
     soundEnabled: document.getElementById("soundEnabled").checked,
     soundProfiles: Object.fromEntries(
       SOUND_PROFILE_META.map(({ key }) => [key, collectSoundProfile(key)])

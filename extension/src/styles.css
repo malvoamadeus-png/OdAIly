@@ -437,6 +437,14 @@ body {
   background: #059669;
 }
 
+.feedCard__rail--gate_market {
+  background: #008f68;
+}
+
+.feedCard__rail--meme_digest {
+  background: #c0266d;
+}
+
 .feedCard--lane-ai .feedCard__rail {
   background: #8b5cf6;
 }
@@ -543,6 +551,18 @@ body {
 .statusChip--neutral {
   background: #f1f5f9;
   color: #334155;
+}
+
+.statusChip--market {
+  background: #e7f8f1;
+  color: #007a59;
+  font-weight: 700;
+}
+
+.statusChip--meme {
+  background: #fce7f3;
+  color: #9d174d;
+  font-weight: 700;
 }
 
 .feedCard--auditor_alert .statusChip--warning {
@@ -849,6 +869,11 @@ body {
   padding: 9px 10px;
   font: inherit;
   color: inherit;
+}
+
+.field input[readonly] {
+  cursor: pointer;
+  background: #f8fafc;
 }
 
 .inlineField {

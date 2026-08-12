@@ -21,7 +21,9 @@ import {
   saveActiveTopTab,
   saveFeedLaneRatios,
   saveNewsGenDraft,
-  saveNewsGenResult
+  saveNewsGenResult,
+  matchesTextLensHotkeyKeydown,
+  matchesTextLensHotkeyKeyup
 } from "./lib/storage.js";
 import {
   ensureAuthSession,
@@ -69,6 +71,9 @@ const state = {
   feedState: new Map(),
   seenFeedKeys: new Set(),
   expandedFeedKeys: new Set(),
+  textLensActive: false,
+  textLensHoverKey: null,
+  textLensMessageId: 0,
   newsGenDraft: null,
   newsGenResult: null,
   newsGenRequestState: {
@@ -229,6 +234,8 @@ const SOUND_PRIORITY = {
   newsflash_direct: 4,
   newsflash_backstage: 3,
   writer3_context: 2,
+  gate_market: 3.5,
+  meme_digest: 3.25,
   whale: 1
 };
 
@@ -238,6 +245,9 @@ function soundKeyForFeedItem(item) {
   }
   if (item.feed_kind === "writer3_context") {
     return "writer3_context";
+  }
+  if (item.feed_kind === "gate_market" || item.feed_kind === "meme_digest") {
+    return item.feed_kind;
   }
   if (item.feed_kind === "whale_onchain" || item.feed_kind === "whale_hyperliquid") {
     return "whale";
@@ -266,6 +276,12 @@ function feedLaneGridStyle() {
 }
 
 function feedSourceClass(item) {
+  if (item.feed_kind === "gate_market") {
+    return "feedCard--source-gate-market";
+  }
+  if (item.feed_kind === "meme_digest") {
+    return "feedCard--source-meme";
+  }
   const source = String(item.meta_json?.source || "").toLowerCase();
   if (source === "x") {
     return "feedCard--source-x";
@@ -293,6 +309,47 @@ function toggleExpandedFeedKey(itemKey) {
   } else {
     setExpandedFeedKey(itemKey);
   }
+}
+
+function hideTextLens() {
+  state.textLensActive = false;
+  state.textLensHoverKey = null;
+  publishTextLensToActiveTab();
+}
+
+function textLensItem() {
+  if (!state.textLensHoverKey) {
+    return null;
+  }
+  return state.feedItems.find((item) => feedKey(item) === state.textLensHoverKey) || null;
+}
+
+async function sendTextLensToActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) {
+    return;
+  }
+  const item = textLensItem();
+  const message = {
+    type: "ODAILY_TEXT_LENS_UPDATE",
+    message_id: state.textLensMessageId += 1,
+    visible: Boolean(state.textLensActive && item),
+    item: item || null
+  };
+  try {
+    await chrome.tabs.sendMessage(tab.id, message);
+  } catch {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-lens.js"] });
+      await chrome.tabs.sendMessage(tab.id, message);
+    } catch {
+      // Chrome restricted pages cannot receive extension content scripts.
+    }
+  }
+}
+
+function publishTextLensToActiveTab() {
+  sendTextLensToActiveTab().catch(() => undefined);
 }
 
 function renderPreservingLaneScroll(laneList) {
@@ -830,6 +887,7 @@ function wireTopTabs() {
       if (nextTab === state.activeTopTab) {
         return;
       }
+      hideTextLens();
       state.activeTopTab = nextTab;
       await saveActiveTopTab(nextTab);
       renderAuthedShell();
@@ -938,6 +996,21 @@ function wireFastLaneToggles() {
   }
 }
 
+function wireTextLensHover() {
+  for (const card of app.querySelectorAll(".feedCard")) {
+    card.addEventListener("pointerenter", () => {
+      state.textLensHoverKey = feedKeyOf(card.dataset.feedKind, card.dataset.feedId);
+      publishTextLensToActiveTab();
+    });
+    card.addEventListener("pointerleave", () => {
+      if (state.textLensHoverKey === feedKeyOf(card.dataset.feedKind, card.dataset.feedId)) {
+        state.textLensHoverKey = null;
+        publishTextLensToActiveTab();
+      }
+    });
+  }
+}
+
 function isSessionExpiredError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return /jwt expired|invalid jwt|token has expired|refresh token|登录状态已失效/i.test(message);
@@ -945,6 +1018,7 @@ function isSessionExpiredError(error) {
 
 async function resetAuthState(message = "") {
   await clearAuthSession();
+  hideTextLens();
   state.session = null;
   state.profile = null;
   state.loginLoading = false;
@@ -1084,9 +1158,61 @@ function wireFeedInteractions() {
   wireFeedbackButtons();
   wireCardToolButtons();
   wireFastLaneToggles();
+  wireTextLensHover();
   wireLaneResizers();
   wireSeenTracking();
 }
+
+function handleTextLensKeydown(event) {
+  if (state.activeTopTab !== FEED_TAB || !state.settings?.textLensHotkey) {
+    return;
+  }
+  if (!matchesTextLensHotkeyKeydown(event, state.settings.textLensHotkey)) {
+    return;
+  }
+  event.preventDefault?.();
+  if (!state.textLensActive) {
+    state.textLensActive = true;
+    publishTextLensToActiveTab();
+  }
+}
+
+function handleTextLensKeyup(event) {
+  if (!state.textLensActive || !state.settings?.textLensHotkey) {
+    return;
+  }
+  if (!matchesTextLensHotkeyKeyup(event, state.settings.textLensHotkey)) {
+    return;
+  }
+  event.preventDefault?.();
+  hideTextLens();
+}
+
+document.addEventListener("keydown", handleTextLensKeydown, true);
+document.addEventListener("keyup", handleTextLensKeyup, true);
+window.addEventListener("blur", hideTextLens);
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "ODAILY_TEXT_LENS_KEY_STATE") {
+    return;
+  }
+  const event = {
+    key: message.key,
+    code: message.code,
+    ctrlKey: Boolean(message.ctrlKey),
+    altKey: Boolean(message.altKey),
+    shiftKey: Boolean(message.shiftKey),
+    metaKey: Boolean(message.metaKey),
+    preventDefault() {}
+  };
+  if (message.state === "down") {
+    handleTextLensKeydown(event);
+  } else if (message.state === "up") {
+    handleTextLensKeyup(event);
+  } else if (message.state === "blur") {
+    hideTextLens();
+  }
+});
 
 async function runNewsGenAction(mode, newsType = null) {
   const draft = state.newsGenDraft;
@@ -1374,10 +1500,14 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
   if (
     authConfigChanged ||
     changes.pollIntervalSeconds ||
+    changes.textLensHotkey ||
     changes.soundEnabled ||
     changes.soundProfiles
   ) {
     state.settings = await getSettings();
+    if (changes.textLensHotkey) {
+      hideTextLens();
+    }
     state.error = "";
     state.loginError = "";
     if (authConfigChanged) {

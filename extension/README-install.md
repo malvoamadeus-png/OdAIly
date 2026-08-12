@@ -75,6 +75,7 @@ curl -i https://47.76.243.147.sslip.io/plugin/auth/profile -X POST
 
 扩展程序选项页只保留：
 
+- 放大阅读热键
 - 轮询间隔
 - 声音提醒
 

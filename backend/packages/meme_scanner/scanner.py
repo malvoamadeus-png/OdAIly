@@ -20,6 +20,7 @@ import requests
 from dotenv import load_dotenv
 
 from packages.common.paths import get_paths
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .narrative import generate_reader_text
@@ -963,6 +964,21 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
             published_at=now_iso(),
             advance_market_cap_high_watermark=str(job["trigger_kind"]) != "tg_burst",
         )
+        if args.send:
+            try:
+                LocalEditorPluginFeedWriter().upsert_meme_digest(
+                    job_id=int(job["id"]),
+                    address=token.address,
+                    platform=token.platform,
+                    symbol=token.symbol,
+                    title=title,
+                    content=content,
+                    trigger_kind=str(job["trigger_kind"]),
+                    market_cap=token.market_cap,
+                    occurred_at=datetime.now(UTC),
+                )
+            except Exception as exc:
+                print(f"[meme-scan] feed write failed job_id={job['id']} error={exc}")
         return "publisher_pending"
     else:
         store.update_job(job["id"], "publish_failed", publish=pushed)

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from packages.publisher import PushClient
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.x_processing.telegram import TelegramClient
 
 from .backtest import run_symbol_backtest
@@ -27,6 +29,7 @@ class GateMarketBroadcastService:
         client: GateMarketClient | None = None,
         push_client: PushClient | None = None,
         telegram_client: TelegramClient | None = None,
+        feed_writer: LocalEditorPluginFeedWriter | None = None,
     ) -> None:
         self.settings = settings
         self.store = store or GateMarketStore(settings.database_path)
@@ -52,6 +55,7 @@ class GateMarketBroadcastService:
             max_attempts=3,
             backoff_seconds=1,
         )
+        self.feed_writer = feed_writer or LocalEditorPluginFeedWriter()
         self._closed_until: dict[str, int] = {}
         self._history_refresh_after: dict[str, int] = {}
         self._last_disk_check = 0
@@ -277,6 +281,20 @@ class GateMarketBroadcastService:
             push_status_code=result.status_code,
             push_response=result.response_text,
         )
+        try:
+            self.feed_writer.upsert_gate_market(
+                event_id=event_id,
+                symbol=config.symbol,
+                display_name=config.display_name,
+                title=brief.title,
+                content=brief.content,
+                mode=active_mode,
+                trigger_level=str(trigger.level),
+                direction=trigger.direction,
+                occurred_at=datetime.fromtimestamp(quote.observed_at, UTC),
+            )
+        except Exception as exc:
+            print(f"[gate-market] feed write failed event_id={event_id} error={exc}")
         self._recover_alert(f"push:{config.symbol}", f"{config.symbol}发布接口已恢复。")
         return {
             "symbol": config.symbol,

@@ -112,6 +112,8 @@ SQLite，不再从旧 Gate JSON 配置读取。
 - `templates`：四类固定标题与正文模板。
 - `symbol_state`：每个 `symbol` 只使用一条共享防重复状态；表内
   `mode='shared'` 是兼容旧表结构的固定存储键，不代表发布模式。
+
+推送接口成功后，worker 同步向信息流插件本地 store 写入 `gate_market` 卡片。卡片进入高频区，状态按模式显示“行情直发”或“行情挂后台”；信息流写入失败只记录 worker 日志，不回滚已经成功的发布结果。
 - `price_samples`：仅保留最近48小时。
 - `trigger_events`：仅保留最近100条诊断结果。
 - `alert_state`：Telegram 故障告警去重与恢复状态。

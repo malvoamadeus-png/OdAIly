@@ -161,6 +161,14 @@ class _FakeTelegram:
         return type("Result", (), {"ok": True, "error": None})()
 
 
+class _FakeFeedWriter:
+    def __init__(self) -> None:
+        self.gate_calls: list[dict] = []
+
+    def upsert_gate_market(self, **kwargs) -> None:
+        self.gate_calls.append(kwargs)
+
+
 def _quote(symbol: str, price: str, timestamp: int) -> TickerQuote:
     value = Decimal(price)
     return TickerQuote(
@@ -190,6 +198,7 @@ def test_backend_and_live_modes_share_trigger_state_but_keep_publish_flags(
         [(base - 86400 - index * 60, Decimal("80")) for index in range(61)],
     )
     fake_push = _FakePushClient()
+    fake_feed = _FakeFeedWriter()
     service = GateMarketBroadcastService(
         settings=GateMarketSettings(
             database_path=database_path,
@@ -215,6 +224,7 @@ def test_backend_and_live_modes_share_trigger_state_but_keep_publish_flags(
         ),
         push_client=fake_push,
         telegram_client=_FakeTelegram(),
+        feed_writer=fake_feed,
     )
     config = store.get_symbol_config("XBRUSD")
 
@@ -228,6 +238,8 @@ def test_backend_and_live_modes_share_trigger_state_but_keep_publish_flags(
 
     assert [call["is_publish"] for call in fake_push.calls] == [False, True]
     assert all(call["is_push"] is False and call["dry_run"] is False for call in fake_push.calls)
+    assert [call["mode"] for call in fake_feed.gate_calls] == ["backend", "live"]
+    assert all(call["symbol"] == "XBRUSD" for call in fake_feed.gate_calls)
 
 
 def test_initialize_migrates_legacy_mode_states_and_unions_disarmed_levels(
