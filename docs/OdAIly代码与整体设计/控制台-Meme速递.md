@@ -14,6 +14,7 @@
 - 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 `completed` 也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者，且查询时市值达到 30 万美元。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
+- `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
 - 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；Grok 分别收集精确 CA 的 X 原帖和独立研究材料，最后由 GPT writer 生成读者正文。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
@@ -80,6 +81,7 @@ python backend/src/main.py meme tg-watch
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
 - `token_info` 成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不推进市值水位。429 会记录服务端退避时间并暂停全局 `token_info` 请求；调度积压写入 worker 日志。
 - `observations` 的跟踪字段包括 `tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复。
+- `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
 
 ## 页面字段

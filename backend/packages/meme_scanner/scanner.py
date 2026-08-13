@@ -278,6 +278,26 @@ class Store:
               status TEXT NOT NULL DEFAULT 'pending', reason TEXT,
               market_cap REAL, updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS token_snapshots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              address TEXT NOT NULL, chain TEXT NOT NULL, platform TEXT NOT NULL,
+              symbol TEXT NOT NULL, name TEXT NOT NULL, market_cap REAL NOT NULL,
+              volume_24h REAL NOT NULL, observed_at TEXT NOT NULL,
+              source TEXT NOT NULL, scan_id TEXT, payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_token_snapshots_address_time
+              ON token_snapshots(address, observed_at, id);
+            CREATE INDEX IF NOT EXISTS idx_token_snapshots_scan
+              ON token_snapshots(source, scan_id);
+            CREATE TABLE IF NOT EXISTS market_cap_milestones (
+              address TEXT NOT NULL, chain TEXT NOT NULL, platform TEXT NOT NULL,
+              symbol TEXT NOT NULL, level REAL NOT NULL, observed_at TEXT NOT NULL,
+              snapshot_id INTEGER NOT NULL, trigger_key TEXT NOT NULL UNIQUE,
+              job_id INTEGER, status TEXT NOT NULL,
+              PRIMARY KEY(address, level)
+            );
+            CREATE INDEX IF NOT EXISTS idx_market_cap_milestones_address
+              ON market_cap_milestones(address, level);
             CREATE INDEX IF NOT EXISTS idx_tg_candidates_status ON tg_candidates(status, id);
             """
         )
@@ -383,6 +403,32 @@ class Store:
     def observation(self, address: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM observations WHERE address=?", (address,)).fetchone()
 
+    def record_snapshot(self, token: Token, *, observed_at: str, source: str, scan_id: str | None = None) -> int:
+        cursor = self.conn.execute(
+            """INSERT INTO token_snapshots(
+              address, chain, platform, symbol, name, market_cap, volume_24h,
+              observed_at, source, scan_id, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (token.address, CHAIN, token.platform, token.symbol, token.name,
+             token.market_cap, token.volume_24h, observed_at, source, scan_id,
+             json.dumps(token.raw, ensure_ascii=False)),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def record_milestone(self, token: Token, *, level: float, observed_at: str, snapshot_id: int) -> bool:
+        trigger_key = f"market_cap:{token.address}:{int(level)}"
+        cursor = self.conn.execute(
+            """INSERT OR IGNORE INTO market_cap_milestones(
+              address, chain, platform, symbol, level, observed_at, snapshot_id,
+              trigger_key, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'detected')""",
+            (token.address, CHAIN, token.platform, token.symbol, level, observed_at,
+             snapshot_id, trigger_key),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
     def upsert_observation(
         self,
         token: Token,
@@ -390,6 +436,7 @@ class Store:
         triggered_at: str | None = None,
         published_at: str | None = None,
         advance_market_cap_high_watermark: bool = True,
+        tracking_source: str = "legacy",
     ) -> None:
         old = self.observation(token.address)
         if advance_market_cap_high_watermark:
@@ -419,7 +466,7 @@ class Store:
                 triggered_at or (old["triggered_at"] if old else None),
                 published_at or (old["published_at"] if old else None),
                 TRACKING_STATUS_LEGACY,
-                "legacy",
+                tracking_source,
                 token.volume_24h,
             ),
         )
@@ -436,6 +483,8 @@ class Store:
         """Register a completed discovery or refresh an already active window."""
         old = self.observation(token.address)
         previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0) if old else 0.0
+        if old and str(old["tracking_source"] or "") == "tg":
+            previous_high = 0.0
         expires_at = parse_iso(old["tracking_expires_at"]) if old else None
         observed_time = parse_iso(observed_at) or datetime.now(UTC)
         if old and old["tracking_status"] == TRACKING_STATUS_ACTIVE and expires_at and expires_at <= observed_time:
@@ -443,6 +492,22 @@ class Store:
             old = self.observation(token.address)
 
         status = str(old["tracking_status"]) if old else None
+        if old and status in (TRACKING_STATUS_LEGACY, TRACKING_STATUS_EXPIRED) and str(old["tracking_source"] or "") == "tg":
+            started_at = str(old["tracking_started_at"] or observed_at)
+            expires = str(old["tracking_expires_at"] or (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat())
+            interval = tracking_interval(token.market_cap, args)
+            next_at = next_tracking_time(token.address, observed_time, interval)
+            self.conn.execute(
+                """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
+                  tracking_status='active', tracking_started_at=?, tracking_expires_at=?,
+                  last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
+                  tracking_source='completed', last_volume_24h=? WHERE address=?""",
+                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at,
+                 started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address),
+            )
+            self.conn.commit()
+            return previous_high, False, TRACKING_STATUS_ACTIVE
         if old and status in (TRACKING_STATUS_LEGACY, TRACKING_STATUS_EXPIRED):
             self.conn.execute(
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
@@ -1002,10 +1067,18 @@ def evaluate_market_token(
     bootstrap: bool,
     previous_high: float | None = None,
     persist_observation: bool = True,
+    snapshot_id: int | None = None,
+    snapshot_source: str = "completed",
 ) -> tuple[int, int]:
     observed = store.observation(token.address)
     if previous_high is None:
         previous_high = float(observed["highest_market_cap"] or observed["last_market_cap"] or 0) if observed else 0.0
+    snapshot_id = snapshot_id or store.record_snapshot(
+        token,
+        observed_at=now_iso(),
+        source=snapshot_source,
+        scan_id=store.meta("completed_scan_at"),
+    )
     if bootstrap:
         if persist_observation:
             store.upsert_observation(token)
@@ -1026,7 +1099,9 @@ def evaluate_market_token(
         store.mark_tracking_triggered(token.address)
     if level is None:
         return (0, 0)
-    trigger_key = f"market_cap:{int(level)}"
+    if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
+        return (0, 0)
+    trigger_key = f"market_cap:{token.address}:{int(level)}"
     if token.volume_ratio < VOLUME_RATIO_GATE:
         inserted = store.add_job(
             token,
@@ -1098,6 +1173,7 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         print(f"[meme-scan] token_info failed address={address} failures={failures}: {error}", file=sys.stderr)
         return {"status": "failed", "address": address, "failures": failures, "error": error, "backlog": backlog, "expired": expired}
 
+    snapshot_id = store.record_snapshot(token, observed_at=stamp, source="token_info")
     previous_high = store.observe_token_info(token, observed_at=stamp, args=args)
     if previous_high is None:
         return {"status": "expired", "address": address, "expired": expired + 1}
@@ -1107,6 +1183,8 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         bootstrap=False,
         previous_high=previous_high,
         persist_observation=False,
+        snapshot_id=snapshot_id,
+        snapshot_source="token_info",
     )
     return {
         "status": "observed",
@@ -1148,6 +1226,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         )
         store.update_tg_candidate(candidate["id"], "discarded", reason="volume_gate_failed", market_cap=token.market_cap)
         return (0, int(inserted))
+    store.record_snapshot(token, observed_at=now_iso(), source="tg", scan_id=f"tg_candidate:{candidate['id']}")
     inserted = store.add_job(
         token,
         "tg_burst",
@@ -1160,6 +1239,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         token,
         triggered_at=now_iso(),
         advance_market_cap_high_watermark=False,
+        tracking_source="tg",
     )
     store.update_tg_candidate(candidate["id"], "queued", market_cap=token.market_cap)
     return (int(inserted), 0)

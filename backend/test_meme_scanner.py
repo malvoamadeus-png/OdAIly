@@ -128,7 +128,7 @@ class MemeScannerTests(unittest.TestCase):
             rows = store.conn.execute(
                 "SELECT trigger_key FROM jobs WHERE address=? ORDER BY id", (first.address,)
             ).fetchall()
-            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:500000"])
+            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:0xlevels:500000"])
             store.close()
 
     def test_text_shell_omits_launch_age_and_uses_news_wording(self) -> None:
@@ -160,7 +160,7 @@ class MemeScannerTests(unittest.TestCase):
             jumped = token("0xjump", 1_200_000, 800_000)
             self.assertEqual(scanner.evaluate_market_token(store, jumped, bootstrap=False), (1, 0))
             row = store.conn.execute("SELECT trigger_key, trigger_level FROM jobs").fetchone()
-            self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:1000000", 1_000_000.0))
+            self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:0xjump:1000000", 1_000_000.0))
             store.close()
 
     def test_tg_burst_does_not_consume_market_cap_milestone(self) -> None:
@@ -195,9 +195,34 @@ class MemeScannerTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(
                 (row["trigger_kind"], row["trigger_key"], row["trigger_level"]),
-                ("market_cap_milestone", "market_cap:1000000", 1_000_000.0),
+                ("market_cap_milestone", "market_cap:0xburst-milestone:1000000", 1_000_000.0),
             )
             self.assertEqual(observation["tracking_status"], "legacy_untracked")
+            store.close()
+
+    def test_completed_reactivates_tg_observation_and_records_snapshot_milestone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xreactivate", 520_000, 400_000)
+            stamp = scanner.now_iso()
+            store.upsert_observation(current, advance_market_cap_high_watermark=False, tracking_source="tg")
+            self.assertEqual(store.observation(current.address)["tracking_status"], "legacy_untracked")
+            previous_high, _, status = store.start_or_observe_completed(
+                current, observed_at=stamp, tracking_window_seconds=604800, args=args(root)
+            )
+            self.assertEqual((previous_high, status), (0.0, "active"))
+            self.assertEqual(scanner.evaluate_market_token(store, current, bootstrap=False), (1, 0))
+            snapshot = store.conn.execute(
+                "SELECT address, chain, platform, market_cap, source FROM token_snapshots WHERE address=?",
+                (current.address,),
+            ).fetchone()
+            self.assertEqual(tuple(snapshot), (current.address, "bsc", "fourmeme", 520000.0, "completed"))
+            milestone = store.conn.execute(
+                "SELECT level, snapshot_id, status FROM market_cap_milestones WHERE address=?",
+                (current.address,),
+            ).fetchone()
+            self.assertEqual((milestone["level"], milestone["snapshot_id"] > 0, milestone["status"]), (500000.0, True, "detected"))
             store.close()
 
     def test_legacy_observations_are_not_backfilled_into_tracking(self) -> None:
@@ -231,7 +256,7 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_completed_tokens", return_value=[current]):
                 scanner.discover_once(store, args(root))
             rows = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchall()
-            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:3000000"])
+            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:0xthree:3000000"])
             store.close()
 
     def test_completed_token_does_not_call_token_info_while_in_latest_list(self) -> None:
@@ -447,7 +472,7 @@ class MemeScannerTests(unittest.TestCase):
                 scanner.scan_once(store, args(root))
             job = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchone()
             observation = store.observation(current.address)
-            self.assertEqual(job["trigger_key"], "market_cap:500000")
+            self.assertEqual(job["trigger_key"], "market_cap:0xaaa:500000")
             self.assertEqual(observation["tracking_status"], "active")
             self.assertEqual(observation["tracking_source"], "completed")
             self.assertTrue(observation["tracking_started_at"])
