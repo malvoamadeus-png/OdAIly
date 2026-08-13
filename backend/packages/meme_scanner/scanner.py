@@ -31,6 +31,8 @@ PLATFORMS = ("fourmeme", "flap")
 MARKET_CAP_GATE = 500_000.0
 MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
 TG_MARKET_CAP_GATE = 300_000.0
+TG_SOLANA_MARKET_CAP_GATE = 500_000.0
+TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
 VOLUME_RATIO_GATE = 0.5
 TRACKING_WINDOW_SECONDS = 7 * 24 * 60 * 60
 COMPLETED_SCAN_INTERVAL_SECONDS = 300
@@ -81,6 +83,7 @@ class Token:
     volume_24h: float
     created_timestamp: int | None
     raw: dict[str, Any]
+    chain: str = CHAIN
 
     @property
     def volume_ratio(self) -> float:
@@ -142,7 +145,8 @@ def timestamp(value: Any) -> int | None:
 def token_from_row(row: dict[str, Any]) -> Token | None:
     address = str(row.get("address") or "").strip().lower()
     platform = str(row.get("launchpad_platform") or row.get("launchpad") or "").strip().lower()
-    if not address or (platform and platform not in (*PLATFORMS, "telegram")):
+    chain = str(row.get("chain") or "").strip().lower()
+    if not address or (platform and platform not in (*PLATFORMS, "telegram", "solana")):
         return None
     return Token(
         address=address,
@@ -153,6 +157,7 @@ def token_from_row(row: dict[str, Any]) -> Token | None:
         volume_24h=number(row.get("volume_24h")),
         created_timestamp=timestamp(row.get("created_timestamp")),
         raw=row,
+        chain="solana" if chain in {"sol", "solana"} or platform == "solana" else CHAIN,
     )
 
 
@@ -212,10 +217,10 @@ def _recursive_pick(value: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def fetch_token_info(address: str) -> Token | None:
+def fetch_token_info(address: str, chain: str = CHAIN) -> Token | None:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
-    command = [GMGN, "token", "info", "--chain", CHAIN, "--address", address, "--raw"]
+    command = [GMGN, "token", "info", "--chain", "sol" if chain == "solana" else chain, "--address", address, "--raw"]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed")
@@ -234,6 +239,7 @@ def fetch_token_info(address: str) -> Token | None:
         return None
     normalized["usd_market_cap"] = market_cap
     normalized.setdefault("address", address.lower())
+    normalized.setdefault("chain", chain)
     normalized.setdefault(
         "launchpad_platform",
         _recursive_pick(payload, ("launchpad_platform", "launchpad")) or "telegram",
@@ -246,7 +252,36 @@ def fetch_token_info(address: str) -> Token | None:
     ):
         if normalized.get(field) in (None, ""):
             normalized[field] = _recursive_pick(payload, aliases)
-    return token_from_row(normalized)
+    token = token_from_row(normalized)
+    if token is not None and chain == "robinhood" and token.chain == "bsc":
+        token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
+    return token
+
+
+def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
+    """Resolve a Telegram CA against the supported chain set only."""
+    if address_chain == "solana":
+        return fetch_token_info(address, "solana")
+    if address_chain != "evm":
+        return None
+    for chain in ("bsc", "robinhood"):
+        token = fetch_token_info(address, chain)
+        if token is not None:
+            if chain == "robinhood" and token.chain == "bsc":
+                token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
+            return token
+    return None
+
+
+def tg_market_cap_gate(chain: str) -> float | None:
+    normalized = str(chain or "").strip().lower().replace("_", "-")
+    if normalized in {"bsc", "bnb", "bnb-chain", "binance-smart-chain"}:
+        return TG_MARKET_CAP_GATE
+    if normalized in {"robinhood", "robinhood-chain", "robinhoodchain"}:
+        return TG_ROBINHOOD_MARKET_CAP_GATE
+    if normalized in {"sol", "solana"}:
+        return TG_SOLANA_MARKET_CAP_GATE
+    return None
 
 
 class Store:
@@ -272,6 +307,7 @@ class Store:
             );
             CREATE TABLE IF NOT EXISTS tg_candidates (
               id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL,
+              chain TEXT NOT NULL DEFAULT 'evm', source_chat TEXT,
               detected_at TEXT NOT NULL, window_start TEXT NOT NULL,
               mention_count INTEGER NOT NULL, chat_count INTEGER NOT NULL,
               sender_count INTEGER NOT NULL, evidence_json TEXT NOT NULL,
@@ -303,6 +339,11 @@ class Store:
         )
         self._ensure_jobs_v2()
         observation_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(observations)")}
+        candidate_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(tg_candidates)")}
+        if "chain" not in candidate_columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN chain TEXT NOT NULL DEFAULT 'evm'")
+        if "source_chat" not in candidate_columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN source_chat TEXT")
         if "highest_market_cap" not in observation_columns:
             self.conn.execute("ALTER TABLE observations ADD COLUMN highest_market_cap REAL NOT NULL DEFAULT 0")
             self.conn.execute("UPDATE observations SET highest_market_cap=last_market_cap")
@@ -335,6 +376,12 @@ class Store:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         if "next_attempt_at" not in columns:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT")
+        self.conn.commit()
+        candidate_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(tg_candidates)")}
+        if "chain" not in candidate_columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN chain TEXT NOT NULL DEFAULT 'evm'")
+        if "source_chat" not in candidate_columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN source_chat TEXT")
         self.conn.commit()
 
     def _ensure_jobs_v2(self) -> None:
@@ -409,7 +456,7 @@ class Store:
               address, chain, platform, symbol, name, market_cap, volume_24h,
               observed_at, source, scan_id, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (token.address, CHAIN, token.platform, token.symbol, token.name,
+            (token.address, token.chain, token.platform, token.symbol, token.name,
              token.market_cap, token.volume_24h, observed_at, source, scan_id,
              json.dumps(token.raw, ensure_ascii=False)),
         )
@@ -423,7 +470,7 @@ class Store:
               address, chain, platform, symbol, level, observed_at, snapshot_id,
               trigger_key, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'detected')""",
-            (token.address, CHAIN, token.platform, token.symbol, level, observed_at,
+            (token.address, token.chain, token.platform, token.symbol, level, observed_at,
              snapshot_id, trigger_key),
         )
         self.conn.commit()
@@ -775,12 +822,13 @@ def display_market_cap(value: float) -> str:
 def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind: str = "market_cap_milestone") -> tuple[str, str]:
     del sampled_at
     cap = display_market_cap(token.market_cap)
+    chain_label = "Solana" if token.chain == "solana" else "BSC"
     if trigger_kind == "tg_burst":
-        title = f"Meme速递：BSC上{token.symbol}社群热议中，市值{cap}万美元"
-        content = f"BSC上{token.symbol}社群热议中，当前市值{cap}万美元。\n\n{narrative.strip()}"
+        title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
+        content = f"{chain_label}上{token.symbol}社群热议中，当前市值{cap}万美元。\n\n{narrative.strip()}"
     else:
-        title = f"Meme速递：BSC上{token.symbol}市值突破{cap}万美元"
-        content = f"BSC上{token.symbol}市值突破{cap}万美元。\n\n{narrative.strip()}"
+        title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
+        content = f"{chain_label}上{token.symbol}市值突破{cap}万美元。\n\n{narrative.strip()}"
     return normalize_writer2(title), normalize_writer2(content)
 
 
@@ -800,7 +848,7 @@ def default_narrative_command(token: Token, output: Path) -> list[str]:
         "narrative",
         "generate",
         "--chain",
-        CHAIN,
+        token.chain,
         "--contract",
         token.address,
         "--telegram-session",
@@ -1155,7 +1203,7 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         print(f"[meme-scan] token_info backlog={backlog}", file=sys.stderr)
     store.mark_token_info_request(now)
     try:
-        token = fetch_token_info(address)
+        token = fetch_token_info(address, "solana") if str(row["chain"] or CHAIN) == "solana" else fetch_token_info(address)
         if token is None:
             raise RuntimeError("token_info returned no usable market cap")
     except Exception as exc:
@@ -1202,14 +1250,19 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
     if candidate is None:
         return (0, 0)
     try:
-        token = fetch_token_info(str(candidate["address"]))
+        chain = str(candidate["chain"] or "evm").lower()
+        token = fetch_tg_token_info(str(candidate["address"]), chain)
     except Exception as exc:
         store.update_tg_candidate(candidate["id"], "pending", reason=f"market_lookup_failed:{exc}")
         return (0, 0)
     if token is None:
-        store.update_tg_candidate(candidate["id"], "discarded", reason="bsc_token_not_found")
+        store.update_tg_candidate(candidate["id"], "discarded", reason="token_not_found")
         return (0, 1)
-    if token.market_cap < TG_MARKET_CAP_GATE:
+    market_cap_gate = tg_market_cap_gate(token.chain)
+    if market_cap_gate is None:
+        store.update_tg_candidate(candidate["id"], "discarded", reason="unsupported_chain", market_cap=token.market_cap)
+        return (0, 1)
+    if token.market_cap < market_cap_gate:
         store.update_tg_candidate(candidate["id"], "discarded", reason="tg_market_cap_gate_failed", market_cap=token.market_cap)
         return (0, 1)
     evidence = json.loads(candidate["evidence_json"])
@@ -1221,7 +1274,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
             "discarded",
             "volume_gate_failed",
             trigger_key=trigger_key,
-            trigger_level=TG_MARKET_CAP_GATE,
+            trigger_level=market_cap_gate,
             evidence=evidence,
         )
         store.update_tg_candidate(candidate["id"], "discarded", reason="volume_gate_failed", market_cap=token.market_cap)
@@ -1232,7 +1285,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         "tg_burst",
         "queued",
         trigger_key=trigger_key,
-        trigger_level=TG_MARKET_CAP_GATE,
+        trigger_level=market_cap_gate,
         evidence=evidence,
     )
     store.upsert_observation(

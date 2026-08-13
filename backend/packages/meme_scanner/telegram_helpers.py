@@ -14,6 +14,8 @@ from telethon.tl.types import User
 
 
 EVM_ADDRESS_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
+SOLANA_ADDRESS_RE = re.compile(r"(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])")
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 PROXY_TYPES = {
     "socks5": socks.SOCKS5,
     "socks5h": socks.SOCKS5,
@@ -41,6 +43,18 @@ def extract_ca_references(text: str) -> list[tuple[str, str]]:
         if address not in seen:
             seen.add(address)
             result.append(("evm", address))
+    for match in SOLANA_ADDRESS_RE.finditer(text):
+        address = match.group(0)
+        value = 0
+        for char in address:
+            value = value * 58 + BASE58_ALPHABET.index(char)
+        decoded = value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b""
+        decoded = b"\x00" * (len(address) - len(address.lstrip("1"))) + decoded
+        if len(decoded) != 32:
+            continue
+        if address not in seen:
+            seen.add(address)
+            result.append(("solana", address))
     return result
 
 

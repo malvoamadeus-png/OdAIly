@@ -10,9 +10,14 @@ from packages.meme_scanner import scanner, tg_watcher
 
 
 ADDRESS = "0x1111111111111111111111111111111111111111"
+SOLANA_ADDRESS = "So11111111111111111111111111111111111111112"
 
 
 class TelegramBurstTests(unittest.TestCase):
+    def test_extracts_solana_base58_and_not_plain_words(self) -> None:
+        refs = tg_watcher.extract_ca_references(f"CA {SOLANA_ADDRESS} utility")
+        self.assertIn(("solana", SOLANA_ADDRESS), refs)
+        self.assertNotIn(("solana", "utility"), refs)
     def record(self, store: tg_watcher.MentionStore, index: int, chat: int, sender: int) -> bool:
         return store.record(
             address=ADDRESS,
@@ -36,6 +41,32 @@ class TelegramBurstTests(unittest.TestCase):
             self.assertTrue(self.record(store, 5, 200, 2))
             candidate = store.conn.execute("SELECT * FROM tg_candidates").fetchone()
             self.assertEqual((candidate["mention_count"], candidate["chat_count"], candidate["sender_count"]), (5, 2, 3))
+            store.close()
+
+    def test_solana_candidate_below_500k_is_discarded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            mentions = tg_watcher.MentionStore(path)
+            for index, sender in enumerate((1, 2, 3, 1, 2), start=1):
+                mentions.record(address=SOLANA_ADDRESS, chat_id=100, message_id=index, sender_key=str(sender), sent_at=datetime.now(UTC), text=SOLANA_ADDRESS, dedupe_key=f"sol:{index}", window_minutes=20, cooldown_hours=6, chain="solana")
+            mentions.close()
+            store = scanner.Store(path)
+            market_token = scanner.Token(SOLANA_ADDRESS, "telegram", "Sol", "SOL", 499_999, 300_000, None, {"address": SOLANA_ADDRESS, "chain": "solana", "symbol": "SOL", "market_cap": 499_999, "volume_24h": 300_000}, "solana")
+            with patch.object(scanner, "fetch_token_info", return_value=market_token):
+                self.assertEqual(scanner.process_tg_candidate(store), (0, 1))
+            store.close()
+
+    def test_robinhood_candidate_requires_one_million(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            mentions = tg_watcher.MentionStore(path)
+            for index, sender in enumerate((1, 2, 3, 1, 2), start=1):
+                mentions.record(address=ADDRESS, chat_id=100, message_id=index, sender_key=str(sender), sent_at=datetime.now(UTC), text=ADDRESS, dedupe_key=f"rh:{index}", window_minutes=20, cooldown_hours=6, source_chat="Robinhood")
+            mentions.close()
+            store = scanner.Store(path)
+            market_token = scanner.Token(ADDRESS, "telegram", "Burst", "BURST", 999_999, 700_000, None, {"address": ADDRESS, "chain": "robinhood", "symbol": "BURST", "market_cap": 999_999, "volume_24h": 700_000}, "robinhood")
+            with patch.object(scanner, "fetch_token_info", return_value=market_token):
+                self.assertEqual(scanner.process_tg_candidate(store), (0, 1))
             store.close()
 
     def test_five_mentions_still_require_three_distinct_senders(self) -> None:

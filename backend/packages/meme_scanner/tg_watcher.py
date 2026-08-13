@@ -88,6 +88,7 @@ class MentionStore:
               ON ca_mentions(address, chat_id, message_id);
             CREATE TABLE IF NOT EXISTS tg_candidates (
               id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL,
+              chain TEXT NOT NULL DEFAULT 'evm', source_chat TEXT,
               detected_at TEXT NOT NULL, window_start TEXT NOT NULL,
               mention_count INTEGER NOT NULL, chat_count INTEGER NOT NULL,
               sender_count INTEGER NOT NULL, evidence_json TEXT NOT NULL,
@@ -98,6 +99,12 @@ class MentionStore:
             CREATE INDEX IF NOT EXISTS idx_tg_candidates_address_time ON tg_candidates(address, detected_at);
             """
         )
+        self.conn.commit()
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(tg_candidates)")}
+        if "chain" not in columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN chain TEXT NOT NULL DEFAULT 'evm'")
+        if "source_chat" not in columns:
+            self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN source_chat TEXT")
         self.conn.commit()
 
     def close(self) -> None:
@@ -115,6 +122,8 @@ class MentionStore:
         dedupe_key: str,
         window_minutes: int,
         cooldown_hours: int,
+        chain: str = "evm",
+        source_chat: str | None = None,
     ) -> bool:
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO ca_mentions(
@@ -125,9 +134,9 @@ class MentionStore:
         self.conn.commit()
         if cursor.rowcount == 0:
             return False
-        return self._maybe_create_candidate(address, window_minutes, cooldown_hours)
+        return self._maybe_create_candidate(address, window_minutes, cooldown_hours, chain, source_chat)
 
-    def _maybe_create_candidate(self, address: str, window_minutes: int, cooldown_hours: int) -> bool:
+    def _maybe_create_candidate(self, address: str, window_minutes: int, cooldown_hours: int, chain: str, source_chat: str | None) -> bool:
         detected_at = datetime.now(UTC)
         window_start = detected_at - timedelta(minutes=window_minutes)
         stats = self.conn.execute(
@@ -155,11 +164,11 @@ class MentionStore:
         evidence = {"messages": [dict(row) for row in reversed(rows)]}
         self.conn.execute(
             """INSERT INTO tg_candidates(
-              address, detected_at, window_start, mention_count, chat_count,
+              address, chain, source_chat, detected_at, window_start, mention_count, chat_count,
               sender_count, evidence_json, status, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
             (
-                address,
+                address, chain, source_chat,
                 detected_at.isoformat(),
                 window_start.isoformat(),
                 mentions,
@@ -219,6 +228,7 @@ async def run(args: argparse.Namespace) -> int:
         connection_retries=args.connection_retries,
         retry_delay=1,
     )
+    source_chat_names: dict[int, str] = {}
 
     async def handle(message: Any) -> None:
         nonlocal last_prune
@@ -229,7 +239,7 @@ async def run(args: argparse.Namespace) -> int:
             if pruned:
                 print(f"[meme-tg-watch] pruned={pruned}")
         text = str(message.message or "")
-        references = [address for chain, address in extract_ca_references(text) if chain == "evm"]
+        references = extract_ca_references(text)
         if not references or not message.date:
             return
         sender = await message.get_sender()
@@ -238,7 +248,8 @@ async def run(args: argparse.Namespace) -> int:
         chat_id = int(getattr(message, "chat_id", 0) or 0)
         sender_id = getattr(sender, "id", None)
         sender_key = str(sender_id) if sender_id is not None else f"name:{display_name(sender).casefold()}"
-        for address in references:
+        source_chat = source_chat_names.get(chat_id) or str(getattr(message, "chat", None) and getattr(message.chat, "title", None) or "").strip()
+        for chain, address in references:
             created = store.record(
                 address=address,
                 chat_id=chat_id,
@@ -247,6 +258,8 @@ async def run(args: argparse.Namespace) -> int:
                 sent_at=message.date.astimezone(UTC),
                 text=text,
                 dedupe_key=forward_key(message, address),
+                chain=chain,
+                source_chat=source_chat,
                 window_minutes=args.window_minutes,
                 cooldown_hours=args.cooldown_hours,
             )
@@ -256,6 +269,7 @@ async def run(args: argparse.Namespace) -> int:
     await client.start()
     try:
         entities, matched_names = await resolve_allowed_entities(client, allowed, args.dialogs_limit)
+        source_chat_names.update({int(getattr(entity, "id", 0)): display_name(entity) for entity in entities})
         if not entities:
             raise RuntimeError("None of the configured Telegram whitelist chats are visible to this account")
         print(f"[meme-tg-watch] listening chats={len(entities)} configured={len(allowed)}")
