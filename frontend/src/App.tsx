@@ -2594,6 +2594,14 @@ function fmtMemeMarketCap(value: number | null): string {
   return `${(value / 10_000).toFixed(value >= 1_000_000 ? 0 : 1)} 万美元`;
 }
 
+function fmtMemeDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-';
+  const seconds = value / 1000;
+  if (seconds < 1) return `${Math.round(value)} 毫秒`;
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
+}
+
 function memeStatusLabel(item: MemeDashboardItem): string {
   switch (item.status) {
     case 'publisher_pending':
@@ -2614,7 +2622,7 @@ function memeStatusLabel(item: MemeDashboardItem): string {
   }
 }
 
-type MemeAuditSection = 'diagnostic' | 'final' | 'telegram' | 'grok_x' | 'grok_narrative' | 'performance';
+type MemeAuditSection = 'diagnostic' | 'final' | 'telegram' | 'x_search' | 'grok_narrative' | 'performance';
 
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -2915,10 +2923,11 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                   {section === 'telegram' && <div className="memeAuditSectionBody"><TelegramAudit contexts={listValue(narrative?.telegram_contexts)} /></div>}
                 </section>
                 <section>
-                  {sectionButton('grok_x', 'Grok X 搜索')}
-                  {section === 'grok_x' && (
+                  {sectionButton('x_search', 'X CA 搜索')}
+                  {section === 'x_search' && (
                     <div className="memeAuditSectionBody">
                       <MaterialList title="X 原帖" materials={listValue(narrative?.x_posts)} />
+                      <MaterialList title="被排除帖子" materials={listValue(narrative?.x_excluded_posts)} />
                       <MaterialList title="Grok source actions" materials={listValue(grokResearch.source_actions)} />
                     </div>
                   )}
@@ -2938,6 +2947,25 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                   {sectionButton('performance', '性能与调用诊断')}
                   {section === 'performance' && (
                     <div className="memeAuditSectionBody">
+                      <div className="memeAuditTiming">
+                        <span><b>排队等待</b>{fmtMemeDuration(item.timing.queue_duration_ms)}</span>
+                        <span><b>叙事流程</b>{fmtMemeDuration(item.timing.narrative_duration_ms)}</span>
+                        <span><b>发布写入</b>{fmtMemeDuration(item.timing.publishing_duration_ms)}</span>
+                        <span><b>总耗时</b>{fmtMemeDuration(item.timing.total_duration_ms)}</span>
+                      </div>
+                      {(() => {
+                        const performance = recordValue(narrative?.performance);
+                        const calls = Array.isArray(performance.calls)
+                          ? performance.calls.map(recordValue).filter((call) => typeof call.stage === 'string' && typeof call.duration_ms === 'number')
+                          : [];
+                        return calls.length > 0 ? (
+                          <div className="memeAuditTiming memeAuditTiming--calls">
+                            {calls.map((call) => (
+                              <span key={String(call.stage)}><b>{narrativeStageLabel(String(call.stage))}</b>{fmtMemeDuration(Number(call.duration_ms))}</span>
+                            ))}
+                          </div>
+                        ) : null;
+                      })()}
                       <div className="memeAuditCounts">
                         {Object.entries(counts).map(([key, value]) => <span key={key}><b>{key}</b>{String(value)}</span>)}
                       </div>

@@ -68,6 +68,14 @@ def test_meme_dashboard_reports_missing_database(tmp_path) -> None:
     assert dashboard["items"] == []
 
 
+def test_meme_dashboard_hides_gate_failed_jobs(tmp_path) -> None:
+    path = tmp_path / "meme.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY,address TEXT,trigger_key TEXT,trigger_level REAL,payload_json TEXT,trigger_kind TEXT,queued_at TEXT,status TEXT,reason TEXT,title TEXT,content TEXT,updated_at TEXT)")
+        connection.execute("INSERT INTO jobs VALUES (1,'0xbad','market_cap:0xbad:1000000',1000000,'{}','market_cap_milestone','2026-08-13T00:00:00Z','discarded','volume_gate_failed','','','2026-08-13T00:00:01Z')")
+    assert MemeDashboardStore(path).dashboard()["items"] == []
+
+
 def test_meme_dashboard_exposes_narrative_summary_and_lazy_detail(tmp_path) -> None:
     path = tmp_path / "meme.sqlite3"
     narrative = {
@@ -123,3 +131,34 @@ def test_meme_dashboard_exposes_narrative_summary_and_lazy_detail(tmp_path) -> N
     assert detail is not None
     assert detail["available"] is True
     assert detail["narrative"]["x_posts"][0]["id"] == "x:1"
+
+
+def test_meme_dashboard_reconstructs_lifecycle_and_narrative_durations(tmp_path) -> None:
+    path = tmp_path / "meme.sqlite3"
+    narrative = {"performance": {"total_duration_ms": 2500}}
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE jobs (
+              id INTEGER PRIMARY KEY,address TEXT,trigger_key TEXT,trigger_level REAL,
+              payload_json TEXT,trigger_kind TEXT,queued_at TEXT,status TEXT,reason TEXT,
+              narrative_json TEXT,title TEXT,content TEXT,updated_at TEXT,
+              processing_started_at TEXT,publishing_started_at TEXT,completed_at TEXT
+            )"""
+        )
+        connection.execute(
+            "CREATE TABLE tg_candidates (id INTEGER PRIMARY KEY, mention_count INTEGER, chat_count INTEGER, sender_count INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "0x333", "market_cap:0x333:500000", 500000, "{}", "market_cap_milestone",
+                "2026-08-14T00:00:00+00:00", "publisher_pending", None, json.dumps(narrative),
+                "title", "content", "2026-08-14T00:05:00+00:00",
+                "2026-08-14T00:00:30+00:00", "2026-08-14T00:02:30+00:00", "2026-08-14T00:03:00+00:00",
+            ),
+        )
+    timing = MemeDashboardStore(path).dashboard()["items"][0]["timing"]
+    assert timing["queue_duration_ms"] == 30000
+    assert timing["narrative_duration_ms"] == 2500
+    assert timing["publishing_duration_ms"] == 30000
+    assert timing["total_duration_ms"] == 180000

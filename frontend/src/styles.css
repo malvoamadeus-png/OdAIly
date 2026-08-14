@@ -1393,6 +1393,32 @@ h2 {
   gap: 8px;
 }
 
+.memeAuditTiming {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.memeAuditTiming span {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  color: #394150;
+  font-size: 12px;
+}
+
+.memeAuditTiming b {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.memeAuditTiming--calls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .memeAuditDiagnosticGrid span,
 .memeAuditDecisionGrid span,
 .memeAuditCounts span,

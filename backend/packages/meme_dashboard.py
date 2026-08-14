@@ -60,11 +60,47 @@ def _narrative_summary(value: Any) -> dict[str, Any]:
 
 def _job_columns(connection: sqlite3.Connection) -> str:
     columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)")}
-    return "narrative_json" if "narrative_json" in columns else "NULL AS narrative_json"
+    selected = []
+    for column in ("narrative_json", "processing_started_at", "publishing_started_at", "completed_at"):
+        selected.append(column if column in columns else f"NULL AS {column}")
+    return ",".join(selected)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _duration_ms(start: Any, end: Any) -> int | None:
+    started = _parse_timestamp(start)
+    finished = _parse_timestamp(end)
+    if started is None or finished is None:
+        return None
+    return max(0, round((finished - started).total_seconds() * 1000))
+
+
+def _timing_summary(row: sqlite3.Row, narrative: dict[str, Any]) -> dict[str, Any]:
+    performance = narrative.get("performance") if isinstance(narrative.get("performance"), dict) else {}
+    return {
+        "queued_at": str(row["queued_at"] or ""),
+        "processing_started_at": row["processing_started_at"],
+        "publishing_started_at": row["publishing_started_at"],
+        "completed_at": row["completed_at"],
+        "queue_duration_ms": _duration_ms(row["queued_at"], row["processing_started_at"]),
+        "narrative_duration_ms": _number(performance.get("total_duration_ms")),
+        "publishing_duration_ms": _duration_ms(row["publishing_started_at"], row["completed_at"]),
+        "total_duration_ms": _duration_ms(row["queued_at"], row["completed_at"]),
+    }
 
 
 def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[str, Any]:
     payload = _json_object(row["payload_json"])
+    narrative = _json_object(row["narrative_json"])
     candidate: dict[str, Any] = {}
     if row["trigger_kind"] == "tg_burst":
         try:
@@ -92,6 +128,7 @@ def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[s
         "content": str(row["content"] or ""),
         "queued_at": str(row["queued_at"]),
         "updated_at": str(row["updated_at"]),
+        "timing": _timing_summary(row, narrative),
         **_narrative_summary(row["narrative_json"]),
     }
 
@@ -123,6 +160,7 @@ class MemeDashboardStore:
                     SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,
                            queued_at,status,reason,title,content,updated_at,{_job_columns(connection)}
                     FROM jobs
+                    WHERE COALESCE(reason, '') NOT IN ('volume_gate_failed', 'tg_market_cap_gate_failed', 'unsupported_chain', 'token_not_found')
                     ORDER BY updated_at DESC,id DESC
                     LIMIT ?
                     """,

@@ -1016,6 +1016,16 @@ export type MemeDashboardItem = {
   failure_code: string | null;
   primary_type: string | null;
   type_hypothesis: string | null;
+  timing: {
+    queued_at: string;
+    processing_started_at: string | null;
+    publishing_started_at: string | null;
+    completed_at: string | null;
+    queue_duration_ms: number | null;
+    narrative_duration_ms: number | null;
+    publishing_duration_ms: number | null;
+    total_duration_ms: number | null;
+  };
 };
 
 export type MemeDashboard = {
@@ -1045,6 +1055,7 @@ export type MemeNarrativeDetail = {
     telegram_contexts?: MemeNarrativeMaterial[];
     telegram_messages?: MemeNarrativeMaterial[];
     x_posts?: MemeNarrativeMaterial[];
+    x_excluded_posts?: MemeNarrativeMaterial[];
     grok_research?: {
       source_actions?: MemeNarrativeMaterial[];
       narrative_materials?: MemeNarrativeMaterial[];

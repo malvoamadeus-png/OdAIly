@@ -30,9 +30,9 @@
 
 Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事生成不使用 watcher 的 CA-only 摘要作为唯一输入，而是按 CommunityMonitor V2 对精确 CA 做白名单全历史 Telegram 搜索。程序全局选择最早 20 条和最新 20 条命中，并对每个命中回读前 2 条、后 15 条上下文。机器人在保存前过滤，原话按 `chat + message_id` 去重。
 
-Grok 分两路执行：第一路用精确 CA 搜索最多 30 条 X 原帖，保留原文、作者、链接和时间；第二路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`。最终 writer 只接收这些结构化材料和 Telegram 原话，不接收搜索过程摘要。
+X CA 搜索使用公开 FxTwitter 接口，分别请求 `top` 两页和 `latest` 两页，每页最多 20 条，按 X 帖子 ID 去重。正文不含精确 CA 的弱相关结果只保留在排除审计中；当前唯一内容过滤规则是排除正文含 `gmgn.ai/` 链接的帖子。保留的帖子保存原文、作者、链接、时间和来源 feed/页码。
 
-两路 Grok 请求共用同一个 xAI/CLIProxyAPI 代理时必须串行占用请求槽；X 搜索和独立研究仍是两个独立阶段，但不能并发打到同一 OAuth 代理账号。阶段请求失败时保留具体诊断并按阶段重试。
+Grok 只执行两路：第一路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`；第二路在 Telegram 实体候选提取完成后做实体补充。两路 Grok 请求使用同一个 xAI/CLIProxyAPI 代理时最多并发占用两个请求槽；阶段请求失败时保留具体诊断并按阶段重试。最终 writer 继续接收完整 Telegram 原话、FxTwitter 帖子和两路 Grok 结构化材料，不新增 Telegram AI 抽取阶段。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 

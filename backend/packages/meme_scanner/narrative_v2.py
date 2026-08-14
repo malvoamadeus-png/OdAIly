@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from packages.common.config import DEFAULT_GPT_WRITER_MODEL, DEFAULT_OPENAI_BASE_URL
 from packages.common.paths import get_paths
 from packages.meme_scanner import context_search
+from packages.meme_scanner import fxtwitter_search
 from packages.meme_scanner import grok_search as grok_x_search
 
 PATHS = get_paths()
@@ -49,9 +50,9 @@ DEFAULT_GPT_MODEL = DEFAULT_GPT_WRITER_MODEL
 DEFAULT_GROK_MODEL = grok_x_search.DEFAULT_MODEL
 DEFAULT_OUTPUT_DIR = EXPORTS_DATA_DIR / "narrative"
 GROK_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
-# CLIProxyAPI's xAI OAuth route is not reliable with concurrent requests from
-# the same account, so all narrative Grok calls share one process-local slot.
-GROK_REQUEST_LOCK = threading.Lock()
+# A production probe accepted two simultaneous x_search requests. Keep the
+# cap local to this worker so a proxy failure cannot fan out without bound.
+GROK_REQUEST_SLOTS = threading.BoundedSemaphore(2)
 
 # These are the numeric senders behind the bot examples supplied for this pipeline.
 # They are used only in memory to remove the messages before any source material is saved.
@@ -159,7 +160,7 @@ def post_grok_response(
     timeout: int,
 ) -> tuple[requests.Response, int]:
     """Retry a transient xAI failure once; callers retain a diagnostic on failure."""
-    with GROK_REQUEST_LOCK:
+    with GROK_REQUEST_SLOTS:
         response: requests.Response | None = None
         for attempt in range(1, 3):
             response = requests.post(
@@ -246,13 +247,6 @@ Return a candidate only when the same message contains a named person/account an
 Telegram contexts:\n{json.dumps(contexts, ensure_ascii=False)}"""
 
 
-def build_x_collection_prompt(contract: str) -> str:
-    return f"""Use X Search to search only this exact CA: {contract}
-Do not add chain, token name, people, or any other term to the search query. Inspect up to 30 posts whose body explicitly contains the CA. Preserve each post verbatim; do not summarize or infer.
-For every returned post, label it `keep` or `exclude`. Exclude data/signal broadcasts (trades, holdings, price, market cap, wallet activity, monitoring alerts) and promotional or funnel posts (profit screenshots, DYOR, AI picking, bots, referral or outbound links, tutorials or service marketing). Also exclude posts whose only content is a vague role movement or generic hype, such as “wallet gang shows up”, whales/smart money arriving, “something's cooking”, or `fr fr`/`for real`. A named person or account action such as “Frank arrived” remains usable. Exclude the entire promotional post even if it contains a narrative assertion. Exclude bare reposts, but keep replies or quote posts with a substantive comment.
-Return only JSON: {{"x_posts":[{{"id":"x:1","author":"@handle","text":"verbatim post","url":"https://x.com/...","timestamp":"ISO time or empty string","decision":"keep|exclude","reason":"human_narrative|data_signal|promotion|bare_repost"}}]}}. Never invent an author, URL, time, or text. The program will discard every `exclude` item before saving material."""
-
-
 def build_grok_research_prompt_v2(contract: str) -> str:
     return f"""Independently research the meme token identified only by this exact CA: {contract}
 Use X Search. Do not read Telegram material and do not use a chain, token name, person, or any other extra lead as input. The task is to identify the concrete source, wording, event, identity, or claim people use to hype it. Do not assess truth, value, price, or tradeability. Do not use project pages, explorers, market sites, or media pages.
@@ -260,24 +254,6 @@ You may state a research conclusion even without an original-post link; it will 
 Return only JSON: {{"source_actions":[{{"id":"grok:source:1","actor":"original named X account or person","action":"posted|reposted|quoted|replied|liked|mentioned","date":"YYYY-MM-DD or empty string","quote":"the exact short source wording","url":"https://x.com/... or empty string"}}],"narrative_materials":[{{"id":"grok:narrative:1","statement":"specific narrative statement"}}],"supplemental_information":[{{"id":"grok:supplement:1","statement":"specific identity, event, or relationship that helps explain an action"}}],"type_hypothesis":"pure_meme|celebrity_anchor|app_linked|"}}.
 `source_actions` is only for an original X action. Do not turn a community repost or a Grok inference into a source action; leave it empty if the original action cannot be identified. Preserve actor, action, date, and short quote exactly; include a URL when X Search returned one, otherwise leave URL empty rather than inventing it.
 Every item must be concrete. Use empty arrays and an empty string when unavailable. Do not produce reader copy, price/market-cap claims, trade advice, generic hype, pure questions, market state, whale/new-wallet activity, vague unnamed-role movement (“wallet gang”, dealers, foreigners, smart money, whales arrived), `fr fr`/`for real`, or unsupported buzzwords. Named-person actions such as “Frank arrived” may be retained."""
-
-
-def normalize_x_posts(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-    posts: list[dict[str, str]] = []
-    for index, item in enumerate(value, 1):
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        author = str(item.get("author") or "").strip()
-        text = str(item.get("text") or "").strip()
-        if str(item.get("decision") or "").strip().casefold() != "keep":
-            continue
-        if not (re.match(r"https://(?:x|twitter)\.com/", url) and author and text):
-            continue
-        posts.append({"id": str(item.get("id") or f"x:{index}"), "author": author, "text": text, "url": url, "timestamp": str(item.get("timestamp") or "").strip()})
-    return posts
 
 
 def normalize_grok_materials(value: Any, *, prefix: str, field: str) -> list[dict[str, str]]:
@@ -352,24 +328,23 @@ def normalize_grok_claims(value: Any, *, prefix: str = "grok:ca") -> list[dict[s
     return claims
 
 
-def collect_x_posts(contract: str, *, model: str, timeout: int) -> dict[str, Any]:
-    load_project_env()
-    api_key = grok_x_search.resolve_api_key(None, grok_x_search.DEFAULT_API_KEY_FILE)
-    base_url = grok_x_search.resolve_base_url(None)
-    response, attempts = post_grok_response(
-        base_url=base_url,
-        api_key=api_key,
-        payload={"model": model, "input": [{"role": "user", "content": build_x_collection_prompt(contract)}], "tools": [{"type": "x_search"}]},
-        timeout=timeout,
-    )
-    if response.status_code >= 400:
-        return {"posts": [], "raw": None, "diagnostic": {"stage": "x_ca_collection", "http_status": response.status_code, "attempts": attempts}}
-    raw = response.json()
-    output_text = grok_x_search.extract_output_text(raw).strip()
-    if not output_text:
-        return {"posts": [], "raw": raw, "diagnostic": {"stage": "x_ca_collection", "http_status": response.status_code, "attempts": attempts, "empty_output": True}}
-    parsed = extract_json_object(output_text, "Grok X collection")
-    return {"posts": normalize_x_posts(parsed.get("x_posts")), "raw": raw, "diagnostic": {"stage": "x_ca_collection", "http_status": response.status_code, "attempts": attempts}}
+def collect_x_posts(contract: str, *, model: str = "", timeout: int) -> dict[str, Any]:
+    del model
+    result = fxtwitter_search.search_ca(contract, pages_per_feed=2, count_per_page=20, timeout=timeout)
+    raw = result["raw"]
+    return {
+        "posts": result["posts"],
+        "excluded_posts": result["excluded_posts"],
+        "raw": raw,
+        "diagnostic": {
+            "stage": "x_ca_collection",
+            "source": "fxtwitter",
+            "pages": len(raw.get("pages") or []),
+            "unique_results": raw.get("unique_results", 0),
+            "kept_results": len(result["posts"]),
+            "excluded_results": len(result["excluded_posts"]),
+        },
+    }
 
 
 def collect_grok_material(contract: str, *, model: str, timeout: int) -> dict[str, Any]:
@@ -869,9 +844,17 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     telegram_path = output_path.with_suffix(".telegram.json")
 
     telegram_task = asyncio.create_task(timed("telegram_collection", collect_telegram_contexts(args, telegram_path)))
-    x_posts_task = timed("x_ca_collection", asyncio.to_thread(collect_x_posts, args.contract, model=args.grok_model, timeout=args.grok_timeout))
-    grok_task = timed("grok_ca_research", asyncio.to_thread(collect_grok_material, args.contract, model=args.grok_model, timeout=args.grok_timeout))
-    (telegram_source, telegram_performance), (x_source, x_performance), (grok_source, grok_performance) = await asyncio.gather(telegram_task, x_posts_task, grok_task)
+    x_posts_task = asyncio.create_task(
+        timed("x_ca_collection", asyncio.to_thread(collect_x_posts, args.contract, timeout=args.grok_timeout))
+    )
+    # Research is CA-only and can run while Telegram material is being prepared.
+    grok_task = asyncio.create_task(
+        timed("grok_ca_research", asyncio.to_thread(collect_grok_material, args.contract, model=args.grok_model, timeout=args.grok_timeout))
+    )
+    (telegram_source, telegram_performance), (x_source, x_performance) = await asyncio.gather(
+        telegram_task,
+        x_posts_task,
+    )
     contexts = list(telegram_source.get("contexts") or [])
     try:
         extraction, entity_extraction_performance = chat_completion_json_with_metrics(
@@ -884,16 +867,22 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     entity_extraction_performance["stage"] = "telegram_entity_extraction"
     telegram_messages = telegram_messages_from_contexts(contexts)
     entity_candidates = normalize_entity_candidates(extraction.get("entity_candidates"), contexts)
-    entity_lookup, entity_lookup_performance = await timed(
-        "grok_entity_lookup",
-        asyncio.to_thread(
-            collect_entity_supplements,
-            args.contract,
-            args.chain,
-            entity_candidates,
-            model=args.grok_model,
-            timeout=args.grok_timeout,
-        ),
+    entity_lookup_task = asyncio.create_task(
+        timed(
+            "grok_entity_lookup",
+            asyncio.to_thread(
+                collect_entity_supplements,
+                args.contract,
+                args.chain,
+                entity_candidates,
+                model=args.grok_model,
+                timeout=args.grok_timeout,
+            ),
+        )
+    )
+    (grok_source, grok_performance), (entity_lookup, entity_lookup_performance) = await asyncio.gather(
+        grok_task,
+        entity_lookup_task,
     )
     x_posts = x_source["posts"]
     grok_source_actions = grok_source["source_actions"]
@@ -967,6 +956,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
         "telegram_messages": telegram_messages,
         "entity_candidates": entity_candidates,
         "x_posts": x_posts,
+        "x_excluded_posts": x_source.get("excluded_posts") or [],
         "type_hypothesis": grok_source["type_hypothesis"],
         "grok_research": {
             "source_actions": grok_source_actions,

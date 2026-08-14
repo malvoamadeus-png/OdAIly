@@ -407,6 +407,10 @@ class Store:
               next_attempt_at TEXT, updated_at TEXT NOT NULL
             )"""
         )
+        job_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("processing_started_at", "publishing_started_at", "completed_at"):
+            if column not in job_columns:
+                self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, next_attempt_at, id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_address ON jobs(address, id)")
         legacy_exists = self.conn.execute(
@@ -734,9 +738,11 @@ class Store:
             if job is None:
                 self.conn.commit()
                 return None
+            stamp = now_iso()
             self.conn.execute(
-                "UPDATE jobs SET status='processing', attempts=attempts+1, next_attempt_at=NULL, updated_at=? WHERE id=?",
-                (now_iso(), job["id"]),
+                "UPDATE jobs SET status='processing', attempts=attempts+1, next_attempt_at=NULL, "
+                "processing_started_at=COALESCE(processing_started_at, ?), updated_at=? WHERE id=?",
+                (stamp, stamp, job["id"]),
             )
             claimed = self.conn.execute("SELECT * FROM jobs WHERE id=?", (job["id"],)).fetchone()
             self.conn.commit()
@@ -787,10 +793,16 @@ class Store:
         self.conn.commit()
 
     def update_job(self, job_id: int, status: str, *, reason: str | None = None, narrative: dict[str, Any] | None = None, title: str | None = None, content: str | None = None, publish: dict[str, Any] | None = None) -> None:
+        stamp = now_iso()
+        publishing_started_at = stamp if status == "publishing" else None
+        completed_at = stamp if status in {"publisher_pending", "discarded", "publish_failed"} else None
         self.conn.execute(
             """UPDATE jobs SET status=?, reason=COALESCE(?, reason), narrative_json=COALESCE(?, narrative_json),
-            title=COALESCE(?, title), content=COALESCE(?, content), publish_json=COALESCE(?, publish_json), updated_at=? WHERE id=?""",
-            (status, reason, json.dumps(narrative, ensure_ascii=False) if narrative else None, title, content, json.dumps(publish, ensure_ascii=False) if publish else None, now_iso(), job_id),
+            title=COALESCE(?, title), content=COALESCE(?, content), publish_json=COALESCE(?, publish_json),
+            publishing_started_at=COALESCE(publishing_started_at, ?), completed_at=COALESCE(completed_at, ?), updated_at=? WHERE id=?""",
+            (status, reason, json.dumps(narrative, ensure_ascii=False) if narrative else None, title, content,
+             json.dumps(publish, ensure_ascii=False) if publish else None,
+             publishing_started_at, completed_at, stamp, job_id),
         )
         self.conn.commit()
 

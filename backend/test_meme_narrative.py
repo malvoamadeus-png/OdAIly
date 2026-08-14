@@ -37,7 +37,7 @@ def narrative_args(output):
     )
 
 
-def test_grok_requests_are_serialized_for_shared_proxy():
+def test_grok_requests_allow_two_concurrent_requests_for_shared_proxy():
     state_lock = threading.Lock()
     active = 0
     max_active = 0
@@ -64,7 +64,7 @@ def test_grok_requests_are_serialized_for_shared_proxy():
                 range(2),
             ))
 
-    assert max_active == 1
+    assert max_active == 2
 
 
 def test_run_async_returns_json_safe_output_path(tmp_path):
