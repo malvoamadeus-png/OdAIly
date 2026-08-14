@@ -93,6 +93,34 @@ class MemeScannerTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual((current.market_cap, current.volume_24h), (160_000.0, 90_000.0))
 
+    def test_telegram_token_info_accepts_unknown_launchpad_platform(self) -> None:
+        address = "0x1111111111111111111111111111111111111111"
+        robinhood_payload = {
+            "address": address,
+            "name": "Robinhood Token",
+            "symbol": "RHO",
+            "launchpad_platform": "pons_v2",
+            "circulating_supply": "1000000000",
+            "price": {"address": address, "price": "0.0012", "volume_24h": "900000"},
+        }
+        bsc_payload = {
+            "address": address,
+            "circulating_supply": "0",
+            "price": {"address": "", "price": "0"},
+        }
+
+        def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            chain = command[command.index("--chain") + 1]
+            payload = robinhood_payload if chain == "robinhood" else bsc_payload
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+
+        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
+            scanner.subprocess, "run", side_effect=run
+        ):
+            current = scanner.fetch_tg_token_info(address, "evm")
+        self.assertIsNotNone(current)
+        self.assertEqual((current.platform, current.chain, current.market_cap), ("pons_v2", "robinhood", 1_200_000.0))
+
     def test_store_migrates_legacy_unique_address_jobs_to_event_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scanner.sqlite3"

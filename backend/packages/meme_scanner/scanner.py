@@ -142,11 +142,15 @@ def timestamp(value: Any) -> int | None:
     return result if result > 0 else None
 
 
-def token_from_row(row: dict[str, Any]) -> Token | None:
+def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
     address = str(row.get("address") or "").strip().lower()
     platform = str(row.get("launchpad_platform") or row.get("launchpad") or "").strip().lower()
     chain = str(row.get("chain") or "").strip().lower()
-    if not address or (platform and platform not in (*PLATFORMS, "telegram", "solana")):
+    if not address or (
+        platform
+        and platform not in (*PLATFORMS, "telegram", "solana")
+        and not allow_unknown_platform
+    ):
         return None
     return Token(
         address=address,
@@ -217,7 +221,12 @@ def _recursive_pick(value: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def fetch_token_info(address: str, chain: str = CHAIN) -> Token | None:
+def fetch_token_info(
+    address: str,
+    chain: str = CHAIN,
+    *,
+    allow_unknown_platform: bool = False,
+) -> Token | None:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
     command = [GMGN, "token", "info", "--chain", "sol" if chain == "solana" else chain, "--address", address, "--raw"]
@@ -252,20 +261,20 @@ def fetch_token_info(address: str, chain: str = CHAIN) -> Token | None:
     ):
         if normalized.get(field) in (None, ""):
             normalized[field] = _recursive_pick(payload, aliases)
-    token = token_from_row(normalized)
+    token = token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
     if token is not None and chain == "robinhood" and token.chain == "bsc":
         token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
     return token
 
 
 def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
-    """Resolve a Telegram CA against the supported chain set only."""
+    """Resolve a Telegram CA by chain; launchpad platform is not a gate."""
     if address_chain == "solana":
-        return fetch_token_info(address, "solana")
+        return fetch_token_info(address, "solana", allow_unknown_platform=True)
     if address_chain != "evm":
         return None
     for chain in ("bsc", "robinhood"):
-        token = fetch_token_info(address, chain)
+        token = fetch_token_info(address, chain, allow_unknown_platform=True)
         if token is not None:
             if chain == "robinhood" and token.chain == "bsc":
                 token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
