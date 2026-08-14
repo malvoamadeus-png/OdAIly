@@ -96,6 +96,8 @@ def test_run_async_returns_json_safe_output_path(tmp_path):
     with patch.object(narrative_v2, "collect_telegram_contexts", new=AsyncMock(return_value=telegram)), patch.object(
         narrative_v2, "collect_x_posts", return_value=x_source
     ), patch.object(narrative_v2, "collect_grok_material", return_value=grok), patch.object(
+        narrative_v2, "collect_gmgn_narrative", return_value={"supplement": [], "raw": {}, "diagnostic": {"stage": "gmgn_narrative", "http_status": 200}}
+    ), patch.object(
         narrative_v2, "chat_completion_json_with_metrics", side_effect=writer_results
     ):
         result = asyncio.run(narrative_v2.run_async(narrative_args(output)))
@@ -117,10 +119,12 @@ def test_final_writer_prompt_separates_grok_supplements():
         [],
         [],
         [],
+        [],
         "",
     )
 
-    assert "Grok材料补充：" in prompt
+    assert "Grok补充：" in prompt
+    assert "GMGN补充：" in prompt
     assert "Grok 还称" in prompt
     assert "王大友是王大有" in prompt
 
@@ -130,11 +134,40 @@ def test_validate_final_result_requires_grok_supplement_marker():
     result = {
         "primary_type": "pure_meme",
         "supplemental_information_ids": ["grok:supplement:1"],
-        "reader_text": "Grok 提到 A fact。",
+        "reader_text": "Grok材料补充：A fact。",
     }
 
     with pytest.raises(RuntimeError, match="Grok supplemental material"):
         narrative_v2.validate_final_result(result, material)
+
+
+def test_validate_final_result_adds_fixed_reader_opening_and_disclaimer() -> None:
+    material = {"tg:1": {"id": "tg:1", "text": "A fact"}}
+    result = narrative_v2.validate_final_result(
+        {
+            "primary_type": "pure_meme",
+            "source_material_ids": ["tg:1"],
+            "reader_text": "群聊有人提到 A fact。",
+        },
+        material,
+    )
+
+    assert result["reader_text"].startswith("据Odaily Meme速递监测，")
+    assert result["reader_text"].endswith("Meme 币价格波动较大，请注意资产保护。")
+
+
+def test_gmgn_supplement_is_forced_into_final_result() -> None:
+    final = {"primary_type": "pure_meme", "reader_text": "主文案。"}
+    supplement = [{"id": "gmgn:supplement:1", "statement": "GMGN简体中文叙事。"}]
+
+    narrative_v2.ensure_gmgn_supplement(final, supplement)
+    result = narrative_v2.validate_final_result(
+        final,
+        {"gmgn:supplement:1": supplement[0]},
+    )
+
+    assert "GMGN补充：GMGN简体中文叙事。" in result["reader_text"]
+    assert "gmgn:supplement:1" in result["supplemental_information"][0]["id"]
 
 
 def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_path) -> None:

@@ -38,6 +38,7 @@ def _settings(audit_output: Path | None, timeout: int) -> Any:
         "grok_model": os.getenv("MEME_GROK_MODEL") or os.getenv("GROK_MODEL") or narrative_v2.DEFAULT_GROK_MODEL,
         "gpt_timeout": timeout,
         "grok_timeout": timeout,
+        "gmgn_timeout": int(os.getenv("MEME_GMGN_TIMEOUT") or min(timeout, 20)),
         "telegram_config": os.getenv("MEME_TELEGRAM_CONFIG") or str(DEFAULT_TELEGRAM_CONFIG),
         "telegram_session": os.getenv("MEME_TELEGRAM_NARRATIVE_SESSION")
         or os.getenv("MEME_TELEGRAM_WATCH_SESSION")
@@ -92,6 +93,8 @@ def generate_reader_text(
             "telegram_contexts": [],
             "telegram_messages": [],
             "x_posts": [],
+            "gmgn_supplement": [],
+            "gmgn_diagnostic": {"stage": "gmgn_narrative", "optional": True},
             "grok_research": {},
             "grok_diagnostics": [{"stage": "narrative_v2", "error": str(exc)}],
             "grok_text": "",

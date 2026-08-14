@@ -1056,6 +1056,8 @@ export type MemeNarrativeDetail = {
     telegram_messages?: MemeNarrativeMaterial[];
     x_posts?: MemeNarrativeMaterial[];
     x_excluded_posts?: MemeNarrativeMaterial[];
+    gmgn_supplement?: MemeNarrativeMaterial[];
+    gmgn_diagnostic?: MemeNarrativeMaterial;
     grok_research?: {
       source_actions?: MemeNarrativeMaterial[];
       narrative_materials?: MemeNarrativeMaterial[];

@@ -24,7 +24,7 @@
 
 内部审计区分 source_materials、angle_materials 和 supplemental_information。三组都可以为空，不能为了填满某一组而用频次、情绪或模型常识补写。原始字眼或明确人物动作本身已经足够时，角度可以为空。
 
-正文归属按来源区分：Telegram 使用“群聊 A 表示/提到……”或“多个群聊表示……”；X 使用“X 上有人/多名用户表示/提到……”。Grok 叙事材料作为主要内容时使用“Grok 指出/表示/提到……”。`grok_supplemental_information` 和 `entity_supplements` 如果被采用，必须单独成段并以 `Grok材料补充：` 开头，多个事实用分号连接，不得用“Grok 还称”把不同材料组串起来。实体核验只输出规范化后的直接事实，例如“英伟达CEO黄仁勋账号关注了 RTX 社区成员”或“加密KOL王大有正在推动并建设 RTX 社区”，不得输出“王大友是王大有”这类身份映射过程。
+正文归属按来源区分：Telegram 使用“群聊 A 表示/提到……”或“多个群聊表示……”；X 使用“X 上有人/多名用户表示/提到……”。Grok 叙事材料作为主要内容时使用“Grok 指出/表示/提到……”。`grok_supplemental_information` 和 `entity_supplements` 如果被采用，必须单独成段并以 `Grok补充：` 开头；GMGN 简体中文叙事如果存在，必须单独成段并以 `GMGN补充：` 开头。多个事实用分号连接，不得用“Grok 还称”把不同材料组串起来。实体核验只输出规范化后的直接事实，例如“英伟达CEO黄仁勋账号关注了 RTX 社区成员”或“加密KOL王大有正在推动并建设 RTX 社区”，不得输出“王大友是王大有”这类身份映射过程。
 
 ## 运行顺序
 
@@ -32,7 +32,7 @@ Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任�
 
 X CA 搜索使用公开 FxTwitter 接口，分别请求 `top` 两页和 `latest` 两页，每页最多 20 条，按 X 帖子 ID 去重。正文不含精确 CA 的弱相关结果只保留在排除审计中；当前唯一内容过滤规则是排除正文含 `gmgn.ai/` 链接的帖子。保留的帖子保存原文、作者、链接、时间和来源 feed/页码。
 
-Grok 只执行两路：第一路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`；第二路在 Telegram 实体候选提取完成后做实体补充。两路 Grok 请求使用同一个 xAI/CLIProxyAPI 代理时最多并发占用两个请求槽；阶段请求失败时保留具体诊断并按阶段重试。最终 writer 继续接收完整 Telegram 原话、FxTwitter 帖子和两路 Grok 结构化材料，不新增 Telegram AI 抽取阶段。
+Grok 只执行两路：第一路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`；第二路在 Telegram 实体候选提取完成后做实体补充。两路 Grok 请求使用同一个 xAI/CLIProxyAPI 代理时最多并发占用两个请求槽。GMGN 叙事通过有头 Playwright + `xvfb-run` 与其他采集阶段并行调用，读取 `data.zh_cn` 作为 `gmgn_supplement`。Grok、Telegram、FxTwitter 等主阶段失败时保留具体诊断并按阶段重试；GMGN 仅作为可选补充，403/429、浏览器依赖或虚拟显示器失败不阻断已有主材料写作。最终 writer 继续接收完整 Telegram 原话、FxTwitter 帖子、GMGN 简体中文叙事和两路 Grok 结构化材料，不新增 Telegram AI 抽取阶段。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 
@@ -49,7 +49,7 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 - `status`：`success`、`empty` 或 `error`。
 - `failure_stage`：`telegram_collection`、`x_ca_collection`、`grok_ca_research`、`telegram_entity_extraction`、`grok_entity_lookup`、`final_writer`、`final_validation` 等。
 - `failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`。
-- Telegram 最老/最新命中及每条命中的前 2、后 15 条上下文；X 原帖；Grok `source_actions`、`narrative_materials`、`supplemental_information`、`type_hypothesis`；实体补充、性能和调用诊断。
+- Telegram 最老/最新命中及每条命中的前 2、后 15 条上下文；X 原帖；GMGN 简体中文叙事；Grok `source_actions`、`narrative_materials`、`supplemental_information`、`type_hypothesis`；实体补充、性能和调用诊断。
 - 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
 
 叙事生成器返回的 `output_path` 必须是字符串路径，并且返回值要包含写入文件的完整审计对象；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型，也不能用精简的最终正文对象覆盖审计文件。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。

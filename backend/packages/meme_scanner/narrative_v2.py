@@ -20,6 +20,7 @@ from packages.common.config import DEFAULT_GPT_WRITER_MODEL, DEFAULT_OPENAI_BASE
 from packages.common.paths import get_paths
 from packages.meme_scanner import context_search
 from packages.meme_scanner import fxtwitter_search
+from packages.meme_scanner import gmgn_narrative
 from packages.meme_scanner import grok_search as grok_x_search
 
 PATHS = get_paths()
@@ -50,6 +51,10 @@ DEFAULT_GPT_MODEL = DEFAULT_GPT_WRITER_MODEL
 DEFAULT_GROK_MODEL = grok_x_search.DEFAULT_MODEL
 DEFAULT_OUTPUT_DIR = EXPORTS_DATA_DIR / "narrative"
 GROK_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+READER_OPENING = "据Odaily Meme速递监测，"
+READER_DISCLAIMER = "以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
+GROK_SUPPLEMENT_MARKER = "Grok补充："
+GMGN_SUPPLEMENT_MARKER = "GMGN补充："
 # A production probe accepted two simultaneous x_search requests. Keep the
 # cap local to this worker so a proxy failure cannot fan out without bound.
 GROK_REQUEST_SLOTS = threading.BoundedSemaphore(2)
@@ -344,6 +349,39 @@ def collect_x_posts(contract: str, *, model: str = "", timeout: int) -> dict[str
             "kept_results": len(result["posts"]),
             "excluded_results": len(result["excluded_posts"]),
         },
+    }
+
+
+def collect_gmgn_narrative(chain: str, contract: str, *, timeout: int) -> dict[str, Any]:
+    try:
+        result = gmgn_narrative.collect(chain, contract, timeout=timeout)
+    except gmgn_narrative.GmgnHTTPError as exc:
+        status = exc.status_code
+        return {
+            "supplement": [],
+            "raw": None,
+            "diagnostic": {
+                "stage": "gmgn_narrative",
+                "source": "gmgn",
+                "http_status": status,
+                "page_http_status": exc.page_status,
+                "browser_mode": "playwright_headed",
+                "optional": True,
+                "error": str(exc),
+            },
+        }
+    except Exception as exc:
+        return {
+            "supplement": [],
+            "raw": None,
+            "diagnostic": {"stage": "gmgn_narrative", "source": "gmgn", "optional": True, "error": str(exc)},
+        }
+    narrative = str(result.get("narrative") or "").strip()
+    supplement = [{"id": "gmgn:supplement:1", "statement": narrative}] if narrative else []
+    return {
+        "supplement": supplement,
+        "raw": result.get("raw"),
+        "diagnostic": result.get("diagnostic") or {"stage": "gmgn_narrative", "source": "gmgn"},
     }
 
 
@@ -664,6 +702,7 @@ def build_final_writer_prompt_v2(
     grok_narrative_materials: list[dict[str, Any]],
     grok_supplemental_information: list[dict[str, Any]],
     entity_supplements: list[dict[str, Any]],
+    gmgn_supplement: list[dict[str, Any]],
     type_hypothesis: str,
 ) -> str:
     material = {
@@ -673,6 +712,7 @@ def build_final_writer_prompt_v2(
         "grok_narrative_materials": grok_narrative_materials,
         "grok_supplemental_information": grok_supplemental_information,
         "entity_supplements": entity_supplements,
+        "gmgn_supplement": gmgn_supplement,
         "grok_type_hypothesis_nonfinal": type_hypothesis,
     }
     return f"""You are a Chinese-language message summarizer. Write the final `reader_text` for chain {chain}, exact CA {contract}.
@@ -684,11 +724,13 @@ The three final types are pure_meme, celebrity_anchor, app_linked. Decide the fi
 
 Use the three buckets deliberately. For celebrity_anchor and pure_meme, the natural order is source, then angle, then supplemental information; for app_linked, use angle, then supplemental information. For celebrity_anchor specifically, a source must be an actual original action: a `grok_source_action` with actor, action, and quote (with date and URL when returned), or an `x_post` whose author is itself the actor and whose text is that actor's direct action. A third party writing “He Yi called it” is not an original source. The first paragraph must name that actor and write the action directly in this form: “XXX 于 X月X日发文提到‘……’”“XXX 于 X月X日转发/引用/评论……”. If the cited source actions span calendar days, include month and day for each action, never the year. A community repost, a Grok summary, or an ordinary X user's claim is not a replacement for this source paragraph. If no original action is available, leave source empty: retain a concrete community claim only as an angle, with its ordinary attribution, and do not invent an empty first paragraph or a named action. When both source and angle are nonempty, write source as the first paragraph and the angle as a separate second paragraph. The second paragraph states only new community wording or interpretation; do not repeat the source. A direct Binance/official/high-profile account mention of the word itself is already a complete reason and may have an empty angle.
 
-When `grok_supplemental_information` or `entity_supplements` is used, write all such facts in a separate paragraph beginning exactly with `Grok材料补充：`; join concrete facts with `；` and do not repeat "Grok 提到/表示" for every item. Put the used IDs in `supplemental_information_ids`, including entity supplement IDs. Do not merge this paragraph into the main Telegram/X narrative, and do not use "Grok 还称" as a bridge. Normalize entity lookup silently: never write identity-resolution text such as "王大友是王大有". Use the canonical person as the subject with a verified role or action, such as "加密KOL王大有正在推动并建设 RTX 社区"; for a known public figure, use a compact appositive subject such as "英伟达CEO黄仁勋账号关注了 RTX 社区成员". If the material does not support a direct normalized fact, omit it. A Grok narrative material used as the main angle may still use the ordinary `Grok 指出/表示/提到` attribution in its own paragraph; it must remain separate from the `Grok材料补充：` paragraph.
+When `grok_supplemental_information` or `entity_supplements` is used, write all such facts in a separate paragraph beginning exactly with `Grok补充：`; join concrete facts with `；` and do not repeat "Grok 提到/表示" for every item. Put the used IDs in `supplemental_information_ids`, including entity supplement IDs. Do not merge this paragraph into the main Telegram/X narrative, and do not use "Grok 还称" as a bridge. Normalize entity lookup silently: never write identity-resolution text such as "王大友是王大有". Use the canonical person as the subject with a verified role or action, such as "加密KOL王大有正在推动并建设 RTX 社区"; for a known public figure, use a compact appositive subject such as "英伟达CEO黄仁勋账号关注了 RTX 社区成员". If the material does not support a direct normalized fact, omit it. A Grok narrative material used as the main angle may still use the ordinary `Grok 指出/表示/提到` attribution in its own paragraph; it must remain separate from the `Grok补充：` paragraph.
 
-Supplemental information, when used, follows in its own paragraph with the exact marker above. This is an ordering rule, not a completeness gate: omit any empty bucket, and do not turn a source into an angle merely because its supplement is empty.
+When `gmgn_supplement` is non-empty, it must be used as a separate final paragraph beginning exactly with `GMGN补充：`; put its ID in `supplemental_information_ids`. Preserve the supplied Simplified Chinese narrative as faithfully as possible and do not present it as an X, Telegram, or Grok claim. Keep `GMGN补充：` and `Grok补充：` as separate paragraphs.
 
-Use plain natural Chinese. Lead with the direct assertion rather than a report of the collection process. No headings, bullet lists, AI/report language, generic catchphrases, or phrases such as “用……来解释……”, “把……说成……的例子”, “有人将其视为……”, “这被认为是……的体现”, “有人把它说成”, “把……标成……”, “叙事包含……”, “把 A 连到/归到 B”, “把/将 A 与 B 联系/关联起来”, “这说明”, “X 上常见词”, “几条线”, or “这个角度”. Delete this explanatory shell and write the source subject + verb + direct assertion instead: write “X 上有人称它为‘龙二金狗’”, not “X 上有人把该 CA 标成‘龙二金狗’”; write “该 CA 与 SK Hynix 的股票吉祥物有关”, not “帖文把该 CA 与 SK Hynix 的股票吉祥物联系在一起”. Do not invent facts or causal links. Return only JSON:
+Supplemental information, when used, follows in its own paragraph with its exact source marker. This is an ordering rule, not a completeness gate for Grok materials; a non-empty `gmgn_supplement` is mandatory.
+
+Use plain natural Chinese. The program adds the fixed opening and closing disclaimer after validation; do not add either one yourself. Lead with the direct assertion rather than a report of the collection process. No headings, bullet lists, AI/report language, generic catchphrases, or phrases such as “用……来解释……”, “把……说成……的例子”, “有人将其视为……”, “这被认为是……的体现”, “有人把它说成”, “把……标成……”, “叙事包含……”, “把 A 连到/归到 B”, “把/将 A 与 B 联系/关联起来”, “这说明”, “X 上常见词”, “几条线”, or “这个角度”. Delete this explanatory shell and write the source subject + verb + direct assertion instead: write “X 上有人称它为‘龙二金狗’”, not “X 上有人把该 CA 标成‘龙二金狗’”; write “该 CA 与 SK Hynix 的股票吉祥物有关”, not “帖文把该 CA 与 SK Hynix 的股票吉祥物联系在一起”. Do not invent facts or causal links. Return only JSON:
 {{"primary_type":"pure_meme|celebrity_anchor|app_linked|","source_material_ids":[],"angle_material_ids":[],"supplemental_information_ids":[],"reader_text":"","used_material_ids":[],"discarded_material_ids":[]}}
 All ID arrays may contain only supplied material IDs. If there is no usable material, reader_text must be empty.
 Material:\n{json.dumps(material, ensure_ascii=False)}"""
@@ -701,11 +743,48 @@ def valid_ids(result: dict[str, Any], field: str, known_ids: set[str]) -> list[s
     return list(dict.fromkeys(str(item) for item in value if str(item) in known_ids))
 
 
+def normalize_reader_text(value: Any) -> str:
+    reader_text = str(value or "").strip()
+    if not reader_text:
+        return ""
+    if not reader_text.startswith(READER_OPENING):
+        reader_text = f"{READER_OPENING}{reader_text}"
+    if not reader_text.endswith(READER_DISCLAIMER):
+        reader_text = f"{reader_text.rstrip()}\n\n{READER_DISCLAIMER}"
+    return reader_text
+
+
+def ensure_gmgn_supplement(result: dict[str, Any], gmgn_supplement: list[dict[str, Any]]) -> None:
+    if not gmgn_supplement:
+        return
+    item = gmgn_supplement[0]
+    item_id = str(item.get("id") or "").strip()
+    statement = str(item.get("statement") or "").strip()
+    if not item_id or not statement:
+        return
+    supplement_ids = result.get("supplemental_information_ids")
+    if not isinstance(supplement_ids, list):
+        supplement_ids = []
+        result["supplemental_information_ids"] = supplement_ids
+    if item_id not in supplement_ids:
+        supplement_ids.append(item_id)
+    used_ids = result.get("used_material_ids")
+    if not isinstance(used_ids, list):
+        used_ids = []
+        result["used_material_ids"] = used_ids
+    if item_id not in used_ids:
+        used_ids.append(item_id)
+    reader_text = str(result.get("reader_text") or "").strip()
+    if not re.search(r"(?m)^GMGN补充：", reader_text):
+        section = f"{GMGN_SUPPLEMENT_MARKER}{statement}"
+        result["reader_text"] = f"{reader_text}\n\n{section}".strip()
+
+
 def validate_final_result(
     result: dict[str, Any],
     material_by_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    reader_text = str(result.get("reader_text") or "").strip()
+    reader_text = normalize_reader_text(result.get("reader_text"))
     if READER_TEXT_FORBIDDEN.search(reader_text):
         raise RuntimeError("Final reader_text contains internal review language.")
 
@@ -719,7 +798,11 @@ def validate_final_result(
         raise RuntimeError("Final reader_text has no classified materials.")
     if reader_text and not used_ids:
         used_ids = list(grouped_ids)
-    if supplement_ids and not re.search(r"(?m)^Grok材料补充：", reader_text):
+    gmgn_ids = [item_id for item_id in supplement_ids if item_id.startswith("gmgn:")]
+    grok_ids = [item_id for item_id in supplement_ids if item_id.startswith("grok:")]
+    if gmgn_ids and not re.search(r"(?m)^GMGN补充：", reader_text):
+        raise RuntimeError("Final reader_text must place GMGN supplemental material under its labeled paragraph.")
+    if grok_ids and not re.search(r"(?m)^Grok补充：", reader_text):
         raise RuntimeError("Final reader_text must place Grok supplemental material under its labeled paragraph.")
 
     return {
@@ -744,6 +827,7 @@ def _material_counts(
     grok_narrative_materials: list[dict[str, Any]],
     grok_supplemental_information: list[dict[str, Any]],
     entity_supplements: list[dict[str, Any]],
+    gmgn_supplement: list[dict[str, Any]],
 ) -> dict[str, int]:
     counts = {
         "telegram_contexts": len(contexts),
@@ -753,6 +837,7 @@ def _material_counts(
         "grok_narrative_materials": len(grok_narrative_materials),
         "grok_supplemental_information": len(grok_supplemental_information),
         "entity_supplements": len(entity_supplements),
+        "gmgn_supplement": len(gmgn_supplement),
     }
     counts["total_materials"] = sum(
         value for key, value in counts.items() if key != "telegram_contexts"
@@ -842,6 +927,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     telegram_path = output_path.with_suffix(".telegram.json")
+    gmgn_timeout = int(getattr(args, "gmgn_timeout", min(int(args.grok_timeout), 20)))
 
     telegram_task = asyncio.create_task(timed("telegram_collection", collect_telegram_contexts(args, telegram_path)))
     x_posts_task = asyncio.create_task(
@@ -850,6 +936,9 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     # Research is CA-only and can run while Telegram material is being prepared.
     grok_task = asyncio.create_task(
         timed("grok_ca_research", asyncio.to_thread(collect_grok_material, args.contract, model=args.grok_model, timeout=args.grok_timeout))
+    )
+    gmgn_task = asyncio.create_task(
+        timed("gmgn_narrative", asyncio.to_thread(collect_gmgn_narrative, args.chain, args.contract, timeout=gmgn_timeout))
     )
     (telegram_source, telegram_performance), (x_source, x_performance) = await asyncio.gather(
         telegram_task,
@@ -880,18 +969,20 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
             ),
         )
     )
-    (grok_source, grok_performance), (entity_lookup, entity_lookup_performance) = await asyncio.gather(
+    (grok_source, grok_performance), (entity_lookup, entity_lookup_performance), (gmgn_source, gmgn_performance) = await asyncio.gather(
         grok_task,
         entity_lookup_task,
+        gmgn_task,
     )
     x_posts = x_source["posts"]
     grok_source_actions = grok_source["source_actions"]
     grok_narrative_materials = grok_source["narrative_materials"]
     grok_supplemental_information = grok_source["supplemental_information"]
     entity_supplements = entity_lookup["claims"]
+    gmgn_supplement = gmgn_source["supplement"]
     material_by_id = {
         item["id"]: item
-        for item in telegram_messages + x_posts + grok_source_actions + grok_narrative_materials + grok_supplemental_information + entity_supplements
+        for item in telegram_messages + x_posts + grok_source_actions + grok_narrative_materials + grok_supplemental_information + entity_supplements + gmgn_supplement
     }
     try:
         final, final_writer_performance = chat_completion_json_with_metrics(
@@ -904,6 +995,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
                 grok_narrative_materials,
                 grok_supplemental_information,
                 entity_supplements,
+                gmgn_supplement,
                 grok_source["type_hypothesis"],
             ),
             model=args.gpt_model,
@@ -912,6 +1004,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:
         raise NarrativeStageError("final_writer", exc) from exc
     final_writer_performance["stage"] = "final_writer"
+    ensure_gmgn_supplement(final, gmgn_supplement)
     try:
         result = validate_final_result(final, material_by_id)
     except Exception as exc:
@@ -924,6 +1017,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
         grok_narrative_materials=grok_narrative_materials,
         grok_supplemental_information=grok_supplemental_information,
         entity_supplements=entity_supplements,
+        gmgn_supplement=gmgn_supplement,
     )
     status, decision_code, decision_reason = _decision_metadata(
         result=result,
@@ -957,6 +1051,8 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
         "entity_candidates": entity_candidates,
         "x_posts": x_posts,
         "x_excluded_posts": x_source.get("excluded_posts") or [],
+        "gmgn_supplement": gmgn_supplement,
+        "gmgn_diagnostic": gmgn_source["diagnostic"],
         "type_hypothesis": grok_source["type_hypothesis"],
         "grok_research": {
             "source_actions": grok_source_actions,
@@ -972,6 +1068,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
                 telegram_performance,
                 x_performance,
                 grok_performance,
+                gmgn_performance,
                 entity_extraction_performance,
                 entity_lookup_performance,
                 final_writer_performance,
@@ -1005,6 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grok-model", default=DEFAULT_GROK_MODEL)
     parser.add_argument("--gpt-timeout", type=int, default=180)
     parser.add_argument("--grok-timeout", type=int, default=180)
+    parser.add_argument("--gmgn-timeout", type=int, default=20)
     parser.add_argument("--telegram-config", default=str(CONFIG_DIR / "telegram.txt"))
     parser.add_argument("--telegram-session", default=str(CONFIG_DIR.parent / "telegram_probe"))
     parser.add_argument("--allowed-chats", default=str(CONFIG_DIR / "whitelist.txt"))

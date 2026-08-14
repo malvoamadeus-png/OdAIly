@@ -2646,6 +2646,7 @@ function narrativeStageLabel(stage: string | null | undefined): string {
     telegram_entity_extraction: 'Telegram 实体提取',
     grok_entity_lookup: '实体补充',
     entity_lookup: '实体补充',
+    gmgn_narrative: 'GMGN 叙事',
     final_writer: '最终写作',
     final_validation: '结果校验',
     narrative_pipeline: '叙事流程',
@@ -2940,6 +2941,7 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                       <MaterialList title="叙事材料" materials={listValue(grokResearch.narrative_materials)} />
                       <MaterialList title="补充信息" materials={listValue(grokResearch.supplemental_information)} />
                       <MaterialList title="实体补充" materials={listValue(narrative?.entity_supplements)} />
+                      <MaterialList title="GMGN补充" materials={listValue(narrative?.gmgn_supplement)} />
                     </div>
                   )}
                 </section>
