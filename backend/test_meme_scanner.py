@@ -60,6 +60,28 @@ class MemeScannerTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn("--min-marketcap", command)
         self.assertNotIn("--max-marketcap", command)
+        self.assertNotIn("--launchpad-platform", command)
+        self.assertNotIn("--sort-by", command)
+
+    def test_completed_request_keeps_unknown_launchpad_platforms(self) -> None:
+        payload = {
+            "completed": [
+                {
+                    "address": "0x1111111111111111111111111111111111111111",
+                    "launchpad_platform": "flap_stocks",
+                    "symbol": "STOCKS",
+                    "name": "Stocks",
+                    "usd_market_cap": 20_000,
+                    "volume_24h": 15_000,
+                }
+            ]
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
+            scanner.subprocess, "run", return_value=completed
+        ):
+            tokens = scanner.fetch_completed_tokens(80)
+        self.assertEqual([(token.platform, token.symbol) for token in tokens], [("flap_stocks", "STOCKS")])
 
     def test_token_info_accepts_nested_market_payload_without_repeated_address(self) -> None:
         payload = {

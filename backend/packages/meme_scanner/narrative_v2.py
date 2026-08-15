@@ -352,6 +352,29 @@ def collect_x_posts(contract: str, *, model: str = "", timeout: int) -> dict[str
     }
 
 
+def collect_x_posts_resilient(contract: str, *, timeout: int) -> dict[str, Any]:
+    try:
+        return collect_x_posts(contract, timeout=timeout)
+    except Exception as exc:
+        message = str(exc) or exc.__class__.__name__
+        return {
+            "posts": [],
+            "excluded_posts": [],
+            "raw": {
+                "source": "fxtwitter",
+                "query": contract,
+                "pages": [],
+                "unique_results": 0,
+            },
+            "diagnostic": {
+                "stage": "x_ca_collection",
+                "source": "fxtwitter",
+                "degraded": True,
+                "error": message,
+            },
+        }
+
+
 def collect_gmgn_narrative(chain: str, contract: str, *, timeout: int) -> dict[str, Any]:
     try:
         result = gmgn_narrative.collect(chain, contract, timeout=timeout)
@@ -931,7 +954,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, Any]:
 
     telegram_task = asyncio.create_task(timed("telegram_collection", collect_telegram_contexts(args, telegram_path)))
     x_posts_task = asyncio.create_task(
-        timed("x_ca_collection", asyncio.to_thread(collect_x_posts, args.contract, timeout=args.grok_timeout))
+        timed("x_ca_collection", asyncio.to_thread(collect_x_posts_resilient, args.contract, timeout=args.grok_timeout))
     )
     # Research is CA-only and can run while Telegram material is being prepared.
     grok_task = asyncio.create_task(

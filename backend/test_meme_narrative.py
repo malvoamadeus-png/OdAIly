@@ -309,6 +309,43 @@ def test_diagnostic_failure_maps_grok_stage_and_http_code() -> None:
     )
 
 
+def test_x_collection_failure_is_degraded_and_does_not_fail_narrative(tmp_path):
+    output = tmp_path / "narrative.json"
+    telegram = {
+        "contexts": [{
+            "chat_title": "A",
+            "context": [{"message_id": 1, "text": "A concrete claim", "sender_username": "user"}],
+        }],
+    }
+    grok = {
+        "raw": {},
+        "source_actions": [],
+        "narrative_materials": [{"id": "grok:narrative:1", "statement": "A concrete claim"}],
+        "supplemental_information": [],
+        "type_hypothesis": "pure_meme",
+        "diagnostic": {"stage": "ca_research", "http_status": 200},
+    }
+    writer_results = [
+        ({"entity_candidates": []}, {}),
+        ({
+            "primary_type": "pure_meme",
+            "angle_material_ids": ["grok:narrative:1"],
+            "reader_text": "A concrete claim",
+            "used_material_ids": ["grok:narrative:1"],
+        }, {}),
+    ]
+    with patch.object(narrative_v2, "collect_telegram_contexts", new=AsyncMock(return_value=telegram)), patch.object(
+        narrative_v2, "collect_x_posts", side_effect=RuntimeError("temporary X failure")
+    ), patch.object(narrative_v2, "collect_grok_material", return_value=grok), patch.object(
+        narrative_v2, "collect_gmgn_narrative", return_value={"supplement": [], "raw": {}, "diagnostic": {"stage": "gmgn_narrative", "http_status": 200}}
+    ), patch.object(narrative_v2, "chat_completion_json_with_metrics", side_effect=writer_results):
+        result = asyncio.run(narrative_v2.run_async(narrative_args(output)))
+
+    assert result["status"] == "success"
+    assert result["x_posts"] == []
+    assert result["grok_diagnostics"][0]["degraded"] is True
+
+
 def test_decision_metadata_distinguishes_empty_angle_from_empty_writer() -> None:
     status, code, reason = narrative_v2._decision_metadata(
         result={

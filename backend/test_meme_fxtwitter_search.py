@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.meme_scanner import fxtwitter_search
+import requests
 
 
 ADDRESS = "0x1111111111111111111111111111111111111111"
@@ -9,11 +10,13 @@ ADDRESS = "0x1111111111111111111111111111111111111111"
 class Response:
     status_code = 200
 
-    def __init__(self, payload: dict[str, object]) -> None:
+    def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} error")
 
     def json(self) -> dict[str, object]:
         return self.payload
@@ -80,3 +83,18 @@ def test_search_ca_fetches_two_pages_per_feed_deduplicates_and_only_removes_gmgn
     assert {post["excluded_reason"] for post in result["excluded_posts"]} == {"gmgn_link", "no_exact_ca"}
     assert len(result["raw"]["pages"]) == 4
     assert len(result["posts"][0]["search_feeds"]) == 3
+
+
+def test_search_ca_treats_404_as_an_empty_page(monkeypatch) -> None:
+    response = Response({}, status_code=404)
+    monkeypatch.setattr(fxtwitter_search.requests, "get", lambda *args, **kwargs: response)
+
+    result = fxtwitter_search.search_ca(ADDRESS, pages_per_feed=1, timeout=1)
+
+    assert result["posts"] == []
+    assert result["excluded_posts"] == []
+    assert result["raw"]["unique_results"] == 0
+    assert result["raw"]["pages"] == [
+        {"feed": "top", "page": 1, "result_count": 0, "has_next_cursor": False, "http_status": 404},
+        {"feed": "latest", "page": 1, "result_count": 0, "has_next_cursor": False, "http_status": 404},
+    ]

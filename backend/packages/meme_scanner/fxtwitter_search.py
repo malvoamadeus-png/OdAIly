@@ -81,6 +81,19 @@ def search_ca(
                 )
                 response.raise_for_status()
                 payload = response.json()
+            except requests.HTTPError as exc:
+                if response.status_code == 404:
+                    page_summaries.append(
+                        {
+                            "feed": feed,
+                            "page": page,
+                            "result_count": 0,
+                            "has_next_cursor": False,
+                            "http_status": 404,
+                        }
+                    )
+                    break
+                raise FxTwitterSearchError(f"FxTwitter {feed} page {page} failed: {exc}") from exc
             except Exception as exc:
                 raise FxTwitterSearchError(f"FxTwitter {feed} page {page} failed: {exc}") from exc
             if not isinstance(payload, dict):

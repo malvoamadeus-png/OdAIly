@@ -168,17 +168,17 @@ def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False)
 def fetch_completed_tokens(limit: int) -> list[Token]:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
-    command = [GMGN, "market", "trenches", "--chain", CHAIN, "--type", "completed", "--limit", str(limit), "--sort-by", "created_timestamp", "--direction", "desc", "--raw"]
-    for platform in PLATFORMS:
-        command.extend(("--launchpad-platform", platform))
+    # Keep the first discovery request broad. GMGN returns a capped candidate
+    # set, so platform filters and client-side timestamp sorting can hide tokens.
+    command = [GMGN, "market", "trenches", "--chain", CHAIN, "--type", "completed", "--limit", str(limit), "--raw"]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN query failed")
     payload = json.loads(result.stdout)
     data = payload.get("data", payload) if isinstance(payload, dict) else {}
     rows = data.get("completed", []) if isinstance(data, dict) else []
-    tokens = [token for row in rows if isinstance(row, dict) if (token := token_from_row(row))]
-    return sorted(tokens, key=lambda item: item.created_timestamp or 0, reverse=True)
+    tokens = [token for row in rows if isinstance(row, dict) if (token := token_from_row(row, allow_unknown_platform=True))]
+    return tokens
 
 
 def _find_token_info_row(value: Any, address: str) -> dict[str, Any] | None:

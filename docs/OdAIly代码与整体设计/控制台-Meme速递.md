@@ -7,7 +7,7 @@
 
 ## 上游链路
 
-- `odaily-meme-scanner.service` 每 5 分钟无市值筛选读取 GMGN BSC `completed` 发射代币列表；`completed` 只承担首次发现窗口，不是完整的市值扫描源。
+- `odaily-meme-scanner.service` 每 5 分钟以 BSC + `completed` + limit 的宽口径请求读取 GMGN 发射代币列表，不附加市值、平台或客户端排序参数；API 返回集合仍可能受上游候选数量限制，`completed` 只承担首次发现窗口，不是完整的市值扫描源。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
 - 普通新币首次进入 `completed` 即建立 7 天跟踪窗口，市值达到 50 万美元后进入播报候选，后续里程碑为 100 万和 300 万美元；首次发现已跨多档时只触发最高档。
 - 仍在最近一次 `completed` 列表中的代币直接使用列表市值，不调用 `token_info`。滚出列表但仍在 7 天窗口内的代币由持久化调度器调用 `token_info`：市值低于 50 万美元每小时一次，达到 50 万美元每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程请求用于错峰限流。
@@ -17,7 +17,7 @@
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子；GMGN 并行读取精确链和 CA 的 `data.zh_cn`；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性添加 `据Odaily Meme速递监测，` 开头、`Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子。FxTwitter 404 作为该页空结果保留在审计中，其他 X 采集异常降级为空材料并保留诊断，不阻断 Telegram、Grok、GMGN 和最终写作；GMGN 并行读取精确链和 CA 的 `data.zh_cn`；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性添加 `据Odaily Meme速递监测，` 开头、`Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 文本口径
 
@@ -73,7 +73,7 @@ python backend/src/main.py meme tg-watch
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
 - CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`，查询 GMGN 时按对应链路请求。
 - 叙事 Telegram 配置：`MEME_TELEGRAM_CONFIG`、`MEME_TELEGRAM_NARRATIVE_SESSION`、`MEME_TELEGRAM_ALLOWED_CHATS`；默认读取 `data/config/meme_telegram.txt`、`data/processed/meme_telegram_narrative` 和 `data/config/meme_whitelist.txt`。
-- FxTwitter CA 搜索：调用公开 `https://api.fxtwitter.com/2/search`，不需要 Grok 凭证；Grok 研究/实体补充读取 `GROK_BASE_URL`、`GROK_API_KEY`、`GROK_MODEL`，也兼容 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`；默认模型为 `grok-4.5`。
+- FxTwitter CA 搜索：调用公开 `https://api.fxtwitter.com/2/search`，不需要 Grok 凭证；404 页面按空结果处理，其他请求异常作为 X 阶段降级诊断，不阻断其他叙事材料；Grok 研究/实体补充读取 `GROK_BASE_URL`、`GROK_API_KEY`、`GROK_MODEL`，也兼容 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`；默认模型为 `grok-4.5`。
 - GMGN 叙事：通过有头 Playwright 浏览器在 `xvfb-run` 虚拟显示器中访问公开 `https://gmgn.ai/api/v1/token_ai_narrative/{chain}/{token_address}`，不需要登录、API Key 或 Authorization；公共查询参数可由 `MEME_GMGN_DEVICE_ID`、`MEME_GMGN_FP_DID`、`MEME_GMGN_CLIENT_ID`、`MEME_GMGN_APP_VER`、`MEME_GMGN_TZ_NAME`、`MEME_GMGN_TZ_OFFSET`、`MEME_GMGN_APP_LANG` 覆盖，代理可由 `MEME_GMGN_HTTPS_PROXY` 或 `GMGN_HTTPS_PROXY` 指定，超时由 `MEME_GMGN_TIMEOUT` 控制，页面稳定等待由 `MEME_GMGN_BROWSER_SETTLE_MS` 控制。服务器需安装 Playwright Chromium 和 `xvfb-run`。GMGN 403/429、浏览器依赖缺失等补充接口失败只记录诊断，不阻断已有主材料写作。
 - 正文整理复用 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`，模型可由 `MEME_WRITER_MODEL` 覆盖。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
