@@ -12,7 +12,7 @@
 - 普通新币首次进入 `completed` 即建立 7 天跟踪窗口，市值达到 50 万美元后进入播报候选，后续里程碑为 100 万和 300 万美元；首次发现已跨多档时只触发最高档。
 - 仍在最近一次 `completed` 列表中的代币直接使用列表市值，不调用 `token_info`。滚出列表但仍在 7 天窗口内的代币由持久化调度器调用 `token_info`：市值低于 50 万美元每小时一次，达到 50 万美元每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程请求用于错峰限流。
 - 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 `completed` 也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口。
-- 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 只查询 BNB Chain（30 万美元）和 Robinhood Chain（100 万美元），Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为本次热议触发门槛。
+- 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 只查询 BNB Chain（30 万美元）和 Robinhood Chain（100 万美元），Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。

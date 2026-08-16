@@ -143,6 +143,19 @@ class MemeScannerTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual((current.platform, current.chain, current.market_cap), ("pons_v2", "robinhood", 1_200_000.0))
 
+    def test_token_payload_accepts_unknown_launchpad_platform(self) -> None:
+        current = scanner.token_from_row(
+            {
+                "address": "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump",
+                "launchpad_platform": "pumpfun",
+                "symbol": "GUNICORN",
+                "name": "Gunicorn",
+                "chain": "solana",
+            }
+        )
+        self.assertIsNotNone(current)
+        self.assertEqual((current.platform, current.chain), ("pumpfun", "solana"))
+
     def test_store_migrates_legacy_unique_address_jobs_to_event_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scanner.sqlite3"

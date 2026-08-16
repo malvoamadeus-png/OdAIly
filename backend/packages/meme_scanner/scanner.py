@@ -27,7 +27,6 @@ from .narrative import generate_reader_text
 
 
 CHAIN = "bsc"
-PLATFORMS = ("fourmeme", "flap")
 MARKET_CAP_GATE = 500_000.0
 MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
 TG_MARKET_CAP_GATE = 300_000.0
@@ -143,14 +142,12 @@ def timestamp(value: Any) -> int | None:
 
 
 def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
+    # Launchpad/platform is metadata only. Keep the keyword for compatibility
+    # with older callers, but never reject a token based on its platform value.
     address = str(row.get("address") or "").strip().lower()
     platform = str(row.get("launchpad_platform") or row.get("launchpad") or "").strip().lower()
     chain = str(row.get("chain") or "").strip().lower()
-    if not address or (
-        platform
-        and platform not in (*PLATFORMS, "telegram", "solana")
-        and not allow_unknown_platform
-    ):
+    if not address:
         return None
     return Token(
         address=address,
