@@ -114,6 +114,37 @@ class TelegramBurstTests(unittest.TestCase):
             self.assertEqual((job["trigger_kind"], job["status"]), ("tg_burst", "queued"))
             store.close()
 
+    def test_high_cap_burst_uses_interpolated_volume_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            mentions = tg_watcher.MentionStore(path)
+            for index, sender in enumerate((1, 2, 3, 1, 2), start=1):
+                self.record(mentions, index, 100, sender)
+            mentions.close()
+
+            store = scanner.Store(path)
+            market_token = scanner.Token(
+                address=ADDRESS,
+                platform="fourmeme",
+                name="High Cap Burst",
+                symbol="HIGH",
+                market_cap=4_500_000,
+                volume_24h=1_000_000,
+                created_timestamp=None,
+                raw={
+                    "address": ADDRESS,
+                    "launchpad_platform": "fourmeme",
+                    "symbol": "HIGH",
+                    "market_cap": 4_500_000,
+                    "volume_24h": 1_000_000,
+                },
+            )
+            with patch.object(scanner, "fetch_tg_token_info", return_value=market_token):
+                self.assertEqual(scanner.process_tg_candidate(store), (1, 0))
+            job = store.conn.execute("SELECT trigger_kind, status FROM jobs").fetchone()
+            self.assertEqual((job["trigger_kind"], job["status"]), ("tg_burst", "queued"))
+            store.close()
+
     def test_community_buzz_below_300k_market_cap_is_discarded(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scanner.sqlite3"

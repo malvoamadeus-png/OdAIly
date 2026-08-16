@@ -32,7 +32,10 @@ MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
 TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
-VOLUME_RATIO_GATE = 0.5
+VOLUME_RATIO_GATE_MIN_CAP = 300_000.0
+VOLUME_RATIO_GATE_MAX_CAP = 3_000_000.0
+VOLUME_RATIO_GATE_AT_MIN_CAP = 0.5
+VOLUME_RATIO_GATE_AT_MAX_CAP = 0.2
 TRACKING_WINDOW_SECONDS = 7 * 24 * 60 * 60
 COMPLETED_SCAN_INTERVAL_SECONDS = 300
 TOKEN_INFO_HIGH_INTERVAL_SECONDS = 300
@@ -87,6 +90,19 @@ class Token:
     @property
     def volume_ratio(self) -> float:
         return self.volume_24h / self.market_cap if self.market_cap > 0 else 0.0
+
+
+def volume_ratio_gate(market_cap: float) -> float:
+    """Return the minimum 24h-volume/market-cap ratio for a token."""
+    cap = max(float(market_cap), 0.0)
+    if cap <= VOLUME_RATIO_GATE_MIN_CAP:
+        return VOLUME_RATIO_GATE_AT_MIN_CAP
+    if cap >= VOLUME_RATIO_GATE_MAX_CAP:
+        return VOLUME_RATIO_GATE_AT_MAX_CAP
+    progress = (cap - VOLUME_RATIO_GATE_MIN_CAP) / (VOLUME_RATIO_GATE_MAX_CAP - VOLUME_RATIO_GATE_MIN_CAP)
+    return VOLUME_RATIO_GATE_AT_MIN_CAP + progress * (
+        VOLUME_RATIO_GATE_AT_MAX_CAP - VOLUME_RATIO_GATE_AT_MIN_CAP
+    )
 
 
 def now_iso() -> str:
@@ -1168,7 +1184,7 @@ def evaluate_market_token(
     if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
         return (0, 0)
     trigger_key = f"market_cap:{token.address}:{int(level)}"
-    if token.volume_ratio < VOLUME_RATIO_GATE:
+    if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
             "market_cap_milestone",
@@ -1285,7 +1301,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         return (0, 1)
     evidence = json.loads(candidate["evidence_json"])
     trigger_key = f"tg_burst:{candidate['id']}"
-    if token.volume_ratio < VOLUME_RATIO_GATE:
+    if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
             "tg_burst",
@@ -1357,7 +1373,10 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         forced_token = fetch_token_info(forced_address)
     if forced_address and forced_token is None:
         raise RuntimeError(f"forced contract was not found on BSC: {forced_address}")
-    if forced_token and (forced_token.market_cap < MARKET_CAP_GATE or forced_token.volume_ratio < VOLUME_RATIO_GATE):
+    if forced_token and (
+        forced_token.market_cap < MARKET_CAP_GATE
+        or forced_token.volume_ratio < volume_ratio_gate(forced_token.market_cap)
+    ):
         raise RuntimeError(f"forced contract does not meet gates: {forced_address}")
     if first_run:
         store.mark_initialized()

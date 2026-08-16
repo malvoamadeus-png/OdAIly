@@ -50,6 +50,37 @@ def args(root: Path) -> argparse.Namespace:
 
 
 class MemeScannerTests(unittest.TestCase):
+    def test_volume_ratio_gate_interpolates_by_market_cap(self) -> None:
+        cases = (
+            (0, 0.5),
+            (299_999, 0.5),
+            (300_000, 0.5),
+            (1_650_000, 0.35),
+            (3_000_000, 0.2),
+            (5_000_000, 0.2),
+        )
+        for market_cap, expected in cases:
+            with self.subTest(market_cap=market_cap):
+                self.assertAlmostEqual(scanner.volume_ratio_gate(market_cap), expected)
+
+    def test_three_million_market_cap_accepts_twenty_percent_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            store.upsert_observation(token("0xscaled-volume", 2_900_000, 1_500_000))
+
+            result = scanner.evaluate_market_token(
+                store,
+                token("0xscaled-volume", 3_000_000, 600_000),
+                bootstrap=False,
+            )
+
+            self.assertEqual(result, (1, 0))
+            job = store.conn.execute(
+                "SELECT status, reason FROM jobs WHERE address='0xscaled-volume'"
+            ).fetchone()
+            self.assertEqual((job["status"], job["reason"]), ("queued", None))
+            store.close()
+
     def test_completed_request_has_no_market_cap_filters(self) -> None:
         payload = {"data": {"completed": []}}
         completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
