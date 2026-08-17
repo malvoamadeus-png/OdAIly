@@ -142,3 +142,5 @@ python backend\src\main.py x-capture-worker
 ```
 
 `x-capture-worker` 是常驻运行命令，启动时不自动执行 schema 初始化。首次部署或 schema 变更后，必须先单独执行 `x-init-db`，再启动或重启 worker，避免常驻服务重启时反复执行 schema 变更。
+
+生产环境由 `deploy/odaily-x-capture.service` 托管，并在 `odaily-local-pipeline.service` 启动后运行。旧 `odaily-x-process@.service` 分阶段 worker 不属于当前生产链路。
