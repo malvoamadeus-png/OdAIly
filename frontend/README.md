@@ -11,7 +11,7 @@ npm run dev
 Configure the HTTPS API base URL:
 
 ```text
-VITE_CONSOLE_API_BASE_URL=https://console-api.example.com
+VITE_CONSOLE_API_BASE_URL=https://api.odaily.uk
 ```
 
 The console and Chrome extension share the fixed local operator account. The backend validates the bcrypt password hash from the primary SQLite database and issues an opaque Bearer session.

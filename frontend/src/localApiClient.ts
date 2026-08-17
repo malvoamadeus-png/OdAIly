@@ -11,7 +11,7 @@ const SESSION_KEY = 'odaily.local.session';
 const listeners = new Set<(event: string, session: Session | null) => void>();
 
 function baseUrl(): string {
-  return String(import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://47.76.243.147.sslip.io').replace(/\/+$/, '');
+  return String(import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://api.odaily.uk').replace(/\/+$/, '');
 }
 
 function loadSession(): Session | null {

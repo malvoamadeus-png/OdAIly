@@ -37,7 +37,7 @@ sudo apt-get install -y caddy
 sudo install -m 0644 deploy/odaily-editor-plugin-api.Caddyfile /etc/caddy/Caddyfile
 sudo systemctl enable --now caddy
 sudo systemctl restart odaily-editor-plugin-api.service caddy
-curl -i https://47.76.243.147.sslip.io/plugin/auth/profile -X POST
+curl -i https://api.odaily.uk/plugin/auth/profile -X POST
 ```
 
 ## 2. 加入值班编辑白名单
@@ -69,7 +69,7 @@ curl -i https://47.76.243.147.sslip.io/plugin/auth/profile -X POST
 
 当前内置插件轻服务地址为：
 
-- `https://47.76.243.147.sslip.io`
+- `https://api.odaily.uk`
 
 值班编辑不需要手填连接参数。
 

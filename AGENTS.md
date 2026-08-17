@@ -34,15 +34,16 @@
 
 ## 生产服务器 SSH 操作
 
-- 生产服务器 SSH 主机别名为 `jibai-prod`，目录为 `/opt/OdAIly`；Windows SSH 配置位于 `C:\Users\A\.ssh\config`。
+- OdAIly 官方服务器 SSH 主机别名为 `odaily-official`，地址为 `8.217.53.11`，Linux 用户当前为 `root`，目录为 `/opt/OdAIly`；Windows SSH 配置位于 `C:\Users\A\.ssh\config`。
+- 原共享服务器保留 SSH 主机别名 `jibai-prod`，地址为 `47.76.243.147`。它继续承载其他项目；OdAIly 迁移完成后不得在该机运行 OdAIly 服务、worker、API 或 SQLite 写入。
 - 当前 Codex 通常运行在 WSL 中。生产连接必须使用 Windows OpenSSH 和 Windows SSH 配置：
 
   ```bash
-  /mnt/c/WINDOWS/System32/OpenSSH/ssh.exe -F 'C:/Users/A/.ssh/config' jibai-prod
+  /mnt/c/WINDOWS/System32/OpenSSH/ssh.exe -F 'C:/Users/A/.ssh/config' odaily-official
   ```
 
 - WSL 的 `/usr/bin/ssh` 不要直接读取 `/mnt/c/Users/A/.ssh` 下的私钥。NTFS 挂载会显示过宽权限，OpenSSH 会忽略私钥；Windows SSH 是生产连接的标准入口。
-- 本地完成构建、提交并推送后，服务器只执行：
+- 本地完成构建、提交并推送后，官方服务器只执行：
 
   ```bash
   cd /opt/OdAIly
@@ -50,8 +51,8 @@
   git pull --ff-only origin main
   ```
 
-- 同步后检查 `git rev-parse --short HEAD`、`git status --short` 和相关 systemd 服务状态。后端代码或服务配置变化时，按对应模块要求重启服务；纯前端变化由 GitHub 连接的前端部署流程负责，不要把服务器目录当作前端发布入口。
-- GitHub 的 `core.sshCommand` 只用于 GitHub，不代表生产服务器 SSH 配置；生产连接始终使用 `jibai-prod`。如果 WSL 的 GitHub SSH 连接超时，使用 Windows SSH fallback 推送：
+- 同步后检查 `git rev-parse --short HEAD`、`git status --short` 和相关 systemd 服务状态。后端代码或服务配置变化时，按对应模块要求重启官方服务器服务；纯前端变化由 GitHub 连接的 Vercel 部署流程负责，不要把服务器目录当作前端发布入口。
+- GitHub 的 `core.sshCommand` 只用于 GitHub，不代表生产服务器 SSH 配置；生产连接使用 `odaily-official`。如果 WSL 的 GitHub SSH 连接超时，使用 Windows SSH fallback 推送：
 
   ```bash
   git -c core.sshCommand="/mnt/c/WINDOWS/System32/OpenSSH/ssh.exe -F C:/Users/A/.ssh/config" push origin main

@@ -117,7 +117,7 @@ export type EventPage = {
 };
 
 function baseUrl(): string {
-  return String(import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://47.76.243.147.sslip.io').replace(/\/+$/, '');
+  return String(import.meta.env.VITE_CONSOLE_API_BASE_URL || import.meta.env.VITE_EDITOR_PLUGIN_API_BASE_URL || 'https://api.odaily.uk').replace(/\/+$/, '');
 }
 
 export async function newsflashOperations<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {

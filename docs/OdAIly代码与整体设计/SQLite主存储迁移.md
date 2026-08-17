@@ -6,6 +6,20 @@
 
 本地 `searcher.sqlite` 是可重建的搜索与 embedding 缓存，不是第二份业务主库。它按短期文档 2 天、参考文档与向量 8 天清理；向量新写入 float32 BLOB，旧 JSON 向量在维护时转换。
 
+## 服务器迁移与部分副本同步
+
+OdAIly 的目标生产节点是 `Odaily 官方服务器`，旧共享服务器不再运行 OdAIly。若官方服务器已经存在旧快照，不能直接把两个 SQLite 主文件拼接或用正在运行的文件互相覆盖：两边的 `tasks`、本地队列、配置和 WAL 可能已经分别产生写入。
+
+迁移顺序固定为：
+
+1. 停止两边所有 OdAIly 写入入口，先停收集器，再等待或记录本地队列中的 `pending/running`，最后停处理器、API 和监督者。
+2. 分别保留两边最终备份、Git commit、`.env` 指纹、SQLite manifest 和关键表计数。
+3. 以旧生产节点最终快照作为主库来源；对官方服务器快照之后产生的任务和人工配置，按 `(source, source_item_id)`、业务配置主键和反馈 ID 做逻辑比对，不按文件大小或自增 ID 猜测差异。
+4. 主库、`local_pipeline.sqlite`、Meme/搜索/Writer3/行情/耗时/插件本地 SQLite 以及 `-wal`、`-shm` 必须在停写后成组备份和恢复。可重建的搜索 embedding 缓存可以不复制，但迁移时必须明确记录这一选择。
+5. 完成 `integrity_check`、行数/最新时间/队列状态对账后，只启动官方服务器；旧共享服务器保持停止和禁用状态，不能双机回滚式同时启动。
+
+Telegram session 不能在两台服务器同时使用。若出现“session used under two different IP addresses”错误，停止旧节点后只在官方服务器重新授权，不复制继续使用已经失效的 session。
+
 ## 实现状态
 
 迁移版本已经完成：

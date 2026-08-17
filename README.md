@@ -373,7 +373,10 @@ python backend\src\main.py writer3-reset-task --task-id 123
 
 ## Linux Service
 
-Use `/opt/OdAIly` for deployment. Repo-tracked service files live under
+OdAIly production runs only on the `Odaily 官方服务器` under `/opt/OdAIly`;
+the public API is `https://api.odaily.uk`. The former shared server may host
+other applications, but must not run OdAIly services or write its SQLite data.
+Repo-tracked service files live under
 `deploy/`, including:
 
 - `deploy/odaily-worker.service`
@@ -407,6 +410,9 @@ Production sync rules:
    git fetch origin
    git pull --ff-only origin main
    ```
+
+The production SSH alias is `odaily-official`. Keep the former shared-server
+alias `jibai-prod` only for non-OdAIly applications and rollback inspection.
 
 5. Verify the worktree is clean:
 
