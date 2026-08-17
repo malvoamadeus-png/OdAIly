@@ -52,6 +52,7 @@ PROJECT_ROOT = PATHS.root_dir
 PROCESSED_DATA_DIR = PATHS.processed_dir
 DEFAULT_DB = PATHS.processed_dir / "meme_scanner.sqlite3"
 DEFAULT_AUDIT_DIR = PATHS.exports_dir / "meme_scanner"
+READER_OPENING = "据Odaily Meme速递监测，"
 # Kept in sync with OdAIly's production PushClient default.  A deployment may
 # override it with MEME_ODAILY_PUSH_ENDPOINT (or the shared ODAILY_PUSH_ENDPOINT).
 DEFAULT_ODAILY_PUSH_ENDPOINT = "http://47.113.217.70:8501/push/data"
@@ -859,10 +860,15 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
     chain_label = "Solana" if token.chain == "solana" else "BSC"
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
-        content = f"{chain_label}上{token.symbol}社群热议中，当前市值{cap}万美元。\n\n{narrative.strip()}"
+        summary = f"{chain_label}上{token.symbol}社群热议中，当前市值{cap}万美元。"
     else:
         title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
-        content = f"{chain_label}上{token.symbol}市值突破{cap}万美元。\n\n{narrative.strip()}"
+        summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
+    reader_text = narrative.strip()
+    if reader_text.startswith(READER_OPENING):
+        content = f"{READER_OPENING}{summary}\n\n{reader_text[len(READER_OPENING):].lstrip()}"
+    else:
+        content = f"{READER_OPENING}{summary}\n\n{reader_text}"
     return normalize_writer2(title), normalize_writer2(content)
 
 

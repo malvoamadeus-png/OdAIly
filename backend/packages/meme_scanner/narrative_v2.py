@@ -52,7 +52,8 @@ DEFAULT_GROK_MODEL = grok_x_search.DEFAULT_MODEL
 DEFAULT_OUTPUT_DIR = EXPORTS_DATA_DIR / "narrative"
 GROK_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 READER_OPENING = "据Odaily Meme速递监测，"
-READER_DISCLAIMER = "以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
+READER_DISCLAIMER = "以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
+LEGACY_READER_DISCLAIMER = "以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
 GROK_SUPPLEMENT_MARKER = "Grok补充："
 GMGN_SUPPLEMENT_MARKER = "GMGN补充："
 # A production probe accepted two simultaneous x_search requests. Keep the
@@ -770,11 +771,57 @@ def normalize_reader_text(value: Any) -> str:
     reader_text = str(value or "").strip()
     if not reader_text:
         return ""
+    reader_text = reader_text.replace(LEGACY_READER_DISCLAIMER, READER_DISCLAIMER)
+    reader_text = normalize_gmgn_supplement_lines(reader_text)
     if not reader_text.startswith(READER_OPENING):
         reader_text = f"{READER_OPENING}{reader_text}"
     if not reader_text.endswith(READER_DISCLAIMER):
         reader_text = f"{reader_text.rstrip()}\n\n{READER_DISCLAIMER}"
     return reader_text
+
+
+def _last_unquoted_comma(value: str) -> int:
+    quote_stack: list[str] = []
+    symmetric_quotes = {'"', "'"}
+    quote_pairs = {"“": "”", "‘": "’", "「": "」", "『": "』"}
+    last_comma = -1
+    for index, char in enumerate(value):
+        if quote_stack:
+            if char == quote_stack[-1]:
+                quote_stack.pop()
+            continue
+        if char in quote_pairs:
+            quote_stack.append(quote_pairs[char])
+        elif char in symmetric_quotes:
+            quote_stack.append(char)
+        elif char in {"，", ","}:
+            last_comma = index
+    return last_comma
+
+
+def clean_gmgn_supplement_line(line: str) -> str:
+    """Remove the GMGN shield-logo sentence when it is not useful to readers."""
+    line = line.strip()
+    if not line.startswith(GMGN_SUPPLEMENT_MARKER) or "标志" not in line:
+        return line
+
+    statement = line[len(GMGN_SUPPLEMENT_MARKER) :]
+    marker_index = statement.find("标志")
+    comma_index = _last_unquoted_comma(statement[:marker_index])
+    if comma_index < 0:
+        return ""
+
+    prefix = statement[:comma_index].rstrip(" \t，,")
+    return f"{GMGN_SUPPLEMENT_MARKER}{prefix}。" if prefix else ""
+
+
+def normalize_gmgn_supplement_lines(value: str) -> str:
+    lines: list[str] = []
+    for line in value.splitlines():
+        cleaned = clean_gmgn_supplement_line(line)
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
 
 
 def ensure_gmgn_supplement(result: dict[str, Any], gmgn_supplement: list[dict[str, Any]]) -> None:
@@ -798,9 +845,17 @@ def ensure_gmgn_supplement(result: dict[str, Any], gmgn_supplement: list[dict[st
     if item_id not in used_ids:
         used_ids.append(item_id)
     reader_text = str(result.get("reader_text") or "").strip()
+    reader_text = normalize_gmgn_supplement_lines(reader_text)
     if not re.search(r"(?m)^GMGN补充：", reader_text):
-        section = f"{GMGN_SUPPLEMENT_MARKER}{statement}"
-        result["reader_text"] = f"{reader_text}\n\n{section}".strip()
+        section = clean_gmgn_supplement_line(f"{GMGN_SUPPLEMENT_MARKER}{statement}")
+        if section:
+            result["reader_text"] = f"{reader_text}\n\n{section}".strip()
+        else:
+            result["reader_text"] = reader_text
+            result["supplemental_information_ids"] = [x for x in supplement_ids if str(x) != item_id]
+            result["used_material_ids"] = [x for x in used_ids if str(x) != item_id]
+    else:
+        result["reader_text"] = reader_text
 
 
 def validate_final_result(
@@ -815,8 +870,11 @@ def validate_final_result(
     source_ids = valid_ids(result, "source_material_ids", known_ids)
     angle_ids = valid_ids(result, "angle_material_ids", known_ids)
     supplement_ids = valid_ids(result, "supplemental_information_ids", known_ids)
-    grouped_ids = set(source_ids + angle_ids + supplement_ids)
     used_ids = valid_ids(result, "used_material_ids", known_ids)
+    if not re.search(r"(?m)^GMGN补充：", reader_text):
+        supplement_ids = [item_id for item_id in supplement_ids if not item_id.startswith("gmgn:")]
+        used_ids = [item_id for item_id in used_ids if not item_id.startswith("gmgn:")]
+    grouped_ids = set(source_ids + angle_ids + supplement_ids)
     if reader_text and not grouped_ids:
         raise RuntimeError("Final reader_text has no classified materials.")
     if reader_text and not used_ids:

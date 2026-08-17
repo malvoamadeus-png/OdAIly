@@ -243,7 +243,7 @@ class MemeScannerTests(unittest.TestCase):
             trigger_kind="tg_burst",
         )
         self.assertEqual(title, "Meme速递：BSC上KIDS社群热议中，市值36万美元")
-        self.assertTrue(content.startswith("BSC上KIDS社群热议中，当前市值36万美元。"))
+        self.assertTrue(content.startswith("据Odaily Meme速递监测，BSC上KIDS社群热议中，当前市值36万美元。"))
         self.assertNotIn("发射", title + content)
         self.assertNotIn("社区短时多次出现", title + content)
 

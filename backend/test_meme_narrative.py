@@ -153,7 +153,22 @@ def test_validate_final_result_adds_fixed_reader_opening_and_disclaimer() -> Non
     )
 
     assert result["reader_text"].startswith("据Odaily Meme速递监测，")
-    assert result["reader_text"].endswith("Meme 币价格波动较大，请注意资产保护。")
+    assert result["reader_text"].endswith("以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。")
+
+
+def test_validate_final_result_replaces_legacy_disclaimer() -> None:
+    material = {"tg:1": {"id": "tg:1", "text": "A fact"}}
+    result = narrative_v2.validate_final_result(
+        {
+            "primary_type": "pure_meme",
+            "source_material_ids": ["tg:1"],
+            "reader_text": "群聊有人提到 A fact。\n\n以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。",
+        },
+        material,
+    )
+
+    assert "以上内容均根据公开渠道整理" not in result["reader_text"]
+    assert result["reader_text"].count("以上内容均基于公开内容整理") == 1
 
 
 def test_gmgn_supplement_is_forced_into_final_result() -> None:
@@ -168,6 +183,27 @@ def test_gmgn_supplement_is_forced_into_final_result() -> None:
 
     assert "GMGN补充：GMGN简体中文叙事。" in result["reader_text"]
     assert "gmgn:supplement:1" in result["supplemental_information"][0]["id"]
+
+
+def test_gmgn_logo_sentence_is_removed_when_it_is_the_first_clause() -> None:
+    final = {"primary_type": "pure_meme", "reader_text": "主文案。"}
+    supplement = [{"id": "gmgn:supplement:1", "statement": "盾牌标志上写着 IGNORE，提醒保持冷静。"}]
+
+    narrative_v2.ensure_gmgn_supplement(final, supplement)
+
+    assert "GMGN补充：" not in final["reader_text"]
+    assert "gmgn:supplement:1" not in final["used_material_ids"]
+
+
+def test_gmgn_logo_sentence_truncates_from_previous_unquoted_comma() -> None:
+    final = {"primary_type": "pure_meme", "reader_text": "主文案。"}
+    supplement = [{"id": "gmgn:supplement:1", "statement": "你好，盾牌写着“IGNORE”这个标志，叭叭叭。"}]
+
+    narrative_v2.ensure_gmgn_supplement(final, supplement)
+
+    assert "GMGN补充：你好。" in final["reader_text"]
+    assert "标志" not in final["reader_text"]
+    assert "叭叭叭" not in final["reader_text"]
 
 
 def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_path) -> None:
