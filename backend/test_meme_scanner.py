@@ -12,7 +12,7 @@ from unittest.mock import patch
 from packages.meme_scanner import scanner
 
 
-def token(address: str, market_cap: float, volume_24h: float) -> scanner.Token:
+def token(address: str, market_cap: float, volume_24h: float, chain: str = scanner.CHAIN) -> scanner.Token:
     return scanner.Token(
         address=address,
         platform="fourmeme",
@@ -29,6 +29,7 @@ def token(address: str, market_cap: float, volume_24h: float) -> scanner.Token:
             "usd_market_cap": market_cap,
             "volume_24h": volume_24h,
         },
+        chain=chain,
     )
 
 
@@ -339,7 +340,68 @@ class MemeScannerTests(unittest.TestCase):
             store = scanner.Store(path)
             row = store.observation("0xold")
             self.assertEqual(row["tracking_status"], "legacy_untracked")
+            self.assertEqual(row["chain"], "bsc")
             self.assertIsNone(row["tracking_started_at"])
+            store.close()
+
+    def test_legacy_observation_chain_is_backfilled_from_latest_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            conn = sqlite3.connect(path)
+            conn.execute(
+                """CREATE TABLE observations (
+                  address TEXT PRIMARY KEY, platform TEXT NOT NULL, symbol TEXT NOT NULL,
+                  last_market_cap REAL NOT NULL, last_seen_at TEXT NOT NULL,
+                  triggered_at TEXT, published_at TEXT
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE token_snapshots (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  address TEXT NOT NULL, chain TEXT NOT NULL, platform TEXT NOT NULL,
+                  symbol TEXT NOT NULL, name TEXT NOT NULL, market_cap REAL NOT NULL,
+                  volume_24h REAL NOT NULL, observed_at TEXT NOT NULL, source TEXT NOT NULL,
+                  scan_id TEXT, payload_json TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO observations(address, platform, symbol, last_market_cap, last_seen_at)
+                VALUES ('sol-token', 'pumpfun', 'SOL', 400000, '2026-08-01T00:00:00+00:00')"""
+            )
+            conn.execute(
+                """INSERT INTO token_snapshots(
+                  id, address, chain, platform, symbol, name, market_cap, volume_24h,
+                  observed_at, source, payload_json
+                ) VALUES (1, 'sol-token', 'solana', 'pumpfun', 'SOL', 'Sol', 400000, 200000,
+                  '2026-08-02T00:00:00+00:00', 'legacy', '{}')"""
+            )
+            conn.commit()
+            conn.close()
+
+            store = scanner.Store(path)
+            self.assertEqual(store.observation("sol-token")["chain"], "solana")
+            store.close()
+
+    def test_token_info_uses_observation_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("sol-token", 800_000, 500_000, chain="solana")
+            old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.conn.execute(
+                "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
+                ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
+            )
+            store.conn.commit()
+            store.set_meta("completed_scan_at", "latest-scan")
+            run_args = args(root)
+            run_args.token_info_min_gap = 0
+            with patch.object(scanner, "fetch_token_info", return_value=current) as token_info:
+                result = scanner.process_due_token_info(store, run_args)
+            self.assertEqual(result["status"], "observed")
+            token_info.assert_called_once_with(current.address, "solana")
+            self.assertEqual(store.observation(current.address)["chain"], "solana")
             store.close()
 
     def test_first_discovery_at_three_million_queues_only_three_million(self) -> None:

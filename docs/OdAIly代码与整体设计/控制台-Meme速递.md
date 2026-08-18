@@ -85,7 +85,7 @@ python backend/src/main.py meme tg-watch
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
 - `token_info` 成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不推进市值水位。429 会记录服务端退避时间并暂停全局 `token_info` 请求；调度积压写入 worker 日志。
-- `observations` 的跟踪字段包括 `tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复。
+- `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 GMGN `token_info` 链路。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
 

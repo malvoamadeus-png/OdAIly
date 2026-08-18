@@ -317,7 +317,8 @@ class Store:
             """
             CREATE TABLE IF NOT EXISTS scanner_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS observations (
-              address TEXT PRIMARY KEY, platform TEXT NOT NULL, symbol TEXT NOT NULL,
+              address TEXT PRIMARY KEY, chain TEXT NOT NULL DEFAULT 'bsc',
+              platform TEXT NOT NULL, symbol TEXT NOT NULL,
               last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
               last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
               tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked',
@@ -363,6 +364,17 @@ class Store:
         self._ensure_jobs_v2()
         observation_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(observations)")}
         candidate_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(tg_candidates)")}
+        if "chain" not in observation_columns:
+            self.conn.execute("ALTER TABLE observations ADD COLUMN chain TEXT NOT NULL DEFAULT 'bsc'")
+            self.conn.execute(
+                """UPDATE observations
+                   SET chain=COALESCE(
+                     (SELECT ts.chain FROM token_snapshots ts
+                      WHERE ts.address=observations.address AND ts.chain IS NOT NULL AND ts.chain<>''
+                      ORDER BY ts.observed_at DESC, ts.id DESC LIMIT 1),
+                     'bsc'
+                   )"""
+            )
         if "chain" not in candidate_columns:
             self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN chain TEXT NOT NULL DEFAULT 'evm'")
         if "source_chat" not in candidate_columns:
@@ -521,10 +533,10 @@ class Store:
             observed_high = 0.0
         self.conn.execute(
             """INSERT INTO observations(
-              address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
+              address, chain, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
               triggered_at, published_at, tracking_status, tracking_source, last_volume_24h
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(address) DO UPDATE SET platform=excluded.platform, symbol=excluded.symbol,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(address) DO UPDATE SET chain=excluded.chain, platform=excluded.platform, symbol=excluded.symbol,
               last_market_cap=excluded.last_market_cap, last_seen_at=excluded.last_seen_at,
               last_volume_24h=excluded.last_volume_24h,
               highest_market_cap=MAX(observations.highest_market_cap, excluded.highest_market_cap),
@@ -532,6 +544,7 @@ class Store:
               published_at=COALESCE(excluded.published_at, observations.published_at)""",
             (
                 token.address,
+                token.chain,
                 token.platform,
                 token.symbol,
                 token.market_cap,
@@ -573,11 +586,12 @@ class Store:
             next_at = next_tracking_time(token.address, observed_time, interval)
             self.conn.execute(
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  chain=?,
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
                   tracking_status='active', tracking_started_at=?, tracking_expires_at=?,
                   last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
                   tracking_source='completed', last_volume_24h=? WHERE address=?""",
-                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at,
+                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at,
                  started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address),
             )
             self.conn.commit()
@@ -585,9 +599,10 @@ class Store:
         if old and status in (TRACKING_STATUS_LEGACY, TRACKING_STATUS_EXPIRED):
             self.conn.execute(
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  chain=?,
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
                   last_completed_seen_at=?, last_volume_24h=? WHERE address=?""",
-                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, token.volume_24h, token.address),
+                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, token.volume_24h, token.address),
             )
             self.conn.commit()
             return previous_high, False, status
@@ -599,22 +614,23 @@ class Store:
             expires = str(old["tracking_expires_at"])
             self.conn.execute(
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+                  chain=?,
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
                   last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
                   tracking_source='completed', last_volume_24h=?, token_info_failures=0,
                   last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
-                (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, next_at, interval, token.volume_24h, token.address),
+                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_at, interval, token.volume_24h, token.address),
             )
         else:
             started_at = observed_at
             expires = (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat()
             self.conn.execute(
                 """INSERT INTO observations(
-                  address, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
+                  address, chain, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
                   tracking_status, tracking_started_at, tracking_expires_at, last_completed_seen_at,
                   next_token_info_at, tracking_interval_seconds, tracking_source, last_volume_24h
-                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'completed', ?)""",
-                (token.address, token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, started_at, expires, observed_at, next_at, interval, token.volume_24h),
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'completed', ?)""",
+                (token.address, token.chain, token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, started_at, expires, observed_at, next_at, interval, token.volume_24h),
             )
         self.conn.commit()
         return previous_high, old is None, TRACKING_STATUS_ACTIVE
@@ -638,11 +654,12 @@ class Store:
         interval = tracking_interval(token.market_cap, args)
         self.conn.execute(
             """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
+              chain=?,
               highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
               last_token_info_at=?, next_token_info_at=?, tracking_interval_seconds=?,
               tracking_source='token_info', last_volume_24h=?, token_info_failures=0,
               last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
-            (token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, observed_at, next_tracking_time(token.address, observed_time, interval), interval, token.volume_24h, token.address),
+            (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_tracking_time(token.address, observed_time, interval), interval, token.volume_24h, token.address),
         )
         self.conn.commit()
         return previous_high
@@ -1243,7 +1260,8 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         print(f"[meme-scan] token_info backlog={backlog}", file=sys.stderr)
     store.mark_token_info_request(now)
     try:
-        token = fetch_token_info(address, "solana") if str(row["chain"] or CHAIN) == "solana" else fetch_token_info(address)
+        chain = str(row["chain"] or CHAIN)
+        token = fetch_token_info(address, chain) if chain != CHAIN else fetch_token_info(address)
         if token is None:
             raise RuntimeError("token_info returned no usable market cap")
     except Exception as exc:
