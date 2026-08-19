@@ -72,6 +72,50 @@ export type SummaryPayload = {
   unassigned_count: number;
 };
 
+export type QualityItem = {
+  source_item_id: string;
+  odaily_url: string;
+  original_url: string | null;
+  has_original_url: boolean;
+  title: string | null;
+  published_at: string | null;
+  view_count: number;
+  is_pushed: boolean | null;
+  first_publication: FirstPublication;
+  exclusion_reasons: string[];
+};
+
+export type QualityPayload = {
+  status: 'ready' | 'insufficient';
+  week_start: string;
+  week_end: string;
+  pushed_count: number;
+  pushed_view_count: number;
+  average_views: number | null;
+  threshold_views: number | null;
+  qualified_count: number;
+  excluded_count: number;
+  total_kpi: number;
+  unassigned_count: number;
+  rules: {
+    regular_source_accounts: string[];
+    automated_x_accounts: string[];
+    automated_media_domains: string[];
+    threshold_multiplier: number;
+    kpi_per_item: number;
+    snapshot_at: string;
+  };
+  groups: Array<{
+    person_key: string;
+    person_name: string;
+    qualified_count: number;
+    excluded_count: number;
+    kpi: number;
+    qualified: QualityItem[];
+    excluded: QualityItem[];
+  }>;
+};
+
 export type ContributionsPayload = {
   week_start: string;
   week_end: string;

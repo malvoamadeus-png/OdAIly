@@ -17,16 +17,19 @@ import {
   type NewsflashPage,
   type NewsflashRow,
   type Person,
+  type QualityItem,
+  type QualityPayload,
   type SchedulePayload,
   type SummaryPayload,
 } from './newsflashOperations';
 
-type TabKey = 'overview' | 'schedule' | 'summary' | 'contributions' | 'events';
+type TabKey = 'overview' | 'schedule' | 'summary' | 'quality' | 'contributions' | 'events';
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'overview', label: '快讯总览' },
   { key: 'schedule', label: '排班表' },
   { key: 'summary', label: '数据总览' },
+  { key: 'quality', label: '优质快讯' },
   { key: 'contributions', label: '贡献快讯' },
   { key: 'events', label: '事件与首发' },
 ];
@@ -40,6 +43,27 @@ const publisherLabels: Record<string, string> = {
   pending_ai: '识别中',
 };
 const shiftLabels: Record<string, string> = { morning: '早班', middle: '中班', late: '晚班' };
+const qualityReasonLabels: Record<string, string> = {
+  contribution: '贡献快讯',
+  competitor_first: '晚于竞品',
+  regular_source: '常规信源',
+  automated_coverage: '自动覆盖',
+  jin10_content: '正文含金十',
+};
+
+function personColor(personKey: string) {
+  let hash = 2166136261;
+  for (const character of personKey) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const hue = Math.abs(hash) % 360;
+  return {
+    backgroundColor: `hsl(${hue} 58% 93%)`,
+    borderColor: `hsl(${hue} 44% 62%)`,
+    color: `hsl(${hue} 42% 27%)`,
+  };
+}
 
 function localDate(value: string | null): string {
   if (!value) return '—';
@@ -113,6 +137,7 @@ export default function NewsflashOperationsPanel({ refreshToken = 0 }: { refresh
       {tab === 'overview' && <Overview people={people} refreshToken={refreshToken} onError={setError} onMessage={setMessage} />}
       {tab === 'schedule' && <Schedule refreshToken={refreshToken} onPeople={setPeople} onError={setError} onMessage={setMessage} />}
       {tab === 'summary' && <Summary refreshToken={refreshToken} onError={setError} />}
+      {tab === 'quality' && <Quality refreshToken={refreshToken} onError={setError} />}
       {tab === 'contributions' && <Contributions people={people} refreshToken={refreshToken} onError={setError} onMessage={setMessage} />}
       {tab === 'events' && <Events refreshToken={refreshToken} onError={setError} />}
     </div>
@@ -263,6 +288,10 @@ function Schedule({ refreshToken, onPeople, onError, onMessage }: { refreshToken
           return <label key={week.week_start}><span>{formatWeekLabel(week.week_start, week.week_end)}</span><select aria-label={`${formatWeekLabel(week.week_start, week.week_end)}归属月份`} value={week.report_month || ''} onChange={async (event) => { const result = await newsflashOperations<{ week_start: string; report_month: string }>('save_week_month', { week_start: week.week_start, report_month: event.target.value }); setData((current) => current ? { ...current, weeks: current.weeks.map((item) => item.week_start === result.week_start ? { ...item, report_month: result.report_month, report_month_manual: true } : item) } : current); }}><option value="">未归属</option>{months.map((value) => <option value={value} key={value}>{formatMonthLabel(value)}</option>)}</select></label>;
         })}
       </div>
+      <div className="personColorLegend" aria-label="值班人员颜色图例">
+        <span className="legendTitle">人员颜色</span>
+        {dutyPeople.map((person) => <span className="personColorChip" style={personColor(person.person_key)} key={person.person_key}>{person.display_name}</span>)}
+      </div>
       <div className="calendarHeader">{['周一','周二','周三','周四','周五','周六','周日'].map((label) => <span key={label}>{label}</span>)}</div>
       <div className="scheduleCalendar">
         {Array.from({ length: leading }, (_, index) => <div className="calendarSpacer" key={`spacer-${index}`} />)}
@@ -270,7 +299,10 @@ function Schedule({ refreshToken, onPeople, onError, onMessage }: { refreshToken
           const shifts = day.mode === 'three' ? ['morning','middle','late'] : ['morning','late'];
           return <article className="scheduleDay" key={day.date}>
             <div className="scheduleDayHeader"><strong>{Number(day.date.slice(-2))}</strong><div className="modeToggle"><button type="button" className={day.mode === 'three' ? 'active' : ''} onClick={() => void saveMode(day.date, 'three')}>三班</button><button type="button" className={day.mode === 'two' ? 'active' : ''} onClick={() => void saveMode(day.date, 'two')}>两班</button></div></div>
-            <div className="shiftList">{shifts.map((shift) => <label key={shift}><span>{shiftLabels[shift]}</span><select value={assignmentMap.get(`${day.date}:${shift}`) || ''} onChange={(event) => void saveAssignment(day.date, shift, event.target.value)}><option value="">未排班</option>{dutyPeople.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></label>)}</div>
+            <div className="shiftList">{shifts.map((shift) => {
+              const selected = assignmentMap.get(`${day.date}:${shift}`) || '';
+              return <label key={shift}><span>{shiftLabels[shift]}</span><select className={selected ? 'personSelected' : ''} style={selected ? personColor(selected) : undefined} value={selected} onChange={(event) => void saveAssignment(day.date, shift, event.target.value)}><option value="">未排班</option>{dutyPeople.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></label>;
+            })}</div>
             <div className="aiDuty"><Database size={13} /> OdAIly 全天</div>
           </article>;
         })}
@@ -303,6 +335,60 @@ function Summary({ refreshToken, onError }: { refreshToken: number; onError: (va
 
 function MetricTable({ rows }: { rows: SummaryPayload['people'] }) { return <div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>人员</th><th>发布数量</th><th>推送数量</th><th>平均浏览量</th><th>推送浏览量</th></tr></thead><tbody>{rows.map((row) => <tr key={row.person_key}><td>{row.person_name}</td><MetricCells row={row} /></tr>)}</tbody></table></div>; }
 function MetricCells({ row }: { row: SummaryPayload['people'][number] | SummaryPayload['rows'][number] }) { return <><td className="numberCell">{row.published_count}</td><td className="numberCell">{row.pushed_count}</td><td className="numberCell">{row.average_views == null ? '—' : row.average_views.toLocaleString()} <small>{coverage(row.view_coverage)}</small></td><td className="numberCell">{row.pushed_views == null ? '—' : row.pushed_views.toLocaleString()}</td></>; }
+
+function Quality({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {
+  const [week, setWeek] = useState('');
+  const [mode, setMode] = useState<'qualified' | 'excluded'>('qualified');
+  const [data, setData] = useState<QualityPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function load(nextWeek?: string) {
+    setLoading(true);
+    onError('');
+    try {
+      const result = await newsflashOperations<QualityPayload>('quality', nextWeek ? { week_start: nextWeek } : {});
+      setData(result);
+      setWeek(result.week_start);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void load(week || undefined); }, [refreshToken]);
+
+  const metric = (value: number | null, digits = 1) => value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits });
+  return <section className="newsflashSection qualitySection">
+    <div className="sectionCommandBar">
+      <div className="weekPicker"><label><span>统计周</span><input type="date" min="2026-08-03" value={week} onChange={(event) => { const normalized = mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)); setWeek(normalized); void load(normalized); }} /></label>{week && <span className="periodHint">{formatWeekLabel(week)}</span>}</div>
+      <div className="segmentedControl" aria-label="优质快讯显示范围"><button type="button" className={mode === 'qualified' ? 'active' : ''} onClick={() => setMode('qualified')}>入选</button><button type="button" className={mode === 'excluded' ? 'active' : ''} onClick={() => setMode('excluded')}>达标但排除</button></div>
+    </div>
+    {loading && <div className="emptyInline">正在计算当周优质快讯…</div>}
+    {!loading && data?.status === 'insufficient' && <div className="qualityInsufficient"><strong>数据不足</strong><span>本周没有已知浏览量的推送快讯，无法计算周均值、门槛和 KPI。</span></div>}
+    {!loading && data?.status === 'ready' && <>
+      <div className="qualityMetrics">
+        <div><span>推送浏览量均值</span><strong>{metric(data.average_views)}</strong><small>{data.pushed_view_count}/{data.pushed_count} 条有浏览量</small></div>
+        <div><span>1.5 倍门槛</span><strong>{metric(data.threshold_views)}</strong><small>严格大于才达标</small></div>
+        <div><span>入选快讯</span><strong>{data.qualified_count}</strong><small>另有 {data.excluded_count} 条达标但排除</small></div>
+        <div><span>总 KPI</span><strong>{metric(data.total_kpi, 10)}</strong><small>每条 {data.rules.kpi_per_item}，无上限</small></div>
+      </div>
+      {data.unassigned_count > 0 && <div className="notice error">{data.unassigned_count} 条人类快讯未能归入排班，不展示且不计 KPI。</div>}
+      <div className="qualityGroups">{data.groups.map((group) => {
+        const items = mode === 'qualified' ? group.qualified : group.excluded;
+        return <section className="qualityGroup" key={group.person_key}>
+          <div className="qualityGroupHeader"><span className="personColorChip" style={personColor(group.person_key)}>{group.person_name}</span><span>入选 <strong>{group.qualified_count}</strong> 条 · KPI <strong>{metric(group.kpi, 10)}</strong> · 排除 <strong>{group.excluded_count}</strong> 条</span></div>
+          {items.length ? <QualityTable items={items} excluded={mode === 'excluded'} /> : <div className="emptyInline">本周没有{mode === 'qualified' ? '入选' : '达标但排除的'}快讯</div>}
+        </section>;
+      })}</div>
+    </>}
+    {data && <details className="qualityRules"><summary>查看判定规则与当周冻结信源范围</summary><div className="qualityRuleGrid"><section><h3>固定常规信源（{data.rules.regular_source_accounts.length}）</h3><div className="ruleTagList">{data.rules.regular_source_accounts.map((account) => <a key={account} href={`https://x.com/${account}`} target="_blank" rel="noreferrer">@{account}</a>)}</div></section><section><h3>当周 X 自动覆盖（{data.rules.automated_x_accounts.length}）</h3><div className="ruleTagList">{data.rules.automated_x_accounts.length ? data.rules.automated_x_accounts.map((account) => <span key={account}>@{account}</span>) : <span>无</span>}</div></section><section><h3>当周媒体自动覆盖（{data.rules.automated_media_domains.length}）</h3><div className="ruleTagList">{data.rules.automated_media_domains.map((domain) => <span key={domain}>{domain}</span>)}</div></section></div><p>规则快照：{localDate(data.rules.snapshot_at)}。浏览量、贡献状态、首发和排班仍按当前数据实时重算。</p></details>}
+  </section>;
+}
+
+function QualityTable({ items, excluded }: { items: QualityItem[]; excluded: boolean }) {
+  return <div className="newsflashTableWrap"><table className="newsflashTable qualityTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>浏览量</th><th>推送</th><th>首发单位</th><th>原文</th>{excluded && <th>排除原因</th>}</tr></thead><tbody>{items.map((item) => <tr key={item.source_item_id}><td className="monoCell">{item.source_item_id}</td><td className="titleColumn"><a href={item.odaily_url} target="_blank" rel="noreferrer">{item.title || '无标题'}</a></td><td>{localDate(item.published_at)}</td><td className="numberCell">{item.view_count.toLocaleString()}</td><td>{item.is_pushed == null ? '—' : item.is_pushed ? '是' : '否'}</td><td>{item.first_publication.label}</td><td>{item.original_url ? <a href={item.original_url} target="_blank" rel="noreferrer">查看原文</a> : <span className="unavailable">无原文链接</span>}</td>{excluded && <td><div className="reasonTags">{item.exclusion_reasons.map((reason) => <span key={reason}>{qualityReasonLabels[reason] || reason}</span>)}</div></td>}</tr>)}</tbody></table></div>;
+}
 
 function Contributions({ people, refreshToken, onError, onMessage }: { people: Person[]; refreshToken: number; onError: (value: string) => void; onMessage: (value: string) => void }) {
   const [week, setWeek] = useState(mondayKey());

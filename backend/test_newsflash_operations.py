@@ -155,6 +155,131 @@ class NewsflashOperationsTest(unittest.TestCase):
         summary = self.repository.get_summary({"week_start": "2026-07-20"})
         self.assertEqual(summary["unassigned_count"], 1)
 
+    def assign_morning(self, duty_date: str, person_key: str = "zoey") -> None:
+        self.repository.save_day_mode({"date": duty_date, "mode": "three"}, actor_email="test@example.com")
+        self.repository.save_assignment(
+            {"date": duty_date, "shift_key": "morning", "person_key": person_key},
+            actor_email="test@example.com",
+        )
+
+    def test_quality_requires_known_pushed_views(self) -> None:
+        self.add_reference("q0", "No view", "2026-08-03T09:00:00+08:00")
+        self.repository.upsert_source_facts([
+            {"source_item_id": "q0", "operator_raw": "Z", "view_count": None, "is_pushed": 1},
+        ])
+
+        result = self.repository.get_quality({"week_start": "2026-08-03"})
+
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["pushed_count"], 1)
+        self.assertEqual(result["pushed_view_count"], 0)
+        self.assertEqual(result["qualified_count"], 0)
+
+    def test_quality_uses_strict_week_threshold_and_has_no_kpi_cap(self) -> None:
+        references = [
+            ("base-1", "Baseline one", "2026-08-10T08:00:00+08:00"),
+            ("base-2", "Baseline two", "2026-08-10T08:10:00+08:00"),
+            ("equal", "Exactly threshold", "2026-08-10T09:00:00+08:00"),
+            ("unassigned", "No shift", "2026-08-11T10:00:00+08:00"),
+        ] + [(f"winner-{index}", f"Above threshold {index}", "2026-08-10T10:00:00+08:00") for index in range(51)]
+        for values in references:
+            self.add_reference(*values)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "base-1", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "base-2", "operator_raw": None, "view_count": 300, "is_pushed": 1},
+            {"source_item_id": "equal", "operator_raw": "Z", "view_count": 300, "is_pushed": 0},
+            {"source_item_id": "unassigned", "operator_raw": "Z", "view_count": 999, "is_pushed": 0},
+        ] + [
+            {"source_item_id": f"winner-{index}", "operator_raw": "Z", "view_count": 301, "is_pushed": 0}
+            for index in range(51)
+        ])
+        self.assign_morning("2026-08-10")
+
+        result = self.repository.get_quality({"week_start": "2026-08-10"})
+
+        self.assertEqual(result["average_views"], 200)
+        self.assertEqual(result["threshold_views"], 300)
+        self.assertEqual(result["qualified_count"], 51)
+        self.assertEqual(result["total_kpi"], 10.2)
+        self.assertEqual(result["unassigned_count"], 1)
+        zoey = next(group for group in result["groups"] if group["person_key"] == "zoey")
+        self.assertEqual(len(zoey["qualified"]), 51)
+
+    def test_quality_records_multiple_exclusions_and_competitor_tie_passes(self) -> None:
+        for source_item_id, title, published_at in (
+            ("base", "Baseline", "2026-08-17T08:00:00+08:00"),
+            ("excluded", "Excluded", "2026-08-17T09:00:00+08:00"),
+            ("tie", "Tie", "2026-08-17T10:00:00+08:00"),
+            ("media", "Media covered", "2026-08-17T11:00:00+08:00"),
+        ):
+            self.add_reference(source_item_id, title, published_at)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "base", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "excluded", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "tie", "operator_raw": "Z", "view_count": 201, "is_pushed": 0},
+            {"source_item_id": "media", "operator_raw": "Z", "view_count": 202, "is_pushed": 0},
+        ])
+        self.assign_morning("2026-08-17")
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "UPDATE odaily_reference_items SET raw_payload=?,content=? WHERE source_item_id='excluded'",
+                (json.dumps({"sourceUrl": "https://twitter.com/LinChen91162689/status/1"}), "来自金十的消息"),
+            )
+            conn.execute("UPDATE odaily_reference_items SET source_url='https://markets.coindesk.com/story' WHERE source_item_id='media'")
+            conn.execute("INSERT INTO x_capture_accounts(username,username_lower,enabled) VALUES ('LinChen91162689','linchen91162689',1)")
+            conn.execute("UPDATE newsflash_operation_facts SET is_contribution=1,contributor_person_key='asher' WHERE source_item_id='excluded'")
+            conn.commit()
+        events = SQLiteCompetitorMonitorRepository(self.path)
+        records = events.upsert_newsflash_items([
+            NewsflashItem(source="blockbeats", source_item_id="b-ex", title="Excluded", content="x", published_at="2026-08-17T08:59:00+08:00"),
+            NewsflashItem(source="odaily", source_item_id="excluded", title="Excluded", content="x", published_at="2026-08-17T09:00:00+08:00"),
+        ])
+        event_id = events.create_event_with_source(records[0])
+        events.assign_item_to_event(EventAssignment(
+            item_id=records[1].id, event_id=event_id, role="supporting", match_method="test",
+            similarity=1.0, matched_item_id=records[0].id, ai_result={}, needs_review=False,
+        ))
+        tie_records = events.upsert_newsflash_items([
+            NewsflashItem(source="blockbeats", source_item_id="b-tie", title="Tie", content="x", published_at="2026-08-17T10:00:00.900000+08:00"),
+            NewsflashItem(source="odaily", source_item_id="tie", title="Tie", content="x", published_at="2026-08-17T10:00:00.100000+08:00"),
+        ])
+        tie_event_id = events.create_event_with_source(tie_records[0])
+        events.assign_item_to_event(EventAssignment(
+            item_id=tie_records[1].id, event_id=tie_event_id, role="supporting", match_method="test",
+            similarity=1.0, matched_item_id=tie_records[0].id, ai_result={}, needs_review=False,
+        ))
+
+        result = self.repository.get_quality({"week_start": "2026-08-17"})
+
+        zoey = next(group for group in result["groups"] if group["person_key"] == "zoey")
+        excluded = next(item for item in zoey["excluded"] if item["source_item_id"] == "excluded")
+        self.assertEqual(set(excluded["exclusion_reasons"]), {
+            "contribution", "competitor_first", "regular_source", "automated_coverage", "jin10_content",
+        })
+        self.assertEqual([item["source_item_id"] for item in zoey["qualified"]], ["tie"])
+        self.assertFalse(zoey["qualified"][0]["has_original_url"])
+        media = next(item for item in zoey["excluded"] if item["source_item_id"] == "media")
+        self.assertEqual(media["exclusion_reasons"], ["automated_coverage"])
+
+    def test_quality_rule_snapshot_does_not_follow_later_monitor_changes(self) -> None:
+        self.add_reference("snapshot-base", "Baseline", "2026-08-24T08:00:00+08:00")
+        self.repository.upsert_source_facts([
+            {"source_item_id": "snapshot-base", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+        ])
+        with connect_sqlite(self.path) as conn:
+            conn.execute("INSERT INTO x_capture_accounts(username,username_lower,enabled) VALUES ('Before','before',1)")
+            conn.commit()
+        before = self.repository.get_quality({"week_start": "2026-08-24"})
+        with connect_sqlite(self.path) as conn:
+            conn.execute("UPDATE x_capture_accounts SET enabled=0 WHERE username_lower='before'")
+            conn.execute("INSERT INTO x_capture_accounts(username,username_lower,enabled) VALUES ('After','after',1)")
+            conn.commit()
+        after = self.repository.get_quality({"week_start": "2026-08-24"})
+
+        self.assertEqual(before["rules"], after["rules"])
+        self.assertIn("Before", after["rules"]["automated_x_accounts"])
+        self.assertNotIn("After", after["rules"]["automated_x_accounts"])
+
 
 class CompetitorEventSummaryTest(unittest.TestCase):
     def setUp(self) -> None:

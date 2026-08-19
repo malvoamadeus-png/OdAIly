@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from packages.common.storage import connect_sqlite
@@ -32,6 +33,22 @@ SOURCE_LABELS = {
     "panews": "PANews",
     "jinse": "金色财经",
 }
+QUALITY_FIRST_WEEK = date(2026, 8, 3)
+QUALITY_THRESHOLD_MULTIPLIER = 1.5
+QUALITY_KPI_PER_ITEM = 0.2
+QUALITY_REGULAR_SOURCE_ACCOUNTS = (
+    "LinChen91162689", "ki_young_ju", "BTC__options", "EricBalchunas", "EleanorTerrett",
+    "zhusu", "evilcos", "sunyuchentron", "NateGeraci", "ag_dwf", "intotheblock", "weremeow",
+    "VitalikButerin", "santimentfeed", "0xENAS", "cz_binance", "JSeyff", "elonmusk",
+    "CryptoHayes", "zachxbt", "Rewkang", "jessepollak", "PrimordialAA", "Matrixport_CN",
+    "10x_Research", "im23pds", "brian_armstrong", "ali_charts", "haydenzadams",
+)
+QUALITY_EXTERNAL_MEDIA_URLS = (
+    "https://www.coindesk.com/",
+    "https://cointelegraph.com/",
+    "https://www.theblock.co/",
+    "https://decrypt.co/",
+)
 
 
 SCHEMA_SQL = """
@@ -111,6 +128,11 @@ CREATE TABLE IF NOT EXISTS newsflash_operation_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_newsflash_operation_audit_entity
 ON newsflash_operation_audit(entity_type, entity_key, created_at DESC);
+CREATE TABLE IF NOT EXISTS newsflash_quality_week_rules (
+    week_start text PRIMARY KEY,
+    rules_json text NOT NULL,
+    created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -248,6 +270,7 @@ class NewsflashOperationsRepository:
             "save_assignment": lambda data: self.save_assignment(data, actor_email=actor_email),
             "save_week_month": lambda data: self.save_week_month(data, actor_email=actor_email),
             "summary": self.get_summary,
+            "quality": self.get_quality,
             "contributions": self.list_contributions,
             "events": self.list_events,
         }
@@ -980,6 +1003,233 @@ class NewsflashOperationsRepository:
                 "view_coverage": {"known": view_known, "total": view_total},
             })
         return {"period": period_label, "weeks": weeks, "rows": rows, "people": people, "unassigned_count": unassigned}
+
+    @staticmethod
+    def _url_host(value: str | None) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            host = (urlparse(text if "://" in text else f"https://{text}").hostname or "").casefold()
+        except ValueError:
+            return ""
+        return host.removeprefix("www.")
+
+    @classmethod
+    def _is_odaily_url(cls, value: str | None) -> bool:
+        host = cls._url_host(value)
+        return host == "odaily.news" or host.endswith(".odaily.news")
+
+    @classmethod
+    def _x_username(cls, value: str | None) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = urlparse(text if "://" in text else f"https://{text}")
+        except ValueError:
+            return None
+        host = (parsed.hostname or "").casefold().removeprefix("www.").removeprefix("mobile.")
+        if host not in {"x.com", "twitter.com"}:
+            return None
+        segment = next((part for part in parsed.path.split("/") if part), "")
+        return segment.removeprefix("@").casefold() or None
+
+    @staticmethod
+    def _host_matches(host: str, domains: Iterable[str]) -> bool:
+        return bool(host) and any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+    def _quality_original_url(self, row: Any) -> str | None:
+        raw_payload = _decode(row["raw_payload"], {})
+        raw_source = raw_payload.get("sourceUrl") if isinstance(raw_payload, dict) else None
+        if str(raw_source or "").strip():
+            return str(raw_source).strip()
+        fallback = str(row["source_url"] or "").strip()
+        return fallback if fallback and not self._is_odaily_url(fallback) else None
+
+    def _quality_first_publication(self, conn, source_item_id: str) -> tuple[dict[str, Any], list[str]]:
+        info = self._event_info(conn, source_item_id)
+        if info.get("status") != "ready" or not self._table_exists(conn, "newsflash_events"):
+            return info, []
+        event = conn.execute(
+            """
+            SELECT e.first_source,e.first_sources FROM newsflash_items i
+            JOIN newsflash_event_sources s ON s.item_id=i.id
+            JOIN newsflash_events e ON e.event_id=s.event_id
+            WHERE i.source='odaily' AND i.source_item_id=? AND e.status='active' LIMIT 1
+            """,
+            (source_item_id,),
+        ).fetchone()
+        if event is None:
+            return info, []
+        sources = _decode(event["first_sources"], []) or ([event["first_source"]] if event["first_source"] else [])
+        return info, [str(source).casefold() for source in sources if str(source or "").strip()]
+
+    def _quality_rule_seed(self, conn) -> dict[str, Any]:
+        x_accounts: list[str] = []
+        if self._table_exists(conn, "x_capture_accounts"):
+            x_accounts = [str(row["username"]) for row in conn.execute(
+                "SELECT username FROM x_capture_accounts WHERE enabled=1 ORDER BY username_lower,username"
+            ).fetchall()]
+        media_urls = list(QUALITY_EXTERNAL_MEDIA_URLS)
+        if self._table_exists(conn, "non_mainstream_media_sources"):
+            media_urls.extend(str(row["homepage_url"]) for row in conn.execute(
+                "SELECT homepage_url FROM non_mainstream_media_sources WHERE enabled=1 ORDER BY site_key"
+            ).fetchall() if str(row["homepage_url"] or "").strip())
+        media_domains = sorted({self._url_host(value) for value in media_urls if self._url_host(value)})
+        return {
+            "regular_source_accounts": list(QUALITY_REGULAR_SOURCE_ACCOUNTS),
+            "automated_x_accounts": x_accounts,
+            "automated_media_domains": media_domains,
+            "threshold_multiplier": QUALITY_THRESHOLD_MULTIPLIER,
+            "kpi_per_item": QUALITY_KPI_PER_ITEM,
+        }
+
+    def _quality_rules(self, conn, week_start: date) -> dict[str, Any]:
+        key = week_start.isoformat()
+        seed = self._quality_rule_seed(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO newsflash_quality_week_rules(week_start,rules_json,created_at) VALUES (?,?,?)",
+            (key, _json(seed), _iso()),
+        )
+        row = conn.execute(
+            "SELECT rules_json,created_at FROM newsflash_quality_week_rules WHERE week_start=?",
+            (key,),
+        ).fetchone()
+        conn.commit()
+        rules = _decode(row["rules_json"], {})
+        rules["snapshot_at"] = row["created_at"]
+        return rules
+
+    def _latest_quality_week(self, conn) -> date:
+        row = conn.execute(
+            """
+            SELECT max(r.published_at) AS published_at
+            FROM newsflash_operation_facts f
+            JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
+            WHERE f.is_pushed=1 AND f.view_count IS NOT NULL AND datetime(r.published_at)>=datetime(?)
+            """,
+            (datetime.combine(QUALITY_FIRST_WEEK, time(0, 0), SHANGHAI_TZ).isoformat(),),
+        ).fetchone()
+        published = _parse_datetime(row["published_at"] if row else None)
+        return _week_start(published.date()) if published else max(QUALITY_FIRST_WEEK, _week_start(datetime.now(SHANGHAI_TZ).date()))
+
+    def get_quality(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with connect_sqlite(self.path) as conn:
+            raw_week = str(payload.get("week_start") or "").strip()
+            start = _week_start(date.fromisoformat(raw_week)) if raw_week else self._latest_quality_week(conn)
+            if start < QUALITY_FIRST_WEEK:
+                raise ValueError(f"quality week must not be earlier than {QUALITY_FIRST_WEEK.isoformat()}")
+            end = start + timedelta(days=7)
+            rules = self._quality_rules(conn, start)
+            period_start = datetime.combine(start, time(0, 0), SHANGHAI_TZ)
+            period_end = datetime.combine(end, time(0, 0), SHANGHAI_TZ)
+            rows = conn.execute(
+                """
+                SELECT r.source_item_id,r.source_url,r.title,r.content,r.raw_payload,r.published_at,
+                       f.publisher_kind,f.publisher_person_key,f.view_count,f.is_pushed,f.is_contribution
+                FROM odaily_reference_items r
+                JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
+                WHERE datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
+                ORDER BY datetime(r.published_at) DESC,r.source_item_id DESC
+                """,
+                (period_start.isoformat(), period_end.isoformat()),
+            ).fetchall()
+            pushed = [row for row in rows if row["is_pushed"] == 1]
+            pushed_views = [int(row["view_count"]) for row in pushed if row["view_count"] is not None]
+            base = {
+                "status": "ready" if pushed_views else "insufficient",
+                "week_start": start.isoformat(),
+                "week_end": (end - timedelta(days=1)).isoformat(),
+                "pushed_count": len(pushed),
+                "pushed_view_count": len(pushed_views),
+                "rules": rules,
+            }
+            if not pushed_views:
+                return {
+                    **base, "average_views": None, "threshold_views": None,
+                    "qualified_count": 0, "excluded_count": 0, "total_kpi": 0,
+                    "unassigned_count": 0, "groups": [],
+                }
+
+            average = sum(pushed_views) / len(pushed_views)
+            threshold = average * float(rules["threshold_multiplier"])
+            dates = [start + timedelta(days=index) for index in range(7)]
+            windows = self._shift_windows(conn, dates)
+            people = {
+                window.person_key: window.person_name
+                for window in sorted(windows, key=lambda value: (value.person_name.casefold(), value.person_key))
+            }
+            grouped = {key: {"qualified": [], "excluded": []} for key in people}
+            unassigned_count = 0
+            regular_accounts = {str(value).casefold() for value in rules["regular_source_accounts"]}
+            automated_accounts = {str(value).casefold() for value in rules["automated_x_accounts"]}
+            automated_domains = {str(value).casefold() for value in rules["automated_media_domains"]}
+
+            for row in rows:
+                moment = _parse_datetime(row["published_at"])
+                if moment is None or row["publisher_kind"] not in {"human", "human_unmapped"}:
+                    continue
+                window = self._assign_window(moment, str(row["publisher_person_key"] or ""), windows) if row["publisher_kind"] == "human" else None
+                if window is None:
+                    unassigned_count += 1
+                    continue
+                if row["view_count"] is None or int(row["view_count"]) <= threshold:
+                    continue
+                original_url = self._quality_original_url(row)
+                username = self._x_username(original_url)
+                host = self._url_host(original_url)
+                first_publication, first_sources = self._quality_first_publication(conn, str(row["source_item_id"]))
+                reasons: list[str] = []
+                if row["is_contribution"]:
+                    reasons.append("contribution")
+                if first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources:
+                    reasons.append("competitor_first")
+                if username and username in regular_accounts:
+                    reasons.append("regular_source")
+                if (username and username in automated_accounts) or self._host_matches(host, automated_domains):
+                    reasons.append("automated_coverage")
+                if "金十" in str(row["content"] or ""):
+                    reasons.append("jin10_content")
+                item = {
+                    "source_item_id": str(row["source_item_id"]),
+                    "odaily_url": f"https://www.odaily.news/zh-CN/newsflash/{row['source_item_id']}",
+                    "original_url": original_url,
+                    "has_original_url": bool(original_url),
+                    "title": row["title"],
+                    "published_at": row["published_at"],
+                    "view_count": int(row["view_count"]),
+                    "is_pushed": None if row["is_pushed"] is None else bool(row["is_pushed"]),
+                    "first_publication": first_publication,
+                    "exclusion_reasons": reasons,
+                }
+                grouped[window.person_key]["excluded" if reasons else "qualified"].append(item)
+
+            groups = []
+            for person_key, person_name in people.items():
+                qualified = grouped[person_key]["qualified"]
+                excluded = grouped[person_key]["excluded"]
+                groups.append({
+                    "person_key": person_key,
+                    "person_name": person_name,
+                    "qualified_count": len(qualified),
+                    "excluded_count": len(excluded),
+                    "kpi": round(len(qualified) * float(rules["kpi_per_item"]), 10),
+                    "qualified": qualified,
+                    "excluded": excluded,
+                })
+            qualified_count = sum(group["qualified_count"] for group in groups)
+            excluded_count = sum(group["excluded_count"] for group in groups)
+            return {
+                **base,
+                "average_views": average,
+                "threshold_views": threshold,
+                "qualified_count": qualified_count,
+                "excluded_count": excluded_count,
+                "total_kpi": round(qualified_count * float(rules["kpi_per_item"]), 10),
+                "unassigned_count": unassigned_count,
+                "groups": groups,
+            }
 
     def list_contributions(self, payload: dict[str, Any]) -> dict[str, Any]:
         start = _week_start(date.fromisoformat(str(payload.get("week_start") or _week_start(datetime.now(SHANGHAI_TZ).date()))))
