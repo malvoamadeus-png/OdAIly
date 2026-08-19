@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from html import escape
 
 import requests
 from pydantic import BaseModel
@@ -12,6 +13,13 @@ class PushResult(BaseModel):
     response_text: str | None = None
     error: str | None = None
     dry_run: bool = False
+
+
+def content_to_paragraph_html(content: str) -> str:
+    paragraphs = (line.strip() for line in content.splitlines())
+    return "".join(
+        f"<p>{escape(paragraph, quote=False)}</p>" for paragraph in paragraphs if paragraph
+    )
 
 
 class PushClient:
@@ -41,7 +49,7 @@ class PushClient:
     ) -> PushResult:
         payload = {
             "title": title,
-            "content": content,
+            "content": content_to_paragraph_html(content),
             "isPublish": bool(is_publish),
             "isPush": bool(is_push),
         }

@@ -109,11 +109,14 @@ Every real request sends:
 ```json
 {
   "title": "...",
-  "content": "...",
+  "content": "<p>...</p><p>...</p>",
   "isPublish": true,
   "isPush": false
 }
 ```
+
+The shared `PushClient` converts each non-empty line of the internal plain-text
+content into one escaped HTML `<p>` element only when building this request.
 
 X processing requests include `sourceUrl` when the upstream task has a
 publishable original link, such as an original X post or a BlockBeats/Jinse
