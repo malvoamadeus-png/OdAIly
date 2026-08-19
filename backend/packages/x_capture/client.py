@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import urllib.parse
 from datetime import datetime
@@ -80,6 +81,97 @@ def _media_urls(payload: dict[str, Any]) -> list[str]:
         if url and url not in urls:
             urls.append(url)
     return urls
+
+
+def _article_content_blocks(article: dict[str, Any]) -> list[dict[str, Any]]:
+    content = article.get("content")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError):
+            content = None
+    if not isinstance(content, dict):
+        return []
+    blocks = content.get("blocks")
+    return [block for block in blocks if isinstance(block, dict)] if isinstance(blocks, list) else []
+
+
+def _article_text(article: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for block in _article_content_blocks(article):
+        text = _text(block.get("text"))
+        if not text:
+            continue
+        block_type = str(block.get("type") or "unstyled")
+        if block_type == "header-one":
+            text = f"# {text}"
+        elif block_type == "header-two":
+            text = f"## {text}"
+        elif block_type == "header-three":
+            text = f"### {text}"
+        elif block_type == "blockquote":
+            text = f"> {text}"
+        elif block_type == "unordered-list-item":
+            text = f"- {text}"
+        elif block_type == "ordered-list-item":
+            text = f"1. {text}"
+        lines.append(text)
+
+    if lines:
+        return "\n".join(lines)
+    return _text(article.get("body") or article.get("text") or article.get("preview_text"))
+
+
+def _find_articles(payload: Any) -> list[dict[str, Any]]:
+    articles: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            article = value.get("article")
+            if isinstance(article, dict):
+                identity = (
+                    str(article.get("id") or ""),
+                    _text(article.get("title")),
+                    _article_text(article),
+                )
+                if identity not in seen and (identity[0] or identity[1] or identity[2]):
+                    seen.add(identity)
+                    articles.append(article)
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(payload)
+    return articles
+
+
+def _compose_x_content(post_text: str, articles: list[dict[str, Any]]) -> tuple[str, list[str]]:
+    if not articles:
+        return post_text, []
+
+    sections: list[str] = []
+    if post_text:
+        sections.append(f"【普通帖子】\n{post_text}")
+
+    article_titles: list[str] = []
+    for article in articles:
+        title = _text(article.get("title"))
+        body = _article_text(article)
+        if title:
+            article_titles.append(title)
+        if not title and not body:
+            continue
+        article_lines = ["【X文章】"]
+        if title:
+            article_lines.append(f"标题：{title}")
+        if body:
+            article_lines.append(f"正文：{body}")
+        sections.append("\n".join(article_lines))
+
+    return "\n".join(sections), article_titles
 
 
 def parse_twitter_created_at(value: str | None) -> str | None:
@@ -182,13 +274,21 @@ class FXTwitterClient:
     ) -> CaptureRecord:
         detail = detail or {}
         author = detail.get("author") if isinstance(detail.get("author"), dict) else {}
-        text = _text(detail.get("text") or detail.get("raw_text")) or candidate.text
+        post_text = _text(detail.get("text") or detail.get("raw_text")) or candidate.text
+        articles = _find_articles(detail)
+        if not articles:
+            articles = _find_articles(candidate.raw_payload)
+        text, article_titles = _compose_x_content(post_text, articles)
         created_at = parse_twitter_created_at(str(detail.get("created_at") or candidate.created_at_raw or ""))
         media_urls = _media_urls(detail) or list(candidate.media_urls)
         metadata: dict[str, Any] = {
             "source": candidate.source,
             "detail_fetched": bool(detail),
         }
+        if articles:
+            metadata["content_format"] = "x_post_with_article" if post_text else "x_article"
+            metadata["article_count"] = len(articles)
+            metadata["article_titles"] = article_titles
         if detail_error:
             metadata["detail_error"] = detail_error
 
