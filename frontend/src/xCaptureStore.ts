@@ -151,6 +151,54 @@ export type Account = {
   last_error: string | null;
 };
 
+export type BinanceSquareSettings = {
+  enabled: boolean;
+  interval_seconds: number;
+  worker_status: string;
+  worker_last_seen_at: string | null;
+  updated_at: string | null;
+};
+
+export type BinanceSquareAccount = {
+  id: number;
+  slug: string;
+  slug_lower: string;
+  profile_url: string;
+  square_uid: string | null;
+  display_name: string | null;
+  write_name: string | null;
+  enabled: boolean;
+  seeded_at: string | null;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+};
+
+export type BinanceSquareAttempt = {
+  id: number;
+  slug_lower: string;
+  status: string;
+  candidate_count: number;
+  seeded_count: number;
+  new_count: number;
+  saved_count: number;
+  error: string | null;
+  started_at: string;
+  finished_at: string;
+};
+
+export type BinanceSquareDashboardPayload = {
+  settings: BinanceSquareSettings;
+  accounts: BinanceSquareAccount[];
+  attempts: BinanceSquareAttempt[];
+};
+
+export type BinanceSquareAccountPatch = {
+  display_name?: string | null;
+  write_name?: string | null;
+  enabled?: boolean;
+};
+
 export type Attempt = {
   id: number;
   username_lower: string;
@@ -462,6 +510,7 @@ const taskPipelineSelectFields = [
 
 export const processingTaskSources = [
   'x',
+  'binance_square',
   'non_mainstream_media',
   'mainstream_media',
   'ai_source',
@@ -677,6 +726,77 @@ export function normalizeUsername(value: string): string {
     throw new Error(`无效的 X 用户名：${username}`);
   }
   return username;
+}
+
+export function normalizeBinanceSquareProfileUrl(value: string): { slug: string; profileUrl: string } {
+  let raw = value.trim();
+  if (!raw) throw new Error('币安广场主页链接不能为空');
+  if (!raw.includes('://')) raw = `https://${raw.replace(/^\/+/, '')}`;
+  const parsed = new URL(raw);
+  if (!['binance.com', 'www.binance.com'].includes(parsed.hostname.toLowerCase())) {
+    throw new Error('只支持 www.binance.com 的币安广场主页链接');
+  }
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  const squareIndex = parts.indexOf('square');
+  if (squareIndex < 0 || parts.length !== squareIndex + 3 || parts[squareIndex + 1] !== 'profile') {
+    throw new Error('请输入 /square/profile/{账号} 格式的币安广场主页');
+  }
+  const slug = parts[squareIndex + 2].trim();
+  if (!slug) throw new Error('币安广场账号标识无效');
+  return { slug, profileUrl: `https://www.binance.com/en/square/profile/${slug}` };
+}
+
+export async function loadBinanceSquareDashboard(): Promise<BinanceSquareDashboardPayload> {
+  const [settingsResult, accountsResult, attemptsResult] = await Promise.all([
+    localApi().from('binance_square_settings').select('*').eq('singleton_key', 'global').single(),
+    localApi().from('binance_square_accounts').select('*').order('enabled', { ascending: false }).order('slug_lower'),
+    localApi().from('binance_square_attempts').select('*').order('started_at', { ascending: false }).limit(30),
+  ]);
+  raise(settingsResult.error); raise(accountsResult.error); raise(attemptsResult.error);
+  return {
+    settings: assertData(settingsResult.data as BinanceSquareSettings | null, '币安广场配置尚未初始化'),
+    accounts: (accountsResult.data ?? []) as unknown as BinanceSquareAccount[],
+    attempts: (attemptsResult.data ?? []) as unknown as BinanceSquareAttempt[],
+  };
+}
+
+export async function updateBinanceSquareEnabled(enabled: boolean): Promise<BinanceSquareSettings> {
+  const { data, error } = await localApi().from('binance_square_settings')
+    .update({ enabled, updated_at: nowIso() }).eq('singleton_key', 'global').select('*').single();
+  raise(error);
+  return assertData(data as BinanceSquareSettings | null, '保存币安广场总开关失败');
+}
+
+export async function createBinanceSquareAccount(profileUrlInput: string): Promise<BinanceSquareAccount> {
+  const normalized = normalizeBinanceSquareProfileUrl(profileUrlInput);
+  const { data, error } = await localApi().from('binance_square_accounts').upsert({
+    slug: normalized.slug,
+    slug_lower: normalized.slug.toLowerCase(),
+    profile_url: normalized.profileUrl,
+    enabled: true,
+    updated_at: nowIso(),
+  }, { onConflict: 'slug_lower' }).select('*').single();
+  raise(error);
+  return assertData(data as BinanceSquareAccount | null, '保存币安广场账号失败');
+}
+
+export async function updateBinanceSquareAccount(
+  accountId: number,
+  patch: BinanceSquareAccountPatch,
+): Promise<BinanceSquareAccount> {
+  const payload: Record<string, string | boolean | null> = { updated_at: nowIso() };
+  if ('display_name' in patch) payload.display_name = patch.display_name?.trim() || null;
+  if ('write_name' in patch) payload.write_name = patch.write_name?.trim() || null;
+  if ('enabled' in patch && patch.enabled !== undefined) payload.enabled = patch.enabled;
+  const { data, error } = await localApi().from('binance_square_accounts')
+    .update(payload).eq('id', accountId).select('*').single();
+  raise(error);
+  return assertData(data as BinanceSquareAccount | null, '更新币安广场账号失败');
+}
+
+export async function deleteBinanceSquareAccount(accountId: number): Promise<void> {
+  const { error } = await localApi().from('binance_square_accounts').delete().eq('id', accountId);
+  raise(error);
 }
 
 export async function loadDashboard(): Promise<DashboardPayload> {

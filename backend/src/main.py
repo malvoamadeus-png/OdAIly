@@ -135,6 +135,12 @@ def parse_args() -> argparse.Namespace:
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
 
+    subparsers.add_parser("binance-square-init-db", help="Initialize Binance Square monitoring tables.")
+    binance_square_worker = subparsers.add_parser(
+        "binance-square-worker", help="Run the experimental Binance Square account monitor."
+    )
+    binance_square_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+
     non_mainstream_init = subparsers.add_parser(
         "non-mainstream-media-init-db",
         help="Initialize non-mainstream media SQLite tables.",
@@ -735,6 +741,34 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
     if args.once:
         stats = worker.run_once()
         print(f"[odaily] x-capture once completed. accounts={len(stats)}")
+        return 0 if all(item.status == "success" for item in stats) else 1
+    worker.run_forever()
+    return 0
+
+
+def binance_square_init_db_command(args: argparse.Namespace) -> int:
+    from packages.binance_square import create_binance_square_repository
+
+    create_binance_square_repository().init_schema()
+    print("[odaily] binance square database schema initialized; monitoring remains disabled")
+    return 0
+
+
+def binance_square_worker_command(args: argparse.Namespace) -> int:
+    from packages.binance_square import BinanceSquareWorker, create_binance_square_repository
+    from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
+    from packages.local_pipeline import LocalPipelineClient
+
+    repository = create_binance_square_repository()
+    worker = BinanceSquareWorker(
+        repository=repository,
+        pipeline_client=LocalPipelineClient(),
+        exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
+    )
+    if args.once:
+        stats = worker.run_once()
+        worker.client.close()
+        print(f"[odaily] binance square once completed. accounts={len(stats)}")
         return 0 if all(item.status == "success" for item in stats) else 1
     worker.run_forever()
     return 0
@@ -1540,6 +1574,10 @@ def main() -> int:
             return local_pipeline_exhaust_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
+        if args.command == "binance-square-init-db":
+            return binance_square_init_db_command(args)
+        if args.command == "binance-square-worker":
+            return binance_square_worker_command(args)
         if args.command == "non-mainstream-media-init-db":
             return non_mainstream_media_init_db_command(args)
         if args.command == "non-mainstream-media-worker":

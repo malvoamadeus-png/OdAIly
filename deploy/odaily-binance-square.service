@@ -1,0 +1,16 @@
+[Unit]
+Description=OdAIly experimental Binance Square account monitor
+After=network-online.target odaily-local-pipeline.service
+Wants=network-online.target odaily-local-pipeline.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1440x900x24" /opt/OdAIly/.venv/bin/python backend/src/main.py binance-square-worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

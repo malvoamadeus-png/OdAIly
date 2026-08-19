@@ -134,6 +134,8 @@ connects to a database directly.
 pip install -r backend\requirements.txt
 python backend\src\main.py x-init-db
 python backend\src\main.py x-capture-worker
+python backend\src\main.py binance-square-init-db
+python backend\src\main.py binance-square-worker --once
 ```
 
 For frontend development and Vercel deployment:
@@ -386,6 +388,7 @@ Repo-tracked service files live under
 - `deploy/odaily-litellm.service`
 - `deploy/odaily-local-pipeline.service`
 - `deploy/odaily-x-capture.service`
+- `deploy/odaily-binance-square.service`（实验性；默认只安装，不 enable/start）
 - `deploy/odaily-competitor-monitor.service`
 - `deploy/odaily-editor-plugin-api.service`
 - `deploy/odaily-editor-plugin-api.Caddyfile`

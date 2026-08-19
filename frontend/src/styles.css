@@ -2340,6 +2340,27 @@ textarea:focus {
   gap: 8px;
 }
 
+.attemptList {
+  display: grid;
+  gap: 8px;
+}
+
+.attemptRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(220px, 2fr) minmax(140px, auto);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid #e1e5e9;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.errorText {
+  color: #b42318;
+  font-size: 12px;
+}
+
 .taskTable {
   display: grid;
   border: 1px solid #e1e5e9;

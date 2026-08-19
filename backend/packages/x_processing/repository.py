@@ -69,6 +69,7 @@ LEGACY_SKIP_UNFINISHED_STATUSES = [
 
 LEGACY_SKIP_SOURCES = [
     "x",
+    "binance_square",
     "blockbeats",
     "panews",
     "jinse",
@@ -529,11 +530,11 @@ class PostgresXProcessingRepository:
         if stage in {"judge", "judge_crypto"}:
             source_filter = """
                 (
-                    (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false) AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    (t.source IN ('x', 'binance_square') AND NOT COALESCE(xa.is_ai_source, false) AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(crypto_search_first_sources)s) AND t.status IN ('searched', %(processing_status)s, %(failure_status)s))
                     OR (
                         (
-                            (t.source = 'x' AND NOT COALESCE(xa.is_ai_source, false))
+                            (t.source IN ('x', 'binance_square') AND NOT COALESCE(xa.is_ai_source, false))
                             OR t.source = ANY(%(crypto_search_first_sources)s)
                         )
                         AND t.status IN (%(processing_status)s, %(failure_status)s)
@@ -543,7 +544,7 @@ class PostgresXProcessingRepository:
             if stage == "judge":
                 source_filter = """
                     (
-                        (t.source = 'x' AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                        (t.source IN ('x', 'binance_square') AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                         OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('searched', %(processing_status)s, %(failure_status)s))
                         OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                     )

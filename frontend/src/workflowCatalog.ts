@@ -31,6 +31,7 @@ export type WorkflowGroup = {
 export const workflowFilters = [
   { key: 'all', label: '全部' },
   { key: 'x', label: 'X' },
+  { key: 'binance', label: '币安广场' },
   { key: 'crypto', label: 'Crypto' },
   { key: 'ai', label: 'AI' },
   { key: 'mixed', label: '混合' },
@@ -136,6 +137,53 @@ export const workflowGroups: WorkflowGroup[] = [
     routes: [
       { label: '普通 X 账号', steps: ['收集者-X', '判断者-Crypto', '搜索者', '编写者1', '编写者2', '发布者'] },
       { label: '标记为 AI信源的 X 账号', steps: ['收集者-X', '判断者-AI', '搜索者', '编写者1', '编写者2', '发布者'] },
+    ],
+  },
+  {
+    id: 'binance_square_pipeline',
+    title: '币安广场主线（休眠）',
+    badge: 'experimental / write_flow',
+    summary: '总开关和独立服务同时启用后，每 180 秒读取配置账号的新帖；首次只建立基线，后续复用 X 常规链路并固定挂后台。',
+    sourceEntry: "tasks.source = 'binance_square'",
+    routingNote: '该来源依赖币安网页内部响应，生产默认关闭且服务默认停止。无论发布者规则如何，都不允许自动发布。',
+    defaultStatus: 'disabled -> pending -> ready_review',
+    filterTags: ['binance'],
+    nodes: [
+      {
+        id: 'binance_collect', name: '收集者-币安广场', kind: 'collector', usesAi: false,
+        description: '只读取配置的官方账号主页，过滤普通帖子，以帖子 ID 建立基线和去重。',
+        output: "新帖写入 tasks.source='binance_square' 并提交 write_flow job。", compactLabel: 'Square',
+      },
+      {
+        id: 'binance_judge', name: '判断者-Crypto', kind: 'judge', usesAi: true,
+        model: 'odaily-deepseek-review', reasoningEffort: 'low',
+        description: '复用 X 常规 Crypto 价值判断，决定 regular / onchain / funding 或丢弃。',
+        output: '保留后进入搜索者。', compactLabel: 'judge_crypto',
+      },
+      {
+        id: 'binance_search', name: '搜索者', kind: 'dedupe', usesAi: true,
+        model: '规则 + 向量 + 搜索者 AI 复核（gpt-5.6-luna）', reasoningEffort: 'medium',
+        description: '复用主链路精确查重、向量召回和必要的 AI 复核。',
+        output: 'duplicate 或进入写作。', compactLabel: 'search',
+      },
+      {
+        id: 'binance_write', name: '编写者1', kind: 'writer', usesAi: true,
+        model: 'odaily-gpt-writer', reasoningEffort: 'medium',
+        description: '按判断类型复用 X 常规、链上或融资写作模板，来源显示为币安广场。',
+        output: '生成标题和正文草稿。', compactLabel: 'write',
+      },
+      {
+        id: 'binance_format', name: '编写者2', kind: 'formatter', usesAi: false,
+        description: '执行统一确定性格式化。', output: '产出 final_title / final_content。', compactLabel: 'format',
+      },
+      {
+        id: 'binance_publish', name: '发布者（强制挂后台）', kind: 'publisher', usesAi: false,
+        description: '跳过自动发布判断，固定以 isPublish=false 调用发布接口。',
+        output: 'ready_review；原因码 binance_square_manual_only。', compactLabel: 'manual_only',
+      },
+    ],
+    routes: [
+      { label: '启用后的新帖', steps: ['收集者-币安广场', '判断者-Crypto', '搜索者', '编写者1', '编写者2', '发布者（强制挂后台）'] },
     ],
   },
   {

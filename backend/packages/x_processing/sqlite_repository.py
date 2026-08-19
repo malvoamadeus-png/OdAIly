@@ -150,7 +150,7 @@ class SQLiteXProcessingRepository:
             return False
         if stage == "judge_crypto":
             return (
-                (source == "x" and not is_ai_source and (status == "pending" or status in retryable_statuses))
+                (source in {"x", "binance_square"} and not is_ai_source and (status == "pending" or status in retryable_statuses))
                 or (source in CRYPTO_SEARCH_FIRST_SOURCES and (status == "searched" or status in retryable_statuses))
             )
         if stage == "judge_ai":

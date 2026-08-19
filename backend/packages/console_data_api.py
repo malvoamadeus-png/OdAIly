@@ -10,6 +10,7 @@ from packages.common.storage import connect_sqlite
 
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ALLOWED_TABLES = {
+    "binance_square_accounts", "binance_square_attempts", "binance_square_settings",
     "console_admins", "jin10_settings",
     "newsflash_items", "non_mainstream_media_settings", "non_mainstream_media_sources",
     "prompt_template_versions", "prompt_templates", "publisher_channels",
@@ -20,7 +21,7 @@ ALLOWED_TABLES = {
     "x_capture_accounts", "x_capture_attempts", "x_capture_settings",
 }
 FILTER_OPERATORS = {"eq": "=", "neq": "!=", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<"}
-READ_ONLY_TABLES = {"console_admins"}
+READ_ONLY_TABLES = {"console_admins", "binance_square_attempts"}
 
 
 def _identifier(value: Any) -> str:
@@ -126,6 +127,8 @@ class ConsoleDataApi:
     def _mutate(self, table: str, operation: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         where, where_params = self._where(payload)
         data = payload.get("data")
+        if table == "binance_square_settings" and operation == "delete":
+            raise ValueError("binance square settings cannot be deleted")
         with connect_sqlite(self.path) as conn:
             if operation == "delete":
                 existing = [_decode_row(row) for row in conn.execute(f"SELECT * FROM {table}{where}", where_params).fetchall()]
@@ -135,6 +138,7 @@ class ConsoleDataApi:
             records = data if isinstance(data, list) else [data]
             if not records or not all(isinstance(record, dict) for record in records):
                 raise ValueError("mutation data must be an object or array")
+            self._validate_binance_square_mutation(table, operation, records)
             if operation == "update":
                 if len(records) != 1:
                     raise ValueError("update accepts one object")
@@ -172,3 +176,29 @@ class ConsoleDataApi:
                         rows.append(_decode_row(returned))
             conn.commit()
             return rows
+
+    @staticmethod
+    def _validate_binance_square_mutation(table: str, operation: str, records: list[dict[str, Any]]) -> None:
+        if table == "binance_square_settings":
+            allowed = {"singleton_key", "enabled", "updated_at"}
+            if any(set(record) - allowed for record in records):
+                raise ValueError("only the Binance Square enabled switch is editable")
+            return
+        if table != "binance_square_accounts":
+            return
+        allowed = (
+            {"slug", "slug_lower", "profile_url", "enabled", "updated_at"}
+            if operation in {"insert", "upsert"}
+            else {"display_name", "write_name", "enabled", "updated_at"}
+        )
+        if any(set(record) - allowed for record in records):
+            raise ValueError("unsupported Binance Square account field")
+        if operation not in {"insert", "upsert"}:
+            return
+        from packages.binance_square.client import normalize_profile_url
+
+        for record in records:
+            slug, profile_url = normalize_profile_url(str(record.get("profile_url") or ""))
+            record["slug"] = slug
+            record["slug_lower"] = slug.lower()
+            record["profile_url"] = profile_url

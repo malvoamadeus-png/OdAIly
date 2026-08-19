@@ -28,6 +28,7 @@ from .known_title_subjects_config import load_known_title_subject_names
 from .models import (
     ACTIVE_CANDIDATE_TTL,
     AI_SOURCE,
+    BINANCE_SQUARE_SOURCE,
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
     JUDGE_ROUTES,
@@ -295,6 +296,7 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
     AI_SOURCE: "external_media",
     "x": "x",
+    BINANCE_SQUARE_SOURCE: "x",
     "blockbeats": "competitor",
     "panews": "competitor",
     "jinse": "competitor",
@@ -557,6 +559,17 @@ class XProcessingWorker:
             raise ValueError(f"unknown stage: {self.stage}")
 
     def _resolve_task_author_name(self, task: TaskRecord) -> TaskRecord:
+        if task.source == BINANCE_SQUARE_SOURCE:
+            metadata = dict(task.metadata or {})
+            effective_author_name = (
+                metadata.get("effective_author_name")
+                or metadata.get("author_display_name")
+                or metadata.get("author_username")
+            )
+            if not effective_author_name:
+                return task
+            metadata["effective_author_name"] = str(effective_author_name).strip()
+            return replace(task, metadata=metadata)
         if task.source != "x":
             return task
         metadata = dict(task.metadata or {})
@@ -611,7 +624,7 @@ class XProcessingWorker:
             or task.metadata.get("author_display_name")
             or task.metadata.get("author_username")
             or "",
-            source_kind="X",
+            source_kind="币安广场" if task.source == BINANCE_SQUARE_SOURCE else "X",
             content=task.content,
         )
         schema = X_JUDGE_JSON_SCHEMA
@@ -1022,6 +1035,18 @@ class XProcessingWorker:
         now_local = decided_at.astimezone(resolve_publisher_timezone(publisher_settings.timezone))
         context_output["decision_local_time"] = now_local.strftime("%Y-%m-%d %H:%M")
 
+        forced_reason_code = forced_manual_review_reason_code(task)
+        if forced_reason_code is not None:
+            self._complete_manual_review_publish(
+                task=task,
+                pipeline=pipeline,
+                publisher_channel=publisher_channel,
+                reason_code=forced_reason_code,
+                output=context_output,
+                decided_at=decided_at,
+            )
+            return
+
         if publisher_channel is None:
             self._complete_manual_review_publish(
                 task=task,
@@ -1418,6 +1443,8 @@ def is_blockbeats_site_url(source_url: str | None) -> bool:
 
 
 def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str:
+    if reason_code == "binance_square_manual_only":
+        return "币安广场属于实验性信源，当前固定挂后台人工确认，不允许自动发布。"
     if reason_code == "hard_blocked_term":
         return "稿件命中发布者硬拦截词，不能自动发布。"
     if reason_code == "source_not_eligible":
@@ -1429,6 +1456,12 @@ def publisher_manual_review_reason(reason_code: str, *, task: TaskRecord) -> str
     if reason_code == "publisher_no_enabled_allow_rules":
         return "对应发布者规则块没有启用任何通过规则，即使未命中排除条件也不能自动放行，因此挂后台人工处理。"
     return "发布者未获得足够明确的自动发布依据，因此挂后台人工处理。"
+
+
+def forced_manual_review_reason_code(task: TaskRecord) -> str | None:
+    if task.source == BINANCE_SQUARE_SOURCE:
+        return "binance_square_manual_only"
+    return None
 
 
 def publisher_hard_blocked_term(*, task: TaskRecord, pipeline: PipelineRecord) -> str | None:

@@ -27,10 +27,12 @@ import NewsflashOperationsPanel from './NewsflashOperationsPanel';
 import {
   createSourceExclusionRuleGroup,
   createAccount,
+  createBinanceSquareAccount,
   createWhaleWatchAddress,
   createWhaleWatchHyperliquidAddress,
   deleteSourceExclusionRuleGroup,
   deleteAccount as deleteLocalAccount,
+  deleteBinanceSquareAccount,
   deleteWhaleWatchAddress,
   deleteWhaleWatchHyperliquidAddress,
   getWhaleWatchHyperliquidSettings,
@@ -50,6 +52,7 @@ import {
   listProcessingTaskPage,
   listRecentJin10Tasks,
   loadDashboard,
+  loadBinanceSquareDashboard,
   loadWhaleWatchDashboard,
   listPromptTemplates,
   onConsoleAuthStateChange,
@@ -64,6 +67,8 @@ import {
   loadNonMainstreamDashboard,
   updateSourceExclusionRuleGroup,
   updateAccount,
+  updateBinanceSquareAccount,
+  updateBinanceSquareEnabled,
   updateNonMainstreamSettings,
   updateNonMainstreamSource,
   updateJin10Settings,
@@ -75,6 +80,10 @@ import {
   updateWhaleWatchHyperliquidSettings,
   type Account,
   type AccountPatch,
+  type BinanceSquareAccount,
+  type BinanceSquareAccountPatch,
+  type BinanceSquareAttempt,
+  type BinanceSquareSettings,
   type Attempt,
   type BlockbeatsKeyConfig,
   type NonMainstreamDashboardPayload,
@@ -127,7 +136,7 @@ import {
   type WorkflowNode,
 } from './workflowCatalog';
 
-type SourceManagementView = 'x' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'blockbeats_key';
+type SourceManagementView = 'x' | 'binance_square' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'blockbeats_key';
 
 type ConsoleView =
   | SourceManagementView
@@ -144,13 +153,21 @@ type ConsoleView =
   | 'jin10';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
-  return view === 'x' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
+  return view === 'x' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
 }
 
 const emptySettings: Settings = {
   global_interval_seconds: 30,
   max_concurrency: 2,
   jitter_seconds: 5,
+  updated_at: null,
+};
+
+const emptyBinanceSquareSettings: BinanceSquareSettings = {
+  enabled: false,
+  interval_seconds: 180,
+  worker_status: 'stopped',
+  worker_last_seen_at: null,
   updated_at: null,
 };
 
@@ -298,6 +315,12 @@ function taskMetadataValue(task: TaskItem, key: string): string {
 }
 
 function taskSourceLabel(task: TaskItem): { primary: string; secondary: string } {
+  if (task.source === 'binance_square') {
+    return {
+      primary: taskMetadataValue(task, 'effective_author_name') || taskMetadataValue(task, 'author_display_name') || '币安广场',
+      secondary: taskMetadataValue(task, 'author_username') || 'Binance Square',
+    };
+  }
   if (task.source === 'x') {
     const primary = taskMetadataValue(task, 'effective_author_name')
       || taskMetadataValue(task, 'author_display_name')
@@ -408,7 +431,7 @@ const taskOverviewFilters: { key: TaskOverviewFilter; label: string }[] = [
 ];
 
 function taskSourceBucket(task: TaskItem): TaskOverviewFilter {
-  if (task.source === 'x') return 'x';
+  if (task.source === 'x' || task.source === 'binance_square') return 'x';
   if (task.source === 'jin10') return 'jin10';
   if (['blockbeats', 'panews', 'jinse'].includes(task.source)) return 'competitor';
   if (['external_media_alert', 'ai_source_alert'].includes(task.source)) return 'alert';
@@ -787,6 +810,7 @@ export function App() {
 
 function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
+  const [binanceSquareSettings, setBinanceSquareSettings] = useState<BinanceSquareSettings>(emptyBinanceSquareSettings);
   const [nonMainstreamSettings, setNonMainstreamSettings] = useState<NonMainstreamSettings>(emptyNonMainstreamSettings);
   const [publisherRules, setPublisherRules] = useState<PublisherRuleConfig>(emptyPublisherRuleConfig);
   const [publisherPromptPreview, setPublisherPromptPreview] = useState('');
@@ -796,6 +820,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [memeDashboard, setMemeDashboard] = useState<MemeDashboard | null>(null);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [binanceSquareAccounts, setBinanceSquareAccounts] = useState<BinanceSquareAccount[]>([]);
+  const [binanceSquareAttempts, setBinanceSquareAttempts] = useState<BinanceSquareAttempt[]>([]);
   const [nonMainstreamSources, setNonMainstreamSources] = useState<NonMainstreamSource[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [processingTasks, setProcessingTasks] = useState<TaskItem[]>([]);
@@ -827,6 +853,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     interval_seconds: '',
     is_ai_source: false,
   });
+  const [newBinanceSquareUrl, setNewBinanceSquareUrl] = useState('');
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [whaleAddresses, setWhaleAddresses] = useState<WhaleWatchAddress[]>([]);
   const [whaleStates, setWhaleStates] = useState<WhaleWatchChainState[]>([]);
@@ -866,6 +893,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const loadedViewsRef = useRef<Set<string>>(new Set());
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
+  const enabledBinanceSquareCount = useMemo(
+    () => binanceSquareAccounts.filter((account) => account.enabled).length,
+    [binanceSquareAccounts],
+  );
   const enabledNonMainstreamCount = useMemo(
     () => nonMainstreamSources.filter((source) => source.enabled && source.source_group === 'external_media').length,
     [nonMainstreamSources],
@@ -895,6 +926,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const sourceManagementLabel =
     sourceManagementView === 'x'
       ? 'X'
+      : sourceManagementView === 'binance_square'
+        ? '币安广场'
       : sourceManagementView === 'non_mainstream'
         ? 'Crypto信源'
         : sourceManagementView === 'ai_source'
@@ -905,6 +938,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const sourceManagementSummary =
     sourceManagementView === 'x'
       ? `${enabledCount} 个启用 X 账号 · 全局 ${settings.global_interval_seconds}s · 抓取频率 / 写作名 / AI标签`
+      : sourceManagementView === 'binance_square'
+        ? `${binanceSquareSettings.enabled ? '总开关已打开' : '总开关关闭'} · ${enabledBinanceSquareCount} 个启用账号 · 固定 180s`
       : sourceManagementView === 'non_mainstream'
         ? `${enabledNonMainstreamCount} 个启用站点 · 全局 ${nonMainstreamSettings.global_interval_seconds}s · 全文 / 标题提醒`
         : sourceManagementView === 'ai_source'
@@ -954,6 +989,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setAccounts(dashboard.accounts);
     setAttempts(dashboard.attempts);
     setLoading(false);
+  }
+
+  async function loadBinanceSquareAll() {
+    setError('');
+    const dashboard = await loadBinanceSquareDashboard();
+    setBinanceSquareSettings(dashboard.settings);
+    setBinanceSquareAccounts(dashboard.accounts);
+    setBinanceSquareAttempts(dashboard.attempts);
   }
 
   async function loadNonMainstreamAll() {
@@ -1119,6 +1162,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       switch (view) {
         case 'x':
           await loadAll();
+          return;
+        case 'binance_square':
+          await loadBinanceSquareAll();
           return;
         case 'tasks':
           await loadProcessingTasks();
@@ -1287,6 +1333,50 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     try {
       await updateAccount(account.id, patch);
       await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function addBinanceSquareAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    try {
+      await createBinanceSquareAccount(newBinanceSquareUrl);
+      setNewBinanceSquareUrl('');
+      setMessage('币安广场账号已保存；总开关与服务仍需同时开启才会监控');
+      await loadBinanceSquareAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function toggleBinanceSquareMonitoring() {
+    setError('');
+    try {
+      const enabled = !binanceSquareSettings.enabled;
+      setBinanceSquareSettings(await updateBinanceSquareEnabled(enabled));
+      setMessage(enabled ? '总开关已打开；还需运维启动服务才会开始监控' : '币安广场监控总开关已关闭');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function patchBinanceSquareAccount(account: BinanceSquareAccount, patch: BinanceSquareAccountPatch) {
+    setError('');
+    try {
+      await updateBinanceSquareAccount(account.id, patch);
+      await loadBinanceSquareAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeBinanceSquareAccount(account: BinanceSquareAccount) {
+    setError('');
+    try {
+      await deleteBinanceSquareAccount(account.id);
+      await loadBinanceSquareAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1641,6 +1731,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const refreshCurrent = () =>
     view === 'x'
       ? loadAll()
+      : view === 'binance_square'
+        ? loadBinanceSquareAll()
       : view === 'newsflash'
         ? (setNewsflashRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'tasks'
@@ -1759,6 +1851,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                 key: 'x' as const,
                 label: 'X',
                 summary: `${enabledCount} 个启用 X 账号 · 抓取频率 / 写作名 / AI标签`,
+              },
+              {
+                key: 'binance_square' as const,
+                label: '币安广场',
+                summary: `${binanceSquareSettings.enabled ? '总开关开' : '总开关关'} · ${enabledBinanceSquareCount} 个账号 · 180s`,
               },
               {
                 key: 'non_mainstream' as const,
@@ -1895,6 +1992,71 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
               </div>
             </section>
 
+          </>
+        ) : view === 'binance_square' ? (
+          <>
+            <section className="toolbarBand">
+              <div className="settingsForm">
+                <div>
+                  <strong>实验性监控</strong>
+                  <span>固定每 180 秒检查；首次只建立最新 20 条基线；后续稿件强制挂后台。</span>
+                </div>
+                <button
+                  className={binanceSquareSettings.enabled ? 'secondaryButton' : 'primaryButton'}
+                  type="button"
+                  onClick={() => void toggleBinanceSquareMonitoring()}
+                >
+                  {binanceSquareSettings.enabled ? <Pause size={17} /> : <Zap size={17} />}
+                  {binanceSquareSettings.enabled ? '关闭总开关' : '打开总开关'}
+                </button>
+              </div>
+            </section>
+            <div className={binanceSquareSettings.enabled ? 'notice error' : 'notice'}>
+              {binanceSquareSettings.enabled
+                ? '总开关已打开，但只有运维启动 odaily-binance-square.service 后才会实际访问币安并提交任务。'
+                : '当前总开关关闭。生产服务默认保持 disabled/inactive，不会启动浏览器、访问币安或产生任务。'}
+              {' '}Worker：{binanceSquareSettings.worker_status || 'stopped'}
+              {binanceSquareSettings.worker_last_seen_at ? ` · 最近心跳 ${fmtTime(binanceSquareSettings.worker_last_seen_at)}` : ' · 尚无心跳'}
+            </div>
+            <section className="section">
+              <div className="sectionHeader">
+                <h2>币安广场账号</h2>
+                <span>{binanceSquareAccounts.length} 个账号 · 固定 3 分钟</span>
+              </div>
+              <form className="addAccount" onSubmit={addBinanceSquareAccount}>
+                <input
+                  placeholder="https://www.binance.com/zh-CN/square/profile/cz"
+                  value={newBinanceSquareUrl}
+                  onChange={(event) => setNewBinanceSquareUrl(event.target.value)}
+                />
+                <button className="primaryButton" type="submit"><Plus size={17} /> 添加</button>
+              </form>
+              <div className="accountList">
+                {binanceSquareAccounts.length === 0 && <div className="emptyState">暂无币安广场账号，请粘贴官方账号主页链接。</div>}
+                {binanceSquareAccounts.map((account) => (
+                  <BinanceSquareAccountRow
+                    key={account.id}
+                    account={account}
+                    onPatch={patchBinanceSquareAccount}
+                    onDelete={removeBinanceSquareAccount}
+                  />
+                ))}
+              </div>
+            </section>
+            <section className="section">
+              <div className="sectionHeader"><h2>最近采集尝试</h2><span>{binanceSquareAttempts.length} 条</span></div>
+              <div className="attemptList">
+                {binanceSquareAttempts.length === 0 && <div className="emptyState">服务尚未运行，没有采集记录。</div>}
+                {binanceSquareAttempts.map((attempt) => (
+                  <div className="attemptRow" key={attempt.id}>
+                    <strong>{attempt.slug_lower}</strong>
+                    <span>{attempt.status} · 候选 {attempt.candidate_count} · 入库 {attempt.saved_count}</span>
+                    <span>{fmtTime(attempt.finished_at)}</span>
+                    {attempt.error && <span className="errorText">{attempt.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </section>
           </>
         ) : view === 'tasks' ? (
           <TaskOverviewPanel
@@ -4544,6 +4706,58 @@ function AccountRow({
           {account.enabled ? <Pause size={17} /> : <Zap size={17} />}
         </button>
         <button className="iconButton danger" type="button" onClick={() => onDelete(account)} title="删除">
+          <Trash2 size={17} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function BinanceSquareAccountRow({
+  account,
+  onPatch,
+  onDelete,
+}: {
+  account: BinanceSquareAccount;
+  onPatch: (account: BinanceSquareAccount, patch: BinanceSquareAccountPatch) => Promise<void>;
+  onDelete: (account: BinanceSquareAccount) => Promise<void>;
+}) {
+  const [displayName, setDisplayName] = useState(account.display_name ?? '');
+  const [writeName, setWriteName] = useState(account.write_name ?? '');
+
+  useEffect(() => {
+    setDisplayName(account.display_name ?? '');
+    setWriteName(account.write_name ?? '');
+  }, [account.display_name, account.write_name]);
+
+  return (
+    <article className={account.enabled ? 'accountRow' : 'accountRow disabled'}>
+      <div className="accountIdentity">
+        <div className="statusDot" />
+        <div>
+          <a href={account.profile_url} target="_blank" rel="noreferrer"><strong>{account.slug}</strong></a>
+          <span>{account.seeded_at ? '已建立基线' : '待建立基线'} · 180s</span>
+          {account.last_error && <span className="errorText">{account.last_error}</span>}
+        </div>
+      </div>
+      <input
+        value={displayName}
+        placeholder="显示名"
+        onChange={(event) => setDisplayName(event.target.value)}
+        onBlur={() => void onPatch(account, { display_name: displayName || null })}
+      />
+      <input
+        value={writeName}
+        placeholder="写作名"
+        onChange={(event) => setWriteName(event.target.value)}
+        onBlur={() => void onPatch(account, { write_name: writeName || null })}
+      />
+      <span className="lastPoll">{fmtTime(account.last_polled_at)}</span>
+      <div className="rowActions">
+        <button className="iconButton" type="button" onClick={() => void onPatch(account, { enabled: !account.enabled })} title={account.enabled ? '暂停账号' : '启用账号'}>
+          {account.enabled ? <Pause size={17} /> : <Zap size={17} />}
+        </button>
+        <button className="iconButton danger" type="button" onClick={() => void onDelete(account)} title="删除">
           <Trash2 size={17} />
         </button>
       </div>

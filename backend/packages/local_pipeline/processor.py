@@ -21,6 +21,7 @@ from packages.external_media_alert.worker import ExternalMediaAlertWorker, Handl
 from packages.x_capture.repository import create_x_capture_repository
 from packages.x_processing.models import (
     AI_SOURCE,
+    BINANCE_SQUARE_SOURCE,
     COMPETITOR_SOURCES,
     JIN10_SOURCE,
     NON_MAINSTREAM_MEDIA_SOURCE,
@@ -278,7 +279,7 @@ class LocalPipelineProcessor:
         return LocalPipelineRunResult(task.id, task.status, "alert_only completed")
 
     def _write_flow_sequence(self, task: TaskRecord) -> list[str]:
-        if task.source == "x":
+        if task.source in {"x", BINANCE_SQUARE_SOURCE}:
             judge_stage = "judge_ai" if bool(task.metadata.get("x_account_is_ai_source")) else "judge_crypto"
             return [judge_stage, "search", "write", "format_publish", "publish"]
         if task.source == AI_SOURCE:
