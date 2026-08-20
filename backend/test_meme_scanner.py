@@ -711,9 +711,28 @@ class MemeScannerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(post.call_args.kwargs["json"]["isPublish"], False)
         self.assertEqual(post.call_args.kwargs["json"]["isPush"], False)
+        self.assertEqual(post.call_args.kwargs["json"]["content"], "<p>content</p>")
         self.assertEqual(
             post.call_args.kwargs["headers"]["Idempotency-Key"],
             "community-monitor:bsc:0xabc",
+        )
+
+    def test_push_converts_meme_content_to_paragraph_html_and_escapes_markup(self) -> None:
+        with patch.object(scanner.requests, "post") as post:
+            post.return_value.raise_for_status.return_value = None
+            post.return_value.status_code = 200
+            post.return_value.text = "ok"
+            result = scanner.push_pending(
+                "title",
+                "第一段。\n\n第二段包含 A&B < C。",
+                endpoint="http://example.test/push",
+                timeout=1,
+                send=True,
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            post.call_args.kwargs["json"]["content"],
+            "<p>第一段。</p><p>第二段包含 A&amp;B &lt; C。</p>",
         )
 
     def test_transient_narrative_failure_moves_job_to_retry_wait(self) -> None:

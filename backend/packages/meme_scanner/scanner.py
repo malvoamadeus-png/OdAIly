@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from packages.common.paths import get_paths
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
+from packages.publisher import content_to_paragraph_html
 
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .narrative import generate_reader_text
@@ -1059,7 +1060,12 @@ def push_pending(
     send: bool,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    payload = {"title": title, "content": content, "isPublish": False, "isPush": False}
+    payload = {
+        "title": title,
+        "content": content_to_paragraph_html(content),
+        "isPublish": False,
+        "isPush": False,
+    }
     if not send:
         return {"ok": True, "dry_run": True, "payload": payload}
     headers = {"Content-Type": "application/json"}

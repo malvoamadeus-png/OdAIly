@@ -61,6 +61,7 @@ python backend/src/main.py meme tg-watch
 
 - `meme scan --once`：执行一次 GMGN 发现并最多处理一个任务，默认 dry-run。
 - `meme scan --send`：常驻轮询并真实写入挂后台稿件，固定 `isPublish=false,isPush=false`。
+- Meme 速递内部保存的正文仍为纯文本；仅在组装推送请求时，将每个非空行转换为 HTML 段落并转义 `&`、`<`、`>`，与通用 `PushClient` 使用同一规则。空行会被删除。
 - `meme tg-watch --check`：校验 Telegram 登录和白名单可见性后退出。
 - systemd unit：`deploy/odaily-meme-scanner.service`、`deploy/odaily-meme-tg-watcher.service`。
 
