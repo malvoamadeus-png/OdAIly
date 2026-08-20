@@ -52,8 +52,11 @@ DEFAULT_GROK_MODEL = grok_x_search.DEFAULT_MODEL
 DEFAULT_OUTPUT_DIR = EXPORTS_DATA_DIR / "narrative"
 GROK_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 READER_OPENING = "据Odaily Meme速递监测，"
-READER_DISCLAIMER = "以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
-LEGACY_READER_DISCLAIMER = "以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。"
+READER_DISCLAIMER = "「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。"
+LEGACY_READER_DISCLAIMERS = (
+    "以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。",
+    "以上内容均根据公开渠道整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。",
+)
 GROK_SUPPLEMENT_MARKER = "Grok补充："
 GMGN_SUPPLEMENT_MARKER = "GMGN补充："
 # A production probe accepted two simultaneous x_search requests. Keep the
@@ -771,7 +774,8 @@ def normalize_reader_text(value: Any) -> str:
     reader_text = str(value or "").strip()
     if not reader_text:
         return ""
-    reader_text = reader_text.replace(LEGACY_READER_DISCLAIMER, READER_DISCLAIMER)
+    for legacy_disclaimer in LEGACY_READER_DISCLAIMERS:
+        reader_text = reader_text.replace(legacy_disclaimer, READER_DISCLAIMER)
     reader_text = normalize_gmgn_supplement_lines(reader_text)
     if not reader_text.startswith(READER_OPENING):
         reader_text = f"{READER_OPENING}{reader_text}"

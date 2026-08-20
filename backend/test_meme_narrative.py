@@ -153,7 +153,7 @@ def test_validate_final_result_adds_fixed_reader_opening_and_disclaimer() -> Non
     )
 
     assert result["reader_text"].startswith("据Odaily Meme速递监测，")
-    assert result["reader_text"].endswith("以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。")
+    assert result["reader_text"].endswith("「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。")
 
 
 def test_validate_final_result_replaces_legacy_disclaimer() -> None:
@@ -168,7 +168,21 @@ def test_validate_final_result_replaces_legacy_disclaimer() -> None:
     )
 
     assert "以上内容均根据公开渠道整理" not in result["reader_text"]
-    assert result["reader_text"].count("以上内容均基于公开内容整理") == 1
+    assert result["reader_text"].count("「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的") == 1
+
+
+def test_validate_final_result_replaces_previous_current_disclaimer() -> None:
+    material = {"tg:1": {"id": "tg:1", "text": "A fact"}}
+    result = narrative_v2.validate_final_result(
+        {
+            "primary_type": "pure_meme",
+            "source_material_ids": ["tg:1"],
+            "reader_text": "群聊有人提到 A fact。\n\n以上内容均基于公开内容整理，真实性仍需读者自行鉴别，Meme 币价格波动较大，请注意资产保护。",
+        },
+        material,
+    )
+
+    assert result["reader_text"].endswith("「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。")
 
 
 def test_gmgn_supplement_is_forced_into_final_result() -> None:

@@ -889,7 +889,7 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
     chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
-        summary = f"{chain_label}上{token.symbol}社群热议中，当前市值{cap}万美元。"
+        summary = f"{chain_label}上{token.symbol}社群热议中，GMGN显示当前市值为{cap}万美元。"
     else:
         title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
         summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
