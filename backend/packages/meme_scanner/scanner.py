@@ -58,23 +58,6 @@ READER_OPENING = "据Odaily Meme速递监测，"
 # Kept in sync with OdAIly's production PushClient default.  A deployment may
 # override it with MEME_ODAILY_PUSH_ENDPOINT (or the shared ODAILY_PUSH_ENDPOINT).
 DEFAULT_ODAILY_PUSH_ENDPOINT = "http://47.113.217.70:8501/push/data"
-READER_TEXT_FORBIDDEN = re.compile(
-    r"这里不能写成|不应延伸为|不应写成|只能写为|只能视作|"
-    r"项目页面(?:将|称)|项目页(?:将|称)|材料(?:里|中)(?:显示|表明)|"
-    r"(?:Grok|X Search)(?:找到|显示)|没有证据(?:证明|表明)|"
-    r"非官方(?:币|发行|背书|关联)|不构成(?:官方|投资)|"
-    r"风险提示|谨慎参与|DYOR",
-    re.IGNORECASE,
-)
-READER_TEXT_NOT_AN_ANGLE = re.compile(
-    r"(?:今日|近日|当前).*Telegram.*(?:集中提及|出现.*提及)|"
-    r"Telegram.{0,10}(?:多条|多份).*消息.*重复提及|"
-    r"(?:多条|多份).*消息.*重复提及|"
-    r"(?:来自|涉及).{0,30}(?:两个|多个|若干)群组.{0,20}(?:多名|多位|用户)|"
-    r"(?:有人|还有人|用户).{0,20}(?:感叹|惊呼).{0,30}(?:卧槽|真能飞|起飞)|"
-    r"(?:税务|官网).{0,20}(?:链接|页面)",
-    re.IGNORECASE,
-)
 RATE_LIMIT_REMAINING_SECONDS = re.compile(r"~(\d+)s remaining")
 
 
@@ -1037,17 +1020,6 @@ def collect_narrative(
     return narrative
 
 
-def validate_reader_text(value: str) -> str | None:
-    """Return a policy error when reader text leaks internal-review language."""
-    match = READER_TEXT_FORBIDDEN.search(value)
-    if match:
-        return f"forbidden_reader_text_phrase:{match.group(0)}"
-    angle_match = READER_TEXT_NOT_AN_ANGLE.search(value)
-    if angle_match:
-        return f"not_final_angle_phrase:{angle_match.group(0)}"
-    return None
-
-
 def log_narrative_result(job: sqlite3.Row, token: Token, narrative: dict[str, Any]) -> None:
     counts = narrative.get("material_counts") if isinstance(narrative.get("material_counts"), dict) else {}
     print(
@@ -1130,10 +1102,6 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     if not reader_text:
         store.update_job(job["id"], "discarded", reason="no_usable_narrative", narrative=narrative)
         return "no_usable_narrative"
-    policy_error = validate_reader_text(reader_text)
-    if policy_error:
-        store.update_job(job["id"], "discarded", reason=policy_error, narrative=narrative)
-        return policy_error
     title, content = format_text(token, reader_text, queued_at, str(job["trigger_kind"]))
     store.update_job(job["id"], "publishing", narrative=narrative, title=title, content=content)
     endpoint = os.environ.get("MEME_ODAILY_PUSH_ENDPOINT") or os.environ.get("ODAILY_PUSH_ENDPOINT") or DEFAULT_ODAILY_PUSH_ENDPOINT

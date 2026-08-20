@@ -81,6 +81,7 @@ python backend/src/main.py meme tg-watch
 
 ## 状态与失败处理
 
+- 最终叙事通过 `narrative_v2` 的生成阶段校验后，scanner 不再维护或执行另一套发布前正文禁词与角度正则；非空正文直接进入标题、正文组装和挂后台流程。
 - `queued -> processing -> publishing -> publisher_pending`：正常挂后台路径。
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
