@@ -62,6 +62,37 @@ def test_meme_dashboard_reads_generated_text_and_tg_counts(tmp_path) -> None:
     assert detail["narrative"] is None
 
 
+def test_meme_dashboard_returns_chain_from_job_payload(tmp_path) -> None:
+    path = tmp_path / "meme.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE jobs (
+              id INTEGER PRIMARY KEY,address TEXT,trigger_key TEXT,trigger_level REAL,
+              payload_json TEXT,trigger_kind TEXT,queued_at TEXT,status TEXT,reason TEXT,
+              title TEXT,content TEXT,updated_at TEXT
+            )"""
+        )
+        connection.execute("CREATE TABLE tg_candidates (id INTEGER PRIMARY KEY,mention_count INTEGER,chat_count INTEGER,sender_count INTEGER)")
+        connection.execute(
+            "INSERT INTO jobs VALUES (1,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "0xa5be0eeb82a013dc7867b9e020c36a69da666666",
+                "tg_burst:1",
+                1_000_000,
+                json.dumps({"chain": "robinhood", "symbol": "CLOCKIN", "market_cap": 2_490_000}),
+                "tg_burst",
+                "2026-08-20T05:00:00+00:00",
+                "publisher_pending",
+                None,
+                "Meme速递：Robinhood上CLOCKIN社群热议中，市值249万美元",
+                "Robinhood上CLOCKIN社群热议中，当前市值249万美元。",
+                "2026-08-20T05:01:00+00:00",
+            ),
+        )
+
+    assert MemeDashboardStore(path).dashboard()["items"][0]["chain"] == "robinhood"
+
+
 def test_meme_dashboard_reports_missing_database(tmp_path) -> None:
     dashboard = MemeDashboardStore(tmp_path / "missing.sqlite3").dashboard()
     assert dashboard["available"] is False

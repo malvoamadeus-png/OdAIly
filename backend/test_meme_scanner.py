@@ -175,6 +175,42 @@ class MemeScannerTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual((current.platform, current.chain, current.market_cap), ("pons_v2", "robinhood", 1_200_000.0))
 
+    def test_telegram_token_info_prefers_robinhood_when_both_queries_are_usable(self) -> None:
+        address = "0xa5be0eeb82a013dc7867b9e020c36a69da666666"
+        payload = {
+            "address": address,
+            "name": "CLOCKIN",
+            "symbol": "CLOCKIN",
+            "launchpad_platform": "pons_v2",
+            "circulating_supply": "1000000000",
+            "price": {"address": address, "price": "0.00249", "volume_24h": "1000000"},
+        }
+
+        def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+
+        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
+            scanner.subprocess, "run", side_effect=run
+        ):
+            current = scanner.fetch_tg_token_info(address, "evm")
+
+        self.assertIsNotNone(current)
+        self.assertEqual(current.chain, "robinhood")
+
+    def test_robinhood_token_payload_keeps_robinhood_chain(self) -> None:
+        current = scanner.token_from_row(
+            {
+                "address": "0xa5be0eeb82a013dc7867b9e020c36a69da666666",
+                "launchpad_platform": "pons_v2",
+                "symbol": "CLOCKIN",
+                "name": "CLOCKIN",
+                "usd_market_cap": 2_490_000,
+                "chain": "robinhood",
+            }
+        )
+        self.assertIsNotNone(current)
+        self.assertEqual(current.chain, "robinhood")
+
     def test_token_payload_accepts_unknown_launchpad_platform(self) -> None:
         current = scanner.token_from_row(
             {
@@ -247,6 +283,17 @@ class MemeScannerTests(unittest.TestCase):
         self.assertTrue(content.startswith("据Odaily Meme速递监测，BSC上KIDS社群热议中，当前市值36万美元。"))
         self.assertNotIn("发射", title + content)
         self.assertNotIn("社区短时多次出现", title + content)
+
+    def test_text_shell_labels_robinhood_tokens(self) -> None:
+        current = token("0xrobinhood", 2_490_000, 1_000_000, chain="robinhood")
+        title, content = scanner.format_text(
+            current,
+            "社群正在讨论其名称来源。",
+            scanner.datetime.now(scanner.UTC),
+            trigger_kind="tg_burst",
+        )
+        self.assertEqual(title, "Meme速递：Robinhood上TEST社群热议中，市值249万美元")
+        self.assertTrue(content.startswith("据Odaily Meme速递监测，Robinhood上TEST社群热议中，当前市值249万美元。"))
 
     def test_jump_across_multiple_levels_only_queues_highest_crossed_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

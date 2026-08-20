@@ -27,10 +27,10 @@ def _run(factory: Any) -> Any:
     raise RuntimeError("Meme narrative V2 cannot run inside an active event loop")
 
 
-def _settings(audit_output: Path | None, timeout: int) -> Any:
+def _settings(audit_output: Path | None, timeout: int, chain: str) -> Any:
     output = audit_output or DEFAULT_AUDIT_DIR / "narrative-v2.json"
     return type("NarrativeArgs", (), {
-        "chain": "bsc",
+        "chain": chain,
         "contract": "",
         "output_dir": str(output.parent),
         "output": str(output),
@@ -66,6 +66,7 @@ def generate_reader_text(
     *,
     address: str,
     symbol: str,
+    chain: str = "bsc",
     trigger_kind: str,
     database_path: Path,
     evidence: dict[str, Any] | None,
@@ -73,7 +74,7 @@ def generate_reader_text(
     audit_output: Path | None = None,
 ) -> dict[str, Any]:
     del symbol, database_path, evidence
-    args = _settings(audit_output, timeout)
+    args = _settings(audit_output, timeout, chain)
     args.contract = address
     args.trigger_kind = trigger_kind
     try:

@@ -12,7 +12,7 @@
 - 普通新币首次进入 `completed` 即建立 7 天跟踪窗口，市值达到 50 万美元后进入播报候选，后续里程碑为 100 万和 300 万美元；首次发现已跨多档时只触发最高档。
 - 仍在最近一次 `completed` 列表中的代币直接使用列表市值，不调用 `token_info`。滚出列表但仍在 7 天窗口内的代币由持久化调度器调用 `token_info`：市值低于 50 万美元每小时一次，达到 50 万美元每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程请求用于错峰限流。
 - 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 `completed` 也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口。
-- 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 只查询 BNB Chain（30 万美元）和 Robinhood Chain（100 万美元），Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
+- 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 先查询 Robinhood Chain，再以 BNB Chain（30 万美元）兜底；Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。
@@ -24,13 +24,13 @@
 普通新币：
 
 ```text
-Meme速递：BSC上{symbol}市值突破{market_cap}万美元
+Meme速递：{chain}上{symbol}市值突破{market_cap}万美元
 ```
 
 社群热议：
 
 ```text
-Meme速递：BSC上{symbol}社群热议中，市值{market_cap}万美元
+Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 ```
 
 标题和正文不展示“发射 X 分钟/小时”，也不展示“在社区短时多次出现”等扫描过程语言。
@@ -72,10 +72,10 @@ python backend/src/main.py meme tg-watch
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
-- CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`，查询 GMGN 时按对应链路请求。
+- CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`。EVM 候选按 Robinhood、BSC 顺序查询并采用首个有效链结果；任务 payload、叙事、标题、控制台字段和 GMGN 链接沿用该链值。
 - 叙事 Telegram 配置：`MEME_TELEGRAM_CONFIG`、`MEME_TELEGRAM_NARRATIVE_SESSION`、`MEME_TELEGRAM_ALLOWED_CHATS`；默认读取 `data/config/meme_telegram.txt`、`data/processed/meme_telegram_narrative` 和 `data/config/meme_whitelist.txt`。
 - FxTwitter CA 搜索：调用公开 `https://api.fxtwitter.com/2/search`，不需要 Grok 凭证；404 页面按空结果处理，其他请求异常作为 X 阶段降级诊断，不阻断其他叙事材料；Grok 研究/实体补充读取 `GROK_BASE_URL`、`GROK_API_KEY`、`GROK_MODEL`，也兼容 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`；默认模型为 `grok-4.5`。
-- GMGN 叙事：通过有头 Playwright 浏览器在 `xvfb-run` 虚拟显示器中访问公开 `https://gmgn.ai/api/v1/token_ai_narrative/{chain}/{token_address}`，不需要登录、API Key 或 Authorization；公共查询参数可由 `MEME_GMGN_DEVICE_ID`、`MEME_GMGN_FP_DID`、`MEME_GMGN_CLIENT_ID`、`MEME_GMGN_APP_VER`、`MEME_GMGN_TZ_NAME`、`MEME_GMGN_TZ_OFFSET`、`MEME_GMGN_APP_LANG` 覆盖，代理可由 `MEME_GMGN_HTTPS_PROXY` 或 `GMGN_HTTPS_PROXY` 指定，超时由 `MEME_GMGN_TIMEOUT` 控制，页面稳定等待由 `MEME_GMGN_BROWSER_SETTLE_MS` 控制。服务器需安装 Playwright Chromium 和 `xvfb-run`。GMGN 403/429、浏览器依赖缺失等补充接口失败只记录诊断，不阻断已有主材料写作。
+- GMGN 叙事：通过有头 Playwright 浏览器在 `xvfb-run` 虚拟显示器中访问公开 `https://gmgn.ai/api/v1/token_ai_narrative/{chain}/{token_address}`，使用任务实际链值，不需要登录、API Key 或 Authorization；公共查询参数可由 `MEME_GMGN_DEVICE_ID`、`MEME_GMGN_FP_DID`、`MEME_GMGN_CLIENT_ID`、`MEME_GMGN_APP_VER`、`MEME_GMGN_TZ_NAME`、`MEME_GMGN_TZ_OFFSET`、`MEME_GMGN_APP_LANG` 覆盖，代理可由 `MEME_GMGN_HTTPS_PROXY` 或 `GMGN_HTTPS_PROXY` 指定，超时由 `MEME_GMGN_TIMEOUT` 控制，页面稳定等待由 `MEME_GMGN_BROWSER_SETTLE_MS` 控制。服务器需安装 Playwright Chromium 和 `xvfb-run`。GMGN 403/429、浏览器依赖缺失等补充接口失败只记录诊断，不阻断已有主材料写作；控制台 GMGN 链接也按任务链值生成，Solana 使用 GMGN 的 `sol` 路径。
 - 正文整理复用 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`，模型可由 `MEME_WRITER_MODEL` 覆盖。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
 

@@ -3181,7 +3181,8 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
       <div className="memeList">
         {items.map((item) => {
           const community = item.trigger_kind === 'tg_burst';
-          const gmgnUrl = `https://gmgn.ai/bsc/token/${item.address}`;
+          const gmgnChain = item.chain === 'solana' ? 'sol' : item.chain;
+          const gmgnUrl = `https://gmgn.ai/${gmgnChain}/token/${item.address}`;
           return (
             <article className="memeItem" key={item.id}>
               <header className="memeItemHeader">

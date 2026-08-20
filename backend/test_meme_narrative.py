@@ -232,6 +232,23 @@ def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_pa
     assert result["telegram_messages"] == result_payload["telegram_messages"]
 
 
+def test_generate_reader_text_passes_chain_to_narrative_v2(tmp_path) -> None:
+    with patch.object(narrative, "_settings", return_value=type("Args", (), {})()) as settings, patch.object(
+        narrative, "_run", return_value={"reader_text": ""}
+    ):
+        narrative.generate_reader_text(
+            address=ADDRESS,
+            symbol="CLOCKIN",
+            chain="robinhood",
+            trigger_kind="tg_burst",
+            database_path=tmp_path / "meme.sqlite3",
+            evidence=None,
+            timeout=1,
+        )
+
+    assert settings.call_args.args[2] == "robinhood"
+
+
 def test_generate_reader_text_returns_empty_without_source_material(tmp_path) -> None:
     with patch.object(
         narrative,

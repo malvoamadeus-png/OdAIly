@@ -35,6 +35,15 @@ def _number(value: Any) -> float | None:
     return result if result >= 0 else None
 
 
+def _chain(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    if normalized in {"sol", "solana"}:
+        return "solana"
+    if normalized in {"robinhood", "robinhood-chain", "robinhoodchain"}:
+        return "robinhood"
+    return "bsc"
+
+
 def _narrative_summary(value: Any) -> dict[str, Any]:
     payload = _json_object(value)
     if not payload:
@@ -111,7 +120,7 @@ def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[s
     return {
         "id": int(row["id"]),
         "address": str(row["address"]),
-        "chain": "bsc",
+        "chain": _chain(payload.get("chain")),
         "platform": str(payload.get("launchpad_platform") or payload.get("launchpad") or "telegram"),
         "name": str(payload.get("name") or ""),
         "symbol": str(payload.get("symbol") or payload.get("name") or "?"),

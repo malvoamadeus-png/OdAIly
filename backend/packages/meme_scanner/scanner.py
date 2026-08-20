@@ -28,6 +28,7 @@ from .narrative import generate_reader_text
 
 
 CHAIN = "bsc"
+SUPPORTED_CHAINS = {"bsc", "robinhood", "solana"}
 MARKET_CAP_GATE = 500_000.0
 MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
 TG_MARKET_CAP_GATE = 300_000.0
@@ -159,12 +160,23 @@ def timestamp(value: Any) -> int | None:
     return result if result > 0 else None
 
 
+def normalize_chain(value: Any, *, default: str = CHAIN) -> str:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    if normalized in {"sol", "solana"}:
+        return "solana"
+    if normalized in {"robinhood", "robinhood-chain", "robinhoodchain"}:
+        return "robinhood"
+    if normalized in {"bsc", "bnb", "bnb-chain", "binance-smart-chain"}:
+        return "bsc"
+    return default if default in SUPPORTED_CHAINS else CHAIN
+
+
 def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
     # Launchpad/platform is metadata only. Keep the keyword for compatibility
     # with older callers, but never reject a token based on its platform value.
     address = str(row.get("address") or "").strip().lower()
     platform = str(row.get("launchpad_platform") or row.get("launchpad") or "").strip().lower()
-    chain = str(row.get("chain") or "").strip().lower()
+    chain = normalize_chain(row.get("chain"), default="")
     if not address:
         return None
     return Token(
@@ -176,7 +188,7 @@ def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False)
         volume_24h=number(row.get("volume_24h")),
         created_timestamp=timestamp(row.get("created_timestamp")),
         raw=row,
-        chain="solana" if chain in {"sol", "solana"} or platform == "solana" else CHAIN,
+        chain="solana" if chain == "solana" or platform == "solana" else chain or CHAIN,
     )
 
 
@@ -244,7 +256,8 @@ def fetch_token_info(
 ) -> Token | None:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
-    command = [GMGN, "token", "info", "--chain", "sol" if chain == "solana" else chain, "--address", address, "--raw"]
+    requested_chain = normalize_chain(chain)
+    command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed")
@@ -263,7 +276,7 @@ def fetch_token_info(
         return None
     normalized["usd_market_cap"] = market_cap
     normalized.setdefault("address", address.lower())
-    normalized.setdefault("chain", chain)
+    normalized["chain"] = requested_chain
     normalized.setdefault(
         "launchpad_platform",
         _recursive_pick(payload, ("launchpad_platform", "launchpad")) or "telegram",
@@ -277,8 +290,6 @@ def fetch_token_info(
         if normalized.get(field) in (None, ""):
             normalized[field] = _recursive_pick(payload, aliases)
     token = token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
-    if token is not None and chain == "robinhood" and token.chain == "bsc":
-        token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
     return token
 
 
@@ -288,22 +299,22 @@ def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
         return fetch_token_info(address, "solana", allow_unknown_platform=True)
     if address_chain != "evm":
         return None
-    for chain in ("bsc", "robinhood"):
+    # EVM addresses do not encode their network. Probe Robinhood first so a
+    # usable Robinhood response cannot be shadowed by a BSC fallback result.
+    for chain in ("robinhood", "bsc"):
         token = fetch_token_info(address, chain, allow_unknown_platform=True)
         if token is not None:
-            if chain == "robinhood" and token.chain == "bsc":
-                token = Token(token.address, token.platform, token.name, token.symbol, token.market_cap, token.volume_24h, token.created_timestamp, token.raw, "robinhood")
             return token
     return None
 
 
 def tg_market_cap_gate(chain: str) -> float | None:
-    normalized = str(chain or "").strip().lower().replace("_", "-")
-    if normalized in {"bsc", "bnb", "bnb-chain", "binance-smart-chain"}:
+    normalized = normalize_chain(chain, default="")
+    if normalized == "bsc":
         return TG_MARKET_CAP_GATE
-    if normalized in {"robinhood", "robinhood-chain", "robinhoodchain"}:
+    if normalized == "robinhood":
         return TG_ROBINHOOD_MARKET_CAP_GATE
-    if normalized in {"sol", "solana"}:
+    if normalized == "solana":
         return TG_SOLANA_MARKET_CAP_GATE
     return None
 
@@ -875,7 +886,7 @@ def display_market_cap(value: float) -> str:
 def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind: str = "market_cap_milestone") -> tuple[str, str]:
     del sampled_at
     cap = display_market_cap(token.market_cap)
-    chain_label = "Solana" if token.chain == "solana" else "BSC"
+    chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
         summary = f"{chain_label}上{token.symbol}社群热议中，当前市值{cap}万美元。"
@@ -939,6 +950,7 @@ def collect_narrative(
         narrative = generate_reader_text(
             address=token.address,
             symbol=token.symbol,
+            chain=token.chain,
             trigger_kind=trigger_kind,
             database_path=database_path or DEFAULT_DB,
             evidence=evidence,
@@ -1131,7 +1143,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         endpoint=endpoint,
         timeout=args.push_timeout,
         send=args.send,
-        idempotency_key=f"odaily:meme:bsc:{token.address}:{job['trigger_key']}",
+        idempotency_key=f"odaily:meme:{token.chain}:{token.address}:{job['trigger_key']}",
     )
     if pushed["ok"]:
         store.update_job(job["id"], "publisher_pending", publish=pushed)

@@ -1113,7 +1113,7 @@ export async function getGateMarketDashboard(): Promise<GateMarketDashboard> {
 export type MemeDashboardItem = {
   id: number;
   address: string;
-  chain: 'bsc';
+  chain: 'bsc' | 'robinhood' | 'solana';
   platform: string;
   name: string;
   symbol: string;
