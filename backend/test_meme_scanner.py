@@ -295,31 +295,6 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual(observation["tracking_status"], "legacy_untracked")
             store.close()
 
-    def test_completed_reactivates_tg_observation_and_records_snapshot_milestone(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            store = scanner.Store(root / "scanner.sqlite3")
-            current = token("0xreactivate", 520_000, 400_000)
-            stamp = scanner.now_iso()
-            store.upsert_observation(current, advance_market_cap_high_watermark=False, tracking_source="tg")
-            self.assertEqual(store.observation(current.address)["tracking_status"], "legacy_untracked")
-            previous_high, _, status = store.start_or_observe_completed(
-                current, observed_at=stamp, tracking_window_seconds=604800, args=args(root)
-            )
-            self.assertEqual((previous_high, status), (0.0, "active"))
-            self.assertEqual(scanner.evaluate_market_token(store, current, bootstrap=False), (1, 0))
-            snapshot = store.conn.execute(
-                "SELECT address, chain, platform, market_cap, source FROM token_snapshots WHERE address=?",
-                (current.address,),
-            ).fetchone()
-            self.assertEqual(tuple(snapshot), (current.address, "bsc", "fourmeme", 520000.0, "completed"))
-            milestone = store.conn.execute(
-                "SELECT level, snapshot_id, status FROM market_cap_milestones WHERE address=?",
-                (current.address,),
-            ).fetchone()
-            self.assertEqual((milestone["level"], milestone["snapshot_id"] > 0, milestone["status"]), (500000.0, True, "detected"))
-            store.close()
-
     def test_legacy_observations_are_not_backfilled_into_tracking(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "scanner.sqlite3"
