@@ -199,6 +199,20 @@ def test_gmgn_supplement_is_forced_into_final_result() -> None:
     assert "gmgn:supplement:1" in result["supplemental_information"][0]["id"]
 
 
+def test_grok_supplement_gets_sentence_punctuation() -> None:
+    result = narrative_v2.validate_final_result(
+        {
+            "primary_type": "pure_meme",
+            "reader_text": "主文案。\n\nGrok补充：Eason 部署了一个中继合约",
+            "supplemental_information_ids": ["grok:supplement:1"],
+            "used_material_ids": ["grok:supplement:1"],
+        },
+        {"grok:supplement:1": {"id": "grok:supplement:1", "statement": "Eason 部署了一个中继合约"}},
+    )
+
+    assert "Grok补充：Eason 部署了一个中继合约。" in result["reader_text"]
+
+
 def test_gmgn_logo_sentence_is_removed_when_it_is_the_first_clause() -> None:
     final = {"primary_type": "pure_meme", "reader_text": "主文案。"}
     supplement = [{"id": "gmgn:supplement:1", "statement": "盾牌标志上写着 IGNORE，提醒保持冷静。"}]

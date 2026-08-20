@@ -777,11 +777,25 @@ def normalize_reader_text(value: Any) -> str:
     for legacy_disclaimer in LEGACY_READER_DISCLAIMERS:
         reader_text = reader_text.replace(legacy_disclaimer, READER_DISCLAIMER)
     reader_text = normalize_gmgn_supplement_lines(reader_text)
+    reader_text = normalize_grok_supplement_punctuation(reader_text)
     if not reader_text.startswith(READER_OPENING):
         reader_text = f"{READER_OPENING}{reader_text}"
     if not reader_text.endswith(READER_DISCLAIMER):
         reader_text = f"{reader_text.rstrip()}\n\n{READER_DISCLAIMER}"
     return reader_text
+
+
+def normalize_grok_supplement_punctuation(value: str) -> str:
+    """Ensure the dedicated Grok supplement paragraph has sentence punctuation."""
+    lines = value.splitlines()
+    normalized: list[str] = []
+    terminal_punctuation = "。！？!?；;"
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{GROK_SUPPLEMENT_MARKER}") and stripped and stripped[-1] not in terminal_punctuation:
+            stripped = f"{stripped}。"
+        normalized.append(stripped)
+    return "\n".join(normalized)
 
 
 def _last_unquoted_comma(value: str) -> int:
