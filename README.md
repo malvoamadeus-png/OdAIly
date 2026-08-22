@@ -288,7 +288,7 @@ X_PROCESS_OPENAI_BASE_URL=http://127.0.0.1:4000/v1
 X_PROCESS_OPENAI_API_STYLE=chat_completions
 COMPETITOR_OPENAI_API_STYLE=
 DEEPSEEK_API_KEY=
-X_PROCESS_JUDGE_MODEL=odaily-deepseek-review
+X_PROCESS_JUDGE_MODEL=odaily-gpt-writer
 X_PROCESS_JUDGE_REASONING_EFFORT=low
 X_PROCESS_JUDGE_OPENAI_BASE_URL=
 X_PROCESS_JUDGE_OPENAI_API_STYLE=
@@ -315,7 +315,7 @@ SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT=true
 SEARCH_AI_REVIEW_THRESHOLD=0.65
 COMPETITOR_EVENT_WINDOW_HOURS=6
 COMPETITOR_FETCH_INTERVAL_SECONDS=60
-COMPETITOR_EVENT_REVIEW_MODEL=odaily-deepseek-fast
+COMPETITOR_EVENT_REVIEW_MODEL=odaily-gpt-writer
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_MESSAGE_THREAD_ID=
@@ -348,10 +348,14 @@ Production text LLM calls go through the local LiteLLM proxy at
 `ODAILY_LLM_BASE_URL`. Keep `X_PROCESS_OPENAI_BASE_URL` pointed at the same
 proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
 `odaily-deepseek-review`, `odaily-gpt-auditor`, and `odaily-deepseek-auditor`. The
+judge, competitor event review, and mixed-source classification use the
+`odaily-gpt-writer` route to `gpt-5.6-luna` without a reasoning parameter; the
+browser-plugin quick generation uses the same route with `low` reasoning. The
 searcher AI review is explicitly configured as `gpt-5.6-luna` with `medium`
 reasoning through `https://sadai.cc/v1`; the former fast GPT path has been
-removed. Fast classification, review, analysis, and browser-plugin quick
-generation now use DeepSeek through LiteLLM. For DeepSeek JSON tasks, use `chat_completions`,
+removed. Remaining DeepSeek routes are retained only for modules that still
+explicitly select them, such as the inactive writer3 analysis path. For JSON
+tasks using those routes, use `chat_completions`,
 `json_object`, and append the JSON Schema to the prompt; the auditor sends
 `AUDITOR_REASONING_EFFORT=max`; the direct searcher GPT review sends
 `SEARCH_AI_REVIEW_REASONING_EFFORT=medium`.
