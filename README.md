@@ -354,8 +354,8 @@ browser-plugin quick generation uses the same route with `low` reasoning. The
 searcher AI review is explicitly configured as `gpt-5.6-luna` with `medium`
 reasoning through `https://sadai.cc/v1`; the former fast GPT path has been
 removed. Remaining DeepSeek routes are retained only for modules that still
-explicitly select them, such as the inactive writer3 analysis path. For JSON
-tasks using those routes, use `chat_completions`,
+explicitly select them, such as the inactive writer3 analysis and external-media
+alert paths. For JSON tasks using those routes, use `chat_completions`,
 `json_object`, and append the JSON Schema to the prompt; the auditor sends
 `AUDITOR_REASONING_EFFORT=max`; the direct searcher GPT review sends
 `SEARCH_AI_REVIEW_REASONING_EFFORT=medium`.
