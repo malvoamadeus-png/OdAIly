@@ -2116,6 +2116,152 @@ textarea:focus {
   margin-bottom: 10px;
 }
 
+.duplicateSearchLayout {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.85fr) minmax(0, 1.15fr);
+  gap: 16px;
+  margin-top: 18px;
+  align-items: start;
+}
+
+.duplicateInputSection,
+.duplicateResultSection {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #dce2e7;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.duplicateHint {
+  margin-top: 5px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.duplicateInput {
+  min-height: 360px;
+  resize: vertical;
+}
+
+.duplicateFormFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.duplicateSubmit {
+  flex: 0 0 auto;
+  padding: 0 16px;
+}
+
+.duplicateNotice {
+  margin-top: 10px;
+}
+
+.duplicateLoading {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.duplicateConclusion {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid;
+  border-radius: 9px;
+}
+
+.duplicateConclusion.isDuplicate {
+  border-color: #f0c4bd;
+  background: #fff7f5;
+  color: #9f2f20;
+}
+
+.duplicateConclusion.isClear {
+  border-color: #cce7d8;
+  background: #f2fbf6;
+  color: #166543;
+}
+
+.duplicateConclusion div {
+  display: grid;
+  gap: 3px;
+}
+
+.duplicateConclusion span {
+  color: #59636e;
+  font-size: 13px;
+}
+
+.duplicateCandidateList {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.duplicateCandidate {
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid #e1e5e9;
+  border-radius: 9px;
+  background: #fbfcfd;
+}
+
+.duplicateCandidate h3 {
+  margin: 0;
+  color: #25303b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.duplicateCandidate a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  color: #146c94;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.duplicateCandidate a:hover {
+  text-decoration: underline;
+}
+
+.duplicateCandidateMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #78838e;
+  font-size: 12px;
+}
+
+.duplicateCandidateMeta strong {
+  margin-left: auto;
+  color: #075f49;
+  font-variant-numeric: tabular-nums;
+}
+
+.duplicateCandidateType {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #edf1f5;
+  color: #53606c;
+  font-weight: 650;
+}
+
 .addAccount {
   grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 1fr) minmax(90px, 0.6fr) 104px;
   margin-bottom: 10px;
@@ -3729,6 +3875,10 @@ textarea:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .duplicateSearchLayout {
+    grid-template-columns: 1fr;
+  }
+
   .workflowSideNoteGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3809,6 +3959,15 @@ textarea:focus {
 
   .workflowHero {
     padding: 18px;
+  }
+
+  .duplicateFormFooter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .duplicateSubmit {
+    width: 100%;
   }
 
   .workflowHero h2 {

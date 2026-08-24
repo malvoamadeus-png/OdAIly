@@ -421,6 +421,23 @@ export type ConsoleAdmin = {
   updated_at: string;
 };
 
+export type DuplicateSearchCandidate = {
+  target_type: 'odaily_published' | 'inflight_candidate' | string;
+  target_id: string;
+  title: string;
+  published_at: string | null;
+  source_url: string | null;
+  similarity: number;
+};
+
+export type DuplicateSearchResult = {
+  kind: 'search';
+  is_duplicate: boolean;
+  reason: string;
+  summary: string;
+  top_candidates: DuplicateSearchCandidate[];
+};
+
 export type DashboardPayload = {
   settings: Settings;
   accounts: Account[];
@@ -648,6 +665,14 @@ export async function getCurrentConsoleAdmin(): Promise<ConsoleAdmin | null> {
   const { data, error } = await localApi().from('console_admins').select('email,created_at,updated_at').limit(1).maybeSingle();
   raise(error);
   return (data ?? null) as ConsoleAdmin | null;
+}
+
+export async function searchNewsflashDuplicates(postText: string): Promise<DuplicateSearchResult> {
+  return consoleApiPost<DuplicateSearchResult>('/plugin/news-gen/search', {
+    source_type: 'x_post',
+    platform: 'x',
+    post_text: postText,
+  });
 }
 
 function nowIso(): string {

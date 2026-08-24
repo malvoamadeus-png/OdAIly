@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -304,6 +305,34 @@ def parse_args() -> argparse.Namespace:
 
     auditor_worker = subparsers.add_parser("auditor-worker", help="Run Odaily published-news auditor worker.")
     auditor_worker.add_argument("--once", action="store_true", help="Process one auditor task and exit.")
+
+    writing_review_report = subparsers.add_parser(
+        "writing-review-report",
+        help="Review AI-written titles and bodies from a recent local SQLite window and write a Markdown report.",
+    )
+    writing_review_report.add_argument(
+        "--hours",
+        type=float,
+        default=12.0,
+        help="Lookback window in hours. Defaults to 12.",
+    )
+    writing_review_report.add_argument(
+        "--path",
+        help="Override ODAILY_SQLITE_PATH for this read-only report.",
+    )
+    writing_review_report.add_argument(
+        "--output-dir",
+        help="Directory for the Markdown and JSON reports. Defaults to data/exports/writing_review.",
+    )
+    writing_review_report.add_argument(
+        "--limit",
+        type=int,
+        help="Review at most this many newest writing outputs.",
+    )
+    writing_review_report.add_argument(
+        "--model",
+        help="Override WRITING_REVIEW_MODEL or the configured AUDITOR_MODEL for this run.",
+    )
 
     maintenance_cleanup = subparsers.add_parser(
         "maintenance-cleanup",
@@ -1388,6 +1417,71 @@ def auditor_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def writing_review_report_command(args: argparse.Namespace) -> int:
+    from packages.common.storage import load_storage_settings
+    from packages.writing_review import (
+        WRITING_REVIEW_PROMPT_VERSION,
+        build_writing_review_client,
+        default_window,
+        generate_writing_review_report,
+        load_ai_written_items,
+        write_report_files,
+    )
+
+    if args.hours <= 0 or args.hours > 24 * 30:
+        raise ValueError("--hours must be greater than 0 and no more than 720")
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit must be >= 1")
+
+    database_path = Path(args.path).expanduser().resolve() if args.path else load_storage_settings().sqlite_path
+    since, until = default_window(args.hours)
+    items = load_ai_written_items(database_path, since=since, until=until, limit=args.limit)
+
+    settings = load_auditor_settings()
+    configured_model = os.getenv("WRITING_REVIEW_MODEL") or settings.model
+    model = args.model or configured_model
+    if items:
+        client, _, reasoning_effort = build_writing_review_client(settings)
+        report = generate_writing_review_report(
+            items,
+            client=client,
+            model=model,
+            since=since,
+            until=until,
+            lookback_hours=args.hours,
+            reasoning_effort=reasoning_effort,
+        )
+    else:
+        from packages.writing_review.report import WritingReviewReport
+
+        report = WritingReviewReport(
+            generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            since=since.isoformat(timespec="seconds"),
+            until=until.isoformat(timespec="seconds"),
+            lookback_hours=args.hours,
+            model=model,
+            prompt_version=WRITING_REVIEW_PROMPT_VERSION,
+            items=[],
+        )
+
+    output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else get_paths().exports_dir / "writing_review"
+    markdown_path, json_path = write_report_files(report, output_dir)
+    print(
+        json.dumps(
+            {
+                "items": len(report.items),
+                "counts": report.counts,
+                "markdown": str(markdown_path),
+                "json": str(json_path),
+                "database": str(database_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def maintenance_cleanup_command(args: argparse.Namespace) -> int:
     from packages.maintenance import create_maintenance_repository
 
@@ -1648,6 +1742,8 @@ def main() -> int:
             return auditor_init_db_command(args)
         if args.command == "auditor-worker":
             return auditor_worker_command(args)
+        if args.command == "writing-review-report":
+            return writing_review_report_command(args)
         if args.command == "maintenance-cleanup":
             return maintenance_cleanup_command(args)
         if args.command == "search-cache-maintenance":
