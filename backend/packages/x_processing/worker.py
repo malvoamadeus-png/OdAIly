@@ -449,6 +449,7 @@ class XProcessingWorker:
             max_attempts=self.settings.retry.max_attempts,
             backoff_seconds=self.settings.retry.backoff_seconds,
             omit_reasoning_effort=self.settings.search_ai_review_omit_reasoning_effort,
+            omit_response_format=self.settings.search_ai_review_omit_response_format,
             chat_response_format_mode=self.settings.search_ai_review_chat_response_format_mode,
             append_json_schema_to_prompt=self.settings.search_ai_review_append_json_schema_to_prompt,
         )

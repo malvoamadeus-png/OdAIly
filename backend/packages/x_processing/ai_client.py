@@ -33,6 +33,7 @@ class OpenAIResponsesClient:
         max_attempts: int,
         backoff_seconds: float,
         omit_reasoning_effort: bool = False,
+        omit_response_format: bool = False,
         chat_response_format_mode: ChatResponseFormatMode = "json_schema",
         append_json_schema_to_prompt: bool = False,
         allow_deepseek_reasoning_effort: bool = False,
@@ -44,6 +45,7 @@ class OpenAIResponsesClient:
         self.max_attempts = max(1, max_attempts)
         self.backoff_seconds = max(0.0, backoff_seconds)
         self.omit_reasoning_effort = omit_reasoning_effort
+        self.omit_response_format = omit_response_format
         self.chat_response_format_mode = chat_response_format_mode
         self.append_json_schema_to_prompt = append_json_schema_to_prompt
         self.allow_deepseek_reasoning_effort = allow_deepseek_reasoning_effort
@@ -191,7 +193,7 @@ class OpenAIResponsesClient:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        if text_format is not None:
+        if text_format is not None and not self.omit_response_format:
             mode = "json_object" if force_json_object else self.chat_response_format_mode
             payload["response_format"] = to_chat_response_format(text_format, mode=mode)
         if reasoning_effort and not (self.omit_reasoning_effort or force_omit_reasoning_effort):

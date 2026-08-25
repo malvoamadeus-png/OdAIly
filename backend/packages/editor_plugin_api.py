@@ -413,6 +413,7 @@ class EditorPluginNewsGenService:
             max_attempts=self.x_settings.retry.max_attempts,
             backoff_seconds=self.x_settings.retry.backoff_seconds,
             omit_reasoning_effort=self.x_settings.search_ai_review_omit_reasoning_effort,
+            omit_response_format=self.x_settings.search_ai_review_omit_response_format,
             chat_response_format_mode=self.x_settings.search_ai_review_chat_response_format_mode,
             append_json_schema_to_prompt=self.x_settings.search_ai_review_append_json_schema_to_prompt,
         )

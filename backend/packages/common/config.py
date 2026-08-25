@@ -321,6 +321,7 @@ class XProcessingSettings(BaseModel):
     search_ai_review_openai_base_url: HttpUrl | None = None
     search_ai_review_openai_api_style: Literal["responses", "chat_completions"] | None = None
     search_ai_review_omit_reasoning_effort: bool = False
+    search_ai_review_omit_response_format: bool = False
     search_ai_review_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     search_ai_review_append_json_schema_to_prompt: bool = False
     search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
@@ -474,6 +475,9 @@ def load_x_processing_settings() -> XProcessingSettings:
         "search_ai_review_openai_base_url": search_review_base_url,
         "search_ai_review_openai_api_style": os.getenv("SEARCH_AI_REVIEW_OPENAI_API_STYLE") or None,
         "search_ai_review_omit_reasoning_effort": _env_bool("SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT", False),
+        "search_ai_review_omit_response_format": _env_bool(
+            "SEARCH_AI_REVIEW_OMIT_RESPONSE_FORMAT", False
+        ),
         "search_ai_review_chat_response_format_mode": (
             os.getenv("SEARCH_AI_REVIEW_CHAT_RESPONSE_FORMAT_MODE") or "json_schema"
         ),
