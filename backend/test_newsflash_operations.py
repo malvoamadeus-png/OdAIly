@@ -316,6 +316,41 @@ class CompetitorEventSummaryTest(unittest.TestCase):
         self.assertTrue(event["first_published_at"].startswith("2026-07-20T02:00:00"))
         self.assertTrue(event["first_published_at"].endswith("+00:00"))
 
+    def test_event_search_matches_source_item_titles(self) -> None:
+        items = [
+            NewsflashItem(
+                source="jinse",
+                source_item_id="j1",
+                title="英伟达周三将发布业绩 分析师料营收增速继续领先大多数同行",
+                content="英伟达将发布业绩。",
+                published_at="2026-08-26T02:40:00+08:00",
+            ),
+            NewsflashItem(
+                source="odaily",
+                source_item_id="o1",
+                title="美股盘前要闻一览：英伟达Q2财报今夜来袭",
+                content="英伟达Q2财报今夜来袭。",
+                published_at="2026-08-26T20:24:00+08:00",
+            ),
+        ]
+        records = self.repository.upsert_newsflash_items(items)
+        event_id = self.repository.create_event_with_source(records[0])
+        self.repository.assign_item_to_event(EventAssignment(
+            item_id=records[1].id,
+            event_id=event_id,
+            role="supporting",
+            match_method="test",
+            similarity=1.0,
+            matched_item_id=records[0].id,
+            needs_review=False,
+            ai_result={},
+        ))
+
+        result = NewsflashOperationsRepository(self.path).list_events({"search": "美股盘前要闻一览"})
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["event_id"], event_id)
+
     def test_odaily_exclusion_is_removed_from_events_but_retained_for_pipeline(self) -> None:
         class Matcher:
             def is_excluded(self, **kwargs):

@@ -1272,8 +1272,23 @@ class NewsflashOperationsRepository:
         params: list[Any] = []
         search = str(payload.get("search") or "").strip()
         if search:
-            clauses.append("lower(e.representative_title) LIKE ?")
-            params.append(f"%{search.casefold()}%")
+            search_pattern = f"%{search.casefold()}%"
+            clauses.append(
+                """(
+                    lower(COALESCE(e.representative_title, '')) LIKE ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM newsflash_event_sources search_sources
+                        JOIN newsflash_items search_items ON search_items.id=search_sources.item_id
+                        WHERE search_sources.event_id=e.event_id
+                          AND (
+                              lower(COALESCE(search_items.title, '')) LIKE ?
+                              OR lower(COALESCE(search_items.source_item_id, '')) LIKE ?
+                          )
+                    )
+                )"""
+            )
+            params.extend([search_pattern, search_pattern, search_pattern])
         if payload.get("has_odaily") in (True, False, 1, 0, "1", "0"):
             clauses.append("e.has_odaily=?")
             params.append(int(str(payload.get("has_odaily")) in {"True", "true", "1"}))

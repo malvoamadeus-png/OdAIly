@@ -10,7 +10,7 @@ from packages.common.time_utils import utc_iso
 from packages.x_processing.searcher import content_hash, normalize_for_embedding
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL, _dt, _json
 
-from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord, generate_event_id
+from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord, canonicalize_source_url, generate_event_id
 from .fetchers import NewsflashItem
 from .repository import extract_raw_published_at, parse_datetime
 
@@ -20,7 +20,7 @@ class SQLiteCompetitorMonitorRepository:
     def init_schema(self)->None:
         with connect_sqlite(self.path) as conn:
             conn.executescript(SQLITE_SCHEMA_SQL+"""
-            CREATE TABLE IF NOT EXISTS newsflash_items(id integer PRIMARY KEY AUTOINCREMENT,source text NOT NULL,source_item_id text NOT NULL,source_url text,title text,content text NOT NULL,content_hash text NOT NULL,published_at text,first_seen_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,raw_payload text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(source,source_item_id));
+            CREATE TABLE IF NOT EXISTS newsflash_items(id integer PRIMARY KEY AUTOINCREMENT,source text NOT NULL,source_item_id text NOT NULL,source_url text,source_url_key text,title text,content text NOT NULL,content_hash text NOT NULL,published_at text,first_seen_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,raw_payload text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(source,source_item_id));
             CREATE TABLE IF NOT EXISTS newsflash_events(event_id text PRIMARY KEY,representative_item_id integer,representative_title text,event_time text,first_source text,first_published_at text,source_count integer NOT NULL DEFAULT 0,competitor_source_count integer NOT NULL DEFAULT 0,has_odaily integer NOT NULL DEFAULT 0,status text NOT NULL DEFAULT 'active',needs_review integer NOT NULL DEFAULT 0,metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS newsflash_event_sources(id integer PRIMARY KEY AUTOINCREMENT,event_id text NOT NULL REFERENCES newsflash_events(event_id) ON DELETE CASCADE,item_id integer NOT NULL UNIQUE REFERENCES newsflash_items(id) ON DELETE CASCADE,source text NOT NULL,source_item_id text NOT NULL,role text NOT NULL,match_method text NOT NULL,similarity real,matched_item_id integer,ai_result text NOT NULL DEFAULT '{}',metadata text NOT NULL DEFAULT '{}',created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS newsflash_event_exclusions(source text NOT NULL,source_item_id text NOT NULL,title text,matched_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(source,source_item_id));
@@ -29,10 +29,15 @@ class SQLiteCompetitorMonitorRepository:
             DROP TABLE IF EXISTS newsflash_event_notes;
             DROP TABLE IF EXISTS newsflash_item_notes;
             CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_time ON newsflash_items(source,published_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_url ON newsflash_items(source_url);
             CREATE INDEX IF NOT EXISTS idx_newsflash_event_sources_event ON newsflash_event_sources(event_id);
             """)
             event_columns={row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
             if "first_sources" not in event_columns:conn.execute("ALTER TABLE newsflash_events ADD COLUMN first_sources text NOT NULL DEFAULT '[]'")
+            item_columns={row["name"] for row in conn.execute("PRAGMA table_info(newsflash_items)").fetchall()}
+            if "source_url_key" not in item_columns:conn.execute("ALTER TABLE newsflash_items ADD COLUMN source_url_key text")
+            for row in conn.execute("SELECT id,source_url FROM newsflash_items WHERE source_url IS NOT NULL AND source_url_key IS NULL").fetchall():conn.execute("UPDATE newsflash_items SET source_url_key=? WHERE id=?",(canonicalize_source_url(row["source_url"]),row["id"]))
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_url_key ON newsflash_items(source_url_key)")
             conn.commit()
     def list_enabled_competitor_exclusion_terms(self)->list[str]:
         with connect_sqlite(self.path) as conn:
@@ -66,7 +71,7 @@ class SQLiteCompetitorMonitorRepository:
         with connect_sqlite(self.path) as conn:
             for item in items:
                 published=parse_datetime(item.published_at);digest=content_hash(normalize_for_embedding(title=item.title,content=item.content))
-                conn.execute("INSERT INTO newsflash_items(source,source_item_id,source_url,title,content,content_hash,published_at,raw_payload,metadata) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_item_id) DO UPDATE SET source_url=excluded.source_url,title=excluded.title,content=excluded.content,content_hash=excluded.content_hash,published_at=excluded.published_at,raw_payload=excluded.raw_payload,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP",(item.source,item.source_item_id,item.source_url,item.title,item.content,digest,utc_iso(published),_json(item.raw_payload),_json(item.metadata)))
+                conn.execute("INSERT INTO newsflash_items(source,source_item_id,source_url,source_url_key,title,content,content_hash,published_at,raw_payload,metadata) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_item_id) DO UPDATE SET source_url=excluded.source_url,source_url_key=excluded.source_url_key,title=excluded.title,content=excluded.content,content_hash=excluded.content_hash,published_at=excluded.published_at,raw_payload=excluded.raw_payload,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP",(item.source,item.source_item_id,item.source_url,canonicalize_source_url(item.source_url),item.title,item.content,digest,utc_iso(published),_json(item.raw_payload),_json(item.metadata)))
                 records.append(self._item(conn.execute("SELECT * FROM newsflash_items WHERE source=? AND source_item_id=?",(item.source,item.source_item_id)).fetchone()))
             conn.commit()
         return records
@@ -87,6 +92,18 @@ class SQLiteCompetitorMonitorRepository:
         where="julianday(COALESCE(i.published_at,i.first_seen_at))>=julianday(?)";params=[utc_iso(since)]
         if exclude_item_ids:where+=f" AND i.id NOT IN ({','.join('?' for _ in exclude_item_ids)})";params.extend(sorted(exclude_item_ids))
         return self._sources(where,tuple(params))
+    def list_event_sources_by_urls(self,*,source_urls:set[str],exclude_item_ids:set[int])->list[EventSourceRecord]:
+        if not source_urls:return []
+        source_url_keys=sorted({key for value in source_urls if (key:=canonicalize_source_url(value))})
+        if not source_url_keys:return []
+        placeholders=','.join('?' for _ in source_url_keys);params=list(source_url_keys);where=f"i.source_url_key IN ({placeholders})"
+        if exclude_item_ids:where+=f" AND i.id NOT IN ({','.join('?' for _ in exclude_item_ids)})";params.extend(sorted(exclude_item_ids))
+        return self._sources(where,tuple(params))
+    def list_event_anchors(self,*,event_ids:set[str])->list[EventSourceRecord]:
+        if not event_ids:return []
+        placeholders=','.join('?' for _ in event_ids)
+        with connect_sqlite(self.path) as conn:rows=conn.execute(f"SELECT e.event_id,i.* FROM newsflash_events e JOIN newsflash_items i ON i.id=e.representative_item_id WHERE e.status='active' AND e.event_id IN ({placeholders})",tuple(sorted(event_ids))).fetchall()
+        return [EventSourceRecord(event_id=r["event_id"],item=self._item(r)) for r in rows]
     def create_event_with_source(self,item:NewsflashItemRecord,*,needs_review:bool=False)->str:
         event_id=generate_event_id();event_time=item.published_at
         with connect_sqlite(self.path) as conn:

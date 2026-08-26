@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from packages.common.config import CompetitorMonitorSettings
 from packages.common.paths import get_paths
@@ -31,12 +32,8 @@ EVENT_REVIEW_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "is_same_event": {"type": "boolean"},
-            "reason": {
-                "type": "string",
-                "enum": ["same_event", "same_topic_different_event", "update_of_existing_event", "unrelated"],
-            },
         },
-        "required": ["is_same_event", "reason"],
+        "required": ["is_same_event"],
     },
     "strict": True,
 }
@@ -89,6 +86,8 @@ class NewsflashEventRepository(Protocol):
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]: ...
     def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]: ...
     def list_recent_event_sources(self, *, since: datetime, exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
+    def list_event_sources_by_urls(self, *, source_urls: set[str], exclude_item_ids: set[int]) -> list[EventSourceRecord]: ...
+    def list_event_anchors(self, *, event_ids: set[str]) -> list[EventSourceRecord]: ...
     def create_event_with_source(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str: ...
     def assign_item_to_event(self, assignment: EventAssignment) -> None: ...
     def update_event_summaries(self, event_ids: set[str]) -> None: ...
@@ -144,10 +143,27 @@ class NewsflashEventAggregator:
             since=since,
             exclude_item_ids=new_record_ids,
         )
+
+        source_urls = {record.source_url for record in new_records if record.source_url}
+        exact_sources = self.repository.list_event_sources_by_urls(
+            source_urls={str(source_url) for source_url in source_urls},
+            exclude_item_ids=new_record_ids,
+        ) if source_urls else []
+        exact_by_url: dict[str, EventSourceRecord] = {}
+        for source in exact_sources:
+            source_url = canonicalize_source_url(source.item.source_url)
+            if source_url:
+                exact_by_url.setdefault(source_url, source)
+
+        recent_event_ids = {source.event_id for source in existing_sources}
+        anchor_sources = self.repository.list_event_anchors(event_ids=recent_event_ids)
+        known_source_item_ids = {source.item.id for source in existing_sources}
+        existing_sources.extend(
+            source for source in anchor_sources if source.item.id not in known_source_item_ids
+        )
         print(f"[odaily] competitor event phase=embed_recent count={len(existing_sources)}")
         existing_vectors = self._embed_records([source.item for source in existing_sources])
-
-        groups = _DisjointSet({record.id for record in new_records})
+        anchors = self._event_anchors(existing_sources)
         assignments: dict[int, EventAssignment] = {}
 
         print(
@@ -155,7 +171,20 @@ class NewsflashEventAggregator:
             f"new_count={len(new_records)} recent_count={len(existing_sources)}"
         )
         for record in new_records:
-            best = self._best_existing_match(record, vectors[record.id], existing_sources, existing_vectors)
+            exact = exact_by_url.get(canonicalize_source_url(record.source_url) or "")
+            if exact is not None:
+                assignments[record.id] = EventAssignment(
+                    item_id=record.id,
+                    event_id=exact.event_id,
+                    role="supporting",
+                    match_method="source_url_exact",
+                    similarity=1.0,
+                    matched_item_id=exact.item.id,
+                    ai_result={},
+                )
+                updated_event_ids.add(exact.event_id)
+                continue
+            best = self._best_existing_match(record, vectors[record.id], anchors, existing_vectors)
             if best is None:
                 continue
             source, similarity, method, ai_result = best
@@ -169,74 +198,81 @@ class NewsflashEventAggregator:
                 ai_result=ai_result,
             )
 
-        print(f"[odaily] competitor event phase=match_batch new_count={len(new_records)}")
-        for left_index, left in enumerate(new_records):
-            for right in new_records[left_index + 1 :]:
+        # A new item can share a source URL with another new item that already
+        # matched an existing event. Resolve that exact identity before doing
+        # the stricter anchor-based grouping below.
+        for record in new_records:
+            if record.id in assignments:
+                continue
+            record_url = canonicalize_source_url(record.source_url)
+            if not record_url:
+                continue
+            exact_assigned = next(
+                (
+                    other
+                    for other in new_records
+                    if other.id != record.id
+                    and assignments.get(other.id) is not None
+                    and canonicalize_source_url(other.source_url) == record_url
+                ),
+                None,
+            )
+            if exact_assigned is not None:
+                current = assignments[exact_assigned.id]
+                assignments[record.id] = EventAssignment(
+                    item_id=record.id,
+                    event_id=current.event_id,
+                    role="supporting",
+                    match_method="source_url_exact",
+                    similarity=1.0,
+                    matched_item_id=exact_assigned.id,
+                    ai_result={},
+                )
+
+        unassigned = {
+            record.id: record
+            for record in new_records
+            if record.id not in assignments
+        }
+        groups: list[list[tuple[NewsflashItemRecord, dict[str, Any] | None]]] = []
+        print(f"[odaily] competitor event phase=match_batch new_count={len(unassigned)}")
+        while unassigned:
+            anchor = min(unassigned.values(), key=_record_sort_key)
+            del unassigned[anchor.id]
+            group: list[tuple[NewsflashItemRecord, dict[str, Any] | None]] = [(anchor, None)]
+            for candidate in sorted(unassigned.values(), key=_record_sort_key):
                 decision = self._same_event_decision(
-                    left=left,
-                    right=right,
-                    similarity=cosine_similarity(vectors[left.id], vectors[right.id]),
+                    left=anchor,
+                    right=candidate,
+                    similarity=cosine_similarity(vectors[anchor.id], vectors[candidate.id]),
                 )
                 if decision is None:
                     continue
-                groups.union(left.id, right.id)
-                for item_id in (left.id, right.id):
-                    current = assignments.get(item_id)
-                    if current is None or decision["similarity"] > (current.similarity or -1.0):
-                        other = right if item_id == left.id else left
-                        assignments[item_id] = EventAssignment(
-                            item_id=item_id,
-                            event_id=current.event_id if current else "",
-                            role="supporting",
-                            match_method=decision["method"],
-                            similarity=decision["similarity"],
-                            matched_item_id=other.id,
-                            ai_result=decision["ai_result"],
-                        )
+                group.append((candidate, decision))
+                del unassigned[candidate.id]
+            groups.append(group)
 
-        records_by_id = {record.id: record for record in new_records}
-        print(f"[odaily] competitor event phase=write_assignments components={len(groups.components())}")
-        for root, item_ids in groups.components().items():
-            event_ids = {assignments[item_id].event_id for item_id in item_ids if assignments.get(item_id) and assignments[item_id].event_id}
-            component_needs_review = self._has_chain_conflict(item_ids, records_by_id, vectors)
-            if event_ids:
-                event_id = sorted(event_ids)[0]
-                needs_review = len(event_ids) > 1 or component_needs_review
-                primary_item_id: int | None = None
-            else:
-                primary = min((records_by_id[item_id] for item_id in item_ids), key=_record_sort_key)
-                needs_review = component_needs_review
-                event_id = self.repository.create_event_with_source(primary, needs_review=needs_review)
-                primary_item_id = primary.id
+        print(f"[odaily] competitor event phase=write_assignments components={len(groups)}")
+        for group in groups:
+            primary, _ = group[0]
+            event_id = self.repository.create_event_with_source(primary, needs_review=False)
             updated_event_ids.add(event_id)
-            for item_id in item_ids:
-                record = records_by_id[item_id]
-                current = assignments.get(item_id)
-                target_event_id = event_id
-                if item_id in existing_by_item_id and current and current.event_id and current.event_id != event_id:
-                    target_event_id = current.event_id
-                    updated_event_ids.add(target_event_id)
-                if (
-                    item_id in existing_by_item_id
-                    and current
-                    and current.event_id == target_event_id
-                    and current.match_method == "existing_assignment"
-                ):
-                    continue
-                if item_id == primary_item_id and target_event_id == event_id:
-                    continue
+            for record, decision in group[1:]:
                 self.repository.assign_item_to_event(
                     EventAssignment(
-                        item_id=item_id,
-                        event_id=target_event_id,
-                        role="primary" if item_id == primary_item_id else "supporting",
-                        match_method=current.match_method if current else "new_event",
-                        similarity=current.similarity if current else None,
-                        matched_item_id=current.matched_item_id if current else None,
-                        ai_result=current.ai_result if current else {},
-                        needs_review=needs_review or (target_event_id != event_id) or (current.needs_review if current else False),
+                        item_id=record.id,
+                        event_id=event_id,
+                        role="supporting",
+                        match_method=decision["method"] if decision else "new_event",
+                        similarity=decision["similarity"] if decision else None,
+                        matched_item_id=primary.id,
+                        ai_result=decision["ai_result"] if decision else {},
+                        needs_review=False,
                     )
                 )
+
+        for current in assignments.values():
+            self.repository.assign_item_to_event(current)
         print(f"[odaily] competitor event phase=update_summaries events={len(updated_event_ids)}")
         self.repository.update_event_summaries(updated_event_ids)
         print(
@@ -281,23 +317,34 @@ class NewsflashEventAggregator:
         self,
         record: NewsflashItemRecord,
         vector: list[float],
-        existing_sources: list[EventSourceRecord],
+        anchors: list[EventSourceRecord],
         existing_vectors: dict[int, list[float]],
     ) -> tuple[EventSourceRecord, float, str, dict[str, Any]] | None:
-        best: tuple[EventSourceRecord, float] | None = None
-        for source in existing_sources:
-            candidate_vector = existing_vectors.get(source.item.id)
-            if candidate_vector is None:
+        best: tuple[EventSourceRecord, dict[str, Any]] | None = None
+        for anchor in anchors:
+            anchor_vector = existing_vectors.get(anchor.item.id)
+            if anchor_vector is None:
                 continue
-            similarity = cosine_similarity(vector, candidate_vector)
-            if best is None or similarity > best[1]:
-                best = (source, similarity)
+            similarity = cosine_similarity(vector, anchor_vector)
+            decision = self._same_event_decision(left=record, right=anchor.item, similarity=similarity)
+            if decision is None:
+                continue
+            if best is None or decision["similarity"] > best[1]["similarity"]:
+                best = (anchor, decision)
         if best is None:
             return None
-        decision = self._same_event_decision(left=record, right=best[0].item, similarity=best[1])
-        if decision is None:
-            return None
-        return best[0], decision["similarity"], decision["method"], decision["ai_result"]
+        anchor, decision = best
+        return anchor, decision["similarity"], decision["method"], decision["ai_result"]
+
+    @staticmethod
+    def _event_anchors(existing_sources: list[EventSourceRecord]) -> list[EventSourceRecord]:
+        by_event: dict[str, list[EventSourceRecord]] = {}
+        for source in existing_sources:
+            by_event.setdefault(source.event_id, []).append(source)
+        return [
+            min(sources, key=lambda source: _record_sort_key(source.item))
+            for sources in by_event.values()
+        ]
 
     def _same_event_decision(
         self,
@@ -306,6 +353,8 @@ class NewsflashEventAggregator:
         right: NewsflashItemRecord,
         similarity: float,
     ) -> dict[str, Any] | None:
+        if same_source_url(left.source_url, right.source_url):
+            return {"similarity": 1.0, "method": "source_url_exact", "ai_result": {}}
         if similarity >= self.settings.event_duplicate_threshold:
             return {"similarity": similarity, "method": "embedding_high", "ai_result": {}}
         if similarity < self.settings.event_ai_review_threshold or self.ai_client is None:
@@ -313,7 +362,7 @@ class NewsflashEventAggregator:
         try:
             raw_output = self.ai_client.generate_text(
                 model=self.settings.event_review_model,
-                prompt=build_event_review_prompt(left=left, right=right, similarity=similarity),
+                prompt=build_event_review_prompt(left=left, right=right),
                 text_format=EVENT_REVIEW_SCHEMA,
             )
             payload = parse_ai_review_output(raw_output)
@@ -324,44 +373,14 @@ class NewsflashEventAggregator:
                 f"similarity={similarity:.4f} error={exc}"
             )
             return None
-        is_same = bool(payload.get("is_same_event"))
+        is_same = payload.get("is_same_event") is True
         if not is_same:
             return None
         return {
             "similarity": similarity,
             "method": "ai_same_event",
-            "ai_result": {"raw_output": raw_output, "reason": payload.get("reason") or "same_event"},
+            "ai_result": {"raw_output": raw_output},
         }
-
-    def _has_chain_conflict(
-        self,
-        item_ids: set[int],
-        records_by_id: dict[int, NewsflashItemRecord],
-        vectors: dict[int, list[float]],
-    ) -> bool:
-        if len(item_ids) < 3:
-            return False
-        ordered = sorted(item_ids)
-        for left_index, left_id in enumerate(ordered):
-            for right_id in ordered[left_index + 1 :]:
-                left_vector = vectors.get(left_id)
-                right_vector = vectors.get(right_id)
-                if left_vector is None or right_vector is None:
-                    continue
-                similarity = cosine_similarity(left_vector, right_vector)
-                if similarity < self.settings.event_ai_review_threshold:
-                    return True
-                if similarity < self.settings.event_duplicate_threshold and self.ai_client is None:
-                    return True
-                if similarity < self.settings.event_duplicate_threshold and self.ai_client is not None:
-                    decision = self._same_event_decision(
-                        left=records_by_id[left_id],
-                        right=records_by_id[right_id],
-                        similarity=similarity,
-                    )
-                    if decision is None:
-                        return True
-        return False
 
     @staticmethod
     def _build_embedding_client(settings: CompetitorMonitorSettings) -> DashScopeEmbeddingClient:
@@ -390,24 +409,74 @@ class NewsflashEventAggregator:
         )
 
 
-def build_event_review_prompt(*, left: NewsflashItemRecord, right: NewsflashItemRecord, similarity: float) -> str:
+def build_event_review_prompt(*, left: NewsflashItemRecord, right: NewsflashItemRecord) -> str:
     return (
-        "你是 Odaily 竞品快讯事件归属器。判断两条快讯是否属于同一个新闻事件。\n"
-        "同一事件要求主体、核心动作、关键结果基本一致；同一主体的新进展或不同动作不是同一事件。\n"
-        "只判断事件归属，不评价标题或正文质量。只输出 JSON，不输出解释。\n\n"
+        "你是 Odaily 竞品快讯的同一报道判断器。\n"
+        "你的唯一任务是判断两条快讯是否在报道同一份原始消息。\n"
+        "只有当两条快讯可以追溯到同一篇原始文章、同一条社交媒体发言、同一份公告或报告，\n"
+        "或者报道同一个主体在同一时点作出的同一项声明、动作、数据发布或事实披露时，才返回 true。\n"
+        "标题写法、篇幅、语言和强调重点不同，不影响判断；同一个核心消息可以有不同角度的改写。\n"
+        "以下情况必须返回 false：只是主体、行业或主题相同；不同分析、预测、评论或报道角度；\n"
+        "预告、后续进展、正式结果或市场反应；一条独立报道与一条包含多项消息的综合要闻；\n"
+        "两条只存在部分事实重合；无法确认来自同一份消息。\n"
+        "不要把‘同一主题’或‘同一场事件’当作‘同一报道’。证据不足时返回 false。\n"
+        "只输出 JSON，不输出解释。\n\n"
         "【快讯 A】\n"
+        f"来源：{left.source}\n"
+        f"原始链接：{left.source_url or ''}\n"
         f"标题：{left.title or ''}\n"
         f"正文：{left.content}\n\n"
         "【快讯 B】\n"
+        f"来源：{right.source}\n"
+        f"原始链接：{right.source_url or ''}\n"
         f"标题：{right.title or ''}\n"
         f"正文：{right.content}\n"
-        f"相似度：{similarity:.4f}\n\n"
-        'JSON格式：{"is_same_event":true|false,"reason":"same_event|same_topic_different_event|update_of_existing_event|unrelated"}'
+        'JSON格式：{"is_same_event":true|false}'
     )
 
 
 def newsflash_cache_key(record: NewsflashItemRecord) -> str:
     return f"newsflash:{record.source}:{record.source_item_id}"
+
+
+def canonicalize_source_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlsplit(str(value).strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    netloc = host
+    if ":" in host:
+        netloc = f"[{host}]"
+    if port and not ((parsed.scheme.lower() == "http" and port == 80) or (parsed.scheme.lower() == "https" and port == 443)):
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    query = [
+        (key, item)
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in {"fbclid", "gclid", "mc_cid", "mc_eid"}
+    ]
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            netloc,
+            parsed.path.rstrip("/") or "/",
+            urlencode(sorted(query)),
+            "",
+        )
+    )
+
+
+def same_source_url(left: str | None, right: str | None) -> bool:
+    left_url = canonicalize_source_url(left)
+    right_url = canonicalize_source_url(right)
+    return bool(left_url and right_url and left_url == right_url)
 
 
 def generate_event_id() -> str:
@@ -434,26 +503,3 @@ def _content_hash(text: str) -> str:
 
 def _record_sort_key(record: NewsflashItemRecord) -> tuple[datetime, int]:
     return (record.published_at or record.first_seen_at or datetime.max.replace(tzinfo=UTC), record.id)
-
-
-class _DisjointSet:
-    def __init__(self, values: set[int]) -> None:
-        self.parent = {value: value for value in values}
-
-    def find(self, value: int) -> int:
-        parent = self.parent[value]
-        if parent != value:
-            self.parent[value] = self.find(parent)
-        return self.parent[value]
-
-    def union(self, left: int, right: int) -> None:
-        left_root = self.find(left)
-        right_root = self.find(right)
-        if left_root != right_root:
-            self.parent[max(left_root, right_root)] = min(left_root, right_root)
-
-    def components(self) -> dict[int, set[int]]:
-        result: dict[int, set[int]] = {}
-        for value in self.parent:
-            result.setdefault(self.find(value), set()).add(value)
-        return result
