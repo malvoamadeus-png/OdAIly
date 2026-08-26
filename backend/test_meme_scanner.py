@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from packages.meme_scanner import scanner
 
@@ -83,37 +83,29 @@ class MemeScannerTests(unittest.TestCase):
             store.close()
 
     def test_completed_request_has_no_market_cap_filters(self) -> None:
-        payload = {"data": {"completed": []}}
-        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
-        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
-            scanner.subprocess, "run", return_value=completed
-        ) as run:
+        client = Mock()
+        client.list_migrated.side_effect = [[], []]
+        client.price_info.return_value = {}
+        with patch.object(scanner, "get_okx_client", return_value=client):
             scanner.fetch_completed_tokens(80)
-        command = run.call_args.args[0]
-        self.assertNotIn("--min-marketcap", command)
-        self.assertNotIn("--max-marketcap", command)
-        self.assertNotIn("--launchpad-platform", command)
-        self.assertNotIn("--sort-by", command)
+        self.assertEqual([call.args for call in client.list_migrated.call_args_list], [("bsc",), ("robinhood",)])
+        self.assertEqual(client.price_info.call_count, 0)
 
     def test_completed_request_keeps_unknown_launchpad_platforms(self) -> None:
-        payload = {
-            "completed": [
-                {
-                    "address": "0x1111111111111111111111111111111111111111",
-                    "launchpad_platform": "flap_stocks",
-                    "symbol": "STOCKS",
-                    "name": "Stocks",
-                    "usd_market_cap": 20_000,
-                    "volume_24h": 15_000,
-                }
-            ]
-        }
-        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
-        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
-            scanner.subprocess, "run", return_value=completed
-        ):
+        client = Mock()
+        client.list_migrated.side_effect = [[{
+            "tokenAddress": "0x1111111111111111111111111111111111111111",
+            "protocolId": "999",
+            "symbol": "STOCKS",
+            "name": "Stocks",
+            "market": {"marketCapUsd": "20000"},
+            "tags": {},
+            "social": {},
+        }], []]
+        client.price_info.return_value = {}
+        with patch.object(scanner, "get_okx_client", return_value=client):
             tokens = scanner.fetch_completed_tokens(80)
-        self.assertEqual([(token.platform, token.symbol) for token in tokens], [("flap_stocks", "STOCKS")])
+        self.assertEqual([(token.platform, token.symbol, token.chain) for token in tokens], [("okx:999", "STOCKS", "bsc")])
 
     def test_token_info_accepts_nested_market_payload_without_repeated_address(self) -> None:
         payload = {
@@ -126,7 +118,7 @@ class MemeScannerTests(unittest.TestCase):
         with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
             scanner.subprocess, "run", return_value=completed
         ):
-            current = scanner.fetch_token_info("0x1111111111111111111111111111111111111111")
+            current = scanner.fetch_gmgn_token_info("0x1111111111111111111111111111111111111111")
         self.assertIsNotNone(current)
         self.assertEqual((current.symbol, current.market_cap, current.volume_24h), ("NEST", 160_000.0, 90_000.0))
 
@@ -143,7 +135,7 @@ class MemeScannerTests(unittest.TestCase):
         with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
             scanner.subprocess, "run", return_value=completed
         ):
-            current = scanner.fetch_token_info(address)
+            current = scanner.fetch_gmgn_token_info(address)
         self.assertIsNotNone(current)
         self.assertEqual((current.market_cap, current.volume_24h), (160_000.0, 90_000.0))
 
@@ -163,14 +155,15 @@ class MemeScannerTests(unittest.TestCase):
             "price": {"address": "", "price": "0"},
         }
 
-        def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            chain = command[command.index("--chain") + 1]
+        def lookup(_address: str, chain: str = "bsc", **_: object) -> scanner.Token | None:
             payload = robinhood_payload if chain == "robinhood" else bsc_payload
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+            row = dict(payload)
+            row["chain"] = chain
+            row["usd_market_cap"] = 1_200_000 if chain == "robinhood" else 0
+            row["volume_24h"] = 900_000 if chain == "robinhood" else 0
+            return scanner.token_from_row(row, allow_unknown_platform=True) if row["usd_market_cap"] else None
 
-        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
-            scanner.subprocess, "run", side_effect=run
-        ):
+        with patch.object(scanner, "fetch_token_info", side_effect=lookup):
             current = scanner.fetch_tg_token_info(address, "evm")
         self.assertIsNotNone(current)
         self.assertEqual((current.platform, current.chain, current.market_cap), ("pons_v2", "robinhood", 1_200_000.0))
@@ -186,12 +179,14 @@ class MemeScannerTests(unittest.TestCase):
             "price": {"address": address, "price": "0.00249", "volume_24h": "1000000"},
         }
 
-        def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+        def lookup(_address: str, chain: str = "bsc", **_: object) -> scanner.Token:
+            row = dict(payload)
+            row["chain"] = chain
+            row["usd_market_cap"] = 2_490_000
+            row["volume_24h"] = 1_000_000
+            return scanner.token_from_row(row, allow_unknown_platform=True)
 
-        with patch.object(scanner, "ensure_cli_ready", return_value=True), patch.object(
-            scanner.subprocess, "run", side_effect=run
-        ):
+        with patch.object(scanner, "fetch_token_info", side_effect=lookup):
             current = scanner.fetch_tg_token_info(address, "evm")
 
         self.assertIsNotNone(current)
@@ -259,7 +254,7 @@ class MemeScannerTests(unittest.TestCase):
             rows = store.conn.execute(
                 "SELECT trigger_key FROM jobs WHERE address=? ORDER BY id", (first.address,)
             ).fetchall()
-            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:0xlevels:500000"])
+            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:bsc:0xlevels:500000"])
             store.close()
 
     def test_text_shell_omits_launch_age_and_uses_news_wording(self) -> None:
@@ -302,7 +297,7 @@ class MemeScannerTests(unittest.TestCase):
             jumped = token("0xjump", 1_200_000, 800_000)
             self.assertEqual(scanner.evaluate_market_token(store, jumped, bootstrap=False), (1, 0))
             row = store.conn.execute("SELECT trigger_key, trigger_level FROM jobs").fetchone()
-            self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:0xjump:1000000", 1_000_000.0))
+            self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:bsc:0xjump:1000000", 1_000_000.0))
             store.close()
 
     def test_tg_burst_does_not_consume_market_cap_milestone(self) -> None:
@@ -337,7 +332,7 @@ class MemeScannerTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(
                 (row["trigger_kind"], row["trigger_key"], row["trigger_level"]),
-                ("market_cap_milestone", "market_cap:0xburst-milestone:1000000", 1_000_000.0),
+                ("market_cap_milestone", "market_cap:bsc:0xburst-milestone:1000000", 1_000_000.0),
             )
             self.assertEqual(observation["tracking_status"], "legacy_untracked")
             store.close()
@@ -434,7 +429,7 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_completed_tokens", return_value=[current]):
                 scanner.discover_once(store, args(root))
             rows = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchall()
-            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:0xthree:3000000"])
+            self.assertEqual([row["trigger_key"] for row in rows], ["market_cap:bsc:0xthree:3000000"])
             store.close()
 
     def test_completed_token_does_not_call_token_info_while_in_latest_list(self) -> None:
@@ -650,7 +645,7 @@ class MemeScannerTests(unittest.TestCase):
                 scanner.scan_once(store, args(root))
             job = store.conn.execute("SELECT trigger_key FROM jobs WHERE address=?", (current.address,)).fetchone()
             observation = store.observation(current.address)
-            self.assertEqual(job["trigger_key"], "market_cap:0xaaa:500000")
+            self.assertEqual(job["trigger_key"], "market_cap:bsc:0xaaa:500000")
             self.assertEqual(observation["tracking_status"], "active")
             self.assertEqual(observation["tracking_source"], "completed")
             self.assertTrue(observation["tracking_started_at"])

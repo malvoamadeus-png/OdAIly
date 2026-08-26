@@ -1,5 +1,5 @@
 [Unit]
-Description=OdAIly Meme GMGN scanner and draft generator
+Description=OdAIly Meme OKX scanner and draft generator
 After=network-online.target
 Wants=network-online.target
 

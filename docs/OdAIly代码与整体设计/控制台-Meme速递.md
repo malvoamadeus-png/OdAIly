@@ -7,17 +7,17 @@
 
 ## 上游链路
 
-- `odaily-meme-scanner.service` 每 5 分钟以 BSC + `completed` + limit 的宽口径请求读取 GMGN 发射代币列表，不附加市值、平台或客户端排序参数；API 返回集合仍可能受上游候选数量限制，`completed` 只承担首次发现窗口，不是完整的市值扫描源。
+- `odaily-meme-scanner.service` 每 5 分钟分别以 BSC chainIndex `56`、Robinhood chainIndex `4663` 请求 OKX MemePump 的 `stage=MIGRATED` 列表，不附加市值过滤；每条链最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。列表代币再通过 OKX `price-info` 批量补齐市值、24 小时成交量、流动性和持有人数。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
-- 普通新币首次进入 `completed` 即建立 7 天跟踪窗口，市值达到 50 万美元后进入播报候选，后续里程碑为 100 万和 300 万美元；首次发现已跨多档时只触发最高档。
-- 仍在最近一次 `completed` 列表中的代币直接使用列表市值，不调用 `token_info`。滚出列表但仍在 7 天窗口内的代币由持久化调度器调用 `token_info`：市值低于 50 万美元每小时一次，达到 50 万美元每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程请求用于错峰限流。
-- 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 `completed` 也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口。
+- 普通代币首次进入 OKX `MIGRATED` 列表即建立 7 天跟踪窗口；BSC 市值达到 50 万美元、Robinhood 市值达到 100 万美元后进入播报候选，后续里程碑为 100 万/300 万美元（BSC）和 300 万美元（Robinhood）；首次发现已跨多档时只触发最高档。
+- 仍在最近一次 OKX 列表中的代币直接使用本轮列表和 `price-info` 数据，不调用单币详情。滚出列表但仍在 7 天窗口内的代币由持久化调度器按链批量调用 OKX `tokenDetails` 与 `price-info`：市值低于本链第一门槛每小时一次，达到门槛每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程调度用于错峰限流。
+- 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 OKX 最新列表也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口；观察和里程碑按 `chain + address` 隔离。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 先查询 Robinhood Chain，再以 BNB Chain（30 万美元）兜底；Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
-- 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。
+- 两类任务均执行成交量门槛、OKX 风险字段记录、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。OKX 的 Top10、Dev、Insiders、Bundlers、Snipers、疑似钓鱼钱包、流动性和社交字段写入原始快照；`MEME_OKX_RISK_MODE=shadow` 只记录风险标记，`block` 才会拦截疑似钓鱼钱包比例不低于 5%或 Top10 持仓不低于 80%的普通里程碑任务。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子。FxTwitter 404 作为该页空结果保留在审计中，其他 X 采集异常降级为空材料并保留诊断，不阻断 Telegram、Grok、GMGN 和最终写作；GMGN 并行读取精确链和 CA 的 `data.zh_cn`；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面，添加 `Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明；`Grok补充：` 段落若缺少末尾标点会自动补充句号；GMGN 补充行若包含“标志”，且该词前没有非引号逗号，则删除整行；若该词前已有非引号逗号，则从前面的逗号开始截断并以句号收尾。免责声明固定为“「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。”；社群热议正文摘要使用“GMGN显示当前市值为{market_cap}万美元”。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子。FxTwitter 404 作为该页空结果保留在审计中，其他 X 采集异常降级为空材料并保留诊断，不阻断 Telegram、Grok、GMGN 和最终写作；GMGN 仍可并行读取精确链和 CA 的 `data.zh_cn` 作为叙事补充；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面，添加 `Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明；`Grok补充：` 段落若缺少末尾标点会自动补充句号；GMGN 补充行若包含“标志”，且该词前没有非引号逗号，则删除整行；若该词前已有非引号逗号，则从前面的逗号开始截断并以句号收尾。免责声明固定为“「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。”；社群热议正文摘要按市场来源显示“OKX/GMGN显示当前市值为{market_cap}万美元”。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 文本口径
 
@@ -59,7 +59,7 @@ python backend/src/main.py meme tg-watch --check
 python backend/src/main.py meme tg-watch
 ```
 
-- `meme scan --once`：执行一次 GMGN 发现并最多处理一个任务，默认 dry-run。
+- `meme scan --once`：执行一次 OKX BSC/Robinhood 发现并最多处理一个任务，默认 dry-run。
 - `meme scan --send`：常驻轮询并真实写入挂后台稿件，固定 `isPublish=false,isPush=false`。
 - Meme 速递内部保存的正文仍为纯文本；仅在组装推送请求时，将每个非空行转换为 HTML 段落并转义 `&`、`<`、`>`，与通用 `PushClient` 使用同一规则。空行会被删除。
 - `meme tg-watch --check`：校验 Telegram 登录和白名单可见性后退出。
@@ -67,12 +67,12 @@ python backend/src/main.py meme tg-watch
 
 ## 配置
 
-- GMGN：`GMGN_API_KEY`，可选 `GMGN_HTTPS_PROXY`；服务器需安装 `gmgn-cli`。
+- OKX：`OKX_API_KEY`、`OKX_SECRET_KEY`、`OKX_PASSPHRASE`；`MEME_OKX_TIMEOUT_SECONDS`、`MEME_OKX_MAX_ATTEMPTS` 控制 REST 超时和重试，`MEME_OKX_RISK_MODE` 默认为 `shadow`。BSC/Robinhood 市场发现、价格和单币风险查询使用 OKX；Solana 兼容路径仍可使用 GMGN。
 - 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
-- CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`。EVM 候选按 Robinhood、BSC 顺序查询并采用首个有效链结果；任务 payload、叙事、标题、控制台字段和 GMGN 链接沿用该链值。
+- CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`。EVM 候选按 Robinhood、BSC 顺序查询并采用首个有效链结果；任务 payload、快照、观察、里程碑、叙事和标题沿用该链值，BSC/Robinhood 市场字段来源为 OKX。
 - 叙事 Telegram 配置：`MEME_TELEGRAM_CONFIG`、`MEME_TELEGRAM_NARRATIVE_SESSION`、`MEME_TELEGRAM_ALLOWED_CHATS`；默认读取 `data/config/meme_telegram.txt`、`data/processed/meme_telegram_narrative` 和 `data/config/meme_whitelist.txt`。
 - FxTwitter CA 搜索：调用公开 `https://api.fxtwitter.com/2/search`，不需要 Grok 凭证；404 页面按空结果处理，其他请求异常作为 X 阶段降级诊断，不阻断其他叙事材料；Grok 研究/实体补充读取 `GROK_BASE_URL`、`GROK_API_KEY`、`GROK_MODEL`，也兼容 `MEME_GROK_BASE_URL`、`MEME_GROK_API_KEY`、`MEME_GROK_MODEL`；默认模型为 `grok-4.5`。
 - GMGN 叙事：通过有头 Playwright 浏览器在 `xvfb-run` 虚拟显示器中访问公开 `https://gmgn.ai/api/v1/token_ai_narrative/{chain}/{token_address}`，使用任务实际链值，不需要登录、API Key 或 Authorization；公共查询参数可由 `MEME_GMGN_DEVICE_ID`、`MEME_GMGN_FP_DID`、`MEME_GMGN_CLIENT_ID`、`MEME_GMGN_APP_VER`、`MEME_GMGN_TZ_NAME`、`MEME_GMGN_TZ_OFFSET`、`MEME_GMGN_APP_LANG` 覆盖，代理可由 `MEME_GMGN_HTTPS_PROXY` 或 `GMGN_HTTPS_PROXY` 指定，超时由 `MEME_GMGN_TIMEOUT` 控制，页面稳定等待由 `MEME_GMGN_BROWSER_SETTLE_MS` 控制。服务器需安装 Playwright Chromium 和 `xvfb-run`。GMGN 403/429、浏览器依赖缺失等补充接口失败只记录诊断，不阻断已有主材料写作；控制台 GMGN 链接也按任务链值生成，Solana 使用 GMGN 的 `sol` 路径。
@@ -86,7 +86,7 @@ python backend/src/main.py meme tg-watch
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
-- `token_info` 成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不推进市值水位。429 会记录服务端退避时间并暂停全局 `token_info` 请求；调度积压写入 worker 日志。
+- OKX `price-info`/`tokenDetails` 成功后更新当前市值、24 小时成交量、最高水位、风险原始字段和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗。429/超时会通过 REST 适配器重试并记录服务端退避；调度积压写入 worker 日志。
 - `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 GMGN `token_info` 链路。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。

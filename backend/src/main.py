@@ -404,10 +404,10 @@ def parse_args() -> argparse.Namespace:
 
     meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
     meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
-    meme_scan = meme_subparsers.add_parser("scan", help="Scan GMGN BSC launch tokens and generate Meme drafts.")
+    meme_scan = meme_subparsers.add_parser("scan", help="Scan OKX BSC and Robinhood migrated tokens and generate Meme drafts.")
     meme_scan.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
     meme_scan.add_argument("--audit-dir", default=str(get_paths().exports_dir / "meme_scanner"))
-    meme_scan.add_argument("--limit", type=int, default=80)
+    meme_scan.add_argument("--limit", type=int, default=30)
     meme_scan.add_argument(
         "--completed-interval",
         type=int,

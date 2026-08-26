@@ -11,8 +11,9 @@ import sys
 import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +26,21 @@ from packages.publisher import content_to_paragraph_html
 
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .narrative import generate_reader_text
+from .okx import OKXClient
 
 
 CHAIN = "bsc"
 SUPPORTED_CHAINS = {"bsc", "robinhood", "solana"}
 MARKET_CAP_GATE = 500_000.0
-MARKET_CAP_LEVELS = (500_000.0, 1_000_000.0, 3_000_000.0)
+MARKET_CAP_GATES = {"bsc": 500_000.0, "robinhood": 1_000_000.0, "solana": 500_000.0}
+MARKET_CAP_LEVELS_BY_CHAIN = {
+    "bsc": (500_000.0, 1_000_000.0, 3_000_000.0),
+    "robinhood": (1_000_000.0, 3_000_000.0),
+    "solana": (500_000.0, 1_000_000.0, 3_000_000.0),
+}
+MARKET_CAP_LEVELS = MARKET_CAP_LEVELS_BY_CHAIN[CHAIN]
+OKX_DISCOVERY_CHAINS = ("bsc", "robinhood")
+OKX_DISCOVERY_LIMIT = 30
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
 TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
@@ -72,6 +82,7 @@ class Token:
     created_timestamp: int | None
     raw: dict[str, Any]
     chain: str = CHAIN
+    metrics_complete: bool = True
 
     @property
     def volume_ratio(self) -> float:
@@ -105,10 +116,18 @@ def parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def tracking_interval(market_cap: float, args: argparse.Namespace) -> int:
+def market_cap_gate(chain: str) -> float:
+    return MARKET_CAP_GATES.get(normalize_chain(chain, default=CHAIN), MARKET_CAP_GATE)
+
+
+def market_cap_levels(chain: str) -> tuple[float, ...]:
+    return MARKET_CAP_LEVELS_BY_CHAIN.get(normalize_chain(chain, default=CHAIN), MARKET_CAP_LEVELS)
+
+
+def tracking_interval(market_cap: float, args: argparse.Namespace, chain: str = CHAIN) -> int:
     return (
         int(getattr(args, "token_info_high_interval", TOKEN_INFO_HIGH_INTERVAL_SECONDS))
-        if market_cap >= MARKET_CAP_GATE
+        if market_cap >= market_cap_gate(chain)
         else int(getattr(args, "token_info_low_interval", TOKEN_INFO_LOW_INTERVAL_SECONDS))
     )
 
@@ -154,6 +173,11 @@ def normalize_chain(value: Any, *, default: str = CHAIN) -> str:
     return default if default in SUPPORTED_CHAINS else CHAIN
 
 
+@lru_cache(maxsize=1)
+def get_okx_client() -> OKXClient:
+    return OKXClient()
+
+
 def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
     # Launchpad/platform is metadata only. Keep the keyword for compatibility
     # with older callers, but never reject a token based on its platform value.
@@ -172,10 +196,92 @@ def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False)
         created_timestamp=timestamp(row.get("created_timestamp")),
         raw=row,
         chain="solana" if chain == "solana" or platform == "solana" else chain or CHAIN,
+        metrics_complete=bool(row.get("_market_metrics_complete", True)),
     )
 
 
-def fetch_completed_tokens(limit: int) -> list[Token]:
+def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
+    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or "").strip().lower()
+    if not address:
+        return None
+    market = item.get("market") if isinstance(item.get("market"), dict) else {}
+    raw = dict(item)
+    raw.update(
+        {
+            "address": address,
+            "chain": chain,
+            "launchpad_platform": f"okx:{item.get('protocolId') or 'unknown'}",
+            "usd_market_cap": market.get("marketCapUsd"),
+            "volume_24h": 0,
+            "_market_metrics_complete": False,
+            "market_source": "okx",
+        }
+    )
+    token = token_from_row(raw, allow_unknown_platform=True)
+    if token is None:
+        return None
+    token.raw["okx_risk_flags"] = okx_risk_flags(token)
+    return replace(token, metrics_complete=False)
+
+
+def _merge_okx_price_info(token: Token, metrics: dict[str, Any] | None) -> Token:
+    if not metrics:
+        return token
+    raw = dict(token.raw)
+    raw["price_info"] = metrics
+    raw["usd_market_cap"] = metrics.get("marketCap") or raw.get("usd_market_cap")
+    raw["volume_24h"] = metrics.get("volume24H")
+    raw["volume_1h"] = metrics.get("volume1H")
+    raw["liquidity"] = metrics.get("liquidity")
+    raw["holders"] = metrics.get("holders")
+    raw["_market_metrics_complete"] = metrics.get("marketCap") not in (None, "") and metrics.get("volume24H") not in (None, "")
+    merged = token_from_row(raw, allow_unknown_platform=True)
+    if merged is None:
+        return token
+    merged.raw["okx_risk_flags"] = okx_risk_flags(merged)
+    return replace(merged, metrics_complete=True)
+
+
+def okx_risk_flags(token: Token) -> list[str]:
+    tags = token.raw.get("tags") if isinstance(token.raw.get("tags"), dict) else {}
+    social = token.raw.get("social") if isinstance(token.raw.get("social"), dict) else {}
+    flags: list[str] = []
+    if number(tags.get("suspectedPhishingWalletPercent")) >= 5:
+        flags.append("suspected_phishing_wallets_high")
+    if number(tags.get("top10HoldingsPercent")) >= 80:
+        flags.append("top10_concentration_high")
+    if number(tags.get("devHoldingsPercent")) >= 5:
+        flags.append("dev_holdings_high")
+    if number(tags.get("insidersPercent")) >= 10:
+        flags.append("insiders_high")
+    if number(tags.get("bundlersPercent")) >= 5:
+        flags.append("bundlers_high")
+    if number(tags.get("snipersPercent")) >= 5:
+        flags.append("snipers_high")
+    if not any(str(social.get(key) or "").strip() for key in ("x", "telegram", "website")):
+        flags.append("no_social_links")
+    if number(token.raw.get("liquidity")) <= 0:
+        flags.append("liquidity_unavailable")
+    return flags
+
+
+def fetch_okx_migrated_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
+    client = get_okx_client()
+    discovered: list[Token] = []
+    for chain in OKX_DISCOVERY_CHAINS:
+        rows = client.list_migrated(chain, limit=limit)
+        tokens = [token for row in rows if (token := _okx_token_from_item(row, chain))]
+        metrics = client.price_info(chain, [token.address for token in tokens]) if tokens else {}
+        discovered.extend(_merge_okx_price_info(token, metrics.get(token.address)) for token in tokens)
+    return discovered
+
+
+def fetch_completed_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
+    """Compatibility name for callers of the former GMGN discovery seam."""
+    return fetch_okx_migrated_tokens(limit)
+
+
+def fetch_gmgn_token_info(address: str, chain: str = CHAIN, *, allow_unknown_platform: bool = False) -> Token | None:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
     # Keep the first discovery request broad. GMGN returns a capped candidate
@@ -276,6 +382,28 @@ def fetch_token_info(
     return token
 
 
+def fetch_okx_token_info(address: str, chain: str) -> Token | None:
+    client = get_okx_client()
+    details = client.token_details(chain, address)
+    token = _okx_token_from_item(details, chain)
+    if token is None:
+        return None
+    metrics = client.price_info(chain, [token.address]).get(token.address)
+    return _merge_okx_price_info(token, metrics)
+
+
+def fetch_token_info(
+    address: str,
+    chain: str = CHAIN,
+    *,
+    allow_unknown_platform: bool = False,
+) -> Token | None:
+    requested_chain = normalize_chain(chain)
+    if requested_chain in OKX_DISCOVERY_CHAINS:
+        return fetch_okx_token_info(address, requested_chain)
+    return fetch_gmgn_token_info(address, requested_chain, allow_unknown_platform=allow_unknown_platform)
+
+
 def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
     """Resolve a Telegram CA by chain; launchpad platform is not a gate."""
     if address_chain == "solana":
@@ -284,10 +412,17 @@ def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
         return None
     # EVM addresses do not encode their network. Probe Robinhood first so a
     # usable Robinhood response cannot be shadowed by a BSC fallback result.
+    last_error: Exception | None = None
     for chain in ("robinhood", "bsc"):
-        token = fetch_token_info(address, chain, allow_unknown_platform=True)
+        try:
+            token = fetch_token_info(address, chain, allow_unknown_platform=True)
+        except Exception as exc:
+            last_error = exc
+            continue
         if token is not None:
             return token
+    if last_error is not None:
+        raise last_error
     return None
 
 
@@ -312,7 +447,7 @@ class Store:
             """
             CREATE TABLE IF NOT EXISTS scanner_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS observations (
-              address TEXT PRIMARY KEY, chain TEXT NOT NULL DEFAULT 'bsc',
+              address TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'bsc',
               platform TEXT NOT NULL, symbol TEXT NOT NULL,
               last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
               last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
@@ -322,7 +457,8 @@ class Store:
               next_token_info_at TEXT, tracking_interval_seconds INTEGER,
               tracking_source TEXT, last_volume_24h REAL NOT NULL DEFAULT 0,
               token_info_failures INTEGER NOT NULL DEFAULT 0,
-              last_token_info_error TEXT
+              last_token_info_error TEXT,
+              PRIMARY KEY(address, chain)
             );
             CREATE TABLE IF NOT EXISTS tg_candidates (
               id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT NOT NULL,
@@ -349,7 +485,7 @@ class Store:
               symbol TEXT NOT NULL, level REAL NOT NULL, observed_at TEXT NOT NULL,
               snapshot_id INTEGER NOT NULL, trigger_key TEXT NOT NULL UNIQUE,
               job_id INTEGER, status TEXT NOT NULL,
-              PRIMARY KEY(address, level)
+              PRIMARY KEY(address, chain, level)
             );
             CREATE INDEX IF NOT EXISTS idx_market_cap_milestones_address
               ON market_cap_milestones(address, level);
@@ -393,6 +529,7 @@ class Store:
         for column, definition in observation_migrations.items():
             if column not in observation_columns:
                 self.conn.execute(f"ALTER TABLE observations ADD COLUMN {column} {definition}")
+        self._migrate_chain_scoped_tables()
         self.conn.execute(
             "UPDATE observations SET tracking_status='legacy_untracked', tracking_source=COALESCE(tracking_source, 'legacy') "
             "WHERE tracking_status IS NULL OR tracking_status=''"
@@ -460,6 +597,71 @@ class Store:
             )
             self.conn.execute("DROP TABLE jobs_v1")
 
+    def _migrate_chain_scoped_tables(self) -> None:
+        observation_sql_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='observations'"
+        ).fetchone()
+        observation_sql = str(observation_sql_row[0] or "") if observation_sql_row else ""
+        if "PRIMARYKEY(address,chain)" not in "".join(observation_sql.split()):
+            self.conn.execute("ALTER TABLE observations RENAME TO observations_legacy_chain")
+            self.conn.execute(
+                """CREATE TABLE observations (
+                  address TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'bsc',
+                  platform TEXT NOT NULL, symbol TEXT NOT NULL,
+                  last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
+                  last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
+                  tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked',
+                  tracking_started_at TEXT, tracking_expires_at TEXT,
+                  last_completed_seen_at TEXT, last_token_info_at TEXT,
+                  next_token_info_at TEXT, tracking_interval_seconds INTEGER,
+                  tracking_source TEXT, last_volume_24h REAL NOT NULL DEFAULT 0,
+                  token_info_failures INTEGER NOT NULL DEFAULT 0,
+                  last_token_info_error TEXT,
+                  PRIMARY KEY(address, chain)
+                )"""
+            )
+            self.conn.execute(
+                """INSERT INTO observations(
+                  address, chain, platform, symbol, last_market_cap, highest_market_cap,
+                  last_seen_at, triggered_at, published_at, tracking_status,
+                  tracking_started_at, tracking_expires_at, last_completed_seen_at,
+                  last_token_info_at, next_token_info_at, tracking_interval_seconds,
+                  tracking_source, last_volume_24h, token_info_failures, last_token_info_error
+                ) SELECT address, COALESCE(chain, 'bsc'), platform, symbol, last_market_cap,
+                  COALESCE(highest_market_cap, last_market_cap), last_seen_at, triggered_at,
+                  published_at, COALESCE(tracking_status, 'legacy_untracked'), tracking_started_at,
+                  tracking_expires_at, last_completed_seen_at, last_token_info_at,
+                  next_token_info_at, tracking_interval_seconds, tracking_source,
+                  COALESCE(last_volume_24h, 0), COALESCE(token_info_failures, 0), last_token_info_error
+                FROM observations_legacy_chain"""
+            )
+            self.conn.execute("DROP TABLE observations_legacy_chain")
+
+        milestone_sql_row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='market_cap_milestones'"
+        ).fetchone()
+        milestone_sql = str(milestone_sql_row[0] or "") if milestone_sql_row else ""
+        if "PRIMARYKEY(address,chain,level)" not in "".join(milestone_sql.split()):
+            self.conn.execute("ALTER TABLE market_cap_milestones RENAME TO market_cap_milestones_legacy_chain")
+            self.conn.execute(
+                """CREATE TABLE market_cap_milestones (
+                  address TEXT NOT NULL, chain TEXT NOT NULL, platform TEXT NOT NULL,
+                  symbol TEXT NOT NULL, level REAL NOT NULL, observed_at TEXT NOT NULL,
+                  snapshot_id INTEGER NOT NULL, trigger_key TEXT NOT NULL UNIQUE,
+                  job_id INTEGER, status TEXT NOT NULL,
+                  PRIMARY KEY(address, chain, level)
+                )"""
+            )
+            self.conn.execute(
+                """INSERT OR IGNORE INTO market_cap_milestones(
+                  address, chain, platform, symbol, level, observed_at, snapshot_id,
+                  trigger_key, job_id, status
+                ) SELECT address, COALESCE(chain, 'bsc'), platform, symbol, level,
+                  observed_at, snapshot_id, trigger_key, job_id, status
+                FROM market_cap_milestones_legacy_chain"""
+            )
+            self.conn.execute("DROP TABLE market_cap_milestones_legacy_chain")
+
     def close(self) -> None:
         self.conn.close()
 
@@ -481,8 +683,12 @@ class Store:
         )
         self.conn.commit()
 
-    def observation(self, address: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM observations WHERE address=?", (address,)).fetchone()
+    def observation(self, address: str, chain: str | None = None) -> sqlite3.Row | None:
+        if chain is None:
+            return self.conn.execute("SELECT * FROM observations WHERE address=?", (address,)).fetchone()
+        return self.conn.execute(
+            "SELECT * FROM observations WHERE address=? AND chain=?", (address, normalize_chain(chain))
+        ).fetchone()
 
     def record_snapshot(self, token: Token, *, observed_at: str, source: str, scan_id: str | None = None) -> int:
         cursor = self.conn.execute(
@@ -498,7 +704,7 @@ class Store:
         return int(cursor.lastrowid)
 
     def record_milestone(self, token: Token, *, level: float, observed_at: str, snapshot_id: int) -> bool:
-        trigger_key = f"market_cap:{token.address}:{int(level)}"
+        trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO market_cap_milestones(
               address, chain, platform, symbol, level, observed_at, snapshot_id,
@@ -519,7 +725,7 @@ class Store:
         advance_market_cap_high_watermark: bool = True,
         tracking_source: str = "legacy",
     ) -> None:
-        old = self.observation(token.address)
+        old = self.observation(token.address, token.chain)
         if advance_market_cap_high_watermark:
             observed_high = token.market_cap
         elif old:
@@ -531,7 +737,7 @@ class Store:
               address, chain, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
               triggered_at, published_at, tracking_status, tracking_source, last_volume_24h
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(address) DO UPDATE SET chain=excluded.chain, platform=excluded.platform, symbol=excluded.symbol,
+            ON CONFLICT(address, chain) DO UPDATE SET platform=excluded.platform, symbol=excluded.symbol,
               last_market_cap=excluded.last_market_cap, last_seen_at=excluded.last_seen_at,
               last_volume_24h=excluded.last_volume_24h,
               highest_market_cap=MAX(observations.highest_market_cap, excluded.highest_market_cap),
@@ -563,7 +769,7 @@ class Store:
         args: argparse.Namespace,
     ) -> tuple[float, bool, str]:
         """Register a completed discovery or refresh an already active window."""
-        old = self.observation(token.address)
+        old = self.observation(token.address, token.chain)
         previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0) if old else 0.0
         if old and str(old["tracking_source"] or "") == "tg":
             previous_high = 0.0
@@ -571,13 +777,13 @@ class Store:
         observed_time = parse_iso(observed_at) or datetime.now(UTC)
         if old and old["tracking_status"] == TRACKING_STATUS_ACTIVE and expires_at and expires_at <= observed_time:
             self.expire_tracking(observed_at)
-            old = self.observation(token.address)
+            old = self.observation(token.address, token.chain)
 
         status = str(old["tracking_status"]) if old else None
         if old and status in (TRACKING_STATUS_LEGACY, TRACKING_STATUS_EXPIRED) and str(old["tracking_source"] or "") == "tg":
             started_at = str(old["tracking_started_at"] or observed_at)
             expires = str(old["tracking_expires_at"] or (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat())
-            interval = tracking_interval(token.market_cap, args)
+            interval = tracking_interval(token.market_cap, args, token.chain)
             next_at = next_tracking_time(token.address, observed_time, interval)
             self.conn.execute(
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
@@ -585,9 +791,9 @@ class Store:
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
                   tracking_status='active', tracking_started_at=?, tracking_expires_at=?,
                   last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
-                  tracking_source='completed', last_volume_24h=? WHERE address=?""",
+                  tracking_source='completed', last_volume_24h=? WHERE address=? AND chain=?""",
                 (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at,
-                 started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address),
+                 started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address, token.chain),
             )
             self.conn.commit()
             return previous_high, False, TRACKING_STATUS_ACTIVE
@@ -596,13 +802,13 @@ class Store:
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
                   chain=?,
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
-                  last_completed_seen_at=?, last_volume_24h=? WHERE address=?""",
-                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, token.volume_24h, token.address),
+                  last_completed_seen_at=?, last_volume_24h=? WHERE address=? AND chain=?""",
+                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, token.volume_24h, token.address, token.chain),
             )
             self.conn.commit()
             return previous_high, False, status
 
-        interval = tracking_interval(token.market_cap, args)
+        interval = tracking_interval(token.market_cap, args, token.chain)
         next_at = next_tracking_time(token.address, observed_time, interval)
         if old:
             started_at = str(old["tracking_started_at"])
@@ -613,8 +819,8 @@ class Store:
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
                   last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
                   tracking_source='completed', last_volume_24h=?, token_info_failures=0,
-                  last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
-                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_at, interval, token.volume_24h, token.address),
+                  last_token_info_error=NULL WHERE address=? AND chain=? AND tracking_status='active'""",
+                (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_at, interval, token.volume_24h, token.address, token.chain),
             )
         else:
             started_at = observed_at
@@ -637,7 +843,7 @@ class Store:
         observed_at: str,
         args: argparse.Namespace,
     ) -> float | None:
-        old = self.observation(token.address)
+        old = self.observation(token.address, token.chain)
         if old is None or old["tracking_status"] != TRACKING_STATUS_ACTIVE:
             return None
         previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0)
@@ -646,21 +852,24 @@ class Store:
         if expires_at and expires_at <= observed_time:
             self.expire_tracking(observed_at)
             return None
-        interval = tracking_interval(token.market_cap, args)
+        interval = tracking_interval(token.market_cap, args, token.chain)
         self.conn.execute(
             """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
               chain=?,
               highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
               last_token_info_at=?, next_token_info_at=?, tracking_interval_seconds=?,
               tracking_source='token_info', last_volume_24h=?, token_info_failures=0,
-              last_token_info_error=NULL WHERE address=? AND tracking_status='active'""",
-            (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_tracking_time(token.address, observed_time, interval), interval, token.volume_24h, token.address),
+              last_token_info_error=NULL WHERE address=? AND chain=? AND tracking_status='active'""",
+            (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at, observed_at, next_tracking_time(token.address, observed_time, interval), interval, token.volume_24h, token.address, token.chain),
         )
         self.conn.commit()
         return previous_high
 
-    def mark_tracking_triggered(self, address: str) -> None:
-        self.conn.execute("UPDATE observations SET triggered_at=COALESCE(triggered_at, ?) WHERE address=?", (now_iso(), address))
+    def mark_tracking_triggered(self, address: str, chain: str = CHAIN) -> None:
+        self.conn.execute(
+            "UPDATE observations SET triggered_at=COALESCE(triggered_at, ?) WHERE address=? AND chain=?",
+            (now_iso(), address, normalize_chain(chain)),
+        )
         self.conn.commit()
 
     def expire_tracking(self, now: str | None = None) -> int:
@@ -692,12 +901,14 @@ class Store:
         ).fetchone()
         return int(row["count"] or 0)
 
-    def record_token_info_failure(self, address: str, *, error: str, next_at: str, observed_at: str) -> None:
+    def record_token_info_failure(
+        self, address: str, *, chain: str = CHAIN, error: str, next_at: str, observed_at: str
+    ) -> None:
         self.conn.execute(
             """UPDATE observations SET token_info_failures=token_info_failures+1,
               last_token_info_error=?, next_token_info_at=?, last_token_info_at=?, last_seen_at=?
-              WHERE address=? AND tracking_status='active'""",
-            (error[:1000], next_at, observed_at, observed_at, address),
+              WHERE address=? AND chain=? AND tracking_status='active'""",
+            (error[:1000], next_at, observed_at, observed_at, address, normalize_chain(chain)),
         )
         self.conn.commit()
 
@@ -729,7 +940,7 @@ class Store:
         evidence: dict[str, Any] | None = None,
     ) -> bool:
         payload = json.dumps(token.raw, ensure_ascii=False)
-        key = trigger_key or f"{trigger_kind}:{token.address}"
+        key = trigger_key or f"{trigger_kind}:{token.chain}:{token.address}"
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO jobs(
               address, trigger_key, trigger_level, payload_json, trigger_kind, queued_at,
@@ -823,7 +1034,7 @@ class Store:
         self.conn.execute(
             """INSERT INTO jobs(address, trigger_key, payload_json, trigger_kind, queued_at, status, updated_at)
             VALUES (?, ?, ?, 'manual_replay', ?, 'queued', ?)""",
-            (token.address, f"manual_replay:{token.address}:{stamp}", json.dumps(token.raw, ensure_ascii=False), stamp, stamp),
+            (token.address, f"manual_replay:{token.chain}:{token.address}:{stamp}", json.dumps(token.raw, ensure_ascii=False), stamp, stamp),
         )
         self.conn.commit()
 
@@ -872,7 +1083,8 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
     chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
-        summary = f"{chain_label}上{token.symbol}社群热议中，GMGN显示当前市值为{cap}万美元。"
+        market_source = "OKX" if token.raw.get("market_source") == "okx" else "GMGN"
+        summary = f"{chain_label}上{token.symbol}社群热议中，{market_source}显示当前市值为{cap}万美元。"
     else:
         title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
         summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
@@ -1141,8 +1353,8 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         return "publish_failed"
 
 
-def milestone_level(previous_high: float, current: float) -> float | None:
-    crossed = [level for level in MARKET_CAP_LEVELS if previous_high < level <= current]
+def milestone_level(previous_high: float, current: float, chain: str = CHAIN) -> float | None:
+    crossed = [level for level in market_cap_levels(chain) if previous_high < level <= current]
     return max(crossed) if crossed else None
 
 
@@ -1161,7 +1373,7 @@ def evaluate_market_token(
     snapshot_id: int | None = None,
     snapshot_source: str = "completed",
 ) -> tuple[int, int]:
-    observed = store.observation(token.address)
+    observed = store.observation(token.address, token.chain)
     if previous_high is None:
         previous_high = float(observed["highest_market_cap"] or observed["last_market_cap"] or 0) if observed else 0.0
     snapshot_id = snapshot_id or store.record_snapshot(
@@ -1173,26 +1385,45 @@ def evaluate_market_token(
     if bootstrap:
         if persist_observation:
             store.upsert_observation(token)
-        if token.market_cap >= MARKET_CAP_GATE:
+        if token.market_cap >= market_cap_gate(token.chain):
             inserted = store.add_job(
                 token,
                 "startup_seen",
                 "discarded",
                 "startup_seen",
-                trigger_key=f"startup:{token.address}",
+                trigger_key=f"startup:{token.chain}:{token.address}",
             )
             return (0, int(inserted))
         return (0, 0)
-    level = milestone_level(previous_high, token.market_cap)
+    if not token.metrics_complete:
+        if persist_observation:
+            store.upsert_observation(token)
+        return (0, 0)
+    level = milestone_level(previous_high, token.market_cap, token.chain)
     if persist_observation:
         store.upsert_observation(token, triggered_at=now_iso() if level else None)
     elif level:
-        store.mark_tracking_triggered(token.address)
+        store.mark_tracking_triggered(token.address, token.chain)
     if level is None:
         return (0, 0)
     if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
         return (0, 0)
-    trigger_key = f"market_cap:{token.address}:{int(level)}"
+    trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
+    risk_flags = okx_risk_flags(token) if token.raw.get("market_source") == "okx" else []
+    risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
+    if risk_mode == "block" and any(
+        flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")
+    ):
+        inserted = store.add_job(
+            token,
+            "market_cap_milestone",
+            "discarded",
+            "okx_risk_gate_failed",
+            trigger_key=trigger_key,
+            trigger_level=level,
+            evidence={"okx_risk_flags": risk_flags},
+        )
+        return (0, int(inserted))
     if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
@@ -1201,6 +1432,7 @@ def evaluate_market_token(
             "volume_gate_failed",
             trigger_key=trigger_key,
             trigger_level=level,
+            evidence={"okx_risk_flags": risk_flags} if risk_flags else None,
         )
         return (0, int(inserted))
     inserted = store.add_job(
@@ -1209,6 +1441,7 @@ def evaluate_market_token(
         "queued",
         trigger_key=trigger_key,
         trigger_level=level,
+        evidence={"okx_risk_flags": risk_flags} if risk_flags else None,
     )
     return (int(inserted), 0)
 
@@ -1248,8 +1481,8 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
     try:
         chain = str(row["chain"] or CHAIN)
         token = fetch_token_info(address, chain) if chain != CHAIN else fetch_token_info(address)
-        if token is None:
-            raise RuntimeError("token_info returned no usable market cap")
+        if token is None or not token.metrics_complete:
+            raise RuntimeError("OKX token info returned no complete market metrics")
     except Exception as exc:
         error = str(exc)
         interval = int(row["tracking_interval_seconds"] or TOKEN_INFO_LOW_INTERVAL_SECONDS)
@@ -1261,7 +1494,7 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
             next_at = max(next_at, backoff_until.isoformat())
             print(f"[meme-scan] token_info rate limited address={address} retry={server_delay}s", file=sys.stderr)
         failures = int(row["token_info_failures"] or 0) + 1
-        store.record_token_info_failure(address, error=error, next_at=next_at, observed_at=stamp)
+        store.record_token_info_failure(address, chain=chain, error=error, next_at=next_at, observed_at=stamp)
         print(f"[meme-scan] token_info failed address={address} failures={failures}: {error}", file=sys.stderr)
         return {"status": "failed", "address": address, "failures": failures, "error": error, "backlog": backlog, "expired": expired}
 
@@ -1311,6 +1544,22 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         return (0, 1)
     evidence = json.loads(candidate["evidence_json"])
     trigger_key = f"tg_burst:{candidate['id']}"
+    risk_flags = okx_risk_flags(token) if token.raw.get("market_source") == "okx" else []
+    risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
+    if risk_mode == "block" and any(
+        flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")
+    ):
+        inserted = store.add_job(
+            token,
+            "tg_burst",
+            "discarded",
+            "okx_risk_gate_failed",
+            trigger_key=trigger_key,
+            trigger_level=market_cap_gate,
+            evidence={**evidence, "okx_risk_flags": risk_flags},
+        )
+        store.update_tg_candidate(candidate["id"], "discarded", reason="okx_risk_gate_failed", market_cap=token.market_cap)
+        return (0, int(inserted))
     if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
@@ -1319,7 +1568,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
             "volume_gate_failed",
             trigger_key=trigger_key,
             trigger_level=market_cap_gate,
-            evidence=evidence,
+            evidence={**evidence, "okx_risk_flags": risk_flags} if risk_flags else evidence,
         )
         store.update_tg_candidate(candidate["id"], "discarded", reason="volume_gate_failed", market_cap=token.market_cap)
         return (0, int(inserted))
@@ -1330,7 +1579,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         "queued",
         trigger_key=trigger_key,
         trigger_level=market_cap_gate,
-        evidence=evidence,
+        evidence={**evidence, "okx_risk_flags": risk_flags} if risk_flags else evidence,
     )
     store.upsert_observation(
         token,
@@ -1382,7 +1631,7 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
     if forced_address and forced_token is None:
         forced_token = fetch_token_info(forced_address)
     if forced_address and forced_token is None:
-        raise RuntimeError(f"forced contract was not found on BSC: {forced_address}")
+        raise RuntimeError(f"forced contract was not found on BSC via OKX: {forced_address}")
     if forced_token and (
         forced_token.market_cap < MARKET_CAP_GATE
         or forced_token.volume_ratio < volume_ratio_gate(forced_token.market_cap)
@@ -1497,10 +1746,10 @@ def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Scan BSC Four.meme and Flap completed tokens for Meme narrative drafts.")
+    parser = argparse.ArgumentParser(description="Scan OKX BSC and Robinhood migrated tokens for Meme narrative drafts.")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--audit-dir", default=str(DEFAULT_AUDIT_DIR))
-    parser.add_argument("--limit", type=int, default=80, help="GMGN completed rows per poll.")
+    parser.add_argument("--limit", type=int, default=OKX_DISCOVERY_LIMIT, help="OKX migrated rows per chain per poll (max 30).")
     parser.add_argument("--completed-interval", type=int, default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or COMPLETED_SCAN_INTERVAL_SECONDS), help="Seconds between completed discovery scans.")
     parser.add_argument("--token-info-high-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or TOKEN_INFO_HIGH_INTERVAL_SECONDS))
     parser.add_argument("--token-info-low-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or TOKEN_INFO_LOW_INTERVAL_SECONDS))
