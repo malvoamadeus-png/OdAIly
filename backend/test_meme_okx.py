@@ -112,6 +112,20 @@ class OKXAdapterTests(unittest.TestCase):
         self.assertEqual(scanner.milestone_level(900_000, 1_100_000, "robinhood"), 1_000_000.0)
         self.assertIsNone(scanner.milestone_level(400_000, 900_000, "robinhood"))
 
+    def test_price_info_keeps_tracking_when_token_details_is_unavailable(self) -> None:
+        client = Mock()
+        client.token_details.side_effect = okx.OKXError("OKX tokenDetails returned no token object")
+        client.price_info.return_value = {
+            "0xold": {"marketCap": "800000", "volume24H": "500000", "liquidity": "100000"}
+        }
+        with patch.object(scanner, "get_okx_client", return_value=client):
+            current = scanner.fetch_okx_token_info("0xold", "bsc")
+
+        self.assertIsNotNone(current)
+        self.assertTrue(current.metrics_complete)
+        self.assertEqual(current.market_cap, 800000.0)
+        self.assertIn("okx_details_error", current.raw)
+
     def test_okx_risk_flags_are_recorded_without_being_a_volume_gate(self) -> None:
         token = scanner.Token(
             address="0xrisk",

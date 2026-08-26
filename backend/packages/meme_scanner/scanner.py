@@ -384,10 +384,28 @@ def fetch_token_info(
 
 def fetch_okx_token_info(address: str, chain: str) -> Token | None:
     client = get_okx_client()
-    details = client.token_details(chain, address)
-    token = _okx_token_from_item(details, chain)
+    details_error: str | None = None
+    try:
+        details = client.token_details(chain, address)
+    except Exception as exc:
+        details = {}
+        details_error = str(exc)
+    token = _okx_token_from_item(details, chain) if details else None
+    if token is None:
+        token = token_from_row(
+            {
+                "address": address,
+                "chain": chain,
+                "launchpad_platform": "okx:unknown",
+                "market_source": "okx",
+                "_market_metrics_complete": False,
+            },
+            allow_unknown_platform=True,
+        )
     if token is None:
         return None
+    if details_error:
+        token.raw["okx_details_error"] = details_error[:1000]
     metrics = client.price_info(chain, [token.address]).get(token.address)
     return _merge_okx_price_info(token, metrics)
 
