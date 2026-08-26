@@ -126,6 +126,34 @@ class OKXAdapterTests(unittest.TestCase):
         self.assertEqual(current.market_cap, 800000.0)
         self.assertIn("okx_details_error", current.raw)
 
+    def test_telegram_okx_fallback_recovers_identity_without_replacing_market_metrics(self) -> None:
+        address = "0x23f1ad82bdb58f7524b6e76bdf5406267ef24413"
+        client = Mock()
+        client.token_details.side_effect = okx.OKXError("OKX tokenDetails returned no token object")
+        client.price_info.return_value = {
+            address: {"marketCap": "1300000", "volume24H": "900000", "liquidity": "200000"}
+        }
+        gmgn_identity = scanner.Token(
+            address=address,
+            platform="telegram",
+            name="Dolores",
+            symbol="DOLORES",
+            market_cap=1,
+            volume_24h=1,
+            created_timestamp=None,
+            raw={},
+            chain="robinhood",
+        )
+        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
+            scanner, "fetch_gmgn_token_info", return_value=gmgn_identity
+        ):
+            current = scanner.fetch_okx_token_info(address, "robinhood", resolve_identity=True)
+
+        self.assertIsNotNone(current)
+        self.assertEqual((current.name, current.symbol, current.market_cap, current.volume_24h),
+                         ("Dolores", "DOLORES", 1_300_000.0, 900_000.0))
+        self.assertEqual(current.raw["identity_source"], "gmgn")
+
     def test_okx_risk_flags_are_recorded_without_being_a_volume_gate(self) -> None:
         token = scanner.Token(
             address="0xrisk",

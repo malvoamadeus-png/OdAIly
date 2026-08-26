@@ -411,7 +411,7 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument(
         "--completed-interval",
         type=int,
-        default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or 300),
+        default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or 60),
     )
     meme_scan.add_argument(
         "--token-info-high-interval",

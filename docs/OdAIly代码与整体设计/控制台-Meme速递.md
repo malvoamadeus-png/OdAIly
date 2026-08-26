@@ -7,7 +7,7 @@
 
 ## 上游链路
 
-- `odaily-meme-scanner.service` 每 5 分钟分别以 BSC chainIndex `56`、Robinhood chainIndex `4663` 请求 OKX MemePump 的 `stage=MIGRATED` 列表，不附加市值过滤；每条链最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。列表代币再通过 OKX `price-info` 批量补齐市值、24 小时成交量、流动性和持有人数。
+- `odaily-meme-scanner.service` 每 1 分钟分别以 BSC chainIndex `56`、Robinhood chainIndex `4663` 请求 OKX MemePump 的 `stage=MIGRATED` 列表，不附加市值过滤；每条链最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。列表代币再通过 OKX `price-info` 批量补齐市值、24 小时成交量、流动性和持有人数。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
 - 普通代币首次进入 OKX `MIGRATED` 列表即建立 7 天跟踪窗口；BSC 市值达到 50 万美元、Robinhood 市值达到 100 万美元后进入播报候选，后续里程碑为 100 万/300 万美元（BSC）和 300 万美元（Robinhood）；首次发现已跨多档时只触发最高档。
 - 仍在最近一次 OKX 列表中的代币直接使用本轮列表和 `price-info` 数据，不调用单币详情。滚出列表但仍在 7 天窗口内的代币由持久化调度器按链批量调用 OKX `tokenDetails` 与 `price-info`：市值低于本链第一门槛每小时一次，达到门槛每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程调度用于错峰限流。
@@ -17,7 +17,7 @@
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
 - 两类任务均执行成交量门槛、OKX 风险字段记录、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。OKX 的 Top10、Dev、Insiders、Bundlers、Snipers、疑似钓鱼钱包、流动性和社交字段写入原始快照；`MEME_OKX_RISK_MODE=shadow` 只记录风险标记，`block` 才会拦截疑似钓鱼钱包比例不低于 5%或 Top10 持仓不低于 80%的普通里程碑任务。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子。FxTwitter 404 作为该页空结果保留在审计中，其他 X 采集异常降级为空材料并保留诊断，不阻断 Telegram、Grok、GMGN 和最终写作；GMGN 仍可并行读取精确链和 CA 的 `data.zh_cn` 作为叙事补充；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面，添加 `Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明；`Grok补充：` 段落若缺少末尾标点会自动补充句号；GMGN 补充行若包含“标志”，且该词前没有非引号逗号，则删除整行；若该词前已有非引号逗号，则从前面的逗号开始截断并以句号收尾。免责声明固定为“「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。”；社群热议正文摘要按市场来源显示“OKX/GMGN显示当前市值为{market_cap}万美元”。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成使用 CommunityMonitor V2 材料契约：对精确 CA 做 Telegram 白名单全历史搜索，保留全局最早 20 条和最新 20 条命中，并为每个命中回读前 2 条、后 15 条上下文；X 使用 FxTwitter 精确 CA 的 `top` 两页和 `latest` 两页，去重后仅排除正文含 `gmgn.ai/` 链接的帖子。FxTwitter 404 作为该页空结果保留在审计中，其他 X 采集异常降级为空材料并保留诊断，不阻断 Telegram、Grok、GMGN 和最终写作；GMGN 仍可并行读取精确链和 CA 的 `data.zh_cn` 作为叙事补充；Grok 只执行独立研究和实体补充，最后由 GPT writer 生成读者正文。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面，添加 `Grok补充：`/`GMGN补充：` 来源段落标记和末尾免责声明；`Grok补充：` 段落若缺少末尾标点会自动补充句号；GMGN 补充行若包含“标志”，且该词前没有非引号逗号，则删除整行；若该词前已有非引号逗号，则从前面的逗号开始截断并以句号收尾。免责声明固定为“「Meme 速递」由 Odaily 独家 AI 模型筛选社区热议潜力标的。内容基于公开信息整理，不构成投资建议，请自行甄别并注意 Meme 币高波动风险。”；社群热议正文摘要固定显示“GMGN显示当前市值为{market_cap}万美元”，但 BSC/Robinhood 的实际市值取 OKX。叙事审计复用 `jobs.narrative_json` 保存各阶段材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，模型、网络、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 文本口径
 
@@ -68,7 +68,7 @@ python backend/src/main.py meme tg-watch
 ## 配置
 
 - OKX：`OKX_API_KEY`、`OKX_SECRET_KEY`、`OKX_PASSPHRASE`；`MEME_OKX_TIMEOUT_SECONDS`、`MEME_OKX_MAX_ATTEMPTS` 控制 REST 超时和重试，`MEME_OKX_RISK_MODE` 默认为 `shadow`。BSC/Robinhood 市场发现、价格和单币风险查询使用 OKX；Solana 兼容路径仍可使用 GMGN。
-- 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
+- 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 60 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。

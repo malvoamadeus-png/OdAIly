@@ -49,7 +49,7 @@ VOLUME_RATIO_GATE_MAX_CAP = 3_000_000.0
 VOLUME_RATIO_GATE_AT_MIN_CAP = 0.5
 VOLUME_RATIO_GATE_AT_MAX_CAP = 0.2
 TRACKING_WINDOW_SECONDS = 7 * 24 * 60 * 60
-COMPLETED_SCAN_INTERVAL_SECONDS = 300
+COMPLETED_SCAN_INTERVAL_SECONDS = 60
 TOKEN_INFO_HIGH_INTERVAL_SECONDS = 300
 TOKEN_INFO_LOW_INTERVAL_SECONDS = 3600
 TOKEN_INFO_MIN_GAP_SECONDS = 3
@@ -281,20 +281,49 @@ def fetch_completed_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
     return fetch_okx_migrated_tokens(limit)
 
 
-def fetch_gmgn_token_info(address: str, chain: str = CHAIN, *, allow_unknown_platform: bool = False) -> Token | None:
+def fetch_gmgn_token_info(
+    address: str,
+    chain: str = CHAIN,
+    *,
+    allow_unknown_platform: bool = False,
+    identity_only: bool = False,
+) -> Token | None:
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
-    # Keep the first discovery request broad. GMGN returns a capped candidate
-    # set, so platform filters and client-side timestamp sorting can hide tokens.
-    command = [GMGN, "market", "trenches", "--chain", CHAIN, "--type", "completed", "--limit", str(limit), "--raw"]
+    requested_chain = normalize_chain(chain)
+    command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
     if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN query failed")
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed")
     payload = json.loads(result.stdout)
-    data = payload.get("data", payload) if isinstance(payload, dict) else {}
-    rows = data.get("completed", []) if isinstance(data, dict) else []
-    tokens = [token for row in rows if isinstance(row, dict) if (token := token_from_row(row, allow_unknown_platform=True))]
-    return tokens
+    row = _find_token_info_row(payload, address.lower())
+    top_level = payload if isinstance(payload, dict) and str(payload.get("address") or "").lower() == address.lower() else {}
+    normalized = {**top_level, **(row or {})}
+    market_cap = number(normalized.get("usd_market_cap") or normalized.get("market_cap"))
+    if market_cap <= 0:
+        market_cap = number(_recursive_pick(payload, ("usd_market_cap", "market_cap")))
+    if market_cap <= 0:
+        price = number(_recursive_pick(payload, ("price",)))
+        circulating_supply = number(_recursive_pick(payload, ("circulating_supply",)))
+        market_cap = price * circulating_supply
+    if market_cap <= 0 and not identity_only:
+        return None
+    normalized["usd_market_cap"] = market_cap
+    normalized.setdefault("address", address.lower())
+    normalized["chain"] = requested_chain
+    normalized.setdefault(
+        "launchpad_platform",
+        _recursive_pick(payload, ("launchpad_platform", "launchpad")) or "telegram",
+    )
+    for field, aliases in (
+        ("volume_24h", ("volume_24h",)),
+        ("name", ("name", "token_name")),
+        ("symbol", ("symbol", "token_symbol")),
+        ("created_timestamp", ("created_timestamp", "creation_timestamp", "open_timestamp")),
+    ):
+        if normalized.get(field) in (None, ""):
+            normalized[field] = _recursive_pick(payload, aliases)
+    return token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
 
 
 def _find_token_info_row(value: Any, address: str) -> dict[str, Any] | None:
@@ -337,52 +366,34 @@ def _recursive_pick(value: Any, keys: tuple[str, ...]) -> Any:
     return None
 
 
-def fetch_token_info(
-    address: str,
-    chain: str = CHAIN,
-    *,
-    allow_unknown_platform: bool = False,
-) -> Token | None:
-    if not ensure_cli_ready():
-        raise RuntimeError("GMGN CLI is not ready")
-    requested_chain = normalize_chain(chain)
-    command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed")
-    payload = json.loads(result.stdout)
-    row = _find_token_info_row(payload, address.lower())
-    top_level = payload if isinstance(payload, dict) and str(payload.get("address") or "").lower() == address.lower() else {}
-    normalized = {**top_level, **(row or {})}
-    market_cap = number(normalized.get("usd_market_cap") or normalized.get("market_cap"))
-    if market_cap <= 0:
-        market_cap = number(_recursive_pick(payload, ("usd_market_cap", "market_cap")))
-    if market_cap <= 0:
-        price = number(_recursive_pick(payload, ("price",)))
-        circulating_supply = number(_recursive_pick(payload, ("circulating_supply",)))
-        market_cap = price * circulating_supply
-    if market_cap <= 0:
-        return None
-    normalized["usd_market_cap"] = market_cap
-    normalized.setdefault("address", address.lower())
-    normalized["chain"] = requested_chain
-    normalized.setdefault(
-        "launchpad_platform",
-        _recursive_pick(payload, ("launchpad_platform", "launchpad")) or "telegram",
-    )
-    for field, aliases in (
-        ("volume_24h", ("volume_24h",)),
-        ("name", ("name", "token_name")),
-        ("symbol", ("symbol", "token_symbol")),
-        ("created_timestamp", ("created_timestamp", "creation_timestamp", "open_timestamp")),
-    ):
-        if normalized.get(field) in (None, ""):
-            normalized[field] = _recursive_pick(payload, aliases)
-    token = token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
-    return token
+def _identity_is_unknown(token: Token) -> bool:
+    unknown = {"", "?", "unknown", "n/a", "none"}
+    return token.name.strip().casefold() in unknown and token.symbol.strip().casefold() in unknown
 
 
-def fetch_okx_token_info(address: str, chain: str) -> Token | None:
+def _resolve_okx_identity_from_gmgn(token: Token) -> Token:
+    if not _identity_is_unknown(token):
+        return token
+    try:
+        metadata = fetch_gmgn_token_info(
+            token.address, token.chain, allow_unknown_platform=True, identity_only=True
+        )
+    except Exception as exc:
+        token.raw["gmgn_identity_error"] = str(exc)[:1000]
+        return token
+    if metadata is None or _identity_is_unknown(metadata):
+        return token
+    raw = dict(token.raw)
+    identity_name = metadata.name.strip() or metadata.symbol.strip()
+    identity_symbol = metadata.symbol.strip() if metadata.symbol.strip().casefold() not in {"", "?", "unknown", "n/a", "none"} else identity_name
+    raw["name"] = identity_name
+    raw["symbol"] = identity_symbol
+    raw["identity_source"] = "gmgn"
+    resolved = token_from_row(raw, allow_unknown_platform=True)
+    return replace(resolved or token, market_cap=token.market_cap, volume_24h=token.volume_24h, metrics_complete=token.metrics_complete)
+
+
+def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = False) -> Token | None:
     client = get_okx_client()
     details_error: str | None = None
     try:
@@ -407,7 +418,8 @@ def fetch_okx_token_info(address: str, chain: str) -> Token | None:
     if details_error:
         token.raw["okx_details_error"] = details_error[:1000]
     metrics = client.price_info(chain, [token.address]).get(token.address)
-    return _merge_okx_price_info(token, metrics)
+    token = _merge_okx_price_info(token, metrics)
+    return _resolve_okx_identity_from_gmgn(token) if resolve_identity else token
 
 
 def fetch_token_info(
@@ -415,10 +427,11 @@ def fetch_token_info(
     chain: str = CHAIN,
     *,
     allow_unknown_platform: bool = False,
+    resolve_identity: bool = False,
 ) -> Token | None:
     requested_chain = normalize_chain(chain)
     if requested_chain in OKX_DISCOVERY_CHAINS:
-        return fetch_okx_token_info(address, requested_chain)
+        return fetch_okx_token_info(address, requested_chain, resolve_identity=resolve_identity)
     return fetch_gmgn_token_info(address, requested_chain, allow_unknown_platform=allow_unknown_platform)
 
 
@@ -433,7 +446,7 @@ def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
     last_error: Exception | None = None
     for chain in ("robinhood", "bsc"):
         try:
-            token = fetch_token_info(address, chain, allow_unknown_platform=True)
+            token = fetch_token_info(address, chain, allow_unknown_platform=True, resolve_identity=True)
         except Exception as exc:
             last_error = exc
             continue
@@ -1101,8 +1114,7 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
     chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
-        market_source = "OKX" if token.raw.get("market_source") == "okx" else "GMGN"
-        summary = f"{chain_label}上{token.symbol}社群热议中，{market_source}显示当前市值为{cap}万美元。"
+        summary = f"{chain_label}上{token.symbol}社群热议中，GMGN显示当前市值为{cap}万美元。"
     else:
         title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
         summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
