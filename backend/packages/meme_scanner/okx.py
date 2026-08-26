@@ -109,7 +109,14 @@ class OKXClient:
                 if str(payload.get("code")) != "0":
                     raise OKXError(f"OKX code {payload.get('code')}: {payload.get('msg') or 'unknown error'}")
                 return OKXResponse(str(payload.get("code")), str(payload.get("msg") or ""), payload.get("data"))
-            except (requests.RequestException, OKXError, ValueError) as exc:
+            except OKXError as exc:
+                # A valid OKX response with a non-zero business code is
+                # deterministic (for example, tokenDetails may have no
+                # object after a token leaves the MemePump detail window).
+                # Let the caller choose its fallback instead of retrying it.
+                last_error = exc
+                break
+            except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt >= self.max_attempts:
                     break
