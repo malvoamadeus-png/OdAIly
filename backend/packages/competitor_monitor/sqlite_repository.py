@@ -12,7 +12,7 @@ from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL, _dt, _jso
 
 from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord, canonicalize_source_url, generate_event_id
 from .fetchers import NewsflashItem
-from .repository import extract_raw_published_at, parse_datetime
+from .repository import extract_raw_published_at, parse_datetime, parse_newsflash_published_at
 
 
 class SQLiteCompetitorMonitorRepository:
@@ -53,7 +53,7 @@ class SQLiteCompetitorMonitorRepository:
         tasks=[];refs=0
         with connect_sqlite(self.path) as conn:
             for item in items:
-                published=parse_datetime(item.published_at);published_text=utc_iso(published)
+                published=parse_newsflash_published_at(item.source,item.published_at);published_text=utc_iso(published)
                 if item.source=="odaily":
                     previous=conn.execute("SELECT 1 FROM odaily_reference_items WHERE source_item_id=?",(item.source_item_id,)).fetchone()
                     conn.execute("INSERT INTO odaily_reference_items(source_item_id,source_url,title,content,published_at,raw_payload,metadata) VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_item_id) DO UPDATE SET source_url=excluded.source_url,title=excluded.title,content=excluded.content,published_at=excluded.published_at,raw_payload=excluded.raw_payload,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP",(item.source_item_id,item.source_url,item.title,item.content,published_text,_json(item.raw_payload),_json(item.metadata)))
@@ -70,7 +70,7 @@ class SQLiteCompetitorMonitorRepository:
         records=[]
         with connect_sqlite(self.path) as conn:
             for item in items:
-                published=parse_datetime(item.published_at);digest=content_hash(normalize_for_embedding(title=item.title,content=item.content))
+                published=parse_newsflash_published_at(item.source,item.published_at);digest=content_hash(normalize_for_embedding(title=item.title,content=item.content))
                 conn.execute("INSERT INTO newsflash_items(source,source_item_id,source_url,source_url_key,title,content,content_hash,published_at,raw_payload,metadata) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_item_id) DO UPDATE SET source_url=excluded.source_url,source_url_key=excluded.source_url_key,title=excluded.title,content=excluded.content,content_hash=excluded.content_hash,published_at=excluded.published_at,raw_payload=excluded.raw_payload,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP",(item.source,item.source_item_id,item.source_url,canonicalize_source_url(item.source_url),item.title,item.content,digest,utc_iso(published),_json(item.raw_payload),_json(item.metadata)))
                 records.append(self._item(conn.execute("SELECT * FROM newsflash_items WHERE source=? AND source_item_id=?",(item.source,item.source_item_id)).fetchone()))
             conn.commit()
@@ -151,28 +151,42 @@ class SQLiteCompetitorMonitorRepository:
             if ids:sources=conn.execute(f"DELETE FROM newsflash_event_sources WHERE item_id IN ({','.join('?' for _ in ids)})",ids).rowcount;conn.execute(f"DELETE FROM newsflash_items WHERE id IN ({','.join('?' for _ in ids)})",ids)
             events=conn.execute("DELETE FROM newsflash_events WHERE NOT EXISTS(SELECT 1 FROM newsflash_event_sources s WHERE s.event_id=newsflash_events.event_id)").rowcount;conn.commit()
         return {"matched_items":len(ids),"removed_sources":sources,"deleted_events":events,"updated_events":0}
-    def repair_newsflash_timestamps(self)->dict[str,int]:
+    def repair_newsflash_timestamps(self,*,since=None,until=None,source=None)->dict[str,int]:
         updated_items=0
         affected_event_ids:set[str]=set()
         with connect_sqlite(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            for row in conn.execute("SELECT source_item_id,published_at,raw_payload FROM odaily_reference_items WHERE published_at IS NOT NULL").fetchall():
+            time_filter=""
+            time_params=[]
+            if since is not None:
+                time_filter+=" AND julianday(published_at)>=julianday(?)";time_params.append(utc_iso(since))
+            if until is not None:
+                time_filter+=" AND julianday(published_at)<julianday(?)";time_params.append(utc_iso(until))
+            if source in (None,"odaily"):
+                for row in conn.execute(f"SELECT source_item_id,published_at,raw_payload FROM odaily_reference_items WHERE published_at IS NOT NULL{time_filter}",tuple(time_params)).fetchall():
+                    raw=json.loads(row["raw_payload"] or "{}")
+                    raw_value=extract_raw_published_at("odaily",raw)
+                    parsed=parse_newsflash_published_at("odaily",raw_value) if raw_value is not None else parse_datetime(row["published_at"])
+                    fixed=utc_iso(parsed)
+                    if fixed and fixed!=row["published_at"]:
+                        conn.execute("UPDATE odaily_reference_items SET published_at=?,updated_at=CURRENT_TIMESTAMP WHERE source_item_id=?",(fixed,row["source_item_id"]))
+                        updated_items+=1
+            task_source_filter=" AND source=?" if source else ""
+            task_params=([source] if source else [])+time_params
+            for row in conn.execute(f"SELECT id,source,published_at,raw_payload FROM tasks WHERE source IN ('blockbeats','panews','jinse'){task_source_filter} AND published_at IS NOT NULL{time_filter}",tuple(task_params)).fetchall():
                 raw=json.loads(row["raw_payload"] or "{}")
-                parsed=parse_datetime(extract_raw_published_at("odaily",raw) or row["published_at"])
-                fixed=utc_iso(parsed)
-                if fixed and fixed!=row["published_at"]:
-                    conn.execute("UPDATE odaily_reference_items SET published_at=?,updated_at=CURRENT_TIMESTAMP WHERE source_item_id=?",(fixed,row["source_item_id"]))
-                    updated_items+=1
-            for row in conn.execute("SELECT id,source,published_at,raw_payload FROM tasks WHERE source IN ('blockbeats','panews','jinse') AND published_at IS NOT NULL").fetchall():
-                raw=json.loads(row["raw_payload"] or "{}")
-                parsed=parse_datetime(extract_raw_published_at(str(row["source"]),raw) or row["published_at"])
+                raw_value=extract_raw_published_at(str(row["source"]),raw)
+                parsed=parse_newsflash_published_at(str(row["source"]),raw_value) if raw_value is not None else parse_datetime(row["published_at"])
                 fixed=utc_iso(parsed)
                 if fixed and fixed!=row["published_at"]:
                     conn.execute("UPDATE tasks SET published_at=? WHERE id=?",(fixed,row["id"]))
                     updated_items+=1
-            for row in conn.execute("SELECT id,source,published_at,raw_payload FROM newsflash_items WHERE published_at IS NOT NULL").fetchall():
+            item_source_filter=" AND source=?" if source else ""
+            item_params=([source] if source else [])+time_params
+            for row in conn.execute(f"SELECT id,source,published_at,raw_payload FROM newsflash_items WHERE published_at IS NOT NULL{item_source_filter}{time_filter}",tuple(item_params)).fetchall():
                 raw=json.loads(row["raw_payload"] or "{}")
-                parsed=parse_datetime(extract_raw_published_at(str(row["source"]),raw) or row["published_at"])
+                raw_value=extract_raw_published_at(str(row["source"]),raw)
+                parsed=parse_newsflash_published_at(str(row["source"]),raw_value) if raw_value is not None else parse_datetime(row["published_at"])
                 fixed=utc_iso(parsed)
                 if not fixed or fixed==row["published_at"]:
                     continue
@@ -183,7 +197,7 @@ class SQLiteCompetitorMonitorRepository:
                 ("auditor_checks","published_at","source_item_id",None),
                 ("writer3_contexts","current_published_at","current_source_item_id","odaily_reference"),
             )
-            for table,timestamp_column,source_column,source_value in derived_tables:
+            for table,timestamp_column,source_column,source_value in (derived_tables if source in (None,"odaily") else ()):
                 if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
                     continue
                 source_filter=f" WHERE d.current_source='{source_value}'" if source_value else ""

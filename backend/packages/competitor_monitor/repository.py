@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from packages.common.time_utils import SHANGHAI_TZ
@@ -28,7 +28,13 @@ class CompetitorMonitorRepository(Protocol):
     def record_event_exclusions(self, items: list[NewsflashItem]) -> None: ...
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]: ...
     def prune_orphan_events(self) -> int: ...
-    def repair_newsflash_timestamps(self) -> dict[str, int]: ...
+    def repair_newsflash_timestamps(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source: str | None = None,
+    ) -> dict[str, int]: ...
     def record_worker_heartbeat(
         self,
         *,
@@ -39,6 +45,9 @@ class CompetitorMonitorRepository(Protocol):
         error: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None: ...
+
+
+PANEWS_PUBLISHED_AT_CORRECTION = timedelta(minutes=1)
 
 
 class PostgresCompetitorMonitorRepository:
@@ -88,7 +97,7 @@ class PostgresCompetitorMonitorRepository:
         reference_count = 0
         with self._connect() as conn:
             for item in items:
-                published_at = parse_datetime(item.published_at)
+                published_at = parse_newsflash_published_at(item.source, item.published_at)
                 if item.source == "odaily":
                     previous = conn.execute(
                         "SELECT 1 FROM odaily_reference_items WHERE source_item_id = %s",
@@ -158,7 +167,7 @@ class PostgresCompetitorMonitorRepository:
         reference_count = 0
         with self._connect() as conn:
             for item in items:
-                published_at = parse_datetime(item.published_at)
+                published_at = parse_newsflash_published_at(item.source, item.published_at)
                 if item.source == "odaily":
                     previous = conn.execute(
                         "SELECT 1 FROM odaily_reference_items WHERE source_item_id = %s",
@@ -229,7 +238,7 @@ class PostgresCompetitorMonitorRepository:
         records: list[NewsflashItemRecord] = []
         with self._connect() as conn:
             for item in items:
-                published_at = parse_datetime(item.published_at)
+                published_at = parse_newsflash_published_at(item.source, item.published_at)
                 digest = content_hash(normalize_for_embedding(title=item.title, content=item.content))
                 row = conn.execute(
                     """
@@ -563,21 +572,45 @@ class PostgresCompetitorMonitorRepository:
             "updated_events": len(remaining_event_ids),
         }
 
-    def repair_newsflash_timestamps(self) -> dict[str, int]:
+    def repair_newsflash_timestamps(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        source: str | None = None,
+    ) -> dict[str, int]:
         updated_item_ids: list[int] = []
         with self._connect() as conn:
             with conn.transaction():
+                filters = []
+                params: dict[str, Any] = {}
+                if source:
+                    filters.append("source = %(source)s")
+                    params["source"] = source
+                if since:
+                    filters.append("published_at >= %(since)s")
+                    params["since"] = since
+                if until:
+                    filters.append("published_at < %(until)s")
+                    params["until"] = until
+                where_sql = f" AND {' AND '.join(filters)}" if filters else ""
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT id, source, published_at, raw_payload
                     FROM newsflash_items
                     WHERE raw_payload IS NOT NULL
+                      {where_sql}
                     ORDER BY id ASC
-                    """
+                    """,
+                    params,
                 ).fetchall()
                 for row in rows:
                     raw_value = extract_raw_published_at(str(row["source"]), row.get("raw_payload") or {})
-                    fixed = parse_datetime(raw_value)
+                    fixed = (
+                        parse_newsflash_published_at(str(row["source"]), raw_value)
+                        if raw_value is not None
+                        else parse_datetime(row["published_at"])
+                    )
                     if fixed is None:
                         continue
                     current = row.get("published_at")
@@ -745,6 +778,19 @@ def parse_datetime(value: Any):
         except ValueError:
             pass
     return None
+
+
+def parse_newsflash_published_at(source: str, value: Any) -> datetime | None:
+    """Return the timestamp used by the system when comparing newsflash sources.
+
+    PANews sometimes moves an article's displayed publication time backwards after
+    publication. Keep its raw payload unchanged, but compensate for that known
+    source-specific bias in every downstream time comparison.
+    """
+    parsed = parse_datetime(value)
+    if parsed is not None and str(source).casefold() == "panews":
+        return parsed + PANEWS_PUBLISHED_AT_CORRECTION
+    return parsed
 
 
 def normalize_exclude_term(value: str) -> str:

@@ -29,7 +29,7 @@ from .blockbeats_registration import register_blockbeats_key
 from .fetchers import BlockbeatsQuotaError, NewsflashItem
 from .fetchers import fetch_blockbeats, fetch_jinse, fetch_odaily, fetch_panews
 from .events import NewsflashEventAggregator
-from .repository import CompetitorMonitorRepository, parse_datetime
+from .repository import CompetitorMonitorRepository, parse_datetime, parse_newsflash_published_at
 
 
 NEWSFLASH_SOURCES = ("blockbeats", "panews", "jinse", "odaily")
@@ -312,7 +312,7 @@ class CompetitorMonitorWorker:
             if item.source == "odaily":
                 kept.append(item)
                 continue
-            published_at = parse_datetime(item.published_at)
+            published_at = parse_newsflash_published_at(item.source, item.published_at)
             check = evaluate_source_freshness(
                 published_at,
                 reference_time=reference_time,

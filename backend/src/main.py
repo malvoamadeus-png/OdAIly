@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 
@@ -214,7 +214,23 @@ def parse_args() -> argparse.Namespace:
         help="Delete newsflash events that have no linked source items.",
     )
 
-    competitor_repair_time = subparsers.add_parser("competitor-repair-newsflash-time", help="Repair newsflash published_at timezone interpretation.")
+    competitor_repair_time = subparsers.add_parser(
+        "competitor-repair-newsflash-time",
+        help="Normalize newsflash published_at values, including the PANews correction.",
+    )
+    competitor_repair_time.add_argument(
+        "--source",
+        choices=["panews", "blockbeats", "jinse", "odaily"],
+        help="Only repair one source; omitted repairs all supported sources.",
+    )
+    competitor_repair_time.add_argument(
+        "--since",
+        help="Inclusive Beijing date boundary, YYYY-MM-DD.",
+    )
+    competitor_repair_time.add_argument(
+        "--until",
+        help="Exclusive Beijing date boundary, YYYY-MM-DD.",
+    )
 
     competitor_worker = subparsers.add_parser("competitor-monitor-worker", help="Run competitor/Odaily newsflash capture.")
     competitor_worker.add_argument("--once", action="store_true", help="Run one competitor capture pass and exit.")
@@ -1084,14 +1100,23 @@ def competitor_prune_orphan_events_command(args: argparse.Namespace) -> int:
 def competitor_repair_newsflash_time_command(args: argparse.Namespace) -> int:
     from packages.competitor_monitor import create_competitor_monitor_repository
 
+    since = _repair_date_boundary(args.since) if args.since else None
+    until = _repair_date_boundary(args.until) if args.until else None
+    if since and until and since >= until:
+        raise SystemExit("--since must be earlier than --until")
     repository = create_competitor_monitor_repository(None)
-    result = repository.repair_newsflash_timestamps()
+    result = repository.repair_newsflash_timestamps(since=since, until=until, source=args.source)
     print(
         "[odaily] competitor newsflash timestamps repaired "
         f"updated_items={result['updated_items']} "
         f"updated_events={result['updated_events']}"
     )
     return 0
+
+
+def _repair_date_boundary(value: str) -> datetime:
+    day = date.fromisoformat(value)
+    return datetime(day.year, day.month, day.day, tzinfo=SHANGHAI_TZ)
 
 
 def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
