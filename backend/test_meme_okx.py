@@ -99,12 +99,49 @@ class OKXAdapterTests(unittest.TestCase):
             {"0xbsc": {"marketCap": "600000", "volume24H": "300000", "liquidity": "100000"}},
             {"0xrh": {"marketCap": "1200000", "volume24H": "800000", "liquidity": "200000"}},
         ]
-        with patch.object(scanner, "get_okx_client", return_value=client):
+        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
+            scanner, "get_okx_meme_web_client", return_value=client
+        ):
             tokens = scanner.fetch_okx_migrated_tokens()
 
         self.assertEqual([(token.chain, token.symbol) for token in tokens], [("bsc", "BSC"), ("robinhood", "RH")])
         self.assertTrue(all(token.metrics_complete for token in tokens))
         self.assertEqual([token.volume_24h for token in tokens], [300000.0, 800000.0])
+
+    def test_web_meme_row_maps_ca_and_one_hour_context_but_uses_official_24h_metrics(self) -> None:
+        web_client = Mock()
+        web_client.list_migrated.side_effect = [
+            [
+                {
+                    "ca": "0xBSC",
+                    "chain": "56",
+                    "protoId": "129826",
+                    "smbl": "WEB",
+                    "name": "Web Token",
+                    "mcap": "700000",
+                    "vol1h": "120000",
+                    "migrEnd": "1700000000000",
+                    "fdTime": "1690000000000",
+                    "_okx_discovery_source": "web_meme_ranking",
+                }
+            ],
+            [],
+        ]
+        market_client = Mock()
+        market_client.price_info.return_value = {
+            "0xbsc": {"marketCap": "710000", "volume24H": "320000", "liquidity": "100000"}
+        }
+        with patch.object(scanner, "get_okx_client", return_value=market_client), patch.object(
+            scanner, "get_okx_meme_web_client", return_value=web_client
+        ):
+            tokens = scanner.fetch_okx_migrated_tokens()
+
+        self.assertEqual(len(tokens), 1)
+        current = tokens[0]
+        self.assertEqual((current.chain, current.symbol, current.name), ("bsc", "WEB", "Web Token"))
+        self.assertEqual(current.raw["okx_discovery_source"], "web_meme_ranking")
+        self.assertEqual(current.raw["volume_1h"], "120000")
+        self.assertEqual(current.volume_24h, 320000.0)
 
     def test_robinhood_uses_one_million_first_market_cap_level(self) -> None:
         self.assertEqual(scanner.market_cap_gate("bsc"), 500_000.0)

@@ -86,7 +86,9 @@ class MemeScannerTests(unittest.TestCase):
         client = Mock()
         client.list_migrated.side_effect = [[], []]
         client.price_info.return_value = {}
-        with patch.object(scanner, "get_okx_client", return_value=client):
+        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
+            scanner, "get_okx_meme_web_client", return_value=client
+        ):
             scanner.fetch_completed_tokens(80)
         self.assertEqual([call.args for call in client.list_migrated.call_args_list], [("bsc",), ("robinhood",)])
         self.assertEqual(client.price_info.call_count, 0)
@@ -103,7 +105,9 @@ class MemeScannerTests(unittest.TestCase):
             "social": {},
         }], []]
         client.price_info.return_value = {}
-        with patch.object(scanner, "get_okx_client", return_value=client):
+        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
+            scanner, "get_okx_meme_web_client", return_value=client
+        ):
             tokens = scanner.fetch_completed_tokens(80)
         self.assertEqual([(token.platform, token.symbol, token.chain) for token in tokens], [("okx:999", "STOCKS", "bsc")])
 

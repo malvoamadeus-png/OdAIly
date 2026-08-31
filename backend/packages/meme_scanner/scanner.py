@@ -26,7 +26,8 @@ from packages.publisher import content_to_paragraph_html
 
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .narrative import generate_reader_text
-from .okx import OKXClient
+from .okx import OKXClient, OKXError
+from .okx_web import OKXMemeWebClient
 
 
 CHAIN = "bsc"
@@ -41,6 +42,7 @@ MARKET_CAP_LEVELS_BY_CHAIN = {
 MARKET_CAP_LEVELS = MARKET_CAP_LEVELS_BY_CHAIN[CHAIN]
 OKX_DISCOVERY_CHAINS = ("bsc", "robinhood")
 OKX_DISCOVERY_LIMIT = 30
+OKX_WEB_DISCOVERY_SOURCES = {"web", "web_meme", "priapi_meme_ranking"}
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
 TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
@@ -178,6 +180,23 @@ def get_okx_client() -> OKXClient:
     return OKXClient()
 
 
+_OKX_MEME_WEB_CLIENT: OKXMemeWebClient | None = None
+
+
+def get_okx_meme_web_client() -> OKXMemeWebClient:
+    global _OKX_MEME_WEB_CLIENT
+    if _OKX_MEME_WEB_CLIENT is None:
+        _OKX_MEME_WEB_CLIENT = OKXMemeWebClient()
+    return _OKX_MEME_WEB_CLIENT
+
+
+def close_okx_meme_web_client() -> None:
+    global _OKX_MEME_WEB_CLIENT
+    if _OKX_MEME_WEB_CLIENT is not None:
+        _OKX_MEME_WEB_CLIENT.close()
+        _OKX_MEME_WEB_CLIENT = None
+
+
 def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
     # Launchpad/platform is metadata only. Keep the keyword for compatibility
     # with older callers, but never reject a token based on its platform value.
@@ -201,20 +220,29 @@ def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False)
 
 
 def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
-    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or "").strip().lower()
+    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or item.get("ca") or "").strip().lower()
     if not address:
         return None
     market = item.get("market") if isinstance(item.get("market"), dict) else {}
+    web_name = str(item.get("name") or item.get("smbl") or "").strip()
+    web_symbol = str(item.get("smbl") or item.get("symbol") or web_name or "?").strip()
+    discovery_source = str(item.get("_okx_discovery_source") or "okx").strip()
     raw = dict(item)
     raw.update(
         {
             "address": address,
             "chain": chain,
             "launchpad_platform": f"okx:{item.get('protocolId') or 'unknown'}",
-            "usd_market_cap": market.get("marketCapUsd"),
+            "name": web_name or item.get("name") or "",
+            "symbol": web_symbol,
+            "usd_market_cap": market.get("marketCapUsd") or item.get("mcap") or item.get("marketCap"),
             "volume_24h": 0,
+            "volume_1h": item.get("vol1h"),
+            "created_timestamp": item.get("fdTime"),
+            "migrated_at": item.get("migrEnd"),
             "_market_metrics_complete": False,
             "market_source": "okx",
+            "okx_discovery_source": discovery_source,
         }
     )
     token = token_from_row(raw, allow_unknown_platform=True)
@@ -231,7 +259,7 @@ def _merge_okx_price_info(token: Token, metrics: dict[str, Any] | None) -> Token
     raw["price_info"] = metrics
     raw["usd_market_cap"] = metrics.get("marketCap") or raw.get("usd_market_cap")
     raw["volume_24h"] = metrics.get("volume24H")
-    raw["volume_1h"] = metrics.get("volume1H")
+    raw["volume_1h"] = metrics.get("volume1H") or raw.get("volume_1h")
     raw["liquidity"] = metrics.get("liquidity")
     raw["holders"] = metrics.get("holders")
     raw["_market_metrics_complete"] = metrics.get("marketCap") not in (None, "") and metrics.get("volume24H") not in (None, "")
@@ -267,9 +295,25 @@ def okx_risk_flags(token: Token) -> list[str]:
 
 def fetch_okx_migrated_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
     client = get_okx_client()
+    source = (os.getenv("MEME_OKX_DISCOVERY_SOURCE") or "web_meme").strip().lower()
+    if source in OKX_WEB_DISCOVERY_SOURCES:
+        discovery_client: Any = get_okx_meme_web_client()
+    elif source in {"official", "signed", "api"}:
+        discovery_client = client
+    else:
+        raise OKXError(
+            f"unsupported MEME_OKX_DISCOVERY_SOURCE={source!r}; "
+            "use web_meme or official"
+        )
+    fallback = (os.getenv("MEME_OKX_DISCOVERY_FALLBACK") or "none").strip().lower()
     discovered: list[Token] = []
     for chain in OKX_DISCOVERY_CHAINS:
-        rows = client.list_migrated(chain, limit=limit)
+        try:
+            rows = discovery_client.list_migrated(chain, limit=limit)
+        except Exception:
+            if discovery_client is client or fallback not in {"official", "signed", "api"}:
+                raise
+            rows = client.list_migrated(chain, limit=limit)
         tokens = [token for row in rows if (token := _okx_token_from_item(row, chain))]
         metrics = client.price_info(chain, [token.address for token in tokens]) if tokens else {}
         discovered.extend(_merge_okx_price_info(token, metrics.get(token.address)) for token in tokens)
@@ -1772,6 +1816,7 @@ def run(args: argparse.Namespace) -> int:
                 stop_event.set()
                 tracking_future.result(timeout=10)
     finally:
+        close_okx_meme_web_client()
         store.close()
 
 

@@ -7,7 +7,7 @@
 
 ## 上游链路
 
-- `odaily-meme-scanner.service` 每 1 分钟分别以 BSC chainIndex `56`、Robinhood chainIndex `4663` 请求 OKX MemePump 的 `stage=MIGRATED` 列表，不附加市值过滤；每条链最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。列表代币再通过 OKX `price-info` 批量补齐市值、24 小时成交量、流动性和持有人数。
+- `odaily-meme-scanner.service` 每 1 分钟通过有头 Playwright Chromium 打开匿名 OKX MemePump 页面，由页面自然生成动态 `ok-verify-*` 请求头，再分别读取 BSC `chainId=56`、Robinhood `chainId=4663` 的 `memefun/meme-ranking/content?rankType=4` 迁移列表，不附加市值过滤；每条链当前最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。网页 row 的 `mcap`/`vol1h` 只作发现上下文，列表代币再通过官方签名 OKX `price-info` 批量补齐市值、24 小时成交量、流动性和持有人数。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
 - 普通代币首次进入 OKX `MIGRATED` 列表即建立 7 天跟踪窗口；BSC 市值达到 50 万美元、Robinhood 市值达到 100 万美元后进入播报候选，后续里程碑为 100 万/300 万美元（BSC）和 300 万美元（Robinhood）；首次发现已跨多档时只触发最高档。
 - 仍在最近一次 OKX 列表中的代币直接使用本轮列表和 `price-info` 数据，不调用单币详情。滚出列表但仍在 7 天窗口内的代币由持久化调度器按链批量调用 OKX `tokenDetails` 与 `price-info`：市值低于本链第一门槛每小时一次，达到门槛每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程调度用于错峰限流。
@@ -67,7 +67,7 @@ python backend/src/main.py meme tg-watch
 
 ## 配置
 
-- OKX：`OKX_API_KEY`、`OKX_SECRET_KEY`、`OKX_PASSPHRASE`；`MEME_OKX_TIMEOUT_SECONDS`、`MEME_OKX_MAX_ATTEMPTS` 控制 REST 超时和重试，`MEME_OKX_RISK_MODE` 默认为 `shadow`。BSC/Robinhood 市场发现、价格和单币风险查询使用 OKX；Solana 兼容路径仍可使用 GMGN。
+- OKX：`OKX_API_KEY`、`OKX_SECRET_KEY`、`OKX_PASSPHRASE` 仍用于 `price-info`、`tokenDetails` 和 24 小时成交量/风险字段；`MEME_OKX_DISCOVERY_SOURCE` 默认 `web_meme`，可设为 `official` 切回签名 `tokenList`；`MEME_OKX_DISCOVERY_FALLBACK=official` 才允许网页发现失败时回退官方列表，默认不回退以避免静默消耗额度。`MEME_OKX_WEB_TIMEOUT_SECONDS`、`MEME_OKX_WEB_SETTLE_MS`、`MEME_OKX_WEB_HEADLESS`、`MEME_OKX_WEB_PROXY` 控制网页运行，生产需要 Playwright Chromium 和 `xvfb-run`，默认有头模式。`MEME_OKX_TIMEOUT_SECONDS`、`MEME_OKX_MAX_ATTEMPTS` 控制官方 REST 超时和重试，`MEME_OKX_RISK_MODE` 默认为 `shadow`。BSC/Robinhood 的发现、价格和单币风险查询仍使用 OKX；Solana 兼容路径仍可使用 GMGN。
 - 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 60 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
@@ -86,7 +86,7 @@ python backend/src/main.py meme tg-watch
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
-- OKX `price-info`/`tokenDetails` 成功后更新当前市值、24 小时成交量、最高水位、风险原始字段和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗。429/超时会通过 REST 适配器重试并记录服务端退避；调度积压写入 worker 日志。
+- OKX 网页发现成功后只更新最新发现窗口；网页页面失败会保留明确错误，不把空结果或浏览器异常当成“没有迁移代币”，也不会默认静默回退官方发现。官方 `price-info`/`tokenDetails` 成功后更新当前市值、24 小时成交量、最高水位、风险原始字段和动态调度周期；失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗。429/超时会通过 REST 适配器重试并记录服务端退避；调度积压写入 worker 日志。
 - `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 GMGN `token_info` 链路。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
