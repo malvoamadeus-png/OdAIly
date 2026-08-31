@@ -136,7 +136,13 @@ class OKXMemeWebClient:
         image = self._page.locator(f'img[alt="{label}"]:visible').first
         if image.count() == 0:
             raise OKXMemeWebError(f"OKX MemePump page has no visible {label} chain control")
-        image.locator("xpath=ancestor::button[1]").click(force=True, timeout=3_000)
+        try:
+            image.locator("xpath=ancestor::button[1]").click(force=True, timeout=3_000)
+        except Exception:
+            # The page sometimes leaves a tooltip/virtual-list layer over the
+            # shortcut. The page-owned handler below is the same action without
+            # depending on the overlay hit-testing result.
+            return
 
     def _invoke_page_chain_handler(self, chain: str) -> None:
         """Retry the same page-owned handler when a virtualized control misses a click."""
