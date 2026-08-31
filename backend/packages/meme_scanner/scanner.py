@@ -43,6 +43,9 @@ MARKET_CAP_LEVELS = MARKET_CAP_LEVELS_BY_CHAIN[CHAIN]
 OKX_DISCOVERY_CHAINS = ("bsc", "robinhood")
 OKX_DISCOVERY_LIMIT = 30
 OKX_WEB_DISCOVERY_SOURCES = {"web", "web_meme", "priapi_meme_ranking"}
+MARKET_PRICE_SOURCES = {"okx", "gmgn"}
+DEFAULT_MARKET_PRICE_SOURCE = "okx"
+DEFAULT_GMGN_PRICE_WORKERS = 8
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
 TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
@@ -190,6 +193,16 @@ def get_okx_meme_web_client() -> OKXMemeWebClient:
     return _OKX_MEME_WEB_CLIENT
 
 
+def get_market_price_source() -> str:
+    source = (os.getenv("MEME_PRICE_SOURCE") or DEFAULT_MARKET_PRICE_SOURCE).strip().lower()
+    if source not in MARKET_PRICE_SOURCES:
+        raise OKXError(
+            f"unsupported MEME_PRICE_SOURCE={source!r}; "
+            "use okx or gmgn"
+        )
+    return source
+
+
 def close_okx_meme_web_client() -> None:
     global _OKX_MEME_WEB_CLIENT
     if _OKX_MEME_WEB_CLIENT is not None:
@@ -242,6 +255,7 @@ def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
             "migrated_at": item.get("migrEnd"),
             "_market_metrics_complete": False,
             "market_source": "okx",
+            "risk_source": "okx",
             "okx_discovery_source": discovery_source,
         }
     )
@@ -270,6 +284,48 @@ def _merge_okx_price_info(token: Token, metrics: dict[str, Any] | None) -> Token
     return replace(merged, metrics_complete=True)
 
 
+def _merge_gmgn_price_info(token: Token, metrics: Token | None) -> Token:
+    if metrics is None:
+        return token
+    raw = dict(token.raw)
+    raw["gmgn_token_info"] = metrics.raw
+    raw["gmgn_price"] = metrics.raw.get("price")
+    raw["usd_market_cap"] = metrics.market_cap
+    raw["volume_24h"] = metrics.volume_24h
+    raw["liquidity"] = metrics.raw.get("liquidity") or raw.get("liquidity")
+    raw["holders"] = metrics.raw.get("holder_count") or raw.get("holders")
+    if not token.name.strip() and metrics.name.strip():
+        raw["name"] = metrics.name
+    if token.symbol.strip().casefold() in {"", "?", "unknown", "n/a", "none"} and metrics.symbol.strip():
+        raw["symbol"] = metrics.symbol
+    raw["market_source"] = "gmgn"
+    raw["_market_metrics_complete"] = metrics.metrics_complete
+    merged = token_from_row(raw, allow_unknown_platform=True)
+    if merged is None:
+        return token
+    return replace(merged, metrics_complete=metrics.metrics_complete)
+
+
+def _fetch_gmgn_price_info(tokens: list[Token]) -> dict[str, Token]:
+    if not tokens:
+        return {}
+    configured_workers = int(os.getenv("MEME_GMGN_PRICE_WORKERS") or DEFAULT_GMGN_PRICE_WORKERS)
+    workers = max(1, min(configured_workers, len(tokens)))
+
+    def lookup(token: Token) -> tuple[str, Token | None]:
+        return (
+            token.address,
+            fetch_gmgn_token_info(token.address, token.chain, allow_unknown_platform=True),
+        )
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gmgn-price") as executor:
+        return {
+            address: metrics
+            for address, metrics in executor.map(lookup, tokens)
+            if metrics is not None
+        }
+
+
 def okx_risk_flags(token: Token) -> list[str]:
     tags = token.raw.get("tags") if isinstance(token.raw.get("tags"), dict) else {}
     social = token.raw.get("social") if isinstance(token.raw.get("social"), dict) else {}
@@ -293,8 +349,16 @@ def okx_risk_flags(token: Token) -> list[str]:
     return flags
 
 
+def market_risk_flags(token: Token) -> list[str]:
+    """Keep OKX risk evaluation when only the market-price adapter changes."""
+    if token.raw.get("risk_source") == "okx" or token.raw.get("market_source") == "okx":
+        return okx_risk_flags(token)
+    return []
+
+
 def fetch_okx_migrated_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
     client = get_okx_client()
+    price_source = get_market_price_source()
     source = (os.getenv("MEME_OKX_DISCOVERY_SOURCE") or "web_meme").strip().lower()
     if source in OKX_WEB_DISCOVERY_SOURCES:
         discovery_client: Any = get_okx_meme_web_client()
@@ -315,8 +379,12 @@ def fetch_okx_migrated_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
                 raise
             rows = client.list_migrated(chain, limit=limit)
         tokens = [token for row in rows if (token := _okx_token_from_item(row, chain))]
-        metrics = client.price_info(chain, [token.address for token in tokens]) if tokens else {}
-        discovered.extend(_merge_okx_price_info(token, metrics.get(token.address)) for token in tokens)
+        if price_source == "gmgn":
+            metrics = _fetch_gmgn_price_info(tokens)
+            discovered.extend(_merge_gmgn_price_info(token, metrics.get(token.address)) for token in tokens)
+        else:
+            metrics = client.price_info(chain, [token.address for token in tokens]) if tokens else {}
+            discovered.extend(_merge_okx_price_info(token, metrics.get(token.address)) for token in tokens)
     return discovered
 
 
@@ -367,6 +435,11 @@ def fetch_gmgn_token_info(
     ):
         if normalized.get(field) in (None, ""):
             normalized[field] = _recursive_pick(payload, aliases)
+    normalized["_market_metrics_complete"] = (
+        not identity_only
+        and market_cap > 0
+        and normalized.get("volume_24h") not in (None, "")
+    )
     return token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
 
 
@@ -438,6 +511,7 @@ def _resolve_okx_identity_from_gmgn(token: Token) -> Token:
 
 
 def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = False) -> Token | None:
+    price_source = get_market_price_source()
     client = get_okx_client()
     details_error: str | None = None
     try:
@@ -453,6 +527,7 @@ def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = F
                 "chain": chain,
                 "launchpad_platform": "okx:unknown",
                 "market_source": "okx",
+                "risk_source": "okx",
                 "_market_metrics_complete": False,
             },
             allow_unknown_platform=True,
@@ -461,9 +536,15 @@ def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = F
         return None
     if details_error:
         token.raw["okx_details_error"] = details_error[:1000]
-    metrics = client.price_info(chain, [token.address]).get(token.address)
-    token = _merge_okx_price_info(token, metrics)
-    return _resolve_okx_identity_from_gmgn(token) if resolve_identity else token
+    if price_source == "gmgn":
+        token = _merge_gmgn_price_info(
+            token,
+            fetch_gmgn_token_info(token.address, chain, allow_unknown_platform=True),
+        )
+    else:
+        metrics = client.price_info(chain, [token.address]).get(token.address)
+        token = _merge_okx_price_info(token, metrics)
+    return _resolve_okx_identity_from_gmgn(token) if resolve_identity and price_source == "okx" else token
 
 
 def fetch_token_info(
@@ -1483,7 +1564,7 @@ def evaluate_market_token(
     if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
         return (0, 0)
     trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
-    risk_flags = okx_risk_flags(token) if token.raw.get("market_source") == "okx" else []
+    risk_flags = market_risk_flags(token)
     risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
     if risk_mode == "block" and any(
         flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")
@@ -1618,7 +1699,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         return (0, 1)
     evidence = json.loads(candidate["evidence_json"])
     trigger_key = f"tg_burst:{candidate['id']}"
-    risk_flags = okx_risk_flags(token) if token.raw.get("market_source") == "okx" else []
+    risk_flags = market_risk_flags(token)
     risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
     if risk_mode == "block" and any(
         flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")

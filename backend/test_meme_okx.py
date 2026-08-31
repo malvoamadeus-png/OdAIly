@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -142,6 +143,73 @@ class OKXAdapterTests(unittest.TestCase):
         self.assertEqual(current.raw["okx_discovery_source"], "web_meme_ranking")
         self.assertEqual(current.raw["volume_1h"], "120000")
         self.assertEqual(current.volume_24h, 320000.0)
+
+    def test_gmgn_price_source_enriches_discovery_without_okx_price_info(self) -> None:
+        web_client = Mock()
+        web_client.list_migrated.side_effect = [
+            [
+                {
+                    "ca": "0xBSC",
+                    "protoId": "129826",
+                    "smbl": "WEB",
+                    "name": "Web Token",
+                    "mcap": "700000",
+                    "vol1h": "120000",
+                    "_okx_discovery_source": "web_meme_ranking",
+                }
+            ],
+            [],
+        ]
+        okx_client = Mock()
+        gmgn_token = scanner.Token(
+            address="0xbsc",
+            platform="fourmeme",
+            name="Web Token",
+            symbol="WEB",
+            market_cap=710000,
+            volume_24h=320000,
+            created_timestamp=None,
+            raw={"price": {"price": "0.00071"}, "volume_24h": "320000", "liquidity": "100000"},
+            chain="bsc",
+        )
+        with patch.dict(os.environ, {"MEME_PRICE_SOURCE": "gmgn"}, clear=False), patch.object(
+            scanner, "get_okx_client", return_value=okx_client
+        ), patch.object(scanner, "get_okx_meme_web_client", return_value=web_client), patch.object(
+            scanner, "_fetch_gmgn_price_info", return_value={"0xbsc": gmgn_token}
+        ):
+            tokens = scanner.fetch_okx_migrated_tokens()
+
+        self.assertEqual(len(tokens), 1)
+        current = tokens[0]
+        self.assertEqual((current.market_cap, current.volume_24h), (710000.0, 320000.0))
+        self.assertEqual(current.raw["market_source"], "gmgn")
+        self.assertEqual(current.raw["risk_source"], "okx")
+        okx_client.price_info.assert_not_called()
+
+    def test_gmgn_price_source_skips_okx_price_info_for_tracking(self) -> None:
+        address = "0x23f1ad82bdb58f7524b6e76bdf5406267ef24413"
+        okx_client = Mock()
+        okx_client.token_details.side_effect = okx.OKXError("OKX tokenDetails unavailable")
+        gmgn_token = scanner.Token(
+            address=address,
+            platform="pons_v2",
+            name="GMGN Token",
+            symbol="GMGN",
+            market_cap=1_300_000,
+            volume_24h=900_000,
+            created_timestamp=None,
+            raw={"price": {"price": "0.0013"}, "volume_24h": "900000"},
+            chain="robinhood",
+        )
+        with patch.dict(os.environ, {"MEME_PRICE_SOURCE": "gmgn"}, clear=False), patch.object(
+            scanner, "get_okx_client", return_value=okx_client
+        ), patch.object(scanner, "fetch_gmgn_token_info", return_value=gmgn_token):
+            current = scanner.fetch_okx_token_info(address, "robinhood")
+
+        self.assertIsNotNone(current)
+        self.assertEqual((current.market_cap, current.volume_24h), (1_300_000.0, 900_000.0))
+        self.assertEqual(current.raw["market_source"], "gmgn")
+        okx_client.price_info.assert_not_called()
 
     def test_robinhood_uses_one_million_first_market_cap_level(self) -> None:
         self.assertEqual(scanner.market_cap_gate("bsc"), 500_000.0)
