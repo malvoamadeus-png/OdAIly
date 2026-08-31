@@ -46,6 +46,7 @@ OKX_WEB_DISCOVERY_SOURCES = {"web", "web_meme", "priapi_meme_ranking"}
 MARKET_PRICE_SOURCES = {"okx", "gmgn"}
 DEFAULT_MARKET_PRICE_SOURCE = "okx"
 DEFAULT_GMGN_PRICE_WORKERS = 4
+DEFAULT_GMGN_REQUEST_INTERVAL_SECONDS = 0.15
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
 TG_ROBINHOOD_MARKET_CAP_GATE = 1_000_000.0
@@ -74,6 +75,11 @@ READER_OPENING = "据Odaily Meme速递监测，"
 # override it with MEME_ODAILY_PUSH_ENDPOINT (or the shared ODAILY_PUSH_ENDPOINT).
 DEFAULT_ODAILY_PUSH_ENDPOINT = "http://47.113.217.70:8501/push/data"
 RATE_LIMIT_REMAINING_SECONDS = re.compile(r"~(\d+)s remaining")
+GMGN_RATE_LIMIT_REMAINING_SECONDS = re.compile(r"~(\d+)s remaining", re.IGNORECASE)
+
+_GMGN_THROTTLE_LOCK = threading.Lock()
+_GMGN_NEXT_REQUEST_AT = 0.0
+_GMGN_BACKOFF_UNTIL = 0.0
 
 
 @dataclass(frozen=True)
@@ -201,6 +207,49 @@ def get_market_price_source() -> str:
             "use okx or gmgn"
         )
     return source
+
+
+def _gmgn_request_interval_seconds() -> float:
+    try:
+        return max(
+            float(os.getenv("MEME_GMGN_REQUEST_INTERVAL_SECONDS") or DEFAULT_GMGN_REQUEST_INTERVAL_SECONDS),
+            0.0,
+        )
+    except ValueError:
+        return DEFAULT_GMGN_REQUEST_INTERVAL_SECONDS
+
+
+def _gmgn_rate_limit_delay_seconds(error: str) -> int:
+    match = GMGN_RATE_LIMIT_REMAINING_SECONDS.search(error)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _record_gmgn_rate_limit(error: str) -> None:
+    delay = _gmgn_rate_limit_delay_seconds(error)
+    if delay <= 0:
+        return
+    global _GMGN_BACKOFF_UNTIL
+    with _GMGN_THROTTLE_LOCK:
+        _GMGN_BACKOFF_UNTIL = max(_GMGN_BACKOFF_UNTIL, time.time() + delay)
+
+
+def _raise_if_gmgn_backing_off() -> None:
+    with _GMGN_THROTTLE_LOCK:
+        remaining = _GMGN_BACKOFF_UNTIL - time.time()
+    if remaining > 0:
+        raise RuntimeError(f"GMGN price source rate limited; retry-after {max(1, int(remaining) + 1)}s")
+
+
+def _wait_for_gmgn_request_slot() -> None:
+    global _GMGN_NEXT_REQUEST_AT
+    with _GMGN_THROTTLE_LOCK:
+        now = time.monotonic()
+        delay = max(_GMGN_NEXT_REQUEST_AT - now, 0.0)
+        _GMGN_NEXT_REQUEST_AT = max(now, _GMGN_NEXT_REQUEST_AT) + _gmgn_request_interval_seconds()
+    if delay > 0:
+        time.sleep(delay)
 
 
 def close_okx_meme_web_client() -> None:
@@ -400,13 +449,17 @@ def fetch_gmgn_token_info(
     allow_unknown_platform: bool = False,
     identity_only: bool = False,
 ) -> Token | None:
+    _raise_if_gmgn_backing_off()
     if not ensure_cli_ready():
         raise RuntimeError("GMGN CLI is not ready")
     requested_chain = normalize_chain(chain)
     command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
+    _wait_for_gmgn_request_slot()
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
     if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed")
+        error = result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed"
+        _record_gmgn_rate_limit(error)
+        raise RuntimeError(error)
     payload = json.loads(result.stdout)
     row = _find_token_info_row(payload, address.lower())
     top_level = payload if isinstance(payload, dict) and str(payload.get("address") or "").lower() == address.lower() else {}

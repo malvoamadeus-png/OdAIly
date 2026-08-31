@@ -5,8 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 
 
 GMGN = shutil.which("gmgn-cli.cmd") or shutil.which("gmgn-cli") or "gmgn-cli"
+
+_CLI_READY: bool | None = None
+_CLI_READY_LOCK = threading.Lock()
 
 
 def gmgn_subprocess_env() -> dict[str, str]:
@@ -54,25 +57,34 @@ def _sync_time_offset() -> None:
         os.environ["NODE_OPTIONS"] = f"{existing} {require_arg}".strip()
 
 
-@lru_cache(maxsize=1)
 def ensure_cli_ready() -> bool:
-    load_dotenv()
-    _sync_time_offset()
-    if GMGN == "gmgn-cli" and not shutil.which("gmgn-cli"):
-        print("gmgn-cli is missing. Install it with: npm install -g gmgn-cli", file=sys.stderr)
-        return False
-    if os.environ.get("GMGN_API_KEY"):
-        return True
-    result = subprocess.run(
-        [GMGN, "config", "--check"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=gmgn_subprocess_env(),
-        check=False,
-    )
-    if result.returncode == 0:
-        return True
-    print(result.stderr.strip() or result.stdout.strip() or "GMGN API key is not configured", file=sys.stderr)
-    return False
+    global _CLI_READY
+    if _CLI_READY is not None:
+        return _CLI_READY
+    with _CLI_READY_LOCK:
+        if _CLI_READY is not None:
+            return _CLI_READY
+        load_dotenv()
+        _sync_time_offset()
+        if GMGN == "gmgn-cli" and not shutil.which("gmgn-cli"):
+            print("gmgn-cli is missing. Install it with: npm install -g gmgn-cli", file=sys.stderr)
+            _CLI_READY = False
+            return _CLI_READY
+        if os.environ.get("GMGN_API_KEY"):
+            _CLI_READY = True
+            return _CLI_READY
+        result = subprocess.run(
+            [GMGN, "config", "--check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=gmgn_subprocess_env(),
+            check=False,
+        )
+        if result.returncode == 0:
+            _CLI_READY = True
+        else:
+            print(result.stderr.strip() or result.stdout.strip() or "GMGN API key is not configured", file=sys.stderr)
+            _CLI_READY = False
+        return _CLI_READY
