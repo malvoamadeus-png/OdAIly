@@ -270,7 +270,7 @@ def _duplicate_decision_for_document(
         duplicate_target_id=document.doc_id,
         reason="same_event",
         similarity=similarity,
-        candidate_id=document.candidate_id if target_type == "inflight_candidate" else None,
+        candidate_id=document.candidate_id if target_type in {"inflight_candidate", "recent_processed"} else None,
     )
 
 
@@ -919,26 +919,37 @@ def _row_to_search_document(row: sqlite3.Row) -> SearchDocument:
 
 
 def top_match(query_vector: list[float], documents: list[tuple[SearchDocument, list[float]]]) -> SearchMatch | None:
-    if np is not None and query_vector and documents:
-        match = _top_match_numpy(query_vector, documents)
-        if match is not None:
-            return match
-    best: SearchMatch | None = None
-    for document, vector in documents:
-        similarity = cosine_similarity(query_vector, vector)
-        if best is None or similarity > best.similarity:
-            best = SearchMatch(document=document, similarity=similarity)
-    return best
+    matches = top_matches(query_vector, documents, limit=1)
+    return matches[0] if matches else None
 
 
-def _top_match_numpy(
+def top_matches(
     query_vector: list[float],
     documents: list[tuple[SearchDocument, list[float]]],
-) -> SearchMatch | None:
+    *,
+    limit: int,
+) -> list[SearchMatch]:
+    if limit <= 0 or not query_vector or not documents:
+        return []
+    if np is not None:
+        matches = _top_matches_numpy(query_vector, documents, limit=limit)
+        if matches is not None:
+            return matches
+    scored = [
+        SearchMatch(document=document, similarity=cosine_similarity(query_vector, vector))
+        for document, vector in documents
+    ]
+    return sorted(scored, key=lambda match: match.similarity, reverse=True)[:limit]
+
+
+def _top_matches_numpy(
+    query_vector: list[float],
+    documents: list[tuple[SearchDocument, list[float]]],
+    *,
+    limit: int,
+) -> list[SearchMatch] | None:
     dimensions = len(query_vector)
-    if dimensions == 0:
-        return None
-    if any(len(vector) != dimensions for _document, vector in documents):
+    if dimensions == 0 or any(len(vector) != dimensions for _document, vector in documents):
         return None
     try:
         query = np.asarray(query_vector, dtype=np.float64)
@@ -946,20 +957,24 @@ def _top_match_numpy(
     except (TypeError, ValueError):
         return None
     if matrix.ndim != 2 or matrix.shape[0] == 0:
-        return None
+        return []
     query_norm = float(np.linalg.norm(query))
     document_norms = np.linalg.norm(matrix, axis=1)
     denominator = document_norms * query_norm
     if query_norm == 0.0:
-        return SearchMatch(document=documents[0][0], similarity=0.0)
+        return [SearchMatch(document=document, similarity=0.0) for document, _vector in documents[:limit]]
     similarities = np.divide(
         matrix @ query,
         denominator,
         out=np.zeros_like(document_norms, dtype=np.float64),
         where=denominator != 0,
     )
-    best_index = int(np.argmax(similarities))
-    return SearchMatch(document=documents[best_index][0], similarity=float(similarities[best_index]))
+    top_count = min(limit, len(documents))
+    top_indices = np.argsort(-similarities, kind="stable")[:top_count]
+    return [
+        SearchMatch(document=documents[int(index)][0], similarity=float(similarities[int(index)]))
+        for index in top_indices
+    ]
 
 
 AI_REVIEW_SCHEMA = {
@@ -1002,6 +1017,42 @@ def build_ai_review_prompt(*, query: SearchDocument, match: SearchMatch) -> str:
         f"正文：{match.document.content}\n"
         f"相似度：{match.similarity:.4f}\n\n"
         'JSON格式：{"is_duplicate":true|false,"duplicate_target_type":"odaily_published|inflight_candidate|none",'
+        '"duplicate_target_id":"string","reason":"same_event|same_topic_different_event|update_of_existing_event|unrelated"}'
+    )
+
+
+def build_ai_batch_review_prompt(
+    *,
+    query: SearchDocument,
+    matches: list[tuple[SearchMatch, str]],
+) -> str:
+    candidates: list[str] = []
+    for index, (match, target_type) in enumerate(matches, start=1):
+        candidates.append(
+            "\n".join(
+                (
+                    f"【候选{index}】",
+                    f"类型：{target_type}",
+                    f"ID：{match.document.doc_id}",
+                    f"标题：{match.document.title or ''}",
+                    f"正文：{match.document.content}",
+                    f"相似度：{match.similarity:.4f}",
+                )
+            )
+        )
+    return (
+        "你是 Odaily 快讯搜索者。请逐一判断新材料与全部候选是否属于同一个新闻事件。\n"
+        "同一公告、披露或行动中，从不同角度报道购买金额、数量、均价、总持仓、浮盈等补充指标，仍然属于同一事件，应判为重复。\n"
+        "同一主体后来发生的新动作、新交易、正式修正或事件发生后的实质进展，不是重复。\n"
+        "只要任意一个候选与新材料属于同一事件，就必须返回 is_duplicate=true，并原样返回该候选的类型和ID。\n"
+        "不能因为新材料相对某一个候选是新进展，就忽略它与其他候选的重复关系。\n"
+        "如果没有任何候选属于同一事件，返回 is_duplicate=false。只输出 JSON，不输出解释。\n\n"
+        "【新材料】\n"
+        f"标题：{query.title or ''}\n"
+        f"正文：{query.content}\n\n"
+        + "\n\n".join(candidates)
+        + "\n\n"
+        + 'JSON格式：{"is_duplicate":true|false,"duplicate_target_type":"odaily_published|inflight_candidate|recent_processed|none",'
         '"duplicate_target_id":"string","reason":"same_event|same_topic_different_event|update_of_existing_event|unrelated"}'
     )
 

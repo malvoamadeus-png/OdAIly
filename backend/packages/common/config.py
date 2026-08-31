@@ -325,7 +325,10 @@ class XProcessingSettings(BaseModel):
     search_ai_review_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     search_ai_review_append_json_schema_to_prompt: bool = False
     search_ai_review_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
-    search_recent_processed_seconds: int = Field(default=1800, ge=60, le=86400)
+    search_batch_ai_review_threshold: float = Field(default=0.60, ge=0.0, le=1.0)
+    search_odaily_review_limit: int = Field(default=3, ge=1, le=20)
+    search_candidate_review_limit: int = Field(default=5, ge=1, le=20)
+    search_recent_processed_seconds: int = Field(default=86400, ge=60, le=86400)
     search_cache_refresh_seconds: int = Field(default=30, ge=5, le=3600)
     search_cache_cleanup_interval_seconds: int = Field(default=21600, ge=300, le=604800)
     search_cache_short_retention_days: int = Field(default=2, ge=1, le=30)
@@ -485,7 +488,12 @@ def load_x_processing_settings() -> XProcessingSettings:
             "SEARCH_AI_REVIEW_APPEND_JSON_SCHEMA_TO_PROMPT", False
         ),
         "search_ai_review_threshold": float(os.getenv("SEARCH_AI_REVIEW_THRESHOLD") or 0.65),
-        "search_recent_processed_seconds": int(os.getenv("SEARCH_RECENT_PROCESSED_SECONDS") or 1800),
+        "search_batch_ai_review_threshold": float(
+            os.getenv("SEARCH_BATCH_AI_REVIEW_THRESHOLD") or 0.60
+        ),
+        "search_odaily_review_limit": int(os.getenv("SEARCH_ODAILY_REVIEW_LIMIT") or 3),
+        "search_candidate_review_limit": int(os.getenv("SEARCH_CANDIDATE_REVIEW_LIMIT") or 5),
+        "search_recent_processed_seconds": int(os.getenv("SEARCH_RECENT_PROCESSED_SECONDS") or 86400),
         "search_cache_refresh_seconds": int(os.getenv("SEARCH_CACHE_REFRESH_SECONDS") or 30),
         "search_cache_cleanup_interval_seconds": int(
             os.getenv("SEARCH_CACHE_CLEANUP_INTERVAL_SECONDS") or 21600

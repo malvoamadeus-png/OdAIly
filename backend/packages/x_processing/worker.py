@@ -65,10 +65,11 @@ from .searcher import (
     SearchCache,
     SearchDecision,
     SearchDocument,
-    build_ai_review_prompt,
+    SearchMatch,
+    build_ai_batch_review_prompt,
     exact_duplicate_decision,
     parse_ai_review_output,
-    top_match,
+    top_matches,
 )
 from .telegram import TelegramClient, skipped_telegram_result
 from .title_trace import (
@@ -760,8 +761,9 @@ class XProcessingWorker:
             target_type="odaily_published",
         )
         query_vector: list[float] | None = None
-        odaily_match = None
-        candidate_match = None
+        odaily_matches: list[SearchMatch] = []
+        candidate_matches: list[SearchMatch] = []
+        review_matches: list[tuple[SearchMatch, str]] = []
         non_duplicate_review: SearchDecision | None = None
         if decision is None:
             decision = exact_duplicate_decision(
@@ -777,41 +779,29 @@ class XProcessingWorker:
             )
         if decision is None:
             query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
-            odaily_match = top_match(
+            odaily_matches = top_matches(
                 query_vector,
                 self.search_embedding_service.embed_documents(odaily_documents),
+                limit=self.settings.search_odaily_review_limit,
             )
-            odaily_decision = self._decide_match(query=query, match=odaily_match, target_type="odaily_published")
-            if odaily_decision is not None:
-                if odaily_decision.is_duplicate:
-                    decision = odaily_decision
-                else:
-                    non_duplicate_review = odaily_decision
-        if decision is None:
-            if query_vector is None:
-                query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
-            candidate_match = top_match(
+            candidate_matches = top_matches(
                 query_vector,
                 self.search_embedding_service.embed_documents(candidate_documents),
+                limit=self.settings.search_candidate_review_limit,
             )
-            candidate_target_type = (
-                "recent_processed"
-                if candidate_match is not None and candidate_match.document.doc_type == "recent_processed"
-                else "inflight_candidate"
-            )
-            candidate_decision = self._decide_match(
+            review_matches = [
+                *((match, "odaily_published") for match in odaily_matches),
+                *((match, self._target_type_for_match(match)) for match in candidate_matches),
+            ]
+            batch_decision = self._decide_matches(
                 query=query,
-                match=candidate_match,
-                target_type=candidate_target_type,
+                matches=review_matches,
             )
-            if candidate_decision is not None:
-                if candidate_decision.is_duplicate:
-                    decision = candidate_decision
-                elif (
-                    non_duplicate_review is None
-                    or candidate_decision.similarity > non_duplicate_review.similarity
-                ):
-                    non_duplicate_review = candidate_decision
+            if batch_decision is not None:
+                if batch_decision.is_duplicate:
+                    decision = batch_decision
+                else:
+                    non_duplicate_review = batch_decision
         if decision and decision.is_duplicate:
             result = {
                 **decision.to_result(),
@@ -822,6 +812,13 @@ class XProcessingWorker:
                     recent_processed_documents=recent_processed_documents,
                 ),
             }
+            observed_matches = [
+                serialized
+                for match, target_type in review_matches
+                if (serialized := self._serialize_search_match(match, target_type=target_type)) is not None
+            ]
+            if observed_matches:
+                result["observed_matches"] = observed_matches
             if decision.candidate_id is not None:
                 try:
                     self.repository.link_task_to_candidate(task, candidate_id=decision.candidate_id, search_result=result)
@@ -844,18 +841,10 @@ class XProcessingWorker:
                 recent_processed_documents=recent_processed_documents,
             ),
         }
-        candidate_target_type = (
-            "recent_processed"
-            if candidate_match is not None and candidate_match.document.doc_type == "recent_processed"
-            else "inflight_candidate"
-        )
         observed_matches = [
-            match_info
-            for match_info in (
-                self._serialize_search_match(odaily_match, target_type="odaily_published"),
-                self._serialize_search_match(candidate_match, target_type=candidate_target_type),
-            )
-            if match_info is not None
+            serialized
+            for match, target_type in review_matches
+            if (serialized := self._serialize_search_match(match, target_type=target_type)) is not None
         ]
         if observed_matches:
             result["observed_matches"] = observed_matches
@@ -876,39 +865,76 @@ class XProcessingWorker:
             },
         )
 
-    def _decide_match(self, *, query: SearchDocument, match, target_type: str) -> SearchDecision | None:
-        if match is None:
+    def _decide_matches(
+        self,
+        *,
+        query: SearchDocument,
+        matches: list[tuple[SearchMatch, str]],
+    ) -> SearchDecision | None:
+        if not matches:
             return None
-        candidate_id = match.document.candidate_id if target_type == "inflight_candidate" else None
-        if match.similarity >= self.settings.search_duplicate_threshold:
+        best_match = max(matches, key=lambda item: item[0].similarity)[0]
+        direct_duplicates = [
+            item for item in matches if item[0].similarity >= self.settings.search_duplicate_threshold
+        ]
+        if direct_duplicates:
+            match, target_type = max(direct_duplicates, key=lambda item: item[0].similarity)
             return SearchDecision(
                 is_duplicate=True,
                 duplicate_target_type=target_type,
                 duplicate_target_id=match.document.doc_id,
                 reason="same_event",
                 similarity=match.similarity,
-                candidate_id=candidate_id,
+                candidate_id=match.document.candidate_id,
             )
-        if match.similarity < self.settings.search_ai_review_threshold or self.search_ai_client is None:
+        if best_match.similarity < self.settings.search_batch_ai_review_threshold or self.search_ai_client is None:
             return None
         raw_output = self.search_ai_client.generate_text(
             model=self.settings.search_ai_review_model,
-            prompt=build_ai_review_prompt(query=query, match=match),
+            prompt=build_ai_batch_review_prompt(query=query, matches=matches),
             text_format=AI_REVIEW_SCHEMA,
             reasoning_effort=self.settings.search_ai_review_reasoning_effort,
         )
         payload = parse_ai_review_output(raw_output)
         is_duplicate = bool(payload.get("is_duplicate"))
-        duplicate_type = str(payload.get("duplicate_target_type") or "none")
+        if not is_duplicate:
+            return SearchDecision(
+                is_duplicate=False,
+                duplicate_target_type="none",
+                duplicate_target_id="",
+                reason=str(payload.get("reason") or "unrelated"),
+                similarity=best_match.similarity,
+                raw_ai_output=raw_output,
+            )
+        requested_target_type = str(payload.get("duplicate_target_type") or "")
+        requested_target_id = str(payload.get("duplicate_target_id") or "")
+        selected = next(
+            (
+                item
+                for item in matches
+                if item[1] == requested_target_type and item[0].document.doc_id == requested_target_id
+            ),
+            None,
+        )
+        if selected is None:
+            matching_ids = [item for item in matches if item[0].document.doc_id == requested_target_id]
+            selected = matching_ids[0] if len(matching_ids) == 1 else None
+        if selected is None:
+            raise ValueError("search AI duplicate target was not included in reviewed candidates")
+        match, target_type = selected
         return SearchDecision(
-            is_duplicate=is_duplicate,
-            duplicate_target_type=duplicate_type if is_duplicate else "none",
-            duplicate_target_id=str((payload.get("duplicate_target_id") or match.document.doc_id) if is_duplicate else ""),
+            is_duplicate=True,
+            duplicate_target_type=target_type,
+            duplicate_target_id=match.document.doc_id,
             reason=str(payload.get("reason") or "unrelated"),
             similarity=match.similarity,
-            candidate_id=candidate_id if is_duplicate and duplicate_type == "inflight_candidate" else None,
+            candidate_id=match.document.candidate_id,
             raw_ai_output=raw_output,
         )
+
+    @staticmethod
+    def _target_type_for_match(match: SearchMatch) -> str:
+        return "recent_processed" if match.document.doc_type == "recent_processed" else "inflight_candidate"
 
     def _serialize_search_match(self, match, *, target_type: str) -> dict[str, Any] | None:
         if match is None:
