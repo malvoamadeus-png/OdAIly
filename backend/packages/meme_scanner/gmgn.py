@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -53,6 +54,7 @@ def _sync_time_offset() -> None:
         os.environ["NODE_OPTIONS"] = f"{existing} {require_arg}".strip()
 
 
+@lru_cache(maxsize=1)
 def ensure_cli_ready() -> bool:
     load_dotenv()
     _sync_time_offset()
