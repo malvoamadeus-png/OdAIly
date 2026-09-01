@@ -26,6 +26,8 @@ def _settings(audit_output: Path | None, timeout: int, chain: str) -> Any:
         "output": str(output),
         "gpt_model": os.getenv("MEME_FAST_WRITER_MODEL") or "gpt-5.6-luna",
         "gpt_timeout": timeout,
+        "writer_base_url": os.getenv("MEME_FAST_WRITER_BASE_URL") or os.getenv("ODAILY_LLM_BASE_URL") or "",
+        "writer_api_key": os.getenv("MEME_FAST_WRITER_API_KEY") or os.getenv("ODAILY_LLM_API_KEY") or "",
         "symbol": "",
     })()
 

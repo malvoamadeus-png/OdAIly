@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+import requests
 
 from . import narrative_v2
 
@@ -116,6 +119,47 @@ Materials:
 {json.dumps(materials, ensure_ascii=False)}"""
 
 
+def write_json_with_metrics(
+    prompt: str,
+    *,
+    model: str,
+    timeout: int,
+    base_url: str,
+    api_key: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not base_url:
+        raise RuntimeError("MEME_FAST_WRITER_BASE_URL is required")
+    if not api_key:
+        raise RuntimeError("MEME_FAST_WRITER_API_KEY is required")
+    started = time.perf_counter()
+    response = requests.post(
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return only a valid JSON object without Markdown fences."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "reasoning_effort": "none",
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("Luna response has no chat-completion content") from exc
+    if not isinstance(content, str):
+        raise RuntimeError("Luna response content is not text")
+    return (
+        narrative_v2.extract_json_object(content, "Luna"),
+        narrative_v2.performance_entry("", started, data),
+    )
+
+
 def run(
     args: Any,
     *,
@@ -162,7 +206,7 @@ def run(
         status, decision_code, decision_reason = "empty", "no_materials", "三路快速信源均没有可用叙事材料"
     else:
         try:
-            raw_final, writer_metric = narrative_v2.chat_completion_json_with_metrics(
+            raw_final, writer_metric = write_json_with_metrics(
                 build_writer_prompt(
                     chain=args.chain,
                     contract=args.contract,
@@ -171,6 +215,8 @@ def run(
                 ),
                 model=args.gpt_model,
                 timeout=args.gpt_timeout,
+                base_url=getattr(args, "writer_base_url", "") or os.getenv("ODAILY_LLM_BASE_URL") or "",
+                api_key=getattr(args, "writer_api_key", "") or os.getenv("ODAILY_LLM_API_KEY") or "",
             )
         except Exception as exc:
             raise narrative_v2.NarrativeStageError("final_writer", exc) from exc

@@ -20,6 +20,8 @@ def args(tmp_path):
         output_dir=str(tmp_path),
         gpt_model="gpt-5.6-luna",
         gpt_timeout=10,
+        writer_base_url="https://writer.invalid/v1",
+        writer_api_key="test-key",
     )
 
 
@@ -47,7 +49,7 @@ def test_fast_narrative_uses_luna_result_and_anonymizes_fomo(tmp_path):
         "used_material_ids": ["thesis:1"],
         "discarded_material_ids": [],
     }
-    with patch.object(fast_narrative.narrative_v2, "chat_completion_json_with_metrics", return_value=(writer, {})) as call:
+    with patch.object(fast_narrative, "write_json_with_metrics", return_value=(writer, {})) as call:
         result = fast_narrative.run(args(tmp_path), provider=provider)
 
     assert call.call_args.kwargs["model"] == "gpt-5.6-luna"
@@ -70,7 +72,7 @@ def test_fast_narrative_rejects_named_fomo_attribution(tmp_path):
         "reader_text": "FOMO Thesis 用户表示 PICKLES 是 Robinhood Agent。",
         "used_material_ids": ["thesis:1"],
     }
-    with patch.object(fast_narrative.narrative_v2, "chat_completion_json_with_metrics", return_value=(writer, {})):
+    with patch.object(fast_narrative, "write_json_with_metrics", return_value=(writer, {})):
         with pytest.raises(narrative_v2.NarrativeStageError) as error:
             fast_narrative.run(args(tmp_path), provider=provider)
     assert error.value.stage == "final_validation"
@@ -78,7 +80,7 @@ def test_fast_narrative_rejects_named_fomo_attribution(tmp_path):
 
 def test_fast_narrative_skips_writer_when_all_sources_are_empty(tmp_path):
     provider = fast_narrative.InMemoryFastEvidenceAdapter(bundle([]))
-    with patch.object(fast_narrative.narrative_v2, "chat_completion_json_with_metrics") as writer:
+    with patch.object(fast_narrative, "write_json_with_metrics") as writer:
         result = fast_narrative.run(args(tmp_path), provider=provider)
     writer.assert_not_called()
     assert result["status"] == "empty"
