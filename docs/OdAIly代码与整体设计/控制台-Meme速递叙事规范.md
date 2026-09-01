@@ -26,15 +26,15 @@
 
 内部审计区分 source_materials、angle_materials 和 supplemental_information。三组都可以为空，不能为了填满某一组而用频次、情绪或模型常识补写。原始字眼或明确人物动作本身已经足够时，角度可以为空。
 
-正文归属按来源区分：Telegram 使用“群聊 A 表示/提到……”或“多个群聊表示……”；X 使用“X 上有人/多名用户表示/提到……”。Grok 叙事材料作为主要内容时使用“Grok 指出/表示/提到……”。`grok_supplemental_information` 和 `entity_supplements` 如果被采用，必须单独成段并以 `Grok补充：` 开头；GMGN 简体中文叙事如果存在，必须单独成段并以 `GMGN补充：` 开头。多个事实用分号连接，不得用“Grok 还称”把不同材料组串起来。实体核验只输出规范化后的直接事实，例如“英伟达CEO黄仁勋账号关注了 RTX 社区成员”或“加密KOL王大有正在推动并建设 RTX 社区”，不得输出“王大友是王大有”这类身份映射过程。
+正文归属按来源区分：Telegram 使用“群聊 A 表示/提到……”或“多个群聊表示……”；X 使用“X 上有人/多名用户表示/提到……”；FOMO Thesis 材料在正文中统一匿名写作“某信源表示……”，不得出现 FOMO、Thesis、产品名、作者名或账号名。社区说法不能被改写为未经归属的确定事实。
 
 ## 运行顺序
 
-Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事生成不使用 watcher 的 CA-only 摘要作为唯一输入，而是按 CommunityMonitor V2 对精确 CA 做白名单全历史 Telegram 搜索。程序全局选择最早 20 条和最新 20 条命中，并对每个命中回读前 2 条、后 15 条上下文。机器人在保存前过滤，原话按 `chat + message_id` 去重。
+Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事材料不直接复用 watcher 的触发摘要，而是调用 HideOnBush 快速材料接口，由 HideOnBush 自有 Telegram 会话按精确 CA 收集白名单材料并返回规范化结果。
 
-X CA 搜索使用公开 FxTwitter 接口，分别请求 `top` 两页和 `latest` 两页，每页最多 20 条，按 X 帖子 ID 去重。正文不含精确 CA 的弱相关结果只保留在排除审计中；当前唯一内容过滤规则是排除正文含 `gmgn.ai/` 链接的帖子。404 页面按空结果处理，其他 X 采集异常降级为空材料并写入诊断，不阻断其他阶段。保留的帖子保存原文、作者、链接、时间和来源 feed/页码。
+FxTwitter、Telegram 与 FOMO Thesis 由 HideOnBush 快速材料模块并行采集。HideOnBush 只返回 `evidence` 和各路诊断，不生成 OdAIly 正文；请求必须显式包含链和 CA，调用身份使用独立内部密钥，不复用 HideOnBush 用户登录和叙事次数限额。
 
-Grok 只执行两路：第一路只用精确 CA 做独立研究，输出 `source_actions`、`narrative_materials`、`supplemental_information` 和非最终 `type_hypothesis`；第二路在 Telegram 实体候选提取完成后做实体补充。两路 Grok 请求使用同一个 xAI/CLIProxyAPI 代理时最多并发占用两个请求槽。GMGN 叙事通过有头 Playwright + `xvfb-run` 与其他采集阶段并行调用，读取 `data.zh_cn` 作为 `gmgn_supplement`。Grok、Telegram 等核心阶段失败时保留具体诊断并按阶段重试；X 采集失败降级为空材料并保留诊断，不阻断其他阶段；GMGN 仅作为可选补充，403/429、浏览器依赖或虚拟显示器失败不阻断已有主材料写作。最终 writer 继续接收完整 Telegram 原话、FxTwitter 帖子、GMGN 简体中文叙事和两路 Grok 结构化材料，不新增 Telegram AI 抽取阶段。
+OdAIly 使用 `gpt-5.6-luna` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事；GMGN 作为市场价格适配器的用途不受影响。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 
@@ -49,9 +49,9 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 叙事流程继续复用 `jobs.narrative_json`，不新增表。每次流程至少记录：
 
 - `status`：`success`、`empty` 或 `error`。
-- `failure_stage`：`telegram_collection`、`x_ca_collection`、`grok_ca_research`、`telegram_entity_extraction`、`grok_entity_lookup`、`final_writer`、`final_validation` 等。
+- `failure_stage`：`hideonbush_fast_evidence`、`final_writer`、`final_validation`。
 - `failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`。
-- Telegram 最老/最新命中及每条命中的前 2、后 15 条上下文；X 原帖；GMGN 简体中文叙事；Grok `source_actions`、`narrative_materials`、`supplemental_information`、`type_hypothesis`；实体补充、性能和调用诊断。
+- HideOnBush 返回的 Telegram、X、FOMO Thesis 规范化材料，三路错误与性能诊断。
 - 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
 
 叙事生成器返回的 `output_path` 必须是字符串路径，并且返回值要包含写入文件的完整审计对象；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型，也不能用精简的最终正文对象覆盖审计文件。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。
@@ -68,4 +68,4 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 2. “Telegram 中多条消息重复提及 bStonkBroker，并出现一条指向税务信息页面的链接。”这是重复计数和链接描述，没有说明具体字眼、事件或关系。
 3. “群聊 A 表示它是‘知了’，也说‘就是大金啊’；还有人感叹‘卧槽真能飞啊’。”其中只有明确字眼可能成为材料；后半句只是用户反应，不能作为炒作理由。
 
-正确处理是：从上下文中的原话提取明确的字眼、梗的来历、人物动作、事件或具体关系；如果提取不到这些内容，正文留空。`telegram_contexts`、`telegram_messages`、`x_posts` 和 `grok_research` 必须保留在审计 JSON，便于复核最终正文使用了什么输入。
+正确处理是：从三路材料中提取明确的字眼、梗的来历、人物动作、事件或具体关系；如果提取不到这些内容，正文留空。`fast_evidence`、`telegram_messages`、`x_posts` 和 `fomo_materials` 必须保留在审计 JSON，便于复核最终正文使用了什么输入。

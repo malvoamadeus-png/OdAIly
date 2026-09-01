@@ -2800,7 +2800,7 @@ function memeStatusLabel(item: MemeDashboardItem): string {
   }
 }
 
-type MemeAuditSection = 'diagnostic' | 'final' | 'telegram' | 'x_search' | 'grok_narrative' | 'performance';
+type MemeAuditSection = 'diagnostic' | 'final' | 'telegram' | 'fast_sources' | 'performance';
 
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -3025,9 +3025,7 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
   };
 
   const narrative = detail?.narrative;
-  const grokResearch = recordValue(narrative?.grok_research);
   const counts = recordValue(narrative?.material_counts) as Record<string, number>;
-  const typeHypothesis = textValue(narrative?.type_hypothesis || grokResearch.type_hypothesis || item.type_hypothesis);
   const toggleSection = (key: MemeAuditSection) => setSection(section === key ? null : key);
 
   const sectionButton = (key: MemeAuditSection, label: string) => (
@@ -3072,7 +3070,6 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                   {section === 'final' && (
                     <div className="memeAuditSectionBody">
                       <div className="memeAuditDecisionGrid">
-                        <span><b>Grok 类型假设</b>{typeHypothesis || '未判断/未形成'}</span>
                         <span><b>最终类型</b>{primaryTypeLabel(textValue(narrative?.primary_type || item.primary_type))}</span>
                         <span><b>类型字段</b>{textValue(narrative?.primary_type || item.primary_type, '未判断/未形成')}</span>
                         <span><b>决策原因</b>{narrativeDecisionLabel(narrative?.decision_code)}</span>
@@ -3102,24 +3099,11 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                   {section === 'telegram' && <div className="memeAuditSectionBody"><TelegramAudit contexts={listValue(narrative?.telegram_contexts)} /></div>}
                 </section>
                 <section>
-                  {sectionButton('x_search', 'X CA 搜索')}
-                  {section === 'x_search' && (
+                  {sectionButton('fast_sources', '快速叙事信源')}
+                  {section === 'fast_sources' && (
                     <div className="memeAuditSectionBody">
                       <MaterialList title="X 原帖" materials={listValue(narrative?.x_posts)} />
-                      <MaterialList title="被排除帖子" materials={listValue(narrative?.x_excluded_posts)} />
-                      <MaterialList title="Grok source actions" materials={listValue(grokResearch.source_actions)} />
-                    </div>
-                  )}
-                </section>
-                <section>
-                  {sectionButton('grok_narrative', 'Grok 叙事材料')}
-                  {section === 'grok_narrative' && (
-                    <div className="memeAuditSectionBody">
-                      <div className="memeAuditTypeHypothesis"><b>类型假设</b>{typeHypothesis || '未判断/未形成'}</div>
-                      <MaterialList title="叙事材料" materials={listValue(grokResearch.narrative_materials)} />
-                      <MaterialList title="补充信息" materials={listValue(grokResearch.supplemental_information)} />
-                      <MaterialList title="实体补充" materials={listValue(narrative?.entity_supplements)} />
-                      <MaterialList title="GMGN补充" materials={listValue(narrative?.gmgn_supplement)} />
+                      <MaterialList title="某信源材料" materials={listValue(narrative?.fomo_materials)} />
                     </div>
                   )}
                 </section>
@@ -3149,7 +3133,8 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                       <div className="memeAuditCounts">
                         {Object.entries(counts).map(([key, value]) => <span key={key}><b>{key}</b>{String(value)}</span>)}
                       </div>
-                      <MaterialList title="Grok / API 诊断" materials={listValue(narrative?.grok_diagnostics)} />
+                      <strong>HideOnBush 信源诊断</strong>
+                      <pre className="memeAuditPre">{JSON.stringify(narrative?.fast_evidence || {}, null, 2)}</pre>
                       <pre className="memeAuditPre">{JSON.stringify(narrative?.performance || {}, null, 2)}</pre>
                     </div>
                   )}

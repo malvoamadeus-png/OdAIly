@@ -1200,6 +1200,8 @@ export type MemeNarrativeDetail = {
     telegram_contexts?: MemeNarrativeMaterial[];
     telegram_messages?: MemeNarrativeMaterial[];
     x_posts?: MemeNarrativeMaterial[];
+    fomo_materials?: MemeNarrativeMaterial[];
+    fast_evidence?: Record<string, unknown>;
     x_excluded_posts?: MemeNarrativeMaterial[];
     gmgn_supplement?: MemeNarrativeMaterial[];
     gmgn_diagnostic?: MemeNarrativeMaterial;

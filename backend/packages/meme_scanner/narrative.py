@@ -1,30 +1,20 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 from pathlib import Path
 from typing import Any
 
-from packages.common.config import DEFAULT_GPT_WRITER_MODEL
 from packages.common.paths import get_paths
 
-from . import narrative_v2
+from . import fast_narrative
 
 
 PATHS = get_paths()
 DEFAULT_AUDIT_DIR = PATHS.exports_dir / "meme_scanner"
-DEFAULT_TELEGRAM_CONFIG = PATHS.config_dir / "meme_telegram.txt"
-DEFAULT_TELEGRAM_SESSION = PATHS.processed_dir / "meme_telegram_narrative"
-DEFAULT_ALLOWED_CHATS = PATHS.config_dir / "meme_whitelist.txt"
 
 
 def _run(factory: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(factory())
-    raise RuntimeError("Meme narrative V2 cannot run inside an active event loop")
+    return factory()
 
 
 def _settings(audit_output: Path | None, timeout: int, chain: str) -> Any:
@@ -34,32 +24,10 @@ def _settings(audit_output: Path | None, timeout: int, chain: str) -> Any:
         "contract": "",
         "output_dir": str(output.parent),
         "output": str(output),
-        "gpt_model": os.getenv("MEME_WRITER_MODEL") or DEFAULT_GPT_WRITER_MODEL,
-        "grok_model": os.getenv("MEME_GROK_MODEL") or os.getenv("GROK_MODEL") or narrative_v2.DEFAULT_GROK_MODEL,
+        "gpt_model": os.getenv("MEME_FAST_WRITER_MODEL") or "gpt-5.6-luna",
         "gpt_timeout": timeout,
-        "grok_timeout": timeout,
-        "gmgn_timeout": int(os.getenv("MEME_GMGN_TIMEOUT") or min(timeout, 20)),
-        "telegram_config": os.getenv("MEME_TELEGRAM_CONFIG") or str(DEFAULT_TELEGRAM_CONFIG),
-        "telegram_session": os.getenv("MEME_TELEGRAM_NARRATIVE_SESSION")
-        or os.getenv("MEME_TELEGRAM_WATCH_SESSION")
-        or str(DEFAULT_TELEGRAM_SESSION),
-        "allowed_chats": os.getenv("MEME_TELEGRAM_ALLOWED_CHATS") or str(DEFAULT_ALLOWED_CHATS),
-        "dialogs_limit": int(os.getenv("MEME_TELEGRAM_DIALOGS_LIMIT") or 300),
-        "proxy": os.getenv("MEME_TELEGRAM_PROXY") or "auto",
-        "telegram_timeout": int(os.getenv("MEME_TELEGRAM_TIMEOUT") or 20),
-        "connection_retries": int(os.getenv("MEME_TELEGRAM_CONNECTION_RETRIES") or 3),
+        "symbol": "",
     })()
-
-
-def _grok_text(result: dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "source_actions": result.get("grok_research", {}).get("source_actions", []),
-            "narrative_materials": result.get("grok_research", {}).get("narrative_materials", []),
-            "supplemental_information": result.get("grok_research", {}).get("supplemental_information", []),
-        },
-        ensure_ascii=False,
-    )
 
 
 def generate_reader_text(
@@ -73,12 +41,18 @@ def generate_reader_text(
     timeout: int,
     audit_output: Path | None = None,
 ) -> dict[str, Any]:
-    del symbol, database_path, evidence
+    del database_path, evidence
     args = _settings(audit_output, timeout, chain)
     args.contract = address
+    args.symbol = symbol
     args.trigger_kind = trigger_kind
+    provider = fast_narrative.HTTPFastEvidenceAdapter(
+        endpoint=os.getenv("MEME_FAST_EVIDENCE_URL") or "",
+        internal_key=os.getenv("MEME_FAST_EVIDENCE_INTERNAL_KEY") or "",
+        timeout_seconds=int(os.getenv("MEME_FAST_EVIDENCE_TIMEOUT") or min(timeout, 45)),
+    )
     try:
-        result = _run(lambda: narrative_v2.run_async(args))
+        result = _run(lambda: fast_narrative.run(args, provider=provider))
     except Exception as exc:
         stage = str(getattr(exc, "stage", "narrative_pipeline") or "narrative_pipeline")
         message = str(exc) or exc.__class__.__name__
@@ -95,9 +69,11 @@ def generate_reader_text(
             "telegram_messages": [],
             "x_posts": [],
             "gmgn_supplement": [],
-            "gmgn_diagnostic": {"stage": "gmgn_narrative", "optional": True},
+            "fomo_materials": [],
+            "fast_evidence": {},
+            "gmgn_diagnostic": {"stage": "gmgn_narrative", "status": "disabled"},
             "grok_research": {},
-            "grok_diagnostics": [{"stage": "narrative_v2", "error": str(exc)}],
+            "grok_diagnostics": [],
             "grok_text": "",
             "grok_error": str(exc),
             "transient_error": f"narrative_{stage}_failed",
@@ -112,13 +88,6 @@ def generate_reader_text(
 
     return {
         **result,
-        "grok_text": _grok_text(result),
-        "grok_error": next(
-            (
-                str(item.get("http_status"))
-                for item in result.get("grok_diagnostics", [])
-                if isinstance(item, dict) and int(item.get("http_status", 0) or 0) >= 400
-            ),
-            None,
-        ),
+        "grok_text": "",
+        "grok_error": None,
     }

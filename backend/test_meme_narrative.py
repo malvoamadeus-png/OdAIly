@@ -304,17 +304,14 @@ def test_generate_reader_text_returns_empty_without_source_material(tmp_path) ->
     assert result["telegram_messages"] == []
 
 
-def test_generate_reader_text_preserves_v2_material_buckets(tmp_path) -> None:
+def test_generate_reader_text_preserves_fast_material_buckets_without_grok(tmp_path) -> None:
     payload = {
         "reader_text": "白宫账号发文提到 Golden Age。",
         "telegram_contexts": [{"chat_title": "Golden", "context": []}],
         "telegram_messages": [{"id": "tg:1", "text": "白宫奶黄金时代了"}],
         "x_posts": [{"id": "x:1", "author": "@WhiteHouse", "text": "Golden Age", "url": "https://x.com/WhiteHouse/status/1"}],
-        "grok_research": {
-            "source_actions": [],
-            "narrative_materials": [{"id": "grok:narrative:1", "statement": "Golden Age 与白宫发文有关"}],
-            "supplemental_information": [],
-        },
+        "fomo_materials": [{"id": "thesis:1", "statement": "Golden Age 与白宫发文有关"}],
+        "grok_research": {},
         "grok_diagnostics": [],
         "performance": {},
     }
@@ -330,11 +327,12 @@ def test_generate_reader_text_preserves_v2_material_buckets(tmp_path) -> None:
 
     assert result["telegram_contexts"] == payload["telegram_contexts"]
     assert result["x_posts"] == payload["x_posts"]
-    assert "Golden Age" in result["grok_text"]
+    assert result["fomo_materials"] == payload["fomo_materials"]
+    assert result["grok_text"] == ""
 
 
-def test_generate_reader_text_persists_stage_error_as_transient_diagnostic(tmp_path) -> None:
-    error = narrative_v2.NarrativeStageError("grok_ca_research", RuntimeError("HTTP 502"))
+def test_generate_reader_text_persists_evidence_stage_error_as_transient_diagnostic(tmp_path) -> None:
+    error = narrative_v2.NarrativeStageError("hideonbush_fast_evidence", RuntimeError("HTTP 502"))
     with patch.object(narrative, "_run", side_effect=error):
         result = narrative.generate_reader_text(
             address=ADDRESS,
@@ -346,19 +344,19 @@ def test_generate_reader_text_persists_stage_error_as_transient_diagnostic(tmp_p
         )
 
     assert result["status"] == "error"
-    assert result["failure_stage"] == "grok_ca_research"
+    assert result["failure_stage"] == "hideonbush_fast_evidence"
     assert result["failure_code"] == "stage_failed"
-    assert result["transient_error"] == "narrative_grok_ca_research_failed"
+    assert result["transient_error"] == "narrative_hideonbush_fast_evidence_failed"
     assert result["decision_code"] == "narrative_error"
 
 
-def test_generate_reader_text_retries_grok_http_diagnostic(tmp_path) -> None:
+def test_generate_reader_text_retries_hideonbush_http_diagnostic(tmp_path) -> None:
     with patch.object(
         narrative,
         "_run",
         return_value={
             "status": "error",
-            "failure_stage": "grok_ca_research",
+            "failure_stage": "hideonbush_fast_evidence",
             "failure_code": "http_502",
             "failure_message": "ca_research 返回 HTTP 502。",
             "reader_text": "",
@@ -366,7 +364,7 @@ def test_generate_reader_text_retries_grok_http_diagnostic(tmp_path) -> None:
             "telegram_messages": [],
             "x_posts": [],
             "grok_research": {},
-            "grok_diagnostics": [{"stage": "ca_research", "http_status": 502}],
+            "grok_diagnostics": [],
             "performance": {},
         },
     ):
@@ -379,7 +377,7 @@ def test_generate_reader_text_retries_grok_http_diagnostic(tmp_path) -> None:
             timeout=1,
         )
 
-    assert result["transient_error"] == "narrative_grok_ca_research_failed"
+    assert result["transient_error"] == "narrative_hideonbush_fast_evidence_failed"
 
 
 def test_diagnostic_failure_maps_grok_stage_and_http_code() -> None:

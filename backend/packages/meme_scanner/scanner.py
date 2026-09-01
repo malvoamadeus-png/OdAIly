@@ -1505,7 +1505,7 @@ def log_narrative_result(job: sqlite3.Row, token: Token, narrative: dict[str, An
         f"failure_code={narrative.get('failure_code') or narrative.get('decision_code') or '-'} "
         f"telegram={counts.get('telegram_messages', 0)} "
         f"x_posts={counts.get('x_posts', 0)} "
-        f"grok_materials={counts.get('grok_narrative_materials', 0)} "
+        f"fomo_materials={counts.get('fomo_materials', 0)} "
         f"reader_text={'yes' if str(narrative.get('reader_text') or '').strip() else 'no'}"
     )
 
