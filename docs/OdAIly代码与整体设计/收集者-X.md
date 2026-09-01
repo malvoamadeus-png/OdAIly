@@ -45,6 +45,13 @@ worker 启动时加载配置。运行中不再保留专门的数据库监听连�
 - `写作名` 作为账号配置存在，不要求在任务入库时覆盖原始作者字段
 - `tasks.content` 会保留推文里的有效段落内容，但会移除空白段落；如果推文本身有多段，只保留单个 `\n` 作为段间分隔，不保留空行
 
+代币身份标准化规则：
+
+- FXTwitter 偶尔会把 X 的代币实体解析成 `solana:<CA>`，而不是原文中的 `$SYMBOL`；收集者-X 在生成 `tasks.content` 前，会识别 Solana CA，并通过现有 GMGN CLI 查询代币身份。
+- GMGN 返回有效 symbol 时，只替换正文和合并后的 X Article 中完整的 `solana:<CA>` 片段；symbol 前的 `$` 或 `#` 会被去掉，查询失败、CLI 不可用或返回未知 symbol 时保留原始 CA 文本。
+- 同一收集进程会缓存 CA 查询结果，避免一条帖子或同一轮重复调用 GMGN；查询仍复用 `meme_scanner` 的 CLI 节流与退避规则，身份查询失败不会阻断 X 内容入库。
+- `tasks.raw_payload` 保留 FXTwitter 返回的原始文本；只有供判断者、编写者和后续链路使用的 `tasks.content` 做身份标准化。
+
 X Article 处理规则：
 
 - 收集者-X 从 FXTwitter 详情响应读取顶层 `article`，也读取普通帖子引用内容中的嵌套 `quote.article`。
