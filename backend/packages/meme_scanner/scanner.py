@@ -54,10 +54,10 @@ VOLUME_RATIO_GATE_MIN_CAP = 300_000.0
 VOLUME_RATIO_GATE_MAX_CAP = 3_000_000.0
 VOLUME_RATIO_GATE_AT_MIN_CAP = 0.5
 VOLUME_RATIO_GATE_AT_MAX_CAP = 0.2
-TRACKING_WINDOW_SECONDS = 7 * 24 * 60 * 60
+TRACKING_WINDOW_SECONDS = 3 * 24 * 60 * 60
 COMPLETED_SCAN_INTERVAL_SECONDS = 60
-TOKEN_INFO_HIGH_INTERVAL_SECONDS = 300
-TOKEN_INFO_LOW_INTERVAL_SECONDS = 3600
+TOKEN_INFO_HIGH_INTERVAL_SECONDS = 15 * 60
+TOKEN_INFO_LOW_INTERVAL_SECONDS = 4 * 60 * 60
 TOKEN_INFO_MIN_GAP_SECONDS = 3
 TRACKING_STATUS_ACTIVE = "active"
 TRACKING_STATUS_EXPIRED = "expired"
@@ -1092,6 +1092,61 @@ class Store:
         self.conn.commit()
         return cursor.rowcount
 
+    def apply_tracking_policy(
+        self,
+        *,
+        now: str,
+        tracking_window_seconds: int,
+        args: argparse.Namespace,
+    ) -> int:
+        """Converge persisted active observations to the current scan policy."""
+        observed_time = parse_iso(now) or datetime.now(UTC)
+        window_seconds = max(int(tracking_window_seconds), 1)
+        rows = self.conn.execute(
+            """SELECT address, chain, tracking_started_at, tracking_expires_at,
+              last_market_cap, next_token_info_at, tracking_interval_seconds
+            FROM observations WHERE tracking_status='active'"""
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            address = str(row["address"])
+            chain = str(row["chain"] or CHAIN)
+            started_at = parse_iso(row["tracking_started_at"])
+            expires_at = parse_iso(row["tracking_expires_at"])
+            if started_at:
+                policy_expires_at = started_at + timedelta(seconds=window_seconds)
+                if expires_at is None or policy_expires_at < expires_at:
+                    expires_at = policy_expires_at
+            if expires_at and expires_at <= observed_time:
+                self.conn.execute(
+                    """UPDATE observations SET tracking_status='expired',
+                      next_token_info_at=NULL, tracking_interval_seconds=NULL
+                    WHERE address=? AND chain=? AND tracking_status='active'""",
+                    (address, chain),
+                )
+                changed += 1
+                continue
+
+            interval = tracking_interval(number(row["last_market_cap"]), args, chain)
+            next_at = str(row["next_token_info_at"] or "") or None
+            if int(row["tracking_interval_seconds"] or 0) != interval:
+                next_at = next_tracking_time(address, observed_time, interval)
+            new_expires_at = expires_at.isoformat() if expires_at else None
+            if (
+                str(row["tracking_expires_at"] or "") != str(new_expires_at or "")
+                or str(row["next_token_info_at"] or "") != str(next_at or "")
+                or int(row["tracking_interval_seconds"] or 0) != interval
+            ):
+                self.conn.execute(
+                    """UPDATE observations SET tracking_expires_at=?, next_token_info_at=?,
+                      tracking_interval_seconds=? WHERE address=? AND chain=?
+                      AND tracking_status='active'""",
+                    (new_expires_at, next_at, interval, address, chain),
+                )
+                changed += 1
+        self.conn.commit()
+        return changed
+
     def due_token_info(self, *, now: str, latest_completed_seen_at: str | None) -> sqlite3.Row | None:
         return self.conn.execute(
             """SELECT * FROM observations WHERE tracking_status='active'
@@ -1903,6 +1958,13 @@ def run(args: argparse.Namespace) -> int:
     recovered = store.recover_inflight()
     if recovered:
         print(f"[meme-scan] recovered={recovered}")
+    policy_changes = store.apply_tracking_policy(
+        now=now_iso(),
+        tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
+        args=args,
+    )
+    if policy_changes:
+        print(f"[meme-scan] tracking_policy_updated={policy_changes}")
     try:
         if args.once:
             scan_once(store, args)

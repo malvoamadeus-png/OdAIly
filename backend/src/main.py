@@ -432,17 +432,17 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument(
         "--token-info-high-interval",
         type=int,
-        default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or 300),
+        default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or 900),
     )
     meme_scan.add_argument(
         "--token-info-low-interval",
         type=int,
-        default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or 3600),
+        default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or 14400),
     )
     meme_scan.add_argument(
         "--tracking-window",
         type=int,
-        default=int(os.getenv("MEME_TRACKING_WINDOW_SECONDS") or 604800),
+        default=int(os.getenv("MEME_TRACKING_WINDOW_SECONDS") or 259200),
     )
     meme_scan.add_argument(
         "--token-info-min-gap",

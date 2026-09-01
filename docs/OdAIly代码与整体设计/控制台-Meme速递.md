@@ -9,9 +9,9 @@
 
 - `odaily-meme-scanner.service` 每 1 分钟通过有头 Playwright Chromium 打开匿名 OKX MemePump 页面，由页面自然生成动态 `ok-verify-*` 请求头，再分别读取 BSC `chainId=56`、Robinhood `chainId=4663` 的 `memefun/meme-ranking/content?rankType=4` 迁移列表，不附加市值过滤；每条链当前最多返回 30 条，列表只承担最新发现窗口，不是完整的历史市值扫描源。网页 row 的 `mcap`/`vol1h` 只作发现上下文，列表代币再通过 `MEME_PRICE_SOURCE` 选择的市场价格适配器补齐市值和 24 小时成交量；OKX 模式批量调用官方签名 `price-info`，GMGN 模式逐个调用 `gmgn-cli token info`。
 - `odaily-meme-tg-watcher.service` 监听 Telegram 白名单社群中的真人 CA 消息。
-- 普通代币首次进入 OKX `MIGRATED` 列表即建立 7 天跟踪窗口；BSC 市值达到 50 万美元、Robinhood 市值达到 100 万美元后进入播报候选，后续里程碑为 100 万/300 万美元（BSC）和 300 万美元（Robinhood）；首次发现已跨多档时只触发最高档。
-- 仍在最近一次 OKX 列表中的代币直接使用本轮列表和市场价格适配器数据，不调用单币详情。滚出列表但仍在 7 天窗口内的代币由持久化调度器按链调用 OKX `tokenDetails` 与选定的市场价格适配器：市值低于本链第一门槛每小时一次，达到门槛每 5 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程调度用于错峰限流；GMGN 发现补价阶段另用 `MEME_GMGN_PRICE_WORKERS` 控制并发。
-- 7 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 OKX 最新列表也不重新激活。迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口；观察和里程碑按 `chain + address` 隔离。
+- 普通代币首次进入 OKX `MIGRATED` 列表即建立 3 天跟踪窗口；BSC 市值达到 50 万美元、Robinhood 市值达到 100 万美元后进入播报候选，后续里程碑为 100 万/300 万美元（BSC）和 300 万美元（Robinhood）；首次发现已跨多档时只触发最高档。
+- 仍在最近一次 OKX 列表中的代币直接使用本轮列表和市场价格适配器数据，不调用单币详情。滚出列表但仍在 3 天窗口内的代币由持久化调度器按链调用 OKX `tokenDetails` 与选定的市场价格适配器：市值低于本链第一门槛每 4 小时一次，达到门槛每 15 分钟一次。固定 CA hash 相位、全局最小 3 秒间隔和单线程调度用于错峰限流；GMGN 发现补价阶段另用 `MEME_GMGN_PRICE_WORKERS` 控制并发。
+- 3 天从首次发现时间计算；到期后状态改为 `expired`，清理下一次调度时间，即使重新出现在 OKX 最新列表也不重新激活。scanner 启动时会按当前窗口收紧仍 active 的历史记录，并按当前市值策略重算其调度周期；迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口；观察和里程碑按 `chain + address` 隔离。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 先查询 Robinhood Chain，再以 BNB Chain（30 万美元）兜底；Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议任务和发布结果刷新当前市值时，不推进普通里程碑水位，避免热议先触发后吞掉 50 万或 100 万档。
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议先发现的记录在后续 `completed` 扫描时仍会激活跟踪，并依据里程碑账本判定首次跨档。
@@ -68,7 +68,7 @@ python backend/src/main.py meme tg-watch
 ## 配置
 
 - OKX：`OKX_API_KEY`、`OKX_SECRET_KEY`、`OKX_PASSPHRASE` 用于 `tokenDetails` 和 OKX 风险字段；`MEME_OKX_DISCOVERY_SOURCE` 默认 `web_meme`，可设为 `official` 切回签名 `tokenList`；`MEME_OKX_DISCOVERY_FALLBACK=official` 才允许网页发现失败时回退官方列表，默认不回退以避免静默消耗额度。`MEME_OKX_WEB_TIMEOUT_SECONDS`、`MEME_OKX_WEB_SETTLE_MS`、`MEME_OKX_WEB_HEADLESS`、`MEME_OKX_WEB_PROXY` 控制网页运行，生产需要 Playwright Chromium 和 `xvfb-run`，默认有头模式。`MEME_OKX_TIMEOUT_SECONDS`、`MEME_OKX_MAX_ATTEMPTS` 控制仍保留的官方 REST 请求超时和重试，`MEME_OKX_RISK_MODE` 默认为 `shadow`。`MEME_PRICE_SOURCE` 控制 BSC/Robinhood 的市值、价格和 24 小时成交量，默认 `okx`；临时设为 `gmgn` 时使用 `gmgn-cli token info`，市值按 `price.price × circulating_supply` 计算，成交量取 `price.volume_24h`，不再调用 OKX `price-info`。网页发现仍来自 OKX MemePump，单币 `tokenDetails` 和风险字段仍可来自 OKX；`MEME_GMGN_PRICE_WORKERS` 控制发现阶段并发查询数，默认 4，`MEME_GMGN_REQUEST_INTERVAL_SECONDS` 控制所有 GMGN 价格请求启动间隔，默认 0.15 秒，GMGN CLI 就绪检查在 scanner 进程内只执行一次；识别到 GMGN 限流封禁后，冷却窗口内不再发送请求。GMGN 价格适配器要求服务器已安装 `gmgn-cli` 并通过 `gmgn-cli config --check`；Solana 兼容路径仍可使用 GMGN。
-- 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 60 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 300 秒）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 3600 秒）、`MEME_TRACKING_WINDOW_SECONDS`（默认 604800 秒）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
+- 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL`（默认 60 秒）、`MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 900 秒，即 15 分钟）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 14400 秒，即 4 小时）、`MEME_TRACKING_WINDOW_SECONDS`（默认 259200 秒，即 3 天）、`MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
@@ -87,7 +87,7 @@ python backend/src/main.py meme tg-watch
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
 - OKX 网页发现成功后只更新最新发现窗口；网页页面失败会保留明确错误，不把空结果或浏览器异常当成“没有迁移代币”，也不会默认静默回退官方发现。市场价格适配器成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；`MEME_PRICE_SOURCE=okx` 时使用官方 `price-info`，`MEME_PRICE_SOURCE=gmgn` 时使用 GMGN `token info` 并按代币逐个查询。单币 `tokenDetails` 仍只负责可选的身份/风险原始字段。任一市场适配器失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗；调度积压写入 worker 日志。
-- `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、7 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 GMGN `token_info` 链路。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
+- `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、3 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 GMGN `token_info` 链路。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
 

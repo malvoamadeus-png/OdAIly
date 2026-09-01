@@ -38,9 +38,9 @@ def args(root: Path) -> argparse.Namespace:
         db=str(root / "scanner.sqlite3"),
         limit=80,
         completed_interval=300,
-        token_info_high_interval=300,
-        token_info_low_interval=3600,
-        tracking_window=604800,
+        token_info_high_interval=900,
+        token_info_low_interval=14400,
+        tracking_window=259200,
         token_info_min_gap=3,
         audit_dir=str(root / "audit"),
         narrative_command=None,
@@ -409,7 +409,7 @@ class MemeScannerTests(unittest.TestCase):
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("sol-token", 800_000, 500_000, chain="solana")
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
                 ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
@@ -450,13 +450,13 @@ class MemeScannerTests(unittest.TestCase):
             token_info.assert_not_called()
             store.close()
 
-    def test_out_of_list_low_cap_uses_hour_interval(self) -> None:
+    def test_out_of_list_low_cap_uses_four_hour_interval(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xlow", 400_000, 300_000)
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
                 ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
@@ -469,16 +469,16 @@ class MemeScannerTests(unittest.TestCase):
                 result = scanner.process_due_token_info(store, run_args)
             self.assertEqual(result["status"], "observed")
             token_info.assert_called_once_with(current.address)
-            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 3600)
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 14400)
             store.close()
 
-    def test_out_of_list_high_cap_uses_five_minute_interval(self) -> None:
+    def test_out_of_list_high_cap_uses_fifteen_minute_interval(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xhigh", 800_000, 500_000)
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
                 ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
@@ -490,7 +490,7 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_token_info", return_value=token("0xhigh", 800_000, 500_000)):
                 result = scanner.process_due_token_info(store, run_args)
             self.assertEqual(result["status"], "observed")
-            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 300)
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 900)
             store.close()
 
     def test_crossing_five_hundred_thousand_switches_to_high_interval(self) -> None:
@@ -499,7 +499,7 @@ class MemeScannerTests(unittest.TestCase):
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xcross", 400_000, 300_000)
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at=?, last_completed_seen_at=? WHERE address=?",
                 ("2000-01-01T00:00:00+00:00", "old-scan", current.address),
@@ -511,7 +511,7 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_token_info", return_value=token("0xcross", 600_000, 400_000)):
                 result = scanner.process_due_token_info(store, run_args)
             self.assertEqual(result["status"], "observed")
-            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 300)
+            self.assertEqual(store.observation(current.address)["tracking_interval_seconds"], 900)
             store.close()
 
     def test_completed_reappearance_suppresses_due_token_info(self) -> None:
@@ -520,7 +520,7 @@ class MemeScannerTests(unittest.TestCase):
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xback", 800_000, 500_000)
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute("UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00' WHERE address=?", (current.address,))
             store.conn.commit()
             run_args = args(root)
@@ -547,12 +547,43 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_token_info") as token_info:
                 result = scanner.process_due_token_info(store, args(root))
                 _, _, status = store.start_or_observe_completed(
-                    current, observed_at=scanner.now_iso(), tracking_window_seconds=604800, args=args(root)
+                    current, observed_at=scanner.now_iso(), tracking_window_seconds=259200, args=args(root)
                 )
             self.assertEqual(result["status"], "idle")
             self.assertEqual(status, "expired")
             self.assertEqual(store.observation(current.address)["tracking_status"], "expired")
             token_info.assert_not_called()
+            store.close()
+
+    def test_startup_policy_converges_persisted_tracking_window_and_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xpolicy", 400_000, 300_000)
+            legacy_args = args(root)
+            legacy_args.token_info_high_interval = 300
+            legacy_args.token_info_low_interval = 3600
+            old_start = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=1)).isoformat()
+            store.start_or_observe_completed(
+                current,
+                observed_at=old_start,
+                tracking_window_seconds=604800,
+                args=legacy_args,
+            )
+            before = store.observation(current.address)
+            changes = store.apply_tracking_policy(
+                now=scanner.now_iso(),
+                tracking_window_seconds=259200,
+                args=args(root),
+            )
+            after = store.observation(current.address)
+            self.assertEqual(changes, 1)
+            self.assertEqual(after["tracking_interval_seconds"], 14400)
+            self.assertLess(
+                scanner.parse_iso(after["tracking_expires_at"]),
+                scanner.parse_iso(before["tracking_expires_at"]),
+            )
+            self.assertEqual(after["tracking_status"], "active")
             store.close()
 
     def test_token_info_failure_preserves_high_watermark(self) -> None:
@@ -561,7 +592,7 @@ class MemeScannerTests(unittest.TestCase):
             store = scanner.Store(root / "scanner.sqlite3")
             current = token("0xfail", 1_200_000, 800_000)
             old_time = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
-            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=604800, args=args(root))
+            store.start_or_observe_completed(current, observed_at=old_time, tracking_window_seconds=259200, args=args(root))
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00', last_completed_seen_at='old-scan' WHERE address=?",
                 (current.address,),
@@ -604,7 +635,7 @@ class MemeScannerTests(unittest.TestCase):
             tokens = [token(f"0xroll-{index}", 800_000, 500_000) for index in range(31)]
             observed_at = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(hours=2)).isoformat()
             for current in tokens:
-                store.start_or_observe_completed(current, observed_at=observed_at, tracking_window_seconds=604800, args=run_args)
+                store.start_or_observe_completed(current, observed_at=observed_at, tracking_window_seconds=259200, args=run_args)
             oldest = tokens[-1]
             store.conn.execute(
                 "UPDATE observations SET next_token_info_at='2000-01-01T00:00:00+00:00', last_completed_seen_at='old-scan' WHERE address=?",
@@ -637,7 +668,7 @@ class MemeScannerTests(unittest.TestCase):
             self.assertTrue(Path(result["output_path"]).exists())
             generate.assert_called_once()
 
-    def test_first_poll_starts_seven_day_tracking_and_queues_highest_level(self) -> None:
+    def test_first_poll_starts_three_day_tracking_and_queues_highest_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = scanner.Store(root / "scanner.sqlite3")
