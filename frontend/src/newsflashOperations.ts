@@ -34,9 +34,12 @@ export type NewsflashRow = {
   contributor_person_key: string | null;
   contributor_name: string | null;
   contribution_type: 'regular' | 'night' | 'ppp';
+  quality_override: QualityOverride;
   source_snapshot_at: string | null;
   first_publication: FirstPublication;
 };
+
+export type QualityOverride = 'none' | 'include' | 'exclude';
 
 export type NewsflashPage = {
   items: NewsflashRow[];
@@ -79,10 +82,12 @@ export type QualityItem = {
   has_original_url: boolean;
   title: string | null;
   published_at: string | null;
-  view_count: number;
+  view_count: number | null;
   is_pushed: boolean | null;
   first_publication: FirstPublication;
+  quality_override: QualityOverride;
   exclusion_reasons: string[];
+  exclusion_reason_labels: string[];
 };
 
 export type QualityPayload = {
@@ -101,6 +106,7 @@ export type QualityPayload = {
     regular_source_accounts: string[];
     automated_x_accounts: string[];
     automated_media_domains: string[];
+    keyword_groups: Array<{ key: string; terms: string[]; label: string }>;
     threshold_multiplier: number;
     kpi_per_item: number;
     snapshot_at: string;

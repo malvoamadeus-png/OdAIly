@@ -49,6 +49,12 @@ QUALITY_EXTERNAL_MEDIA_URLS = (
     "https://www.theblock.co/",
     "https://decrypt.co/",
 )
+QUALITY_EXCLUSION_GROUPS = (
+    {"key": "btc_liquidation", "terms": ("BTC", "爆仓")},
+    {"key": "eth_liquidation", "terms": ("ETH", "爆仓")},
+    {"key": "sol_liquidation", "terms": ("SOL", "爆仓")},
+)
+QUALITY_OVERRIDE_VALUES = {"none", "include", "exclude"}
 
 
 SCHEMA_SQL = """
@@ -79,6 +85,7 @@ CREATE TABLE IF NOT EXISTS newsflash_operation_facts (
     is_contribution integer NOT NULL DEFAULT 0,
     contributor_person_key text REFERENCES newsflash_roster(person_key) ON DELETE SET NULL,
     contribution_type text NOT NULL DEFAULT 'regular',
+    quality_override text NOT NULL DEFAULT 'none',
     source_snapshot_at text,
     attribution_checked_at text,
     created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -240,6 +247,9 @@ class NewsflashOperationsRepository:
                 event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
                 if "first_sources" not in event_columns:
                     conn.execute("ALTER TABLE newsflash_events ADD COLUMN first_sources text NOT NULL DEFAULT '[]'")
+            fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts)").fetchall()}
+            if "quality_override" not in fact_columns:
+                conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN quality_override text NOT NULL DEFAULT 'none'")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS newsflash_event_exclusions("
                 "source text NOT NULL,source_item_id text NOT NULL,title text,matched_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,"
@@ -562,8 +572,8 @@ class NewsflashOperationsRepository:
                 clauses.append("r.source_item_id=?")
                 params.append(search)
             else:
-                clauses.append("lower(r.title) LIKE ?")
-                params.append(f"%{search.casefold()}%")
+                clauses.append("(lower(r.title) LIKE ? OR r.source_item_id=?)")
+                params.extend([f"%{search.casefold()}%", search])
         for key, column in (("date_from", "r.published_at"), ("date_to", "r.published_at")):
             value = str(payload.get(key) or "").strip()
             if value:
@@ -624,6 +634,7 @@ class NewsflashOperationsRepository:
                 SELECT r.source_item_id,r.source_url,r.title,r.published_at,r.updated_at AS reference_updated_at,
                        f.operator_raw,f.publisher_kind,f.publisher_person_key,f.publisher_locked,f.view_count,
                        f.is_pushed,f.pushed_at,f.is_contribution,f.contributor_person_key,f.contribution_type,
+                       f.quality_override,
                        f.source_snapshot_at,f.updated_at AS operation_updated_at,
                        operator.display_name AS publisher_person_name,contributor.display_name AS contributor_name
                 FROM odaily_reference_items r
@@ -642,6 +653,7 @@ class NewsflashOperationsRepository:
                 item["publisher_locked"] = bool(item.get("publisher_locked"))
                 item["is_contribution"] = bool(item.get("is_contribution"))
                 item["is_pushed"] = None if item.get("is_pushed") is None else bool(item["is_pushed"])
+                item["quality_override"] = str(item.get("quality_override") or "none")
                 item["first_publication"] = self._event_info(conn, str(item["source_item_id"]))
                 data.append(item)
         return {"items": data, "page": page, "page_size": page_size, "total": total, "pages": max(1, (total + page_size - 1) // page_size)}
@@ -658,6 +670,7 @@ class NewsflashOperationsRepository:
             "publisher_kind",
             "publisher_person_key",
             "operator_raw",
+            "quality_override",
         }
         if set(patch) - allowed:
             raise ValueError("unsupported newsflash field")
@@ -669,6 +682,10 @@ class NewsflashOperationsRepository:
             data = dict(patch)
             if "contribution_type" in data and data["contribution_type"] not in CONTRIBUTION_TYPES:
                 raise ValueError("invalid contribution type")
+            if "quality_override" in data:
+                data["quality_override"] = str(data["quality_override"] or "none").strip().casefold()
+                if data["quality_override"] not in QUALITY_OVERRIDE_VALUES:
+                    raise ValueError("invalid quality override")
             if "is_contribution" in data:
                 enabled = bool(data["is_contribution"])
                 data["is_contribution"] = int(enabled)
@@ -1081,6 +1098,14 @@ class NewsflashOperationsRepository:
             "regular_source_accounts": list(QUALITY_REGULAR_SOURCE_ACCOUNTS),
             "automated_x_accounts": x_accounts,
             "automated_media_domains": media_domains,
+            "keyword_groups": [
+                {
+                    "key": group["key"],
+                    "terms": list(group["terms"]),
+                    "label": " + ".join(group["terms"]),
+                }
+                for group in QUALITY_EXCLUSION_GROUPS
+            ],
             "threshold_multiplier": QUALITY_THRESHOLD_MULTIPLIER,
             "kpi_per_item": QUALITY_KPI_PER_ITEM,
         }
@@ -1096,8 +1121,16 @@ class NewsflashOperationsRepository:
             "SELECT rules_json,created_at FROM newsflash_quality_week_rules WHERE week_start=?",
             (key,),
         ).fetchone()
-        conn.commit()
         rules = _decode(row["rules_json"], {})
+        if "keyword_groups" not in rules:
+            # Existing week snapshots predate keyword exclusions. Add the new
+            # fixed rule set once so subsequent reads remain snapshot-based.
+            rules["keyword_groups"] = seed["keyword_groups"]
+            conn.execute(
+                "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
+                (_json(rules), key),
+            )
+        conn.commit()
         rules["snapshot_at"] = row["created_at"]
         return rules
 
@@ -1127,7 +1160,8 @@ class NewsflashOperationsRepository:
             rows = conn.execute(
                 """
                 SELECT r.source_item_id,r.source_url,r.title,r.content,r.raw_payload,r.published_at,
-                       f.publisher_kind,f.publisher_person_key,f.view_count,f.is_pushed,f.is_contribution
+                       f.publisher_kind,f.publisher_person_key,f.view_count,f.is_pushed,f.is_contribution,
+                       f.quality_override
                 FROM odaily_reference_items r
                 JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
                 WHERE datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
@@ -1165,6 +1199,7 @@ class NewsflashOperationsRepository:
             regular_accounts = {str(value).casefold() for value in rules["regular_source_accounts"]}
             automated_accounts = {str(value).casefold() for value in rules["automated_x_accounts"]}
             automated_domains = {str(value).casefold() for value in rules["automated_media_domains"]}
+            keyword_groups = rules.get("keyword_groups", [])
 
             for row in rows:
                 moment = _parse_datetime(row["published_at"])
@@ -1174,23 +1209,40 @@ class NewsflashOperationsRepository:
                 if window is None:
                     unassigned_count += 1
                     continue
-                if row["view_count"] is None or int(row["view_count"]) <= threshold:
+                quality_override = str(row["quality_override"] or "none").strip().casefold()
+                if quality_override != "include" and (row["view_count"] is None or int(row["view_count"]) <= threshold):
                     continue
+                reasons: list[str] = []
+                reason_labels: list[str] = []
                 original_url = self._quality_original_url(row)
                 username = self._x_username(original_url)
                 host = self._url_host(original_url)
                 first_publication, first_sources = self._quality_first_publication(conn, str(row["source_item_id"]))
-                reasons: list[str] = []
-                if row["is_contribution"]:
-                    reasons.append("contribution")
-                if first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources:
-                    reasons.append("competitor_first")
-                if username and username in regular_accounts:
-                    reasons.append("regular_source")
-                if (username and username in automated_accounts) or self._host_matches(host, automated_domains):
-                    reasons.append("automated_coverage")
-                if "金十" in str(row["content"] or ""):
-                    reasons.append("jin10_content")
+                if quality_override != "include":
+                    if row["is_contribution"]:
+                        reasons.append("contribution")
+                        reason_labels.append("贡献快讯")
+                    if first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources:
+                        reasons.append("competitor_first")
+                        reason_labels.append("晚于竞品")
+                    if username and username in regular_accounts:
+                        reasons.append("regular_source")
+                        reason_labels.append("常规信源")
+                    if (username and username in automated_accounts) or self._host_matches(host, automated_domains):
+                        reasons.append("automated_coverage")
+                        reason_labels.append("自动覆盖")
+                    if "金十" in str(row["content"] or ""):
+                        reasons.append("jin10_content")
+                        reason_labels.append("正文含金十")
+                    quality_text = f"{row['title'] or ''}\n{row['content'] or ''}".casefold()
+                    for group in keyword_groups:
+                        terms = [str(term) for term in group.get("terms", []) if str(term).strip()]
+                        if terms and all(term.casefold() in quality_text for term in terms):
+                            reasons.append(f"keyword_{group.get('key', 'unknown')}")
+                            reason_labels.append(f"排除词：{group.get('label') or ' + '.join(terms)}")
+                    if quality_override == "exclude":
+                        reasons.append("manual_exclude")
+                        reason_labels.append("人工排除")
                 item = {
                     "source_item_id": str(row["source_item_id"]),
                     "odaily_url": f"https://www.odaily.news/zh-CN/newsflash/{row['source_item_id']}",
@@ -1198,10 +1250,12 @@ class NewsflashOperationsRepository:
                     "has_original_url": bool(original_url),
                     "title": row["title"],
                     "published_at": row["published_at"],
-                    "view_count": int(row["view_count"]),
+                    "view_count": None if row["view_count"] is None else int(row["view_count"]),
                     "is_pushed": None if row["is_pushed"] is None else bool(row["is_pushed"]),
                     "first_publication": first_publication,
+                    "quality_override": quality_override,
                     "exclusion_reasons": reasons,
+                    "exclusion_reason_labels": reason_labels,
                 }
                 grouped[window.person_key]["excluded" if reasons else "qualified"].append(item)
 

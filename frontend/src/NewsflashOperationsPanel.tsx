@@ -18,6 +18,7 @@ import {
   type NewsflashRow,
   type Person,
   type QualityItem,
+  type QualityOverride,
   type QualityPayload,
   type SchedulePayload,
   type SummaryPayload,
@@ -49,6 +50,11 @@ const qualityReasonLabels: Record<string, string> = {
   regular_source: '常规信源',
   automated_coverage: '自动覆盖',
   jin10_content: '正文含金十',
+};
+const qualityOverrideLabels: Record<QualityOverride, string> = {
+  none: '自动判断',
+  include: '直接入选',
+  exclude: '直接排除',
 };
 
 function personColor(personKey: string) {
@@ -212,7 +218,7 @@ function Overview({
       <div className="tableMeta"><span>{loading ? '加载中…' : `${data.total} 条快讯`}</span><span>每页 50 条</span></div>
       <div className="newsflashTableWrap">
         <table className="newsflashTable">
-          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead>
+          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>优质快讯</th><th>首发单位</th></tr></thead>
           <tbody>
             {data.items.map((row) => (
               <tr key={row.source_item_id}>
@@ -235,10 +241,11 @@ function Overview({
                 <td className="numberCell">{row.view_count == null ? <Unavailable /> : row.view_count.toLocaleString()}</td>
                 <td><select className="inlineSelect" value={row.contributor_person_key || ''} onChange={(event) => void patchRow(row, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })} disabled={['odaily_ai', 'other_ai', 'pending_ai'].includes(row.publisher_kind || '')}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td>
                 <td><select className="inlineSelect" value={row.contribution_type || 'regular'} onChange={(event) => void patchRow(row, { contribution_type: event.target.value })} disabled={!row.is_contribution}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td>
+                <td><QualityOverrideSelect value={row.quality_override} disabled={row.publisher_kind !== 'human' || !row.publisher_person_key} onChange={(value) => void patchRow(row, { quality_override: value })} /></td>
                 <td><span className={`statusText ${row.first_publication.status}`}>{row.first_publication.label}</span></td>
               </tr>
             ))}
-            {!loading && data.items.length === 0 && <tr><td colSpan={9} className="emptyCell">没有符合条件的快讯</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={10} className="emptyCell">没有符合条件的快讯</td></tr>}
           </tbody>
         </table>
       </div>
@@ -356,6 +363,16 @@ function Quality({ refreshToken, onError }: { refreshToken: number; onError: (va
     }
   }
 
+  async function patchOverride(sourceItemId: string, qualityOverride: QualityOverride) {
+    onError('');
+    try {
+      await newsflashOperations('update', { source_item_id: sourceItemId, patch: { quality_override: qualityOverride } });
+      await load(week);
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   useEffect(() => { void load(week || undefined); }, [refreshToken]);
 
   const metric = (value: number | null, digits = 1) => value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits });
@@ -378,16 +395,16 @@ function Quality({ refreshToken, onError }: { refreshToken: number; onError: (va
         const items = mode === 'qualified' ? group.qualified : group.excluded;
         return <section className="qualityGroup" key={group.person_key}>
           <div className="qualityGroupHeader"><span className="personColorChip" style={personColor(group.person_key)}>{group.person_name}</span><span>入选 <strong>{group.qualified_count}</strong> 条 · KPI <strong>{metric(group.kpi, 10)}</strong> · 排除 <strong>{group.excluded_count}</strong> 条</span></div>
-          {items.length ? <QualityTable items={items} excluded={mode === 'excluded'} /> : <div className="emptyInline">本周没有{mode === 'qualified' ? '入选' : '达标但排除的'}快讯</div>}
+          {items.length ? <QualityTable items={items} excluded={mode === 'excluded'} onOverride={(sourceItemId, value) => void patchOverride(sourceItemId, value)} /> : <div className="emptyInline">本周没有{mode === 'qualified' ? '入选' : '达标但排除的'}快讯</div>}
         </section>;
       })}</div>
     </>}
-    {data && <details className="qualityRules"><summary>查看判定规则与当周冻结信源范围</summary><div className="qualityRuleGrid"><section><h3>固定常规信源（{data.rules.regular_source_accounts.length}）</h3><div className="ruleTagList">{data.rules.regular_source_accounts.map((account) => <a key={account} href={`https://x.com/${account}`} target="_blank" rel="noreferrer">@{account}</a>)}</div></section><section><h3>当周 X 自动覆盖（{data.rules.automated_x_accounts.length}）</h3><div className="ruleTagList">{data.rules.automated_x_accounts.length ? data.rules.automated_x_accounts.map((account) => <span key={account}>@{account}</span>) : <span>无</span>}</div></section><section><h3>当周媒体自动覆盖（{data.rules.automated_media_domains.length}）</h3><div className="ruleTagList">{data.rules.automated_media_domains.map((domain) => <span key={domain}>{domain}</span>)}</div></section></div><p>规则快照：{localDate(data.rules.snapshot_at)}。浏览量、贡献状态、首发和排班仍按当前数据实时重算。</p></details>}
+    {data && <details className="qualityRules"><summary>查看判定规则与当周冻结信源范围</summary><div className="qualityRuleGrid"><section><h3>排除词组（{data.rules.keyword_groups.length}）</h3><div className="ruleTagList">{data.rules.keyword_groups.map((group) => <span key={group.key}>{group.label}</span>)}</div><p>组内词汇需同时出现，任一词组命中即排除。</p></section><section><h3>固定常规信源（{data.rules.regular_source_accounts.length}）</h3><div className="ruleTagList">{data.rules.regular_source_accounts.map((account) => <a key={account} href={`https://x.com/${account}`} target="_blank" rel="noreferrer">@{account}</a>)}</div></section><section><h3>当周 X 自动覆盖（{data.rules.automated_x_accounts.length}）</h3><div className="ruleTagList">{data.rules.automated_x_accounts.length ? data.rules.automated_x_accounts.map((account) => <span key={account}>@{account}</span>) : <span>无</span>}</div></section><section><h3>当周媒体自动覆盖（{data.rules.automated_media_domains.length}）</h3><div className="ruleTagList">{data.rules.automated_media_domains.map((domain) => <span key={domain}>{domain}</span>)}</div></section></div><p>规则快照：{localDate(data.rules.snapshot_at)}。浏览量、贡献状态、首发、排班和人工覆盖仍按当前数据实时重算。</p></details>}
   </section>;
 }
 
-function QualityTable({ items, excluded }: { items: QualityItem[]; excluded: boolean }) {
-  return <div className="newsflashTableWrap"><table className="newsflashTable qualityTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>浏览量</th><th>推送</th><th>首发单位</th><th>原文</th>{excluded && <th>排除原因</th>}</tr></thead><tbody>{items.map((item) => <tr key={item.source_item_id}><td className="monoCell">{item.source_item_id}</td><td className="titleColumn"><a href={item.odaily_url} target="_blank" rel="noreferrer">{item.title || '无标题'}</a></td><td>{localDate(item.published_at)}</td><td className="numberCell">{item.view_count.toLocaleString()}</td><td>{item.is_pushed == null ? '—' : item.is_pushed ? '是' : '否'}</td><td>{item.first_publication.label}</td><td>{item.original_url ? <a href={item.original_url} target="_blank" rel="noreferrer">查看原文</a> : <span className="unavailable">无原文链接</span>}</td>{excluded && <td><div className="reasonTags">{item.exclusion_reasons.map((reason) => <span key={reason}>{qualityReasonLabels[reason] || reason}</span>)}</div></td>}</tr>)}</tbody></table></div>;
+function QualityTable({ items, excluded, onOverride }: { items: QualityItem[]; excluded: boolean; onOverride: (sourceItemId: string, value: QualityOverride) => void }) {
+  return <div className="newsflashTableWrap"><table className="newsflashTable qualityTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>浏览量</th><th>推送</th><th>首发单位</th><th>原文</th><th>人工覆盖</th>{excluded && <th>排除原因</th>}</tr></thead><tbody>{items.map((item) => <tr key={item.source_item_id}><td className="monoCell">{item.source_item_id}</td><td className="titleColumn"><a href={item.odaily_url} target="_blank" rel="noreferrer">{item.title || '无标题'}</a></td><td>{localDate(item.published_at)}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td>{item.is_pushed == null ? '—' : item.is_pushed ? '是' : '否'}</td><td>{item.first_publication.label}</td><td>{item.original_url ? <a href={item.original_url} target="_blank" rel="noreferrer">查看原文</a> : <span className="unavailable">无原文链接</span>}</td><td><QualityOverrideSelect value={item.quality_override} onChange={(value) => onOverride(item.source_item_id, value)} /></td>{excluded && <td><div className="reasonTags">{(item.exclusion_reason_labels?.length ? item.exclusion_reason_labels : item.exclusion_reasons.map((reason) => qualityReasonLabels[reason] || reason)).map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}</div></td>}</tr>)}</tbody></table></div>;
 }
 
 function Contributions({ people, refreshToken, onError, onMessage }: { people: Person[]; refreshToken: number; onError: (value: string) => void; onMessage: (value: string) => void }) {
@@ -412,3 +429,8 @@ function Events({ refreshToken, onError }: { refreshToken: number; onError: (val
 
 function Pagination({ page, pages, onChange }: { page: number; pages: number; onChange: (value: number) => void }) { return <div className="paginationBar"><button className="iconButton" type="button" title="上一页" disabled={page <= 1} onClick={() => onChange(page - 1)}><ChevronLeft size={17} /></button><span>第 {page} / {pages} 页</span><button className="iconButton" type="button" title="下一页" disabled={page >= pages} onClick={() => onChange(page + 1)}><ChevronRight size={17} /></button></div>; }
 function Unavailable() { return <span className="unavailable" title="当前数据源暂未提供">—</span>; }
+
+function QualityOverrideSelect({ value, disabled = false, onChange }: { value: QualityOverride | null | undefined; disabled?: boolean; onChange: (value: QualityOverride) => void }) {
+  const normalized = value === 'include' || value === 'exclude' ? value : 'none';
+  return <select className="inlineSelect qualityOverrideSelect" aria-label="优质快讯人工覆盖" value={normalized} disabled={disabled} onChange={(event) => onChange(event.target.value as QualityOverride)}>{(Object.keys(qualityOverrideLabels) as QualityOverride[]).map((key) => <option key={key} value={key}>{qualityOverrideLabels[key]}</option>)}</select>;
+}

@@ -275,6 +275,10 @@ body {
   font-size: 12px;
 }
 
+.qualityOverrideSelect {
+  min-width: 112px;
+}
+
 .inlineSelect:disabled {
   color: #8b949e;
   background: #f4f6f8;
@@ -661,7 +665,7 @@ body {
 }
 
 .qualityTable {
-  min-width: 1040px;
+  min-width: 1180px;
 }
 
 .reasonTags,
@@ -697,7 +701,7 @@ body {
 
 .qualityRuleGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
   margin-top: 14px;
 }
@@ -710,6 +714,13 @@ body {
   margin: 0 0 8px;
   color: #53606c;
   font-size: 13px;
+}
+
+.qualityRuleGrid section p {
+  margin: 9px 0 0;
+  color: #66717d;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .ruleTagList a,
