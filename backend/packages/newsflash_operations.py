@@ -1374,7 +1374,7 @@ class NewsflashOperationsRepository:
         return {
             "base_score": base_score,
             "high_view_bonus": high_view_bonus,
-            "score": base_score + high_view_bonus,
+            "score": base_score,
         }
 
     def list_events(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -153,7 +153,7 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(items["score-two-a"]["score"], 0.5)
         self.assertEqual(items["score-over-two-a"]["base_score"], 1.0)
         self.assertEqual(items["score-over-two-a"]["high_view_bonus"], 0.5)
-        self.assertEqual(items["score-over-two-a"]["score"], 1.5)
+        self.assertEqual(items["score-over-two-a"]["score"], 1.0)
         self.assertEqual(items["score-night"]["base_score"], 0.5)
         self.assertEqual(items["score-night"]["high_view_bonus"], 0)
         self.assertEqual(items["score-night"]["score"], 0.5)
