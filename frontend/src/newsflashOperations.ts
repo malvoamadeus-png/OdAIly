@@ -126,6 +126,12 @@ export type ContributionsPayload = {
   week_start: string;
   week_end: string;
   in_progress: boolean;
+  status: 'ready' | 'insufficient';
+  baseline: {
+    pushed_count: number;
+    known_view_count: number;
+    average_views: number | null;
+  };
   groups: Array<{
     person_key: string;
     display_name: string;
@@ -133,6 +139,11 @@ export type ContributionsPayload = {
     total_views: number;
     average_views: number | null;
     view_coverage: { known: number; total: number };
+    base_score_total: number;
+    base_score_capped: number;
+    high_view_bonus_count: number;
+    high_view_bonus: number;
+    total_score: number;
     items: Array<{
       source_item_id: string;
       source_url: string | null;
@@ -142,6 +153,9 @@ export type ContributionsPayload = {
       contribution_type: string;
       contributor_person_key: string;
       first_publication: FirstPublication;
+      base_score: number;
+      high_view_bonus: number;
+      score: number;
     }>;
   }>;
 };

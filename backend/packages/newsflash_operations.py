@@ -15,6 +15,8 @@ from packages.common.storage import connect_sqlite
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 CONTRIBUTION_TYPES = {"regular", "night", "ppp"}
+CONTRIBUTION_SCORE_CAP = 5.0
+CONTRIBUTION_HIGH_VIEW_BONUS = 0.5
 PUBLISHER_KINDS = {"human", "human_unmapped", "odaily_ai", "other_ai", "pending_ai"}
 SHIFT_DEFINITIONS = {
     "three": (
@@ -1289,6 +1291,18 @@ class NewsflashOperationsRepository:
         start = _week_start(date.fromisoformat(str(payload.get("week_start") or _week_start(datetime.now(SHANGHAI_TZ).date()))))
         end = start + timedelta(days=7)
         with connect_sqlite(self.path) as conn:
+            period_start = datetime.combine(start, time(0, 0), SHANGHAI_TZ).isoformat()
+            period_end = datetime.combine(end, time(0, 0), SHANGHAI_TZ).isoformat()
+            baseline_rows = conn.execute(
+                """
+                SELECT f.view_count
+                FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
+                WHERE f.is_pushed=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
+                """,
+                (period_start, period_end),
+            ).fetchall()
+            baseline_views = [int(row["view_count"]) for row in baseline_rows if row["view_count"] is not None]
+            average_views = sum(baseline_views) / len(baseline_views) if baseline_views else None
             people = [dict(row) for row in conn.execute(
                 "SELECT person_key,display_name FROM newsflash_roster WHERE active=1 AND contributor_enabled=1 ORDER BY display_name COLLATE NOCASE"
             ).fetchall()]
@@ -1301,23 +1315,67 @@ class NewsflashOperationsRepository:
                 WHERE f.is_contribution=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
                 ORDER BY p.display_name COLLATE NOCASE,datetime(r.published_at) DESC
                 """,
-                (datetime.combine(start, time(0, 0), SHANGHAI_TZ).isoformat(), datetime.combine(end, time(0, 0), SHANGHAI_TZ).isoformat()),
+                (period_start, period_end),
             ).fetchall()]
             for row in rows:
                 row["first_publication"] = self._event_info(conn, str(row["source_item_id"]))
+                score = self._contribution_score(row["view_count"], row["contribution_type"], average_views)
+                row.update(score)
         groups = []
         for person in people:
             items = [row for row in rows if row["contributor_person_key"] == person["person_key"]]
             views = [int(row["view_count"]) for row in items if row["view_count"] is not None]
+            base_score_total = round(sum(float(item["base_score"]) for item in items), 10)
+            high_view_bonus_count = sum(1 for item in items if float(item["high_view_bonus"]) > 0)
+            high_view_bonus = round(sum(float(item["high_view_bonus"]) for item in items), 10)
+            base_score_capped = min(base_score_total, CONTRIBUTION_SCORE_CAP)
             groups.append({
                 **person,
                 "count": len(items),
                 "total_views": sum(views),
                 "average_views": round(sum(views) / len(views), 1) if views else None,
                 "view_coverage": {"known": len(views), "total": len(items)},
+                "base_score_total": base_score_total,
+                "base_score_capped": base_score_capped,
+                "high_view_bonus_count": high_view_bonus_count,
+                "high_view_bonus": high_view_bonus,
+                "total_score": round(base_score_capped + high_view_bonus, 10),
                 "items": items,
             })
-        return {"week_start": start.isoformat(), "week_end": (end - timedelta(days=1)).isoformat(), "in_progress": datetime.now(SHANGHAI_TZ).date() < end, "groups": groups}
+        return {
+            "week_start": start.isoformat(),
+            "week_end": (end - timedelta(days=1)).isoformat(),
+            "in_progress": datetime.now(SHANGHAI_TZ).date() < end,
+            "status": "ready" if average_views is not None else "insufficient",
+            "baseline": {
+                "pushed_count": len(baseline_rows),
+                "known_view_count": len(baseline_views),
+                "average_views": average_views,
+            },
+            "groups": groups,
+        }
+
+    @staticmethod
+    def _contribution_score(view_count: Any, contribution_type: str | None, average_views: float | None) -> dict[str, float]:
+        if contribution_type in {"night", "ppp"}:
+            return {"base_score": 0.5, "high_view_bonus": 0.0, "score": 0.5}
+        if view_count is None or average_views is None:
+            return {"base_score": 0.0, "high_view_bonus": 0.0, "score": 0.0}
+        views = float(view_count)
+        if views < average_views * 0.5:
+            base_score = 0.0
+        elif views < average_views * 0.75:
+            base_score = 0.25
+        elif views <= average_views * 2:
+            base_score = 0.5
+        else:
+            base_score = 1.0
+        high_view_bonus = CONTRIBUTION_HIGH_VIEW_BONUS if views > average_views * 2 else 0.0
+        return {
+            "base_score": base_score,
+            "high_view_bonus": high_view_bonus,
+            "score": base_score + high_view_bonus,
+        }
 
     def list_events(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = max(1, int(payload.get("page") or 1))

@@ -94,6 +94,153 @@ class NewsflashOperationsTest(unittest.TestCase):
         asher = next(group for group in contributions["groups"] if group["person_key"] == "asher")
         self.assertEqual(asher["count"], 1)
 
+    def test_contribution_scores_use_all_pushed_baseline_and_exact_bands(self) -> None:
+        references = [
+            ("score-base-1", "Baseline one", "2026-08-10T08:00:00+08:00"),
+            ("score-base-2", "Baseline two", "2026-08-10T08:05:00+08:00"),
+            ("score-below", "Below half", "2026-08-10T09:00:00+08:00"),
+            ("score-half", "Exactly half", "2026-08-10T09:05:00+08:00"),
+            ("score-three-quarter", "Exactly three quarters", "2026-08-10T09:10:00+08:00"),
+            ("score-two-a", "Exactly two A", "2026-08-10T09:15:00+08:00"),
+            ("score-over-two-a", "Over two A", "2026-08-10T09:20:00+08:00"),
+            ("score-night", "Night fixed score", "2026-08-10T09:25:00+08:00"),
+            ("score-ppp-missing", "PPP fixed score", "2026-08-10T09:30:00+08:00"),
+            ("score-regular-missing", "Regular missing view", "2026-08-10T09:35:00+08:00"),
+        ]
+        for values in references:
+            self.add_reference(*values)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "score-base-1", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "score-base-2", "operator_raw": None, "view_count": 300, "is_pushed": 1},
+            {"source_item_id": "score-below", "operator_raw": "Z", "view_count": 99, "is_pushed": 0},
+            {"source_item_id": "score-half", "operator_raw": "Z", "view_count": 100, "is_pushed": 0},
+            {"source_item_id": "score-three-quarter", "operator_raw": "Z", "view_count": 150, "is_pushed": 0},
+            {"source_item_id": "score-two-a", "operator_raw": "Z", "view_count": 400, "is_pushed": 0},
+            {"source_item_id": "score-over-two-a", "operator_raw": "Z", "view_count": 401, "is_pushed": 0},
+            {"source_item_id": "score-night", "operator_raw": "Z", "view_count": 1000, "is_pushed": 0},
+            {"source_item_id": "score-ppp-missing", "operator_raw": "Z", "view_count": None, "is_pushed": 0},
+            {"source_item_id": "score-regular-missing", "operator_raw": "Z", "view_count": None, "is_pushed": 0},
+        ])
+        self.assign_morning("2026-08-10")
+        for source_item_id, contribution_type in (
+            ("score-below", "regular"),
+            ("score-half", "regular"),
+            ("score-three-quarter", "regular"),
+            ("score-two-a", "regular"),
+            ("score-over-two-a", "regular"),
+            ("score-night", "night"),
+            ("score-ppp-missing", "ppp"),
+            ("score-regular-missing", "regular"),
+        ):
+            self.repository.update_newsflash(
+                {
+                    "source_item_id": source_item_id,
+                    "patch": {"is_contribution": True, "contributor_person_key": "asher", "contribution_type": contribution_type},
+                },
+                actor_email="test@example.com",
+            )
+
+        result = self.repository.list_contributions({"week_start": "2026-08-10"})
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["baseline"], {"pushed_count": 2, "known_view_count": 2, "average_views": 200})
+        asher = next(group for group in result["groups"] if group["person_key"] == "asher")
+        items = {item["source_item_id"]: item for item in asher["items"]}
+        self.assertEqual(asher["count"], 8)
+        self.assertEqual(items["score-below"]["score"], 0)
+        self.assertEqual(items["score-half"]["score"], 0.25)
+        self.assertEqual(items["score-three-quarter"]["score"], 0.5)
+        self.assertEqual(items["score-two-a"]["score"], 0.5)
+        self.assertEqual(items["score-over-two-a"]["base_score"], 1.0)
+        self.assertEqual(items["score-over-two-a"]["high_view_bonus"], 0.5)
+        self.assertEqual(items["score-over-two-a"]["score"], 1.5)
+        self.assertEqual(items["score-night"]["base_score"], 0.5)
+        self.assertEqual(items["score-night"]["high_view_bonus"], 0)
+        self.assertEqual(items["score-night"]["score"], 0.5)
+        self.assertEqual(items["score-ppp-missing"]["score"], 0.5)
+        self.assertEqual(items["score-regular-missing"]["score"], 0)
+        self.assertEqual(asher["base_score_total"], 3.25)
+        self.assertEqual(asher["base_score_capped"], 3.25)
+        self.assertEqual(asher["high_view_bonus_count"], 1)
+        self.assertEqual(asher["high_view_bonus"], 0.5)
+        self.assertEqual(asher["total_score"], 3.75)
+
+    def test_contribution_score_cap_does_not_cap_high_view_bonus(self) -> None:
+        references = [("cap-base", "Baseline", "2026-08-11T08:00:00+08:00")]
+        references += [(f"cap-asher-{index}", f"Asher {index}", "2026-08-11T09:00:00+08:00") for index in range(30)]
+        references += [(f"cap-zoey-{index}", f"Zoey {index}", "2026-08-11T10:00:00+08:00") for index in range(29)]
+        references.append(("cap-zoey-high", "Zoey high", "2026-08-11T10:05:00+08:00"))
+        for values in references:
+            self.add_reference(*values)
+        facts = [{"source_item_id": "cap-base", "operator_raw": None, "view_count": 100, "is_pushed": 1}]
+        facts += [{"source_item_id": f"cap-asher-{index}", "operator_raw": "Z", "view_count": 100, "is_pushed": 0} for index in range(30)]
+        facts += [{"source_item_id": f"cap-zoey-{index}", "operator_raw": "Z", "view_count": 100, "is_pushed": 0} for index in range(29)]
+        facts.append({"source_item_id": "cap-zoey-high", "operator_raw": "Z", "view_count": 201, "is_pushed": 0})
+        self.repository.upsert_source_facts(facts)
+        self.assign_morning("2026-08-11")
+        for source_item_id, contributor_person_key in (
+            *[(f"cap-asher-{index}", "asher") for index in range(30)],
+            *[(f"cap-zoey-{index}", "zoey") for index in range(29)],
+            ("cap-zoey-high", "zoey"),
+        ):
+            self.repository.update_newsflash(
+                {
+                    "source_item_id": source_item_id,
+                    "patch": {"is_contribution": True, "contributor_person_key": contributor_person_key, "contribution_type": "regular"},
+                },
+                actor_email="test@example.com",
+            )
+
+        result = self.repository.list_contributions({"week_start": "2026-08-11"})
+
+        asher = next(group for group in result["groups"] if group["person_key"] == "asher")
+        zoey = next(group for group in result["groups"] if group["person_key"] == "zoey")
+        self.assertEqual(asher["base_score_total"], 15)
+        self.assertEqual(asher["base_score_capped"], 5)
+        self.assertEqual(asher["total_score"], 5)
+        self.assertEqual(zoey["base_score_total"], 15.5)
+        self.assertEqual(zoey["base_score_capped"], 5)
+        self.assertEqual(zoey["high_view_bonus_count"], 1)
+        self.assertEqual(zoey["total_score"], 5.5)
+
+    def test_contribution_score_keeps_special_types_when_baseline_is_insufficient(self) -> None:
+        for source_item_id, title, published_at in (
+            ("insufficient-regular", "Regular", "2026-08-31T09:00:00+08:00"),
+            ("insufficient-night", "Night", "2026-08-31T10:00:00+08:00"),
+            ("insufficient-ppp", "PPP", "2026-08-31T11:00:00+08:00"),
+        ):
+            self.add_reference(source_item_id, title, published_at)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "insufficient-regular", "operator_raw": "Z", "view_count": 999, "is_pushed": 0},
+            {"source_item_id": "insufficient-night", "operator_raw": "Z", "view_count": None, "is_pushed": 0},
+            {"source_item_id": "insufficient-ppp", "operator_raw": "Z", "view_count": None, "is_pushed": 0},
+        ])
+        self.assign_morning("2026-08-31")
+        for source_item_id, contribution_type in (
+            ("insufficient-regular", "regular"),
+            ("insufficient-night", "night"),
+            ("insufficient-ppp", "ppp"),
+        ):
+            self.repository.update_newsflash(
+                {
+                    "source_item_id": source_item_id,
+                    "patch": {"is_contribution": True, "contributor_person_key": "asher", "contribution_type": contribution_type},
+                },
+                actor_email="test@example.com",
+            )
+
+        result = self.repository.list_contributions({"week_start": "2026-08-31"})
+
+        asher = next(group for group in result["groups"] if group["person_key"] == "asher")
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["baseline"]["average_views"], None)
+        self.assertEqual({item["source_item_id"]: item["score"] for item in asher["items"]}, {
+            "insufficient-regular": 0,
+            "insufficient-night": 0.5,
+            "insufficient-ppp": 0.5,
+        })
+        self.assertEqual(asher["total_score"], 1)
+
     def test_adjacent_shifts_use_real_boundary_for_same_person(self) -> None:
         self.add_reference("20", "Before", "2026-07-20T13:20:00+08:00")
         self.add_reference("21", "After", "2026-07-20T13:40:00+08:00")

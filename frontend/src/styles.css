@@ -574,6 +574,35 @@ body {
   gap: 18px;
 }
 
+.contributionBaseline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.contributionBaseline > div {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid #dce2e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.contributionBaseline span,
+.contributionBaseline small,
+.contributionStats small {
+  color: #66717d;
+  font-size: 12px;
+}
+
+.contributionBaseline strong {
+  color: #1f4f43;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
 .contributionGroup {
   padding-top: 4px;
   border-top: 2px solid #cfd7de;
@@ -588,6 +617,7 @@ body {
   align-items: baseline;
   justify-content: center;
   gap: 6px;
+  flex-wrap: wrap;
   color: #66717d;
   font-size: 12px;
 }
@@ -596,6 +626,32 @@ body {
   margin-left: 10px;
   color: #25303b;
   font-size: 16px;
+}
+
+.contributionStats {
+  justify-content: flex-end !important;
+}
+
+.contributionStats span {
+  white-space: nowrap;
+}
+
+.contributionStats .contributionTotalScore {
+  color: #075f49;
+  font-weight: 700;
+}
+
+.contributionStats .contributionTotalScore strong {
+  font-size: 20px;
+}
+
+.contributionItemScore {
+  color: #075f49;
+  font-weight: 700;
+}
+
+.contributionRules p + p {
+  margin-top: 6px;
 }
 
 .qualityMetrics {
@@ -868,7 +924,8 @@ body {
   }
 
   .qualityMetrics,
-  .qualityRuleGrid {
+  .qualityRuleGrid,
+  .contributionBaseline {
     grid-template-columns: 1fr;
   }
 

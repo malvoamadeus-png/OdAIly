@@ -120,6 +120,10 @@ function coverage(value: { known: number; total: number } | undefined): string {
   return `${value.known}/${value.total}`;
 }
 
+function scoreValue(value: number | null | undefined): string {
+  return value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
 export default function NewsflashOperationsPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [tab, setTab] = useState<TabKey>('overview');
   const [people, setPeople] = useState<Person[]>([]);
@@ -410,11 +414,28 @@ function QualityTable({ items, excluded, onOverride }: { items: QualityItem[]; e
 function Contributions({ people, refreshToken, onError, onMessage }: { people: Person[]; refreshToken: number; onError: (value: string) => void; onMessage: (value: string) => void }) {
   const [week, setWeek] = useState(mondayKey());
   const [data, setData] = useState<ContributionsPayload | null>(null);
-  async function load() { try { setData(await newsflashOperations<ContributionsPayload>('contributions', { week_start: week })); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
+  async function load() {
+    onError('');
+    try { setData(await newsflashOperations<ContributionsPayload>('contributions', { week_start: week })); }
+    catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+  }
   useEffect(() => { void load(); }, [week, refreshToken]);
   async function patch(sourceItemId: string, patchValue: Record<string, unknown>) { try { await newsflashOperations('update', { source_item_id: sourceItemId, patch: patchValue }); onMessage(`快讯 ${sourceItemId} 已保存`); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
   const contributors = people.filter((person) => person.active && person.contributor_enabled);
-  return <section className="newsflashSection"><div className="sectionCommandBar"><div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div>{data?.in_progress && <span className="statusText ready">本周进行中</span>}</div><div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}><div className="contributionGroupHeader"><h2>{group.display_name}</h2><div><strong>{group.count}</strong><span>条</span><strong>{group.total_views.toLocaleString()}</strong><span>总浏览量</span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong><span>平均</span></div></div>{group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}</section>)}</div></section>;
+  return <section className="newsflashSection">
+    <div className="sectionCommandBar"><div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div>{data?.in_progress && <span className="statusText ready">本周进行中</span>}</div>
+    {data && <div className="contributionBaseline">
+      <div><span>本周 A（推送浏览量均值）</span><strong>{scoreValue(data.baseline.average_views)}</strong><small>{data.baseline.known_view_count}/{data.baseline.pushed_count} 条推送快讯有浏览量</small></div>
+      <div><span>基准样本</span><strong>{data.baseline.pushed_count}</strong><small>仅推送快讯进入 A</small></div>
+      <div><span>计分方式</span><strong>基础分封顶 5</strong><small>常规 &gt;2A 每条额外 +0.5</small></div>
+    </div>}
+    {data?.status === 'insufficient' && <div className="notice error">本周没有已知浏览量的推送快讯，A 暂不可计算；常规贡献快讯记 0 分，夜间 / PPP 仍记 0.5 分。</div>}
+    {data && <details className="qualityRules contributionRules"><summary>查看贡献快讯评分规则</summary><p>按北京时间自然周统计。常规快讯：低于 0.5A 为 0 分，0.5A（含）至 0.75A（不含）为 0.25 分，0.75A（含）至 2A（含）为 0.5 分，超过 2A 为基础分 1 分并额外奖励 0.5 分。</p><p>夜间 / PPP 固定 0.5 分，超过 2A 不额外奖励。每人基础分先封顶 5 分，再叠加常规超 2A 奖励；常规浏览量未知时记 0 分。</p></details>}
+    <div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}>
+      <div className="contributionGroupHeader"><h2>{group.display_name}</h2><div className="contributionStats"><span><strong>{group.count}</strong> 条</span><span><strong>{group.total_views.toLocaleString()}</strong> 总浏览量</span><span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong> 平均</span><span>基础分 <strong>{scoreValue(group.base_score_capped)}</strong><small>（原始 {scoreValue(group.base_score_total)}）</small></span><span>超 2A 奖励 <strong>{scoreValue(group.high_view_bonus)}</strong><small>（{group.high_view_bonus_count} 条）</small></span><span className="contributionTotalScore">总分 <strong>{scoreValue(group.total_score)}</strong></span></div></div>
+      {group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable contributionScoreTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>基础分</th><th>超2A奖励</th><th>计入分数</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td className="numberCell">{scoreValue(item.base_score)}</td><td className="numberCell">{scoreValue(item.high_view_bonus)}</td><td className="numberCell contributionItemScore">{scoreValue(item.score)}</td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}
+    </section>)}</div>
+  </section>;
 }
 
 function Events({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {
