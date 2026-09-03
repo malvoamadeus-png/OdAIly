@@ -209,6 +209,11 @@ def get_market_price_source() -> str:
     return source
 
 
+def okx_details_enabled() -> bool:
+    value = os.getenv("MEME_OKX_DETAILS_ENABLED")
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _gmgn_request_interval_seconds() -> float:
     try:
         return max(
@@ -400,7 +405,7 @@ def okx_risk_flags(token: Token) -> list[str]:
 
 def market_risk_flags(token: Token) -> list[str]:
     """Keep OKX risk evaluation when only the market-price adapter changes."""
-    if token.raw.get("risk_source") == "okx" or token.raw.get("market_source") == "okx":
+    if token.raw.get("risk_source") == "okx":
         return okx_risk_flags(token)
     return []
 
@@ -566,12 +571,14 @@ def _resolve_okx_identity_from_gmgn(token: Token) -> Token:
 def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = False) -> Token | None:
     price_source = get_market_price_source()
     client = get_okx_client()
+    details_enabled = okx_details_enabled()
     details_error: str | None = None
-    try:
-        details = client.token_details(chain, address)
-    except Exception as exc:
-        details = {}
-        details_error = str(exc)
+    details: dict[str, Any] = {}
+    if details_enabled:
+        try:
+            details = client.token_details(chain, address)
+        except Exception as exc:
+            details_error = str(exc)
     token = _okx_token_from_item(details, chain) if details else None
     if token is None:
         token = token_from_row(
@@ -579,8 +586,8 @@ def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = F
                 "address": address,
                 "chain": chain,
                 "launchpad_platform": "okx:unknown",
-                "market_source": "okx",
-                "risk_source": "okx",
+                "market_source": price_source,
+                "risk_source": "okx" if details_enabled else "disabled",
                 "_market_metrics_complete": False,
             },
             allow_unknown_platform=True,

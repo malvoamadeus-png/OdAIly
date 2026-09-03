@@ -201,7 +201,11 @@ class OKXAdapterTests(unittest.TestCase):
             raw={"price": {"price": "0.0013"}, "volume_24h": "900000"},
             chain="robinhood",
         )
-        with patch.dict(os.environ, {"MEME_PRICE_SOURCE": "gmgn"}, clear=False), patch.object(
+        with patch.dict(
+            os.environ,
+            {"MEME_PRICE_SOURCE": "gmgn", "MEME_OKX_DETAILS_ENABLED": "false"},
+            clear=False,
+        ), patch.object(
             scanner, "get_okx_client", return_value=okx_client
         ), patch.object(scanner, "fetch_gmgn_token_info", return_value=gmgn_token):
             current = scanner.fetch_okx_token_info(address, "robinhood")
@@ -209,7 +213,42 @@ class OKXAdapterTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual((current.market_cap, current.volume_24h), (1_300_000.0, 900_000.0))
         self.assertEqual(current.raw["market_source"], "gmgn")
+        okx_client.token_details.assert_not_called()
         okx_client.price_info.assert_not_called()
+
+    def test_okx_details_can_be_enabled_for_risk_metadata(self) -> None:
+        address = "0x23f1ad82bdb58f7524b6e76bdf5406267ef24413"
+        okx_client = Mock()
+        okx_client.token_details.return_value = {
+            "tokenAddress": address,
+            "symbol": "RISK",
+            "name": "Risk Token",
+            "tags": {"top10HoldingsPercent": "84"},
+            "social": {},
+        }
+        gmgn_token = scanner.Token(
+            address=address,
+            platform="pons_v2",
+            name="Risk Token",
+            symbol="RISK",
+            market_cap=1_300_000,
+            volume_24h=900_000,
+            created_timestamp=None,
+            raw={"liquidity": "100000"},
+            chain="robinhood",
+        )
+        with patch.dict(
+            os.environ,
+            {"MEME_PRICE_SOURCE": "gmgn", "MEME_OKX_DETAILS_ENABLED": "true"},
+            clear=False,
+        ), patch.object(scanner, "get_okx_client", return_value=okx_client), patch.object(
+            scanner, "fetch_gmgn_token_info", return_value=gmgn_token
+        ):
+            current = scanner.fetch_okx_token_info(address, "robinhood")
+
+        self.assertIsNotNone(current)
+        okx_client.token_details.assert_called_once_with("robinhood", address)
+        self.assertIn("top10_concentration_high", scanner.market_risk_flags(current))
 
     def test_robinhood_uses_one_million_first_market_cap_level(self) -> None:
         self.assertEqual(scanner.market_cap_gate("bsc"), 500_000.0)
@@ -223,7 +262,9 @@ class OKXAdapterTests(unittest.TestCase):
         client.price_info.return_value = {
             "0xold": {"marketCap": "800000", "volume24H": "500000", "liquidity": "100000"}
         }
-        with patch.object(scanner, "get_okx_client", return_value=client):
+        with patch.dict(os.environ, {"MEME_OKX_DETAILS_ENABLED": "true"}, clear=False), patch.object(
+            scanner, "get_okx_client", return_value=client
+        ):
             current = scanner.fetch_okx_token_info("0xold", "bsc")
 
         self.assertIsNotNone(current)
@@ -270,6 +311,7 @@ class OKXAdapterTests(unittest.TestCase):
             created_timestamp=None,
             raw={
                 "market_source": "okx",
+                "risk_source": "okx",
                 "tags": {"top10HoldingsPercent": "84", "suspectedPhishingWalletPercent": "8"},
                 "social": {},
                 "liquidity": "100000",
