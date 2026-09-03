@@ -452,7 +452,7 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument("--once", action="store_true")
     meme_scan.add_argument("--send", action="store_true")
     meme_scan.add_argument("--push-timeout", type=int, default=20)
-    meme_scan.add_argument("--narrative-timeout", type=int, default=180)
+    meme_scan.add_argument("--narrative-timeout", type=int, default=90)
     meme_scan.add_argument("--narrative-command")
     meme_scan.add_argument("--force-contract")
 

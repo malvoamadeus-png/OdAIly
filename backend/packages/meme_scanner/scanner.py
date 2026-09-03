@@ -2029,7 +2029,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="Run one poll and process at most one queued job.")
     parser.add_argument("--send", action="store_true", help="Create an OdAIly publisher_pending draft. Default is dry-run.")
     parser.add_argument("--push-timeout", type=int, default=20)
-    parser.add_argument("--narrative-timeout", type=int, default=180)
+    parser.add_argument("--narrative-timeout", type=int, default=90)
     parser.add_argument("--narrative-command", help="Optional command template; supports {contract}, {symbol}, {name}, {output}.")
     parser.add_argument("--force-contract", help="Operator-only replay for a qualifying CA currently present in the completed list.")
     return parser

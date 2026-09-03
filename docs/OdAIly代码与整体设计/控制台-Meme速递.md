@@ -75,7 +75,7 @@ python backend/src/main.py meme tg-watch
 - CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`。EVM 候选按 Robinhood、BSC 顺序查询并采用首个有效链结果；任务 payload、快照、观察、里程碑、叙事和标题沿用该链值，BSC/Robinhood 市场字段来源由 `MEME_PRICE_SOURCE` 决定，发现来源仍是 OKX MemePump 网页。
 - 叙事 Telegram 会话、白名单与 FOMO 浏览器会话归 HideOnBush 管理；OdAIly 不再读取这些运行资产。
 - 快速叙事材料：OdAIly 通过 `MEME_FAST_EVIDENCE_URL` 调用 HideOnBush 内部材料接口，请求显式携带链、CA 和 symbol，并使用 `MEME_FAST_EVIDENCE_INTERNAL_KEY` 鉴权。HideOnBush 并行收集 FxTwitter、Telegram、FOMO Thesis，只返回材料和诊断；超时由 `MEME_FAST_EVIDENCE_TIMEOUT` 控制。
-- 最终写作：使用独立的 `MEME_FAST_WRITER_BASE_URL`、`MEME_FAST_WRITER_API_KEY` 和 `MEME_FAST_WRITER_MODEL`，模型默认固定为 `gpt-5.6-luna`，请求使用 `reasoning_effort=none`。Meme 叙事不再调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事。`MEME_PRICE_SOURCE=gmgn` 的市场价格适配器是独立链路，仍可继续使用。
+- 最终写作：使用独立的 `MEME_FAST_WRITER_BASE_URL`、`MEME_FAST_WRITER_API_KEY` 和 `MEME_FAST_WRITER_MODEL`，模型默认固定为 `gpt-5.6-luna`，请求使用 `reasoning_effort=none`，GPT 客户端默认超时为 `90` 秒。Meme 叙事不再调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事。`MEME_PRICE_SOURCE=gmgn` 的市场价格适配器是独立链路，仍可继续使用。
 - 未单独设置快速 writer 地址或密钥时才回退 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`；生产应显式配置支持 Luna 的独立 relay。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
 

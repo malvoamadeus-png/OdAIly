@@ -172,7 +172,7 @@ class EditorPluginApiSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     session_ttl_hours: float = Field(default=168.0, gt=0.0, le=720.0)
-    generation_timeout_seconds: float = Field(default=120.0, gt=0.0, le=300.0)
+    generation_timeout_seconds: float = Field(default=90.0, gt=0.0, le=300.0)
     cors_allow_origin: str = "*"
     local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
@@ -251,7 +251,7 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "host": host or os.getenv("EDITOR_PLUGIN_API_HOST") or "127.0.0.1",
         "port": port or int(os.getenv("EDITOR_PLUGIN_API_PORT") or 8765),
         "session_ttl_hours": float(os.getenv("EDITOR_PLUGIN_API_SESSION_TTL_HOURS") or 168.0),
-        "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 120.0),
+        "generation_timeout_seconds": float(os.getenv("EDITOR_PLUGIN_API_GENERATION_TIMEOUT_SECONDS") or 90.0),
         "cors_allow_origin": os.getenv("EDITOR_PLUGIN_API_CORS_ALLOW_ORIGIN") or "*",
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),

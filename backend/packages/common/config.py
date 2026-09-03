@@ -17,6 +17,7 @@ DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
 DEFAULT_GPT_AUDITOR_MODEL = "odaily-gpt-auditor"
+DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 90.0
 
 
 DEFAULT_WATCHLIST = [
@@ -320,7 +321,7 @@ class XProcessingSettings(BaseModel):
     search_ai_review_openai_api_key: str | None = None
     search_ai_review_openai_base_url: HttpUrl | None = None
     search_ai_review_openai_api_style: Literal["responses", "chat_completions"] | None = None
-    search_ai_review_omit_reasoning_effort: bool = False
+    search_ai_review_omit_reasoning_effort: bool = True
     search_ai_review_omit_response_format: bool = False
     search_ai_review_chat_response_format_mode: Literal["json_schema", "json_object"] = "json_schema"
     search_ai_review_append_json_schema_to_prompt: bool = False
@@ -335,8 +336,8 @@ class XProcessingSettings(BaseModel):
     search_cache_reference_retention_days: int = Field(default=8, ge=2, le=90)
     push_endpoint: HttpUrl = "http://47.113.217.70:8501/push/data"
     dry_run: bool = False
-    request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
-    writer_request_timeout_seconds: float = Field(default=150.0, gt=0.0, le=180.0)
+    request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=180.0)
+    writer_request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -477,7 +478,7 @@ def load_x_processing_settings() -> XProcessingSettings:
         ),
         "search_ai_review_openai_base_url": search_review_base_url,
         "search_ai_review_openai_api_style": os.getenv("SEARCH_AI_REVIEW_OPENAI_API_STYLE") or None,
-        "search_ai_review_omit_reasoning_effort": _env_bool("SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT", False),
+        "search_ai_review_omit_reasoning_effort": _env_bool("SEARCH_AI_REVIEW_OMIT_REASONING_EFFORT", True),
         "search_ai_review_omit_response_format": _env_bool(
             "SEARCH_AI_REVIEW_OMIT_RESPONSE_FORMAT", False
         ),
@@ -504,9 +505,11 @@ def load_x_processing_settings() -> XProcessingSettings:
         ),
         "push_endpoint": os.getenv("X_PROCESS_PUSH_ENDPOINT") or os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
         "dry_run": _env_bool("X_PROCESS_DRY_RUN", False),
-        "request_timeout_seconds": float(os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or 30.0),
+        "request_timeout_seconds": float(
+            os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS") or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
+        ),
         "writer_request_timeout_seconds": float(
-            os.getenv("X_PROCESS_WRITER_REQUEST_TIMEOUT_SECONDS") or 150.0
+            os.getenv("X_PROCESS_WRITER_REQUEST_TIMEOUT_SECONDS") or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
         ),
         "retry": {
             "max_attempts": int(os.getenv("X_PROCESS_MAX_ATTEMPTS") or 3),
@@ -537,7 +540,7 @@ class ExternalMediaAlertSettings(BaseModel):
     search_window_hours: int = Field(default=168, ge=1, le=720)
     search_duplicate_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     search_ai_review_threshold: float = Field(default=0.72, ge=0.0, le=1.0)
-    request_timeout_seconds: float = Field(default=30.0, gt=0.0, le=180.0)
+    request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=180.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -573,7 +576,7 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
         "request_timeout_seconds": float(
             os.getenv("EXTERNAL_MEDIA_ALERT_REQUEST_TIMEOUT_SECONDS")
             or os.getenv("X_PROCESS_REQUEST_TIMEOUT_SECONDS")
-            or 30.0
+            or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
         ),
         "retry": {
             "max_attempts": int(
@@ -608,7 +611,7 @@ class CompetitorMonitorSettings(BaseModel):
     blockbeats_registration_timeout_seconds: int = Field(default=120, ge=30, le=900)
     blockbeats_auto_register_cooldown_seconds: int = Field(default=3600, ge=60, le=86400)
     fetch_interval_seconds: int = Field(default=60, ge=10, le=3600)
-    request_timeout_seconds: float = Field(default=20.0, gt=0.0, le=180.0)
+    request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=180.0)
     event_assignment_timeout_seconds: int = Field(default=240, ge=30, le=1800)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     openai_api_key: str | None = None
@@ -636,7 +639,9 @@ def load_competitor_monitor_settings() -> CompetitorMonitorSettings:
         "blockbeats_registration_timeout_seconds": int(os.getenv("BLOCKBEATS_REGISTRATION_TIMEOUT_SECONDS") or 120),
         "blockbeats_auto_register_cooldown_seconds": int(os.getenv("BLOCKBEATS_AUTO_REGISTER_COOLDOWN_SECONDS") or 3600),
         "fetch_interval_seconds": int(os.getenv("COMPETITOR_FETCH_INTERVAL_SECONDS") or 60),
-        "request_timeout_seconds": float(os.getenv("COMPETITOR_REQUEST_TIMEOUT_SECONDS") or 20.0),
+        "request_timeout_seconds": float(
+            os.getenv("COMPETITOR_REQUEST_TIMEOUT_SECONDS") or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
+        ),
         "event_assignment_timeout_seconds": int(os.getenv("COMPETITOR_EVENT_ASSIGNMENT_TIMEOUT_SECONDS") or 240),
         "retry": {
             "max_attempts": int(os.getenv("COMPETITOR_MAX_ATTEMPTS") or 3),
@@ -799,7 +804,7 @@ class Writer3Settings(BaseModel):
     candidate_limit: int = Field(default=20, ge=1, le=100)
     context_candidates: int = Field(default=5, ge=1, le=20)
     current_freshness_window_seconds: int = Field(default=600, ge=1, le=86400)
-    request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
+    request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=300.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     start_after: str | None = None
     telegram_bot_token: str | None = None
@@ -823,7 +828,9 @@ def load_writer3_settings() -> Writer3Settings:
         "candidate_limit": int(os.getenv("WRITER3_CANDIDATE_LIMIT") or 20),
         "context_candidates": int(os.getenv("WRITER3_CONTEXT_CANDIDATES") or 5),
         "current_freshness_window_seconds": int(os.getenv("WRITER3_CURRENT_FRESHNESS_WINDOW_SECONDS") or 600),
-        "request_timeout_seconds": float(os.getenv("WRITER3_REQUEST_TIMEOUT_SECONDS") or 60.0),
+        "request_timeout_seconds": float(
+            os.getenv("WRITER3_REQUEST_TIMEOUT_SECONDS") or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
+        ),
         "retry": {
             "max_attempts": int(os.getenv("WRITER3_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("WRITER3_BACKOFF_SECONDS") or 1.0),
@@ -852,7 +859,7 @@ class AuditorSettings(BaseModel):
     reasoning_effort: str = "medium"
     lookback_minutes: int = Field(default=120, ge=1, le=10080)
     max_items_per_run: int = Field(default=20, ge=1, le=200)
-    request_timeout_seconds: float = Field(default=60.0, gt=0.0, le=300.0)
+    request_timeout_seconds: float = Field(default=DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, gt=0.0, le=300.0)
     retry: RetrySettings = Field(default_factory=RetrySettings)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -887,7 +894,9 @@ def load_auditor_settings() -> AuditorSettings:
         "reasoning_effort": os.getenv("AUDITOR_REASONING_EFFORT") or "medium",
         "lookback_minutes": int(os.getenv("AUDITOR_LOOKBACK_MINUTES") or 120),
         "max_items_per_run": int(os.getenv("AUDITOR_MAX_ITEMS_PER_RUN") or 20),
-        "request_timeout_seconds": float(os.getenv("AUDITOR_REQUEST_TIMEOUT_SECONDS") or 60.0),
+        "request_timeout_seconds": float(
+            os.getenv("AUDITOR_REQUEST_TIMEOUT_SECONDS") or DEFAULT_AI_REQUEST_TIMEOUT_SECONDS
+        ),
         "retry": {
             "max_attempts": int(os.getenv("AUDITOR_MAX_ATTEMPTS") or 3),
             "backoff_seconds": float(os.getenv("AUDITOR_BACKOFF_SECONDS") or 1.0),

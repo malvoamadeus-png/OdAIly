@@ -190,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", help="Grok API key. Prefer GROK_API_KEY or config/grok_api_key.txt.")
     parser.add_argument("--api-key-file", default=str(DEFAULT_API_KEY_FILE))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=int, default=90)
     return parser
 
 
