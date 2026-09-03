@@ -125,6 +125,7 @@ class OpenAIResponsesClient:
                         model=model,
                         api_style=self.api_style,
                         url=url,
+                        timeout_seconds=self.timeout_seconds,
                         response=response if "response" in locals() else None,
                     )
                 )
@@ -242,6 +243,7 @@ class OpenAIResponsesClient:
                     fallback_exc,
                     model=model,
                     api_style=self.api_style,
+                    timeout_seconds=self.timeout_seconds,
                     chat_url=self._chat_completions_url(),
                     responses_url=responses_url,
                     chat_response=response,
@@ -352,12 +354,14 @@ def build_ai_error_message(
     model: str,
     api_style: OpenAIApiStyle,
     url: str,
+    timeout_seconds: float,
     response: requests.Response | None,
 ) -> str:
     details = [
         f"model={model}",
         f"api_style={api_style}",
         f"url={url}",
+        f"timeout_seconds={timeout_seconds:g}",
         f"error={exc}",
     ]
     if response is not None:
@@ -379,6 +383,7 @@ def build_ai_fallback_error_message(
     *,
     model: str,
     api_style: OpenAIApiStyle,
+    timeout_seconds: float,
     chat_url: str,
     responses_url: str,
     chat_response: requests.Response,
@@ -387,6 +392,7 @@ def build_ai_fallback_error_message(
     return (
         "OpenAI request failed after responses fallback: "
         f"model={model} api_style={api_style} "
+        f"timeout_seconds={timeout_seconds:g} "
         f"chat_url={chat_url} chat_error={primary_exc} "
         f"chat_status_code={chat_response.status_code} "
         f"chat_content_type={str(chat_response.headers.get('content-type') or '-').strip() or '-'} "

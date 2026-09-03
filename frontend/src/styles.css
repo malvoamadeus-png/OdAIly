@@ -3096,6 +3096,140 @@ textarea:focus {
   background: #f8fafb;
 }
 
+.taskDiagnostics {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8e2ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.taskDiagnostics.failure {
+  border-color: #f0c5c0;
+  background: #fffafa;
+}
+
+.taskDiagnostics.processing {
+  border-color: #e7d29f;
+  background: #fffdf5;
+}
+
+.taskDiagnosticsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.taskDiagnosticsHeader > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.taskDiagnosticsHeader span,
+.taskDiagnosticsGrid span,
+.taskDiagnosticsEvidence > span,
+.taskDiagnosticsQueue > span,
+.taskDiagnosticsWorker > span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.taskDiagnosticsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.taskDiagnosticsGrid div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e4e8ec;
+  border-radius: 6px;
+}
+
+.taskDiagnosticsGrid strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.taskDiagnosticsEvidence,
+.taskDiagnosticsQueue,
+.taskDiagnosticsWorker {
+  display: grid;
+  gap: 6px;
+}
+
+.taskDiagnosticsEvidence > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.taskDiagnosticsEvidence code {
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #f1f5f8;
+  color: #394150;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.taskDiagnosticsQueue,
+.taskDiagnosticsWorker {
+  padding-top: 8px;
+  border-top: 1px solid #edf0f3;
+}
+
+.taskDiagnosticsQueue small,
+.taskDiagnosticsWorker small {
+  color: #6b7280;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.taskDiagnosticsRaw summary {
+  width: fit-content;
+  color: #0f684a;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.taskDiagnosticsRaw pre {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #111827;
+  color: #e5e7eb;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.taskDiagnosticsLoading,
+.taskDiagnosticsError {
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: #6b7280;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.taskDiagnosticsError {
+  color: #b42318;
+  background: #fff1f0;
+}
+
 .taskTraceGrid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -4095,6 +4229,15 @@ textarea:focus {
   }
 
   .taskTableRow {
+    grid-template-columns: 1fr;
+  }
+
+  .taskDiagnosticsHeader {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .taskDiagnosticsGrid {
     grid-template-columns: 1fr;
   }
 

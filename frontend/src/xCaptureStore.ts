@@ -344,6 +344,57 @@ export type TaskPipelineSummary = {
   last_error: string | null;
 };
 
+export type TaskFailureDiagnostics = {
+  available: boolean;
+  task: {
+    id: number;
+    source: string;
+    source_item_id: string;
+    title: string | null;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    attempt_count: number;
+    locked_by: string | null;
+    locked_until: string | null;
+  };
+  diagnosis: {
+    kind: 'failure' | 'processing' | 'none';
+    stage: string;
+    stage_label: string;
+    code: string | null;
+    category: string | null;
+    category_label: string | null;
+    reason: string | null;
+    action_hint: string | null;
+    raw_error: string | null;
+    evidence: Record<string, string>;
+    retryable: boolean | null;
+  };
+  queue: {
+    id: number;
+    job_type: string;
+    source: string;
+    source_item_id: string;
+    status: string;
+    attempt_count: number;
+    last_error: string | null;
+    next_attempt_at: string | null;
+    created_at: string;
+    updated_at: string;
+  } | null;
+  worker: {
+    component: string;
+    worker_id: string;
+    status: string;
+    last_seen_at: string;
+    last_success_at: string | null;
+    last_error: string | null;
+    stale: boolean;
+  } | null;
+  handoff_summary: string;
+};
+
 export type PromptTemplate = {
   template_key: string;
   display_name: string;
@@ -1075,6 +1126,10 @@ async function consoleApiGet<T>(path: string): Promise<T> {
 
 export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashboard> {
   return consoleApiPost<PipelineTimingDashboard>('/console/pipeline-timing/get');
+}
+
+export async function getTaskFailureDiagnostics(taskId: number): Promise<TaskFailureDiagnostics> {
+  return consoleApiGet<TaskFailureDiagnostics>(`/console/failure-diagnostics/get?id=${encodeURIComponent(taskId)}`);
 }
 
 export type GateMarketMode = 'backend' | 'live';

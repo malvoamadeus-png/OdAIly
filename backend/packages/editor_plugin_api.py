@@ -31,6 +31,7 @@ from packages.competitor_monitor.blockbeats_key_config import (
     save_blockbeats_key,
 )
 from packages.editor_plugin_local_store import LocalEditorPluginStore
+from packages.failure_diagnostics import FailureDiagnosticsStore
 from packages.gate_market_broadcast.settings import load_gate_market_settings
 from packages.gate_market_broadcast.store import GateMarketStore
 from packages.meme_dashboard import MemeDashboardStore
@@ -370,7 +371,13 @@ class EditorPluginNewsGenService:
 
         create_console_auth_repository(database_url).init_schema()
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
-        self.console_data = ConsoleDataApi(load_storage_settings().sqlite_path)
+        storage_settings = load_storage_settings()
+        self.console_data = ConsoleDataApi(storage_settings.sqlite_path)
+        self.failure_diagnostics = FailureDiagnosticsStore(
+            storage_settings.sqlite_path,
+            self.paths.runtime_dir / "local_pipeline.sqlite",
+            storage_epoch=storage_settings.epoch,
+        )
         self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
         self.gate_market_store = GateMarketStore(load_gate_market_settings().database_path)
         self.gate_market_store.initialize()
@@ -482,6 +489,10 @@ class EditorPluginNewsGenService:
 
     def execute_console_data(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         return self.console_data.execute(payload)
+
+    def get_failure_diagnostics(self, actor: AuthenticatedEditor, task_id: int) -> dict[str, Any] | None:
+        del actor
+        return self.failure_diagnostics.get_task(task_id)
 
     def execute_newsflash_operations(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         action = str(payload.get("action") or "")
@@ -1019,6 +1030,25 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
             return
         parsed_path = urlparse(self.path)
+        if parsed_path.path == "/console/failure-diagnostics/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                raw_task_id = (parse_qs(parsed_path.query).get("id") or [""])[0]
+                try:
+                    task_id = int(raw_task_id)
+                except (TypeError, ValueError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "缺少有效的 task id"})
+                    return
+                diagnostics = self.server.service.get_failure_diagnostics(actor, task_id)
+                if diagnostics is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "任务不存在或诊断信息不可用"})
+                    return
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": diagnostics})
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
         if parsed_path.path == "/console/meme/get":
             try:
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))

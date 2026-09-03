@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Database,
   FileText,
   Globe2,
@@ -46,6 +47,7 @@ import {
   getMemeNarrativeDetail,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
+  getTaskFailureDiagnostics,
   getRuntimeRules,
   getKnownTitleSubjects,
   getPublisherRuleConfig,
@@ -102,6 +104,7 @@ import {
   type PublisherRuleProfileKey,
   type Settings,
   type TaskItem,
+  type TaskFailureDiagnostics,
   type WhaleWatchActivity,
   type WhaleWatchAddress,
   type WhaleWatchAddressPatch,
@@ -515,6 +518,31 @@ function taskTitleTrace(task: TaskItem): TitleTrace | null {
 
 function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string }) {
   const [expandedTaskId, setExpandedTaskId] = useState<number | null>(null);
+  const [diagnosticsByTaskId, setDiagnosticsByTaskId] = useState<Record<number, TaskFailureDiagnostics | null>>({});
+  const [diagnosticsErrorByTaskId, setDiagnosticsErrorByTaskId] = useState<Record<number, string>>({});
+  const [loadingDiagnosticsTaskId, setLoadingDiagnosticsTaskId] = useState<number | null>(null);
+
+  async function toggleTaskDetails(taskId: number): Promise<void> {
+    if (expandedTaskId === taskId) {
+      setExpandedTaskId(null);
+      return;
+    }
+    setExpandedTaskId(taskId);
+    if (Object.prototype.hasOwnProperty.call(diagnosticsByTaskId, taskId)) return;
+    setLoadingDiagnosticsTaskId(taskId);
+    try {
+      const diagnostics = await getTaskFailureDiagnostics(taskId);
+      setDiagnosticsByTaskId((current) => ({ ...current, [taskId]: diagnostics }));
+    } catch (error) {
+      setDiagnosticsErrorByTaskId((current) => ({
+        ...current,
+        [taskId]: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setLoadingDiagnosticsTaskId((current) => (current === taskId ? null : current));
+    }
+  }
+
   return (
     <div className="taskTable">
       <div className="taskTableHeader">
@@ -551,12 +579,20 @@ function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string 
                 <span className={isTaskStatusWarn(task.status) ? 'statusPill warn' : 'statusPill'}>{statusLabel}</span>
                 <span>{fmtTime(task.created_at)}</span>
                 {publisherExplanation && <span className="publisherReason">{publisherExplanation}</span>}
-                <button className="iconButton" type="button" title="查看处理详情" onClick={() => setExpandedTaskId(expanded ? null : task.id)}>
+                <button className="iconButton" type="button" title="查看处理详情" onClick={() => { void toggleTaskDetails(task.id); }}>
                   {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
               </div>
             </div>
-            {expanded && <TaskTraceDetails task={task} trace={trace} />}
+            {expanded && (
+              <TaskTraceDetails
+                task={task}
+                trace={trace}
+                diagnostics={diagnosticsByTaskId[task.id]}
+                diagnosticsError={diagnosticsErrorByTaskId[task.id]}
+                diagnosticsLoading={loadingDiagnosticsTaskId === task.id}
+              />
+            )}
           </div>
         );
       })}
@@ -2313,7 +2349,19 @@ function TaskOverviewPanel({
   );
 }
 
-function TaskTraceDetails({ task, trace }: { task: TaskItem; trace: TitleTrace | null }) {
+function TaskTraceDetails({
+  task,
+  trace,
+  diagnostics,
+  diagnosticsError,
+  diagnosticsLoading,
+}: {
+  task: TaskItem;
+  trace: TitleTrace | null;
+  diagnostics?: TaskFailureDiagnostics | null;
+  diagnosticsError?: string;
+  diagnosticsLoading?: boolean;
+}) {
   const pipeline = task.pipeline;
   const knownSubjects = trace?.matched_known_subjects || [];
   const titleRules = trace?.matched_title_rules || [];
@@ -2321,6 +2369,11 @@ function TaskTraceDetails({ task, trace }: { task: TaskItem; trace: TitleTrace |
   const judgeRuleVersion = typeof pipeline?.judge_output?.rule_version === 'string' ? pipeline.judge_output.rule_version : '-';
   return (
     <div className="taskTraceDetails">
+      <TaskFailureDiagnosticsPanel
+        diagnostics={diagnostics}
+        error={diagnosticsError}
+        loading={diagnosticsLoading}
+      />
       <div className="taskTraceGrid">
         <div><span>标题策略</span><strong>{trace?.title_strategy ? titleStrategyLabels[trace.title_strategy] || trace.title_strategy : '旧任务无标题溯源'}</strong></div>
         <div><span>特色模式</span><strong>{pipeline?.writer_feature_mode_enabled ? '已启用' : '未启用'} / {trace?.feature_mode_applied ? '实际采用' : '未采用'}</strong></div>
@@ -2336,6 +2389,105 @@ function TaskTraceDetails({ task, trace }: { task: TaskItem; trace: TitleTrace |
           {trace.feature_mode_applied && trace.feature_mode_reason && <p><strong>特色原因</strong>{trace.feature_mode_reason}</p>}
           <details><summary>查看原始溯源</summary><pre>{JSON.stringify(trace, null, 2)}</pre></details>
         </div>
+      )}
+    </div>
+  );
+}
+
+function TaskFailureDiagnosticsPanel({
+  diagnostics,
+  error,
+  loading,
+}: {
+  diagnostics?: TaskFailureDiagnostics | null;
+  error?: string;
+  loading?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  if (loading) {
+    return <div className="taskDiagnosticsLoading">失败诊断加载中。</div>;
+  }
+  if (error) {
+    return <div className="taskDiagnosticsError">失败诊断加载失败：{error}</div>;
+  }
+  if (!diagnostics) return null;
+
+  const { diagnosis, queue, worker } = diagnostics;
+  const isFailure = diagnosis.kind === 'failure';
+  const isProcessing = diagnosis.kind === 'processing';
+  if (diagnosis.kind === 'none') return null;
+  const handoffSummary = diagnostics.handoff_summary;
+  const evidence = Object.entries(diagnosis.evidence || {});
+  const evidenceLabels: Record<string, string> = {
+    model: '模型',
+    api_style: '接口风格',
+    endpoint: '端点',
+    http_status: 'HTTP',
+    timeout_seconds: '客户端超时',
+  };
+  const queueStatusLabel: Record<string, string> = {
+    pending: '待重试',
+    running: '执行中',
+    failed: '等待重试',
+    exhausted: '已耗尽重试',
+    succeeded: '已完成',
+  };
+
+  async function copyHandoffSummary(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(handoffSummary);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className={isFailure ? 'taskDiagnostics failure' : isProcessing ? 'taskDiagnostics processing' : 'taskDiagnostics'}>
+      <div className="taskDiagnosticsHeader">
+        <div>
+          <strong>{isFailure ? '失败诊断' : isProcessing ? '处理中诊断' : '执行诊断'}</strong>
+          <span>{diagnosis.stage_label} · {diagnosis.stage || '当前状态无阶段标识'}</span>
+        </div>
+        <button className="secondaryButton compact" type="button" onClick={() => { void copyHandoffSummary(); }}>
+          <Copy size={14} /> {copied ? '已复制' : isFailure ? '复制故障摘要' : '复制诊断摘要'}
+        </button>
+      </div>
+      <div className="taskDiagnosticsGrid">
+        <div><span>故障分类</span><strong>{diagnosis.category_label || '未记录'}</strong></div>
+        <div><span>故障代码</span><strong>{diagnosis.code || '—'}</strong></div>
+        <div><span>具体原因</span><strong>{diagnosis.reason || '—'}</strong></div>
+        <div><span>处理建议</span><strong>{diagnosis.action_hint || '—'}</strong></div>
+        <div><span>任务尝试</span><strong>{diagnostics.task.attempt_count} 次</strong></div>
+        <div><span>最近更新</span><strong>{fmtTime(diagnostics.task.updated_at)}</strong></div>
+      </div>
+      {evidence.length > 0 && (
+        <div className="taskDiagnosticsEvidence">
+          <span>可核对证据</span>
+          <div>{evidence.map(([key, value]) => <code key={key}>{evidenceLabels[key] || key}={value}</code>)}</div>
+        </div>
+      )}
+      {queue && (
+        <div className="taskDiagnosticsQueue">
+          <span>本地队列</span>
+          <strong>{queueStatusLabel[queue.status] || queue.status} · job {queue.id} · 已尝试 {queue.attempt_count} 次</strong>
+          {queue.next_attempt_at && queue.status !== 'exhausted' && <small>下次重试：{fmtTime(queue.next_attempt_at)}</small>}
+        </div>
+      )}
+      {worker && (isProcessing || worker.stale) && (
+        <div className="taskDiagnosticsWorker">
+          <span>Worker 状态</span>
+          <strong>{worker.stale ? '最近心跳已超时' : worker.status}</strong>
+          <small>最近心跳：{fmtTime(worker.last_seen_at)} · 最近成功：{fmtTime(worker.last_success_at)}</small>
+          {worker.last_error && <small>Worker 错误：{worker.last_error}</small>}
+        </div>
+      )}
+      {diagnosis.raw_error && (
+        <details className="taskDiagnosticsRaw">
+          <summary>查看原始错误</summary>
+          <pre>{diagnosis.raw_error}</pre>
+        </details>
       )}
     </div>
   );
