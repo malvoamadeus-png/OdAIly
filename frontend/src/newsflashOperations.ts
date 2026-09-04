@@ -15,6 +15,7 @@ export type FirstPublication = {
   sources: string[];
   event_id?: string;
   published_at?: string;
+  override_source?: string | null;
 };
 
 export type NewsflashRow = {
@@ -34,6 +35,7 @@ export type NewsflashRow = {
   contributor_person_key: string | null;
   contributor_name: string | null;
   contribution_type: 'regular' | 'night' | 'ppp';
+  first_source_override: string | null;
   quality_override: QualityOverride;
   source_snapshot_at: string | null;
   first_publication: FirstPublication;
@@ -212,7 +214,7 @@ export type EventPage = {
     competitor_source_count: number;
     has_odaily: number;
     odaily_published_at: string | null;
-    sources: Array<{ source: string; source_item_id: string; source_url: string | null; title: string | null; published_at: string | null }>;
+    sources: Array<{ source: string; source_item_id: string; source_url: string | null; media_url: string | null; title: string | null; published_at: string | null }>;
   }>;
 };
 

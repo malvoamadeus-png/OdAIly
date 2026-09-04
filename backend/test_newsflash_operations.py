@@ -94,6 +94,58 @@ class NewsflashOperationsTest(unittest.TestCase):
         asher = next(group for group in contributions["groups"] if group["person_key"] == "asher")
         self.assertEqual(asher["count"], 1)
 
+    def test_contribution_first_source_can_be_overridden_and_cleared(self) -> None:
+        self.add_reference("first-source-override", "可修正首发单位", "2026-08-10T10:00:00+08:00")
+        self.repository.upsert_source_facts([
+            {"source_item_id": "first-source-override", "operator_raw": "Z", "view_count": 100, "is_pushed": 0},
+        ])
+        self.repository.update_newsflash(
+            {
+                "source_item_id": "first-source-override",
+                "patch": {
+                    "is_contribution": True,
+                    "contributor_person_key": "asher",
+                    "first_source_override": "blockbeats",
+                },
+            },
+            actor_email="test@example.com",
+        )
+
+        contributions = self.repository.list_contributions({"week_start": "2026-08-10"})
+        item = next(group for group in contributions["groups"] if group["person_key"] == "asher")["items"][0]
+        self.assertEqual(item["first_publication"]["status"], "ready")
+        self.assertEqual(item["first_publication"]["label"], "BlockBeats")
+        self.assertEqual(item["first_publication"]["override_source"], "blockbeats")
+        filtered = self.repository.list_newsflashes({"first_status": "ready", "first_source": "blockbeats"})
+        self.assertEqual([row["source_item_id"] for row in filtered["items"]], ["first-source-override"])
+
+        self.repository.update_newsflash(
+            {"source_item_id": "first-source-override", "patch": {"first_source_override": None}},
+            actor_email="test@example.com",
+        )
+        cleared = self.repository.list_contributions({"week_start": "2026-08-10"})
+        cleared_item = next(group for group in cleared["groups"] if group["person_key"] == "asher")["items"][0]
+        self.assertEqual(cleared_item["first_publication"]["status"], "unmatched")
+        self.assertIsNone(cleared_item["first_publication"]["override_source"])
+
+        with self.assertRaises(ValueError):
+            self.repository.update_newsflash(
+                {"source_item_id": "first-source-override", "patch": {"first_source_override": "unknown"}},
+                actor_email="test@example.com",
+            )
+
+    def test_excluded_first_source_is_explicitly_labeled(self) -> None:
+        self.add_reference("excluded-first-source", "竞品排除快讯", "2026-08-10T10:00:00+08:00")
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "INSERT INTO newsflash_event_exclusions(source,source_item_id,title) VALUES (?,?,?)",
+                ("odaily", "excluded-first-source", "竞品排除快讯"),
+            )
+            conn.commit()
+
+        result = self.repository.list_newsflashes({"search": "excluded-first-source"})
+        self.assertEqual(result["items"][0]["first_publication"]["label"], "事件已排除（未参与事件归并）")
+
     def test_contribution_scores_use_all_pushed_baseline_and_exact_bands(self) -> None:
         references = [
             ("score-base-1", "Baseline one", "2026-08-10T08:00:00+08:00"),
@@ -606,6 +658,27 @@ class CompetitorEventSummaryTest(unittest.TestCase):
 
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["event_id"], event_id)
+
+    def test_event_sources_expose_media_url_separately_from_external_original(self) -> None:
+        external_url = "https://www.bitunix.com/news/bitunix-analyst"
+        media_url = "https://m.theblockbeats.info/flash/364350"
+        item = NewsflashItem(
+            source="blockbeats",
+            source_item_id="364350",
+            title="Bitunix分析师：非农只是第一道考验",
+            content="内容",
+            published_at="2026-09-04T08:49:00+00:00",
+            source_url=external_url,
+            raw_payload={"link": media_url},
+            metadata={},
+        )
+        records = self.repository.upsert_newsflash_items([item])
+        self.repository.create_event_with_source(records[0])
+
+        result = NewsflashOperationsRepository(self.path).list_events({})
+        source = result["items"][0]["sources"][0]
+        self.assertEqual(source["source_url"], external_url)
+        self.assertEqual(source["media_url"], media_url)
 
     def test_odaily_exclusion_is_removed_from_events_but_retained_for_pipeline(self) -> None:
         class Matcher:

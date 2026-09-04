@@ -279,6 +279,10 @@ body {
   min-width: 112px;
 }
 
+.firstSourceSelect {
+  min-width: 132px;
+}
+
 .inlineSelect:disabled {
   color: #8b949e;
   background: #f4f6f8;

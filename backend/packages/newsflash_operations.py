@@ -35,6 +35,22 @@ SOURCE_LABELS = {
     "panews": "PANews",
     "jinse": "金色财经",
 }
+SOURCE_MEDIA_DOMAINS = {
+    "odaily": ("odaily.news",),
+    "blockbeats": ("theblockbeats.info", "blockbeats.info"),
+    "panews": ("panewslab.com",),
+    "jinse": ("jinse.cn",),
+}
+SOURCE_MEDIA_URL_KEYS = (
+    "detail_url",
+    "detailUrl",
+    "media_url",
+    "mediaUrl",
+    "link",
+    "url",
+    "jump_url",
+    "jumpUrl",
+)
 QUALITY_FIRST_WEEK = date(2026, 8, 3)
 QUALITY_THRESHOLD_MULTIPLIER = 1.5
 QUALITY_KPI_PER_ITEM = 0.2
@@ -87,6 +103,7 @@ CREATE TABLE IF NOT EXISTS newsflash_operation_facts (
     is_contribution integer NOT NULL DEFAULT 0,
     contributor_person_key text REFERENCES newsflash_roster(person_key) ON DELETE SET NULL,
     contribution_type text NOT NULL DEFAULT 'regular',
+    first_source_override text,
     quality_override text NOT NULL DEFAULT 'none',
     source_snapshot_at text,
     attribution_checked_at text,
@@ -252,6 +269,8 @@ class NewsflashOperationsRepository:
             fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts)").fetchall()}
             if "quality_override" not in fact_columns:
                 conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN quality_override text NOT NULL DEFAULT 'none'")
+            if "first_source_override" not in fact_columns:
+                conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN first_source_override text")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS newsflash_event_exclusions("
                 "source text NOT NULL,source_item_id text NOT NULL,title text,matched_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,"
@@ -527,13 +546,72 @@ class NewsflashOperationsRepository:
             conn.commit()
         return self.list_roster()
 
+    @classmethod
+    def _source_media_url(
+        cls,
+        source: str,
+        source_item_id: str,
+        source_url: Any = None,
+        raw_payload: Any = None,
+    ) -> str | None:
+        source_key = str(source or "").strip().casefold()
+        domains = SOURCE_MEDIA_DOMAINS.get(source_key, ())
+        payload = _decode(raw_payload, {})
+        candidates: list[str] = []
+        if isinstance(payload, dict):
+            for key in SOURCE_MEDIA_URL_KEYS:
+                value = str(payload.get(key) or "").strip()
+                if value:
+                    candidates.append(value)
+        fallback_source_url = str(source_url or "").strip()
+        if fallback_source_url:
+            candidates.append(fallback_source_url)
+        for candidate in candidates:
+            try:
+                parsed = urlparse(candidate)
+            except ValueError:
+                continue
+            host = (parsed.hostname or "").casefold().removeprefix("www.")
+            if parsed.scheme in {"http", "https"} and cls._host_matches(host, domains):
+                return candidate
+
+        source_id = str(source_item_id or "").strip()
+        if not source_id or not all(character.isalnum() or character in {"-", "_"} for character in source_id):
+            return None
+        if source_key == "odaily":
+            return f"https://www.odaily.news/zh-CN/newsflash/{source_id}"
+        if source_key == "blockbeats" and source_id.isdigit():
+            return f"https://www.theblockbeats.info/flash/{source_id}"
+        if source_key == "panews" and source_id.isdigit():
+            return f"https://www.panewslab.com/zh/articledetails/{source_id}.html"
+        if source_key == "jinse" and source_id.isdigit():
+            return f"https://www.jinse.cn/lives/{source_id}.html"
+        return None
+
+    @staticmethod
+    def _first_source_override(conn, source_item_id: str) -> str | None:
+        row = conn.execute(
+            "SELECT first_source_override FROM newsflash_operation_facts WHERE source_item_id=?",
+            (source_item_id,),
+        ).fetchone()
+        value = str(row["first_source_override"] or "").strip().casefold() if row else ""
+        return value if value in SOURCE_LABELS else None
+
     def _event_info(self, conn, source_item_id: str) -> dict[str, Any]:
+        override_source = self._first_source_override(conn, source_item_id)
+        if override_source:
+            return {
+                "status": "ready",
+                "sources": [SOURCE_LABELS[override_source]],
+                "label": SOURCE_LABELS[override_source],
+                "override_source": override_source,
+            }
         excluded = conn.execute(
             "SELECT 1 FROM newsflash_event_exclusions WHERE source='odaily' AND source_item_id=?",
             (source_item_id,),
         ).fetchone() if self._table_exists(conn, "newsflash_event_exclusions") else None
         if excluded:
-            return {"status": "excluded", "sources": [], "label": "已排除"}
+            return {"status": "excluded", "sources": [], "label": "事件已排除（未参与事件归并）", "override_source": None}
         event = conn.execute(
             """
             SELECT e.* FROM newsflash_items i
@@ -545,19 +623,20 @@ class NewsflashOperationsRepository:
             (source_item_id,),
         ).fetchone() if self._table_exists(conn, "newsflash_events") else None
         if not event:
-            return {"status": "unmatched", "sources": [], "label": "未匹配到事件"}
+            return {"status": "unmatched", "sources": [], "label": "未匹配到事件", "override_source": None}
         first_sources = _decode(event["first_sources"], []) if "first_sources" in event.keys() else []
         if not first_sources and event["first_source"]:
             first_sources = [event["first_source"]]
         labels = _source_labels(first_sources)
         if not event["first_published_at"]:
-            return {"status": "insufficient", "sources": [], "label": "数据不足", "event_id": event["event_id"]}
+            return {"status": "insufficient", "sources": [], "label": "数据不足", "event_id": event["event_id"], "override_source": None}
         return {
             "status": "ready",
             "sources": labels,
             "label": "、".join(labels),
             "event_id": event["event_id"],
             "published_at": event["first_published_at"],
+            "override_source": None,
         }
 
     @staticmethod
@@ -608,25 +687,30 @@ class NewsflashOperationsRepository:
             exclusion_exists = "EXISTS(SELECT 1 FROM newsflash_event_exclusions x WHERE x.source='odaily' AND x.source_item_id=r.source_item_id)"
             event_exists = "EXISTS(SELECT 1 FROM newsflash_items ni JOIN newsflash_event_sources nes ON nes.item_id=ni.id JOIN newsflash_events ne ON ne.event_id=nes.event_id WHERE ni.source='odaily' AND ni.source_item_id=r.source_item_id AND ne.status='active')"
             if first_status == "excluded" and has_exclusions:
-                local_clauses.append(exclusion_exists)
+                local_clauses.append(f"({exclusion_exists} AND f.first_source_override IS NULL)")
             elif first_status == "unmatched" and has_events:
                 if has_exclusions:
                     local_clauses.append(f"NOT {exclusion_exists}")
-                local_clauses.append(f"NOT {event_exists}")
+                local_clauses.append(f"NOT {event_exists} AND f.first_source_override IS NULL")
             elif first_status in {"ready", "insufficient"} and has_events:
-                local_clauses.append(
+                event_status = "NOT NULL" if first_status == "ready" else "NULL"
+                event_clause = (
                     "EXISTS(SELECT 1 FROM newsflash_items ni JOIN newsflash_event_sources nes ON nes.item_id=ni.id "
                     "JOIN newsflash_events ne ON ne.event_id=nes.event_id WHERE ni.source='odaily' AND ni.source_item_id=r.source_item_id "
-                    f"AND ne.status='active' AND ne.first_published_at IS {'NOT NULL' if first_status == 'ready' else 'NULL'})"
+                    f"AND ne.status='active' AND ne.first_published_at IS {event_status})"
                 )
+                if first_status == "ready":
+                    local_clauses.append(f"(f.first_source_override IS NOT NULL OR {event_clause})")
+                else:
+                    local_clauses.append(f"(f.first_source_override IS NULL AND {event_clause})")
             first_source = str(payload.get("first_source") or "").strip()
             if first_source and has_events:
                 local_clauses.append(
-                    "EXISTS(SELECT 1 FROM newsflash_items ni JOIN newsflash_event_sources nes ON nes.item_id=ni.id "
+                    "(f.first_source_override=? OR EXISTS(SELECT 1 FROM newsflash_items ni JOIN newsflash_event_sources nes ON nes.item_id=ni.id "
                     "JOIN newsflash_events ne ON ne.event_id=nes.event_id WHERE ni.source='odaily' AND ni.source_item_id=r.source_item_id "
-                    "AND ne.status='active' AND (ne.first_source=? OR ne.first_sources LIKE ?))"
+                    "AND ne.status='active' AND (ne.first_source=? OR ne.first_sources LIKE ?)))"
                 )
-                local_params.extend([first_source, f'%"{first_source}"%'])
+                local_params.extend([first_source, first_source, f'%"{first_source}"%'])
             where = " AND ".join(local_clauses)
             total = int(conn.execute(
                 f"SELECT count(*) FROM odaily_reference_items r LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id WHERE {where}",
@@ -637,7 +721,7 @@ class NewsflashOperationsRepository:
                 SELECT r.source_item_id,r.source_url,r.title,r.published_at,r.updated_at AS reference_updated_at,
                        f.operator_raw,f.publisher_kind,f.publisher_person_key,f.publisher_locked,f.view_count,
                        f.is_pushed,f.pushed_at,f.is_contribution,f.contributor_person_key,f.contribution_type,
-                       f.quality_override,
+                       f.first_source_override,f.quality_override,
                        f.source_snapshot_at,f.updated_at AS operation_updated_at,
                        operator.display_name AS publisher_person_name,contributor.display_name AS contributor_name
                 FROM odaily_reference_items r
@@ -673,6 +757,7 @@ class NewsflashOperationsRepository:
             "publisher_kind",
             "publisher_person_key",
             "operator_raw",
+            "first_source_override",
             "quality_override",
         }
         if set(patch) - allowed:
@@ -689,6 +774,10 @@ class NewsflashOperationsRepository:
                 data["quality_override"] = str(data["quality_override"] or "none").strip().casefold()
                 if data["quality_override"] not in QUALITY_OVERRIDE_VALUES:
                     raise ValueError("invalid quality override")
+            if "first_source_override" in data:
+                data["first_source_override"] = str(data["first_source_override"] or "").strip().casefold() or None
+                if data["first_source_override"] and data["first_source_override"] not in SOURCE_LABELS:
+                    raise ValueError("invalid first source override")
             if "is_contribution" in data:
                 enabled = bool(data["is_contribution"])
                 data["is_contribution"] = int(enabled)
@@ -1069,6 +1158,9 @@ class NewsflashOperationsRepository:
 
     def _quality_first_publication(self, conn, source_item_id: str) -> tuple[dict[str, Any], list[str]]:
         info = self._event_info(conn, source_item_id)
+        override_source = self._first_source_override(conn, source_item_id)
+        if override_source:
+            return info, [override_source]
         if info.get("status") != "ready" or not self._table_exists(conn, "newsflash_events"):
             return info, []
         event = conn.execute(
@@ -1496,12 +1588,20 @@ class NewsflashOperationsRepository:
                 first_sources = _decode(event["first_sources"], []) if "first_sources" in event.keys() else ([event["first_source"]] if event["first_source"] else [])
                 sources = [dict(row) for row in conn.execute(
                     """
-                    SELECT i.source,i.source_item_id,i.source_url,i.title,i.published_at
+                    SELECT i.source,i.source_item_id,i.source_url,i.title,i.published_at,i.raw_payload
                     FROM newsflash_event_sources s JOIN newsflash_items i ON i.id=s.item_id
                     WHERE s.event_id=? ORDER BY CASE WHEN i.published_at IS NULL THEN 1 ELSE 0 END,datetime(i.published_at),i.id
                     """,
                     (event["event_id"],),
                 ).fetchall()]
+                for source in sources:
+                    source["media_url"] = self._source_media_url(
+                        source["source"],
+                        source["source_item_id"],
+                        source.get("source_url"),
+                        source.get("raw_payload"),
+                    )
+                    source.pop("raw_payload", None)
                 odaily = next((source for source in sources if source["source"] == "odaily"), None)
                 delay_minutes = None
                 if odaily and odaily["published_at"] and event["first_published_at"]:
