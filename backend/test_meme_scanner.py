@@ -51,6 +51,12 @@ def args(root: Path) -> argparse.Namespace:
 
 
 class MemeScannerTests(unittest.TestCase):
+    def test_normalize_chain_accepts_gmgn_evm_lookup_chains(self) -> None:
+        self.assertEqual(scanner.normalize_chain("robinhood"), "robinhood")
+        self.assertEqual(scanner.normalize_chain("base"), "base")
+        self.assertEqual(scanner.normalize_chain("ethereum"), "eth")
+        self.assertEqual(scanner.normalize_chain("eth"), "eth")
+
     def test_volume_ratio_gate_interpolates_by_market_cap(self) -> None:
         cases = (
             (0, 0.5),

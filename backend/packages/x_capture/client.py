@@ -13,8 +13,8 @@ from .models import CaptureRecord, TimelineAttempt, TweetCandidate
 from .token_identity import (
     TokenSymbolResolver,
     normalize_token_symbol,
-    replace_solana_ca_tokens,
-    resolve_solana_token_symbol_with_gmgn,
+    replace_token_ca_tokens,
+    resolve_token_symbol_with_gmgn,
 )
 
 
@@ -219,27 +219,28 @@ class FXTwitterClient:
         *,
         timeout_seconds: float = 20.0,
         user_agent: str = "odaily-x-capture/1.0",
-        solana_symbol_resolver: TokenSymbolResolver = resolve_solana_token_symbol_with_gmgn,
+        token_symbol_resolver: TokenSymbolResolver = resolve_token_symbol_with_gmgn,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.user_agent = user_agent
-        self.solana_symbol_resolver = solana_symbol_resolver
-        self._solana_symbol_cache: dict[str, str | None] = {}
-        self._solana_symbol_cache_lock = threading.Lock()
+        self.token_symbol_resolver = token_symbol_resolver
+        self._token_symbol_cache: dict[tuple[tuple[str, ...], str], str | None] = {}
+        self._token_symbol_cache_lock = threading.Lock()
 
-    def _resolve_solana_symbol(self, address: str) -> str | None:
-        with self._solana_symbol_cache_lock:
-            if address in self._solana_symbol_cache:
-                return self._solana_symbol_cache[address]
+    def _resolve_token_symbol(self, chains: tuple[str, ...], address: str) -> str | None:
+        cache_key = (chains, address.casefold())
+        with self._token_symbol_cache_lock:
+            if cache_key in self._token_symbol_cache:
+                return self._token_symbol_cache[cache_key]
             try:
-                symbol = normalize_token_symbol(self.solana_symbol_resolver(address))
+                symbol = normalize_token_symbol(self.token_symbol_resolver(chains, address))
             except Exception as exc:
                 print(
                     "[odaily] x-capture GMGN token identity lookup failed "
                     f"address={address} error={type(exc).__name__}: {str(exc)[:200]}"
                 )
                 symbol = None
-            self._solana_symbol_cache[address] = symbol
+            self._token_symbol_cache[cache_key] = symbol
             return symbol
 
     def _get_json(self, url: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -305,7 +306,7 @@ class FXTwitterClient:
         if not articles:
             articles = _find_articles(candidate.raw_payload)
         text, article_titles = _compose_x_content(post_text, articles)
-        text = replace_solana_ca_tokens(text, self._resolve_solana_symbol)
+        text = replace_token_ca_tokens(text, self._resolve_token_symbol)
         created_at = parse_twitter_created_at(str(detail.get("created_at") or candidate.created_at_raw or ""))
         media_urls = _media_urls(detail) or list(candidate.media_urls)
         metadata: dict[str, Any] = {

@@ -3,7 +3,10 @@ from unittest.mock import patch
 
 from packages.x_capture.client import FXTwitterClient
 from packages.x_capture.models import TweetCandidate
-from packages.x_capture.token_identity import resolve_solana_token_symbol_with_gmgn
+from packages.x_capture.token_identity import (
+    resolve_solana_token_symbol_with_gmgn,
+    resolve_token_symbol_with_gmgn,
+)
 
 
 def _candidate(text: str = "Outer post") -> TweetCandidate:
@@ -78,13 +81,13 @@ def test_build_record_keeps_plain_post_content_unchanged() -> None:
 
 def test_build_record_resolves_solana_ca_with_gmgn_symbol_resolver() -> None:
     address = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
-    calls: list[str] = []
+    calls: list[tuple[tuple[str, ...], str]] = []
 
-    def resolve_symbol(value: str) -> str | None:
-        calls.append(value)
+    def resolve_symbol(chains: tuple[str, ...], value: str) -> str | None:
+        calls.append((chains, value))
         return "TRUMP"
 
-    client = FXTwitterClient(solana_symbol_resolver=resolve_symbol)
+    client = FXTwitterClient(token_symbol_resolver=resolve_symbol)
     record = client.build_record(
         "lookonchain",
         _candidate(),
@@ -94,12 +97,12 @@ def test_build_record_resolves_solana_ca_with_gmgn_symbol_resolver() -> None:
     )
 
     assert record.text == "The Official Trump Meme Team transferred out another 11.01M TRUMP ($26.65M)."
-    assert calls == [address]
+    assert calls == [(("solana",), address)]
 
 
 def test_build_record_resolves_solana_ca_in_merged_article() -> None:
     address = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
-    client = FXTwitterClient(solana_symbol_resolver=lambda _: "TRUMP")
+    client = FXTwitterClient(token_symbol_resolver=lambda _chains, _address: "TRUMP")
     record = client.build_record(
         "lookonchain",
         _candidate(),
@@ -118,13 +121,13 @@ def test_build_record_resolves_solana_ca_in_merged_article() -> None:
 
 def test_build_record_caches_duplicate_solana_ca_and_keeps_unresolved_ca() -> None:
     address = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
-    calls: list[str] = []
+    calls: list[tuple[tuple[str, ...], str]] = []
 
-    def resolve_symbol(value: str) -> str | None:
-        calls.append(value)
+    def resolve_symbol(chains: tuple[str, ...], value: str) -> str | None:
+        calls.append((chains, value))
         return None
 
-    client = FXTwitterClient(solana_symbol_resolver=resolve_symbol)
+    client = FXTwitterClient(token_symbol_resolver=resolve_symbol)
     record = client.build_record(
         "lookonchain",
         _candidate(),
@@ -132,7 +135,7 @@ def test_build_record_caches_duplicate_solana_ca_and_keeps_unresolved_ca() -> No
     )
 
     assert record.text == f"solana:{address} then solana:{address}"
-    assert calls == [address]
+    assert calls == [(("solana",), address)]
 
 
 def test_gmgn_symbol_resolver_uses_solana_identity_lookup() -> None:
@@ -149,3 +152,58 @@ def test_gmgn_symbol_resolver_uses_solana_identity_lookup() -> None:
         allow_unknown_platform=True,
         identity_only=True,
     )
+
+
+def test_build_record_resolves_ethereum_ca_in_priority_chain_order() -> None:
+    address = "0x07f5b6823751c2e2cd4560f28af75ff887102241"
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    def resolve_symbol(chains: tuple[str, ...], value: str) -> str | None:
+        calls.append((chains, value))
+        return "PONS"
+
+    client = FXTwitterClient(token_symbol_resolver=resolve_symbol)
+    record = client.build_record(
+        "lookonchain",
+        _candidate(),
+        detail={"text": f"Unipcs holds ethereum:{address}."},
+    )
+
+    assert record.text == "Unipcs holds PONS."
+    assert calls == [(("robinhood", "bsc", "base", "eth"), address)]
+
+
+def test_build_record_resolves_solana_ca_without_evm_fallback() -> None:
+    address = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    def resolve_symbol(chains: tuple[str, ...], value: str) -> str | None:
+        calls.append((chains, value))
+        return "TRUMP"
+
+    client = FXTwitterClient(token_symbol_resolver=resolve_symbol)
+    record = client.build_record(
+        "lookonchain",
+        _candidate(),
+        detail={"text": f"The token is solana:{address}."},
+    )
+
+    assert record.text == "The token is TRUMP."
+    assert calls == [(("solana",), address)]
+
+
+def test_gmgn_symbol_resolver_falls_back_across_evm_chains() -> None:
+    address = "0x07f5b6823751c2e2cd4560f28af75ff887102241"
+    responses = iter([None, None, None, SimpleNamespace(symbol="$PONS")])
+    with patch(
+        "packages.meme_scanner.scanner.fetch_gmgn_token_info",
+        side_effect=lambda value, chain, **kwargs: next(responses),
+    ) as lookup:
+        assert resolve_token_symbol_with_gmgn(("robinhood", "bsc", "base", "eth"), address) == "PONS"
+
+    assert [call.args[:2] for call in lookup.call_args_list] == [
+        (address, "robinhood"),
+        (address, "bsc"),
+        (address, "base"),
+        (address, "eth"),
+    ]

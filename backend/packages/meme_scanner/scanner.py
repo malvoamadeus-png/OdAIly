@@ -31,7 +31,7 @@ from .okx_web import OKXMemeWebClient
 
 
 CHAIN = "bsc"
-SUPPORTED_CHAINS = {"bsc", "robinhood", "solana"}
+SUPPORTED_CHAINS = {"bsc", "robinhood", "solana", "base", "eth"}
 MARKET_CAP_GATE = 500_000.0
 MARKET_CAP_GATES = {"bsc": 500_000.0, "robinhood": 1_000_000.0, "solana": 500_000.0}
 MARKET_CAP_LEVELS_BY_CHAIN = {
@@ -181,6 +181,10 @@ def normalize_chain(value: Any, *, default: str = CHAIN) -> str:
         return "robinhood"
     if normalized in {"bsc", "bnb", "bnb-chain", "binance-smart-chain"}:
         return "bsc"
+    if normalized in {"base", "base-chain", "basechain"}:
+        return "base"
+    if normalized in {"eth", "ethereum", "ethereum-mainnet"}:
+        return "eth"
     return default if default in SUPPORTED_CHAINS else CHAIN
 
 

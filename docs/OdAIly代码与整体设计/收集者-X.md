@@ -47,8 +47,8 @@ worker 启动时加载配置。运行中不再保留专门的数据库监听连�
 
 代币身份标准化规则：
 
-- FXTwitter 偶尔会把 X 的代币实体解析成 `solana:<CA>`，而不是原文中的 `$SYMBOL`；收集者-X 在生成 `tasks.content` 前，会识别 Solana CA，并通过现有 GMGN CLI 查询代币身份。
-- GMGN 返回有效 symbol 时，只替换正文和合并后的 X Article 中完整的 `solana:<CA>` 片段；symbol 前的 `$` 或 `#` 会被去掉，查询失败、CLI 不可用或返回未知 symbol 时保留原始 CA 文本。
+- FXTwitter 偶尔会把 X 的代币实体解析成 `solana:<CA>` 或 `ethereum:0x<CA>`，而不是原文中的 `$SYMBOL`；收集者-X 在生成 `tasks.content` 前，会识别这些 CA，并通过现有 GMGN CLI 查询代币身份。
+- `solana:<CA>` 直接查询 Solana；其他 EVM CA 按 `robinhood -> bsc -> base -> eth` 顺序查询，第一个返回有效 symbol 的链生效。GMGN 返回有效 symbol 时，只替换正文和合并后的 X Article 中完整的 CA 片段；symbol 前的 `$` 或 `#` 会被去掉，查询失败、CLI 不可用或返回未知 symbol 时保留原始 CA 文本。
 - 同一收集进程会缓存 CA 查询结果，避免一条帖子或同一轮重复调用 GMGN；查询仍复用 `meme_scanner` 的 CLI 节流与退避规则，身份查询失败不会阻断 X 内容入库。
 - `tasks.raw_payload` 保留 FXTwitter 返回的原始文本；只有供判断者、编写者和后续链路使用的 `tasks.content` 做身份标准化。
 
