@@ -654,6 +654,83 @@ body {
   margin-top: 6px;
 }
 
+.contributionMonthlyMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 14px 0 10px;
+  color: #66717d;
+  font-size: 12px;
+}
+
+.contributionMonthlyTableWrap {
+  overflow-x: auto;
+}
+
+.contributionMonthlyTable {
+  min-width: 1160px;
+}
+
+.contributionMonthlyTable th {
+  min-width: 92px;
+  padding: 8px 7px;
+}
+
+.contributionMonthlyTable thead tr:first-child th {
+  position: static;
+  background: #e8f0ef;
+  color: #31574d;
+}
+
+.contributionMonthlyTable thead tr:first-child th:first-child,
+.contributionMonthlyTable thead tr:first-child th:last-child {
+  background: #dcebe7;
+}
+
+.contributionMonthlyTable thead tr:first-child th span,
+.contributionMonthlyTable thead tr:first-child th small {
+  display: block;
+}
+
+.contributionMonthlyTable thead tr:first-child th small {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.monthlyWeekReady {
+  color: #08775a;
+}
+
+.monthlyWeekInsufficient {
+  color: #a35d3d;
+}
+
+.contributionMonthlyTable thead tr:nth-child(2) th {
+  position: static;
+  min-width: 78px;
+  background: #f3f6f7;
+}
+
+.contributionMonthlyTable thead tr:first-child th:first-child,
+.contributionMonthlyTable tbody td:first-child {
+  min-width: 110px;
+}
+
+.monthlyPersonCell {
+  background: #fbfcfc;
+}
+
+.monthlyTotalScore {
+  font-size: 15px;
+}
+
+.contributionMonthlyFootnote {
+  margin-top: 8px;
+  color: #7b8793;
+  font-size: 12px;
+}
+
 .qualityMetrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));

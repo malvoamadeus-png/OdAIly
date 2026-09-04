@@ -160,6 +160,42 @@ export type ContributionsPayload = {
   }>;
 };
 
+export type ContributionsMonthlyPayload = {
+  report_month: string;
+  in_progress: boolean;
+  insufficient_week_count: number;
+  weeks: Array<{
+    week_start: string;
+    week_end: string;
+    status: 'ready' | 'insufficient';
+    in_progress: boolean;
+    baseline: {
+      pushed_count: number;
+      known_view_count: number;
+      average_views: number | null;
+    };
+  }>;
+  people: Array<{
+    person_key: string;
+    display_name: string;
+    count: number;
+    total_views: number;
+    average_views: number | null;
+    view_coverage: { known: number; total: number };
+    total_score: number;
+    weeks: Array<{
+      week_start: string;
+      week_end: string;
+      status: 'ready' | 'insufficient';
+      count: number;
+      total_views: number;
+      average_views: number | null;
+      view_coverage: { known: number; total: number };
+      total_score: number;
+    }>;
+  }>;
+};
+
 export type EventPage = {
   page: number;
   pages: number;

@@ -271,6 +271,51 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(weeks, ["2026-06-29", "2026-07-06", "2026-07-13", "2026-07-20"])
         self.assertEqual(len(dates), 28)
 
+    def test_monthly_contributions_aggregate_week_scores_and_known_views(self) -> None:
+        references = [
+            ("monthly-base-1", "Week one baseline", "2026-07-06T08:00:00+08:00"),
+            ("monthly-contribution-1", "Week one contribution", "2026-07-06T09:00:00+08:00"),
+            ("monthly-base-2", "Week two baseline", "2026-07-13T08:00:00+08:00"),
+            ("monthly-contribution-2", "Week two contribution", "2026-07-13T09:00:00+08:00"),
+        ]
+        for values in references:
+            self.add_reference(*values)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "monthly-base-1", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "monthly-contribution-1", "operator_raw": "Z", "view_count": 100, "is_pushed": 0},
+            {"source_item_id": "monthly-base-2", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "monthly-contribution-2", "operator_raw": "Z", "view_count": 300, "is_pushed": 0},
+        ])
+        self.assign_morning("2026-07-06")
+        self.assign_morning("2026-07-13")
+        for source_item_id in ("monthly-contribution-1", "monthly-contribution-2"):
+            self.repository.update_newsflash(
+                {
+                    "source_item_id": source_item_id,
+                    "patch": {"is_contribution": True, "contributor_person_key": "asher", "contribution_type": "regular"},
+                },
+                actor_email="test@example.com",
+            )
+        self.repository.save_week_month(
+            {"week_start": "2026-06-29", "report_month": "2026-07"},
+            actor_email="test@example.com",
+        )
+
+        result = self.repository.list_contributions_monthly({"report_month": "2026-07"})
+
+        self.assertEqual(
+            [week["week_start"] for week in result["weeks"]],
+            ["2026-06-29", "2026-07-06", "2026-07-13", "2026-07-20"],
+        )
+        asher = next(person for person in result["people"] if person["person_key"] == "asher")
+        weekly = {week["week_start"]: week for week in asher["weeks"]}
+        self.assertEqual(weekly["2026-07-06"]["total_score"], 0.5)
+        self.assertEqual(weekly["2026-07-13"]["total_score"], 1.5)
+        self.assertEqual(asher["count"], 2)
+        self.assertEqual(asher["total_views"], 400)
+        self.assertEqual(asher["average_views"], 200)
+        self.assertEqual(asher["total_score"], 2)
+
     def test_xlsx_import_updates_existing_rows_and_skips_missing_ids(self) -> None:
         self.add_reference("30", "Old title", "2026-07-20T08:00:00+08:00")
         workbook = Workbook()

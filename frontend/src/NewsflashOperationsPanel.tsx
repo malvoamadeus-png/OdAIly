@@ -13,6 +13,7 @@ import {
 import {
   newsflashOperations,
   type ContributionsPayload,
+  type ContributionsMonthlyPayload,
   type EventPage,
   type NewsflashPage,
   type NewsflashRow,
@@ -412,30 +413,68 @@ function QualityTable({ items, excluded, onOverride }: { items: QualityItem[]; e
 }
 
 function Contributions({ people, refreshToken, onError, onMessage }: { people: Person[]; refreshToken: number; onError: (value: string) => void; onMessage: (value: string) => void }) {
+  const [mode, setMode] = useState<'week' | 'month'>('week');
   const [week, setWeek] = useState(mondayKey());
+  const [month, setMonth] = useState(currentMonth());
   const [data, setData] = useState<ContributionsPayload | null>(null);
-  async function load() {
+  const [monthlyData, setMonthlyData] = useState<ContributionsMonthlyPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  async function loadWeek() {
+    setLoading(true);
     onError('');
     try { setData(await newsflashOperations<ContributionsPayload>('contributions', { week_start: week })); }
     catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setLoading(false); }
   }
-  useEffect(() => { void load(); }, [week, refreshToken]);
-  async function patch(sourceItemId: string, patchValue: Record<string, unknown>) { try { await newsflashOperations('update', { source_item_id: sourceItemId, patch: patchValue }); onMessage(`快讯 ${sourceItemId} 已保存`); await load(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
+  async function loadMonth() {
+    setLoading(true);
+    onError('');
+    try { setMonthlyData(await newsflashOperations<ContributionsMonthlyPayload>('contributions_month', { report_month: month })); }
+    catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void (mode === 'week' ? loadWeek() : loadMonth()); }, [mode, week, month, refreshToken]);
+  async function patch(sourceItemId: string, patchValue: Record<string, unknown>) { try { await newsflashOperations('update', { source_item_id: sourceItemId, patch: patchValue }); onMessage(`快讯 ${sourceItemId} 已保存`); await loadWeek(); } catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); } }
   const contributors = people.filter((person) => person.active && person.contributor_enabled);
   return <section className="newsflashSection">
-    <div className="sectionCommandBar"><div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div>{data?.in_progress && <span className="statusText ready">本周进行中</span>}</div>
-    {data && <div className="contributionBaseline">
-      <div><span>本周 A（推送浏览量均值）</span><strong>{scoreValue(data.baseline.average_views)}</strong><small>{data.baseline.known_view_count}/{data.baseline.pushed_count} 条推送快讯有浏览量</small></div>
-      <div><span>基准样本</span><strong>{data.baseline.pushed_count}</strong><small>仅推送快讯进入 A</small></div>
-      <div><span>计分方式</span><strong>基础分封顶 5</strong><small>常规 &gt;2A 每条额外 +0.5</small></div>
-    </div>}
-    {data?.status === 'insufficient' && <div className="notice error">本周没有已知浏览量的推送快讯，A 暂不可计算；常规贡献快讯记 0 分，夜间 / PPP 仍记 0.5 分。</div>}
-    {data && <details className="qualityRules contributionRules"><summary>查看贡献快讯评分规则</summary><p>按北京时间自然周统计。常规快讯：低于 0.5A 为 0 分，0.5A（含）至 0.75A（不含）为 0.25 分，0.75A（含）至 2A（含）为 0.5 分，超过 2A 为基础分 1 分并额外奖励 0.5 分。</p><p>夜间 / PPP 固定 0.5 分，超过 2A 不额外奖励。每人基础分先封顶 5 分，再叠加常规超 2A 奖励；常规浏览量未知时记 0 分。</p></details>}
-    <div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}>
-      <div className="contributionGroupHeader"><h2>{group.display_name}</h2><div className="contributionStats"><span><strong>{group.count}</strong> 条</span><span><strong>{group.total_views.toLocaleString()}</strong> 总浏览量</span><span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong> 平均</span><span>基础分 <strong>{scoreValue(group.base_score_capped)}</strong><small>（原始 {scoreValue(group.base_score_total)}）</small></span><span>超 2A 奖励 <strong>{scoreValue(group.high_view_bonus)}</strong><small>（{group.high_view_bonus_count} 条）</small></span><span className="contributionTotalScore">总分 <strong>{scoreValue(group.total_score)}</strong></span></div></div>
-      {group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable contributionScoreTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>基础分</th><th>超2A奖励</th><th>计入分数</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td className="numberCell">{scoreValue(item.base_score)}</td><td className="numberCell">{scoreValue(item.high_view_bonus)}</td><td className="numberCell contributionItemScore">{scoreValue(item.score)}</td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}
-    </section>)}</div>
+    <div className="sectionCommandBar"><div className="segmentedControl" aria-label="贡献快讯显示范围"><button type="button" className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>按周明细</button><button type="button" className={mode === 'month' ? 'active' : ''} onClick={() => setMode('month')}>月度总览</button></div>{mode === 'week' ? <div className="weekPicker"><label><span>统计周</span><input type="date" value={week} onChange={(event) => setWeek(mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)))} /></label><span className="periodHint">{formatWeekLabel(week)}</span></div> : <label><span>统计月份</span><input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>}{mode === 'week' && data?.in_progress && <span className="statusText ready">本周进行中</span>}{mode === 'month' && monthlyData?.in_progress && <span className="statusText ready">当月包含进行中的周</span>}</div>
+    {loading && <div className="emptyInline">正在加载贡献快讯数据…</div>}
+    {!loading && mode === 'month' && monthlyData && <ContributionMonthlyOverview data={monthlyData} />}
+    {!loading && mode === 'week' && <>
+      {data && <div className="contributionBaseline">
+        <div><span>本周 A（推送浏览量均值）</span><strong>{scoreValue(data.baseline.average_views)}</strong><small>{data.baseline.known_view_count}/{data.baseline.pushed_count} 条推送快讯有浏览量</small></div>
+        <div><span>基准样本</span><strong>{data.baseline.pushed_count}</strong><small>仅推送快讯进入 A</small></div>
+        <div><span>计分方式</span><strong>基础分封顶 5</strong><small>常规 &gt;2A 每条额外 +0.5</small></div>
+      </div>}
+      {data?.status === 'insufficient' && <div className="notice error">本周没有已知浏览量的推送快讯，A 暂不可计算；常规贡献快讯记 0 分，夜间 / PPP 仍记 0.5 分。</div>}
+      {data && <details className="qualityRules contributionRules"><summary>查看贡献快讯评分规则</summary><p>按北京时间自然周统计。常规快讯：低于 0.5A 为 0 分，0.5A（含）至 0.75A（不含）为 0.25 分，0.75A（含）至 2A（含）为 0.5 分，超过 2A 为基础分 1 分并额外奖励 0.5 分。</p><p>夜间 / PPP 固定 0.5 分，超过 2A 不额外奖励。每人基础分先封顶 5 分，再叠加常规超 2A 奖励；常规浏览量未知时记 0 分。</p></details>}
+      <div className="contributionGroups">{(data?.groups || []).map((group) => <section className="contributionGroup" key={group.person_key}>
+        <div className="contributionGroupHeader"><h2>{group.display_name}</h2><div className="contributionStats"><span><strong>{group.count}</strong> 条</span><span><strong>{group.total_views.toLocaleString()}</strong> 总浏览量</span><span><strong>{group.average_views == null ? '—' : group.average_views.toLocaleString()}</strong> 平均</span><span>基础分 <strong>{scoreValue(group.base_score_capped)}</strong><small>（原始 {scoreValue(group.base_score_total)}）</small></span><span>超 2A 奖励 <strong>{scoreValue(group.high_view_bonus)}</strong><small>（{group.high_view_bonus_count} 条）</small></span><span className="contributionTotalScore">总分 <strong>{scoreValue(group.total_score)}</strong></span></div></div>
+        {group.items.length ? <div className="newsflashTableWrap"><table className="newsflashTable contributionScoreTable"><thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>基础分</th><th>超2A奖励</th><th>计入分数</th><th>首发单位</th></tr></thead><tbody>{group.items.map((item) => <tr key={item.source_item_id}><td>{item.source_item_id}</td><td className="titleColumn">{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</td><td className="numberCell">{item.view_count == null ? '—' : item.view_count.toLocaleString()}</td><td><select className="inlineSelect" value={item.contributor_person_key} onChange={(event) => void patch(item.source_item_id, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td><td><select className="inlineSelect" value={item.contribution_type} onChange={(event) => void patch(item.source_item_id, { contribution_type: event.target.value })}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td><td className="numberCell">{scoreValue(item.base_score)}</td><td className="numberCell">{scoreValue(item.high_view_bonus)}</td><td className="numberCell contributionItemScore">{scoreValue(item.score)}</td><td>{item.first_publication.label}</td></tr>)}</tbody></table></div> : <div className="emptyInline">本周 0 条</div>}
+      </section>)}</div>
+    </>}
   </section>;
+}
+
+function formatWeekRange(weekStart: string, weekEnd: string): string {
+  const [, startMonth, startDay] = weekStart.split('-').map(Number);
+  const [, endMonth, endDay] = weekEnd.split('-').map(Number);
+  return `${startMonth}月${startDay}日 - ${endMonth}月${endDay}日`;
+}
+
+function monthlyAverage(value: number | null, viewCoverage: { known: number; total: number }) {
+  if (value == null) return '—';
+  const known = coverage(viewCoverage);
+  return <>{value.toLocaleString()} {known && <small>{known}</small>}</>;
+}
+
+function ContributionMonthlyOverview({ data }: { data: ContributionsMonthlyPayload }) {
+  return <>
+    <div className="contributionMonthlyMeta"><span>共 {data.weeks.length} 个归属周</span><span>月度总分 = 各归属周人员总分相加</span><span>平均浏览量仅按已知浏览量计算</span></div>
+    {data.insufficient_week_count > 0 && <div className="notice error">{data.insufficient_week_count} 个周没有可计算 A 的已知推送浏览量；这些周的常规贡献快讯记 0 分，夜间 / PPP 仍按 0.5 分计。</div>}
+    <div className="newsflashTableWrap contributionMonthlyTableWrap"><table className="newsflashTable contributionMonthlyTable"><thead><tr><th rowSpan={2}>人员</th>{data.weeks.map((week) => <th colSpan={4} key={week.week_start}><span>{formatWeekRange(week.week_start, week.week_end)}</span><small className={week.status === 'ready' ? 'monthlyWeekReady' : 'monthlyWeekInsufficient'}>{week.status === 'ready' ? 'A可用' : 'A不足'}</small></th>)}<th colSpan={4}>月份合计</th></tr><tr>{data.weeks.map((week) => [<th key={`${week.week_start}:count`}>条数</th>, <th key={`${week.week_start}:score`}>总分</th>, <th key={`${week.week_start}:views`}>总浏览量</th>, <th key={`${week.week_start}:average`}>平均浏览量</th>])}<th>条数</th><th>总分</th><th>总浏览量</th><th>平均浏览量</th></tr></thead><tbody>{data.people.map((person) => <tr key={person.person_key}><td className="monthlyPersonCell"><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></td>{data.weeks.map((week) => { const metrics = person.weeks.find((item) => item.week_start === week.week_start); return [<td className="numberCell" key={`${person.person_key}:${week.week_start}:count`}>{metrics?.count ?? 0}</td>, <td className="numberCell contributionItemScore" key={`${person.person_key}:${week.week_start}:score`}>{scoreValue(metrics?.total_score ?? 0)}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:views`}>{(metrics?.total_views ?? 0).toLocaleString()}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:average`}>{monthlyAverage(metrics?.average_views ?? null, metrics?.view_coverage || { known: 0, total: 0 })}</td>]; })}<td className="numberCell">{person.count}</td><td className="numberCell contributionItemScore monthlyTotalScore">{scoreValue(person.total_score)}</td><td className="numberCell">{person.total_views.toLocaleString()}</td><td className="numberCell">{monthlyAverage(person.average_views, person.view_coverage)}</td></tr>)}</tbody></table>{!data.people.length && <div className="emptyInline">当前月份没有启用的贡献者</div>}</div>
+    <div className="contributionMonthlyFootnote">周列按自然周展示，跨月周只有被排班表归属到本月时才会计入；月度总分不会把所有快讯跨周重新套用同一个 A。</div>
+  </>;
 }
 
 function Events({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {

@@ -284,6 +284,7 @@ class NewsflashOperationsRepository:
             "summary": self.get_summary,
             "quality": self.get_quality,
             "contributions": self.list_contributions,
+            "contributions_month": self.list_contributions_monthly,
             "events": self.list_events,
         }
         handler = handlers.get(action)
@@ -1287,40 +1288,38 @@ class NewsflashOperationsRepository:
                 "groups": groups,
             }
 
-    def list_contributions(self, payload: dict[str, Any]) -> dict[str, Any]:
-        start = _week_start(date.fromisoformat(str(payload.get("week_start") or _week_start(datetime.now(SHANGHAI_TZ).date()))))
+    def _list_contributions_for_week(self, conn, start: date) -> dict[str, Any]:
         end = start + timedelta(days=7)
-        with connect_sqlite(self.path) as conn:
-            period_start = datetime.combine(start, time(0, 0), SHANGHAI_TZ).isoformat()
-            period_end = datetime.combine(end, time(0, 0), SHANGHAI_TZ).isoformat()
-            baseline_rows = conn.execute(
-                """
-                SELECT f.view_count
-                FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
-                WHERE f.is_pushed=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
-                """,
-                (period_start, period_end),
-            ).fetchall()
-            baseline_views = [int(row["view_count"]) for row in baseline_rows if row["view_count"] is not None]
-            average_views = sum(baseline_views) / len(baseline_views) if baseline_views else None
-            people = [dict(row) for row in conn.execute(
-                "SELECT person_key,display_name FROM newsflash_roster WHERE active=1 AND contributor_enabled=1 ORDER BY display_name COLLATE NOCASE"
-            ).fetchall()]
-            rows = [dict(row) for row in conn.execute(
-                """
-                SELECT r.source_item_id,r.source_url,r.title,r.published_at,f.view_count,f.contribution_type,
-                       f.contributor_person_key,p.display_name AS contributor_name
-                FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
-                JOIN newsflash_roster p ON p.person_key=f.contributor_person_key
-                WHERE f.is_contribution=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
-                ORDER BY p.display_name COLLATE NOCASE,datetime(r.published_at) DESC
-                """,
-                (period_start, period_end),
-            ).fetchall()]
-            for row in rows:
-                row["first_publication"] = self._event_info(conn, str(row["source_item_id"]))
-                score = self._contribution_score(row["view_count"], row["contribution_type"], average_views)
-                row.update(score)
+        period_start = datetime.combine(start, time(0, 0), SHANGHAI_TZ).isoformat()
+        period_end = datetime.combine(end, time(0, 0), SHANGHAI_TZ).isoformat()
+        baseline_rows = conn.execute(
+            """
+            SELECT f.view_count
+            FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
+            WHERE f.is_pushed=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
+            """,
+            (period_start, period_end),
+        ).fetchall()
+        baseline_views = [int(row["view_count"]) for row in baseline_rows if row["view_count"] is not None]
+        average_views = sum(baseline_views) / len(baseline_views) if baseline_views else None
+        people = [dict(row) for row in conn.execute(
+            "SELECT person_key,display_name FROM newsflash_roster WHERE active=1 AND contributor_enabled=1 ORDER BY display_name COLLATE NOCASE"
+        ).fetchall()]
+        rows = [dict(row) for row in conn.execute(
+            """
+            SELECT r.source_item_id,r.source_url,r.title,r.published_at,f.view_count,f.contribution_type,
+                   f.contributor_person_key,p.display_name AS contributor_name
+            FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
+            JOIN newsflash_roster p ON p.person_key=f.contributor_person_key
+            WHERE f.is_contribution=1 AND datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
+            ORDER BY p.display_name COLLATE NOCASE,datetime(r.published_at) DESC
+            """,
+            (period_start, period_end),
+        ).fetchall()]
+        for row in rows:
+            row["first_publication"] = self._event_info(conn, str(row["source_item_id"]))
+            score = self._contribution_score(row["view_count"], row["contribution_type"], average_views)
+            row.update(score)
         groups = []
         for person in people:
             items = [row for row in rows if row["contributor_person_key"] == person["person_key"]]
@@ -1353,6 +1352,73 @@ class NewsflashOperationsRepository:
                 "average_views": average_views,
             },
             "groups": groups,
+        }
+
+    def list_contributions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        start = _week_start(date.fromisoformat(str(payload.get("week_start") or _week_start(datetime.now(SHANGHAI_TZ).date()))))
+        with connect_sqlite(self.path) as conn:
+            return self._list_contributions_for_week(conn, start)
+
+    def list_contributions_monthly(self, payload: dict[str, Any]) -> dict[str, Any]:
+        report_month = str(payload.get("report_month") or datetime.now(SHANGHAI_TZ).strftime("%Y-%m")).strip()
+        with connect_sqlite(self.path) as conn:
+            _, period_label, week_keys = self._period_dates(conn, {"report_month": report_month})
+            weekly_results = [
+                self._list_contributions_for_week(conn, date.fromisoformat(week_key))
+                for week_key in week_keys
+            ]
+            people = [dict(row) for row in conn.execute(
+                "SELECT person_key,display_name FROM newsflash_roster WHERE active=1 AND contributor_enabled=1 ORDER BY display_name COLLATE NOCASE"
+            ).fetchall()]
+
+        weekly_by_person = {
+            person["person_key"]: [
+                {
+                    "week_start": result["week_start"],
+                    "week_end": result["week_end"],
+                    "status": result["status"],
+                    "count": group["count"],
+                    "total_views": group["total_views"],
+                    "average_views": group["average_views"],
+                    "view_coverage": group["view_coverage"],
+                    "total_score": group["total_score"],
+                }
+                for result in weekly_results
+                for group in result["groups"]
+                if group["person_key"] == person["person_key"]
+            ]
+            for person in people
+        }
+        monthly_people = []
+        for person in people:
+            weekly = weekly_by_person[person["person_key"]]
+            known_views = sum(item["view_coverage"]["known"] for item in weekly)
+            total_items = sum(item["view_coverage"]["total"] for item in weekly)
+            total_views = sum(item["total_views"] for item in weekly)
+            monthly_people.append({
+                **person,
+                "count": sum(item["count"] for item in weekly),
+                "total_views": total_views,
+                "average_views": round(total_views / known_views, 1) if known_views else None,
+                "view_coverage": {"known": known_views, "total": total_items},
+                "total_score": round(sum(float(item["total_score"]) for item in weekly), 10),
+                "weeks": weekly,
+            })
+        return {
+            "report_month": period_label,
+            "in_progress": any(result["in_progress"] for result in weekly_results),
+            "insufficient_week_count": sum(1 for result in weekly_results if result["status"] == "insufficient"),
+            "weeks": [
+                {
+                    "week_start": result["week_start"],
+                    "week_end": result["week_end"],
+                    "status": result["status"],
+                    "in_progress": result["in_progress"],
+                    "baseline": result["baseline"],
+                }
+                for result in weekly_results
+            ],
+            "people": monthly_people,
         }
 
     @staticmethod
