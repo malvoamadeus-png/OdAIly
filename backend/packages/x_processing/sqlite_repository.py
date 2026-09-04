@@ -251,6 +251,74 @@ class SQLiteXProcessingRepository:
             raise ValueError(f"active prompt not found: {template_key}")
         return _row_to_prompt(_record(row))
 
+    def append_prompt_version(
+        self,
+        *,
+        template_key: str,
+        appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool]:
+        """Create and activate one appended Prompt version, or return the active one if present."""
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT v.*, t.feature_mode_enabled, t.feature_mode_text "
+                "FROM prompt_templates t "
+                "JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=? AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"active prompt not found: {template_key}")
+
+            active_prompt = _row_to_prompt(_record(row))
+            normalized_appendix = appendix.strip()
+            if not normalized_appendix or normalized_appendix in active_prompt.content:
+                updated_content = active_prompt.content
+            else:
+                separator = (
+                    "\n\n"
+                    if active_prompt.content and not active_prompt.content.endswith("\n")
+                    else "\n"
+                    if active_prompt.content
+                    else ""
+                )
+                updated_content = f"{active_prompt.content}{separator}{normalized_appendix}"
+            if updated_content == active_prompt.content:
+                conn.commit()
+                return active_prompt, False
+
+            latest = conn.execute(
+                "SELECT COALESCE(MAX(version_number), 0) AS version_number "
+                "FROM prompt_template_versions WHERE template_key=?",
+                (template_key,),
+            ).fetchone()
+            version_number = int(latest["version_number"]) + 1
+            created_at = _iso()
+            cursor = conn.execute(
+                "INSERT INTO prompt_template_versions "
+                "(template_key, version_number, content, note, created_at, published_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (template_key, version_number, updated_content, note, created_at, created_at),
+            )
+            version_id = int(cursor.lastrowid)
+            conn.execute(
+                "UPDATE prompt_templates SET active_version_id=?, updated_at=? WHERE template_key=?",
+                (version_id, created_at, template_key),
+            )
+            new_row = conn.execute(
+                "SELECT v.*, t.feature_mode_enabled, t.feature_mode_text "
+                "FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=? AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+            conn.commit()
+
+        if new_row is None:  # pragma: no cover - guarded by the active row and transaction above.
+            raise ValueError(f"active prompt not found after migration: {template_key}")
+        return _row_to_prompt(_record(new_row)), True
+
     def get_publisher_settings(self):
         with self._connect() as conn:
             self._ensure_publisher_defaults(conn)

@@ -192,6 +192,17 @@ def parse_args() -> argparse.Namespace:
         help="Do not delete existing X pending tasks during initialization.",
     )
 
+    x_process_prompt_migration = subparsers.add_parser(
+        "x-process-publish-prompt-version",
+        help="Append the X Article writer rules to the active Prompt and publish one new version.",
+    )
+    x_process_prompt_migration.add_argument(
+        "--template-key",
+        choices=["x_regular_writer"],
+        required=True,
+        help="Prompt template to migrate.",
+    )
+
     subparsers.add_parser(
         "publisher-init-config",
         help="Create the default local publisher rule config if it does not exist.",
@@ -975,6 +986,24 @@ def x_process_init_db_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def x_process_publish_prompt_version_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.prompt_rules import X_ARTICLE_WRITER_RULES
+    from packages.x_processing.repository import create_x_processing_repository
+
+    repository = create_x_processing_repository(None)
+    version, changed = repository.append_prompt_version(
+        template_key=args.template_key,
+        appendix=X_ARTICLE_WRITER_RULES,
+        note="append X Article compact editing rules",
+    )
+    print(
+        "[odaily] prompt migration completed "
+        f"template_key={version.template_key} version_id={version.id} "
+        f"version_number={version.version_number} changed={str(changed).lower()}"
+    )
+    return 0
+
+
 def publisher_init_config_command(args: argparse.Namespace) -> int:
     saved = save_publisher_rule_config(load_publisher_rule_config(), updated_by="system")
     print(f"[odaily] publisher config initialized updated_at={saved.updated_at}")
@@ -1715,6 +1744,8 @@ def main() -> int:
             return jin10_monitor_worker_command(args)
         if args.command == "x-process-init-db":
             return x_process_init_db_command(args)
+        if args.command == "x-process-publish-prompt-version":
+            return x_process_publish_prompt_version_command(args)
         if args.command == "publisher-init-config":
             return publisher_init_config_command(args)
         if args.command == "x-process-worker":

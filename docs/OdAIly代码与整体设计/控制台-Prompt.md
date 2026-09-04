@@ -4,6 +4,19 @@
 
 内置规则支持按模块筛选、全文搜索与展开原文，并显示代码位置及“代码只读 / 控制台可编辑”状态。接口内容从代码常量和当前知名人物配置实时组装，不读取或返回环境变量、数据库连接串、API key 或其他密钥。
 
+## X Article Prompt 发布
+
+`x_regular_writer` 遇到 `metadata.content_format = x_post_with_article` 或 `x_article` 时，会把外层帖子与 Article 作为同一条 X 来源编辑成 2–4 句、1–2 段的快讯。完整 Article 仍保留在任务原始材料中，用于事实核对和审计，不直接作为发布正文。
+
+代码模板更新不会覆盖已有 active Prompt。生产切换时执行：
+
+```bash
+python backend/src/main.py x-process-publish-prompt-version \
+  --template-key x_regular_writer
+```
+
+该命令从当前 active Prompt 保留既有自定义内容，追加 X Article 专项规则，创建并切换新版本；已存在规则时幂等返回，不修改历史版本或历史任务。普通 X 帖子仍使用原有 Prompt 输入路径。
+
 ## 知名人物
 
 知名人物配置通过认证后台接口维护：

@@ -9,7 +9,7 @@ from .source_attribution import append_source_attribution
 
 
 ODAILY_PREFIX = "Odaily星球日报讯 "
-_PARAGRAPH_ENDINGS = ("。", "！", "？", "；", ".", "!", "?", ";", "”", "’", "\"", "'")
+_PARAGRAPH_ENDINGS = ("。", "！", "？", "；", ".", "!", "?", ";", "：", ":", "”", "’", "\"", "'")
 _MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]\n]{1,300}\]\(https?://[^)\s]+(?:\s+\"[^\"]*\")?\)", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 _MODEL_META_LINE_PATTERN = re.compile(

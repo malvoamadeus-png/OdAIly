@@ -188,6 +188,13 @@ class XProcessingRepository(Protocol):
     ) -> TaskRecord | None: ...
     def get_pipeline(self, task_id: int) -> PipelineRecord: ...
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion: ...
+    def append_prompt_version(
+        self,
+        *,
+        template_key: str,
+        appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool]: ...
     def complete_judge(
         self,
         task_id: int,
@@ -1360,6 +1367,42 @@ class InMemoryXProcessingRepository:
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
         return self.prompts[template_key]
+
+    def append_prompt_version(
+        self,
+        *,
+        template_key: str,
+        appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool]:
+        current = self.prompts[template_key]
+        normalized_appendix = appendix.strip()
+        if not normalized_appendix or normalized_appendix in current.content:
+            updated_content = current.content
+        else:
+            separator = (
+                "\n\n"
+                if current.content and not current.content.endswith("\n")
+                else "\n"
+                if current.content
+                else ""
+            )
+            updated_content = f"{current.content}{separator}{normalized_appendix}"
+        if updated_content == current.content:
+            return current, False
+        migrated = PromptTemplateVersion(
+            id=max(prompt.id for prompt in self.prompts.values()) + 1,
+            template_key=current.template_key,
+            version_number=current.version_number + 1,
+            content=updated_content,
+            feature_mode_enabled=current.feature_mode_enabled,
+            feature_mode_text=current.feature_mode_text,
+            note=note,
+            created_at=utc_now(),
+            published_at=utc_now(),
+        )
+        self.prompts[template_key] = migrated
+        return migrated, True
 
     def get_publisher_settings(self) -> PublisherSettingsRecord:
         return self.publisher_settings

@@ -77,6 +77,20 @@ def test_writer2_does_not_append_source_without_explicit_non_x_mode() -> None:
     assert result.content == "Odaily星球日报讯 作者表示市场正在变化。"
 
 
+def test_writer2_keeps_colon_as_valid_paragraph_ending() -> None:
+    result = format_brief(DraftBrief(title="测试标题", content="发文表示："))
+
+    assert result.content == "Odaily星球日报讯 发文表示："
+
+
+def test_writer2_keeps_full_width_and_ascii_colons_as_valid_endings() -> None:
+    full_width = format_brief(DraftBrief(title="测试标题", content="发文表示："))
+    ascii_colon = format_brief(DraftBrief(title="测试标题", content="发文表示:"))
+
+    assert full_width.content.endswith("表示：")
+    assert ascii_colon.content.endswith("表示:")
+
+
 def test_auditor_ignores_borrow_lend_word_usage() -> None:
     task = _task("即用户重复抵押资产、借入稳定币并再次部署资金")
     raw_output = json.dumps(

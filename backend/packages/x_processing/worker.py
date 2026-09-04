@@ -57,6 +57,12 @@ from .publisher_config import (
     parse_publisher_decision,
     profile_key_for_task,
 )
+from .prompt_rules import (
+    X_ARTICLE_RULE_MARKER,
+    X_ARTICLE_WRITER_CONTEXT,
+    X_ARTICLE_WRITER_RULES,
+    is_x_article_content_format,
+)
 from .repository import XProcessingRepository
 from .searcher import (
     AI_REVIEW_SCHEMA,
@@ -1610,6 +1616,19 @@ def build_writer_prompt(
         or task.title
         or "Odaily"
     )
+    if task.source == "x" and is_x_article_content_format(task.metadata):
+        prompt_content = render_prompt_content(prompt)
+        if X_ARTICLE_RULE_MARKER not in prompt_content:
+            prompt_content = f"{prompt_content}\n\n{X_ARTICLE_WRITER_RULES}"
+        return (
+            f"{prompt_content}\n\n"
+            f"{X_ARTICLE_WRITER_CONTEXT}\n"
+            "【待处理 X 复合来源】\n"
+            f"发布人：{author}\n"
+            f"来源链接：{task.source_url or ''}\n"
+            f"原文内容：{task.content}\n\n"
+            f"{output_instruction}"
+        )
     return (
         f"{render_prompt_content(prompt)}\n\n"
         "【待处理原文】\n"
