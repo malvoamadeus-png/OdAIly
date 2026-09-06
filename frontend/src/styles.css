@@ -735,6 +735,189 @@ body {
   font-size: 12px;
 }
 
+.monthlyChartPanel {
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid #dbe5e2;
+  border-radius: 12px;
+  background: #fcfefd;
+}
+
+.monthlyChartHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.monthlyChartHeader h3 {
+  margin: 0;
+  color: #21483e;
+  font-size: 16px;
+}
+
+.monthlyChartHeader p {
+  margin: 5px 0 0;
+  color: #74817f;
+  font-size: 12px;
+}
+
+.monthlyChartLegendHint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #74817f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chartAxisDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chartAxisDotLeft { background: #287b67; }
+.chartAxisDotRight { margin-left: 8px; background: #c37a4a; }
+
+.monthlyChartControls {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(210px, 1fr) minmax(260px, 1.3fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.monthlyChartControls fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid #e0e8e5;
+  border-radius: 9px;
+}
+
+.monthlyChartControls legend {
+  padding: 0 5px;
+  color: #31574d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.monthlyChartCheckboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.monthlyChartCheckboxes label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  color: #43514f;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.monthlyChartCheckboxes input {
+  accent-color: #08775a;
+}
+
+.monthlyChartCheckboxes label small {
+  color: #8a9693;
+  font-size: 10px;
+}
+
+.monthlyChartPeople {
+  max-height: 74px;
+  overflow-y: auto;
+}
+
+.monthlyChartPeople .personColorChip {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.monthlyChartCanvas {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.monthlyChartCanvas svg {
+  display: block;
+  width: 100%;
+  min-width: 700px;
+  height: auto;
+}
+
+.monthlyChartGrid {
+  stroke: #e4ece9;
+  stroke-width: 1;
+}
+
+.monthlyChartAxis {
+  stroke: #9aaba5;
+  stroke-width: 1;
+}
+
+.monthlyChartAxisLabel,
+.monthlyChartAxisTitle,
+.monthlyChartPeriodLabel,
+.monthlyChartPeriodDetail {
+  fill: #687874;
+  font-family: inherit;
+}
+
+.monthlyChartAxisLabel { font-size: 11px; }
+.monthlyChartAxisTitle { font-size: 11px; font-weight: 700; }
+.monthlyChartPeriodLabel { font-size: 12px; font-weight: 700; }
+.monthlyChartPeriodDetail { fill: #8a9693; font-size: 9px; }
+
+.monthlyChartBar {
+  opacity: 0.82;
+  transition: opacity 120ms ease;
+}
+
+.monthlyChartBar:hover { opacity: 1; }
+
+.monthlyChartBar--count,
+.monthlyChartBar--total_score { stroke: #fff; stroke-width: 0.5; }
+
+.monthlyChartBar--total_views,
+.monthlyChartBar--average_views { opacity: 0.58; stroke: #fff; stroke-width: 0.5; }
+
+.monthlyChartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+  margin: 2px 12px 0 62px;
+  color: #66717d;
+  font-size: 11px;
+}
+
+.monthlyChartLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.monthlyChartLegend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.monthlyChartEmpty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  margin-top: 14px;
+  border: 1px dashed #cbdad5;
+  border-radius: 9px;
+  color: #7b8793;
+  font-size: 13px;
+}
+
 .qualityMetrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));

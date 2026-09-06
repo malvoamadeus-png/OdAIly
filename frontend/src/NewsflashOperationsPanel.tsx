@@ -27,6 +27,7 @@ import {
 } from './newsflashOperations';
 
 type TabKey = 'overview' | 'schedule' | 'summary' | 'quality' | 'contributions' | 'events';
+type MonthlyChartMetric = 'count' | 'total_score' | 'total_views' | 'average_views';
 
 const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'overview', label: '快讯总览' },
@@ -38,6 +39,13 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 ];
 
 const contributionLabels: Record<string, string> = { regular: '常规', night: '夜间', ppp: 'PPP' };
+const monthlyChartMetricLabels: Record<MonthlyChartMetric, string> = {
+  count: '条数',
+  total_score: '总分',
+  total_views: '总浏览量',
+  average_views: '平均浏览量',
+};
+const monthlyChartMetricOrder: MonthlyChartMetric[] = ['count', 'total_score', 'total_views', 'average_views'];
 const publisherLabels: Record<string, string> = {
   human: '人类',
   human_unmapped: '未映射人员',
@@ -245,7 +253,7 @@ function Overview({
                   {row.publisher_kind && row.publisher_kind !== 'human' && <small>{publisherLabels[row.publisher_kind] || row.publisher_kind}</small>}
                 </td>
                 <td className="numberCell">{row.view_count == null ? <Unavailable /> : row.view_count.toLocaleString()}</td>
-                <td><select className="inlineSelect" value={row.contributor_person_key || ''} onChange={(event) => void patchRow(row, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })} disabled={['odaily_ai', 'other_ai', 'pending_ai'].includes(row.publisher_kind || '')}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td>
+                <td><select className="inlineSelect" value={row.contributor_person_key || ''} onChange={(event) => void patchRow(row, event.target.value ? { contributor_person_key: event.target.value, is_contribution: true } : { is_contribution: false })} disabled={['other_ai', 'pending_ai'].includes(row.publisher_kind || '')}><option value="">—</option>{contributors.map((person) => <option key={person.person_key} value={person.person_key}>{person.display_name}</option>)}</select></td>
                 <td><select className="inlineSelect" value={row.contribution_type || 'regular'} onChange={(event) => void patchRow(row, { contribution_type: event.target.value })} disabled={!row.is_contribution}><option value="regular">常规</option><option value="night">夜间</option><option value="ppp">PPP</option></select></td>
                 <td><QualityOverrideSelect value={row.quality_override} disabled={row.publisher_kind !== 'human' || !row.publisher_person_key} onChange={(value) => void patchRow(row, { quality_override: value })} /></td>
                 <td><span className={`statusText ${row.first_publication.status}`}>{row.first_publication.label}</span></td>
@@ -470,12 +478,127 @@ function monthlyAverage(value: number | null, viewCoverage: { known: number; tot
 }
 
 function ContributionMonthlyOverview({ data }: { data: ContributionsMonthlyPayload }) {
+  const [selectedPeriods, setSelectedPeriods] = useState<string[]>(['total']);
+  const [selectedMetrics, setSelectedMetrics] = useState<MonthlyChartMetric[]>(['total_score']);
+  const [selectedPeople, setSelectedPeople] = useState<string[]>([]);
+  const [peopleInitialized, setPeopleInitialized] = useState(false);
+
+  useEffect(() => {
+    if (peopleInitialized) return;
+    setSelectedPeople(data.people.filter((person) => person.person_key !== 'malvo' && person.display_name !== 'Malvo').map((person) => person.person_key));
+    setPeopleInitialized(true);
+  }, [data.people, peopleInitialized, setPeopleInitialized]);
+
+  const periods = [
+    ...data.weeks.map((week, index) => ({ key: `week-${index}`, label: `第${index + 1}周`, detail: formatWeekRange(week.week_start, week.week_end), index })),
+    { key: 'total', label: '月份合计', detail: '月份合计', index: -1 },
+  ];
+  const visiblePeriods = periods.filter((period) => selectedPeriods.includes(period.key));
+  const visiblePeople = data.people.filter((person) => selectedPeople.includes(person.person_key));
+  const visibleMetrics = monthlyChartMetricOrder.filter((metric) => selectedMetrics.includes(metric));
+
+  function toggleSelection<T extends string>(current: T[], value: T, update: (next: T[]) => void) {
+    update(current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  }
+
   return <>
     <div className="contributionMonthlyMeta"><span>共 {data.weeks.length} 个归属周</span><span>月度总分 = 各归属周人员总分相加</span><span>平均浏览量仅按已知浏览量计算</span></div>
     {data.insufficient_week_count > 0 && <div className="notice error">{data.insufficient_week_count} 个周没有可计算 A 的已知推送浏览量；这些周的常规贡献快讯记 0 分，夜间 / PPP 仍按 0.5 分计。</div>}
     <div className="newsflashTableWrap contributionMonthlyTableWrap"><table className="newsflashTable contributionMonthlyTable"><thead><tr><th rowSpan={2}>人员</th>{data.weeks.map((week) => <th colSpan={4} key={week.week_start}><span>{formatWeekRange(week.week_start, week.week_end)}</span><small className={week.status === 'ready' ? 'monthlyWeekReady' : 'monthlyWeekInsufficient'}>{week.status === 'ready' ? 'A可用' : 'A不足'}</small></th>)}<th colSpan={4}>月份合计</th></tr><tr>{data.weeks.map((week) => [<th key={`${week.week_start}:count`}>条数</th>, <th key={`${week.week_start}:score`}>总分</th>, <th key={`${week.week_start}:views`}>总浏览量</th>, <th key={`${week.week_start}:average`}>平均浏览量</th>])}<th>条数</th><th>总分</th><th>总浏览量</th><th>平均浏览量</th></tr></thead><tbody>{data.people.map((person) => <tr key={person.person_key}><td className="monthlyPersonCell"><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></td>{data.weeks.map((week) => { const metrics = person.weeks.find((item) => item.week_start === week.week_start); return [<td className="numberCell" key={`${person.person_key}:${week.week_start}:count`}>{metrics?.count ?? 0}</td>, <td className="numberCell contributionItemScore" key={`${person.person_key}:${week.week_start}:score`}>{scoreValue(metrics?.total_score ?? 0)}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:views`}>{(metrics?.total_views ?? 0).toLocaleString()}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:average`}>{monthlyAverage(metrics?.average_views ?? null, metrics?.view_coverage || { known: 0, total: 0 })}</td>]; })}<td className="numberCell">{person.count}</td><td className="numberCell contributionItemScore monthlyTotalScore">{scoreValue(person.total_score)}</td><td className="numberCell">{person.total_views.toLocaleString()}</td><td className="numberCell">{monthlyAverage(person.average_views, person.view_coverage)}</td></tr>)}</tbody></table>{!data.people.length && <div className="emptyInline">当前月份没有启用的贡献者</div>}</div>
+    <div className="monthlyChartPanel">
+      <div className="monthlyChartHeader">
+        <div><h3>月度贡献图表</h3><p>可同时选择多个周次、维度和人员；条数 / 总分使用左轴，浏览量使用右轴。</p></div>
+        <div className="monthlyChartLegendHint"><span className="chartAxisDot chartAxisDotLeft" />左轴：条数、总分 <span className="chartAxisDot chartAxisDotRight" />右轴：浏览量</div>
+      </div>
+      <div className="monthlyChartControls">
+        <fieldset><legend>时间</legend><div className="monthlyChartCheckboxes">{periods.map((period) => <label key={period.key}><input type="checkbox" checked={selectedPeriods.includes(period.key)} onChange={() => toggleSelection(selectedPeriods, period.key, setSelectedPeriods)} /><span>{period.label}</span><small>{period.detail}</small></label>)}</div></fieldset>
+        <fieldset><legend>维度</legend><div className="monthlyChartCheckboxes">{monthlyChartMetricOrder.map((metric) => <label key={metric}><input type="checkbox" checked={selectedMetrics.includes(metric)} onChange={() => toggleSelection(selectedMetrics, metric, setSelectedMetrics)} /><span>{monthlyChartMetricLabels[metric]}</span></label>)}</div></fieldset>
+        <fieldset><legend>人员</legend><div className="monthlyChartCheckboxes monthlyChartPeople">{data.people.map((person) => <label key={person.person_key}><input type="checkbox" checked={selectedPeople.includes(person.person_key)} onChange={() => toggleSelection(selectedPeople, person.person_key, setSelectedPeople)} /><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></label>)}</div></fieldset>
+      </div>
+      <MonthlyContributionChart periods={visiblePeriods} people={visiblePeople} metrics={visibleMetrics} />
+    </div>
     <div className="contributionMonthlyFootnote">周列按自然周展示，跨月周只有被排班表归属到本月时才会计入；月度总分不会把所有快讯跨周重新套用同一个 A。</div>
   </>;
+}
+
+type MonthlyChartPeriod = { key: string; label: string; detail: string; index: number };
+type MonthlyChartPerson = ContributionsMonthlyPayload['people'][number];
+
+function MonthlyContributionChart({ periods, people, metrics }: { periods: MonthlyChartPeriod[]; people: MonthlyChartPerson[]; metrics: MonthlyChartMetric[] }) {
+  const width = 1080;
+  const height = 430;
+  const margin = { top: 28, right: 68, bottom: 64, left: 62 };
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+  const leftMetrics = metrics.filter((metric) => metric === 'count' || metric === 'total_score');
+  const rightMetrics = metrics.filter((metric) => metric === 'total_views' || metric === 'average_views');
+  const values = new Map<string, number | null>();
+
+  function valueFor(person: MonthlyChartPerson, period: MonthlyChartPeriod, metric: MonthlyChartMetric): number | null {
+    if (period.key === 'total') {
+      if (metric === 'count') return person.count;
+      if (metric === 'total_score') return person.total_score;
+      if (metric === 'total_views') return person.total_views;
+      return person.average_views;
+    }
+    const week = person.weeks[period.index];
+    if (!week) return null;
+    if (metric === 'count') return week.count;
+    if (metric === 'total_score') return week.total_score;
+    if (metric === 'total_views') return week.total_views;
+    return week.average_views;
+  }
+
+  for (const person of people) {
+    for (const period of periods) {
+      for (const metric of metrics) values.set(`${person.person_key}:${period.key}:${metric}`, valueFor(person, period, metric));
+    }
+  }
+
+  const leftMax = Math.max(1, ...Array.from(values.entries()).filter(([key]) => leftMetrics.some((metric) => key.endsWith(`:${metric}`))).map(([, value]) => value ?? 0));
+  const rightMax = Math.max(1, ...Array.from(values.entries()).filter(([key]) => rightMetrics.some((metric) => key.endsWith(`:${metric}`))).map(([, value]) => value ?? 0));
+  const leftScale = (value: number) => margin.top + chartHeight - (value / leftMax) * chartHeight;
+  const rightScale = (value: number) => margin.top + chartHeight - (value / rightMax) * chartHeight;
+  const periodWidth = periods.length ? chartWidth / periods.length : chartWidth;
+  const series = people.flatMap((person) => metrics.map((metric) => ({ person, metric, key: `${person.person_key}:${metric}` })));
+  const barWidth = series.length ? Math.min(24, Math.max(4, (periodWidth * 0.78) / series.length - 2)) : 0;
+  const groupWidth = series.length * (barWidth + 2);
+  const leftTicks = Array.from({ length: 6 }, (_, index) => leftMax * index / 5);
+  const rightTicks = Array.from({ length: 6 }, (_, index) => rightMax * index / 5);
+
+  if (!periods.length || !metrics.length || !people.length) {
+    return <div className="monthlyChartEmpty">请选择至少一个时间、维度和人员后查看图表。</div>;
+  }
+
+  return <div className="monthlyChartCanvas">
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="月度贡献柱状图">
+      {leftTicks.map((tick, index) => { const y = leftScale(tick); return <g key={`grid-${index}`}><line x1={margin.left} x2={width - margin.right} y1={y} y2={y} className="monthlyChartGrid" /><text x={margin.left - 10} y={y + 4} textAnchor="end" className="monthlyChartAxisLabel">{Math.round(tick).toLocaleString()}</text>{rightMetrics.length > 0 && <text x={width - margin.right + 10} y={y + 4} className="monthlyChartAxisLabel">{Math.round(rightTicks[index]).toLocaleString()}</text>}</g>; })}
+      <line x1={margin.left} x2={margin.left} y1={margin.top} y2={margin.top + chartHeight} className="monthlyChartAxis" />
+      <line x1={width - margin.right} x2={width - margin.right} y1={margin.top} y2={margin.top + chartHeight} className="monthlyChartAxis" />
+      <line x1={margin.left} x2={width - margin.right} y1={margin.top + chartHeight} y2={margin.top + chartHeight} className="monthlyChartAxis" />
+      <text x={margin.left} y={16} className="monthlyChartAxisTitle">条数 / 总分</text>
+      {rightMetrics.length > 0 && <text x={width - margin.right} y={16} textAnchor="end" className="monthlyChartAxisTitle">浏览量</text>}
+      {periods.map((period, periodIndex) => {
+        const center = margin.left + periodWidth * (periodIndex + 0.5);
+        const start = center - groupWidth / 2;
+        return <g key={period.key}>
+          {series.map((item, seriesIndex) => {
+            const value = values.get(`${item.person.person_key}:${period.key}:${item.metric}`);
+            if (value == null) return null;
+            const isRight = item.metric === 'total_views' || item.metric === 'average_views';
+            const y = isRight ? rightScale(value) : leftScale(value);
+            const baseline = margin.top + chartHeight;
+            const barHeight = Math.max(0, baseline - y);
+            const x = start + seriesIndex * (barWidth + 2);
+            return <rect key={`${period.key}:${item.key}`} x={x} y={barHeight ? y : baseline - 1} width={barWidth} height={barHeight || 1} rx={2} className={`monthlyChartBar monthlyChartBar--${item.metric}`} style={{ fill: personColor(item.person.person_key).color }}><title>{`${item.person.display_name} · ${monthlyChartMetricLabels[item.metric]} · ${period.label}：${item.metric === 'average_views' ? value.toLocaleString() : Math.round(value).toLocaleString()}`}</title></rect>;
+          })}
+          <text x={center} y={height - 36} textAnchor="middle" className="monthlyChartPeriodLabel">{period.label}</text>
+          <text x={center} y={height - 20} textAnchor="middle" className="monthlyChartPeriodDetail">{period.detail}</text>
+        </g>;
+      })}
+    </svg>
+    <div className="monthlyChartLegend">{series.map((item) => <span key={item.key}><i style={{ backgroundColor: personColor(item.person.person_key).color }} />{item.person.display_name} · {monthlyChartMetricLabels[item.metric]}</span>)}</div>
+  </div>;
 }
 
 function Events({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {

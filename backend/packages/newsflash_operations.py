@@ -788,7 +788,7 @@ class NewsflashOperationsRepository:
                     raise ValueError("contributor is required")
             resulting_contribution = bool(data.get("is_contribution", before.get("is_contribution")))
             resulting_kind = str(data.get("publisher_kind", before.get("publisher_kind")) or "")
-            if resulting_contribution and resulting_kind in {"odaily_ai", "other_ai", "pending_ai"}:
+            if resulting_contribution and resulting_kind in {"other_ai", "pending_ai"}:
                 raise ValueError("AI newsflash cannot be marked as contribution")
             if "publisher_kind" in data:
                 if data["publisher_kind"] not in PUBLISHER_KINDS - {"pending_ai"}:
