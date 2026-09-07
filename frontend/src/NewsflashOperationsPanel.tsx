@@ -67,17 +67,35 @@ const qualityOverrideLabels: Record<QualityOverride, string> = {
   exclude: '直接排除',
 };
 
+const personPalette = [
+  '#2563eb', '#ea580c', '#059669', '#9333ea', '#ca8a04',
+  '#0891b2', '#db2777', '#92400e', '#4f46e5', '#dc2626',
+];
+
+const personPaletteByKey: Record<string, string> = {
+  zoey: '#2563eb',
+  harbour: '#ea580c',
+  shark: '#059669',
+  leo: '#9333ea',
+  malvo: '#ca8a04',
+  golem: '#0891b2',
+  wenser: '#db2777',
+  asher: '#92400e',
+  azuma: '#4f46e5',
+  dc: '#dc2626',
+  odaily_ai: '#0f766e',
+};
+
 function personColor(personKey: string) {
-  let hash = 2166136261;
+  let hash = 0;
   for (const character of personKey) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   }
-  const hue = Math.abs(hash) % 360;
+  const color = personPaletteByKey[personKey] || personPalette[hash % personPalette.length];
   return {
-    backgroundColor: `hsl(${hue} 58% 93%)`,
-    borderColor: `hsl(${hue} 44% 62%)`,
-    color: `hsl(${hue} 42% 27%)`,
+    backgroundColor: `${color}18`,
+    borderColor: `${color}80`,
+    color,
   };
 }
 
