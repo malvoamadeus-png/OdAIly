@@ -511,7 +511,7 @@ function ContributionMonthlyOverview({ data }: { data: ContributionsMonthlyPaylo
         <div className="monthlyChartLegendHint"><span className="chartAxisDot chartAxisDotLeft" />左轴：条数、总分 <span className="chartAxisDot chartAxisDotRight" />右轴：浏览量</div>
       </div>
       <div className="monthlyChartControls">
-        <div className="monthlyChartFilterGroup"><span className="monthlyChartFilterLabel">时间</span><div className="monthlyChartCheckboxes">{periods.map((period) => <label key={period.key}><input type="checkbox" checked={selectedPeriods.includes(period.key)} onChange={() => toggleSelection(selectedPeriods, period.key, setSelectedPeriods)} /><span>{period.label}</span><small>{period.detail}</small></label>)}</div></div>
+        <div className="monthlyChartFilterGroup"><span className="monthlyChartFilterLabel">时间</span><div className="monthlyChartCheckboxes">{periods.map((period) => <label key={period.key} title={period.detail}><input type="checkbox" checked={selectedPeriods.includes(period.key)} onChange={() => toggleSelection(selectedPeriods, period.key, setSelectedPeriods)} /><span>{period.label}</span></label>)}</div></div>
         <div className="monthlyChartFilterGroup"><span className="monthlyChartFilterLabel">维度</span><div className="monthlyChartCheckboxes">{monthlyChartMetricOrder.map((metric) => <label key={metric}><input type="checkbox" checked={selectedMetrics.includes(metric)} onChange={() => toggleSelection(selectedMetrics, metric, setSelectedMetrics)} /><span>{monthlyChartMetricLabels[metric]}</span></label>)}</div></div>
         <div className="monthlyChartFilterGroup monthlyChartPeopleGroup"><span className="monthlyChartFilterLabel">人员</span><div className="monthlyChartCheckboxes monthlyChartPeople">{data.people.map((person) => <label key={person.person_key}><input type="checkbox" checked={selectedPeople.includes(person.person_key)} onChange={() => toggleSelection(selectedPeople, person.person_key, setSelectedPeople)} /><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></label>)}</div></div>
       </div>
@@ -526,7 +526,7 @@ type MonthlyChartPerson = ContributionsMonthlyPayload['people'][number];
 
 function MonthlyContributionChart({ periods, people, metrics }: { periods: MonthlyChartPeriod[]; people: MonthlyChartPerson[]; metrics: MonthlyChartMetric[] }) {
   const width = 1080;
-  const height = 360;
+  const height = 430;
   const margin = { top: 28, right: 68, bottom: 64, left: 62 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;

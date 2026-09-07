@@ -816,30 +816,27 @@ body {
 .monthlyChartCheckboxes label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 23px;
-  padding: 2px 7px;
-  border: 1px solid #e0e9e5;
-  border-radius: 999px;
-  background: #fff;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #43514f;
   font-size: 12px;
   cursor: pointer;
 }
 
 .monthlyChartCheckboxes input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
   accent-color: #08775a;
 }
 
-.monthlyChartCheckboxes label small {
-  color: #8a9693;
-  font-size: 10px;
-}
-
 .monthlyChartCheckboxes label:has(input:checked) {
-  border-color: #9bcabc;
-  background: #edf8f4;
   color: #075f49;
+  font-weight: 700;
 }
 
 .monthlyChartPeople {
@@ -861,7 +858,7 @@ body {
   display: block;
   width: 100%;
   min-width: 660px;
-  height: 300px;
+  height: auto;
 }
 
 .monthlyChartGrid {
@@ -904,7 +901,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 7px 14px;
-  max-height: 46px;
+  max-height: 70px;
   margin: 2px 12px 0 62px;
   overflow-y: auto;
   color: #66717d;
