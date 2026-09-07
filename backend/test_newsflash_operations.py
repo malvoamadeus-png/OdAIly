@@ -726,6 +726,35 @@ class NewsflashOperationsTest(unittest.TestCase):
                 actor_email="test@example.com",
             )
 
+    def test_quality_monthly_aggregates_complete_weeks(self) -> None:
+        references = [
+            ("monthly-quality-base-1", "Monthly quality baseline 1", "2026-08-03T08:00:00+08:00"),
+            ("monthly-quality-winner-1", "Monthly quality winner 1", "2026-08-03T10:00:00+08:00"),
+            ("monthly-quality-base-2", "Monthly quality baseline 2", "2026-08-10T08:00:00+08:00"),
+            ("monthly-quality-winner-2", "Monthly quality winner 2", "2026-08-10T10:00:00+08:00"),
+        ]
+        for values in references:
+            self.add_reference(*values)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "monthly-quality-base-1", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "monthly-quality-winner-1", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "monthly-quality-base-2", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "monthly-quality-winner-2", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+        ])
+        self.assign_morning("2026-08-03")
+        self.assign_morning("2026-08-10")
+
+        result = self.repository.list_quality_monthly({"report_month": "2026-08"})
+
+        self.assertEqual(len(result["weeks"]), 4)
+        self.assertEqual(result["qualified_count"], 2)
+        self.assertEqual(result["excluded_count"], 0)
+        self.assertEqual(result["total_kpi"], 0.4)
+        zoey = next(person for person in result["people"] if person["person_key"] == "zoey")
+        self.assertEqual(zoey["qualified_count"], 2)
+        self.assertEqual(zoey["kpi"], 0.4)
+        self.assertEqual([week["qualified_count"] for week in zoey["weeks"]], [1, 1, 0, 0])
+
 
 class CompetitorEventSummaryTest(unittest.TestCase):
     def setUp(self) -> None:

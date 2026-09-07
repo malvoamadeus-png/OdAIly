@@ -307,6 +307,7 @@ class NewsflashOperationsRepository:
             "save_week_month": lambda data: self.save_week_month(data, actor_email=actor_email),
             "summary": self.get_summary,
             "quality": self.get_quality,
+            "quality_month": self.list_quality_monthly,
             "contributions": self.list_contributions,
             "contributions_month": self.list_contributions_monthly,
             "events": self.list_events,
@@ -1312,6 +1313,7 @@ class NewsflashOperationsRepository:
                 "status": "ready" if pushed_views else "insufficient",
                 "week_start": start.isoformat(),
                 "week_end": (end - timedelta(days=1)).isoformat(),
+                "in_progress": datetime.now(SHANGHAI_TZ).date() < end,
                 "pushed_count": len(pushed),
                 "pushed_view_count": len(pushed_views),
                 "rules": rules,
@@ -1421,6 +1423,64 @@ class NewsflashOperationsRepository:
                 "unassigned_count": unassigned_count,
                 "groups": groups,
             }
+
+    def list_quality_monthly(self, payload: dict[str, Any]) -> dict[str, Any]:
+        report_month = str(payload.get("report_month") or datetime.now(SHANGHAI_TZ).strftime("%Y-%m")).strip()
+        with connect_sqlite(self.path) as conn:
+            _, period_label, week_keys = self._period_dates(conn, {"report_month": report_month})
+        if any(date.fromisoformat(week_key) < QUALITY_FIRST_WEEK for week_key in week_keys):
+            raise ValueError(f"quality month must not include a week earlier than {QUALITY_FIRST_WEEK.isoformat()}")
+
+        weekly_results = [self.get_quality({"week_start": week_key}) for week_key in week_keys]
+        people_by_key: dict[str, str] = {}
+        for result in weekly_results:
+            for group in result["groups"]:
+                people_by_key[str(group["person_key"])] = str(group["person_name"])
+
+        monthly_people = []
+        for person_key, person_name in sorted(people_by_key.items(), key=lambda item: (item[1].casefold(), item[0])):
+            weeks = []
+            for result in weekly_results:
+                group = next((item for item in result["groups"] if item["person_key"] == person_key), None)
+                weeks.append({
+                    "week_start": result["week_start"],
+                    "week_end": result["week_end"],
+                    "status": result["status"],
+                    "qualified_count": group["qualified_count"] if group else 0,
+                    "excluded_count": group["excluded_count"] if group else 0,
+                    "kpi": group["kpi"] if group else 0,
+                })
+            monthly_people.append({
+                "person_key": person_key,
+                "person_name": person_name,
+                "qualified_count": sum(item["qualified_count"] for item in weeks),
+                "excluded_count": sum(item["excluded_count"] for item in weeks),
+                "kpi": round(sum(float(item["kpi"]) for item in weeks), 10),
+                "weeks": weeks,
+            })
+
+        return {
+            "report_month": period_label,
+            "in_progress": any(result["in_progress"] for result in weekly_results),
+            "weeks": [
+                {
+                    "week_start": result["week_start"],
+                    "week_end": result["week_end"],
+                    "status": result["status"],
+                    "in_progress": result["in_progress"],
+                    "average_views": result["average_views"],
+                    "threshold_views": result["threshold_views"],
+                    "qualified_count": result["qualified_count"],
+                    "excluded_count": result["excluded_count"],
+                    "total_kpi": result["total_kpi"],
+                }
+                for result in weekly_results
+            ],
+            "qualified_count": sum(result["qualified_count"] for result in weekly_results),
+            "excluded_count": sum(result["excluded_count"] for result in weekly_results),
+            "total_kpi": round(sum(float(result["total_kpi"]) for result in weekly_results), 10),
+            "people": monthly_people,
+        }
 
     def _list_contributions_for_week(self, conn, start: date) -> dict[str, Any]:
         end = start + timedelta(days=7)

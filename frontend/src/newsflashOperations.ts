@@ -124,6 +124,40 @@ export type QualityPayload = {
   }>;
 };
 
+export type QualityMonthlyPayload = {
+  report_month: string;
+  in_progress: boolean;
+  qualified_count: number;
+  excluded_count: number;
+  total_kpi: number;
+  weeks: Array<{
+    week_start: string;
+    week_end: string;
+    status: 'ready' | 'insufficient';
+    in_progress: boolean;
+    average_views: number | null;
+    threshold_views: number | null;
+    qualified_count: number;
+    excluded_count: number;
+    total_kpi: number;
+  }>;
+  people: Array<{
+    person_key: string;
+    person_name: string;
+    qualified_count: number;
+    excluded_count: number;
+    kpi: number;
+    weeks: Array<{
+      week_start: string;
+      week_end: string;
+      status: 'ready' | 'insufficient';
+      qualified_count: number;
+      excluded_count: number;
+      kpi: number;
+    }>;
+  }>;
+};
+
 export type ContributionsPayload = {
   week_start: string;
   week_end: string;

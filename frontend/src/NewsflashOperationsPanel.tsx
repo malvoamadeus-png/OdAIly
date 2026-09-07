@@ -20,6 +20,7 @@ import {
   type NewsflashRow,
   type Person,
   type QualityItem,
+  type QualityMonthlyPayload,
   type QualityOverride,
   type QualityPayload,
   type SchedulePayload,
@@ -377,11 +378,14 @@ function MetricCells({ row }: { row: SummaryPayload['people'][number] | SummaryP
 
 function Quality({ refreshToken, onError }: { refreshToken: number; onError: (value: string) => void }) {
   const [week, setWeek] = useState('');
+  const [month, setMonth] = useState(currentMonth());
+  const [view, setView] = useState<'week' | 'month'>('week');
   const [mode, setMode] = useState<'qualified' | 'excluded'>('qualified');
   const [data, setData] = useState<QualityPayload | null>(null);
+  const [monthlyData, setMonthlyData] = useState<QualityMonthlyPayload | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function load(nextWeek?: string) {
+  async function loadWeek(nextWeek?: string) {
     setLoading(true);
     onError('');
     try {
@@ -395,27 +399,41 @@ function Quality({ refreshToken, onError }: { refreshToken: number; onError: (va
     }
   }
 
+  async function loadMonth(nextMonth = month) {
+    setLoading(true);
+    onError('');
+    try {
+      setMonthlyData(await newsflashOperations<QualityMonthlyPayload>('quality_month', { report_month: nextMonth }));
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function patchOverride(sourceItemId: string, qualityOverride: QualityOverride) {
     onError('');
     try {
       await newsflashOperations('update', { source_item_id: sourceItemId, patch: { quality_override: qualityOverride } });
-      await load(week);
+      await loadWeek(week);
     } catch (reason) {
       onError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
-  useEffect(() => { void load(week || undefined); }, [refreshToken]);
+  useEffect(() => { void (view === 'week' ? loadWeek(week || undefined) : loadMonth()); }, [view, week, month, refreshToken]);
 
   const metric = (value: number | null, digits = 1) => value == null ? '—' : value.toLocaleString('zh-CN', { maximumFractionDigits: digits });
   return <section className="newsflashSection qualitySection">
     <div className="sectionCommandBar">
-      <div className="weekPicker"><label><span>统计周</span><input type="date" min="2026-08-03" value={week} onChange={(event) => { const normalized = mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)); setWeek(normalized); void load(normalized); }} /></label>{week && <span className="periodHint">{formatWeekLabel(week)}</span>}</div>
-      <div className="segmentedControl" aria-label="优质快讯显示范围"><button type="button" className={mode === 'qualified' ? 'active' : ''} onClick={() => setMode('qualified')}>入选</button><button type="button" className={mode === 'excluded' ? 'active' : ''} onClick={() => setMode('excluded')}>达标但排除</button></div>
+      <div className="segmentedControl" aria-label="优质快讯统计范围"><button type="button" className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>按周明细</button><button type="button" className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>月度总览</button></div>
+      {view === 'week' ? <div className="weekPicker"><label><span>统计周</span><input type="date" min="2026-08-03" value={week} onChange={(event) => { const normalized = mondayKey(new Date(`${event.target.value}T12:00:00+08:00`)); setWeek(normalized); void loadWeek(normalized); }} /></label>{week && <span className="periodHint">{formatWeekLabel(week)}</span>}</div> : <label><span>统计月份</span><input type="month" min="2026-08" value={month} onChange={(event) => setMonth(event.target.value)} /></label>}
+      {view === 'week' && <div className="segmentedControl" aria-label="优质快讯显示范围"><button type="button" className={mode === 'qualified' ? 'active' : ''} onClick={() => setMode('qualified')}>入选</button><button type="button" className={mode === 'excluded' ? 'active' : ''} onClick={() => setMode('excluded')}>达标但排除</button></div>}
     </div>
-    {loading && <div className="emptyInline">正在计算当周优质快讯…</div>}
-    {!loading && data?.status === 'insufficient' && <div className="qualityInsufficient"><strong>数据不足</strong><span>本周没有已知浏览量的推送快讯，无法计算周均值、门槛和 KPI。</span></div>}
-    {!loading && data?.status === 'ready' && <>
+    {loading && <div className="emptyInline">正在计算{view === 'week' ? '当周' : '当月'}优质快讯…</div>}
+    {!loading && view === 'month' && monthlyData && <QualityMonthlyOverview data={monthlyData} />}
+    {!loading && view === 'week' && data?.status === 'insufficient' && <div className="qualityInsufficient"><strong>数据不足</strong><span>本周没有已知浏览量的推送快讯，无法计算周均值、门槛和 KPI。</span></div>}
+    {!loading && view === 'week' && data?.status === 'ready' && <>
       <div className="qualityMetrics">
         <div><span>推送浏览量均值</span><strong>{metric(data.average_views)}</strong><small>{data.pushed_view_count}/{data.pushed_count} 条有浏览量</small></div>
         <div><span>1.5 倍门槛</span><strong>{metric(data.threshold_views)}</strong><small>严格大于才达标</small></div>
@@ -431,8 +449,16 @@ function Quality({ refreshToken, onError }: { refreshToken: number; onError: (va
         </section>;
       })}</div>
     </>}
-    {data && <details className="qualityRules"><summary>查看判定规则与当周冻结信源范围</summary><div className="qualityRuleGrid"><section><h3>排除词组（{data.rules.keyword_groups.length}）</h3><div className="ruleTagList">{data.rules.keyword_groups.map((group) => <span key={group.key}>{group.label}</span>)}</div><p>组内词汇需同时出现，任一词组命中即排除。</p></section><section><h3>固定常规信源（{data.rules.regular_source_accounts.length}）</h3><div className="ruleTagList">{data.rules.regular_source_accounts.map((account) => <a key={account} href={`https://x.com/${account}`} target="_blank" rel="noreferrer">@{account}</a>)}</div></section><section><h3>当周 X 自动覆盖（{data.rules.automated_x_accounts.length}）</h3><div className="ruleTagList">{data.rules.automated_x_accounts.length ? data.rules.automated_x_accounts.map((account) => <span key={account}>@{account}</span>) : <span>无</span>}</div></section><section><h3>当周媒体自动覆盖（{data.rules.automated_media_domains.length}）</h3><div className="ruleTagList">{data.rules.automated_media_domains.map((domain) => <span key={domain}>{domain}</span>)}</div></section></div><p>规则快照：{localDate(data.rules.snapshot_at)}。浏览量、贡献状态、首发、排班和人工覆盖仍按当前数据实时重算。</p></details>}
+    {view === 'week' && data && <details className="qualityRules"><summary>查看判定规则与当周冻结信源范围</summary><div className="qualityRuleGrid"><section><h3>排除词组（{data.rules.keyword_groups.length}）</h3><div className="ruleTagList">{data.rules.keyword_groups.map((group) => <span key={group.key}>{group.label}</span>)}</div><p>组内词汇需同时出现，任一词组命中即排除。</p></section><section><h3>固定常规信源（{data.rules.regular_source_accounts.length}）</h3><div className="ruleTagList">{data.rules.regular_source_accounts.map((account) => <a key={account} href={`https://x.com/${account}`} target="_blank" rel="noreferrer">@{account}</a>)}</div></section><section><h3>当周 X 自动覆盖（{data.rules.automated_x_accounts.length}）</h3><div className="ruleTagList">{data.rules.automated_x_accounts.length ? data.rules.automated_x_accounts.map((account) => <span key={account}>@{account}</span>) : <span>无</span>}</div></section><section><h3>当周媒体自动覆盖（{data.rules.automated_media_domains.length}）</h3><div className="ruleTagList">{data.rules.automated_media_domains.map((domain) => <span key={domain}>{domain}</span>)}</div></section></div><p>规则快照：{localDate(data.rules.snapshot_at)}。浏览量、贡献状态、首发、排班和人工覆盖仍按当前数据实时重算。</p></details>}
   </section>;
+}
+
+function QualityMonthlyOverview({ data }: { data: QualityMonthlyPayload }) {
+  const metric = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 10 });
+  return <>
+    <div className="contributionMonthlyMeta"><span>共 {data.weeks.length} 个归属周</span><span>入选 KPI = 入选条数 × 0.2</span><span>月度统计按完整自然周汇总</span></div>
+    <div className="newsflashTableWrap contributionMonthlyTableWrap"><table className="newsflashTable contributionMonthlyTable qualityMonthlyTable"><thead><tr><th rowSpan={2}>人员</th>{data.weeks.map((week) => <th colSpan={3} key={week.week_start}><span>{formatWeekRange(week.week_start, week.week_end)}</span><small className={week.status === 'ready' ? 'monthlyWeekReady' : 'monthlyWeekInsufficient'}>{week.status === 'ready' ? 'A可用' : 'A不足'}</small></th>)}<th colSpan={3}>月份合计</th></tr><tr>{data.weeks.map((week) => [<th key={`${week.week_start}:qualified`}>入选</th>, <th key={`${week.week_start}:excluded`}>排除</th>, <th key={`${week.week_start}:kpi`}>KPI</th>])}<th>入选</th><th>排除</th><th>KPI</th></tr></thead><tbody>{data.people.map((person) => <tr key={person.person_key}><td className="monthlyPersonCell"><span className="personColorChip" style={personColor(person.person_key)}>{person.person_name}</span></td>{data.weeks.map((week) => { const metrics = person.weeks.find((item) => item.week_start === week.week_start); return [<td className="numberCell" key={`${person.person_key}:${week.week_start}:qualified`}>{metrics?.qualified_count ?? 0}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:excluded`}>{metrics?.excluded_count ?? 0}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:kpi`}>{metric(metrics?.kpi ?? 0)}</td>]; })}<td className="numberCell">{person.qualified_count}</td><td className="numberCell">{person.excluded_count}</td><td className="numberCell monthlyTotalScore">{metric(person.kpi)}</td></tr>)}</tbody></table>{!data.people.length && <div className="emptyInline">当前月份没有可统计的值班人员</div>}</div>
+  </>;
 }
 
 function QualityTable({ items, excluded, onOverride }: { items: QualityItem[]; excluded: boolean; onOverride: (sourceItemId: string, value: QualityOverride) => void }) {
