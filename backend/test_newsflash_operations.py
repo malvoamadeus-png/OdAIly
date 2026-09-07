@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from packages.common.storage import connect_sqlite
@@ -66,7 +67,7 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(human["publisher_kind"], "human")
         self.assertEqual(automated["publisher_kind"], "odaily_ai")
 
-    def test_newsflash_list_recovers_odaily_ai_when_operation_fact_is_missing(self) -> None:
+    def test_newsflash_list_does_not_reconcile_missing_operation_fact(self) -> None:
         self.add_reference("missing-odaily-fact", "Missing operation fact", "2026-07-20T10:00:00+08:00")
         with connect_sqlite(self.path) as conn:
             conn.execute("INSERT INTO tasks(source,source_item_id,content) VALUES ('x','missing-task','source')")
@@ -77,12 +78,13 @@ class NewsflashOperationsTest(unittest.TestCase):
             )
             conn.commit()
 
-        result = self.repository.list_newsflashes({"search": "missing-odaily-fact"})
+        with patch.object(self.repository, "_match_odaily_task", side_effect=AssertionError("read path must not reconcile publishers")):
+            result = self.repository.list_newsflashes({"search": "missing-odaily-fact"})
+            summary = self.repository.get_summary({"week_start": "2026-07-20"})
 
-        self.assertEqual(result["items"][0]["publisher_kind"], "odaily_ai")
-        summary = self.repository.get_summary({"week_start": "2026-07-20"})
+        self.assertEqual(result["items"][0]["publisher_kind"], "other_ai")
         odaily_row = next(row for row in summary["rows"] if row["person_key"] == "odaily_ai")
-        self.assertEqual(odaily_row["published_count"], 1)
+        self.assertEqual(odaily_row["published_count"], 0)
         with connect_sqlite(self.path) as conn:
             fact = conn.execute(
                 "SELECT publisher_kind FROM newsflash_operation_facts WHERE source_item_id=?",
@@ -90,7 +92,7 @@ class NewsflashOperationsTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(fact)
 
-    def test_newsflash_list_reclassifies_unlocked_null_publisher_fact(self) -> None:
+    def test_newsflash_list_does_not_reclassify_unlocked_null_publisher_fact(self) -> None:
         self.add_reference("null-odaily-fact", "Null publisher fact", "2026-07-20T10:00:00+08:00")
         with connect_sqlite(self.path) as conn:
             conn.execute(
@@ -107,7 +109,7 @@ class NewsflashOperationsTest(unittest.TestCase):
 
         result = self.repository.list_newsflashes({"search": "null-odaily-fact"})
 
-        self.assertEqual(result["items"][0]["publisher_kind"], "odaily_ai")
+        self.assertEqual(result["items"][0]["publisher_kind"], "other_ai")
 
     def test_newsflash_list_normalizes_historical_odaily_operator_name(self) -> None:
         self.add_reference("historical-odaily-name", "Historical OdAIly name", "2026-07-20T10:00:00+08:00")

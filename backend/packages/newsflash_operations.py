@@ -271,6 +271,11 @@ class NewsflashOperationsRepository:
                 event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
                 if "first_sources" not in event_columns:
                     conn.execute("ALTER TABLE newsflash_events ADD COLUMN first_sources text NOT NULL DEFAULT '[]'")
+            if self._table_exists(conn, "x_task_pipeline"):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_x_task_pipeline_final_title_published "
+                    "ON x_task_pipeline(final_title) WHERE publish_completed_at IS NOT NULL"
+                )
             fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts)").fetchall()}
             if "quality_override" not in fact_columns:
                 conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN quality_override text NOT NULL DEFAULT 'none'")
@@ -361,6 +366,7 @@ class NewsflashOperationsRepository:
     ) -> dict[str, int]:
         matched = 0
         skipped = 0
+        matched_source_item_ids: list[str] = []
         with connect_sqlite(self.path) as conn:
             for fact in facts:
                 source_item_id = _as_source_item_id(fact.get("source_item_id"))
@@ -382,6 +388,7 @@ class NewsflashOperationsRepository:
                 if existing and existing["publisher_locked"]:
                     publisher_kind = None
                     publisher_person_key = None
+                matched_source_item_ids.append(source_item_id)
                 conn.execute(
                     """
                     INSERT INTO newsflash_operation_facts(
@@ -413,21 +420,32 @@ class NewsflashOperationsRepository:
                 )
                 matched += 1
             conn.commit()
-        reconciled = self.reconcile_ai_publishers()
+        reconciled = self.reconcile_ai_publishers(source_item_ids=matched_source_item_ids)
         return {"read": len(facts), "matched": matched, "skipped": skipped, "reconciled_odaily": reconciled}
 
-    def reconcile_ai_publishers(self) -> int:
+    def reconcile_ai_publishers(self, *, source_item_ids: Iterable[str] | None = None) -> int:
         now = datetime.now(SHANGHAI_TZ)
         updated = 0
         with connect_sqlite(self.path) as conn:
+            normalized_ids = [_as_source_item_id(value) for value in source_item_ids or () if _as_source_item_id(value)]
+            if source_item_ids is not None and not normalized_ids:
+                return 0
+            scope_clause = ""
+            scope_params: list[Any] = []
+            if normalized_ids:
+                placeholders = ",".join("?" for _ in normalized_ids)
+                scope_clause = f" AND f.source_item_id IN ({placeholders})"
+                scope_params.extend(normalized_ids)
             rows = conn.execute(
-                """
+                f"""
                 SELECT f.source_item_id,r.title,r.published_at
                 FROM newsflash_operation_facts f
                 JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
                 WHERE f.publisher_locked=0 AND (f.operator_raw IS NULL OR trim(f.operator_raw)='')
                   AND f.publisher_kind IN ('pending_ai','other_ai')
-                """
+                  {scope_clause}
+                """,
+                scope_params,
             ).fetchall()
             for row in rows:
                 published = _parse_datetime(row["published_at"])
@@ -470,7 +488,7 @@ class NewsflashOperationsRepository:
                 return True
         return False
 
-    def _effective_publisher(self, conn, *, source_item_id: str, title: str | None, published_at: Any, operator_raw: str | None, publisher_kind: str | None, publisher_person_key: str | None, publisher_locked: bool = False) -> tuple[str | None, str | None]:
+    def _effective_publisher(self, conn, *, published_at: Any, operator_raw: str | None, publisher_kind: str | None, publisher_person_key: str | None, publisher_locked: bool = False) -> tuple[str | None, str | None]:
         if publisher_locked:
             return publisher_kind, publisher_person_key
         if _is_odaily_operator(operator_raw):
@@ -483,8 +501,6 @@ class NewsflashOperationsRepository:
             person_key = self._person_for_alias(conn, operator_raw)
             return ("human" if person_key else "human_unmapped"), person_key
         published = _parse_datetime(published_at)
-        if published is not None and self._match_odaily_task(conn, source_item_id, title, published):
-            return "odaily_ai", None
         if published is not None and datetime.now(SHANGHAI_TZ) - published >= timedelta(minutes=10):
             return "other_ai", None
         return "pending_ai", None
@@ -766,8 +782,6 @@ class NewsflashOperationsRepository:
                 item = dict(row)
                 item["publisher_kind"], item["publisher_person_key"] = self._effective_publisher(
                     conn,
-                    source_item_id=str(item["source_item_id"]),
-                    title=item.get("title"),
                     published_at=item.get("published_at"),
                     operator_raw=item.get("operator_raw"),
                     publisher_kind=item.get("publisher_kind"),
@@ -1082,8 +1096,6 @@ class NewsflashOperationsRepository:
                 item = dict(row)
                 item["publisher_kind"], item["publisher_person_key"] = self._effective_publisher(
                     conn,
-                    source_item_id=str(item["source_item_id"]),
-                    title=item.get("title"),
                     published_at=item.get("published_at"),
                     operator_raw=item.get("operator_raw"),
                     publisher_kind=item.get("publisher_kind"),

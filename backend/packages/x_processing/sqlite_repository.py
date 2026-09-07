@@ -478,6 +478,7 @@ CREATE TABLE IF NOT EXISTS search_event_candidates (id integer PRIMARY KEY AUTOI
 CREATE TABLE IF NOT EXISTS search_event_sources (id integer PRIMARY KEY AUTOINCREMENT, candidate_id integer NOT NULL REFERENCES search_event_candidates(id) ON DELETE CASCADE, task_id integer REFERENCES tasks(id) ON DELETE SET NULL, source text NOT NULL, source_item_id text NOT NULL, source_url text, title text, content text NOT NULL, role text NOT NULL CHECK(role IN ('primary','supporting')), metadata text NOT NULL DEFAULT '{}', created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(candidate_id, task_id));
 CREATE INDEX IF NOT EXISTS idx_tasks_status_lock ON tasks(status, locked_until, created_at);
 CREATE INDEX IF NOT EXISTS idx_x_task_pipeline_candidate ON x_task_pipeline(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_x_task_pipeline_final_title_published ON x_task_pipeline(final_title) WHERE publish_completed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_odaily_reference_published ON odaily_reference_items(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_search_candidates_status_expires ON search_event_candidates(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_search_candidates_hash ON search_event_candidates(content_hash);
