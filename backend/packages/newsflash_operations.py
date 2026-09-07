@@ -1474,8 +1474,7 @@ class NewsflashOperationsRepository:
             items = [row for row in rows if row["contributor_person_key"] == person["person_key"]]
             views = [int(row["view_count"]) for row in items if row["view_count"] is not None]
             base_score_total = round(sum(float(item["base_score"]) for item in items), 10)
-            high_view_bonus_count = sum(1 for item in items if float(item["high_view_bonus"]) > 0)
-            high_view_bonus = round(sum(float(item["high_view_bonus"]) for item in items), 10)
+            high_view_bonus_count, high_view_bonus = self._apply_contribution_bonus_cap(items, base_score_total)
             base_score_capped = min(base_score_total, CONTRIBUTION_SCORE_CAP)
             groups.append({
                 **person,
@@ -1487,7 +1486,7 @@ class NewsflashOperationsRepository:
                 "base_score_capped": base_score_capped,
                 "high_view_bonus_count": high_view_bonus_count,
                 "high_view_bonus": high_view_bonus,
-                "total_score": round(base_score_capped + high_view_bonus, 10),
+                "total_score": round(min(base_score_total, base_score_capped + high_view_bonus), 10),
                 "items": items,
             })
         return {
@@ -1502,6 +1501,17 @@ class NewsflashOperationsRepository:
             },
             "groups": groups,
         }
+
+    @staticmethod
+    def _apply_contribution_bonus_cap(items: list[dict[str, Any]], base_score_total: float) -> tuple[int, float]:
+        """Count 2A bonuses only after the raw base score reaches five."""
+        if base_score_total < CONTRIBUTION_SCORE_CAP:
+            for item in items:
+                item["high_view_bonus"] = 0.0
+            return 0, 0.0
+        bonus_count = sum(1 for item in items if float(item.get("high_view_bonus") or 0) > 0)
+        bonus = round(sum(float(item.get("high_view_bonus") or 0) for item in items), 10)
+        return bonus_count, bonus
 
     def list_contributions(self, payload: dict[str, Any]) -> dict[str, Any]:
         start = _week_start(date.fromisoformat(str(payload.get("week_start") or _week_start(datetime.now(SHANGHAI_TZ).date()))))

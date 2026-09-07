@@ -299,7 +299,7 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(items["score-three-quarter"]["score"], 0.5)
         self.assertEqual(items["score-two-a"]["score"], 0.5)
         self.assertEqual(items["score-over-two-a"]["base_score"], 1.0)
-        self.assertEqual(items["score-over-two-a"]["high_view_bonus"], 0.5)
+        self.assertEqual(items["score-over-two-a"]["high_view_bonus"], 0)
         self.assertEqual(items["score-over-two-a"]["score"], 1.0)
         self.assertEqual(items["score-night"]["base_score"], 0.5)
         self.assertEqual(items["score-night"]["high_view_bonus"], 0)
@@ -308,11 +308,11 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(items["score-regular-missing"]["score"], 0)
         self.assertEqual(asher["base_score_total"], 3.25)
         self.assertEqual(asher["base_score_capped"], 3.25)
-        self.assertEqual(asher["high_view_bonus_count"], 1)
-        self.assertEqual(asher["high_view_bonus"], 0.5)
-        self.assertEqual(asher["total_score"], 3.75)
+        self.assertEqual(asher["high_view_bonus_count"], 0)
+        self.assertEqual(asher["high_view_bonus"], 0)
+        self.assertEqual(asher["total_score"], 3.25)
 
-    def test_contribution_score_cap_does_not_cap_high_view_bonus(self) -> None:
+    def test_contribution_score_cap_limits_final_score_after_bonus(self) -> None:
         references = [("cap-base", "Baseline", "2026-08-11T08:00:00+08:00")]
         references += [(f"cap-asher-{index}", f"Asher {index}", "2026-08-11T09:00:00+08:00") for index in range(30)]
         references += [(f"cap-zoey-{index}", f"Zoey {index}", "2026-08-11T10:00:00+08:00") for index in range(29)]
@@ -457,11 +457,36 @@ class NewsflashOperationsTest(unittest.TestCase):
         asher = next(person for person in result["people"] if person["person_key"] == "asher")
         weekly = {week["week_start"]: week for week in asher["weeks"]}
         self.assertEqual(weekly["2026-07-06"]["total_score"], 0.5)
-        self.assertEqual(weekly["2026-07-13"]["total_score"], 1.5)
+        self.assertEqual(weekly["2026-07-13"]["total_score"], 1)
         self.assertEqual(asher["count"], 2)
         self.assertEqual(asher["total_views"], 400)
         self.assertEqual(asher["average_views"], 200)
-        self.assertEqual(asher["total_score"], 2)
+        self.assertEqual(asher["total_score"], 1.5)
+
+    def test_contribution_score_matches_four_ones_and_eight_halves_example(self) -> None:
+        items = [
+            {"base_score": 1.0, "high_view_bonus": 0.5} for _ in range(4)
+        ] + [
+            {"base_score": 0.5, "high_view_bonus": 0.0} for _ in range(8)
+        ]
+        base_total = sum(item["base_score"] for item in items)
+
+        count, bonus = self.repository._apply_contribution_bonus_cap(items, base_total)
+
+        self.assertEqual((count, bonus), (4, 2.0))
+        self.assertEqual(min(base_total, 5 + bonus), 7.0)
+
+    def test_contribution_score_allows_only_room_after_five_base_points(self) -> None:
+        items = [
+            {"base_score": 0.5, "high_view_bonus": 0.0} for _ in range(10)
+        ] + [{"base_score": 1.0, "high_view_bonus": 0.5}]
+        base_total = sum(item["base_score"] for item in items)
+
+        count, bonus = self.repository._apply_contribution_bonus_cap(items, base_total)
+
+        self.assertEqual(base_total, 6.0)
+        self.assertEqual((count, bonus), (1, 0.5))
+        self.assertEqual(min(base_total, 5 + bonus), 5.5)
 
     def test_xlsx_import_updates_existing_rows_and_skips_missing_ids(self) -> None:
         self.add_reference("30", "Old title", "2026-07-20T08:00:00+08:00")
