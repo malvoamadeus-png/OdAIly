@@ -150,12 +150,14 @@ class NewsflashOperationsTest(unittest.TestCase):
         asher = next(group for group in contributions["groups"] if group["person_key"] == "asher")
         self.assertEqual(asher["count"], 1)
 
-    def test_odaily_ai_can_be_marked_as_contribution_but_other_ai_cannot(self) -> None:
+    def test_any_publisher_kind_can_be_marked_as_contribution(self) -> None:
         self.add_reference("odaily-ai-contribution", "OdAIly contribution", "2026-07-20T10:00:00+08:00")
         self.add_reference("other-ai-contribution", "Other AI contribution", "2026-07-20T11:00:00+08:00")
+        self.add_reference("pending-ai-contribution", "Pending AI contribution", "2026-07-20T12:00:00+08:00")
         self.repository.upsert_source_facts([
             {"source_item_id": "odaily-ai-contribution", "operator_raw": None, "view_count": 100, "is_pushed": 0},
             {"source_item_id": "other-ai-contribution", "operator_raw": None, "view_count": 100, "is_pushed": 0},
+            {"source_item_id": "pending-ai-contribution", "operator_raw": None, "view_count": 100, "is_pushed": 0},
         ])
         with connect_sqlite(self.path) as conn:
             conn.execute(
@@ -166,6 +168,10 @@ class NewsflashOperationsTest(unittest.TestCase):
                 "UPDATE newsflash_operation_facts SET publisher_kind='other_ai' WHERE source_item_id=?",
                 ("other-ai-contribution",),
             )
+            conn.execute(
+                "UPDATE newsflash_operation_facts SET publisher_kind='pending_ai' WHERE source_item_id=?",
+                ("pending-ai-contribution",),
+            )
             conn.commit()
 
         self.repository.update_newsflash(
@@ -175,19 +181,31 @@ class NewsflashOperationsTest(unittest.TestCase):
             },
             actor_email="test@example.com",
         )
-        with self.assertRaisesRegex(ValueError, "AI newsflash cannot be marked as contribution"):
-            self.repository.update_newsflash(
-                {
-                    "source_item_id": "other-ai-contribution",
-                    "patch": {"contributor_person_key": "asher", "is_contribution": True},
-                },
-                actor_email="test@example.com",
-            )
+        self.repository.update_newsflash(
+            {
+                "source_item_id": "other-ai-contribution",
+                "patch": {"contributor_person_key": "asher", "is_contribution": True},
+            },
+            actor_email="test@example.com",
+        )
 
         result = self.repository.list_newsflashes({"search": "odaily-ai-contribution"})
         self.assertTrue(result["items"][0]["is_contribution"])
         self.assertEqual(result["items"][0]["contributor_person_key"], "asher")
         self.assertEqual(result["items"][0]["contribution_type"], "night")
+        other_result = self.repository.list_newsflashes({"search": "other-ai-contribution"})
+        self.assertTrue(other_result["items"][0]["is_contribution"])
+        self.assertEqual(other_result["items"][0]["contributor_person_key"], "asher")
+        self.repository.update_newsflash(
+            {
+                "source_item_id": "pending-ai-contribution",
+                "patch": {"contributor_person_key": "asher", "is_contribution": True},
+            },
+            actor_email="test@example.com",
+        )
+        pending_result = self.repository.list_newsflashes({"search": "pending-ai-contribution"})
+        self.assertTrue(pending_result["items"][0]["is_contribution"])
+        self.assertEqual(pending_result["items"][0]["contributor_person_key"], "asher")
 
     def test_contribution_first_source_can_be_overridden_and_cleared(self) -> None:
         self.add_reference("first-source-override", "可修正首发单位", "2026-08-10T10:00:00+08:00")

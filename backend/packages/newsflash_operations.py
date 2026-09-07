@@ -803,17 +803,6 @@ class NewsflashOperationsRepository:
                 raise ValueError("newsflash not found")
             conn.execute("INSERT INTO newsflash_operation_facts(source_item_id) VALUES (?) ON CONFLICT(source_item_id) DO NOTHING", (source_item_id,))
             before = dict(conn.execute("SELECT * FROM newsflash_operation_facts WHERE source_item_id=?", (source_item_id,)).fetchone())
-            reference = conn.execute("SELECT title,published_at FROM odaily_reference_items WHERE source_item_id=?", (source_item_id,)).fetchone()
-            effective_kind, effective_person_key = self._effective_publisher(
-                conn,
-                source_item_id=source_item_id,
-                title=reference["title"] if reference else None,
-                published_at=reference["published_at"] if reference else None,
-                operator_raw=before.get("operator_raw"),
-                publisher_kind=before.get("publisher_kind"),
-                publisher_person_key=before.get("publisher_person_key"),
-                publisher_locked=bool(before.get("publisher_locked")),
-            )
             data = dict(patch)
             if "contribution_type" in data and data["contribution_type"] not in CONTRIBUTION_TYPES:
                 raise ValueError("invalid contribution type")
@@ -833,10 +822,6 @@ class NewsflashOperationsRepository:
                     data["contribution_type"] = "regular"
                 elif not (data.get("contributor_person_key") or before.get("contributor_person_key")):
                     raise ValueError("contributor is required")
-            resulting_contribution = bool(data.get("is_contribution", before.get("is_contribution")))
-            resulting_kind = str(data.get("publisher_kind", effective_kind) or "")
-            if resulting_contribution and resulting_kind in {"other_ai", "pending_ai"}:
-                raise ValueError("AI newsflash cannot be marked as contribution")
             if "publisher_kind" in data:
                 if data["publisher_kind"] not in PUBLISHER_KINDS - {"pending_ai"}:
                     raise ValueError("invalid publisher kind")
