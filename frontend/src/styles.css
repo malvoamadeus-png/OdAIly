@@ -736,28 +736,26 @@ body {
 }
 
 .monthlyChartPanel {
-  margin-top: 22px;
-  padding: 16px;
-  border: 1px solid #dbe5e2;
-  border-radius: 12px;
-  background: #fcfefd;
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid #e2ebe8;
 }
 
 .monthlyChartHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
+  gap: 10px 14px;
 }
 
 .monthlyChartHeader h3 {
   margin: 0;
   color: #21483e;
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .monthlyChartHeader p {
-  margin: 5px 0 0;
+  margin: 3px 0 0;
   color: #74817f;
   font-size: 12px;
 }
@@ -781,22 +779,29 @@ body {
 .chartAxisDotRight { margin-left: 8px; background: #c37a4a; }
 
 .monthlyChartControls {
-  display: grid;
-  grid-template-columns: minmax(210px, 1fr) minmax(210px, 1fr) minmax(260px, 1.3fr);
-  gap: 12px;
-  margin-top: 14px;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 10px;
+  padding: 8px 0 9px;
+  border-bottom: 1px solid #edf2f0;
 }
 
-.monthlyChartControls fieldset {
+.monthlyChartFilterGroup {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
   min-width: 0;
-  margin: 0;
-  padding: 10px 12px 12px;
-  border: 1px solid #e0e8e5;
-  border-radius: 9px;
 }
 
-.monthlyChartControls legend {
-  padding: 0 5px;
+.monthlyChartPeopleGroup {
+  flex: 1 1 360px;
+}
+
+.monthlyChartFilterLabel {
+  flex: 0 0 auto;
+  padding-top: 4px;
   color: #31574d;
   font-size: 12px;
   font-weight: 700;
@@ -805,14 +810,18 @@ body {
 .monthlyChartCheckboxes {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 6px 8px;
 }
 
 .monthlyChartCheckboxes label {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 24px;
+  min-height: 23px;
+  padding: 2px 7px;
+  border: 1px solid #e0e9e5;
+  border-radius: 999px;
+  background: #fff;
   color: #43514f;
   font-size: 12px;
   cursor: pointer;
@@ -827,8 +836,14 @@ body {
   font-size: 10px;
 }
 
+.monthlyChartCheckboxes label:has(input:checked) {
+  border-color: #9bcabc;
+  background: #edf8f4;
+  color: #075f49;
+}
+
 .monthlyChartPeople {
-  max-height: 74px;
+  max-height: 58px;
   overflow-y: auto;
 }
 
@@ -838,15 +853,15 @@ body {
 }
 
 .monthlyChartCanvas {
-  margin-top: 14px;
+  margin-top: 4px;
   overflow-x: auto;
 }
 
 .monthlyChartCanvas svg {
   display: block;
   width: 100%;
-  min-width: 700px;
-  height: auto;
+  min-width: 660px;
+  height: 300px;
 }
 
 .monthlyChartGrid {
@@ -889,7 +904,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 7px 14px;
+  max-height: 46px;
   margin: 2px 12px 0 62px;
+  overflow-y: auto;
   color: #66717d;
   font-size: 11px;
 }
@@ -910,12 +927,28 @@ body {
 .monthlyChartEmpty {
   display: grid;
   place-items: center;
-  min-height: 180px;
-  margin-top: 14px;
+  min-height: 140px;
+  margin-top: 8px;
   border: 1px dashed #cbdad5;
   border-radius: 9px;
   color: #7b8793;
   font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .monthlyChartHeader {
+    display: block;
+  }
+
+  .monthlyChartLegendHint {
+    margin-top: 8px;
+    white-space: normal;
+  }
+
+  .monthlyChartFilterGroup,
+  .monthlyChartPeopleGroup {
+    flex-basis: 100%;
+  }
 }
 
 .qualityMetrics {

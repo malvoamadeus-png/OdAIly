@@ -505,18 +505,18 @@ function ContributionMonthlyOverview({ data }: { data: ContributionsMonthlyPaylo
     <div className="contributionMonthlyMeta"><span>共 {data.weeks.length} 个归属周</span><span>月度总分 = 各归属周人员总分相加</span><span>平均浏览量仅按已知浏览量计算</span></div>
     {data.insufficient_week_count > 0 && <div className="notice error">{data.insufficient_week_count} 个周没有可计算 A 的已知推送浏览量；这些周的常规贡献快讯记 0 分，夜间 / PPP 仍按 0.5 分计。</div>}
     <div className="newsflashTableWrap contributionMonthlyTableWrap"><table className="newsflashTable contributionMonthlyTable"><thead><tr><th rowSpan={2}>人员</th>{data.weeks.map((week) => <th colSpan={4} key={week.week_start}><span>{formatWeekRange(week.week_start, week.week_end)}</span><small className={week.status === 'ready' ? 'monthlyWeekReady' : 'monthlyWeekInsufficient'}>{week.status === 'ready' ? 'A可用' : 'A不足'}</small></th>)}<th colSpan={4}>月份合计</th></tr><tr>{data.weeks.map((week) => [<th key={`${week.week_start}:count`}>条数</th>, <th key={`${week.week_start}:score`}>总分</th>, <th key={`${week.week_start}:views`}>总浏览量</th>, <th key={`${week.week_start}:average`}>平均浏览量</th>])}<th>条数</th><th>总分</th><th>总浏览量</th><th>平均浏览量</th></tr></thead><tbody>{data.people.map((person) => <tr key={person.person_key}><td className="monthlyPersonCell"><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></td>{data.weeks.map((week) => { const metrics = person.weeks.find((item) => item.week_start === week.week_start); return [<td className="numberCell" key={`${person.person_key}:${week.week_start}:count`}>{metrics?.count ?? 0}</td>, <td className="numberCell contributionItemScore" key={`${person.person_key}:${week.week_start}:score`}>{scoreValue(metrics?.total_score ?? 0)}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:views`}>{(metrics?.total_views ?? 0).toLocaleString()}</td>, <td className="numberCell" key={`${person.person_key}:${week.week_start}:average`}>{monthlyAverage(metrics?.average_views ?? null, metrics?.view_coverage || { known: 0, total: 0 })}</td>]; })}<td className="numberCell">{person.count}</td><td className="numberCell contributionItemScore monthlyTotalScore">{scoreValue(person.total_score)}</td><td className="numberCell">{person.total_views.toLocaleString()}</td><td className="numberCell">{monthlyAverage(person.average_views, person.view_coverage)}</td></tr>)}</tbody></table>{!data.people.length && <div className="emptyInline">当前月份没有启用的贡献者</div>}</div>
-    <div className="monthlyChartPanel">
+    <section className="monthlyChartPanel" aria-labelledby="monthly-chart-title">
       <div className="monthlyChartHeader">
-        <div><h3>月度贡献图表</h3><p>可同时选择多个周次、维度和人员；条数 / 总分使用左轴，浏览量使用右轴。</p></div>
+        <div><h3 id="monthly-chart-title">月度贡献图表</h3><p>可同时选择多个周次、维度和人员；条数 / 总分使用左轴，浏览量使用右轴。</p></div>
         <div className="monthlyChartLegendHint"><span className="chartAxisDot chartAxisDotLeft" />左轴：条数、总分 <span className="chartAxisDot chartAxisDotRight" />右轴：浏览量</div>
       </div>
       <div className="monthlyChartControls">
-        <fieldset><legend>时间</legend><div className="monthlyChartCheckboxes">{periods.map((period) => <label key={period.key}><input type="checkbox" checked={selectedPeriods.includes(period.key)} onChange={() => toggleSelection(selectedPeriods, period.key, setSelectedPeriods)} /><span>{period.label}</span><small>{period.detail}</small></label>)}</div></fieldset>
-        <fieldset><legend>维度</legend><div className="monthlyChartCheckboxes">{monthlyChartMetricOrder.map((metric) => <label key={metric}><input type="checkbox" checked={selectedMetrics.includes(metric)} onChange={() => toggleSelection(selectedMetrics, metric, setSelectedMetrics)} /><span>{monthlyChartMetricLabels[metric]}</span></label>)}</div></fieldset>
-        <fieldset><legend>人员</legend><div className="monthlyChartCheckboxes monthlyChartPeople">{data.people.map((person) => <label key={person.person_key}><input type="checkbox" checked={selectedPeople.includes(person.person_key)} onChange={() => toggleSelection(selectedPeople, person.person_key, setSelectedPeople)} /><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></label>)}</div></fieldset>
+        <div className="monthlyChartFilterGroup"><span className="monthlyChartFilterLabel">时间</span><div className="monthlyChartCheckboxes">{periods.map((period) => <label key={period.key}><input type="checkbox" checked={selectedPeriods.includes(period.key)} onChange={() => toggleSelection(selectedPeriods, period.key, setSelectedPeriods)} /><span>{period.label}</span><small>{period.detail}</small></label>)}</div></div>
+        <div className="monthlyChartFilterGroup"><span className="monthlyChartFilterLabel">维度</span><div className="monthlyChartCheckboxes">{monthlyChartMetricOrder.map((metric) => <label key={metric}><input type="checkbox" checked={selectedMetrics.includes(metric)} onChange={() => toggleSelection(selectedMetrics, metric, setSelectedMetrics)} /><span>{monthlyChartMetricLabels[metric]}</span></label>)}</div></div>
+        <div className="monthlyChartFilterGroup monthlyChartPeopleGroup"><span className="monthlyChartFilterLabel">人员</span><div className="monthlyChartCheckboxes monthlyChartPeople">{data.people.map((person) => <label key={person.person_key}><input type="checkbox" checked={selectedPeople.includes(person.person_key)} onChange={() => toggleSelection(selectedPeople, person.person_key, setSelectedPeople)} /><span className="personColorChip" style={personColor(person.person_key)}>{person.display_name}</span></label>)}</div></div>
       </div>
       <MonthlyContributionChart periods={visiblePeriods} people={visiblePeople} metrics={visibleMetrics} />
-    </div>
+    </section>
     <div className="contributionMonthlyFootnote">周列按自然周展示，跨月周只有被排班表归属到本月时才会计入；月度总分不会把所有快讯跨周重新套用同一个 A。</div>
   </>;
 }
@@ -526,7 +526,7 @@ type MonthlyChartPerson = ContributionsMonthlyPayload['people'][number];
 
 function MonthlyContributionChart({ periods, people, metrics }: { periods: MonthlyChartPeriod[]; people: MonthlyChartPerson[]; metrics: MonthlyChartMetric[] }) {
   const width = 1080;
-  const height = 430;
+  const height = 360;
   const margin = { top: 28, right: 68, bottom: 64, left: 62 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;

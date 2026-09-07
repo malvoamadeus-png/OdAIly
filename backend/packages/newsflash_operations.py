@@ -193,6 +193,11 @@ def _normalize_alias(value: str | None) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
+def _is_odaily_operator(value: str | None) -> bool:
+    normalized = _normalize_alias(value).replace(" ", "")
+    return normalized in {"odaily", "odailyai"}
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
@@ -340,6 +345,8 @@ class NewsflashOperationsRepository:
         return str(row["person_key"]) if row else None
 
     def _classify_operator(self, conn, operator_raw: str | None) -> tuple[str, str | None]:
+        if _is_odaily_operator(operator_raw):
+            return "odaily_ai", None
         if str(operator_raw or "").strip():
             person_key = self._person_for_alias(conn, operator_raw)
             return ("human" if person_key else "human_unmapped", person_key)
@@ -461,6 +468,25 @@ class NewsflashOperationsRepository:
             if completed and abs((completed - published).total_seconds()) <= 300:
                 return True
         return False
+
+    def _effective_publisher(self, conn, *, source_item_id: str, title: str | None, published_at: Any, operator_raw: str | None, publisher_kind: str | None, publisher_person_key: str | None, publisher_locked: bool = False) -> tuple[str | None, str | None]:
+        if publisher_locked:
+            return publisher_kind, publisher_person_key
+        if _is_odaily_operator(operator_raw):
+            return "odaily_ai", None
+        if publisher_kind and publisher_kind != "human_unmapped":
+            return publisher_kind, publisher_person_key
+        if publisher_kind:
+            return publisher_kind, publisher_person_key
+        if str(operator_raw or "").strip():
+            person_key = self._person_for_alias(conn, operator_raw)
+            return ("human" if person_key else "human_unmapped"), person_key
+        published = _parse_datetime(published_at)
+        if published is not None and self._match_odaily_task(conn, source_item_id, title, published):
+            return "odaily_ai", None
+        if published is not None and datetime.now(SHANGHAI_TZ) - published >= timedelta(minutes=10):
+            return "other_ai", None
+        return "pending_ai", None
 
     def _remote_ids_from_push_result(self, raw: Any) -> set[str]:
         payload = _decode(raw, {})
@@ -737,6 +763,16 @@ class NewsflashOperationsRepository:
             data = []
             for row in rows:
                 item = dict(row)
+                item["publisher_kind"], item["publisher_person_key"] = self._effective_publisher(
+                    conn,
+                    source_item_id=str(item["source_item_id"]),
+                    title=item.get("title"),
+                    published_at=item.get("published_at"),
+                    operator_raw=item.get("operator_raw"),
+                    publisher_kind=item.get("publisher_kind"),
+                    publisher_person_key=item.get("publisher_person_key"),
+                    publisher_locked=bool(item.get("publisher_locked")),
+                )
                 item["publisher_locked"] = bool(item.get("publisher_locked"))
                 item["is_contribution"] = bool(item.get("is_contribution"))
                 item["is_pushed"] = None if item.get("is_pushed") is None else bool(item["is_pushed"])
@@ -767,6 +803,17 @@ class NewsflashOperationsRepository:
                 raise ValueError("newsflash not found")
             conn.execute("INSERT INTO newsflash_operation_facts(source_item_id) VALUES (?) ON CONFLICT(source_item_id) DO NOTHING", (source_item_id,))
             before = dict(conn.execute("SELECT * FROM newsflash_operation_facts WHERE source_item_id=?", (source_item_id,)).fetchone())
+            reference = conn.execute("SELECT title,published_at FROM odaily_reference_items WHERE source_item_id=?", (source_item_id,)).fetchone()
+            effective_kind, effective_person_key = self._effective_publisher(
+                conn,
+                source_item_id=source_item_id,
+                title=reference["title"] if reference else None,
+                published_at=reference["published_at"] if reference else None,
+                operator_raw=before.get("operator_raw"),
+                publisher_kind=before.get("publisher_kind"),
+                publisher_person_key=before.get("publisher_person_key"),
+                publisher_locked=bool(before.get("publisher_locked")),
+            )
             data = dict(patch)
             if "contribution_type" in data and data["contribution_type"] not in CONTRIBUTION_TYPES:
                 raise ValueError("invalid contribution type")
@@ -787,7 +834,7 @@ class NewsflashOperationsRepository:
                 elif not (data.get("contributor_person_key") or before.get("contributor_person_key")):
                     raise ValueError("contributor is required")
             resulting_contribution = bool(data.get("is_contribution", before.get("is_contribution")))
-            resulting_kind = str(data.get("publisher_kind", before.get("publisher_kind")) or "")
+            resulting_kind = str(data.get("publisher_kind", effective_kind) or "")
             if resulting_contribution and resulting_kind in {"other_ai", "pending_ai"}:
                 raise ValueError("AI newsflash cannot be marked as contribution")
             if "publisher_kind" in data:
@@ -1033,40 +1080,50 @@ class NewsflashOperationsRepository:
             period_end = datetime.combine(max(dates) + timedelta(days=2), time(0, 0), SHANGHAI_TZ)
             source_rows = conn.execute(
                 """
-                SELECT r.source_item_id,r.published_at,f.publisher_kind,f.publisher_person_key,f.view_count,
+                SELECT r.source_item_id,r.title,r.published_at,f.publisher_kind,f.publisher_person_key,f.operator_raw,f.publisher_locked,f.view_count,
                        f.is_pushed,f.is_contribution
-                FROM odaily_reference_items r JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
+                FROM odaily_reference_items r LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
                 WHERE datetime(r.published_at)>=datetime(?) AND datetime(r.published_at)<datetime(?)
                 """,
                 (period_start.isoformat(), period_end.isoformat()),
             ).fetchall()
             roster = {row["person_key"]: row["display_name"] for row in conn.execute("SELECT person_key,display_name FROM newsflash_roster").fetchall()}
-        assigned: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-        unassigned = 0
-        ai_by_day: dict[str, list[dict[str, Any]]] = {}
-        date_set = set(dates)
-        for row in source_rows:
-            item = dict(row)
-            item["is_pushed"] = None if item["is_pushed"] is None else bool(item["is_pushed"])
-            moment = _parse_datetime(item["published_at"])
-            if moment is None:
-                continue
-            if item["publisher_kind"] == "odaily_ai" and moment.date() in date_set:
-                ai_by_day.setdefault(moment.date().isoformat(), []).append(item)
-                continue
-            if item["publisher_kind"] == "human_unmapped":
-                if moment.date() in date_set:
-                    unassigned += 1
-                continue
-            if item["publisher_kind"] != "human" or item["is_contribution"]:
-                continue
-            window = self._assign_window(moment, str(item["publisher_person_key"] or ""), windows)
-            if window is None:
-                if moment.date() in date_set:
-                    unassigned += 1
-                continue
-            key = (window.duty_date.isoformat(), window.shift_key, window.person_key)
-            assigned.setdefault(key, []).append(item)
+            assigned: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+            unassigned = 0
+            ai_by_day: dict[str, list[dict[str, Any]]] = {}
+            date_set = set(dates)
+            for row in source_rows:
+                item = dict(row)
+                item["publisher_kind"], item["publisher_person_key"] = self._effective_publisher(
+                    conn,
+                    source_item_id=str(item["source_item_id"]),
+                    title=item.get("title"),
+                    published_at=item.get("published_at"),
+                    operator_raw=item.get("operator_raw"),
+                    publisher_kind=item.get("publisher_kind"),
+                    publisher_person_key=item.get("publisher_person_key"),
+                    publisher_locked=bool(item.get("publisher_locked")),
+                )
+                item["is_pushed"] = None if item["is_pushed"] is None else bool(item["is_pushed"])
+                moment = _parse_datetime(item["published_at"])
+                if moment is None:
+                    continue
+                if item["publisher_kind"] == "odaily_ai" and moment.date() in date_set:
+                    ai_by_day.setdefault(moment.date().isoformat(), []).append(item)
+                    continue
+                if item["publisher_kind"] == "human_unmapped":
+                    if moment.date() in date_set:
+                        unassigned += 1
+                    continue
+                if item["publisher_kind"] != "human" or item["is_contribution"]:
+                    continue
+                window = self._assign_window(moment, str(item["publisher_person_key"] or ""), windows)
+                if window is None:
+                    if moment.date() in date_set:
+                        unassigned += 1
+                    continue
+                key = (window.duty_date.isoformat(), window.shift_key, window.person_key)
+                assigned.setdefault(key, []).append(item)
         rows = []
         for window in sorted(windows, key=lambda item: (item.duty_date, item.core_start, item.person_name)):
             key = (window.duty_date.isoformat(), window.shift_key, window.person_key)

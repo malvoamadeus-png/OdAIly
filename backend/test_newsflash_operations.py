@@ -66,6 +66,62 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(human["publisher_kind"], "human")
         self.assertEqual(automated["publisher_kind"], "odaily_ai")
 
+    def test_newsflash_list_recovers_odaily_ai_when_operation_fact_is_missing(self) -> None:
+        self.add_reference("missing-odaily-fact", "Missing operation fact", "2026-07-20T10:00:00+08:00")
+        with connect_sqlite(self.path) as conn:
+            conn.execute("INSERT INTO tasks(source,source_item_id,content) VALUES ('x','missing-task','source')")
+            task_id = conn.execute("SELECT id FROM tasks WHERE source_item_id='missing-task'").fetchone()[0]
+            conn.execute(
+                "INSERT INTO x_task_pipeline(task_id,final_title,publish_completed_at) VALUES (?,?,?)",
+                (task_id, "Missing operation fact", "2026-07-20T09:58:00+08:00"),
+            )
+            conn.commit()
+
+        result = self.repository.list_newsflashes({"search": "missing-odaily-fact"})
+
+        self.assertEqual(result["items"][0]["publisher_kind"], "odaily_ai")
+        summary = self.repository.get_summary({"week_start": "2026-07-20"})
+        odaily_row = next(row for row in summary["rows"] if row["person_key"] == "odaily_ai")
+        self.assertEqual(odaily_row["published_count"], 1)
+        with connect_sqlite(self.path) as conn:
+            fact = conn.execute(
+                "SELECT publisher_kind FROM newsflash_operation_facts WHERE source_item_id=?",
+                ("missing-odaily-fact",),
+            ).fetchone()
+        self.assertIsNone(fact)
+
+    def test_newsflash_list_reclassifies_unlocked_null_publisher_fact(self) -> None:
+        self.add_reference("null-odaily-fact", "Null publisher fact", "2026-07-20T10:00:00+08:00")
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "INSERT INTO newsflash_operation_facts(source_item_id,operator_raw,publisher_kind) VALUES (?,?,?)",
+                ("null-odaily-fact", None, None),
+            )
+            conn.execute("INSERT INTO tasks(source,source_item_id,content) VALUES ('x','null-task','source')")
+            task_id = conn.execute("SELECT id FROM tasks WHERE source_item_id='null-task'").fetchone()[0]
+            conn.execute(
+                "INSERT INTO x_task_pipeline(task_id,final_title,publish_completed_at) VALUES (?,?,?)",
+                (task_id, "Null publisher fact", "2026-07-20T09:58:00+08:00"),
+            )
+            conn.commit()
+
+        result = self.repository.list_newsflashes({"search": "null-odaily-fact"})
+
+        self.assertEqual(result["items"][0]["publisher_kind"], "odaily_ai")
+
+    def test_newsflash_list_normalizes_historical_odaily_operator_name(self) -> None:
+        self.add_reference("historical-odaily-name", "Historical OdAIly name", "2026-07-20T10:00:00+08:00")
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "INSERT INTO newsflash_operation_facts(source_item_id,operator_raw,publisher_kind) VALUES (?,?,?)",
+                ("historical-odaily-name", "OdAily", "human_unmapped"),
+            )
+            conn.commit()
+
+        result = self.repository.list_newsflashes({"search": "historical-odaily-name"})
+
+        self.assertEqual(result["items"][0]["publisher_kind"], "odaily_ai")
+
     def test_contribution_is_required_and_excluded_from_shift_summary(self) -> None:
         self.add_reference("10", "Counted", "2026-07-20T09:00:00+08:00")
         self.add_reference("11", "Contribution", "2026-07-20T10:00:00+08:00")
