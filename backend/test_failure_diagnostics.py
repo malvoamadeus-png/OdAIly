@@ -8,11 +8,11 @@ from packages.failure_diagnostics import FailureDiagnosticsStore
 def test_classify_failure_distinguishes_quota_timeout_and_upstream_5xx() -> None:
     quota = classify_failure("OpenAI error: insufficient_quota", status="search_failed")
     timeout = classify_failure(
-        "OpenAI request failed: model=gpt-5.6-luna timeout_seconds=90 error=Read timed out",
+        "OpenAI request failed: model=gpt-5.6-terra timeout_seconds=90 error=Read timed out",
         status="search_failed",
     )
     upstream = classify_failure(
-        "OpenAI request failed: model=gpt-5.6-luna status_code=503 body_prefix=upstream",
+        "OpenAI request failed: model=gpt-5.6-terra status_code=503 body_prefix=upstream",
         status="judge_failed",
     )
 
@@ -49,7 +49,7 @@ def test_store_joins_task_pipeline_queue_and_worker_evidence(tmp_path) -> None:
         )
         connection.execute(
             "INSERT INTO x_task_pipeline VALUES (?, ?, ?)",
-            (7, None, "OpenAI request failed: model=gpt-5.6-luna timeout_seconds=90 error=Read timed out"),
+            (7, None, "OpenAI request failed: model=gpt-5.6-terra timeout_seconds=90 error=Read timed out"),
         )
         connection.execute(
             "INSERT INTO pipeline_worker_heartbeats VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -84,7 +84,7 @@ def test_store_joins_task_pipeline_queue_and_worker_evidence(tmp_path) -> None:
 
     assert result is not None
     assert result["diagnosis"]["code"] == "ai_request_timeout"
-    assert result["diagnosis"]["evidence"]["model"] == "gpt-5.6-luna"
+    assert result["diagnosis"]["evidence"]["model"] == "gpt-5.6-terra"
     assert result["diagnosis"]["evidence"]["timeout_seconds"] == "90"
     assert result["queue"]["status"] == "exhausted"
     assert "job_id=19" in result["handoff_summary"]

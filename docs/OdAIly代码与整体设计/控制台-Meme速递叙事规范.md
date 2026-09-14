@@ -34,7 +34,7 @@ Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任�
 
 FxTwitter、Telegram 与 FOMO Thesis 由 HideOnBush 快速材料模块并行采集。HideOnBush 只返回 `evidence` 和各路诊断，不生成 OdAIly 正文；请求必须显式包含链和 CA，调用身份使用独立内部密钥，不复用 HideOnBush 用户登录和叙事次数限额。
 
-OdAIly 使用 `gpt-5.6-luna` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事；GMGN 作为市场价格适配器的用途不受影响。
+OdAIly 使用 `gpt-5.6-terra` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事；GMGN 作为市场价格适配器的用途不受影响。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 

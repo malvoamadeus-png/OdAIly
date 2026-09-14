@@ -304,7 +304,7 @@ SEARCH_EMBEDDING_MODEL=text-embedding-v4
 SEARCH_EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 SEARCH_WINDOW_HOURS=6
 SEARCH_DUPLICATE_THRESHOLD=0.88
-SEARCH_AI_REVIEW_MODEL=gpt-5.6-luna
+SEARCH_AI_REVIEW_MODEL=gpt-5.6-terra
 SEARCH_AI_REVIEW_REASONING_EFFORT=medium
 SEARCH_AI_REVIEW_OPENAI_API_KEY=
 SEARCH_AI_REVIEW_OPENAI_BASE_URL=https://sadai.cc/v1
@@ -349,9 +349,9 @@ Production text LLM calls go through the local LiteLLM proxy at
 proxy and use business model aliases: `odaily-gpt-writer`, `odaily-deepseek-fast`,
 `odaily-deepseek-review`, `odaily-gpt-auditor`, and `odaily-deepseek-auditor`. The
 judge, competitor event review, and mixed-source classification use the
-`odaily-gpt-writer` route to `gpt-5.6-luna` without a reasoning parameter; the
+`odaily-gpt-writer` route to `gpt-5.6-terra` without a reasoning parameter; the
 browser-plugin quick generation uses the same route with `low` reasoning. The
-searcher AI review is explicitly configured as `gpt-5.6-luna` with `medium`
+searcher AI review is explicitly configured as `gpt-5.6-terra` with `medium`
 reasoning through `https://sadai.cc/v1`; the former fast GPT path has been
 removed. Remaining DeepSeek routes are retained only for modules that still
 explicitly select them, such as the inactive writer3 analysis and external-media

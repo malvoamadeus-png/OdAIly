@@ -12,7 +12,7 @@ def test_chat_payload_can_omit_unsupported_response_format() -> None:
     )
 
     payload = client._chat_completions_payload(
-        model="gpt-5.6-luna",
+        model="gpt-5.6-terra",
         prompt="Return JSON.",
         text_format={
             "type": "json_schema",
@@ -38,7 +38,7 @@ def test_chat_payload_can_omit_reasoning_effort() -> None:
     )
 
     payload = client._chat_completions_payload(
-        model="gpt-5.6-luna",
+        model="gpt-5.6-terra",
         prompt="Return JSON.",
         text_format=None,
         reasoning_effort="medium",

@@ -18,7 +18,7 @@ def args(tmp_path):
         symbol="PICKLES",
         output=str(tmp_path / "narrative.json"),
         output_dir=str(tmp_path),
-        gpt_model="gpt-5.6-luna",
+        gpt_model="gpt-5.6-terra",
         gpt_timeout=10,
         writer_base_url="https://writer.invalid/v1",
         writer_api_key="test-key",
@@ -34,7 +34,7 @@ def bundle(evidence):
     }
 
 
-def test_fast_narrative_uses_luna_result_and_anonymizes_fomo(tmp_path):
+def test_fast_narrative_uses_terra_result_and_anonymizes_fomo(tmp_path):
     provider = fast_narrative.InMemoryFastEvidenceAdapter(bundle([{
         "id": "thesis:1",
         "source": "fomo_thesis",
@@ -52,7 +52,7 @@ def test_fast_narrative_uses_luna_result_and_anonymizes_fomo(tmp_path):
     with patch.object(fast_narrative, "write_json_with_metrics", return_value=(writer, {})) as call:
         result = fast_narrative.run(args(tmp_path), provider=provider)
 
-    assert call.call_args.kwargs["model"] == "gpt-5.6-luna"
+    assert call.call_args.kwargs["model"] == "gpt-5.6-terra"
     assert result["status"] == "success"
     assert "某信源表示" in result["reader_text"]
     assert "FOMO" not in result["reader_text"]

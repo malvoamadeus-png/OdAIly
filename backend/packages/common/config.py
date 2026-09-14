@@ -409,7 +409,7 @@ def _llm_writer_model(*specific_names: str) -> str:
         value = os.getenv(name)
         if value:
             return value
-    return DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.6-luna"
+    return DEFAULT_GPT_WRITER_MODEL if os.getenv("ODAILY_LLM_BASE_URL") else "gpt-5.6-terra"
 
 
 def _llm_deepseek_review_model(*specific_names: str) -> str:
