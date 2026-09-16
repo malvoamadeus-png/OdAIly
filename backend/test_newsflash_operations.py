@@ -664,11 +664,44 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertIn("Before", after["rules"]["automated_x_accounts"])
         self.assertNotIn("After", after["rules"]["automated_x_accounts"])
 
+    def test_quality_rule_snapshot_adds_new_fixed_keyword_groups(self) -> None:
+        self.add_reference("snapshot-keywords", "Baseline", "2026-08-24T08:00:00+08:00")
+        self.repository.upsert_source_facts([
+            {"source_item_id": "snapshot-keywords", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+        ])
+        initial = self.repository.get_quality({"week_start": "2026-08-24"})
+        old_groups = [
+            group for group in initial["rules"]["keyword_groups"]
+            if group["key"] in {"btc_liquidation", "eth_liquidation", "sol_liquidation"}
+        ]
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
+                (json.dumps({**initial["rules"], "keyword_groups": old_groups}), "2026-08-24"),
+            )
+            conn.commit()
+
+        updated = self.repository.get_quality({"week_start": "2026-08-24"})
+
+        self.assertEqual(
+            [group["key"] for group in updated["rules"]["keyword_groups"]],
+            [
+                "btc_liquidation", "eth_liquidation", "sol_liquidation", "title_morning_brief",
+                "title_noon_brief", "title_evening_brief", "content_sosovalue",
+            ],
+        )
+
     def test_quality_keyword_groups_and_manual_overrides(self) -> None:
         references = [
             ("override-base", "Baseline", "2026-08-31T08:00:00+08:00"),
             ("override-normal", "BTC 行情", "2026-08-31T09:00:00+08:00"),
             ("override-keyword", "BTC 发生爆仓", "2026-08-31T10:00:00+08:00"),
+            ("override-title-morning", "早讯：市场动态", "2026-08-31T10:30:00+08:00"),
+            ("override-title-noon", "午讯：市场动态", "2026-08-31T10:45:00+08:00"),
+            ("override-title-evening", "晚讯：市场动态", "2026-08-31T11:00:00+08:00"),
+            ("override-content-sosovalue", "市场动态", "2026-08-31T11:15:00+08:00"),
+            ("override-content-morning", "市场动态", "2026-08-31T11:30:00+08:00"),
+            ("override-title-sosovalue", "SoSoValue 市场数据", "2026-08-31T11:45:00+08:00"),
             ("override-low", "低浏览人工入选", "2026-08-31T11:00:00+08:00"),
             ("override-exclude", "人工排除", "2026-08-31T12:00:00+08:00"),
         ]
@@ -678,6 +711,12 @@ class NewsflashOperationsTest(unittest.TestCase):
             {"source_item_id": "override-base", "operator_raw": None, "view_count": 100, "is_pushed": 1},
             {"source_item_id": "override-normal", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
             {"source_item_id": "override-keyword", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-title-morning", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-title-noon", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-title-evening", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-content-sosovalue", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-content-morning", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "override-title-sosovalue", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
             {"source_item_id": "override-low", "operator_raw": "Z", "view_count": 50, "is_pushed": 0},
             {"source_item_id": "override-exclude", "operator_raw": "Z", "view_count": 201, "is_pushed": 0},
         ])
@@ -686,6 +725,18 @@ class NewsflashOperationsTest(unittest.TestCase):
             conn.execute(
                 "UPDATE odaily_reference_items SET content=? WHERE source_item_id='override-keyword'",
                 ("BTC 市场出现爆仓",),
+            )
+            conn.execute(
+                "UPDATE odaily_reference_items SET content=? WHERE source_item_id='override-content-sosovalue'",
+                ("SoSoValue 数据",),
+            )
+            conn.execute(
+                "UPDATE odaily_reference_items SET content=? WHERE source_item_id='override-content-morning'",
+                ("早讯：市场动态",),
+            )
+            conn.execute(
+                "UPDATE odaily_reference_items SET content=? WHERE source_item_id='override-title-sosovalue'",
+                ("市场数据",),
             )
             conn.commit()
         self.repository.update_newsflash(
@@ -705,20 +756,37 @@ class NewsflashOperationsTest(unittest.TestCase):
                 ("btc_liquidation", ["BTC", "爆仓"]),
                 ("eth_liquidation", ["ETH", "爆仓"]),
                 ("sol_liquidation", ["SOL", "爆仓"]),
+                ("title_morning_brief", ["早讯"]),
+                ("title_noon_brief", ["午讯"]),
+                ("title_evening_brief", ["晚讯"]),
+                ("content_sosovalue", ["SoSoValue"]),
             ],
         )
         zoey = next(group for group in result["groups"] if group["person_key"] == "zoey")
-        self.assertEqual([item["source_item_id"] for item in zoey["qualified"]], ["override-low", "override-normal"])
-        self.assertEqual([item["source_item_id"] for item in zoey["excluded"]], ["override-exclude", "override-keyword"])
+        self.assertEqual(
+            [item["source_item_id"] for item in zoey["qualified"]],
+            ["override-title-sosovalue", "override-content-morning", "override-low", "override-normal"],
+        )
+        self.assertEqual(
+            [item["source_item_id"] for item in zoey["excluded"]],
+            [
+                "override-exclude", "override-content-sosovalue", "override-title-evening", "override-title-noon",
+                "override-title-morning", "override-keyword",
+            ],
+        )
         keyword = next(item for item in zoey["excluded"] if item["source_item_id"] == "override-keyword")
         self.assertEqual(keyword["exclusion_reasons"], ["keyword_btc_liquidation"])
         self.assertEqual(keyword["exclusion_reason_labels"], ["排除词：BTC + 爆仓"])
+        title_morning = next(item for item in zoey["excluded"] if item["source_item_id"] == "override-title-morning")
+        self.assertEqual(title_morning["exclusion_reason_labels"], ["排除词：早讯（标题）"])
+        sosovalue = next(item for item in zoey["excluded"] if item["source_item_id"] == "override-content-sosovalue")
+        self.assertEqual(sosovalue["exclusion_reason_labels"], ["排除词：SoSoValue（正文）"])
         manual = next(item for item in zoey["excluded"] if item["source_item_id"] == "override-exclude")
         self.assertEqual(manual["exclusion_reasons"], ["manual_exclude"])
         self.assertEqual(manual["exclusion_reason_labels"], ["人工排除"])
         low = next(item for item in zoey["qualified"] if item["source_item_id"] == "override-low")
         self.assertEqual(low["quality_override"], "include")
-        self.assertEqual(result["total_kpi"], 0.4)
+        self.assertEqual(result["total_kpi"], 0.8)
         listed = self.repository.list_newsflashes({"search": "低浏览人工入选"})
         self.assertEqual(listed["items"][0]["quality_override"], "include")
 

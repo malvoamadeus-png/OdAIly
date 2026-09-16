@@ -68,9 +68,13 @@ QUALITY_EXTERNAL_MEDIA_URLS = (
     "https://decrypt.co/",
 )
 QUALITY_EXCLUSION_GROUPS = (
-    {"key": "btc_liquidation", "terms": ("BTC", "爆仓")},
-    {"key": "eth_liquidation", "terms": ("ETH", "爆仓")},
-    {"key": "sol_liquidation", "terms": ("SOL", "爆仓")},
+    {"key": "btc_liquidation", "terms": ("BTC", "爆仓"), "scope": "title_content"},
+    {"key": "eth_liquidation", "terms": ("ETH", "爆仓"), "scope": "title_content"},
+    {"key": "sol_liquidation", "terms": ("SOL", "爆仓"), "scope": "title_content"},
+    {"key": "title_morning_brief", "terms": ("早讯",), "scope": "title", "label": "早讯（标题）"},
+    {"key": "title_noon_brief", "terms": ("午讯",), "scope": "title", "label": "午讯（标题）"},
+    {"key": "title_evening_brief", "terms": ("晚讯",), "scope": "title", "label": "晚讯（标题）"},
+    {"key": "content_sosovalue", "terms": ("SoSoValue",), "scope": "content", "label": "SoSoValue（正文）"},
 )
 QUALITY_OVERRIDE_VALUES = {"none", "include", "exclude"}
 
@@ -1252,7 +1256,8 @@ class NewsflashOperationsRepository:
                 {
                     "key": group["key"],
                     "terms": list(group["terms"]),
-                    "label": " + ".join(group["terms"]),
+                    "scope": group.get("scope", "title_content"),
+                    "label": group.get("label") or " + ".join(group["terms"]),
                 }
                 for group in QUALITY_EXCLUSION_GROUPS
             ],
@@ -1272,7 +1277,8 @@ class NewsflashOperationsRepository:
             (key,),
         ).fetchone()
         rules = _decode(row["rules_json"], {})
-        if "keyword_groups" not in rules:
+        keyword_groups = rules.get("keyword_groups")
+        if not isinstance(keyword_groups, list):
             # Existing week snapshots predate keyword exclusions. Add the new
             # fixed rule set once so subsequent reads remain snapshot-based.
             rules["keyword_groups"] = seed["keyword_groups"]
@@ -1280,6 +1286,17 @@ class NewsflashOperationsRepository:
                 "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
                 (_json(rules), key),
             )
+        else:
+            existing_keys = {str(group.get("key") or "") for group in keyword_groups if isinstance(group, dict)}
+            missing_groups = [group for group in seed["keyword_groups"] if group["key"] not in existing_keys]
+            if missing_groups:
+                # Fixed system rules added after the original snapshot must
+                # also apply to existing reporting weeks immediately.
+                rules["keyword_groups"] = [*keyword_groups, *missing_groups]
+                conn.execute(
+                    "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
+                    (_json(rules), key),
+                )
         conn.commit()
         rules["snapshot_at"] = row["created_at"]
         return rules
@@ -1385,10 +1402,19 @@ class NewsflashOperationsRepository:
                     if "金十" in str(row["content"] or ""):
                         reasons.append("jin10_content")
                         reason_labels.append("正文含金十")
-                    quality_text = f"{row['title'] or ''}\n{row['content'] or ''}".casefold()
+                    title_text = str(row["title"] or "").casefold()
+                    content_text = str(row["content"] or "").casefold()
+                    quality_text = f"{title_text}\n{content_text}"
                     for group in keyword_groups:
                         terms = [str(term) for term in group.get("terms", []) if str(term).strip()]
-                        if terms and all(term.casefold() in quality_text for term in terms):
+                        scope = str(group.get("scope") or "title_content")
+                        text_by_scope = {
+                            "title": title_text,
+                            "content": content_text,
+                            "title_content": quality_text,
+                        }
+                        matching_text = text_by_scope.get(scope, quality_text)
+                        if terms and all(term.casefold() in matching_text for term in terms):
                             reasons.append(f"keyword_{group.get('key', 'unknown')}")
                             reason_labels.append(f"排除词：{group.get('label') or ' + '.join(terms)}")
                     if quality_override == "exclude":
