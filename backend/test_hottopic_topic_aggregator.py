@@ -183,3 +183,59 @@ def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path)
         ).fetchone()[0] == 5
     finally:
         aggregator.close()
+
+
+def test_lifecycle_qualifies_accounts_sharing_an_exact_contract(tmp_path: Path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    topic_id = "topic:truman"
+    contract = "0xabffa443547b34ab6c3b3173d26e233900527777"
+    posts = [
+        ("alpha", f"$TRUMAN is an AI world experiment {contract}"),
+        ("bravo", f"$TRUMAN has a fixed CA {contract}"),
+        ("charlie", f"Watching $TRUMAN at {contract}"),
+        ("delta", f"The AI project contract is {contract}"),
+        ("echo", f"This is the same BSC address: {contract}"),
+    ]
+    try:
+        with aggregator.connection:
+            for index, (account, text) in enumerate(posts):
+                item_id, claim_id = f"content:{index}", f"claim:{index}"
+                at = (now + timedelta(minutes=index)).isoformat()
+                aggregator.connection.execute(
+                    "INSERT INTO content_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (item_id, f"tweet:{index}", account, account, "original", text, text, at,
+                     f"https://x.com/{account}/status/{index}", "{}", "{}", "{}", f"fingerprint:{index}"),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (claim_id, item_id, text, "reported_fact", "[]", "AI/模型", "", "", 1.0, 1.0, at),
+                )
+                aggregator.connection.execute(
+                    "INSERT OR IGNORE INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                    "seed_expires_at,last_evidence_at,last_participation_at,matching_status,visibility,identity_revision,participant_count_1h,"
+                    "participant_count_6h,participant_count_24h,participant_velocity,hotness_score,retention_tier) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (topic_id, "$TRUMAN", "$truman", "[]", "AI/模型", now.isoformat(), now.isoformat(),
+                     (now + timedelta(hours=24)).isoformat(), at, at, "seed", "hidden", 1, 0, 0, 0, 0.0, 0.0, "transient"),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (stable_id("membership", claim_id, topic_id), claim_id, topic_id, None, "primary", "new_fact", 1.0, "test", "test", at, None),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO topic_participations VALUES (?,?,?,?)",
+                    (topic_id, account, at, item_id),
+                )
+
+        assessment = aggregator._assess_topic(topic_id, now + timedelta(minutes=5))
+
+        assert assessment.event_anchor == f"contract:{contract}"
+        assert assessment.qualified_accounts == {account for account, _ in posts}
+        assert assessment.qualifies is True
+        aggregator._refresh_all_topics((now + timedelta(minutes=5)).isoformat())
+        assert aggregator.connection.execute(
+            "SELECT matching_status FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()[0] == "active"
+    finally:
+        aggregator.close()
