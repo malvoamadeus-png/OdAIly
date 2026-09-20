@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import EventIdentity, TopicAggregator, stable_id
+from packages.hottopic.topic_aggregator import EventIdentity, ModelBriefWriter, TopicAggregator, stable_id
 
 
 def profile(
@@ -47,6 +47,16 @@ def test_non_asset_event_identity_merges_across_independent_accounts() -> None:
         True,
         "shared named event identity=['binance', 'binancewallet', 'pancakeswap']; kind=launch",
     )
+
+
+def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatch) -> None:
+    monkeypatch.delenv("HOTTOPIC_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "upstream-key")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "local-proxy-key")
+
+    writer = ModelBriefWriter("gpt-5.6-terra", base_url="http://127.0.0.1:4000/v1")
+
+    assert writer.api_key == "local-proxy-key"
 
 
 def test_event_identity_extracts_named_entities_and_launch_kind_from_ordinary_posts() -> None:

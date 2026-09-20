@@ -2296,8 +2296,8 @@ class ModelBriefWriter:
         retry_base_seconds: float = 2.0,
     ) -> None:
         self.model = model
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.base_url = (base_url or os.environ.get("X_PROCESS_OPENAI_BASE_URL", "")).rstrip("/")
+        self.api_key = api_key or self._default_api_key(self.base_url)
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.retry_base_seconds = retry_base_seconds
@@ -2309,6 +2309,16 @@ class ModelBriefWriter:
             raise ValueError("model writer retry_base_seconds cannot be negative")
         if not self.api_key or not self.base_url:
             raise RuntimeError("model writer requires OPENAI_API_KEY and X_PROCESS_OPENAI_BASE_URL")
+
+    @staticmethod
+    def _default_api_key(base_url: str) -> str:
+        """Use the local proxy credential only when HotTopic targets LiteLLM."""
+        explicit = os.environ.get("HOTTOPIC_OPENAI_API_KEY", "")
+        if explicit:
+            return explicit
+        if base_url.startswith(("http://127.0.0.1:", "http://localhost:", "https://127.0.0.1:", "https://localhost:")):
+            return os.environ.get("LITELLM_MASTER_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        return os.environ.get("OPENAI_API_KEY", "")
 
     def __call__(self, connection: sqlite3.Connection, topic_id: str, at: str, evidence: Sequence[dict[str, Any]]) -> dict[str, str]:
         topic = connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
