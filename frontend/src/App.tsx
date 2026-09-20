@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import NewsflashOperationsPanel from './NewsflashOperationsPanel';
 import DuplicateSearchPanel from './DuplicateSearchPanel';
+import { HotTopicPanel } from './HotTopicPanel';
 import {
   createSourceExclusionRuleGroup,
   createAccount,
@@ -156,7 +157,8 @@ type ConsoleView =
   | 'prompts'
   | 'competitor'
   | 'newsflash'
-  | 'jin10';
+  | 'jin10'
+  | 'hottopic';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
   return view === 'x' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
@@ -871,6 +873,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [error, setError] = useState('');
   const [view, setView] = useState<ConsoleView>('x');
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
+  const [hottopicRefreshToken, setHottopicRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
@@ -1710,6 +1713,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Gate Market'
       : view === 'meme'
         ? 'Meme Express'
+      : view === 'hottopic'
+        ? 'HotTopic'
       : view === 'publisher'
         ? 'Publisher'
       : view === 'jin10'
@@ -1736,6 +1741,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Gate行情播报'
       : view === 'meme'
         ? 'Meme速递'
+      : view === 'hottopic'
+        ? '热点话题'
       : view === 'publisher'
         ? '发布者控制台'
       : view === 'jin10'
@@ -1762,6 +1769,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `${gateMarket?.symbols.length || 0} 个标的 · ${gateMarket?.mode === 'live' ? '正式发布' : '后台生成'} · 只读`
       : view === 'meme'
         ? `${memeDashboard?.items.length || 0} 条记录 · 普通新币 50 万起 · 社群热议 5 次且 30 万起 · 只读`
+      : view === 'hottopic'
+        ? '独立 SQLite 和独立抓取 worker · 仅从本次部署后的内容形成热点'
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
@@ -1790,6 +1799,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadGateMarket()
       : view === 'meme'
         ? loadMemeDashboard()
+      : view === 'hottopic'
+        ? (setHottopicRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source'
         ? loadNonMainstreamAll()
       : view === 'blockbeats_key'
@@ -1841,6 +1852,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'meme' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('meme')}>
             <Megaphone size={18} /> Meme速递
+          </button>
+          <button className={view === 'hottopic' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('hottopic')}>
+            <Zap size={18} /> 热点话题
           </button>
           <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
             <Send size={18} /> 发布者
@@ -1941,7 +1955,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </section>
         )}
 
-        {view === 'newsflash' ? (
+        {view === 'hottopic' ? (
+          <HotTopicPanel key={hottopicRefreshToken} />
+        ) : view === 'newsflash' ? (
           <NewsflashOperationsPanel refreshToken={newsflashRefreshToken} />
         ) : view === 'dedupe' ? (
           <DuplicateSearchPanel />

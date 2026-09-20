@@ -34,6 +34,7 @@ from packages.editor_plugin_local_store import LocalEditorPluginStore
 from packages.failure_diagnostics import FailureDiagnosticsStore
 from packages.gate_market_broadcast.settings import load_gate_market_settings
 from packages.gate_market_broadcast.store import GateMarketStore
+from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
 from packages.pipeline_timing import (
@@ -387,6 +388,7 @@ class EditorPluginNewsGenService:
         self.x_repository = create_x_processing_repository(database_url)
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
         self.newsflash_operations = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+        self.hottopic = HotTopicService()
 
         self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
@@ -456,6 +458,7 @@ class EditorPluginNewsGenService:
     def close(self) -> None:
         self.pipeline_timing_snapshots.stop()
         self.feed_syncer.stop()
+        self.hottopic.close()
 
     def authenticate(self, authorization_header: str | None) -> AuthenticatedEditor:
         actor = self.authenticator.authenticate(authorization_header)
@@ -497,6 +500,42 @@ class EditorPluginNewsGenService:
     def execute_newsflash_operations(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         action = str(payload.get("action") or "")
         return self.newsflash_operations.execute(action, payload, actor_email=actor.email)
+
+    def get_hottopic_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.hottopic.dashboard()
+
+    def get_hottopic_accounts(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        del actor
+        return self.hottopic.list_accounts(query=str(payload.get("query") or ""), status=str(payload.get("status") or "all"))
+
+    def get_hottopic_topic(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any] | None:
+        del actor
+        topic_id = str(payload.get("topic_id") or "").strip()
+        if not topic_id:
+            raise EditorPluginApiError("topic_id 不能为空")
+        return self.hottopic.topic_detail(topic_id)
+
+    def mutate_hottopic_account(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "")
+        handle = str(payload.get("screen_name") or "")
+        try:
+            if action == "add":
+                result = self.hottopic.add_account(handle, str(payload.get("display_name") or ""))
+            elif action == "follow":
+                result = self.hottopic.set_account_status(handle, "followed")
+            elif action == "unfollow":
+                result = self.hottopic.set_account_status(handle, "unfollowed")
+            elif action == "blacklist":
+                result = self.hottopic.set_account_status(handle, "blacklisted")
+            elif action == "unblacklist":
+                result = self.hottopic.set_account_status(handle, "unfollowed")
+            else:
+                raise EditorPluginApiError("不支持的 HotTopic 账号操作")
+        except ValueError as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+        self.hottopic.event("console_account_action", {"action": action, "screen_name": result["screen_name"], "actor": actor.email})
+        return result
 
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
@@ -994,6 +1033,10 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
         "/console/newsflash-operations",
+        "/console/hottopic/dashboard",
+        "/console/hottopic/accounts",
+        "/console/hottopic/topic",
+        "/console/hottopic/account",
     }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -1113,6 +1156,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/newsflash-operations":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_newsflash_operations(actor, self._read_json())})
+                    return
+                if self.path == "/console/hottopic/dashboard":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_dashboard(actor)})
+                    return
+                if self.path == "/console/hottopic/accounts":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_accounts(actor, self._read_json())})
+                    return
+                if self.path == "/console/hottopic/topic":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_topic(actor, self._read_json())})
+                    return
+                if self.path == "/console/hottopic/account":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.mutate_hottopic_account(actor, self._read_json())})
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})

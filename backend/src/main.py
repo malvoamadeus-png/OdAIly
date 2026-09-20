@@ -136,6 +136,13 @@ def parse_args() -> argparse.Namespace:
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
 
+    hottopic_worker = subparsers.add_parser("hottopic-worker", help="Run the independent HotTopic X collector.")
+    hottopic_worker.add_argument("--once", action="store_true", help="Run one collection pass and exit.")
+    hottopic_worker.add_argument("--database", help="Override the HotTopic SQLite path.")
+    hottopic_worker.add_argument("--seed", action="store_true", help="Seed the tracked initial account list when the database is empty.")
+    hottopic_worker.add_argument("--model", help="Optional model used to write visible topic briefs.")
+    hottopic_worker.add_argument("--workers", type=int, default=8, help="Maximum concurrent profile polls.")
+
     subparsers.add_parser("binance-square-init-db", help="Initialize Binance Square monitoring tables.")
     binance_square_worker = subparsers.add_parser(
         "binance-square-worker", help="Run the experimental Binance Square account monitor."
@@ -697,6 +704,19 @@ def editor_plugin_api_server_command(args: argparse.Namespace) -> int:
         database_url=None,
         host=args.host,
         port=args.port,
+    )
+
+
+def hottopic_worker_command(args: argparse.Namespace) -> int:
+    from packages.hottopic import run_worker
+
+    seed_path = BACKEND_DIR / "packages" / "hottopic" / "initial_accounts.csv" if args.seed else None
+    return run_worker(
+        database_path=Path(args.database).expanduser().resolve() if args.database else None,
+        seed_path=seed_path,
+        once=args.once,
+        model=args.model,
+        workers=args.workers,
     )
 
 
@@ -1722,6 +1742,8 @@ def main() -> int:
             return local_pipeline_exhaust_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
+        if args.command == "hottopic-worker":
+            return hottopic_worker_command(args)
         if args.command == "binance-square-init-db":
             return binance_square_init_db_command(args)
         if args.command == "binance-square-worker":

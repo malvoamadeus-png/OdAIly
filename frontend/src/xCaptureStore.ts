@@ -135,6 +135,52 @@ export type Jin10Settings = {
   updated_at: string | null;
 };
 
+export type HotTopicAccountStatus = 'followed' | 'unfollowed' | 'blacklisted';
+
+export type HotTopicAccount = {
+  screen_name: string;
+  display_name: string;
+  protected: number;
+  status: HotTopicAccountStatus;
+  last_polled_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  last_item_count: number;
+  cumulative_content_count: number;
+  cumulative_hot_topic_count: number;
+};
+
+export type HotTopicCard = {
+  id: string;
+  title: string;
+  brief: string;
+  firstSeenAt: string;
+  lastEvidenceAt: string | null;
+  hotness: number;
+  participants: { oneHour: number; sixHours: number; twentyFourHours: number; velocity: number };
+};
+
+export type HotTopicDashboard = {
+  generatedAt: string;
+  health: {
+    deploymentStartedAt: string;
+    accounts: { total: number; followed: number; unfollowed: number; blacklisted: number; errors: number };
+    inboxPending: number;
+    topics: Record<string, number>;
+  };
+  topics: HotTopicCard[];
+};
+
+export type HotTopicDetail = {
+  id: string;
+  title: string;
+  brief: string;
+  hotness: number;
+  participants: { oneHour: number; sixHours: number; twentyFourHours: number };
+  speakers: Array<{ account: string; lastParticipationAt: string; sourceUrl: string | null }>;
+};
+
 export type Account = {
   id: number;
   username: string;
@@ -1303,6 +1349,30 @@ export async function savePublisherRuleConfig(config: PublisherRuleConfig): Prom
 
 export async function getBlockbeatsKeyConfig(): Promise<BlockbeatsKeyConfig> {
   return consoleApiPost<BlockbeatsKeyConfig>('/console/blockbeats-key/get');
+}
+
+export async function getHotTopicDashboard(): Promise<HotTopicDashboard> {
+  return consoleApiPost<HotTopicDashboard>('/console/hottopic/dashboard');
+}
+
+export async function listHotTopicAccounts(query = '', status = 'all'): Promise<HotTopicAccount[]> {
+  return consoleApiPost<HotTopicAccount[]>('/console/hottopic/accounts', { query, status });
+}
+
+export async function getHotTopicDetail(topicId: string): Promise<HotTopicDetail | null> {
+  return consoleApiPost<HotTopicDetail | null>('/console/hottopic/topic', { topic_id: topicId });
+}
+
+export async function mutateHotTopicAccount(
+  action: 'add' | 'follow' | 'unfollow' | 'blacklist' | 'unblacklist',
+  screenName: string,
+  displayName = '',
+): Promise<HotTopicAccount> {
+  return consoleApiPost<HotTopicAccount>('/console/hottopic/account', {
+    action,
+    screen_name: screenName,
+    display_name: displayName,
+  });
 }
 
 export async function saveBlockbeatsKey(apiKey: string): Promise<BlockbeatsKeyConfig> {

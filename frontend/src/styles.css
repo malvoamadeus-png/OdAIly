@@ -16,6 +16,72 @@ body {
   min-height: 100vh;
 }
 
+.hottopicLayout { display: grid; gap: 16px; }
+.hottopicSummary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) 40px; gap: 10px; align-items: stretch; }
+.hottopicMetric { display: grid; gap: 4px; min-height: 70px; padding: 13px 15px; border: 1px solid #d8e0e4; border-radius: 7px; background: #fff; }
+.hottopicMetric span { color: #66717d; font-size: 12px; }
+.hottopicMetric strong { color: #1c2d34; font-size: 22px; }
+.hottopicMetric.warning strong { color: #b45309; }
+.hottopicWorkspace { display: grid; grid-template-columns: minmax(320px, .9fr) minmax(0, 1.3fr); min-height: 430px; border: 1px solid #d8e0e4; border-radius: 7px; overflow: hidden; background: #fff; }
+.hottopicTopics { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid #e3e8eb; min-width: 0; }
+.hottopicTopics .sectionHeader, .hottopicDetail { padding: 16px; }
+.hottopicTopics .sectionHeader h2, .hottopicAccounts h2, .hottopicDetailCopy h2 { margin: 0; font-size: 17px; }
+.sectionHeader > div { display: grid; gap: 4px; }
+.sectionHeader > div > span { color: #6b7680; font-size: 12px; }
+.hottopicTopicList { overflow: auto; border-top: 1px solid #e8edef; }
+.hottopicTopicRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; padding: 14px 16px; border: 0; border-bottom: 1px solid #e8edef; background: #fff; color: #24323b; cursor: pointer; text-align: left; }
+.hottopicTopicRow:hover, .hottopicTopicRow.active { background: #f0f8f5; }
+.hottopicTopicRow strong { font-size: 14px; }
+.hottopicTopicRow p { display: -webkit-box; margin: 6px 0; overflow: hidden; color: #66717d; font-size: 13px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.hottopicTopicRow div > span, .hottopicScore { display: inline-flex; align-items: center; gap: 4px; color: #697681; font-size: 12px; }
+.hottopicScore { align-items: flex-start; color: #b45309; }
+.hottopicDetail { min-width: 0; overflow: auto; }
+.hottopicDetailCopy { max-width: 760px; }
+.hottopicDetailCopy > p { white-space: pre-wrap; color: #35444d; line-height: 1.75; }
+.hottopicDetailMeta { display: flex; gap: 14px; margin-bottom: 12px; color: #66717d; font-size: 13px; }
+.hottopicDetailMeta span { display: inline-flex; align-items: center; gap: 5px; }
+.hottopicDetailCopy section { margin-top: 28px; }
+.hottopicDetailCopy h3 { margin: 0 0 9px; font-size: 14px; }
+.hottopicSpeakers { display: flex; flex-wrap: wrap; gap: 7px; }
+.hottopicSpeakers a { display: grid; gap: 2px; min-width: 126px; padding: 8px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #176b55; text-decoration: none; }
+.hottopicSpeakers time { color: #74808a; font-size: 11px; }
+.hottopicAccounts { border: 1px solid #d8e0e4; border-radius: 7px; background: #fff; overflow: hidden; }
+.hottopicAccounts > .sectionHeader { padding: 16px 16px 8px; }
+.hottopicAddAccount, .hottopicFilters { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-top: 1px solid #e8edef; }
+.hottopicAddAccount input, .hottopicFilters input { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #cfd8dc; border-radius: 6px; color: #27353e; background: #fff; }
+.hottopicAddAccount input { flex: 1; }
+.hottopicFilters { justify-content: space-between; background: #fafcfc; }
+.hottopicFilters label { display: flex; align-items: center; gap: 7px; color: #70808a; }
+.hottopicFilters label input { width: 190px; }
+.segmentedControl { display: flex; overflow: hidden; border: 1px solid #d2dbdf; border-radius: 6px; }
+.segmentedControl button { min-height: 34px; padding: 0 10px; border: 0; border-right: 1px solid #dbe2e5; background: #fff; color: #53616a; cursor: pointer; font-size: 12px; }
+.segmentedControl button:last-child { border-right: 0; }
+.segmentedControl button.active { background: #e8f5f0; color: #08775a; font-weight: 700; }
+.hottopicAccountTable { overflow-x: auto; border-top: 1px solid #e8edef; }
+.hottopicAccountHead, .hottopicAccountRow { display: grid; grid-template-columns: minmax(190px, 2fr) 92px 92px 92px minmax(120px, 1.2fr) 76px; min-width: 760px; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #e8edef; font-size: 13px; }
+.hottopicAccountHead { background: #f5f8f8; color: #66727c; font-size: 12px; font-weight: 700; }
+.hottopicAccountRow > div:first-child { display: grid; gap: 3px; }
+.hottopicAccountRow > div:first-child > span { color: #68757e; font-size: 12px; }
+.hottopicAccountRow small { display: inline-flex; align-items: center; gap: 4px; color: #b45309; font-size: 11px; }
+.hottopicStatus { width: max-content; padding: 3px 7px; border-radius: 4px; font-size: 12px; font-weight: 700; }
+.hottopicStatus.followed { color: #08775a; background: #e6f5ef; }
+.hottopicStatus.unfollowed { color: #6b7280; background: #edf0f2; }
+.hottopicStatus.blacklisted { color: #b42318; background: #fdecec; }
+.hottopicActions { display: flex; gap: 5px; }
+.hottopicActions button { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 1px solid #ccd7db; border-radius: 5px; background: #fff; color: #40505a; cursor: pointer; }
+.hottopicActions button:last-child { color: #a63c33; }
+.hottopicActions button:disabled { opacity: .5; cursor: wait; }
+
+@media (max-width: 850px) {
+  .hottopicSummary { grid-template-columns: repeat(2, minmax(0, 1fr)) 40px; }
+  .hottopicWorkspace { grid-template-columns: 1fr; }
+  .hottopicTopics { min-height: 310px; border-right: 0; border-bottom: 1px solid #e3e8eb; }
+  .hottopicAddAccount { display: grid; grid-template-columns: 1fr; }
+  .hottopicFilters { align-items: stretch; flex-direction: column; }
+  .hottopicFilters label input { width: 100%; }
+  .segmentedControl { overflow-x: auto; }
+}
+
 .newsflashWorkspace {
   display: grid;
   gap: 16px;
