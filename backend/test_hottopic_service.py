@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from packages.hottopic.capture import AccountRow, ContentItem
-from packages.hottopic.service import BLACKLISTED_HANDLES, HotTopicService
+from packages.hottopic.service import BLACKLISTED_HANDLES, HotTopicService, open_worker_database
 
 
 def item(handle: str, tweet_id: str, created_at: datetime) -> ContentItem:
@@ -84,6 +86,114 @@ def test_blacklist_stops_tracking_and_requires_explicit_follow_to_restore(servic
         service.add_account("alice")
     assert service.set_account_status("alice", "unfollowed")["status"] == "unfollowed"
     assert service.set_account_status("alice", "followed")["status"] == "followed"
+
+
+def test_blacklist_queues_cleanup_and_preserves_permanent_evidence(service: HotTopicService) -> None:
+    """Account operations must not delete an unbounded topic graph inline."""
+    service.add_account("alice")
+    now = service.deployment_started_at()
+    with service.aggregator.connection:
+        service.aggregator.connection.executemany(
+            "INSERT INTO content_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (f"content:{number}", f"tweet:{number}", "alice", "alice", "original", "text", "text", now,
+                 f"https://x.com/alice/status/{number}", "{}", "{}", "{}", f"fingerprint:{number}")
+                for number in range(3)
+            ],
+        )
+        service.aggregator.connection.executemany(
+            "INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (f"claim:{number}", f"content:{number}", "text", "statement", "[]", "", "", "", 1.0, 1.0, now)
+                for number in range(3)
+            ],
+        )
+        service.aggregator.connection.execute(
+            "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+            "seed_expires_at,matching_status,visibility,identity_revision,participant_count_1h,participant_count_6h,"
+            "participant_count_24h,participant_velocity,hotness_score,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("topic:permanent", "Shared event", "Shared event", "[]", "event", now, now, now,
+             "active", "visible", 1, 1, 1, 1, 1.0, 1.0, "permanent"),
+        )
+        service.aggregator.connection.execute(
+            "INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("membership:permanent", "claim:0", "topic:permanent", None, "primary", "new_fact", 1.0, "test", "test", now, None),
+        )
+
+    assert service.set_account_status("alice", "blacklisted")["status"] == "blacklisted"
+    assert service.aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 3
+    assert service.db.execute("SELECT COUNT(*) FROM hottopic_account_cleanup").fetchone()[0] == 1
+
+    service.process_account_cleanup_jobs()
+
+    assert service.aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 1
+    assert service.aggregator.connection.execute(
+        "SELECT content_item_id FROM content_items"
+    ).fetchone()[0] == "content:0"
+    assert service.db.execute("SELECT COUNT(*) FROM hottopic_account_cleanup").fetchone()[0] == 0
+
+
+def test_ai_brief_generation_does_not_hold_the_sqlite_write_lock(service: HotTopicService) -> None:
+    """Network-bound brief generation must run after the aggregation commit."""
+    now = service.deployment_started_at()
+    writer_started = threading.Event()
+    release_writer = threading.Event()
+    errors: list[BaseException] = []
+
+    def blocking_writer(*_args):
+        writer_started.set()
+        assert release_writer.wait(timeout=2)
+        return {"title": "Shared event", "brief": "A confirmed shared event.", "source_claim_ids": ["claim:brief"]}
+
+    service.aggregator.brief_writer = blocking_writer
+    service.aggregator._refresh_all_topics = lambda _at: {"transitions": {}, "affected_topic_ids": []}  # type: ignore[method-assign]
+    with service.aggregator.connection:
+        service.aggregator.connection.execute(
+            "INSERT INTO content_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("content:brief", "tweet:brief", "alice", "alice", "original", "Shared event announced", "Shared event announced", now,
+             "https://x.com/alice/status/brief", "{}", "{}", "{}", "fingerprint:brief"),
+        )
+        service.aggregator.connection.execute(
+            "INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("claim:brief", "content:brief", "Shared event announced", "official_statement", "[]", "event", "", "", 1.0, 1.0, now),
+        )
+        service.aggregator.connection.execute(
+            "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+            "seed_expires_at,matching_status,visibility,identity_revision,participant_count_1h,participant_count_6h,"
+            "participant_count_24h,participant_velocity,hotness_score,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("topic:brief", "Shared event", "Shared event", "[]", "event", now, now, now,
+             "active", "hidden", 1, 1, 1, 1, 1.0, 1.0, "permanent"),
+        )
+        service.aggregator.connection.execute(
+            "INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("membership:brief", "claim:brief", "topic:brief", None, "primary", "new_fact", 1.0, "test", "test", now, None),
+        )
+
+    def aggregate() -> None:
+        try:
+            service.aggregator.process_batch([], now)
+        except BaseException as exc:  # Surface worker failures in the test thread.
+            errors.append(exc)
+
+    worker = threading.Thread(target=aggregate)
+    worker.start()
+    assert writer_started.wait(timeout=1)
+    blocker = open_worker_database(service.path)
+    try:
+        release_timer = threading.Timer(0.35, release_writer.set)
+        release_timer.start()
+        started = time.perf_counter()
+        blocker.execute("BEGIN IMMEDIATE")
+        elapsed = time.perf_counter() - started
+        blocker.rollback()
+        assert elapsed < 0.2
+        release_timer.join()
+    finally:
+        release_writer.set()
+        blocker.close()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not errors
 
 
 def test_permanent_topic_participation_updates_cumulative_metric(service: HotTopicService) -> None:

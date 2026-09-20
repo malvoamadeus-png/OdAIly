@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
-from packages.common.storage import connect_sqlite
 
 from .capture import AccountRow, ContentItem, scan_account
 from .topic_aggregator import ModelBriefWriter, TopicAggregator
@@ -27,6 +26,8 @@ POLL_INTERVAL_SECONDS = 600
 TRANSIENT_RETENTION_HOURS = 48
 EVENT_RETENTION_DAYS = 5
 MAINTENANCE_INTERVAL = timedelta(hours=1)
+ACCOUNT_CLEANUP_BATCH_SIZE = 100
+AGGREGATION_BATCH_SIZE = 100
 BLACKLISTED_HANDLES = {
     "nikkei", "polymarketmoney", "cb_doge", "teamtrump", "skaas777",
     "pr0h0s", "fxtrader", "big_pharmai", "acboxliu", "notthreadguy",
@@ -66,6 +67,11 @@ CREATE TABLE IF NOT EXISTS hottopic_inbox (
 );
 CREATE INDEX IF NOT EXISTS idx_hottopic_inbox_pending
   ON hottopic_inbox(processed_at, collected_at);
+CREATE TABLE IF NOT EXISTS hottopic_account_cleanup (
+  screen_name_lower TEXT PRIMARY KEY REFERENCES hottopic_accounts(screen_name_lower),
+  queued_at TEXT NOT NULL,
+  last_error TEXT
+);
 CREATE TABLE IF NOT EXISTS hottopic_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -227,7 +233,14 @@ class HotTopicService:
                 (status, next_due, now, lower),
             )
             if status == "blacklisted":
-                self._discard_transient_account_material(lower)
+                # Keep the console operation bounded.  The worker removes the
+                # account's transient topic graph in small, resumable batches.
+                self.db.execute("DELETE FROM hottopic_inbox WHERE screen_name_lower=?", (lower,))
+                self.db.execute(
+                    "INSERT INTO hottopic_account_cleanup(screen_name_lower,queued_at,last_error) VALUES(?,?,NULL) "
+                    "ON CONFLICT(screen_name_lower) DO UPDATE SET queued_at=excluded.queued_at,last_error=NULL",
+                    (lower, now),
+                )
         return self._account(lower)
 
     def _account(self, lower: str) -> dict[str, Any]:
@@ -235,28 +248,80 @@ class HotTopicService:
         assert row is not None
         return dict(row)
 
-    def _discard_transient_account_material(self, lower: str) -> None:
-        """Remove queue records and source rows not cited by a permanent topic."""
-        with self.db:
-            self.db.execute("DELETE FROM hottopic_inbox WHERE screen_name_lower=?", (lower,))
-        with connect_sqlite(self.path) as state:
-            ids = [row[0] for row in state.execute(
-                "SELECT ci.content_item_id FROM content_items ci WHERE lower(ci.activity_account)=? AND NOT EXISTS ("
-                "SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id JOIN topics t ON t.topic_id=m.topic_id "
-                "WHERE cl.content_item_id=ci.content_item_id AND m.superseded_by IS NULL AND t.retention_tier='permanent')",
-                (lower,),
-            ).fetchall()]
+    def process_account_cleanup_jobs(self, *, job_limit: int = 1) -> dict[str, int]:
+        """Process small, resumable blacklist cleanups outside console requests."""
+        rows = self.db.execute(
+            "SELECT screen_name_lower FROM hottopic_account_cleanup ORDER BY queued_at LIMIT ?",
+            (max(1, job_limit),),
+        ).fetchall()
+        result = {"processed_jobs": 0, "deleted_content_items": 0, "deleted_claims": 0}
+        for row in rows:
+            lower = str(row["screen_name_lower"])
+            try:
+                deleted_content, deleted_claims, complete = self._discard_transient_account_material_batch(lower)
+            except Exception as exc:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE hottopic_account_cleanup SET last_error=? WHERE screen_name_lower=?",
+                        (f"{type(exc).__name__}: {exc}", lower),
+                    )
+                continue
+            result["processed_jobs"] += 1
+            result["deleted_content_items"] += deleted_content
+            result["deleted_claims"] += deleted_claims
+            if complete:
+                with self.db:
+                    self.db.execute("DELETE FROM hottopic_account_cleanup WHERE screen_name_lower=?", (lower,))
+        return result
+
+    def _discard_transient_account_material_batch(self, lower: str) -> tuple[int, int, bool]:
+        """Delete at most one small batch while retaining permanent evidence."""
+        state = self.aggregator.connection
+        state.execute("BEGIN IMMEDIATE")
+        try:
+            ids = [
+                row[0]
+                for row in state.execute(
+                    "SELECT ci.content_item_id FROM content_items ci WHERE lower(ci.activity_account)=? AND NOT EXISTS ("
+                    "SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id JOIN topics t ON t.topic_id=m.topic_id "
+                    "WHERE cl.content_item_id=ci.content_item_id AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM claims cl JOIN topic_evidence te ON te.claim_id=cl.claim_id JOIN topics t ON t.topic_id=te.topic_id "
+                    "WHERE cl.content_item_id=ci.content_item_id AND t.retention_tier='permanent') "
+                    "LIMIT ?",
+                    (lower, ACCOUNT_CLEANUP_BATCH_SIZE),
+                ).fetchall()
+            ]
             if not ids:
-                return
+                state.commit()
+                return 0, 0, True
             marks = ",".join("?" for _ in ids)
-            claim_ids = [row[0] for row in state.execute(f"SELECT claim_id FROM claims WHERE content_item_id IN ({marks})", ids).fetchall()]
+            claim_ids = [
+                row[0] for row in state.execute(
+                    f"SELECT claim_id FROM claims WHERE content_item_id IN ({marks})", ids
+                ).fetchall()
+            ]
             if claim_ids:
                 claim_marks = ",".join("?" for _ in claim_ids)
+                state.execute(
+                    f"DELETE FROM topic_evidence WHERE claim_id IN ({claim_marks}) "
+                    "AND topic_id IN (SELECT topic_id FROM topics WHERE retention_tier!='permanent')",
+                    claim_ids,
+                )
                 state.execute(f"DELETE FROM memberships WHERE claim_id IN ({claim_marks})", claim_ids)
                 state.execute(f"DELETE FROM decision_audit WHERE claim_id IN ({claim_marks})", claim_ids)
                 state.execute(f"DELETE FROM claims WHERE claim_id IN ({claim_marks})", claim_ids)
             state.execute(f"DELETE FROM content_items WHERE content_item_id IN ({marks})", ids)
+            state.execute(
+                "DELETE FROM topic_participations WHERE lower(activity_account)=? "
+                "AND topic_id IN (SELECT topic_id FROM topics WHERE retention_tier!='permanent')",
+                (lower,),
+            )
             state.commit()
+            return len(ids), len(claim_ids), len(ids) < ACCOUNT_CLEANUP_BATCH_SIZE
+        except Exception:
+            state.rollback()
+            raise
 
     def _due_accounts(self) -> list[AccountRow]:
         rows = self.db.execute(
@@ -272,6 +337,7 @@ class HotTopicService:
         accounts = self._due_accounts()
         if not accounts:
             self.aggregate()
+            self.process_account_cleanup_jobs()
             self.maintain()
             return {"polled": 0, "accepted": 0}
         cutoff = datetime.fromisoformat(self.deployment_started_at())
@@ -288,6 +354,7 @@ class HotTopicService:
                 added = self._store_poll(account, items, error, now)
                 accepted += added
         self.aggregate()
+        self.process_account_cleanup_jobs()
         self.maintain()
         return {"polled": len(accounts), "accepted": accepted}
 
@@ -321,7 +388,10 @@ class HotTopicService:
         return accepted
 
     def aggregate(self) -> None:
-        rows = self.db.execute("SELECT tweet_id,payload_json FROM hottopic_inbox WHERE processed_at IS NULL ORDER BY collected_at LIMIT 500").fetchall()
+        rows = self.db.execute(
+            "SELECT tweet_id,payload_json FROM hottopic_inbox WHERE processed_at IS NULL ORDER BY collected_at LIMIT ?",
+            (AGGREGATION_BATCH_SIZE,),
+        ).fetchall()
         if not rows:
             return
         try:

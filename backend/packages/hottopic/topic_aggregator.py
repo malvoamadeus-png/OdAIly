@@ -881,7 +881,13 @@ class TopicAggregator:
                     "AND (t.brief_status='pending' OR t.brief_retry_after IS NOT NULL)"
                 ).fetchall()
             }
-            brief_requests = self._refresh_briefs(affected | pending_briefs, batch_iso, status_requests["transitions"])
+            brief_topic_ids = affected | pending_briefs
+            # Brief generation can make network calls and retries.  Persist
+            # the deterministic topic state before it starts so it never owns
+            # SQLite's single writer while waiting on a remote model.
+            metrics["phase_ms"] = {"state_commit": round((time.perf_counter() - phase_started) * 1000, 2)}
+            self.connection.commit()
+            brief_requests = self._refresh_briefs(brief_topic_ids, batch_iso, status_requests["transitions"])
             metrics["affected_topic_ids"] = sorted(affected)
             metrics["brief_refresh_requests"] = brief_requests
             metrics["brief_deferred_count"] = sum(
@@ -897,7 +903,6 @@ class TopicAggregator:
                 for request in brief_requests
                 if request.get("brief_status") == "error"
             )
-            metrics["phase_ms"] = {"state_commit": round((time.perf_counter() - phase_started) * 1000, 2)}
             for decision in decisions:
                 self.connection.execute(
                     "INSERT OR IGNORE INTO decision_audit VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1816,6 +1821,9 @@ class TopicAggregator:
                 reason = "ordinary_substantive_update"
             revision = last_revision + 1
             result = self._write_brief(topic_id, revision, at, reason)
+            # Do not hold a brief write transaction while generating a later
+            # brief in this same batch.
+            self.connection.commit()
             requests.append({"topic_id": topic_id, "revision": revision, "reason": reason, **result})
         return requests
 
