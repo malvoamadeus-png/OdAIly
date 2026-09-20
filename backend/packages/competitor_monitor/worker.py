@@ -196,8 +196,8 @@ class CompetitorMonitorWorker:
         for item in items:
             matched = self.exclusion_matcher.is_excluded(
                 scopes=["competitor"],
-                title_texts=[item.title],
-                body_texts=[item.content],
+                title_texts=self._exclusion_title_texts(item),
+                body_texts=self._exclusion_content_texts(item),
             )
             (excluded if matched else included).append(item)
         return included, excluded
@@ -211,10 +211,18 @@ class CompetitorMonitorWorker:
             if item.source == "odaily"
             or not self.exclusion_matcher.is_excluded(
                 scopes=["competitor"],
-                title_texts=[item.title],
-                body_texts=[item.content],
+                title_texts=self._exclusion_title_texts(item),
+                body_texts=self._exclusion_content_texts(item),
             )
         ]
+
+    @staticmethod
+    def _exclusion_title_texts(item: NewsflashItem) -> list[str | None]:
+        return [getattr(item, "exclusion_title", None) or item.title]
+
+    @staticmethod
+    def _exclusion_content_texts(item: NewsflashItem) -> list[str | None]:
+        return [getattr(item, "exclusion_content", None) or item.content]
 
     def _exclude_items(self, items: list[NewsflashItem]) -> list[NewsflashItem]:
         """Compatibility wrapper for callers that still expect task-pipeline filtering."""

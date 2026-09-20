@@ -12,7 +12,7 @@ from packages.competitor_monitor.blockbeats_key_config import (
     record_blockbeats_key_status,
     save_blockbeats_key,
 )
-from packages.competitor_monitor.fetchers import BlockbeatsQuotaError, NewsflashItem
+from packages.competitor_monitor.fetchers import BlockbeatsQuotaError, NewsflashItem, fetch_blockbeats
 from packages.competitor_monitor.blockbeats_registration import BlockbeatsRegistrationResult
 from packages.competitor_monitor.worker import CompetitorMonitorWorker, CompetitorRunResult
 
@@ -317,6 +317,36 @@ def test_competitor_exclusion_skips_odaily_reference_items():
 
     assert worker._exclude_items([item]) == [item]
     assert worker.exclusion_matcher.checked_title_texts == []
+
+
+def test_competitor_exclusion_uses_raw_text_before_media_prefix_cleanup(monkeypatch):
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": 368061,
+                        "title": "巨鲸买入比特币最新震荡区间预测",
+                        "content": "<p>BlockBeats 消息，9 月 20 日，据 TradingBeats 监测，巨鲸继续扩大 BTC 空仓。</p>",
+                    }
+                ]
+            }
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("packages.competitor_monitor.fetchers.requests.get", lambda *args, **kwargs: _Response())
+    item = fetch_blockbeats(api_key="test-key", timeout_seconds=1.0)[0]
+
+    assert "TradingBeats" not in item.content
+    assert "TradingBeats" in (item.exclusion_content or "")
+
+    worker = CompetitorMonitorWorker.__new__(CompetitorMonitorWorker)
+    worker.exclusion_matcher = _FakeExclusionMatcher(term="TradingBeats", match_target="all")
+
+    assert worker._exclude_items([item]) == []
 
 
 class _HeartbeatRepository:

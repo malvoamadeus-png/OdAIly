@@ -63,12 +63,18 @@ class NewsflashItem:
     published_at: str | None = None
     raw_payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    exclusion_title: str | None = None
+    exclusion_content: str | None = None
 
     def __post_init__(self) -> None:
+        normalized_title = normalize_inline_text(self.title)
+        normalized_content = normalize_multiline_text(self.content)
         object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))
-        object.__setattr__(self, "title", normalize_inline_text(self.title))
-        object.__setattr__(self, "content", normalize_multiline_text(self.content))
+        object.__setattr__(self, "title", normalized_title)
+        object.__setattr__(self, "content", normalized_content)
         object.__setattr__(self, "source_url", normalize_inline_text(self.source_url) or None if self.source_url else None)
+        object.__setattr__(self, "exclusion_title", normalize_inline_text(self.exclusion_title) if self.exclusion_title is not None else normalized_title)
+        object.__setattr__(self, "exclusion_content", normalize_multiline_text(self.exclusion_content) if self.exclusion_content is not None else normalized_content)
 
 
 def strip_html(text: str, *, preserve_paragraph_breaks: bool = False) -> str:
@@ -137,14 +143,15 @@ def fetch_blockbeats(*, api_key: str | None, timeout_seconds: float) -> list[New
     news_list = _extract_list(payload)
     items: list[NewsflashItem] = []
     for news in news_list:
-        title = str(news.get("title") or news.get("name") or "").strip()
-        if not title:
+        raw_title = str(news.get("title") or news.get("name") or "").strip()
+        if not raw_title:
             continue
-        source_id = str(news.get("id") or news.get("flash_id") or news.get("newsflash_id") or stable_id("blockbeats", title))
-        content = normalize_item_content(title, str(news.get("content") or news.get("description") or news.get("summary") or title))
+        source_id = str(news.get("id") or news.get("flash_id") or news.get("newsflash_id") or stable_id("blockbeats", raw_title))
+        raw_content = str(news.get("content") or news.get("description") or news.get("summary") or raw_title)
+        content = normalize_item_content(raw_title, raw_content)
         published_at = str(news.get("create_time") or news.get("created_at") or news.get("publish_time") or news.get("published_at") or "")
         source_url = extract_blockbeats_original_link(news)
-        items.append(NewsflashItem("blockbeats", source_id, scrub_competitor_brands(title), content, source_url, published_at, news))
+        items.append(NewsflashItem("blockbeats", source_id, scrub_competitor_brands(raw_title), content, source_url, published_at, news, exclusion_title=raw_title, exclusion_content=raw_content))
     return items
 
 
@@ -224,13 +231,14 @@ def fetch_panews(*, timeout_seconds: float) -> list[NewsflashItem]:
     for news in news_list:
         if not isinstance(news, dict):
             continue
-        title = str(news.get("title") or "").strip()
-        if not title:
+        raw_title = str(news.get("title") or "").strip()
+        if not raw_title:
             continue
-        source_id = str(news.get("articleId") or news.get("id") or stable_id("panews", title))
-        content = normalize_item_content(title, str(news.get("content") or news.get("desc") or news.get("summary") or title))
+        source_id = str(news.get("articleId") or news.get("id") or stable_id("panews", raw_title))
+        raw_content = str(news.get("content") or news.get("desc") or news.get("summary") or raw_title)
+        content = normalize_item_content(raw_title, raw_content)
         source_url = f"https://www.panewslab.com/zh/articledetails/{source_id}.html"
-        items.append(NewsflashItem("panews", source_id, scrub_competitor_brands(title), content, source_url, str(news.get("publishedAt") or ""), news))
+        items.append(NewsflashItem("panews", source_id, scrub_competitor_brands(raw_title), content, source_url, str(news.get("publishedAt") or ""), news, exclusion_title=raw_title, exclusion_content=raw_content))
     return items
 
 
@@ -247,16 +255,17 @@ def fetch_jinse(*, timeout_seconds: float) -> list[NewsflashItem]:
     for news in _extract_jinse_lives(payload):
         if not isinstance(news, dict):
             continue
-        title = str(news.get("title") or extract_jinse_title(news.get("content")) or "").strip()
-        if not title:
+        raw_title = str(news.get("title") or extract_jinse_title(news.get("content")) or "").strip()
+        if not raw_title:
             continue
         published_at = news.get("created_at") or news.get("published_at") or ""
         live_id = news.get("id")
         source_url = extract_jinse_original_link(news)
         raw_link_for_id = str(news.get("jump_url") or news.get("link") or "")
-        source_id = str(news.get("id") or extract_jinse_live_id(raw_link_for_id) or stable_id("jinse", title, str(published_at)))
-        content = normalize_item_content(title, str(news.get("content") or news.get("summary") or title))
-        items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(title), content, source_url, str(published_at), news))
+        source_id = str(news.get("id") or extract_jinse_live_id(raw_link_for_id) or stable_id("jinse", raw_title, str(published_at)))
+        raw_content = str(news.get("content") or news.get("summary") or raw_title)
+        content = normalize_item_content(raw_title, raw_content)
+        items.append(NewsflashItem("jinse", source_id, scrub_competitor_brands(raw_title), content, source_url, str(published_at), news, exclusion_title=raw_title, exclusion_content=raw_content))
     return items
 
 
@@ -302,21 +311,22 @@ def fetch_odaily(*, timeout_seconds: float) -> list[NewsflashItem]:
     payload = _fetch_odaily_payload(timeout_seconds=timeout_seconds)
     items: list[NewsflashItem] = []
     for news in _extract_list(payload):
-        title = str(news.get("title") or "").strip()
-        if not title:
+        raw_title = str(news.get("title") or "").strip()
+        if not raw_title:
             continue
-        source_id = str(news.get("id") or news.get("newsflashId") or stable_id("odaily", title))
+        source_id = str(news.get("id") or news.get("newsflashId") or stable_id("odaily", raw_title))
+        raw_content = str(news.get("content") or news.get("description") or news.get("summary") or raw_title)
         content = remove_odaily_prefix(
             normalize_item_content(
-                title,
-                str(news.get("content") or news.get("description") or news.get("summary") or title),
+                raw_title,
+                raw_content,
                 preserve_paragraph_breaks=True,
             ),
             preserve_paragraph_breaks=True,
         )
         published_at = str(news.get("publishDate") or news.get("publishedAt") or news.get("createdAt") or news.get("createTime") or "")
         source_url = str(news.get("sourceUrl") or news.get("link") or news.get("url") or f"https://www.odaily.news/zh-CN/newsflash/{source_id}")
-        items.append(NewsflashItem("odaily", source_id, title, content, source_url, published_at, news))
+        items.append(NewsflashItem("odaily", source_id, raw_title, content, source_url, published_at, news, exclusion_title=raw_title, exclusion_content=raw_content))
     return items
 
 
