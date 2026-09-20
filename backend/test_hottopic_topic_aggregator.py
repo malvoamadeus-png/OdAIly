@@ -54,7 +54,7 @@ def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatc
     monkeypatch.setenv("OPENAI_API_KEY", "upstream-key")
     monkeypatch.setenv("LITELLM_MASTER_KEY", "local-proxy-key")
 
-    writer = ModelBriefWriter("gpt-5.6-terra", base_url="http://127.0.0.1:4000/v1")
+    writer = ModelBriefWriter("odaily-gpt-writer", base_url="http://127.0.0.1:4000/v1")
 
     assert writer.api_key == "local-proxy-key"
 

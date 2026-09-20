@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
-Environment=HOTTOPIC_MODEL=gpt-5.6-terra
+Environment=HOTTOPIC_MODEL=odaily-gpt-writer
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py hottopic-worker --seed --workers 8
 Restart=always
 RestartSec=10
