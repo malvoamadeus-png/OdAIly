@@ -417,6 +417,8 @@ class HotTopicService:
         current = utc_now()
         if not force and row[0] and current - datetime.fromisoformat(row[0]) < MAINTENANCE_INTERVAL:
             return None
+        reconciled = self.aggregator.reconcile_recent_topics(current)
+        self._refresh_hot_topic_counts()
         state = self.aggregator.prune_transient_state(current, retention_hours=TRANSIENT_RETENTION_HOURS)
         inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
         event_cutoff = iso(current - timedelta(days=EVENT_RETENTION_DAYS))
@@ -424,7 +426,7 @@ class HotTopicService:
             inbox = self.db.execute("DELETE FROM hottopic_inbox WHERE processed_at IS NOT NULL AND collected_at<?", (inbox_cutoff,)).rowcount
             events = self.db.execute("DELETE FROM hottopic_events WHERE at<?", (event_cutoff,)).rowcount
             self.db.execute("UPDATE hottopic_meta SET last_maintenance_at=? WHERE singleton_key='global'", (iso(current),))
-        return {**state, "deleted_inbox": inbox, "deleted_events": events}
+        return {**state, "deleted_inbox": inbox, "deleted_events": events, "merged_topics": len(reconciled["topic_merges"])}
 
     def health(self) -> dict[str, Any]:
         counts = self.db.execute(

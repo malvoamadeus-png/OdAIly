@@ -50,6 +50,7 @@ STOPWORDS = {
 LAUNCH_SIGNALS = (
     "宣布", "发布", "推出", "上线", "发射台", "新台子", "注意力榜单",
     "launchpad", "launched", "launching", "announced", "released", "rollout",
+    "introduce", "introduces", "introducing",
 )
 LISTING_SIGNALS = (
     "上币", "现货交易", "交易路线图", "路线图",
@@ -64,6 +65,10 @@ IDENTITY_STOPWORDS = STOPWORDS | {
     "token", "tokens", "launch", "launched", "launching", "launchpad", "platform",
     "announced", "released", "team", "project", "projects", "market", "meme", "memes",
     "推出", "发布", "上线", "宣布", "发射台", "平台", "项目", "代币", "市场", "注意力",
+}
+GENERIC_NAMED_EVENT_ENTITIES = IDENTITY_STOPWORDS | {
+    "access", "available", "campaign", "campaigns", "faq", "first", "introducing",
+    "official", "pre", "protocol", "reading", "soon", "swap", "through", "wallet",
 }
 GENERIC_ASSET_IDENTITIES = {
     "btc", "eth", "sol", "bnb", "usdc", "usdt", "xrp", "doge",
@@ -311,6 +316,8 @@ class EventIdentity:
 
     merge_anchors: frozenset[str]
     aliases: frozenset[str]
+    named_entities: frozenset[str]
+    name_tokens: frozenset[str]
     lookup_terms: frozenset[str]
 
 
@@ -925,6 +932,41 @@ class TopicAggregator:
             self.connection.rollback()
             raise
 
+    def reconcile_recent_topics(self, at: datetime | str) -> dict[str, Any]:
+        """Reapply generic merge identity to recent open topics without new input."""
+        batch_iso = iso(at)
+        cutoff = (dt(batch_iso) - timedelta(hours=24)).isoformat()
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            topic_ids = {
+                row["topic_id"]
+                for row in self.connection.execute(
+                    "SELECT topic_id FROM topics WHERE matching_status IN ('seed','active') "
+                    "AND COALESCE(last_evidence_at, started_at)>=?",
+                    (cutoff,),
+                )
+            }
+            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso)
+            affected = set(topic_ids)
+            for request in merge_requests:
+                affected.add(request["source_topic_id"])
+                affected.add(request["target_topic_id"])
+            status_requests = self._refresh_all_topics(batch_iso)
+            affected.update(status_requests["affected_topic_ids"])
+            pending_briefs = {
+                row["topic_id"]
+                for row in self.connection.execute(
+                    "SELECT topic_id FROM topics WHERE matching_status='active' "
+                    "AND (brief_status='pending' OR brief_retry_after IS NOT NULL)"
+                )
+            }
+            self.connection.commit()
+            brief_requests = self._refresh_briefs(affected | pending_briefs, batch_iso, status_requests["transitions"])
+            return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests}
+        except Exception:
+            self.connection.rollback()
+            raise
+
     def _extract_claims(self, item: ContentItem) -> Sequence[Claim]:
         text = item.expanded_text
         pieces = [compact(piece) for piece in re.split(r"\n+|(?<=[。！？!?])\s+|(?<=[.!?])\s+(?=[A-Z$@])", text)]
@@ -1132,13 +1174,19 @@ class TopicAggregator:
         return value.lower().strip().lstrip("$#@").strip("-_.")
 
     @classmethod
-    def _plain_identity_aliases(cls, text: str) -> set[str]:
-        """Find prose aliases that may connect to an explicit asset anchor.
+    def _name_tokens(cls, value: str) -> set[str]:
+        """Return non-generic components for cross-writing identity checks."""
+        raw = value.strip().lstrip("$#@")
+        return {
+            cls._normalized_identity(part)
+            for part in re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+|\d+", raw)
+            if cls._normalized_identity(part) not in GENERIC_NAMED_EVENT_ENTITIES
+            and cls._normalized_identity(part) not in GENERIC_ASSET_IDENTITIES
+        }
 
-        These aliases never merge two topics by themselves.  A merge still
-        requires the other side to contain an explicit $/# asset label or a
-        contract, which keeps broad words useful for recall but not identity.
-        """
+    @classmethod
+    def _plain_identity_aliases(cls, text: str) -> set[str]:
+        """Find broad recall aliases without treating them as event identity."""
         aliases = set(subject_tags(text))
         aliases.update(value.lower().lstrip("#") for value in RE_HASHTAG.findall(text))
         for raw in RE_WORD.findall(text.lower()):
@@ -1155,16 +1203,26 @@ class TopicAggregator:
     def _event_identity(cls, rows: Sequence[sqlite3.Row]) -> EventIdentity:
         merge_anchors: set[str] = set()
         aliases: set[str] = set()
+        named_entities: set[str] = set()
+        name_tokens: set[str] = set()
         lookup_terms: set[str] = set()
         for row in rows:
             text = compact(row["claim_text"])
             for normalized in subject_tags(text):
                 merge_anchors.add(f"asset:{normalized}")
+                if normalized not in GENERIC_ASSET_IDENTITIES:
+                    named_entities.add(normalized)
+                    name_tokens.update(cls._name_tokens(normalized))
                 lookup_terms.update((normalized, f"${normalized}", f"#{normalized}"))
             for value in RE_CONTRACT.findall(text):
                 normalized = value.lower()
                 merge_anchors.add(f"contract:{normalized}")
                 lookup_terms.add(normalized)
+            for value in RE_MENTION.findall(text):
+                normalized = cls._normalized_identity(value)
+                if normalized and normalized not in GENERIC_NAMED_EVENT_ENTITIES:
+                    named_entities.add(normalized)
+                    name_tokens.update(cls._name_tokens(value))
             for value in re.findall(r"\b[A-Za-z][A-Za-z0-9_]{2,30}\b", text):
                 normalized = cls._normalized_identity(value)
                 if not normalized or normalized in IDENTITY_STOPWORDS or normalized in GENERIC_ASSET_IDENTITIES:
@@ -1177,11 +1235,31 @@ class TopicAggregator:
                 )
                 if is_named:
                     aliases.add(normalized)
+                    if normalized not in GENERIC_NAMED_EVENT_ENTITIES:
+                        named_entities.add(normalized)
+                        name_tokens.update(cls._name_tokens(value))
                     lookup_terms.add(normalized)
             prose_aliases = cls._plain_identity_aliases(text)
             aliases.update(prose_aliases)
             lookup_terms.update(prose_aliases)
-        return EventIdentity(frozenset(merge_anchors), frozenset(aliases), frozenset(lookup_terms))
+        return EventIdentity(
+            frozenset(merge_anchors),
+            frozenset(aliases),
+            frozenset(named_entities),
+            frozenset(name_tokens),
+            frozenset(lookup_terms),
+        )
+
+    @staticmethod
+    def _event_kinds(rows: Sequence[sqlite3.Row]) -> set[str]:
+        kinds: set[str] = set()
+        for row in rows:
+            text = compact(row["claim_text"]).lower()
+            if any(signal in text for signal in LAUNCH_SIGNALS):
+                kinds.add("launch")
+            if any(signal in text for signal in LISTING_SIGNALS):
+                kinds.add("listing")
+        return kinds
 
     @staticmethod
     def _primary_identity_values(accounts_by_value: dict[str, set[str]]) -> set[str]:
@@ -1234,6 +1312,7 @@ class TopicAggregator:
             for contract in RE_CONTRACT.findall(text):
                 contract_accounts[contract.lower()].add(row["activity_account"])
         identity = self._event_identity(rows)
+        event_kinds = self._event_kinds(rows)
         participants = {
             row["activity_account"]
             for row in self.connection.execute(
@@ -1252,6 +1331,7 @@ class TopicAggregator:
             "topic": topic,
             "rows": rows,
             "identity": identity,
+            "event_kinds": event_kinds,
             "participants": participants,
             "launch_accounts": launch_accounts,
             "mechanism_accounts": mechanism_accounts,
@@ -1313,6 +1393,28 @@ class TopicAggregator:
             connected = left_in_right | right_in_left
             if connected:
                 return True, f"repeated subordinate event asset={sorted(connected)[:6]}"
+
+        # Non-asset events (product releases, corporate actions, protocol
+        # changes) need an identity path too.  Use only stable named entities,
+        # never broad recall aliases or CJK n-grams, and require the same
+        # event category plus independent cross-account support.  Two distinct
+        # primary assets remain non-mergeable without an existing strong link.
+        shared_named_entities = left_identity.named_entities & right_identity.named_entities
+        shared_name_tokens = left_identity.name_tokens & right_identity.name_tokens
+        named_event_support = set(shared_named_entities)
+        if len(named_event_support) < 2:
+            named_event_support.update(sorted(shared_name_tokens - named_event_support)[:2 - len(named_event_support)])
+        shared_event_kinds = set(left.get("event_kinds", set())) & set(right.get("event_kinds", set()))
+        independent_accounts = set(left["participants"]) | set(right["participants"])
+        if (
+            not (left_assets and right_assets)
+            and shared_named_entities
+            and len(named_event_support) >= 2
+            and shared_event_kinds
+            and len(independent_accounts) >= 3
+        ):
+            kind = sorted(shared_event_kinds)[0]
+            return True, f"shared named event identity={sorted(named_event_support)[:6]}; kind={kind}"
 
         # A subject may be written as a plain name or hashtag in some posts
         # and as a dollar label in another.  Permit that bridge only when it
