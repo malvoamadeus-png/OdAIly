@@ -1835,6 +1835,7 @@ class TopicAggregator:
 
         root_accounts: defaultdict[str, set[str]] = defaultdict(set)
         tag_accounts: defaultdict[str, set[str]] = defaultdict(set)
+        event_identity_accounts: defaultdict[str, set[str]] = defaultdict(set)
         for row in rows:
             references = json_loads(row["references_json"], {})
             for key in ("quote_id", "reply_to"):
@@ -1842,6 +1843,11 @@ class TopicAggregator:
                     root_accounts[f"{key}:{references[key]}"].add(row["activity_account"])
             for tag in subject_tags(row["claim_text"]):
                 tag_accounts[tag].add(row["activity_account"])
+            identity = self._event_identity([row])
+            names = sorted(identity.named_entities | identity.name_tokens)
+            for index, left_name in enumerate(names):
+                for right_name in names[index + 1:]:
+                    event_identity_accounts[f"event:{left_name}|{right_name}"].add(row["activity_account"])
         accounts_by_tweet = {row["tweet_id"]: row["activity_account"] for row in rows}
         for root, accounts in root_accounts.items():
             root_tweet_id = root.split(":", 1)[1]
@@ -1851,9 +1857,11 @@ class TopicAggregator:
 
         anchor_candidates = [(root, set(accounts)) for root, accounts in root_accounts.items()]
         anchor_candidates.extend((f"asset:{tag}", set(accounts)) for tag, accounts in tag_accounts.items())
+        if self._event_kinds(rows):
+            anchor_candidates.extend((identity, set(accounts)) for identity, accounts in event_identity_accounts.items())
         anchor, qualified = max(
             anchor_candidates,
-            key=lambda value: (len(value[1]), value[0].startswith("asset:"), value[0]),
+            key=lambda value: (len(value[1]), value[0].startswith(("asset:", "event:")), value[0]),
             default=("", set()),
         )
 
@@ -1872,7 +1880,7 @@ class TopicAggregator:
                     qualified.add(row["activity_account"])
 
         coherence = len(qualified) / max(1, len(all_accounts))
-        subject_keys = {anchor.removeprefix("asset:")} if anchor.startswith("asset:") else set()
+        subject_keys = set(anchor.removeprefix("asset:").removeprefix("event:").split("|")) if anchor.startswith(("asset:", "event:")) else set()
         substantive = any(
             row["activity_account"] in qualified
             and row["claim_kind"] != "reaction"

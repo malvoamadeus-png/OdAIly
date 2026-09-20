@@ -123,6 +123,8 @@ def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path)
         seeds = [
             ("topic:announcement", "official", "Binance Wallet announced Pre-Access campaigns hosted by PancakeSwap."),
             ("topic:announcement", "commentator", "Binance and PancakeSwap launched Pre-Access for Binance Wallet users."),
+            ("topic:announcement", "researcher", "PancakeSwap introduced Pre-Access through Binance Wallet."),
+            ("topic:announcement", "trader", "Binance Wallet released the PancakeSwap Pre-Access campaign."),
             ("topic:follow-up", "analyst", "@BinanceWallet and @PancakeSwap introduced Pre-Access; Polymarket may be first."),
         ]
         created_topics: set[str] = set()
@@ -163,11 +165,11 @@ def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path)
 
         assert result["topic_merges"]
         assert aggregator.connection.execute(
-            "SELECT COUNT(*) FROM topics WHERE matching_status='seed'"
+            "SELECT COUNT(*) FROM topics WHERE matching_status='active'"
         ).fetchone()[0] == 1
         assert aggregator.connection.execute(
             "SELECT COUNT(*) FROM topic_participations WHERE topic_id=("
-            "SELECT topic_id FROM topics WHERE matching_status='seed')"
-        ).fetchone()[0] == 3
+            "SELECT topic_id FROM topics WHERE matching_status='active')"
+        ).fetchone()[0] == 5
     finally:
         aggregator.close()
