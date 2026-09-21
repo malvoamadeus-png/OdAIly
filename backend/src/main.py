@@ -445,7 +445,12 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument(
         "--completed-interval",
         type=int,
-        default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or 60),
+        default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or 300),
+    )
+    meme_scan.add_argument(
+        "--worker-poll-interval",
+        type=float,
+        default=float(os.getenv("MEME_WORKER_POLL_INTERVAL") or 5),
     )
     meme_scan.add_argument(
         "--token-info-high-interval",
@@ -473,6 +478,23 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument("--narrative-timeout", type=int, default=90)
     meme_scan.add_argument("--narrative-command")
     meme_scan.add_argument("--force-contract")
+
+    meme_fomo_login = meme_subparsers.add_parser(
+        "fomo-login",
+        help="Open a one-shot, localhost-only FOMO browser login window.",
+    )
+    meme_fomo_login.add_argument(
+        "--timeout",
+        type=int,
+        default=int(os.getenv("MEME_FOMO_LOGIN_TIMEOUT_SECONDS") or 900),
+        help="Maximum seconds to keep the one-shot browser open.",
+    )
+    meme_fomo_login.add_argument(
+        "--cdp-port",
+        type=int,
+        default=int(os.getenv("MEME_FOMO_LOGIN_CDP_PORT") or 9224),
+        help="Loopback-only DevTools port, intended for an SSH tunnel.",
+    )
 
     meme_tg = meme_subparsers.add_parser("tg-watch", help="Listen for repeated CA mentions in Telegram chats.")
     meme_tg.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
@@ -1696,6 +1718,10 @@ def meme_command(args: argparse.Namespace) -> int:
         from packages.meme_scanner import scanner
 
         return scanner.run(args)
+    if args.meme_action == "fomo-login":
+        from packages.meme_scanner import fomo_login
+
+        return fomo_login.run(args)
     if args.meme_action == "tg-watch":
         from packages.meme_scanner import tg_watcher
 

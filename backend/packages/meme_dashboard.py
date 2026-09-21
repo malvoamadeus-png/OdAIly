@@ -75,6 +75,36 @@ def _job_columns(connection: sqlite3.Connection) -> str:
     return ",".join(selected)
 
 
+def _current_market_observations(connection: sqlite3.Connection) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return the latest tracked market values without changing job snapshots.
+
+    Only active observations belong to the scanner's current three-day
+    tracking window.  Older/legacy rows remain useful audit data but must not
+    make a historical job card look like it has a live price.
+    """
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'"
+    ).fetchone()
+    if table is None:
+        return {}
+    columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(observations)")}
+    required = {"address", "chain", "last_market_cap", "last_volume_24h", "last_seen_at", "tracking_status"}
+    if not required.issubset(columns):
+        return {}
+    rows = connection.execute(
+        """SELECT address, chain, last_market_cap, last_volume_24h, last_seen_at
+           FROM observations WHERE tracking_status='active'"""
+    ).fetchall()
+    return {
+        (_chain(row["chain"]), str(row["address"]).strip().lower()): {
+            "market_cap": _number(row["last_market_cap"]),
+            "volume_24h": _number(row["last_volume_24h"]),
+            "observed_at": str(row["last_seen_at"] or ""),
+        }
+        for row in rows
+    }
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -107,9 +137,15 @@ def _timing_summary(row: sqlite3.Row, narrative: dict[str, Any]) -> dict[str, An
     }
 
 
-def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[str, Any]:
+def _row_item(
+    row: sqlite3.Row,
+    candidates: dict[int, dict[str, Any]],
+    market_observations: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     payload = _json_object(row["payload_json"])
     narrative = _json_object(row["narrative_json"])
+    chain = _chain(payload.get("chain"))
+    current_market = (market_observations or {}).get((chain, str(row["address"]).strip().lower()))
     candidate: dict[str, Any] = {}
     if row["trigger_kind"] == "tg_burst":
         try:
@@ -120,12 +156,13 @@ def _row_item(row: sqlite3.Row, candidates: dict[int, dict[str, Any]]) -> dict[s
     return {
         "id": int(row["id"]),
         "address": str(row["address"]),
-        "chain": _chain(payload.get("chain")),
+        "chain": chain,
         "platform": str(payload.get("launchpad_platform") or payload.get("launchpad") or "telegram"),
         "name": str(payload.get("name") or ""),
         "symbol": str(payload.get("symbol") or payload.get("name") or "?"),
-        "market_cap": _number(payload.get("usd_market_cap") or payload.get("market_cap")),
-        "volume_24h": _number(payload.get("volume_24h")),
+        "market_cap": current_market["market_cap"] if current_market else _number(payload.get("usd_market_cap") or payload.get("market_cap")),
+        "volume_24h": current_market["volume_24h"] if current_market else _number(payload.get("volume_24h")),
+        "market_observed_at": current_market["observed_at"] if current_market else None,
         "trigger_kind": str(row["trigger_kind"]),
         "trigger_level": _number(row["trigger_level"]),
         "mention_count": candidate.get("mention_count"),
@@ -185,6 +222,7 @@ class MemeDashboardStore:
                     )
                     """
                 ).fetchall()
+                market_observations = _current_market_observations(connection)
         except (OSError, sqlite3.Error) as exc:
             return {
                 "available": False,
@@ -196,7 +234,7 @@ class MemeDashboardStore:
         candidates = {int(row["id"]): dict(row) for row in candidate_rows}
         items: list[dict[str, Any]] = []
         for row in jobs:
-            items.append(_row_item(row, candidates))
+            items.append(_row_item(row, candidates, market_observations))
         return {
             "available": True,
             "generated_at": generated_at,
@@ -228,6 +266,7 @@ class MemeDashboardStore:
                     """,
                     (str(row["trigger_key"] or ""),),
                 ).fetchall()
+                market_observations = _current_market_observations(connection)
         except (OSError, sqlite3.Error):
             return None
 
@@ -235,6 +274,6 @@ class MemeDashboardStore:
         payload = _json_object(row["narrative_json"])
         return {
             "available": bool(payload),
-            "job": _row_item(row, candidates),
+            "job": _row_item(row, candidates, market_observations),
             "narrative": payload if payload else None,
         }

@@ -1,4 +1,4 @@
-"""Fast Meme narrative: HideOnBush evidence in, OdAIly Terra prose out."""
+"""Fast Meme narrative: local evidence in, OdAIly Terra prose out."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import requests
 
@@ -25,42 +23,6 @@ class FastEvidenceProvider(Protocol):
 
 
 @dataclass(frozen=True)
-class HTTPFastEvidenceAdapter:
-    endpoint: str
-    internal_key: str
-    timeout_seconds: int = 45
-
-    def collect(self, *, chain: str, contract: str, symbol: str, request_id: str) -> dict[str, Any]:
-        if not self.endpoint:
-            raise RuntimeError("MEME_FAST_EVIDENCE_URL is required")
-        if len(self.internal_key) < 32:
-            raise RuntimeError("MEME_FAST_EVIDENCE_INTERNAL_KEY must contain at least 32 characters")
-        request = Request(
-            self.endpoint,
-            data=json.dumps({
-                "chain": chain,
-                "contract": contract,
-                "symbol": symbol,
-                "requestId": request_id,
-            }).encode("utf-8"),
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-Internal-Key": self.internal_key,
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise RuntimeError(f"HideOnBush evidence returned HTTP {exc.code}") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"HideOnBush evidence request failed: {exc}") from exc
-        return normalize_bundle(payload)
-
-
-@dataclass(frozen=True)
 class InMemoryFastEvidenceAdapter:
     bundle: dict[str, Any]
 
@@ -71,12 +33,12 @@ class InMemoryFastEvidenceAdapter:
 
 def normalize_bundle(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise RuntimeError("HideOnBush evidence response must be a JSON object")
+        raise RuntimeError("local Meme evidence response must be a JSON object")
     if str(value.get("version") or "") != INTERFACE_VERSION:
-        raise RuntimeError("HideOnBush evidence interface version mismatch")
+        raise RuntimeError("local Meme evidence interface version mismatch")
     status = str(value.get("status") or "")
     if status not in {"success", "partial", "empty", "error"}:
-        raise RuntimeError("HideOnBush evidence response has invalid status")
+        raise RuntimeError("local Meme evidence response has invalid status")
     evidence: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for raw in value.get("evidence") or []:
@@ -170,27 +132,30 @@ def run(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     collection_started = time.perf_counter()
     try:
-        bundle = provider.collect(
-            chain=args.chain,
-            contract=args.contract,
-            symbol=getattr(args, "symbol", ""),
-            request_id=f"odaily:meme:{args.chain}:{args.contract.lower()}",
+        bundle = normalize_bundle(
+            provider.collect(
+                chain=args.chain,
+                contract=args.contract,
+                symbol=getattr(args, "symbol", ""),
+                request_id=f"odaily:meme:{args.chain}:{args.contract.lower()}",
+            )
         )
     except Exception as exc:
-        raise narrative_v2.NarrativeStageError("hideonbush_fast_evidence", exc) from exc
+        raise narrative_v2.NarrativeStageError("local_fast_evidence", exc) from exc
     collection_metric = {
-        "stage": "hideonbush_fast_evidence",
+        "stage": "local_fast_evidence",
         "duration_ms": round((time.perf_counter() - collection_started) * 1000),
         "status": bundle["status"],
     }
     if bundle["status"] == "error":
         raise narrative_v2.NarrativeStageError(
-            "hideonbush_fast_evidence",
-            RuntimeError(str(bundle.get("decisionReason") or "HideOnBush evidence collection failed")),
+            "local_fast_evidence",
+            RuntimeError(str(bundle.get("decisionReason") or "local Meme evidence collection failed")),
         )
 
     materials = list(bundle["evidence"])
     material_by_id = {item["id"]: item for item in materials}
+    telegram_contexts = bundle.get("telegramContexts") if isinstance(bundle.get("telegramContexts"), list) else []
     telegram_messages = [item for item in materials if item["source"] == "telegram"]
     x_posts = [item for item in materials if item["source"] == "x"]
     fomo_materials = [item for item in materials if item["source"] == "fomo_thesis"]
@@ -236,7 +201,7 @@ def run(
 
     result = {
         "status": status,
-        "failure_stage": None if status == "success" else ("final_writer" if decision_code == "writer_returned_empty" else "hideonbush_fast_evidence"),
+        "failure_stage": None if status == "success" else ("final_writer" if decision_code == "writer_returned_empty" else "local_fast_evidence"),
         "failure_code": None if status == "success" else decision_code,
         "failure_message": None,
         "material_counts": counts,
@@ -244,7 +209,7 @@ def run(
         "decision_reason": decision_reason,
         **final,
         "fast_evidence": bundle,
-        "telegram_contexts": [],
+        "telegram_contexts": telegram_contexts,
         "telegram_messages": telegram_messages,
         "x_posts": x_posts,
         "fomo_materials": fomo_materials,

@@ -89,19 +89,19 @@ class MemeScannerTests(unittest.TestCase):
             store.close()
 
     def test_completed_request_has_no_market_cap_filters(self) -> None:
-        client = Mock()
-        client.list_migrated.side_effect = [[], []]
-        client.price_info.return_value = {}
-        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
-            scanner, "get_okx_meme_web_client", return_value=client
+        discovery_client = Mock()
+        discovery_client.list_migrated.side_effect = [[], []]
+        market_client = Mock()
+        with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
+            scanner, "get_dexscreener_client", return_value=market_client
         ):
             scanner.fetch_completed_tokens(80)
-        self.assertEqual([call.args for call in client.list_migrated.call_args_list], [("bsc",), ("robinhood",)])
-        self.assertEqual(client.price_info.call_count, 0)
+        self.assertEqual([call.args for call in discovery_client.list_migrated.call_args_list], [("bsc",), ("robinhood",)])
+        self.assertEqual(market_client.price_info.call_count, 0)
 
     def test_completed_request_keeps_unknown_launchpad_platforms(self) -> None:
-        client = Mock()
-        client.list_migrated.side_effect = [[{
+        discovery_client = Mock()
+        discovery_client.list_migrated.side_effect = [[{
             "tokenAddress": "0x1111111111111111111111111111111111111111",
             "protocolId": "999",
             "symbol": "STOCKS",
@@ -110,12 +110,40 @@ class MemeScannerTests(unittest.TestCase):
             "tags": {},
             "social": {},
         }], []]
-        client.price_info.return_value = {}
-        with patch.object(scanner, "get_okx_client", return_value=client), patch.object(
-            scanner, "get_okx_meme_web_client", return_value=client
+        market_client = Mock()
+        market_client.price_info.return_value = {}
+        with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
+            scanner, "get_dexscreener_client", return_value=market_client
         ):
             tokens = scanner.fetch_completed_tokens(80)
         self.assertEqual([(token.platform, token.symbol, token.chain) for token in tokens], [("okx:999", "STOCKS", "bsc")])
+
+    def test_failed_discovery_waits_for_the_next_five_minute_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            with patch.object(scanner, "fetch_completed_tokens", side_effect=RuntimeError("upstream unavailable")):
+                with self.assertRaisesRegex(RuntimeError, "upstream unavailable"):
+                    scanner.discover_once(store, args(root))
+
+            self.assertFalse(scanner.completed_scan_due(store, 300))
+            with patch.object(scanner, "fetch_completed_tokens") as fetch:
+                summary = scanner.discover_once(store, args(root))
+            self.assertFalse(summary["completed_scanned"])
+            fetch.assert_not_called()
+            store.close()
+
+    def test_browser_busy_defers_discovery_until_the_next_five_minute_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            with patch.object(scanner, "fetch_completed_tokens", side_effect=scanner.BrowserLockTimeout("busy")):
+                summary = scanner.discover_once(store, args(root))
+
+            self.assertTrue(summary["discovery_deferred"])
+            self.assertIsNotNone(scanner.parse_iso(store.meta(scanner.COMPLETED_SCAN_ATTEMPT_META_KEY)))
+            self.assertFalse(scanner.completed_scan_due(store, 300))
+            store.close()
 
     def test_token_info_accepts_nested_market_payload_without_repeated_address(self) -> None:
         payload = {
@@ -202,6 +230,18 @@ class MemeScannerTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual(current.chain, "robinhood")
 
+    def test_telegram_evm_falls_back_to_bsc_when_robinhood_has_no_market_pair(self) -> None:
+        address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        incomplete_robinhood = scanner.replace(token(address, 0, 0, chain="robinhood"), metrics_complete=False)
+        bsc = token(address, 600_000, 400_000, chain="bsc")
+
+        with patch.object(scanner, "fetch_token_info", side_effect=[incomplete_robinhood, bsc]) as lookup:
+            current = scanner.fetch_tg_token_info(address, "evm")
+
+        self.assertIsNotNone(current)
+        self.assertEqual((current.chain, current.market_cap), ("bsc", 600_000))
+        self.assertEqual([call.args[1] for call in lookup.call_args_list], ["robinhood", "bsc"])
+
     def test_robinhood_token_payload_keeps_robinhood_chain(self) -> None:
         current = scanner.token_from_row(
             {
@@ -285,7 +325,7 @@ class MemeScannerTests(unittest.TestCase):
             trigger_kind="tg_burst",
         )
         self.assertEqual(title, "Meme速递：BSC上KIDS社群热议中，市值36万美元")
-        self.assertTrue(content.startswith("据Odaily Meme速递监测，BSC上KIDS社群热议中，GMGN显示当前市值为36万美元。"))
+        self.assertTrue(content.startswith("据Odaily Meme速递监测，BSC上KIDS社群热议中，当前市值为36万美元。"))
         self.assertNotIn("发射", title + content)
         self.assertNotIn("社区短时多次出现", title + content)
 
@@ -298,7 +338,7 @@ class MemeScannerTests(unittest.TestCase):
             trigger_kind="tg_burst",
         )
         self.assertEqual(title, "Meme速递：Robinhood上TEST社群热议中，市值249万美元")
-        self.assertTrue(content.startswith("据Odaily Meme速递监测，Robinhood上TEST社群热议中，GMGN显示当前市值为249万美元。"))
+        self.assertTrue(content.startswith("据Odaily Meme速递监测，Robinhood上TEST社群热议中，当前市值为249万美元。"))
 
     def test_jump_across_multiple_levels_only_queues_highest_crossed_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -674,6 +714,30 @@ class MemeScannerTests(unittest.TestCase):
             self.assertTrue(Path(result["output_path"]).exists())
             generate.assert_called_once()
 
+    def test_fomo_login_alert_is_deduplicated_in_meme_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            narrative = {
+                "fast_evidence": {
+                    "sourceDiagnostics": {
+                        "fomo_thesis": {"code": "login_required"},
+                    },
+                },
+            }
+            with patch.dict(
+                "os.environ",
+                {"TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123"},
+                clear=False,
+            ), patch.object(scanner, "TelegramClient") as telegram_client:
+                telegram_client.return_value.send_message.return_value = Mock(ok=True)
+                self.assertTrue(scanner.alert_fomo_login_required(store, narrative))
+                self.assertFalse(scanner.alert_fomo_login_required(store, narrative))
+
+            telegram_client.return_value.send_message.assert_called_once()
+            self.assertTrue(store.meta(scanner.FOMO_LOGIN_ALERT_META_KEY))
+            store.close()
+
     def test_first_poll_starts_three_day_tracking_and_queues_highest_level(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -813,6 +877,24 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual(result, "retry_wait")
             self.assertEqual((row["status"], row["reason"], row["attempts"]), ("retry_wait", "narrative_command_failed", 1))
             self.assertTrue(row["next_attempt_at"])
+            store.close()
+
+    def test_fomo_login_retry_keeps_a_qualifying_job_until_queue_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xfomo-retry", 600_000, 400_000)
+            store.add_job(current, "market_cap_milestone", "queued")
+            store.conn.execute("UPDATE jobs SET attempts=? WHERE address=?", (scanner.MAX_JOB_ATTEMPTS, current.address))
+            store.conn.commit()
+            job = store.conn.execute("SELECT * FROM jobs WHERE address=?", (current.address,)).fetchone()
+
+            result = store.retry_job(job, "narrative_fomo_login_required")
+            row = store.conn.execute("SELECT status, reason, next_attempt_at FROM jobs WHERE address=?", (current.address,)).fetchone()
+
+            self.assertEqual(result, "retry_wait")
+            self.assertEqual((row["status"], row["reason"]), ("retry_wait", "narrative_fomo_login_required"))
+            self.assertGreater(scanner.parse_iso(row["next_attempt_at"]), scanner.datetime.now(scanner.UTC))
             store.close()
 
     def test_recover_inflight_jobs_returns_them_to_retry_queue(self) -> None:

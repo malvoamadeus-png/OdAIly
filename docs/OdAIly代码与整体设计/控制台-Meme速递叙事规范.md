@@ -30,11 +30,13 @@
 
 ## 运行顺序
 
-Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事材料不直接复用 watcher 的触发摘要，而是调用 HideOnBush 快速材料接口，由 HideOnBush 自有 Telegram 会话按精确 CA 收集白名单材料并返回规范化结果。
+Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任务门槛；最终叙事材料不直接复用 watcher 的触发摘要。OdAIly 本地 collector 使用独立 Telegram session，按精确 CA 在白名单中检索上下文，只将精确 CA 命中的具体消息作为写作材料；上下文完整保留在审计中。
 
-FxTwitter、Telegram 与 FOMO Thesis 由 HideOnBush 快速材料模块并行采集。HideOnBush 只返回 `evidence` 和各路诊断，不生成 OdAIly 正文；请求必须显式包含链和 CA，调用身份使用独立内部密钥，不复用 HideOnBush 用户登录和叙事次数限额。
+FxTwitter、Telegram 与 FOMO Thesis 由 OdAIly 本地快速材料模块并行采集，保持 `2026-09-01` 版本化 `evidence` bundle，不经过 HideOnBush HTTP 接口或内部密钥。Telegram 和 FxTwitter 不启动浏览器。FOMO 只在实际叙事任务中取得共享浏览器锁、使用独立运行时 profile 启动一次 Playwright Chromium，并由页面自有模块取得当次认证；采集完成或异常时始终关闭 context/browser。每次启动前都会检查本地材料总时限；若 Playwright 初始化已耗尽时限，则不再拉起 Chromium。权限 `0700` 的服务器本地 profile 仅由浏览器保存认证状态供下次按需使用；应用不读取、打印、导出或写入 Cookie、JWT、用户身份和上游原始响应。
 
-OdAIly 使用 `gpt-5.6-terra` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN 叙事；GMGN 作为市场价格适配器的用途不受影响。
+FOMO profile 缺失、被重定向到登录页或收到明确认证失败时，source diagnostic 记录 `code=login_required`。已有 Telegram/X 材料时，该路只是 `partial`，仍可写作；三路没有正文时，任务每 5 分钟进入一次 `retry_wait`，直至普通 1 小时队列时限到期，并发送冷却后的 Telegram 运维提醒。不会驻留 FOMO 浏览器、daemon、systemd service 或公开远程调试端口；收到提醒后由值班人通过一次性 `meme fomo-login` 维护命令更新服务器运行时 profile。该命令在 `xvfb-run` 中短暂启动浏览器，DevTools 仅绑定 `127.0.0.1`，只能经 SSH 本地转发访问；profile、Cookie 和 JWT 不得复制、打印或提交。
+
+OdAIly 使用 `gpt-5.6-terra` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 
@@ -49,9 +51,9 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 叙事流程继续复用 `jobs.narrative_json`，不新增表。每次流程至少记录：
 
 - `status`：`success`、`empty` 或 `error`。
-- `failure_stage`：`hideonbush_fast_evidence`、`final_writer`、`final_validation`。
+- `failure_stage`：`local_fast_evidence`、`final_writer`、`final_validation`。
 - `failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`。
-- HideOnBush 返回的 Telegram、X、FOMO Thesis 规范化材料，三路错误与性能诊断。
+- OdAIly 本地 collector 返回的 Telegram、X、FOMO Thesis 规范化材料、三路安全错误码与性能诊断。
 - 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
 
 叙事生成器返回的 `output_path` 必须是字符串路径，并且返回值要包含写入文件的完整审计对象；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型，也不能用精简的最终正文对象覆盖审计文件。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。

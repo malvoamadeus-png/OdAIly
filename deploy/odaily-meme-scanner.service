@@ -8,6 +8,8 @@ Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=MEME_COMPLETED_SCAN_INTERVAL=300
+Environment=MEME_WORKER_POLL_INTERVAL=5
 ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1440x900x24" /opt/OdAIly/.venv/bin/python backend/src/main.py meme scan --send
 Restart=always
 RestartSec=10

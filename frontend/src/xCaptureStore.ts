@@ -1245,6 +1245,7 @@ export type MemeDashboardItem = {
   symbol: string;
   market_cap: number | null;
   volume_24h: number | null;
+  market_observed_at: string | null;
   trigger_kind: 'market_cap_milestone' | 'tg_burst' | 'manual_replay' | 'startup_seen' | string;
   trigger_level: number | null;
   mention_count: number | null;

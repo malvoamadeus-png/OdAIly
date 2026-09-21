@@ -3301,7 +3301,7 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                       <div className="memeAuditCounts">
                         {Object.entries(counts).map(([key, value]) => <span key={key}><b>{key}</b>{String(value)}</span>)}
                       </div>
-                      <strong>HideOnBush 信源诊断</strong>
+                      <strong>快速信源诊断</strong>
                       <pre className="memeAuditPre">{JSON.stringify(narrative?.fast_evidence || {}, null, 2)}</pre>
                       <pre className="memeAuditPre">{JSON.stringify(narrative?.performance || {}, null, 2)}</pre>
                     </div>
@@ -3350,8 +3350,7 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
       <div className="memeList">
         {items.map((item) => {
           const community = item.trigger_kind === 'tg_burst';
-          const gmgnChain = item.chain === 'solana' ? 'sol' : item.chain;
-          const gmgnUrl = `https://gmgn.ai/${gmgnChain}/token/${item.address}`;
+          const dexscreenerUrl = `https://dexscreener.com/${encodeURIComponent(item.chain)}/${encodeURIComponent(item.address)}`;
           return (
             <article className="memeItem" key={item.id}>
               <header className="memeItemHeader">
@@ -3374,7 +3373,7 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
               <div className="memeMetaGrid">
                 <div className="memeAddressMeta">
                   <span>CA</span>
-                  <a href={gmgnUrl} target="_blank" rel="noreferrer">{item.address}</a>
+                  <a href={dexscreenerUrl} target="_blank" rel="noreferrer">{item.address}</a>
                 </div>
                 <div>
                   <span>来源</span>

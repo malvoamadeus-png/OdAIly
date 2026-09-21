@@ -133,32 +133,25 @@ class OKXMemeWebClient:
 
     def _click_chain(self, chain: str) -> None:
         label = OKX_MEME_CHAIN_LABELS[chain]
-        image = self._page.locator(f'img[alt="{label}"]:visible').first
-        if image.count() == 0:
-            raise OKXMemeWebError(f"OKX MemePump page has no visible {label} chain control")
+        selector = self._page.locator('[data-testid="okd-select-text"]:visible')
+        if selector.count() == 0:
+            raise OKXMemeWebError("OKX MemePump page has no visible chain selector")
         try:
-            image.locator("xpath=ancestor::button[1]").click(force=True, timeout=3_000)
-        except Exception:
-            # The page sometimes leaves a tooltip/virtual-list layer over the
-            # shortcut. The page-owned handler below is the same action without
-            # depending on the overlay hit-testing result.
-            return
-
-    def _invoke_page_chain_handler(self, chain: str) -> None:
-        """Retry the same page-owned handler when a virtualized control misses a click."""
-        label = OKX_MEME_CHAIN_LABELS[chain]
-        self._page.evaluate(
-            """label => {
-                const image = [...document.querySelectorAll('img[alt]')]
-                    .find(node => node.alt === label && node.getBoundingClientRect().width > 0);
-                const button = image && image.closest('button');
-                const key = button && Object.keys(button).find(name => name.startsWith('__reactProps'));
-                const handler = key && button[key] && button[key].onClick;
-                if (typeof handler !== 'function') throw new Error(`no handler for ${label}`);
-                handler();
-            }""",
-            label,
-        )
+            # OKX binds the menu to the inner select element. Its synthetic
+            # mouse path may ignore Playwright's forced click, while DOM click
+            # dispatches the same page-owned event without private React APIs.
+            selector.evaluate("element => element.click()")
+            option = self._page.locator(
+                f'[data-testid="okd-select-popup"] [role="option"]:has(img[alt="{label}"]):visible'
+            )
+            option.wait_for(state="visible", timeout=3_000)
+            if option.count() == 0:
+                raise OKXMemeWebError(f"OKX MemePump chain selector has no {label} option")
+            option.click(force=True, timeout=3_000)
+        except OKXMemeWebError:
+            raise
+        except Exception as exc:
+            raise OKXMemeWebError(f"OKX MemePump chain selector failed for {chain}: {exc}") from exc
 
     def _wait_for_chain(self, chain: str, timeout: float) -> None:
         deadline = time.monotonic() + max(timeout, 0.1)
@@ -178,16 +171,6 @@ class OKXMemeWebClient:
             self._page.wait_for_timeout(min(self.settle_ms, 2_000))
         else:
             self._click_chain(chain)
-        if chain in self._latest:
-            return
-        # On some OKX page builds the first React click only persists the chain
-        # in localStorage; invoking the page's own handler once more starts the
-        # rank requests. This still uses the browser-generated request headers.
-        try:
-            self._invoke_page_chain_handler(chain)
-        except Exception as exc:
-            if chain not in self._latest:
-                raise OKXMemeWebError(f"OKX MemePump chain control failed for {chain}: {exc}") from exc
         self._wait_for_chain(chain, self.timeout)
 
     def list_migrated(self, chain: str, *, limit: int = 30) -> list[dict[str, Any]]:

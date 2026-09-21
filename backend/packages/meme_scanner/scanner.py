@@ -13,7 +13,6 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +22,13 @@ from dotenv import load_dotenv
 from packages.common.paths import get_paths
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import content_to_paragraph_html
+from packages.x_processing.telegram import TelegramClient
 
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
+from .browser_lock import BrowserLockTimeout, exclusive_browser
+from .dexscreener import DexScreenerClient
 from .narrative import generate_reader_text
-from .okx import OKXClient, OKXError
+from .okx import OKXError
 from .okx_web import OKXMemeWebClient
 
 
@@ -43,9 +45,6 @@ MARKET_CAP_LEVELS = MARKET_CAP_LEVELS_BY_CHAIN[CHAIN]
 OKX_DISCOVERY_CHAINS = ("bsc", "robinhood")
 OKX_DISCOVERY_LIMIT = 30
 OKX_WEB_DISCOVERY_SOURCES = {"web", "web_meme", "priapi_meme_ranking"}
-MARKET_PRICE_SOURCES = {"okx", "gmgn"}
-DEFAULT_MARKET_PRICE_SOURCE = "okx"
-DEFAULT_GMGN_PRICE_WORKERS = 4
 DEFAULT_GMGN_REQUEST_INTERVAL_SECONDS = 0.15
 TG_MARKET_CAP_GATE = 300_000.0
 TG_SOLANA_MARKET_CAP_GATE = 500_000.0
@@ -55,7 +54,9 @@ VOLUME_RATIO_GATE_MAX_CAP = 3_000_000.0
 VOLUME_RATIO_GATE_AT_MIN_CAP = 0.5
 VOLUME_RATIO_GATE_AT_MAX_CAP = 0.2
 TRACKING_WINDOW_SECONDS = 3 * 24 * 60 * 60
-COMPLETED_SCAN_INTERVAL_SECONDS = 60
+COMPLETED_SCAN_INTERVAL_SECONDS = 5 * 60
+WORKER_POLL_INTERVAL_SECONDS = 5
+OKX_BROWSER_LOCK_TIMEOUT_SECONDS = 1
 TOKEN_INFO_HIGH_INTERVAL_SECONDS = 15 * 60
 TOKEN_INFO_LOW_INTERVAL_SECONDS = 4 * 60 * 60
 TOKEN_INFO_MIN_GAP_SECONDS = 3
@@ -65,6 +66,10 @@ TRACKING_STATUS_LEGACY = "legacy_untracked"
 QUEUE_EXPIRY_SECONDS = 3600
 MAX_JOB_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = (60, 300, 900)
+FOMO_LOGIN_ALERT_META_KEY = "fomo_login_alert_at"
+FOMO_LOGIN_ALERT_COOLDOWN_SECONDS = 12 * 60 * 60
+FOMO_LOGIN_RETRY_SECONDS = 5 * 60
+COMPLETED_SCAN_ATTEMPT_META_KEY = "completed_scan_attempt_at"
 PATHS = get_paths()
 PROJECT_ROOT = PATHS.root_dir
 PROCESSED_DATA_DIR = PATHS.processed_dir
@@ -188,12 +193,8 @@ def normalize_chain(value: Any, *, default: str = CHAIN) -> str:
     return default if default in SUPPORTED_CHAINS else CHAIN
 
 
-@lru_cache(maxsize=1)
-def get_okx_client() -> OKXClient:
-    return OKXClient()
-
-
 _OKX_MEME_WEB_CLIENT: OKXMemeWebClient | None = None
+_DEXSCREENER_CLIENT: DexScreenerClient | None = None
 
 
 def get_okx_meme_web_client() -> OKXMemeWebClient:
@@ -203,19 +204,13 @@ def get_okx_meme_web_client() -> OKXMemeWebClient:
     return _OKX_MEME_WEB_CLIENT
 
 
-def get_market_price_source() -> str:
-    source = (os.getenv("MEME_PRICE_SOURCE") or DEFAULT_MARKET_PRICE_SOURCE).strip().lower()
-    if source not in MARKET_PRICE_SOURCES:
-        raise OKXError(
-            f"unsupported MEME_PRICE_SOURCE={source!r}; "
-            "use okx or gmgn"
+def get_dexscreener_client() -> DexScreenerClient:
+    global _DEXSCREENER_CLIENT
+    if _DEXSCREENER_CLIENT is None:
+        _DEXSCREENER_CLIENT = DexScreenerClient(
+            timeout=max(5, int(os.getenv("MEME_DEXSCREENER_TIMEOUT_SECONDS") or 15))
         )
-    return source
-
-
-def okx_details_enabled() -> bool:
-    value = os.getenv("MEME_OKX_DETAILS_ENABLED")
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+    return _DEXSCREENER_CLIENT
 
 
 def _gmgn_request_interval_seconds() -> float:
@@ -312,142 +307,81 @@ def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
             "created_timestamp": item.get("fdTime"),
             "migrated_at": item.get("migrEnd"),
             "_market_metrics_complete": False,
-            "market_source": "okx",
-            "risk_source": "okx",
+            "market_source": "okx_web_discovery",
+            "risk_source": "disabled",
             "okx_discovery_source": discovery_source,
         }
     )
     token = token_from_row(raw, allow_unknown_platform=True)
     if token is None:
         return None
-    token.raw["okx_risk_flags"] = okx_risk_flags(token)
     return replace(token, metrics_complete=False)
 
 
-def _merge_okx_price_info(token: Token, metrics: dict[str, Any] | None) -> Token:
-    if not metrics:
+def _merge_dexscreener_price_info(token: Token, pair: dict[str, Any] | None) -> Token:
+    if not pair:
         return token
+    volume = pair.get("volume") if isinstance(pair.get("volume"), dict) else {}
+    liquidity = pair.get("liquidity") if isinstance(pair.get("liquidity"), dict) else {}
+    base_token = pair.get("baseToken") if isinstance(pair.get("baseToken"), dict) else {}
     raw = dict(token.raw)
-    raw["price_info"] = metrics
-    raw["usd_market_cap"] = metrics.get("marketCap") or raw.get("usd_market_cap")
-    raw["volume_24h"] = metrics.get("volume24H")
-    raw["volume_1h"] = metrics.get("volume1H") or raw.get("volume_1h")
-    raw["liquidity"] = metrics.get("liquidity")
-    raw["holders"] = metrics.get("holders")
-    raw["_market_metrics_complete"] = metrics.get("marketCap") not in (None, "") and metrics.get("volume24H") not in (None, "")
+    raw["dexscreener_pair"] = pair
+    raw["usd_market_cap"] = pair.get("marketCap")
+    raw["volume_24h"] = volume.get("h24")
+    raw["liquidity"] = liquidity.get("usd")
+    raw["dex_id"] = pair.get("dexId")
+    raw["pair_address"] = pair.get("pairAddress")
+    raw["market_source"] = "dexscreener"
+    raw["_market_metrics_complete"] = pair.get("marketCap") is not None and volume.get("h24") is not None
+    if not token.name.strip() and str(base_token.get("name") or "").strip():
+        raw["name"] = base_token["name"]
+    if token.symbol.strip().casefold() in {"", "?", "unknown", "n/a", "none"} and str(base_token.get("symbol") or "").strip():
+        raw["symbol"] = base_token["symbol"]
     merged = token_from_row(raw, allow_unknown_platform=True)
-    if merged is None:
-        return token
-    merged.raw["okx_risk_flags"] = okx_risk_flags(merged)
-    return replace(merged, metrics_complete=True)
+    return replace(merged, metrics_complete=bool(raw["_market_metrics_complete"])) if merged else token
 
 
-def _merge_gmgn_price_info(token: Token, metrics: Token | None) -> Token:
-    if metrics is None:
-        return token
-    raw = dict(token.raw)
-    raw["gmgn_token_info"] = metrics.raw
-    raw["gmgn_price"] = metrics.raw.get("price")
-    raw["usd_market_cap"] = metrics.market_cap
-    raw["volume_24h"] = metrics.volume_24h
-    raw["liquidity"] = metrics.raw.get("liquidity") or raw.get("liquidity")
-    raw["holders"] = metrics.raw.get("holder_count") or raw.get("holders")
-    if not token.name.strip() and metrics.name.strip():
-        raw["name"] = metrics.name
-    if token.symbol.strip().casefold() in {"", "?", "unknown", "n/a", "none"} and metrics.symbol.strip():
-        raw["symbol"] = metrics.symbol
-    raw["market_source"] = "gmgn"
-    raw["_market_metrics_complete"] = metrics.metrics_complete
-    merged = token_from_row(raw, allow_unknown_platform=True)
-    if merged is None:
-        return token
-    return replace(merged, metrics_complete=metrics.metrics_complete)
+def _fetch_dexscreener_price_info(chain: str, tokens: list[Token]) -> dict[str, dict[str, Any]]:
+    return get_dexscreener_client().price_info(chain, [token.address for token in tokens]) if tokens else {}
 
 
-def _fetch_gmgn_price_info(tokens: list[Token]) -> dict[str, Token]:
-    if not tokens:
-        return {}
-    configured_workers = int(os.getenv("MEME_GMGN_PRICE_WORKERS") or DEFAULT_GMGN_PRICE_WORKERS)
-    workers = max(1, min(configured_workers, len(tokens)))
-
-    def lookup(token: Token) -> tuple[str, Token | None]:
-        return (
-            token.address,
-            fetch_gmgn_token_info(token.address, token.chain, allow_unknown_platform=True),
-        )
-
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="gmgn-price") as executor:
-        return {
-            address: metrics
-            for address, metrics in executor.map(lookup, tokens)
-            if metrics is not None
-        }
-
-
-def okx_risk_flags(token: Token) -> list[str]:
-    tags = token.raw.get("tags") if isinstance(token.raw.get("tags"), dict) else {}
-    social = token.raw.get("social") if isinstance(token.raw.get("social"), dict) else {}
-    flags: list[str] = []
-    if number(tags.get("suspectedPhishingWalletPercent")) >= 5:
-        flags.append("suspected_phishing_wallets_high")
-    if number(tags.get("top10HoldingsPercent")) >= 80:
-        flags.append("top10_concentration_high")
-    if number(tags.get("devHoldingsPercent")) >= 5:
-        flags.append("dev_holdings_high")
-    if number(tags.get("insidersPercent")) >= 10:
-        flags.append("insiders_high")
-    if number(tags.get("bundlersPercent")) >= 5:
-        flags.append("bundlers_high")
-    if number(tags.get("snipersPercent")) >= 5:
-        flags.append("snipers_high")
-    if not any(str(social.get(key) or "").strip() for key in ("x", "telegram", "website")):
-        flags.append("no_social_links")
-    if number(token.raw.get("liquidity")) <= 0:
-        flags.append("liquidity_unavailable")
-    return flags
-
-
-def market_risk_flags(token: Token) -> list[str]:
-    """Keep OKX risk evaluation when only the market-price adapter changes."""
-    if token.raw.get("risk_source") == "okx":
-        return okx_risk_flags(token)
-    return []
+def okx_browser_lock_timeout_seconds() -> float:
+    try:
+        return max(0.1, float(os.getenv("MEME_OKX_BROWSER_LOCK_TIMEOUT_SECONDS") or OKX_BROWSER_LOCK_TIMEOUT_SECONDS))
+    except ValueError:
+        return float(OKX_BROWSER_LOCK_TIMEOUT_SECONDS)
 
 
 def fetch_okx_migrated_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
-    client = get_okx_client()
-    price_source = get_market_price_source()
     source = (os.getenv("MEME_OKX_DISCOVERY_SOURCE") or "web_meme").strip().lower()
-    if source in OKX_WEB_DISCOVERY_SOURCES:
-        discovery_client: Any = get_okx_meme_web_client()
-    elif source in {"official", "signed", "api"}:
-        discovery_client = client
-    else:
+    if source not in OKX_WEB_DISCOVERY_SOURCES:
         raise OKXError(
             f"unsupported MEME_OKX_DISCOVERY_SOURCE={source!r}; "
-            "use web_meme or official"
+            "use web_meme"
         )
-    fallback = (os.getenv("MEME_OKX_DISCOVERY_FALLBACK") or "none").strip().lower()
-    discovered: list[Token] = []
-    for chain in OKX_DISCOVERY_CHAINS:
+    # The verification headers are page-generated and short lived. Keep the
+    # browser only for this complete discovery pass, never for token tracking.
+    rows_by_chain: list[tuple[str, list[dict[str, Any]]]] = []
+    with exclusive_browser(timeout_seconds=okx_browser_lock_timeout_seconds()):
         try:
-            rows = discovery_client.list_migrated(chain, limit=limit)
-        except Exception:
-            if discovery_client is client or fallback not in {"official", "signed", "api"}:
-                raise
-            rows = client.list_migrated(chain, limit=limit)
+            discovery_client: Any = get_okx_meme_web_client()
+            for chain in OKX_DISCOVERY_CHAINS:
+                rows = discovery_client.list_migrated(chain, limit=limit)
+                rows_by_chain.append((chain, rows))
+        finally:
+            close_okx_meme_web_client()
+    # The page-produced OKX verification headers are no longer needed once
+    # both lists are captured. Release Chromium before public market lookups.
+    discovered: list[Token] = []
+    for chain, rows in rows_by_chain:
         tokens = [token for row in rows if (token := _okx_token_from_item(row, chain))]
-        if price_source == "gmgn":
-            metrics = _fetch_gmgn_price_info(tokens)
-            discovered.extend(_merge_gmgn_price_info(token, metrics.get(token.address)) for token in tokens)
-        else:
-            metrics = client.price_info(chain, [token.address for token in tokens]) if tokens else {}
-            discovered.extend(_merge_okx_price_info(token, metrics.get(token.address)) for token in tokens)
+        metrics = _fetch_dexscreener_price_info(chain, tokens)
+        discovered.extend(_merge_dexscreener_price_info(token, metrics.get(token.address)) for token in tokens)
     return discovered
 
 
 def fetch_completed_tokens(limit: int = OKX_DISCOVERY_LIMIT) -> list[Token]:
-    """Compatibility name for callers of the former GMGN discovery seam."""
+    """Compatibility name for callers of the completed-token discovery seam."""
     return fetch_okx_migrated_tokens(limit)
 
 
@@ -573,42 +507,21 @@ def _resolve_okx_identity_from_gmgn(token: Token) -> Token:
 
 
 def fetch_okx_token_info(address: str, chain: str, *, resolve_identity: bool = False) -> Token | None:
-    price_source = get_market_price_source()
-    client = get_okx_client()
-    details_enabled = okx_details_enabled()
-    details_error: str | None = None
-    details: dict[str, Any] = {}
-    if details_enabled:
-        try:
-            details = client.token_details(chain, address)
-        except Exception as exc:
-            details_error = str(exc)
-    token = _okx_token_from_item(details, chain) if details else None
-    if token is None:
-        token = token_from_row(
-            {
-                "address": address,
-                "chain": chain,
-                "launchpad_platform": "okx:unknown",
-                "market_source": price_source,
-                "risk_source": "okx" if details_enabled else "disabled",
-                "_market_metrics_complete": False,
-            },
-            allow_unknown_platform=True,
-        )
+    del resolve_identity
+    token = token_from_row(
+        {
+            "address": address,
+            "chain": chain,
+            "launchpad_platform": "dexscreener:unknown",
+            "market_source": "dexscreener",
+            "risk_source": "disabled",
+            "_market_metrics_complete": False,
+        },
+        allow_unknown_platform=True,
+    )
     if token is None:
         return None
-    if details_error:
-        token.raw["okx_details_error"] = details_error[:1000]
-    if price_source == "gmgn":
-        token = _merge_gmgn_price_info(
-            token,
-            fetch_gmgn_token_info(token.address, chain, allow_unknown_platform=True),
-        )
-    else:
-        metrics = client.price_info(chain, [token.address]).get(token.address)
-        token = _merge_okx_price_info(token, metrics)
-    return _resolve_okx_identity_from_gmgn(token) if resolve_identity and price_source == "okx" else token
+    return _merge_dexscreener_price_info(token, _fetch_dexscreener_price_info(chain, [token]).get(token.address))
 
 
 def fetch_token_info(
@@ -619,15 +532,17 @@ def fetch_token_info(
     resolve_identity: bool = False,
 ) -> Token | None:
     requested_chain = normalize_chain(chain)
-    if requested_chain in OKX_DISCOVERY_CHAINS:
+    if requested_chain in {"bsc", "robinhood", "solana"}:
         return fetch_okx_token_info(address, requested_chain, resolve_identity=resolve_identity)
-    return fetch_gmgn_token_info(address, requested_chain, allow_unknown_platform=allow_unknown_platform)
+    del allow_unknown_platform
+    return None
 
 
 def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
     """Resolve a Telegram CA by chain; launchpad platform is not a gate."""
     if address_chain == "solana":
-        return fetch_token_info(address, "solana", allow_unknown_platform=True)
+        token = fetch_token_info(address, "solana", allow_unknown_platform=True)
+        return token if token is not None and token.metrics_complete else None
     if address_chain != "evm":
         return None
     # EVM addresses do not encode their network. Probe Robinhood first so a
@@ -639,7 +554,7 @@ def fetch_tg_token_info(address: str, address_chain: str) -> Token | None:
         except Exception as exc:
             last_error = exc
             continue
-        if token is not None:
+        if token is not None and token.metrics_complete:
             return token
     if last_error is not None:
         raise last_error
@@ -660,8 +575,9 @@ def tg_market_cap_gate(chain: str) -> float | None:
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(
             """
@@ -1284,10 +1200,11 @@ class Store:
 
     def retry_job(self, job: sqlite3.Row, reason: str, *, narrative: dict[str, Any] | None = None) -> str:
         attempts = int(job["attempts"] or 0)
-        if attempts >= MAX_JOB_ATTEMPTS:
+        waiting_for_fomo_login = reason == "narrative_fomo_login_required"
+        if attempts >= MAX_JOB_ATTEMPTS and not waiting_for_fomo_login:
             self.update_job(job["id"], "discarded", reason=f"transient_exhausted:{reason}", narrative=narrative)
             return "transient_exhausted"
-        delay = RETRY_DELAYS_SECONDS[min(attempts - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+        delay = fomo_login_retry_seconds() if waiting_for_fomo_login else RETRY_DELAYS_SECONDS[min(attempts - 1, len(RETRY_DELAYS_SECONDS) - 1)]
         next_attempt_at = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
         self.conn.execute(
             """UPDATE jobs SET status='retry_wait', reason=?, narrative_json=COALESCE(?, narrative_json),
@@ -1358,7 +1275,7 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
     chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
     if trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
-        summary = f"{chain_label}上{token.symbol}社群热议中，GMGN显示当前市值为{cap}万美元。"
+        summary = f"{chain_label}上{token.symbol}社群热议中，当前市值为{cap}万美元。"
     else:
         title = f"Meme速递：{chain_label}上{token.symbol}市值突破{cap}万美元"
         summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
@@ -1521,6 +1438,68 @@ def log_narrative_result(job: sqlite3.Row, token: Token, narrative: dict[str, An
     )
 
 
+def _fomo_login_required(narrative: dict[str, Any]) -> bool:
+    bundle = narrative.get("fast_evidence")
+    if not isinstance(bundle, dict):
+        return False
+    diagnostics = bundle.get("diagnostics") if isinstance(bundle.get("diagnostics"), dict) else {}
+    source_diagnostics = bundle.get("sourceDiagnostics") if isinstance(bundle.get("sourceDiagnostics"), dict) else {}
+    candidates = (
+        source_diagnostics.get("fomo_thesis"),
+        diagnostics.get("fomo_thesis"),
+        diagnostics.get("errors", {}).get("fomo_thesis") if isinstance(diagnostics.get("errors"), dict) else None,
+    )
+    return any(
+        isinstance(candidate, dict)
+        and str(candidate.get("code") or candidate.get("status") or "").strip().lower() == "login_required"
+        for candidate in candidates
+    )
+
+
+def _fomo_login_alert_cooldown_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("MEME_FOMO_LOGIN_ALERT_COOLDOWN_SECONDS") or FOMO_LOGIN_ALERT_COOLDOWN_SECONDS))
+    except ValueError:
+        return FOMO_LOGIN_ALERT_COOLDOWN_SECONDS
+
+
+def alert_fomo_login_required(store: Store, narrative: dict[str, Any]) -> bool:
+    """Notify the operator once per cooldown without exposing browser session data."""
+    if not _fomo_login_required(narrative):
+        return False
+    now = datetime.now(UTC)
+    last_alert = parse_iso(store.meta(FOMO_LOGIN_ALERT_META_KEY))
+    if last_alert and (now - last_alert).total_seconds() < _fomo_login_alert_cooldown_seconds():
+        return False
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    chat_id = os.getenv("MEME_FOMO_LOGIN_ALERT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID") or ""
+    thread_id = os.getenv("MEME_FOMO_LOGIN_ALERT_THREAD_ID") or os.getenv("TELEGRAM_MESSAGE_THREAD_ID")
+    if not bot_token.strip() or not chat_id.strip():
+        print("[meme-scan] FOMO login required but no Telegram alert route is configured", file=sys.stderr)
+        return False
+    try:
+        notifier = TelegramClient(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            timeout_seconds=max(1, float(os.getenv("MEME_FOMO_LOGIN_ALERT_TIMEOUT_SECONDS") or 10)),
+            max_attempts=1,
+            backoff_seconds=0,
+        )
+        result = notifier.send_message(
+            "Meme速递 FOMO 登录已失效，请在 odaily-official 运行一次 meme fomo-login 更新浏览器会话。"
+        )
+    except Exception as exc:
+        print(f"[meme-scan] FOMO login alert failed: {type(exc).__name__}", file=sys.stderr)
+        return False
+    if not result.ok:
+        print("[meme-scan] FOMO login alert was not delivered", file=sys.stderr)
+        return False
+    store.set_meta(FOMO_LOGIN_ALERT_META_KEY, now.isoformat())
+    print("[meme-scan] FOMO login alert sent")
+    return True
+
+
 def push_pending(
     title: str,
     content: str,
@@ -1582,6 +1561,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         trigger_kind=str(job["trigger_kind"]),
     )
     log_narrative_result(job, token, narrative)
+    alert_fomo_login_required(store, narrative)
     reader_text = str(narrative.get("reader_text") or "").strip()
     if narrative.get("transient_error"):
         return store.retry_job(job, str(narrative["transient_error"]), narrative=narrative)
@@ -1633,8 +1613,16 @@ def milestone_level(previous_high: float, current: float, chain: str = CHAIN) ->
 
 
 def completed_scan_due(store: Store, interval_seconds: int) -> bool:
-    last = parse_iso(store.meta("completed_scan_at"))
+    last = parse_iso(store.meta(COMPLETED_SCAN_ATTEMPT_META_KEY))
     return last is None or (datetime.now(UTC) - last).total_seconds() >= max(int(interval_seconds), 1)
+
+
+def fomo_login_retry_seconds() -> int:
+    try:
+        configured = int(os.getenv("MEME_FOMO_LOGIN_RETRY_SECONDS") or FOMO_LOGIN_RETRY_SECONDS)
+    except ValueError:
+        configured = FOMO_LOGIN_RETRY_SECONDS
+    return max(30, min(configured, QUEUE_EXPIRY_SECONDS))
 
 
 def evaluate_market_token(
@@ -1683,21 +1671,6 @@ def evaluate_market_token(
     if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
         return (0, 0)
     trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
-    risk_flags = market_risk_flags(token)
-    risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
-    if risk_mode == "block" and any(
-        flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")
-    ):
-        inserted = store.add_job(
-            token,
-            "market_cap_milestone",
-            "discarded",
-            "okx_risk_gate_failed",
-            trigger_key=trigger_key,
-            trigger_level=level,
-            evidence={"okx_risk_flags": risk_flags},
-        )
-        return (0, int(inserted))
     if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
@@ -1706,7 +1679,7 @@ def evaluate_market_token(
             "volume_gate_failed",
             trigger_key=trigger_key,
             trigger_level=level,
-            evidence={"okx_risk_flags": risk_flags} if risk_flags else None,
+            evidence=None,
         )
         return (0, int(inserted))
     inserted = store.add_job(
@@ -1715,7 +1688,7 @@ def evaluate_market_token(
         "queued",
         trigger_key=trigger_key,
         trigger_level=level,
-        evidence={"okx_risk_flags": risk_flags} if risk_flags else None,
+        evidence=None,
     )
     return (int(inserted), 0)
 
@@ -1756,7 +1729,7 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         chain = str(row["chain"] or CHAIN)
         token = fetch_token_info(address, chain) if chain != CHAIN else fetch_token_info(address)
         if token is None or not token.metrics_complete:
-            raise RuntimeError("OKX token info returned no complete market metrics")
+            raise RuntimeError("Dexscreener returned no complete market metrics")
     except Exception as exc:
         error = str(exc)
         interval = int(row["tracking_interval_seconds"] or TOKEN_INFO_LOW_INTERVAL_SECONDS)
@@ -1818,22 +1791,6 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         return (0, 1)
     evidence = json.loads(candidate["evidence_json"])
     trigger_key = f"tg_burst:{candidate['id']}"
-    risk_flags = market_risk_flags(token)
-    risk_mode = (os.getenv("MEME_OKX_RISK_MODE") or "shadow").strip().lower()
-    if risk_mode == "block" and any(
-        flag in risk_flags for flag in ("suspected_phishing_wallets_high", "top10_concentration_high")
-    ):
-        inserted = store.add_job(
-            token,
-            "tg_burst",
-            "discarded",
-            "okx_risk_gate_failed",
-            trigger_key=trigger_key,
-            trigger_level=market_cap_gate,
-            evidence={**evidence, "okx_risk_flags": risk_flags},
-        )
-        store.update_tg_candidate(candidate["id"], "discarded", reason="okx_risk_gate_failed", market_cap=token.market_cap)
-        return (0, int(inserted))
     if token.volume_ratio < volume_ratio_gate(token.market_cap):
         inserted = store.add_job(
             token,
@@ -1842,7 +1799,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
             "volume_gate_failed",
             trigger_key=trigger_key,
             trigger_level=market_cap_gate,
-            evidence={**evidence, "okx_risk_flags": risk_flags} if risk_flags else evidence,
+            evidence=evidence,
         )
         store.update_tg_candidate(candidate["id"], "discarded", reason="volume_gate_failed", market_cap=token.market_cap)
         return (0, int(inserted))
@@ -1853,7 +1810,7 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         "queued",
         trigger_key=trigger_key,
         trigger_level=market_cap_gate,
-        evidence={**evidence, "okx_risk_flags": risk_flags} if risk_flags else evidence,
+        evidence=evidence,
     )
     store.upsert_observation(
         token,
@@ -1875,37 +1832,51 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
     scan_stamp: str | None = None
     queued = 0
     discarded = 0
+    expired = 0
+    discovery_deferred = False
     first_run = not store.initialized()
     if should_scan_completed:
-        recent_tokens = fetch_completed_tokens(args.limit)
-        scan_stamp = now_iso()
-        expired = store.expire_tracking(scan_stamp)
-        for token in {item.address: item for item in recent_tokens}.values():
-            previous_high, _, status = store.start_or_observe_completed(
-                token,
-                observed_at=scan_stamp,
-                tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
-                args=args,
-            )
-            if status == TRACKING_STATUS_ACTIVE:
-                added_queued, added_discarded = evaluate_market_token(
-                    store,
+        # Record failed network attempts too, so an upstream outage cannot
+        # turn the lightweight five-second worker poll into Chromium churn.
+        store.set_meta(COMPLETED_SCAN_ATTEMPT_META_KEY, now_iso())
+        try:
+            recent_tokens = fetch_completed_tokens(args.limit)
+        except BrowserLockTimeout:
+            # An interactive FOMO login owns the browser. Keep the recorded
+            # attempt so the regular five-minute cadence does not contend for
+            # Chromium on every lightweight worker poll.
+            discovery_deferred = True
+        else:
+            scan_stamp = now_iso()
+            expired = store.expire_tracking(scan_stamp)
+            for token in {item.address: item for item in recent_tokens}.values():
+                previous_high, _, status = store.start_or_observe_completed(
                     token,
-                    bootstrap=False,
-                    previous_high=previous_high,
-                    persist_observation=False,
+                    observed_at=scan_stamp,
+                    tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
+                    args=args,
                 )
-                queued += added_queued
-                discarded += added_discarded
-        store.set_meta("completed_scan_at", scan_stamp)
+                if status == TRACKING_STATUS_ACTIVE:
+                    added_queued, added_discarded = evaluate_market_token(
+                        store,
+                        token,
+                        bootstrap=False,
+                        previous_high=previous_high,
+                        persist_observation=False,
+                    )
+                    queued += added_queued
+                    discarded += added_discarded
+            store.set_meta("completed_scan_at", scan_stamp)
     else:
-        expired = store.expire_tracking()
+        # token_info_worker owns regular expiry checks. Avoid a write-only
+        # SQLite transaction for every lightweight queue poll.
+        expired = 0
 
     forced_token = next((token for token in recent_tokens if token.address == forced_address), None) if forced_address else None
     if forced_address and forced_token is None:
         forced_token = fetch_token_info(forced_address)
     if forced_address and forced_token is None:
-        raise RuntimeError(f"forced contract was not found on BSC via OKX: {forced_address}")
+        raise RuntimeError(f"forced contract was not found on BSC via Dexscreener: {forced_address}")
     if forced_token and (
         forced_token.market_cap < MARKET_CAP_GATE
         or forced_token.volume_ratio < volume_ratio_gate(forced_token.market_cap)
@@ -1922,6 +1893,7 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         "completed": len(recent_tokens),
         "market_observed": len(recent_tokens),
         "completed_scanned": bool(scan_stamp),
+        "discovery_deferred": discovery_deferred,
         "expired": expired,
         "startup": first_run,
         "queued": queued,
@@ -1935,7 +1907,7 @@ def scan_once(store: Store, args: argparse.Namespace) -> None:
     token_info_result = process_due_token_info(store, args)
     result = process_one(store, args, address=summary["forced_address"])
     print(
-        f"[meme-scan] completed={summary['completed']} startup={summary['startup']} "
+        f"[meme-scan] completed={summary['completed']} deferred={summary['discovery_deferred']} startup={summary['startup']} "
         f"market_observed={summary['market_observed']} queued={summary['queued']} "
         f"discarded={summary['discarded']} token_info={token_info_result['status']} "
         f"processed={result or 'none'}"
@@ -2007,7 +1979,7 @@ def run(args: argparse.Namespace) -> int:
                         if worker is None:
                             worker = executor.submit(process_from_db, args.db, args)
                         print(
-                            f"[meme-scan] completed={summary['completed']} scanned={summary['completed_scanned']} "
+                            f"[meme-scan] completed={summary['completed']} scanned={summary['completed_scanned']} deferred={summary['discovery_deferred']} "
                             f"startup={summary['startup']} market_observed={summary['market_observed']} "
                             f"queued={summary['queued']} discarded={summary['discarded']} "
                             f"expired={summary['expired']} processed={processed or 'none'} "
@@ -2015,10 +1987,10 @@ def run(args: argparse.Namespace) -> int:
                         )
                     except Exception as exc:
                         print(f"[meme-scan] poll failed: {exc}", file=sys.stderr)
-                    completed_interval = int(
-                        getattr(args, "completed_interval", getattr(args, "interval", COMPLETED_SCAN_INTERVAL_SECONDS))
+                    worker_poll_interval = float(
+                        getattr(args, "worker_poll_interval", WORKER_POLL_INTERVAL_SECONDS)
                     )
-                    time.sleep(max(0.0, completed_interval - (time.monotonic() - started)))
+                    time.sleep(max(0.0, max(worker_poll_interval, 1.0) - (time.monotonic() - started)))
             finally:
                 stop_event.set()
                 tracking_future.result(timeout=10)
@@ -2033,6 +2005,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit-dir", default=str(DEFAULT_AUDIT_DIR))
     parser.add_argument("--limit", type=int, default=OKX_DISCOVERY_LIMIT, help="OKX migrated rows per chain per poll (max 30).")
     parser.add_argument("--completed-interval", type=int, default=int(os.getenv("MEME_COMPLETED_SCAN_INTERVAL") or COMPLETED_SCAN_INTERVAL_SECONDS), help="Seconds between completed discovery scans.")
+    parser.add_argument("--worker-poll-interval", type=float, default=float(os.getenv("MEME_WORKER_POLL_INTERVAL") or WORKER_POLL_INTERVAL_SECONDS), help="Seconds between lightweight queue polls while the scanner is resident.")
     parser.add_argument("--token-info-high-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_HIGH_INTERVAL") or TOKEN_INFO_HIGH_INTERVAL_SECONDS))
     parser.add_argument("--token-info-low-interval", type=int, default=int(os.getenv("MEME_TOKEN_INFO_LOW_INTERVAL") or TOKEN_INFO_LOW_INTERVAL_SECONDS))
     parser.add_argument("--tracking-window", type=int, default=int(os.getenv("MEME_TRACKING_WINDOW_SECONDS") or TRACKING_WINDOW_SECONDS))

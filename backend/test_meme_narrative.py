@@ -260,6 +260,27 @@ def test_generate_reader_text_does_not_turn_tg_volume_into_a_reader_angle(tmp_pa
     assert result["telegram_messages"] == result_payload["telegram_messages"]
 
 
+def test_generate_reader_text_retries_empty_result_while_fomo_login_is_required(tmp_path) -> None:
+    result_payload = {
+        "status": "empty",
+        "reader_text": "",
+        "fast_evidence": {
+            "sourceDiagnostics": {"fomo_thesis": {"code": "login_required"}},
+        },
+    }
+    with patch.object(narrative, "_run", return_value=result_payload):
+        result = narrative.generate_reader_text(
+            address=ADDRESS,
+            symbol="KIDS",
+            trigger_kind="market_cap_milestone",
+            database_path=tmp_path / "meme.sqlite3",
+            evidence=None,
+            timeout=1,
+        )
+
+    assert result["transient_error"] == "narrative_fomo_login_required"
+
+
 def test_generate_reader_text_passes_chain_to_narrative_v2(tmp_path) -> None:
     with patch.object(narrative, "_settings", return_value=type("Args", (), {})()) as settings, patch.object(
         narrative, "_run", return_value={"reader_text": ""}

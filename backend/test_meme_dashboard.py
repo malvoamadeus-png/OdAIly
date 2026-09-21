@@ -93,6 +93,83 @@ def test_meme_dashboard_returns_chain_from_job_payload(tmp_path) -> None:
     assert MemeDashboardStore(path).dashboard()["items"][0]["chain"] == "robinhood"
 
 
+def test_meme_dashboard_uses_active_chain_scoped_observation_as_current_market(tmp_path) -> None:
+    path = tmp_path / "meme.sqlite3"
+    address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    expired_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    payload = {"chain": "robinhood", "symbol": "CLOCKIN", "market_cap": 1_000_000, "volume_24h": 300_000}
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE jobs (
+              id INTEGER PRIMARY KEY,address TEXT,trigger_key TEXT,trigger_level REAL,
+              payload_json TEXT,trigger_kind TEXT,queued_at TEXT,status TEXT,reason TEXT,
+              title TEXT,content TEXT,updated_at TEXT
+            );
+            CREATE TABLE tg_candidates (
+              id INTEGER PRIMARY KEY,mention_count INTEGER,chat_count INTEGER,sender_count INTEGER
+            );
+            CREATE TABLE observations (
+              address TEXT NOT NULL,chain TEXT NOT NULL,last_market_cap REAL NOT NULL,
+              last_volume_24h REAL NOT NULL,last_seen_at TEXT NOT NULL,tracking_status TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (1,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                address,
+                "market_cap:robinhood:0xaaa:1000000",
+                1_000_000,
+                json.dumps(payload),
+                "market_cap_milestone",
+                "2026-09-01T00:00:00+00:00",
+                "publisher_pending",
+                None,
+                "title",
+                "content",
+                "2026-09-01T00:01:00+00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO jobs VALUES (2,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                expired_address,
+                "market_cap:bsc:0xbbb:500000",
+                500_000,
+                json.dumps({"chain": "bsc", "symbol": "OLD", "market_cap": 500_000, "volume_24h": 100_000}),
+                "market_cap_milestone",
+                "2026-09-01T00:00:00+00:00",
+                "publisher_pending",
+                None,
+                "title",
+                "content",
+                "2026-09-01T00:00:01+00:00",
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO observations VALUES (?,?,?,?,?,?)",
+            [
+                (address, "robinhood", 2_500_000, 800_000, "2026-09-01T00:15:00+00:00", "active"),
+                (address, "bsc", 9_000_000, 9_000_000, "2026-09-01T00:15:00+00:00", "active"),
+                (address, "robinhood", 7_000_000, 7_000_000, "2026-09-01T00:16:00+00:00", "expired"),
+                (expired_address, "bsc", 7_000_000, 7_000_000, "2026-09-01T00:16:00+00:00", "expired"),
+            ],
+        )
+
+    dashboard = MemeDashboardStore(path).dashboard()
+    items = {item["address"]: item for item in dashboard["items"]}
+
+    assert items[address]["market_cap"] == 2_500_000
+    assert items[address]["volume_24h"] == 800_000
+    assert items[address]["market_observed_at"] == "2026-09-01T00:15:00+00:00"
+    assert items[expired_address]["market_cap"] == 500_000
+    assert items[expired_address]["market_observed_at"] is None
+    with sqlite3.connect(path) as connection:
+        stored_payload = json.loads(connection.execute("SELECT payload_json FROM jobs WHERE id=1").fetchone()[0])
+    assert stored_payload == payload
+
+
 def test_meme_dashboard_reports_missing_database(tmp_path) -> None:
     dashboard = MemeDashboardStore(tmp_path / "missing.sqlite3").dashboard()
     assert dashboard["available"] is False

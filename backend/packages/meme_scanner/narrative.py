@@ -6,7 +6,7 @@ from typing import Any
 
 from packages.common.paths import get_paths
 
-from . import fast_narrative
+from . import fast_evidence, fast_narrative
 
 
 PATHS = get_paths()
@@ -48,10 +48,8 @@ def generate_reader_text(
     args.contract = address
     args.symbol = symbol
     args.trigger_kind = trigger_kind
-    provider = fast_narrative.HTTPFastEvidenceAdapter(
-        endpoint=os.getenv("MEME_FAST_EVIDENCE_URL") or "",
-        internal_key=os.getenv("MEME_FAST_EVIDENCE_INTERNAL_KEY") or "",
-        timeout_seconds=int(os.getenv("MEME_FAST_EVIDENCE_TIMEOUT") or min(timeout, 45)),
+    provider = fast_evidence.LocalFastEvidenceAdapter(
+        timeout_seconds=int(os.getenv("MEME_LOCAL_EVIDENCE_TIMEOUT") or min(timeout, 45)),
     )
     try:
         result = _run(lambda: fast_narrative.run(args, provider=provider))
@@ -87,9 +85,31 @@ def generate_reader_text(
             **result,
             "transient_error": f"narrative_{stage}_failed",
         }
+    elif not str(result.get("reader_text") or "").strip() and _fomo_login_required(result):
+        # Keep an otherwise empty job alive briefly after notifying the
+        # operator, so a newly refreshed profile can be used by a retry.
+        result = {**result, "transient_error": "narrative_fomo_login_required"}
 
     return {
         **result,
         "grok_text": "",
         "grok_error": None,
     }
+
+
+def _fomo_login_required(result: dict[str, Any]) -> bool:
+    bundle = result.get("fast_evidence")
+    if not isinstance(bundle, dict):
+        return False
+    diagnostics = bundle.get("diagnostics") if isinstance(bundle.get("diagnostics"), dict) else {}
+    sources = bundle.get("sourceDiagnostics") if isinstance(bundle.get("sourceDiagnostics"), dict) else {}
+    candidates = (
+        sources.get("fomo_thesis"),
+        diagnostics.get("fomo_thesis"),
+        diagnostics.get("errors", {}).get("fomo_thesis") if isinstance(diagnostics.get("errors"), dict) else None,
+    )
+    return any(
+        isinstance(candidate, dict)
+        and str(candidate.get("code") or candidate.get("status") or "").strip().lower() == "login_required"
+        for candidate in candidates
+    )
