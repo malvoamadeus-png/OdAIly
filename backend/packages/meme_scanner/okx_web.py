@@ -133,21 +133,38 @@ class OKXMemeWebClient:
 
     def _click_chain(self, chain: str) -> None:
         label = OKX_MEME_CHAIN_LABELS[chain]
-        selector = self._page.locator('[data-testid="okd-select-text"]:visible')
-        if selector.count() == 0:
-            raise OKXMemeWebError("OKX MemePump page has no visible chain selector")
         try:
-            # OKX binds the menu to the inner select element. Its synthetic
-            # mouse path may ignore Playwright's forced click, while DOM click
-            # dispatches the same page-owned event without private React APIs.
-            selector.evaluate("element => element.click()")
-            option = self._page.locator(
-                f'[data-testid="okd-select-popup"] [role="option"]:has(img[alt="{label}"]):visible'
-            )
-            option.wait_for(state="visible", timeout=3_000)
+            # The current chain remains a visible shortcut until it moves into
+            # the collapsed selector. Prefer that direct page control.
+            shortcut = self._page.locator(f'button:has(img[alt="{label}"]):visible')
+            if shortcut.count() > 0:
+                shortcut.first.click(force=True, timeout=3_000)
+                return
+
+            # The click handler belongs to the reference value box, not its
+            # inner ``okd-select-text`` decoration. The popup test id is only
+            # present after opening, so locate the option by its stable role.
+            selector = self._page.locator('[data-testid="okd-select-reference-value-box"]:visible')
+            if selector.count() == 0:
+                raise OKXMemeWebError("OKX MemePump page has no visible chain selector")
+            selector.first.click(force=True, timeout=3_000)
+            option = self._page.locator(f'[role="option"]:has(img[alt="{label}"]):visible')
+            try:
+                option.wait_for(state="visible", timeout=1_500)
+            except Exception:
+                # A transient OKX mask can absorb the pointer click. Dispatch
+                # the same click from the real reference element before
+                # treating the option as missing.
+                try:
+                    selector.first.evaluate("element => element.click()")
+                    option.wait_for(state="visible", timeout=3_000)
+                except Exception as exc:
+                    if option.count() == 0:
+                        raise OKXMemeWebError(f"OKX MemePump chain selector has no {label} option") from exc
+                    raise
             if option.count() == 0:
                 raise OKXMemeWebError(f"OKX MemePump chain selector has no {label} option")
-            option.click(force=True, timeout=3_000)
+            option.first.click(force=True, timeout=3_000)
         except OKXMemeWebError:
             raise
         except Exception as exc:
@@ -163,7 +180,11 @@ class OKXMemeWebClient:
         raise OKXMemeWebError(f"OKX MemePump web discovery timed out for {chain}: {detail}")
 
     def _refresh_current_chain(self, chain: str) -> None:
-        self._latest.pop(chain, None)
+        # A newly opened page has already made one authenticated ranking
+        # request during _start(). Reuse that fresh response instead of
+        # clicking the selector just to fetch the same chain again.
+        if chain in self._latest:
+            return
         self._errors.pop(chain, None)
         current = self._selected_chain()
         if current == chain:
@@ -190,6 +211,7 @@ class OKXMemeWebClient:
                     rows.append(row)
                 return rows
             except OKXMemeWebError:
+                self.close()
                 raise
             except Exception as exc:
                 self.close()
