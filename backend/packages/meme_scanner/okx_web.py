@@ -134,16 +134,11 @@ class OKXMemeWebClient:
     def _click_chain(self, chain: str) -> None:
         label = OKX_MEME_CHAIN_LABELS[chain]
         try:
-            # The current chain remains a visible shortcut until it moves into
-            # the collapsed selector. Prefer that direct page control.
-            shortcut = self._page.locator(f'button:has(img[alt="{label}"]):visible')
-            if shortcut.count() > 0:
-                shortcut.first.click(force=True, timeout=3_000)
-                return
-
             # The click handler belongs to the reference value box, not its
             # inner ``okd-select-text`` decoration. The popup test id is only
             # present after opening, so locate the option by its stable role.
+            # Do not use the visible shortcut buttons: on the Xvfb page they
+            # can redraw the list without issuing the ranking request.
             selector = self._page.locator('[data-testid="okd-select-reference-value-box"]:visible')
             if selector.count() == 0:
                 raise OKXMemeWebError("OKX MemePump page has no visible chain selector")
