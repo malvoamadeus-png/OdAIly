@@ -94,6 +94,31 @@ def test_fomo_does_not_launch_chromium_when_playwright_startup_uses_the_remainin
     playwright.chromium.launch_persistent_context.assert_not_called()
 
 
+def test_fomo_uses_headful_chromium_by_default_for_the_privy_runtime(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    page = MagicMock()
+    page.url = fast_evidence.FOMO_ENTRY_URL
+    browser_context = MagicMock()
+    browser_context.pages = [page]
+    playwright = MagicMock()
+    playwright.chromium.launch_persistent_context.return_value = browser_context
+    monkeypatch.delenv("MEME_FOMO_HEADLESS", raising=False)
+
+    with patch.object(fast_evidence, "_fomo_profile_dir", return_value=profile), patch.object(
+        fast_evidence, "exclusive_browser", return_value=nullcontext()
+    ), patch("playwright.sync_api.sync_playwright", return_value=nullcontext(playwright)), patch.object(
+        fast_evidence,
+        "_fomo_page_fetch",
+        return_value={"nativeAvailable": True, "ok": False, "status": 401},
+    ):
+        result = fast_evidence._collect_fomo("bsc", ADDRESS)
+
+    assert result["diagnostic"]["status"] == "login_required"
+    assert playwright.chromium.launch_persistent_context.call_args.kwargs["headless"] is False
+    browser_context.close.assert_called_once()
+
+
 def test_fomo_nested_comment_uses_only_comment_text():
     assert fast_evidence._fomo_statement({"comment": {"comment": "Concrete thesis text"}}) == "Concrete thesis text"
     assert fast_evidence._fomo_statement({"comment": {"author": "private"}}) == ""

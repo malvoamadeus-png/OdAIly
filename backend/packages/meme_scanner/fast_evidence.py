@@ -384,7 +384,10 @@ def _collect_fomo(chain: str, contract: str, *, deadline: float | None = None) -
                 if remaining is not None and remaining <= 0:
                     return _fomo_error("collection_timeout", started)
                 launch_kwargs: dict[str, Any] = {
-                    "headless": _env_bool("MEME_FOMO_HEADLESS", True),
+                    # FOMO renders only its shell in headless Chromium, which
+                    # leaves the Privy runtime unavailable to its own fetch module.
+                    # The scanner systemd unit already provides an isolated Xvfb display.
+                    "headless": _env_bool("MEME_FOMO_HEADLESS", False),
                     "viewport": {"width": 1440, "height": 900},
                     "locale": "en-US",
                     "timezone_id": "Asia/Shanghai",
