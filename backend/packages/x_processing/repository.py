@@ -19,6 +19,7 @@ from .models import (
     COMPETITOR_SOURCES,
     JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
+    MSX_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
     ODAILY_REFERENCE_SOURCE,
@@ -40,7 +41,7 @@ from .models import (
 )
 from .searcher import SearchDocument, content_hash
 
-CRYPTO_SEARCH_FIRST_SOURCES = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE}
+CRYPTO_SEARCH_FIRST_SOURCES = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE, MSX_SOURCE}
 
 
 def _task_has_x_ai_source_label(task: TaskRecord) -> bool:
@@ -74,6 +75,7 @@ LEGACY_SKIP_SOURCES = [
     "panews",
     "jinse",
     "non_mainstream_media",
+    MSX_SOURCE,
     "ai_source",
     "mainstream_media",
     "external_media_alert",
@@ -97,6 +99,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         "外媒快讯",
         f"{PROMPT_DOCS_DIR}/主流外媒快讯模板.txt",
         "initial mainstream media writer template",
+    ),
+    "msx_notice_writer": (
+        "MSX公告快讯",
+        f"{PROMPT_DOCS_DIR}/MSX公告快讯模板.txt",
+        "initial MSX notice writer template",
     ),
     "external_media_alert_domain_judge": (
         "外媒标题领域判断",

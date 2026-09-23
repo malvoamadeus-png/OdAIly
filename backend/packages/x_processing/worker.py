@@ -34,6 +34,7 @@ from .models import (
     JUDGE_ROUTES,
     JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
+    MSX_SOURCE,
     NEWS_TYPES,
     NON_MAINSTREAM_MEDIA_SOURCE,
     PROMPT_KEY_BY_NEWS_TYPE,
@@ -162,6 +163,35 @@ X_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 快讯判断者。你的任务是对�
 内容：{content}
 """
 
+MSX_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的 MSX 公告判断者。你要判断一条 MSX 官方中文公告是否值得进入快讯流水线。
+
+只保留具有明确交易、资产或用户权益信息的公告，例如：
+- MSX 上新股票、ETF 或其他可交易资产；
+- 股息、分红、派息或其他明确的资产权益安排；
+- 交易权限、交易规则、充值提现、产品功能或服务范围的实质变化；
+- 活动规则发生会影响用户权益、资产或参与条件的实质调整；
+- 有具体资产、时间、金额、数量、操作条件或结果的正式公告。
+
+丢弃以下内容：
+- 单纯抽奖、营销、社区宣传、节日祝福或泛活动文案；
+- 不影响交易、资产或用户权益的普通维护提醒；
+- 缺少明确主体、动作或结果的内容；
+- 与 MSX 交易或资产服务无关的内容；
+- 与已发布内容实质重复的公告（如果输入材料本身没有重复依据，不要臆测重复）。
+
+保留时 route 固定输出 regular，因为 MSX 公告进入常规快讯写作模板；丢弃时 route 输出 discard。
+只输出 JSON，不输出解释文本。格式必须为：
+{{"route":"regular|discard","discard_type":"none|marketing_activity|routine_company_news|daily_chatter|off_topic"}}
+
+如果 route 不是 discard，discard_type 必须是 none；如果 route 是 discard，选择最贴切的丢弃类型。
+
+公告类别：{category}
+公告标题：{title}
+公告链接：{source_url}
+公告正文：{content}
+"""
+
+
 COMPETITOR_JUDGE_PROMPT_TEMPLATE = """你是 Odaily 的竞品信源判断者。每条内容只在这里判断一次：先判断是否应丢弃，再为保留内容选择快讯路由。
 
 竞品来源本身不能证明内容具有 Crypto 新闻价值。请按完整语义判断新闻的核心主体、动作和结果是否与加密行业存在实质联系，不能因为正文偶然出现 Crypto、Web3、代币名称或免责声明就放行。
@@ -210,6 +240,25 @@ COMPETITOR_JUDGE_JSON_SCHEMA = {
                     "marketing_activity",
                     "routine_company_news",
                 ],
+            },
+        },
+        "required": ["route", "discard_type"],
+    },
+    "strict": True,
+}
+
+
+MSX_JUDGE_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "msx_judge_route",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "route": {"type": "string", "enum": ["regular", "discard"]},
+            "discard_type": {
+                "type": "string",
+                "enum": ["none", "marketing_activity", "routine_company_news", "daily_chatter", "off_topic"],
             },
         },
         "required": ["route", "discard_type"],
@@ -298,10 +347,12 @@ JUDGE_RULE_VERSIONS = {
     "crypto_source": "crypto-source-v1",
     "ai_source": "ai-source-v1",
     "jin10": "jin10-v1",
+    "msx": "msx-v1",
 }
 PUBLISHER_CHANNEL_BY_SOURCE = {
     NON_MAINSTREAM_MEDIA_SOURCE: "external_media",
     AI_SOURCE: "external_media",
+    MSX_SOURCE: "external_media",
     "x": "x",
     BINANCE_SQUARE_SOURCE: "x",
     "blockbeats": "competitor",
@@ -636,7 +687,16 @@ class XProcessingWorker:
             content=task.content,
         )
         schema = X_JUDGE_JSON_SCHEMA
-        if is_ai_judge:
+        if is_msx_task(task):
+            prompt = MSX_JUDGE_PROMPT_TEMPLATE.format(
+                category=task.metadata.get("category") or "",
+                title=task.title or "",
+                source_url=task.source_url or "",
+                content=task.content,
+            )
+            schema = MSX_JUDGE_JSON_SCHEMA
+            rule_set = "msx"
+        elif is_ai_judge:
             is_ai_source = is_ai_source_task(task)
             prompt = AI_JUDGE_PROMPT_TEMPLATE.format(
                 source_kind="AI信源全文" if is_ai_source else "X-AI信源",
@@ -973,7 +1033,10 @@ class XProcessingWorker:
     def _run_write(self, task: TaskRecord) -> None:
         pipeline = self.repository.get_pipeline(task.id)
         template_key = None
-        if is_mainstream_media_task(task):
+        metadata_template_key = task.metadata.get("writer_template_key")
+        if metadata_template_key:
+            template_key = str(metadata_template_key)
+        elif is_mainstream_media_task(task):
             template_key = "mainstream_media_writer"
         elif pipeline.news_type is not None:
             template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
@@ -1437,6 +1500,10 @@ def is_non_mainstream_media_task(task: TaskRecord) -> bool:
     return task.source == NON_MAINSTREAM_MEDIA_SOURCE
 
 
+def is_msx_task(task: TaskRecord) -> bool:
+    return task.source == MSX_SOURCE
+
+
 def is_ai_source_task(task: TaskRecord) -> bool:
     return task.source == AI_SOURCE
 
@@ -1570,6 +1637,17 @@ def build_writer_prompt(
             f"标题：{task.title or ''}\n"
             f"正文：{task.content}\n\n"
             "禁止提及采集媒体名称，禁止提及来源平台，禁止输出解释。\n"
+            f"{output_instruction}"
+        )
+    if is_msx_task(task):
+        return (
+            f"{render_prompt_content(prompt)}\n\n"
+            "【待处理MSX公告】\n"
+            "来源平台：MSX\n"
+            f"公告类别：{task.metadata.get('category') or ''}\n"
+            f"公告标题：{task.title or ''}\n"
+            f"公告链接：{task.source_url or ''}\n"
+            f"公告正文：{task.content}\n\n"
             f"{output_instruction}"
         )
     if is_non_mainstream_media_task(task) or is_ai_source_task(task):

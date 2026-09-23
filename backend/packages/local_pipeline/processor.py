@@ -24,6 +24,7 @@ from packages.x_processing.models import (
     BINANCE_SQUARE_SOURCE,
     COMPETITOR_SOURCES,
     JIN10_SOURCE,
+    MSX_SOURCE,
     NON_MAINSTREAM_MEDIA_SOURCE,
     SEARCH_FIRST_SOURCES,
     TaskRecord,
@@ -286,7 +287,7 @@ class LocalPipelineProcessor:
             return ["search", "judge_ai", "write", "format_publish", "publish"]
         if task.source == JIN10_SOURCE:
             return ["judge_jin10", "search", "write", "format_publish", "publish"]
-        if task.source == NON_MAINSTREAM_MEDIA_SOURCE or task.source in COMPETITOR_SOURCES or task.source in SEARCH_FIRST_SOURCES:
+        if task.source == NON_MAINSTREAM_MEDIA_SOURCE or task.source == MSX_SOURCE or task.source in COMPETITOR_SOURCES or task.source in SEARCH_FIRST_SOURCES:
             return ["search", "judge_crypto", "write", "format_publish", "publish"]
         return ["judge_crypto", "search", "write", "format_publish", "publish"]
 

@@ -397,6 +397,7 @@ Repo-tracked service files live under
 - `deploy/odaily-editor-plugin-api.service`
 - `deploy/odaily-editor-plugin-api.Caddyfile`
 - `deploy/odaily-non-mainstream-media.service`
+- `deploy/odaily-msx-notice.service`
 - `deploy/odaily-telegram-discovery.service`
 - `deploy/odaily-jin10-monitor.service`
 - `deploy/odaily-whale-watch.service`
@@ -433,8 +434,8 @@ alias `jibai-prod` only for non-OdAIly applications and rollback inspection.
 5. Verify running services and recent logs:
 
    ```bash
-   systemctl is-active odaily-litellm.service odaily-editor-plugin-api.service odaily-local-pipeline.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-telegram-discovery.service odaily-competitor-monitor.service odaily-jin10-monitor.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
-   journalctl -u odaily-local-pipeline.service -u odaily-x-capture.service -u odaily-non-mainstream-media.service -u odaily-telegram-discovery.service -u odaily-competitor-monitor.service -u odaily-jin10-monitor.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
+   systemctl is-active odaily-litellm.service odaily-editor-plugin-api.service odaily-local-pipeline.service odaily-x-capture.service odaily-non-mainstream-media.service odaily-msx-notice.service odaily-telegram-discovery.service odaily-competitor-monitor.service odaily-jin10-monitor.service odaily-whale-watch.service odaily-whale-watch-hyperliquid.service odaily-pipeline-supervisor.service
+   journalctl -u odaily-local-pipeline.service -u odaily-x-capture.service -u odaily-non-mainstream-media.service -u odaily-msx-notice.service -u odaily-telegram-discovery.service -u odaily-competitor-monitor.service -u odaily-jin10-monitor.service -u odaily-whale-watch.service -u odaily-whale-watch-hyperliquid.service -u odaily-pipeline-supervisor.service -n 50 --no-pager
    ```
 
 Production servers are not a long-term editing environment for repo-tracked

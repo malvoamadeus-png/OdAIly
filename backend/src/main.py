@@ -536,6 +536,37 @@ def parse_args() -> argparse.Namespace:
     meme_discovery.add_argument("--timeout", type=int, default=20)
     meme_discovery.add_argument("--connection-retries", type=int, default=3)
 
+    okx_stock_brief = subparsers.add_parser(
+        "okx-stock-brief",
+        help="Generate the OKX US stock 30-day market brief from public data.",
+    )
+    okx_stock_brief.add_argument(
+        "--as-of-date",
+        type=date.fromisoformat,
+        help="Displayed Beijing date; statistics end before this date. Defaults to the latest completed day.",
+    )
+    okx_stock_brief.add_argument("--json", action="store_true", help="Output auditable JSON instead of the brief.")
+
+    msx_notices = subparsers.add_parser(
+        "msx-notices",
+        help="Fetch MSX public Chinese notices from the read-only notice API.",
+    )
+    msx_notices.add_argument("--page-index", type=int, default=1)
+    msx_notices.add_argument("--page-size", type=int, default=10)
+    msx_notices.add_argument("--sub-type", type=int, help="Filter by MSX notice subtype.")
+    msx_notices.add_argument("--list-only", action="store_true", help="Do not fetch article HTML for each notice.")
+    msx_notices.add_argument("--json", action="store_true", help="Output machine-readable JSON.")
+    msx_notices.add_argument("--api-base-url", help="Override the public MSX API base URL.")
+
+    msx_worker = subparsers.add_parser(
+        "msx-notice-worker",
+        help="Poll MSX notices and submit new full-text notices to the local pipeline.",
+    )
+    msx_worker.add_argument("--once", action="store_true", help="Run one polling pass and exit.")
+    msx_worker.add_argument("--interval-seconds", type=int, default=600)
+    msx_worker.add_argument("--page-size", type=int, default=100)
+    msx_worker.add_argument("--api-base-url", help="Override the public MSX API base URL.")
+
     subparsers.add_parser("doctor", help="Print configuration and schedule diagnostics.")
     return parser.parse_args()
 
@@ -1733,6 +1764,72 @@ def meme_command(args: argparse.Namespace) -> int:
     raise ValueError(f"Unknown meme action: {args.meme_action}")
 
 
+def okx_stock_brief_command(args: argparse.Namespace) -> int:
+    from packages.okx_stock_brief import OKXPublicClient, _default_as_of_date, generate_brief
+
+    result = generate_brief(
+        OKXPublicClient(),
+        as_of_date=args.as_of_date or _default_as_of_date(),
+    )
+    if args.json:
+        print(json.dumps(result.to_json(), ensure_ascii=False, indent=2))
+    else:
+        print(result.render())
+    return 0
+
+
+def msx_notices_command(args: argparse.Namespace) -> int:
+    from packages.msx_notice import MSXNoticeClient
+
+    client = MSXNoticeClient(api_base_url=args.api_base_url) if args.api_base_url else MSXNoticeClient()
+    total, notices = client.fetch_page(
+        page_index=args.page_index,
+        page_size=args.page_size,
+        sub_type=args.sub_type,
+        include_content=not args.list_only,
+    )
+    payload = {
+        "total": total,
+        "page_index": args.page_index,
+        "page_size": args.page_size,
+        "notices": [notice.to_json() for notice in notices],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        for notice in notices:
+            print(f"# {notice.title}")
+            print(f"{notice.published_at} | {notice.category} | {notice.detail_url}")
+            if notice.content:
+                print(f"\n{notice.content}")
+            print()
+    return 0
+
+
+def msx_notice_worker_command(args: argparse.Namespace) -> int:
+    from packages.local_pipeline import LocalPipelineClient
+    from packages.msx_notice import MSXNoticeClient
+    from packages.msx_notice_worker import MSXNoticeWorker
+
+    client = MSXNoticeClient(api_base_url=args.api_base_url) if args.api_base_url else MSXNoticeClient()
+    worker = MSXNoticeWorker(
+        client=client,
+        pipeline_client=LocalPipelineClient(),
+        interval_seconds=args.interval_seconds,
+        page_size=args.page_size,
+    )
+    if args.once:
+        stats = worker.run_once()
+        print(
+            "[odaily] MSX notice once completed. "
+            f"status={stats.status} candidates={stats.candidate_count} "
+            f"seeded={stats.seeded_count} new={stats.new_count} saved={stats.saved_count}"
+        )
+        return 0 if stats.status == "success" else 1
+    worker.run_forever()
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -1860,6 +1957,12 @@ def main() -> int:
             return gate_market_command(args)
         if args.command == "meme":
             return meme_command(args)
+        if args.command == "okx-stock-brief":
+            return okx_stock_brief_command(args)
+        if args.command == "msx-notices":
+            return msx_notices_command(args)
+        if args.command == "msx-notice-worker":
+            return msx_notice_worker_command(args)
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:
