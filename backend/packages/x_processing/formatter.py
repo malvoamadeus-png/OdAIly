@@ -12,6 +12,7 @@ ODAILY_PREFIX = "Odaily星球日报讯 "
 _PARAGRAPH_ENDINGS = ("。", "！", "？", "；", ".", "!", "?", ";", "：", ":", "”", "’", "\"", "'")
 _MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]\n]{1,300}\]\(https?://[^)\s]+(?:\s+\"[^\"]*\")?\)", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_MSX_NOTICE_PREFIX_PATTERN = re.compile(r"^据\s*MSX\s*公告\s*[，,]")
 _MODEL_META_LINE_PATTERN = re.compile(
     r"^(?:"
     r"好的|以下是|下面是|已根据|根据要求|按要求|我会先|我将先|我先|我已经|我已|"
@@ -174,6 +175,10 @@ def _normalize_content_spaces(value: str) -> str:
     return text
 
 
+def _restore_msx_notice_prefix(value: str) -> str:
+    return _MSX_NOTICE_PREFIX_PATTERN.sub("据MSX公告，", value, count=1)
+
+
 def _normalize_numeric_asset_spaces(value: str) -> str:
     return re.sub(r"(\d(?:[\d,.]*\d)?|\d)\s*USDT\b", r"\1 USDT", value, flags=re.IGNORECASE)
 
@@ -210,6 +215,7 @@ def format_brief(
     prefix, content_body = _split_existing_prefix(draft.content)
     content = _apply_common_replacements(content_body)
     content = _normalize_content_spaces(content)
+    content = _restore_msx_notice_prefix(content)
     content = _restore_fixed_account_names(_normalize_numeric_asset_spaces(content))
     if prefix:
         content = f"{prefix}{content}"

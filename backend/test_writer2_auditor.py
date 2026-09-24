@@ -77,6 +77,18 @@ def test_writer2_does_not_append_source_without_explicit_non_x_mode() -> None:
     assert result.content == "Odaily星球日报讯 作者表示市场正在变化。"
 
 
+def test_writer2_preserves_exact_msx_notice_prefix() -> None:
+    result = format_brief(
+        DraftBrief(
+            title="MSX上线股票代币",
+            content="据MSX公告，MSX于9月24日上线股票代币现货交易",
+        )
+    )
+
+    assert result.content.startswith("Odaily星球日报讯 据MSX公告，")
+    assert "据 MSX 公告" not in result.content
+
+
 def test_writer2_keeps_colon_as_valid_paragraph_ending() -> None:
     result = format_brief(DraftBrief(title="测试标题", content="发文表示："))
 
