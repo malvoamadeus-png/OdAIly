@@ -73,6 +73,8 @@ class LocalPipelineService:
         self._last_worker_error: str | None = None
 
     def start(self) -> None:
+        if hasattr(self.processor, "init_remote_schema"):
+            self.processor.init_remote_schema()
         if hasattr(self.processor, "start_background_tasks"):
             try:
                 self.processor.start_background_tasks()
