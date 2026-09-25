@@ -1123,7 +1123,9 @@ class TopicAggregator:
         topic_id = stable_id("topic", claim.claim_id)
         subject = compact(claim.claim_text)[:120]
         self.connection.execute(
-            "INSERT INTO topics (topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,"
+            # Seed IDs are deterministic so an inbox retry can encounter a
+            # topic that was committed before the inbox marker was updated.
+            "INSERT OR IGNORE INTO topics (topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,"
             "started_at,first_seen_at,seed_expires_at,last_evidence_at,last_participation_at,matching_status,"
             "visibility,archived_at,brief_status,brief_error,brief_error_at,brief_retry_count,brief_retry_after,identity_revision,participant_count_1h,"
             "participant_count_6h,participant_count_24h,participant_velocity,hotness_score) "

@@ -104,6 +104,35 @@ def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_p
         aggregator.close()
 
 
+def test_process_batch_reuses_existing_seed_topic_when_cache_misses_it(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    payload = {
+        "tweet_id": "1",
+        "activity_type": "original",
+        "author_screen_name": "account",
+        "account_screen_name": "account",
+        "created_at_iso": now.isoformat(),
+        "text": "$TEST launched",
+        "expanded_text": "$TEST launched",
+    }
+    item = ContentItem.from_any(payload)
+    assert item is not None
+    claim = aggregator._extract_claims(item)[0]
+    aggregator._create_seed(claim, item, now.isoformat())
+    aggregator.connection.commit()
+    aggregator._retrieval_cache.clear()
+    aggregator._feature_index.clear()
+
+    try:
+        result = aggregator.process_batch([payload], now + timedelta(seconds=1))
+
+        assert result["metrics"]["create_seed_count"] == 1
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 1
+    finally:
+        aggregator.close()
+
+
 def test_event_identity_extracts_named_entities_and_launch_kind_from_ordinary_posts() -> None:
     announcement = {"claim_text": "Binance Wallet announced Pre-Access campaigns hosted by PancakeSwap."}
     follow_up = {"claim_text": "@BinanceWallet and @PancakeSwap introduced Pre-Access; Polymarket may be first."}
