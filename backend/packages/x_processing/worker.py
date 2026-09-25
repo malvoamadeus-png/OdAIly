@@ -1611,7 +1611,7 @@ def build_structured_writer_prompt(
         "【本次系统输出契约】\n"
         "本次输出格式覆盖模板中任何旧的‘标题空一行正文’要求。只输出一个 JSON 对象，不要输出 Markdown 或解释。\n"
         "JSON 的 title 字段只放标题文本，不要添加‘标题’或‘标题为’等标签。\n"
-        "JSON 的 content 字段只放正文文本，不要添加‘正文’、‘正文为’或‘标题为’等标签，不要复述 title，也不要添加 Odaily 刊头。\n"
+        "JSON 的 content 字段只放正文文本，不要添加‘正文’、‘正文为’或‘标题为’等标签，也不要添加 Odaily 刊头。\n"
         "title_strategy 只能使用 plain、speaker_anchor、entity_front、action_first、result_front、amount_front、time_window_front。\n"
         "matched_title_rules 只能使用 known_speaker_anchor、entity_front、action_first、result_change_front、amount_front、time_window_front、plain_direct、feature_subject_amplification。\n"
         "title_strategy_reason 只解释标题组织方式；不要输出事实抽取或风险分析。\n"

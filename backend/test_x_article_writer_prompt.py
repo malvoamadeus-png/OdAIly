@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
-from packages.x_processing.worker import build_writer_prompt
+from packages.x_processing.worker import build_structured_writer_prompt, build_writer_prompt
 
 
 def _prompt() -> PromptTemplateVersion:
@@ -76,3 +76,13 @@ def test_plain_x_post_keeps_existing_input_path() -> None:
     assert "【待处理原文】" in prompt
     assert "【X Article写作上下文】" not in prompt
     assert "发布人：Uniswap创始人Hayden" in prompt
+
+
+def test_structured_writer_prompt_does_not_require_title_deduplication() -> None:
+    prompt = build_structured_writer_prompt(
+        task=_task(content_format=None, content="CoinMarketCap宣布完成对Coinglass的收购，交易金额未披露。"),
+        prompt=_prompt(),
+        known_subjects=[],
+    )
+
+    assert "不要复述 title" not in prompt
