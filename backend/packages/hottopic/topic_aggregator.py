@@ -750,9 +750,7 @@ class TopicAggregator:
         except Exception:
             self.connection.rollback()
             raise
-        self._retrieval_cache.clear()
-        self._feature_index.clear()
-        self._load_retrieval_cache()
+        self._reload_retrieval_cache()
         return {
             "deleted_topics": len(topic_ids),
             "deleted_content_items": len(content_ids),
@@ -930,6 +928,10 @@ class TopicAggregator:
             return result
         except Exception:
             self.connection.rollback()
+            # Retrieval state is updated while the transaction is open.  A
+            # rollback removes those rows from SQLite, so discard any cache
+            # entries created during the failed attempt before retrying.
+            self._reload_retrieval_cache()
             raise
 
     def reconcile_recent_topics(self, at: datetime | str) -> dict[str, Any]:
@@ -1751,6 +1753,11 @@ class TopicAggregator:
                 "started_at": row["started_at"], "tokens": set(json_loads(row["tokens_json"], [])),
                 "hard_keys": set(json_loads(row["hard_keys_json"], [])), "entities": set(json_loads(row["entities_json"], [])),
             })
+
+    def _reload_retrieval_cache(self) -> None:
+        self._retrieval_cache.clear()
+        self._feature_index.clear()
+        self._load_retrieval_cache()
 
     def _cache_topic(self, topic_id: str, value: dict[str, Any]) -> None:
         old = self._retrieval_cache.get(topic_id)

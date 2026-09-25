@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import EventIdentity, ModelBriefWriter, TopicAggregator, stable_id
+from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, stable_id
 
 
 def profile(
@@ -57,6 +57,51 @@ def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatc
     writer = ModelBriefWriter("odaily-gpt-writer", base_url="http://127.0.0.1:4000/v1")
 
     assert writer.api_key == "local-proxy-key"
+
+
+def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+
+    def content(tweet_id: str, at: datetime) -> ContentItem:
+        return ContentItem(
+            content_item_id=f"tweet:{tweet_id}",
+            tweet_id=tweet_id,
+            activity_account=f"account_{tweet_id}",
+            author=f"account_{tweet_id}",
+            activity_type="original",
+            content_text="$TEST launched",
+            expanded_text="$TEST launched",
+            created_at=at.isoformat(),
+            source_url=f"https://x.com/account_{tweet_id}/status/{tweet_id}",
+            metrics={},
+            references={},
+            raw_payload={},
+        )
+
+    original_refresh = aggregator._refresh_all_topics
+
+    def fail_after_topic_state(_at: str):
+        raise RuntimeError("forced failure after topic cache update")
+
+    aggregator._refresh_all_topics = fail_after_topic_state  # type: ignore[method-assign]
+    try:
+        try:
+            aggregator.process_batch([content("1", now)], now)
+        except RuntimeError as exc:
+            assert str(exc) == "forced failure after topic cache update"
+        else:
+            raise AssertionError("the first batch should fail after the topic state is cached")
+
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 0
+
+        aggregator._refresh_all_topics = original_refresh  # type: ignore[method-assign]
+        result = aggregator.process_batch([content("2", now + timedelta(seconds=1))], now + timedelta(seconds=1))
+
+        assert result["metrics"]["create_seed_count"] == 1
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 1
+    finally:
+        aggregator.close()
 
 
 def test_event_identity_extracts_named_entities_and_launch_kind_from_ordinary_posts() -> None:
