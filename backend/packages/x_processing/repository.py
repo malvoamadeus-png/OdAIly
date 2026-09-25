@@ -349,6 +349,7 @@ def _row_to_pipeline(row: dict[str, Any]) -> PipelineRecord:
         candidate_id=row.get("candidate_id"),
         judge_output=row.get("judge_output") or {},
         judge_completed_at=row.get("judge_completed_at"),
+        search_result=row.get("search_result") or {},
         search_completed_at=row.get("search_completed_at"),
         prompt_template_key=row.get("prompt_template_key"),
         prompt_version_id=row.get("prompt_version_id"),

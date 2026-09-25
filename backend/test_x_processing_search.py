@@ -8,7 +8,7 @@ from pathlib import Path
 
 from packages.common.config import XProcessingSettings
 from packages.x_processing.models import TaskRecord
-from packages.x_processing.searcher import SearchDocument
+from packages.x_processing.searcher import SearchDocument, SearchMatch, build_ai_review_prompt
 from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
 from packages.x_processing.worker import XProcessingWorker
 
@@ -190,7 +190,6 @@ def test_search_blocks_strategy_purchase_when_duplicate_is_not_top_one(
     )
 
     result = worker.run_once()
-
     assert result.failed == 0
     assert repository.get_task(query.id).status == "duplicate"
     assert repository.get_pipeline(query.id).candidate_id == 29558
@@ -252,3 +251,124 @@ def test_search_allows_strategy_purchase_when_only_old_holding_report_matches(
     assert len(ai_client.prompts) == 1
     assert "514025" in ai_client.prompts[0]
     assert "29558" not in ai_client.prompts[0]
+
+
+def test_search_reviews_medium_similarity_when_new_fact_is_fund_wallets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime.now(UTC)
+    database_path = tmp_path / "odaily.sqlite"
+    repository = SQLiteXProcessingRepository(database_path)
+    query = TaskRecord(
+        id=731763,
+        source="x",
+        source_item_id="2103290298638159941",
+        source_url="https://x.com/EmberCN/status/2103290298638159941",
+        title="Bitget 风险保护基金由 5500 枚 BTC 构成，分布在三个钱包",
+        content="Bitget 价值 4.64 亿美元的风险保护基金由 5500 枚 BTC 构成，位于三个钱包。",
+        published_at=now,
+        status="judged",
+    )
+    _seed_task(database_path, query)
+    monkeypatch.setattr(
+        "packages.x_processing.worker._search_cache_path_for_repository",
+        lambda _repository: tmp_path / "searcher.sqlite",
+    )
+    ai_client = StrategyDuplicateAI()
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repository,
+        settings=XProcessingSettings(search_batch_ai_review_threshold=0.60),
+        search_embedding_service=FakeEmbeddingService(
+            {("odaily_reference", "520198"): _vector(0.80)}
+        ),
+        search_ai_client=ai_client,
+    )
+    cache = worker._search_cache()
+    assert cache is not None
+    reference = SearchDocument(
+        doc_type="odaily_reference",
+        doc_id="520198",
+        title="Bitget：部分热钱包发生异常转账，初步涉及约3.516亿美元",
+        content="Bitget 被盗约 3.516 亿美元，相关损失在超过 4.64 亿美元的用户保护基金覆盖范围内。",
+        source="odaily",
+        published_at=now - timedelta(hours=2),
+    )
+    cache.upsert_document(reference)
+
+    result = worker.run_once()
+
+    assert result.message == f"processed task {query.id}", result
+    assert result.failed == 0
+    assert repository.get_task(query.id).status == "deduped"
+    search_result = repository.get_pipeline(query.id).search_result
+    assert search_result["is_duplicate"] is False
+    assert search_result["reviewed_by_ai"] is True
+    assert len(ai_client.prompts) == 1
+    assert "钱包地址" in ai_client.prompts[0]
+    assert "520198" in ai_client.prompts[0]
+
+    single_prompt = build_ai_review_prompt(
+        query=SearchDocument(
+            doc_type="editor_plugin_query",
+            doc_id="query",
+            title=query.title,
+            content=query.content,
+            source="x",
+        ),
+        match=SearchMatch(document=reference, similarity=0.80),
+    )
+    assert "钱包地址" in single_prompt
+
+
+def test_search_keeps_direct_duplicate_for_very_high_similarity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime.now(UTC)
+    database_path = tmp_path / "odaily.sqlite"
+    repository = SQLiteXProcessingRepository(database_path)
+    query = TaskRecord(
+        id=731764,
+        source="x",
+        source_item_id="2103290298638159942",
+        source_url="https://x.com/EmberCN/status/2103290298638159942",
+        title="Bitget 风险保护基金由 5500 枚 BTC 构成",
+        content="Bitget 风险保护基金由 5500 枚 BTC 构成。",
+        published_at=now,
+        status="judged",
+    )
+    _seed_task(database_path, query)
+    monkeypatch.setattr(
+        "packages.x_processing.worker._search_cache_path_for_repository",
+        lambda _repository: tmp_path / "searcher.sqlite",
+    )
+    ai_client = StrategyDuplicateAI()
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repository,
+        settings=XProcessingSettings(search_batch_ai_review_threshold=0.60),
+        search_embedding_service=FakeEmbeddingService(
+            {("odaily_reference", "520198"): _vector(0.90)}
+        ),
+        search_ai_client=ai_client,
+    )
+    cache = worker._search_cache()
+    assert cache is not None
+    cache.upsert_document(
+        SearchDocument(
+            doc_type="odaily_reference",
+            doc_id="520198",
+            title="Bitget：部分热钱包发生异常转账",
+            content="Bitget 热钱包发生异常转账。",
+            source="odaily",
+            published_at=now - timedelta(hours=2),
+        )
+    )
+
+    result = worker.run_once()
+
+    assert result.failed == 0
+    assert repository.get_task(query.id).status == "duplicate"
+    assert len(ai_client.prompts) == 0
