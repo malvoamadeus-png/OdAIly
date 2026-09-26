@@ -501,8 +501,16 @@ class TopicAggregator:
         # The live dashboard reads the state from separate connections, while
         # shutdown and test harnesses may close the service from a supervisor
         # thread. SQLite remains serialized by the aggregator transaction.
-        self.connection = sqlite3.connect(self.database, check_same_thread=False)
+        self.connection = sqlite3.connect(self.database, timeout=30.0, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        # This connection shares the worker SQLite file with the account
+        # directory. Match its lock wait and WAL settings so a short console
+        # write does not make an aggregation transaction fail after SQLite's
+        # default five seconds.
+        self.connection.execute("PRAGMA busy_timeout=30000")
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA foreign_keys=ON")
+        self.connection.execute("PRAGMA synchronous=FULL")
         self.connection.executescript(SCHEMA)
         self._migrate_single_brief_schema()
         self._migrate_brief_status_schema()
@@ -2304,8 +2312,9 @@ class ModelBriefWriter:
 
     def __init__(
         self,
-        model: str,
+        model: str = "gpt-5.6-luna",
         *,
+        fallback_model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 30.0,
@@ -2313,7 +2322,19 @@ class ModelBriefWriter:
         retry_base_seconds: float = 2.0,
     ) -> None:
         self.model = model
-        self.base_url = (base_url or os.environ.get("X_PROCESS_OPENAI_BASE_URL", "")).rstrip("/")
+        self.fallback_model = (
+            fallback_model
+            if fallback_model is not None
+            else os.environ.get("HOTTOPIC_FALLBACK_MODEL", "gpt-5.6-terra")
+        ).strip()
+        self.base_url = (
+            base_url
+            or os.environ.get("HOTTOPIC_OPENAI_BASE_URL", "")
+            or os.environ.get("ODAILY_LLM_BASE_URL", "")
+            # Compatibility only for existing deployments. New HotTopic/X
+            # Agent configuration never needs the quick-news variable.
+            or os.environ.get("X_PROCESS_OPENAI_BASE_URL", "")
+        ).rstrip("/")
         self.api_key = api_key or self._default_api_key(self.base_url)
         self.timeout = timeout
         self.max_attempts = max_attempts
@@ -2325,7 +2346,7 @@ class ModelBriefWriter:
         if self.retry_base_seconds < 0:
             raise ValueError("model writer retry_base_seconds cannot be negative")
         if not self.api_key or not self.base_url:
-            raise RuntimeError("model writer requires OPENAI_API_KEY and X_PROCESS_OPENAI_BASE_URL")
+            raise RuntimeError("model writer requires a HotTopic-compatible API key and base URL")
 
     @staticmethod
     def _default_api_key(base_url: str) -> str:
@@ -2334,8 +2355,12 @@ class ModelBriefWriter:
         if explicit:
             return explicit
         if base_url.startswith(("http://127.0.0.1:", "http://localhost:", "https://127.0.0.1:", "https://localhost:")):
-            return os.environ.get("LITELLM_MASTER_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-        return os.environ.get("OPENAI_API_KEY", "")
+            return (
+                os.environ.get("LITELLM_MASTER_KEY", "")
+                or os.environ.get("ODAILY_LLM_API_KEY", "")
+                or os.environ.get("OPENAI_API_KEY", "")
+            )
+        return os.environ.get("ODAILY_LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
 
     def __call__(self, connection: sqlite3.Connection, topic_id: str, at: str, evidence: Sequence[dict[str, Any]]) -> dict[str, str]:
         topic = connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
@@ -2371,11 +2396,31 @@ class ModelBriefWriter:
 信息点：
 {json.dumps(payload, ensure_ascii=False)}
 """.strip()
+        try:
+            return self._write_with_model(self.model, prompt, topic, evidence)
+        except Exception as primary_error:
+            if not self.fallback_model or self.fallback_model == self.model:
+                raise
+            try:
+                return self._write_with_model(self.fallback_model, prompt, topic, evidence)
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"HotTopic brief models failed: primary={type(primary_error).__name__}: {primary_error}; "
+                    f"fallback={type(fallback_error).__name__}: {fallback_error}"
+                ) from fallback_error
+
+    def _write_with_model(
+        self,
+        model: str,
+        prompt: str,
+        topic: sqlite3.Row,
+        evidence: Sequence[dict[str, Any]],
+    ) -> dict[str, str]:
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(
                 {
-                    "model": self.model,
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
                     "reasoning_effort": "none",

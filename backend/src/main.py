@@ -143,6 +143,23 @@ def parse_args() -> argparse.Namespace:
     hottopic_worker.add_argument("--model", help="Optional model used to write visible topic briefs.")
     hottopic_worker.add_argument("--workers", type=int, default=8, help="Maximum concurrent profile polls.")
 
+    x_agent_import = subparsers.add_parser(
+        "x-agent-import-screening",
+        help="Import a local X Agent screening report into the independent shared account directory.",
+    )
+    x_agent_import.add_argument("--report", required=True, help="Local JSON report produced by x_agent_local_screen.py.")
+    x_agent_import.add_argument("--database", help="Override the shared HotTopic/X Agent SQLite path.")
+    x_agent_import.add_argument(
+        "--apply-suggestions",
+        action="store_true",
+        help="Also apply initial market/project suggestions to accounts that already exist. Explicit only.",
+    )
+
+    x_agent_retry = subparsers.add_parser("x-agent-retry-failed", help="Requeue bounded failed X Agent analysis jobs.")
+    x_agent_retry.add_argument("--database", help="Override the shared HotTopic/X Agent SQLite path.")
+    x_agent_retry.add_argument("--module", choices=("market_sentiment", "project_promotion"))
+    x_agent_retry.add_argument("--limit", type=int, default=100)
+
     subparsers.add_parser("binance-square-init-db", help="Initialize Binance Square monitoring tables.")
     binance_square_worker = subparsers.add_parser(
         "binance-square-worker", help="Run the experimental Binance Square account monitor."
@@ -771,6 +788,32 @@ def hottopic_worker_command(args: argparse.Namespace) -> int:
         model=args.model,
         workers=args.workers,
     )
+
+
+def x_agent_import_screening_command(args: argparse.Namespace) -> int:
+    from packages.hottopic import HotTopicService
+
+    service = HotTopicService(Path(args.database).expanduser().resolve() if args.database else None)
+    try:
+        result = service.import_x_agent_screening_report(
+            Path(args.report).expanduser().resolve(),
+            apply_suggestions=bool(args.apply_suggestions),
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    finally:
+        service.close()
+
+
+def x_agent_retry_failed_command(args: argparse.Namespace) -> int:
+    from packages.hottopic import HotTopicService
+
+    service = HotTopicService(Path(args.database).expanduser().resolve() if args.database else None)
+    try:
+        print(json.dumps({"requeued": service.retry_failed_x_agent_jobs(module=args.module or "", limit=args.limit)}, ensure_ascii=False))
+        return 0
+    finally:
+        service.close()
 
 
 def editor_plugin_local_feed_status_command(args: argparse.Namespace) -> int:
@@ -1867,6 +1910,10 @@ def main() -> int:
             return x_capture_worker_command(args)
         if args.command == "hottopic-worker":
             return hottopic_worker_command(args)
+        if args.command == "x-agent-import-screening":
+            return x_agent_import_screening_command(args)
+        if args.command == "x-agent-retry-failed":
+            return x_agent_retry_failed_command(args)
         if args.command == "binance-square-init-db":
             return binance_square_init_db_command(args)
         if args.command == "binance-square-worker":

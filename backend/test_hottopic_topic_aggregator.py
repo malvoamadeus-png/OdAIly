@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -57,6 +58,61 @@ def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatc
     writer = ModelBriefWriter("odaily-gpt-writer", base_url="http://127.0.0.1:4000/v1")
 
     assert writer.api_key == "local-proxy-key"
+
+
+def test_aggregator_connection_matches_the_shared_worker_lock_policy(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    try:
+        assert aggregator.connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        assert aggregator.connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert aggregator.connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        aggregator.close()
+
+
+def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
+    calls: list[dict[str, object]] = []
+
+    class Cursor:
+        def fetchone(self) -> dict[str, str]:
+            return {"working_title": "Example topic"}
+
+    class Connection:
+        def execute(self, *_args, **_kwargs) -> Cursor:
+            return Cursor()
+
+    writer = ModelBriefWriter(
+        "gpt-5.6-luna",
+        fallback_model="gpt-5.6-terra",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        max_attempts=1,
+    )
+
+    def post(request):
+        payload = json.loads(request.data.decode("utf-8"))
+        calls.append(payload)
+        if payload["model"] == "gpt-5.6-luna":
+            raise RuntimeError("luna unavailable")
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "title": "Example topic",
+                "brief": "A concise evidence-grounded brief.",
+                "source_claim_ids": ["claim:1"],
+            })}}]
+        }
+
+    writer._post_json = post  # type: ignore[method-assign]
+    result = writer(
+        Connection(),  # type: ignore[arg-type]
+        "topic:1",
+        datetime.now(UTC).isoformat(),
+        [{"claim_id": "claim:1", "claim_text": "Example evidence", "tweet_id": "1"}],
+    )
+
+    assert result["source_claim_ids"] == ["claim:1"]
+    assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert all(call["reasoning_effort"] == "none" for call in calls)
 
 
 def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_path: Path) -> None:

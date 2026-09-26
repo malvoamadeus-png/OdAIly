@@ -5,13 +5,15 @@ import csv
 import json
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -244,12 +246,43 @@ def latest_post_snapshot(account: AccountRow, results: list[dict[str, Any]]) -> 
     }
 
 
-def scan_account(account: AccountRow, *, cutoff: datetime, timeline_count: int, retries: int) -> tuple[list[ContentItem], dict[str, Any] | None, dict[str, Any] | None]:
+def retry_after_seconds(error: urllib.error.HTTPError, *, now: datetime | None = None) -> float:
+    """Parse either permitted Retry-After form into a non-negative delay."""
+    raw = error.headers.get("Retry-After") if error.headers is not None else None
+    if raw is None:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    reference = now or datetime.now(UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    return max(0.0, (retry_at.astimezone(UTC) - reference.astimezone(UTC)).total_seconds())
+
+
+def scan_account(
+    account: AccountRow,
+    *,
+    cutoff: datetime,
+    timeline_count: int,
+    retries: int,
+    before_request: Callable[[], None] | None = None,
+    on_rate_limited: Callable[[float], None] | None = None,
+) -> tuple[list[ContentItem], dict[str, Any] | None, dict[str, Any] | None]:
     if account.protected:
         return [], None, {"account": account.screen_name, "kind": "protected", "error": "protected account skipped"}
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
+            if before_request is not None:
+                before_request()
             payload = fetch_json(
                 f"{FXTWITTER_BASE_URL}/2/profile/{account.screen_name}/statuses",
                 {"count": max(1, min(timeline_count, 100))},
@@ -268,9 +301,26 @@ def scan_account(account: AccountRow, *, cutoff: datetime, timeline_count: int, 
             return items, latest, None
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                # Do not spend the account retry budget inside an upstream
+                # cooldown. Let the worker pause every account immediately
+                # and reschedule this one with its persisted backoff instead.
+                if on_rate_limited is not None:
+                    on_rate_limited(retry_after_seconds(exc))
+                break
             if attempt < retries:
                 time.sleep(0.8 * (attempt + 1))
-    return [], None, {"account": account.screen_name, "kind": "fetch_failed", "error": str(last_error)}
+    rate_limited = isinstance(last_error, urllib.error.HTTPError) and last_error.code == 429
+    error: dict[str, Any] = {
+        "account": account.screen_name,
+        "kind": "rate_limited" if rate_limited else "fetch_failed",
+        "error": str(last_error),
+    }
+    if rate_limited:
+        retry_after = retry_after_seconds(last_error)
+        if retry_after > 0:
+            error["retry_after_seconds"] = retry_after
+    return [], None, error
 
 
 def write_json(path: Path, payload: Any) -> None:

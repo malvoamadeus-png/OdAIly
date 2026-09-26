@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -8,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from packages.hottopic.capture import AccountRow, ContentItem
-from packages.hottopic.service import BLACKLISTED_HANDLES, HotTopicService, open_worker_database
+from packages.hottopic.service import CollectRequestPacer, HotTopicService, open_worker_database
 
 
 def item(handle: str, tweet_id: str, created_at: datetime) -> ContentItem:
@@ -45,21 +46,25 @@ def service(tmp_path: Path):
         value.close()
 
 
-def test_seed_blacklists_named_accounts_and_keeps_hellojintao(service: HotTopicService) -> None:
+def test_seed_defaults_every_account_to_hot_topic_enabled(service: HotTopicService) -> None:
     service.seed_accounts([
         {"screen_name": "hellojintao", "display_name": "hello"},
         {"screen_name": "TeamTrump", "display_name": "Trump"},
     ])
     accounts = {row["screen_name_lower"]: row for row in service.list_accounts()}
     assert accounts["hellojintao"]["status"] == "followed"
-    assert accounts["teamtrump"]["status"] == "blacklisted"
-    assert "teamtrump" in BLACKLISTED_HANDLES
+    assert accounts["hellojintao"]["hot_topic_enabled"] == 1
+    assert accounts["teamtrump"]["status"] == "followed"
+    assert accounts["teamtrump"]["hot_topic_enabled"] == 1
 
 
-def test_named_blacklist_cannot_be_added_before_the_seed_runs(service: HotTopicService) -> None:
-    with pytest.raises(ValueError, match="已拉黑"):
-        service.add_account("TeamTrump")
-    assert service.list_accounts(status="blacklisted")[0]["screen_name_lower"] == "teamtrump"
+def test_legacy_status_endpoint_cannot_create_a_hidden_blacklist(service: HotTopicService) -> None:
+    service.add_account("TeamTrump")
+    with pytest.raises(ValueError, match="不支持"):
+        service.set_account_status("TeamTrump", "blacklisted")
+    account = service.list_x_agent_accounts()["items"][0]
+    assert account["status"] == "followed"
+    assert account["hotTopicEnabled"] is True
 
 
 def test_watermark_rejects_history_and_content_counter_survives_cleanup(service: HotTopicService) -> None:
@@ -79,17 +84,18 @@ def test_watermark_rejects_history_and_content_counter_survives_cleanup(service:
     assert service.list_accounts()[0]["cumulative_content_count"] == 1
 
 
-def test_blacklist_stops_tracking_and_requires_explicit_follow_to_restore(service: HotTopicService) -> None:
+def test_legacy_unfollow_maps_to_subscription_state(service: HotTopicService) -> None:
     service.add_account("alice")
-    assert service.set_account_status("alice", "blacklisted")["status"] == "blacklisted"
-    with pytest.raises(ValueError, match="先解除"):
-        service.add_account("alice")
     assert service.set_account_status("alice", "unfollowed")["status"] == "unfollowed"
+    state = service.list_x_agent_accounts()["items"][0]
+    assert state["hotTopicEnabled"] is False
+    assert state["marketSentimentEnabled"] is False
+    assert state["projectPromotionEnabled"] is False
     assert service.set_account_status("alice", "followed")["status"] == "followed"
 
 
-def test_blacklist_queues_cleanup_and_preserves_permanent_evidence(service: HotTopicService) -> None:
-    """Account operations must not delete an unbounded topic graph inline."""
+def test_account_cleanup_job_preserves_permanent_evidence(service: HotTopicService) -> None:
+    """Legacy cleanup rows remain bounded when an older database contains them."""
     service.add_account("alice")
     now = service.deployment_started_at()
     with service.aggregator.connection:
@@ -120,7 +126,11 @@ def test_blacklist_queues_cleanup_and_preserves_permanent_evidence(service: HotT
             ("membership:permanent", "claim:0", "topic:permanent", None, "primary", "new_fact", 1.0, "test", "test", now, None),
         )
 
-    assert service.set_account_status("alice", "blacklisted")["status"] == "blacklisted"
+    with service.db:
+        service.db.execute(
+            "INSERT INTO hottopic_account_cleanup(screen_name_lower,queued_at,last_error) VALUES(?,?,NULL)",
+            ("alice", now),
+        )
     assert service.aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 3
     assert service.db.execute("SELECT COUNT(*) FROM hottopic_account_cleanup").fetchone()[0] == 1
 
@@ -196,6 +206,40 @@ def test_ai_brief_generation_does_not_hold_the_sqlite_write_lock(service: HotTop
     assert not errors
 
 
+def test_aggregation_does_not_hold_the_account_directory_lock(service: HotTopicService) -> None:
+    service.add_account("alice")
+    account = AccountRow("alice", "", "", 0, 0, False, "https://x.com/alice")
+    watermark = datetime.fromisoformat(service.deployment_started_at())
+    service._store_poll(account, [item("alice", "slow-aggregate", watermark + timedelta(seconds=1))], None, watermark.isoformat())
+    aggregation_started = threading.Event()
+    release_aggregation = threading.Event()
+    errors: list[BaseException] = []
+
+    def slow_process(*_args, **_kwargs):
+        aggregation_started.set()
+        assert release_aggregation.wait(timeout=2)
+        return {"metrics": {}}
+
+    service.aggregator.process_batch = slow_process  # type: ignore[method-assign]
+
+    def aggregate() -> None:
+        try:
+            service.aggregate()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=aggregate)
+    worker.start()
+    assert aggregation_started.wait(timeout=1)
+    started = time.perf_counter()
+    service.set_x_agent_subscriptions(["alice"], {"market_sentiment_enabled": True})
+    assert time.perf_counter() - started < 0.2
+    release_aggregation.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert not errors
+
+
 def test_permanent_topic_participation_updates_cumulative_metric(service: HotTopicService) -> None:
     service.add_account("alice")
     now = service.deployment_started_at()
@@ -221,3 +265,47 @@ def test_retention_constants_are_applied(service: HotTopicService) -> None:
         service.db.execute("INSERT INTO hottopic_events(at,kind,detail_json) VALUES(?,?,?)", ((started - timedelta(days=6)).isoformat(), "old", "{}"))
     service.maintain(force=True)
     assert service.db.execute("SELECT COUNT(*) FROM hottopic_events WHERE kind='old'").fetchone()[0] == 0
+
+
+def test_zero_interval_pacer_still_honors_a_shared_rate_limit(monkeypatch) -> None:
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr("packages.hottopic.service.time.monotonic", monotonic)
+    monkeypatch.setattr("packages.hottopic.service.time.sleep", sleep)
+    pacer = CollectRequestPacer(0)
+    pacer.defer(1.2)
+    pacer.wait()
+
+    assert sum(sleeps) >= 1.2
+
+
+def test_collection_failures_back_off_per_account(service: HotTopicService) -> None:
+    transient = {"kind": "fetch_failed", "error": "timed out"}
+    rate_limited = {"kind": "rate_limited", "error": "HTTP Error 429", "retry_after_seconds": 900}
+
+    assert service._next_poll_delay_seconds(transient, 1) == 600
+    assert service._next_poll_delay_seconds(transient, 2) == 1200
+    assert service._next_poll_delay_seconds(rate_limited, 1) == 900
+    assert service._next_poll_delay_seconds(rate_limited, 2) == 1800
+
+
+def test_maintain_records_sqlite_lock_and_leaves_the_worker_alive(service: HotTopicService) -> None:
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    service.aggregator.reconcile_recent_topics = locked  # type: ignore[method-assign]
+
+    assert service.maintain(force=True) is None
+    event = service.db.execute(
+        "SELECT kind,detail_json FROM hottopic_events WHERE kind='maintain_busy' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert event is not None
+    assert "database is locked" in event["detail_json"]

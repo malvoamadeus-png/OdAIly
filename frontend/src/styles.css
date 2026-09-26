@@ -6,6 +6,531 @@
   text-rendering: optimizeLegibility;
 }
 
+.xAgentLayout {
+  display: grid;
+  gap: 16px;
+}
+
+.xAgentTabBar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  overflow-x: auto;
+  padding-bottom: 1px;
+  border-bottom: 1px solid #d8e0e4;
+}
+
+.xAgentTabBar > button:not(.xAgentRefresh) {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #66727c;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.xAgentTabBar > button:not(.xAgentRefresh):hover,
+.xAgentTabBar > button:not(.xAgentRefresh).active {
+  border-bottom-color: #0f8a5f;
+  color: #08775a;
+}
+
+.xAgentRefresh {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.xAgentUtilityBar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 34px;
+}
+
+.xAgentUtilityBar .secondaryButton.compact {
+  min-height: 32px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.xAgentRetryFeedback {
+  min-width: 0;
+  color: #53616a;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.xAgentRetryFeedback.error {
+  color: #b42318;
+}
+
+.xAgentSummary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.xAgentMetric {
+  display: grid;
+  gap: 4px;
+  min-height: 70px;
+  padding: 13px 15px;
+  border: 1px solid #d8e0e4;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.xAgentMetric span {
+  color: #66717d;
+  font-size: 12px;
+}
+
+.xAgentMetric strong {
+  color: #1c2d34;
+  font-size: 21px;
+}
+
+.xAgentMetric.warning strong {
+  color: #b45309;
+}
+
+.xAgentPlaceholder {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  border: 1px solid #d8e0e4;
+  border-radius: 7px;
+  background: #fff;
+  color: #66727c;
+  font-size: 14px;
+}
+
+.xAgentTableSection {
+  overflow: hidden;
+  border: 1px solid #d8e0e4;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.xAgentTableSection > .sectionHeader {
+  padding: 16px 16px 10px;
+}
+
+.xAgentTableSection > .sectionHeader h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.xAgentAddAccount,
+.xAgentFilters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid #e8edef;
+}
+
+.xAgentAddAccount input {
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.xAgentFilters {
+  justify-content: space-between;
+  background: #fafcfc;
+}
+
+.xAgentFilters > label {
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #70808a;
+}
+
+.xAgentFilters > label input {
+  min-width: 0;
+}
+
+.xAgentFilters select {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 28px 0 10px;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  background: #fff;
+  color: #394150;
+}
+
+.xAgentResultFilters {
+  justify-content: flex-start;
+}
+
+.xAgentBatchActions {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 9px 16px;
+  border-top: 1px solid #e8edef;
+  background: #fff;
+}
+
+.xAgentBatchActions > span {
+  margin-right: 3px;
+  color: #68757e;
+  font-size: 12px;
+}
+
+.xAgentBatchActions .secondaryButton.compact {
+  min-height: 32px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.xAgentBatchActions .secondaryButton.danger {
+  border-color: #efc9c5;
+  color: #b42318;
+}
+
+.xAgentInlineNotice {
+  margin: 10px 16px 0;
+}
+
+.xAgentTableWrap {
+  overflow-x: auto;
+  border-top: 1px solid #e8edef;
+}
+
+.xAgentAccountHead,
+.xAgentAccountRow,
+.xAgentMarketHead,
+.xAgentMarketRow,
+.xAgentProjectHead,
+.xAgentProjectRow {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e8edef;
+  font-size: 13px;
+}
+
+.xAgentAccountHead,
+.xAgentAccountRow {
+  grid-template-columns: minmax(210px, 2fr) 104px 104px 104px minmax(122px, 1fr) minmax(122px, 1fr);
+  min-width: 860px;
+}
+
+.xAgentMarketHead,
+.xAgentMarketRow {
+  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, .8fr) minmax(110px, .8fr) minmax(260px, 2.2fr) minmax(124px, .9fr);
+  min-width: 820px;
+}
+
+.xAgentProjectHead,
+.xAgentProjectRow {
+  grid-template-columns: minmax(190px, 1.2fr) minmax(190px, 1.2fr) minmax(260px, 2.1fr) minmax(124px, .9fr);
+  min-width: 760px;
+}
+
+.xAgentAccountHead,
+.xAgentMarketHead,
+.xAgentProjectHead {
+  background: #f5f8f8;
+  color: #66727c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.xAgentAccountRow:last-child,
+.xAgentResultGroup:last-child .xAgentMarketRow,
+.xAgentResultGroup:last-child .xAgentProjectRow {
+  border-bottom: 0;
+}
+
+.xAgentAccountIdentity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.xAgentAccountIdentity a {
+  overflow: hidden;
+  color: #08775a;
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentAccountIdentity > span {
+  overflow: hidden;
+  color: #68757e;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentAccountIdentity small {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  overflow: hidden;
+  color: #b45309;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentSubscriptionToggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  width: max-content;
+  color: #53616a;
+  font-size: 12px;
+}
+
+.xAgentSubscriptionToggle input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: #0f8a5f;
+}
+
+.xAgentSubscriptionToggle input:disabled {
+  cursor: wait;
+}
+
+.xAgentPager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 54px;
+  padding: 9px 16px;
+  border-top: 1px solid #e8edef;
+  color: #66727c;
+  font-size: 12px;
+}
+
+.xAgentPager > div {
+  display: flex;
+  gap: 6px;
+}
+
+.xAgentPager .iconButton:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.xAgentResultGroup {
+  min-width: max-content;
+}
+
+.xAgentMarketRow.active,
+.xAgentProjectRow.active {
+  background: #f0f8f5;
+}
+
+.xAgentDetailTrigger {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #24323b;
+  cursor: pointer;
+  text-align: left;
+}
+
+.xAgentDetailTrigger > svg {
+  flex: 0 0 auto;
+  color: #70808a;
+  transition: transform .15s ease;
+}
+
+.xAgentDetailTrigger > svg.rotated {
+  transform: rotate(180deg);
+}
+
+.xAgentDetailTrigger span {
+  display: grid;
+  min-width: 0;
+}
+
+.xAgentDetailTrigger strong,
+.xAgentDetailTrigger small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentDetailTrigger strong {
+  color: #176b55;
+}
+
+.xAgentDetailTrigger small {
+  color: #76828b;
+  font-size: 11px;
+}
+
+.xAgentSentimentPill {
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: #eef2f4;
+  color: #40505a;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentReason,
+.xAgentContract {
+  overflow: hidden;
+  color: #53616a;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentContract {
+  color: #68757e;
+  font-size: 12px;
+}
+
+.xAgentPostList,
+.xAgentDetailLoading {
+  padding: 12px 16px 14px 42px;
+  border-bottom: 1px solid #e8edef;
+  background: #fafcfc;
+}
+
+.xAgentPostList {
+  display: grid;
+  gap: 9px;
+}
+
+.xAgentPostItem {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid #dce4e6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.xAgentPostMeta {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  color: #697681;
+  font-size: 12px;
+}
+
+.xAgentPostMeta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #176b55;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xAgentPostMeta time {
+  margin-left: auto;
+}
+
+.xAgentPostMeta a {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid #d8e0e4;
+  border-radius: 5px;
+  color: #176b55;
+}
+
+.xAgentPostItem p {
+  margin: 0;
+  color: #35444d;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.xAgentPostItem footer {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+  color: #68757e;
+  font-size: 12px;
+}
+
+.xAgentPostItem footer span {
+  line-height: 1.45;
+}
+
+.xAgentDetailLoading {
+  color: #68757e;
+  font-size: 13px;
+}
+
+.xAgentDetailNotice {
+  margin: 10px 16px 14px 42px;
+}
+
+@media (max-width: 1050px) {
+  .xAgentSummary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 850px) {
+  .xAgentSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .xAgentAddAccount,
+  .xAgentFilters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .xAgentFilters > label {
+    flex-basis: auto;
+  }
+
+  .xAgentFilters select {
+    width: 100%;
+  }
+
+  .xAgentPostList,
+  .xAgentDetailLoading {
+    padding-left: 16px;
+  }
+
+  .xAgentDetailNotice {
+    margin-left: 16px;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -25,7 +550,7 @@ body {
 .hottopicWorkspace { display: grid; grid-template-columns: minmax(320px, .9fr) minmax(0, 1.3fr); min-height: 430px; border: 1px solid #d8e0e4; border-radius: 7px; overflow: hidden; background: #fff; }
 .hottopicTopics { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid #e3e8eb; min-width: 0; }
 .hottopicTopics .sectionHeader, .hottopicDetail { padding: 16px; }
-.hottopicTopics .sectionHeader h2, .hottopicAccounts h2, .hottopicDetailCopy h2 { margin: 0; font-size: 17px; }
+.hottopicTopics .sectionHeader h2, .hottopicDetailCopy h2 { margin: 0; font-size: 17px; }
 .sectionHeader > div { display: grid; gap: 4px; }
 .sectionHeader > div > span { color: #6b7680; font-size: 12px; }
 .hottopicTopicList { overflow: auto; border-top: 1px solid #e8edef; }
@@ -45,40 +570,15 @@ body {
 .hottopicSpeakers { display: flex; flex-wrap: wrap; gap: 7px; }
 .hottopicSpeakers a { display: grid; gap: 2px; min-width: 126px; padding: 8px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #176b55; text-decoration: none; }
 .hottopicSpeakers time { color: #74808a; font-size: 11px; }
-.hottopicAccounts { border: 1px solid #d8e0e4; border-radius: 7px; background: #fff; overflow: hidden; }
-.hottopicAccounts > .sectionHeader { padding: 16px 16px 8px; }
-.hottopicAddAccount, .hottopicFilters { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-top: 1px solid #e8edef; }
-.hottopicAddAccount input, .hottopicFilters input { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #cfd8dc; border-radius: 6px; color: #27353e; background: #fff; }
-.hottopicAddAccount input { flex: 1; }
-.hottopicFilters { justify-content: space-between; background: #fafcfc; }
-.hottopicFilters label { display: flex; align-items: center; gap: 7px; color: #70808a; }
-.hottopicFilters label input { width: 190px; }
 .segmentedControl { display: flex; overflow: hidden; border: 1px solid #d2dbdf; border-radius: 6px; }
 .segmentedControl button { min-height: 34px; padding: 0 10px; border: 0; border-right: 1px solid #dbe2e5; background: #fff; color: #53616a; cursor: pointer; font-size: 12px; }
 .segmentedControl button:last-child { border-right: 0; }
 .segmentedControl button.active { background: #e8f5f0; color: #08775a; font-weight: 700; }
-.hottopicAccountTable { overflow-x: auto; border-top: 1px solid #e8edef; }
-.hottopicAccountHead, .hottopicAccountRow { display: grid; grid-template-columns: minmax(190px, 2fr) 92px 92px 92px minmax(120px, 1.2fr) 76px; min-width: 760px; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #e8edef; font-size: 13px; }
-.hottopicAccountHead { background: #f5f8f8; color: #66727c; font-size: 12px; font-weight: 700; }
-.hottopicAccountRow > div:first-child { display: grid; gap: 3px; }
-.hottopicAccountRow > div:first-child > span { color: #68757e; font-size: 12px; }
-.hottopicAccountRow small { display: inline-flex; align-items: center; gap: 4px; color: #b45309; font-size: 11px; }
-.hottopicStatus { width: max-content; padding: 3px 7px; border-radius: 4px; font-size: 12px; font-weight: 700; }
-.hottopicStatus.followed { color: #08775a; background: #e6f5ef; }
-.hottopicStatus.unfollowed { color: #6b7280; background: #edf0f2; }
-.hottopicStatus.blacklisted { color: #b42318; background: #fdecec; }
-.hottopicActions { display: flex; gap: 5px; }
-.hottopicActions button { display: inline-grid; width: 30px; height: 30px; place-items: center; border: 1px solid #ccd7db; border-radius: 5px; background: #fff; color: #40505a; cursor: pointer; }
-.hottopicActions button:last-child { color: #a63c33; }
-.hottopicActions button:disabled { opacity: .5; cursor: wait; }
 
 @media (max-width: 850px) {
   .hottopicSummary { grid-template-columns: repeat(2, minmax(0, 1fr)) 40px; }
   .hottopicWorkspace { grid-template-columns: 1fr; }
   .hottopicTopics { min-height: 310px; border-right: 0; border-bottom: 1px solid #e3e8eb; }
-  .hottopicAddAccount { display: grid; grid-template-columns: 1fr; }
-  .hottopicFilters { align-items: stretch; flex-direction: column; }
-  .hottopicFilters label input { width: 100%; }
   .segmentedControl { overflow-x: auto; }
 }
 

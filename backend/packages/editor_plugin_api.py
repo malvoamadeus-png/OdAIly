@@ -370,7 +370,8 @@ class EditorPluginNewsGenService:
         self.paths = get_paths()
         ensure_runtime_dirs(self.paths)
 
-        create_console_auth_repository(database_url).init_schema()
+        self.console_auth_repository = create_console_auth_repository(database_url)
+        self.console_auth_repository.init_schema()
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         storage_settings = load_storage_settings()
         self.console_data = ConsoleDataApi(storage_settings.sqlite_path)
@@ -465,7 +466,10 @@ class EditorPluginNewsGenService:
         return actor
 
     def authenticate_console_admin(self, authorization_header: str | None) -> AuthenticatedEditor:
-        return self.authenticate(authorization_header)
+        actor = self.authenticate(authorization_header)
+        if self.console_auth_repository.get_admin(actor.email) is None:
+            raise EditorPluginForbiddenError("当前账号不是控制台管理员")
+        return actor
 
     def login(self, request: EditorPluginLoginRequestModel) -> dict[str, Any]:
         token, expires_at, actor = self.authenticator.login(request)
@@ -505,10 +509,6 @@ class EditorPluginNewsGenService:
         del actor
         return self.hottopic.dashboard()
 
-    def get_hottopic_accounts(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        del actor
-        return self.hottopic.list_accounts(query=str(payload.get("query") or ""), status=str(payload.get("status") or "all"))
-
     def get_hottopic_topic(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any] | None:
         del actor
         topic_id = str(payload.get("topic_id") or "").strip()
@@ -516,26 +516,104 @@ class EditorPluginNewsGenService:
             raise EditorPluginApiError("topic_id 不能为空")
         return self.hottopic.topic_detail(topic_id)
 
-    def mutate_hottopic_account(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
-        action = str(payload.get("action") or "")
-        handle = str(payload.get("screen_name") or "")
+    def get_x_agent_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.hottopic.x_agent_dashboard()
+
+    def get_x_agent_accounts(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
         try:
-            if action == "add":
-                result = self.hottopic.add_account(handle, str(payload.get("display_name") or ""))
-            elif action == "follow":
-                result = self.hottopic.set_account_status(handle, "followed")
-            elif action == "unfollow":
-                result = self.hottopic.set_account_status(handle, "unfollowed")
-            elif action == "blacklist":
-                result = self.hottopic.set_account_status(handle, "blacklisted")
-            elif action == "unblacklist":
-                result = self.hottopic.set_account_status(handle, "unfollowed")
-            else:
-                raise EditorPluginApiError("不支持的 HotTopic 账号操作")
+            return self.hottopic.list_x_agent_accounts(
+                query=str(payload.get("query") or ""),
+                module=str(payload.get("module") or "all"),
+                enabled=payload.get("enabled", "all"),
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def mutate_x_agent_account(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "")
+        if action != "add":
+            raise EditorPluginApiError("不支持的 X Agent 账号操作")
+        try:
+            return self.hottopic.add_x_agent_account(
+                str(payload.get("screen_name") or ""),
+                str(payload.get("display_name") or ""),
+            )
         except ValueError as exc:
             raise EditorPluginApiError(str(exc)) from exc
-        self.hottopic.event("console_account_action", {"action": action, "screen_name": result["screen_name"], "actor": actor.email})
-        return result
+
+    def update_x_agent_subscriptions(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        handles = payload.get("screen_names")
+        patch = payload.get("patch")
+        if not isinstance(handles, list) or not isinstance(patch, dict):
+            raise EditorPluginApiError("screen_names 和 patch 必须有效")
+        try:
+            return {"items": self.hottopic.set_x_agent_subscriptions(handles, patch)}
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def get_x_agent_market_sentiment(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.list_market_sentiment(
+                window=str(payload.get("window") or "24h"),
+                query=str(payload.get("query") or ""),
+                sentiment=str(payload.get("sentiment") or "all"),
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def get_x_agent_market_sentiment_detail(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.market_sentiment_detail(
+                str(payload.get("instrument_key") or ""),
+                window=str(payload.get("window") or "24h"),
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def get_x_agent_project_promotions(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.list_project_promotions(
+                window=str(payload.get("window") or "24h"),
+                query=str(payload.get("query") or ""),
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def get_x_agent_project_promotion_detail(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.project_promotion_detail(
+                str(payload.get("identity_key") or ""),
+                window=str(payload.get("window") or "24h"),
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def retry_x_agent_failed_jobs(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return {"requeued": self.hottopic.retry_failed_x_agent_jobs(
+                module=str(payload.get("module") or ""),
+                limit=int(payload.get("limit") or 100),
+            )}
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
 
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
@@ -1034,9 +1112,16 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/blockbeats-key/save",
         "/console/newsflash-operations",
         "/console/hottopic/dashboard",
-        "/console/hottopic/accounts",
         "/console/hottopic/topic",
-        "/console/hottopic/account",
+        "/console/x-agent/dashboard",
+        "/console/x-agent/accounts",
+        "/console/x-agent/account",
+        "/console/x-agent/subscriptions",
+        "/console/x-agent/market-sentiment",
+        "/console/x-agent/market-sentiment/detail",
+        "/console/x-agent/project-promotion",
+        "/console/x-agent/project-promotion/detail",
+        "/console/x-agent/retry-failed",
     }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -1160,14 +1245,35 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 if self.path == "/console/hottopic/dashboard":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_dashboard(actor)})
                     return
-                if self.path == "/console/hottopic/accounts":
-                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_accounts(actor, self._read_json())})
-                    return
                 if self.path == "/console/hottopic/topic":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_topic(actor, self._read_json())})
                     return
-                if self.path == "/console/hottopic/account":
-                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.mutate_hottopic_account(actor, self._read_json())})
+                if self.path == "/console/x-agent/dashboard":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_dashboard(actor)})
+                    return
+                if self.path == "/console/x-agent/accounts":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_accounts(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/account":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.mutate_x_agent_account(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/subscriptions":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.update_x_agent_subscriptions(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/market-sentiment":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_market_sentiment(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/market-sentiment/detail":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_market_sentiment_detail(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/project-promotion":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_project_promotions(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/project-promotion/detail":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_project_promotion_detail(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/retry-failed":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.retry_x_agent_failed_jobs(actor, self._read_json())})
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})

@@ -135,22 +135,6 @@ export type Jin10Settings = {
   updated_at: string | null;
 };
 
-export type HotTopicAccountStatus = 'followed' | 'unfollowed' | 'blacklisted';
-
-export type HotTopicAccount = {
-  screen_name: string;
-  display_name: string;
-  protected: number;
-  status: HotTopicAccountStatus;
-  last_polled_at: string | null;
-  last_success_at: string | null;
-  last_error: string | null;
-  consecutive_failures: number;
-  last_item_count: number;
-  cumulative_content_count: number;
-  cumulative_hot_topic_count: number;
-};
-
 export type HotTopicCard = {
   id: string;
   title: string;
@@ -179,6 +163,86 @@ export type HotTopicDetail = {
   hotness: number;
   participants: { oneHour: number; sixHours: number; twentyFourHours: number };
   speakers: Array<{ account: string; lastParticipationAt: string; sourceUrl: string | null }>;
+};
+
+export type XAgentDashboard = {
+  accounts: {
+    total: number;
+    hotTopicEnabled: number;
+    marketSentimentEnabled: number;
+    projectPromotionEnabled: number;
+    errors: number;
+  };
+  jobs: {
+    pending: number;
+    failed: number;
+  };
+  topics?: unknown;
+};
+
+export type XAgentAccount = {
+  screenName: string;
+  displayName: string | null;
+  profileUrl: string | null;
+  hotTopicEnabled: boolean;
+  marketSentimentEnabled: boolean;
+  projectPromotionEnabled: boolean;
+  lastPolledAt: string | null;
+  lastSuccessAt: string | null;
+  lastAnalyzedAt: string | null;
+  lastError: string | null;
+  lastAnalysisError: string | null;
+};
+
+export type XAgentPage<T> = {
+  items: T[];
+  total: number;
+};
+
+export type XAgentAccountModule = 'hot_topic' | 'market_sentiment' | 'project_promotion';
+
+export type XAgentSubscriptionPatch = Partial<Pick<XAgentAccount,
+  'hotTopicEnabled' | 'marketSentimentEnabled' | 'projectPromotionEnabled'
+>>;
+
+export type XAgentMarketSentimentItem = {
+  instrumentKey: string;
+  instrumentName: string;
+  ticker: string | null;
+  scope: string;
+  sentiment: string;
+  latestAt: string | null;
+  reason: string | null;
+};
+
+export type XAgentProjectPromotionItem = {
+  identityKey: string;
+  projectName: string;
+  ticker: string | null;
+  chainName: string | null;
+  contractAddress: string | null;
+  officialUrl: string | null;
+  logic: string | null;
+  lastMentionedAt: string | null;
+};
+
+export type XAgentMarketSentimentDetailItem = {
+  tweetId: string;
+  account: string;
+  sourceUrl: string | null;
+  sourceText: string;
+  postedAt: string | null;
+  sentiment: string;
+  reason: string | null;
+};
+
+export type XAgentProjectPromotionDetailItem = {
+  id: string | number;
+  account: string;
+  sourceUrl: string | null;
+  sourceText: string;
+  logic: string | null;
+  lastMentionedAt: string | null;
 };
 
 export type Account = {
@@ -1356,23 +1420,144 @@ export async function getHotTopicDashboard(): Promise<HotTopicDashboard> {
   return consoleApiPost<HotTopicDashboard>('/console/hottopic/dashboard');
 }
 
-export async function listHotTopicAccounts(query = '', status = 'all'): Promise<HotTopicAccount[]> {
-  return consoleApiPost<HotTopicAccount[]>('/console/hottopic/accounts', { query, status });
-}
-
 export async function getHotTopicDetail(topicId: string): Promise<HotTopicDetail | null> {
   return consoleApiPost<HotTopicDetail | null>('/console/hottopic/topic', { topic_id: topicId });
 }
 
-export async function mutateHotTopicAccount(
-  action: 'add' | 'follow' | 'unfollow' | 'blacklist' | 'unblacklist',
-  screenName: string,
-  displayName = '',
-): Promise<HotTopicAccount> {
-  return consoleApiPost<HotTopicAccount>('/console/hottopic/account', {
-    action,
+export async function getXAgentDashboard(): Promise<XAgentDashboard> {
+  return consoleApiPost<XAgentDashboard>('/console/x-agent/dashboard');
+}
+
+export async function listXAgentAccounts({
+  query = '',
+  module,
+  enabled,
+  offset = 0,
+  limit = 50,
+}: {
+  query?: string;
+  module?: XAgentAccountModule;
+  enabled?: boolean;
+  offset?: number;
+  limit?: number;
+} = {}): Promise<XAgentPage<XAgentAccount>> {
+  return consoleApiPost<XAgentPage<XAgentAccount>>('/console/x-agent/accounts', {
+    query,
+    module,
+    enabled,
+    offset,
+    limit,
+  });
+}
+
+export async function addXAgentAccount(screenName: string, displayName = ''): Promise<XAgentAccount> {
+  return consoleApiPost<XAgentAccount>('/console/x-agent/account', {
+    action: 'add',
     screen_name: screenName,
     display_name: displayName,
+  });
+}
+
+export async function updateXAgentSubscriptions(
+  screenNames: string[],
+  patch: XAgentSubscriptionPatch,
+): Promise<{ items: XAgentAccount[] }> {
+  const payload: Record<string, boolean> = {};
+  if (patch.hotTopicEnabled !== undefined) payload.hot_topic_enabled = patch.hotTopicEnabled;
+  if (patch.marketSentimentEnabled !== undefined) payload.market_sentiment_enabled = patch.marketSentimentEnabled;
+  if (patch.projectPromotionEnabled !== undefined) payload.project_promotion_enabled = patch.projectPromotionEnabled;
+  return consoleApiPost<{ items: XAgentAccount[] }>('/console/x-agent/subscriptions', {
+    screen_names: screenNames,
+    patch: payload,
+  });
+}
+
+export async function retryXAgentFailedJobs(
+  module: 'market_sentiment' | 'project_promotion' | '' = '',
+  limit = 100,
+): Promise<{ requeued: number }> {
+  return consoleApiPost<{ requeued: number }>('/console/x-agent/retry-failed', {
+    module,
+    limit: Math.min(100, Math.max(1, limit)),
+  });
+}
+
+export async function listXAgentMarketSentiment({
+  window,
+  query = '',
+  sentiment,
+  offset = 0,
+  limit = 50,
+}: {
+  window: string;
+  query?: string;
+  sentiment?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<XAgentPage<XAgentMarketSentimentItem>> {
+  return consoleApiPost<XAgentPage<XAgentMarketSentimentItem>>('/console/x-agent/market-sentiment', {
+    window,
+    query,
+    sentiment,
+    offset,
+    limit,
+  });
+}
+
+export async function getXAgentMarketSentimentDetail({
+  instrumentKey,
+  window,
+  offset = 0,
+  limit = 50,
+}: {
+  instrumentKey: string;
+  window: string;
+  offset?: number;
+  limit?: number;
+}): Promise<XAgentPage<XAgentMarketSentimentDetailItem>> {
+  return consoleApiPost<XAgentPage<XAgentMarketSentimentDetailItem>>('/console/x-agent/market-sentiment/detail', {
+    instrument_key: instrumentKey,
+    window,
+    offset,
+    limit,
+  });
+}
+
+export async function listXAgentProjectPromotion({
+  window,
+  query = '',
+  offset = 0,
+  limit = 50,
+}: {
+  window: string;
+  query?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<XAgentPage<XAgentProjectPromotionItem>> {
+  return consoleApiPost<XAgentPage<XAgentProjectPromotionItem>>('/console/x-agent/project-promotion', {
+    window,
+    query,
+    offset,
+    limit,
+  });
+}
+
+export async function getXAgentProjectPromotionDetail({
+  identityKey,
+  window,
+  offset = 0,
+  limit = 50,
+}: {
+  identityKey: string;
+  window: string;
+  offset?: number;
+  limit?: number;
+}): Promise<XAgentPage<XAgentProjectPromotionDetailItem>> {
+  return consoleApiPost<XAgentPage<XAgentProjectPromotionDetailItem>>('/console/x-agent/project-promotion/detail', {
+    identity_key: identityKey,
+    window,
+    offset,
+    limit,
   });
 }
 
