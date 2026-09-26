@@ -271,6 +271,92 @@ def test_reimport_without_explicit_apply_does_not_override_manual_switch(tmp_pat
         value.close()
 
 
+def test_x_agent_backfill_is_dry_by_default_and_only_reads_enabled_account_inbox(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        value.add_x_agent_account("alice")
+        value.add_x_agent_account("bob")
+        alice = AccountRow("alice", "", "", 0, 0, False, "https://x.com/alice")
+        bob = AccountRow("bob", "", "", 0, 0, False, "https://x.com/bob")
+        quote = content("alice", "quote", "")
+        quote.activity_type = "quote"
+        quote.expanded_text = "引用 @other: BTC bullish with a long position"
+        collected_at = iso(utc_now())
+        value._store_poll(
+            alice,
+            [
+                content("alice", "market", "BTC bullish and I am long."),
+                content("alice", "noise", "Hello from X Agent."),
+                quote,
+            ],
+            None,
+            collected_at,
+        )
+        value._store_poll(bob, [content("bob", "disabled", "BTC bullish and I am long.")], None, collected_at)
+        value.set_x_agent_subscriptions(["alice"], {"market_sentiment_enabled": True})
+
+        dry_run = value.backfill_x_agent_inbox(
+            module="market_sentiment",
+            since=iso(utc_now() - timedelta(minutes=1)),
+        )
+        assert dry_run == {"considered": 3, "relevant": 1, "enqueued": 0}
+        assert value.db.execute("SELECT COUNT(*) FROM x_agent_analysis_jobs").fetchone()[0] == 0
+        assert value.list_x_agent_accounts(query="alice")["items"][0]["marketSentimentEnabled"] is True
+
+        applied = value.backfill_x_agent_inbox(
+            module="market_sentiment",
+            since=iso(utc_now() - timedelta(minutes=1)),
+            apply=True,
+        )
+        assert applied == {"considered": 3, "relevant": 1, "enqueued": 1}
+        job = value.db.execute("SELECT tweet_id,module,status FROM x_agent_analysis_jobs").fetchone()
+        assert tuple(job) == ("market", "market_sentiment", "pending")
+        assert value.backfill_x_agent_inbox(
+            module="market_sentiment",
+            since=iso(utc_now() - timedelta(minutes=1)),
+            apply=True,
+        ) == {"considered": 2, "relevant": 0, "enqueued": 0}
+    finally:
+        value.close()
+
+
+def test_x_agent_backfill_respects_since_and_enqueue_limit(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        value.add_x_agent_account("alice")
+        account = AccountRow("alice", "", "", 0, 0, False, "https://x.com/alice")
+        earlier = utc_now() - timedelta(hours=2)
+        later = utc_now() - timedelta(minutes=1)
+        value._store_poll(account, [content("alice", "old", "BTC bullish and I am long.")], None, iso(earlier))
+        value._store_poll(
+            account,
+            [
+                content("alice", "new-1", "BTC bullish and I am long."),
+                content("alice", "new-2", "ETH bearish and I reduced exposure."),
+            ],
+            None,
+            iso(later),
+        )
+        value.set_x_agent_subscriptions(["alice"], {"market_sentiment_enabled": True})
+
+        result = value.backfill_x_agent_inbox(
+            module="market_sentiment",
+            since=iso(utc_now() - timedelta(minutes=30)),
+            limit=1,
+            apply=True,
+        )
+        assert result == {"considered": 2, "relevant": 2, "enqueued": 1}
+        assert value.db.execute("SELECT tweet_id FROM x_agent_analysis_jobs").fetchone()[0] == "new-1"
+        assert value.backfill_x_agent_inbox(
+            module="market_sentiment",
+            since=iso(utc_now() - timedelta(minutes=30)),
+            limit=999,
+            apply=True,
+        ) == {"considered": 1, "relevant": 1, "enqueued": 1}
+    finally:
+        value.close()
+
+
 def test_readding_an_existing_account_preserves_manual_subscription_switches(tmp_path: Path) -> None:
     value = service(tmp_path)
     try:

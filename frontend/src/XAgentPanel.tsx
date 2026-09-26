@@ -695,7 +695,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('hotTopicEnabled', true)}><Flame size={15} /> 开启热点</button>
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('marketSentimentEnabled', true)}><TrendingUp size={15} /> 开启情绪</button>
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('projectPromotionEnabled', true)}><Rocket size={15} /> 开启推介</button>
-          {accountModule !== 'all' && <button className="secondaryButton compact danger" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription(MODULE_FIELD[accountModule], false)}><Power size={15} /> 全页关闭</button>}
+          {accountModule !== 'all' && <button className="secondaryButton compact danger" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription(MODULE_FIELD[accountModule], false)}><Power size={15} /> 关闭本页{accountModule === 'hot_topic' ? '热点' : accountModule === 'market_sentiment' ? '情绪' : '推介'}订阅</button>}
         </div>
         {accountsError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {accountsError}</div>}
         <div className="xAgentTableWrap" role="table">

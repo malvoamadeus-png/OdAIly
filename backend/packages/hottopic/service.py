@@ -663,6 +663,77 @@ class HotTopicService:
                     skipped += 1
         return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
+    @staticmethod
+    def _x_agent_analysis_text(source: dict[str, Any]) -> str | None:
+        """Return only the tracked account's own text for X Agent analysis."""
+        own_text = str(source.get("text") or "")
+        if not own_text and source.get("activity_type") == "quote":
+            return None
+        return own_text or str(source.get("expanded_text") or "")
+
+    @_serialized
+    def backfill_x_agent_inbox(
+        self,
+        *,
+        module: str,
+        since: str,
+        limit: int = 100,
+        apply: bool = False,
+    ) -> dict[str, int]:
+        """Queue a bounded, explicit replay of eligible existing inbox rows.
+
+        This never changes subscriptions or calls a model. The normal worker
+        consumes the standard pending jobs after an operator chooses --apply.
+        """
+        column_by_module = {
+            "market_sentiment": "market_sentiment_enabled",
+            "project_promotion": "project_promotion_enabled",
+        }
+        column = column_by_module.get(module)
+        if column is None:
+            raise ValueError("不支持的 X Agent 模块")
+        try:
+            parsed_since = datetime.fromisoformat(since.strip().replace("Z", "+00:00"))
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("--since 必须是带时区的 ISO 时间") from exc
+        if parsed_since.tzinfo is None:
+            raise ValueError("--since 必须包含时区")
+        safe_since = iso(parsed_since)
+        safe_limit = min(500, max(1, int(limit)))
+        rows = self.db.execute(
+            "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i "
+            "JOIN hottopic_accounts a ON a.screen_name_lower=i.screen_name_lower "
+            f"WHERE a.status='followed' AND a.{column}=1 AND i.collected_at>=? "
+            "AND NOT EXISTS(SELECT 1 FROM x_agent_analysis_jobs j WHERE j.tweet_id=i.tweet_id AND j.module=?) "
+            "ORDER BY i.collected_at,i.tweet_id",
+            (safe_since, module),
+        ).fetchall()
+        considered = len(rows)
+        relevant_rows: list[tuple[str, str]] = []
+        for row in rows:
+            try:
+                source = json.loads(str(row["payload_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(source, dict):
+                continue
+            text = self._x_agent_analysis_text(source)
+            if text is not None and is_relevant(module, text):
+                relevant_rows.append((str(row["tweet_id"]), str(row["payload_json"])))
+        relevant = len(relevant_rows)
+        enqueued = 0
+        if apply:
+            now = iso(utc_now())
+            with self.db:
+                for tweet_id, _payload in relevant_rows[:safe_limit]:
+                    cursor = self.db.execute(
+                        "INSERT OR IGNORE INTO x_agent_analysis_jobs(tweet_id,module,status,created_at,updated_at) "
+                        "VALUES(?,?,?, ?, ?)",
+                        (tweet_id, module, "pending", now, now),
+                    )
+                    enqueued += cursor.rowcount
+        return {"considered": considered, "relevant": relevant, "enqueued": enqueued}
+
     @_serialized
     def process_account_cleanup_jobs(self, *, job_limit: int = 1) -> dict[str, int]:
         """Process small, resumable blacklist cleanups outside console requests."""
@@ -950,10 +1021,9 @@ class HotTopicService:
                 source = json.loads(job["payload_json"])
                 # Quoted text supplies context for HotTopic, but X Agent must
                 # only attribute the tracked account's own words to it.
-                own_text = str(source.get("text") or "")
-                if not own_text and source.get("activity_type") == "quote":
+                text = self._x_agent_analysis_text(source)
+                if text is None:
                     return job, None, None
-                text = own_text or str(source.get("expanded_text") or "")
                 if not is_relevant(str(job["module"]), text):
                     return job, None, None
                 return job, analyzer.analyze(str(job["module"]), source), None

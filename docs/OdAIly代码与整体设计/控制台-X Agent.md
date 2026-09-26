@@ -77,3 +77,18 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 ```
 
 命令对新账号默认打开热点话题，并按报告的 `include` 建议打开市场情绪或项目推介。没有 `--apply-suggestions` 时，已存在账号的人工开关不会被覆盖；生产 worker 不会重读报告。
+
+筛选建议只改变账号目录中的三个订阅开关，不会生成市场情绪或项目推介结果。首次启用模块时，已有的 `hottopic_inbox` 不会由正常采集循环自动回放；需要人工确认后，用同一台生产 worker 的 CLI 做有界回填：
+
+```bash
+.venv/bin/python backend/src/main.py x-agent-backfill \
+  --module market_sentiment \
+  --since 2026-09-24T00:00:00+00:00 \
+  --limit 100
+.venv/bin/python backend/src/main.py x-agent-backfill \
+  --module project_promotion \
+  --since 2026-09-24T00:00:00+00:00 \
+  --limit 100
+```
+
+省略 `--apply` 时只统计候选，不写库；确认输出后加 `--apply` 才会把对应模块的相关 inbox 帖子以幂等 `pending` 任务入队。命令只读取 `followed` 且已打开该模块的账号，不改订阅开关、不调用模型；模型仍由 `odaily-hottopic.service` 使用 Luna、Terra fallback 消费。可重复执行，已存在的同模块任务会跳过；`--limit` 单次最多 500，适合分批运行。市场情绪默认显示最近 24 小时，项目推介默认显示最近 24 小时；回填较早数据后应切换到 `7d` 或 `30d` 窗口查看。

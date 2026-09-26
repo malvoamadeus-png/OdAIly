@@ -160,6 +160,16 @@ def parse_args() -> argparse.Namespace:
     x_agent_retry.add_argument("--module", choices=("market_sentiment", "project_promotion"))
     x_agent_retry.add_argument("--limit", type=int, default=100)
 
+    x_agent_backfill = subparsers.add_parser(
+        "x-agent-backfill",
+        help="Queue a bounded replay of existing enabled X Agent inbox rows. Defaults to dry-run.",
+    )
+    x_agent_backfill.add_argument("--database", help="Override the shared HotTopic/X Agent SQLite path.")
+    x_agent_backfill.add_argument("--module", choices=("market_sentiment", "project_promotion"), required=True)
+    x_agent_backfill.add_argument("--since", required=True, help="Inclusive inbox collection timestamp in ISO 8601 format.")
+    x_agent_backfill.add_argument("--limit", type=int, default=100, help="Maximum jobs to enqueue; capped at 500.")
+    x_agent_backfill.add_argument("--apply", action="store_true", help="Insert pending jobs. Omit for dry-run.")
+
     subparsers.add_parser("binance-square-init-db", help="Initialize Binance Square monitoring tables.")
     binance_square_worker = subparsers.add_parser(
         "binance-square-worker", help="Run the experimental Binance Square account monitor."
@@ -811,6 +821,23 @@ def x_agent_retry_failed_command(args: argparse.Namespace) -> int:
     service = HotTopicService(Path(args.database).expanduser().resolve() if args.database else None)
     try:
         print(json.dumps({"requeued": service.retry_failed_x_agent_jobs(module=args.module or "", limit=args.limit)}, ensure_ascii=False))
+        return 0
+    finally:
+        service.close()
+
+
+def x_agent_backfill_command(args: argparse.Namespace) -> int:
+    from packages.hottopic import HotTopicService
+
+    service = HotTopicService(Path(args.database).expanduser().resolve() if args.database else None)
+    try:
+        result = service.backfill_x_agent_inbox(
+            module=args.module,
+            since=args.since,
+            limit=args.limit,
+            apply=bool(args.apply),
+        )
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     finally:
         service.close()
@@ -1914,6 +1941,8 @@ def main() -> int:
             return x_agent_import_screening_command(args)
         if args.command == "x-agent-retry-failed":
             return x_agent_retry_failed_command(args)
+        if args.command == "x-agent-backfill":
+            return x_agent_backfill_command(args)
         if args.command == "binance-square-init-db":
             return binance_square_init_db_command(args)
         if args.command == "binance-square-worker":
