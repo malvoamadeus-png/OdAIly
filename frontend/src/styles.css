@@ -228,6 +228,12 @@ button.xAgentMetric {
   gap: 12px;
 }
 
+.xAgentResultEmpty .inlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .xAgentTableWrap {
   overflow-x: auto;
   border-top: 1px solid #e8edef;
