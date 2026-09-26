@@ -99,6 +99,23 @@
   color: #b45309;
 }
 
+button.xAgentMetric {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.xAgentMetric.interactive:hover {
+  border-color: #86b5b7;
+  background: #f3fbfa;
+}
+
+.xAgentMetric.interactive:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 2px;
+}
+
 .xAgentPlaceholder {
   display: grid;
   min-height: 220px;
@@ -201,6 +218,14 @@
 
 .xAgentInlineNotice {
   margin: 10px 16px 0;
+}
+
+.xAgentResultEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .xAgentTableWrap {

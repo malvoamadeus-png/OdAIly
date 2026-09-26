@@ -605,6 +605,16 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
     setTab(nextTab);
   }
 
+  function openSubscribedAccounts(module: Extract<XAgentAccountModule, 'market_sentiment' | 'project_promotion'>) {
+    setAccountQuery('');
+    setAccountModule(module);
+    setAccountEnabled('enabled');
+    setAccountOffset(0);
+    setAccounts([]);
+    setAccountsTotal(0);
+    setTab('accounts');
+  }
+
   function toggleMarketDetail(instrumentKey: string) {
     setMarketSelectedKey((current) => current === instrumentKey ? null : instrumentKey);
     setMarketDetailOffset(0);
@@ -642,8 +652,8 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       {dashboard && showsAnalysisControls && <div className="xAgentSummary">
         <Metric label="账号" value={dashboard.accounts.total} />
         <Metric label="热点话题" value={dashboard.accounts.hotTopicEnabled} />
-        <Metric label="市场情绪" value={dashboard.accounts.marketSentimentEnabled} />
-        <Metric label="项目推介" value={dashboard.accounts.projectPromotionEnabled} />
+        <Metric label="情绪订阅账号" value={dashboard.accounts.marketSentimentEnabled} onClick={() => openSubscribedAccounts('market_sentiment')} />
+        <Metric label="推介订阅账号" value={dashboard.accounts.projectPromotionEnabled} onClick={() => openSubscribedAccounts('project_promotion')} />
         <Metric label="待处理" value={dashboard.jobs.pending} />
         <Metric label="失败" value={dashboard.jobs.failed + dashboard.accounts.errors} warning={dashboard.jobs.failed + dashboard.accounts.errors > 0} />
       </div>}
@@ -716,7 +726,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         {marketError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {marketError}</div>}
         <div className="xAgentTableWrap" role="table">
           <div className="xAgentMarketHead" role="row"><span>标的</span><span>范围</span><span>态度</span><span>汇总说明</span><span>最近提及</span></div>
-          {!marketLoading && marketItems.length === 0 && <div className="emptyState">当前窗口暂无市场情绪结果。</div>}
+          {!marketLoading && marketItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前窗口暂无运行时观察。</span><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('market_sentiment')}>查看 {dashboard?.accounts.marketSentimentEnabled ?? 0} 个订阅账号</button></div>}
           {marketItems.map((item) => <div key={item.instrumentKey} className="xAgentResultGroup">
             <div className={marketSelectedKey === item.instrumentKey ? 'xAgentMarketRow active' : 'xAgentMarketRow'} role="row">
               <button className="xAgentDetailTrigger" type="button" aria-expanded={marketSelectedKey === item.instrumentKey} onClick={() => toggleMarketDetail(item.instrumentKey)}><ChevronDown size={16} className={marketSelectedKey === item.instrumentKey ? 'rotated' : ''} /><span><strong>{item.instrumentName}</strong>{item.ticker && <small>{item.ticker}</small>}</span></button>
@@ -737,7 +747,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         {projectError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {projectError}</div>}
         <div className="xAgentTableWrap" role="table">
           <div className="xAgentProjectHead" role="row"><span>项目</span><span>链 / 合约</span><span>逻辑</span><span>最近提及</span></div>
-          {!projectLoading && projectItems.length === 0 && <div className="emptyState">当前窗口暂无项目推介结果。</div>}
+          {!projectLoading && projectItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前窗口暂无运行时观察。</span><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('project_promotion')}>查看 {dashboard?.accounts.projectPromotionEnabled ?? 0} 个订阅账号</button></div>}
           {projectItems.map((item) => <div key={item.identityKey} className="xAgentResultGroup">
             <div className={projectSelectedKey === item.identityKey ? 'xAgentProjectRow active' : 'xAgentProjectRow'} role="row">
               <button className="xAgentDetailTrigger" type="button" aria-expanded={projectSelectedKey === item.identityKey} onClick={() => toggleProjectDetail(item.identityKey)}><ChevronDown size={16} className={projectSelectedKey === item.identityKey ? 'rotated' : ''} /><span><strong>{item.projectName}</strong>{item.ticker && <small>{item.ticker}</small>}</span></button>
@@ -752,6 +762,9 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   );
 }
 
-function Metric({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) {
-  return <div className={warning ? 'xAgentMetric warning' : 'xAgentMetric'}><span>{label}</span><strong>{value.toLocaleString()}</strong></div>;
+function Metric({ label, value, warning = false, onClick }: { label: string; value: number; warning?: boolean; onClick?: () => void }) {
+  const className = warning ? 'xAgentMetric warning' : 'xAgentMetric';
+  const content = <><span>{label}</span><strong>{value.toLocaleString()}</strong></>;
+  if (onClick) return <button className={`${className} interactive`} type="button" onClick={onClick} title={`查看${label}`}>{content}</button>;
+  return <div className={className}>{content}</div>;
 }
