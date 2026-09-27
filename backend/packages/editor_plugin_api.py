@@ -581,6 +581,16 @@ class EditorPluginNewsGenService:
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc
 
+    def get_x_agent_market_sentiment_history(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.market_sentiment_history(
+                str(payload.get("instrument_key") or ""),
+                limit=int(payload.get("limit") or 120),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
     def get_x_agent_project_promotions(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
         try:
@@ -1265,6 +1275,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/x-agent/market-sentiment/detail":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_market_sentiment_detail(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/market-sentiment/history":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_market_sentiment_history(actor, self._read_json())})
                     return
                 if self.path == "/console/x-agent/project-promotion":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_project_promotions(actor, self._read_json())})

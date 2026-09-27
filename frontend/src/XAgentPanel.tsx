@@ -1,10 +1,11 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, Flame, Plus, Power, RefreshCcw, Rocket, Search, TrendingUp } from 'lucide-react';
+import { ChartLine, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, Flame, Plus, Power, RefreshCcw, Rocket, Search, TrendingUp, X } from 'lucide-react';
 import { HotTopicPanel } from './HotTopicPanel';
 import {
   addXAgentAccount,
   getXAgentDashboard,
   getXAgentMarketSentimentDetail,
+  getXAgentMarketSentimentHistory,
   getXAgentProjectPromotionDetail,
   listXAgentAccounts,
   listXAgentMarketSentiment,
@@ -15,6 +16,7 @@ import {
   type XAgentAccountModule,
   type XAgentDashboard,
   type XAgentMarketSentimentDetailItem,
+  type XAgentMarketSentimentHistory,
   type XAgentMarketSentimentItem,
   type XAgentPage,
   type XAgentProjectPromotionDetailItem,
@@ -119,6 +121,76 @@ function PageControls({
         <button className="iconButton" type="button" title="上一页" aria-label="上一页" disabled={disabled || offset === 0} onClick={() => onChange(Math.max(0, offset - PAGE_SIZE))}><ChevronLeft size={17} /></button>
         <button className="iconButton" type="button" title="下一页" aria-label="下一页" disabled={disabled || offset + PAGE_SIZE >= total} onClick={() => onChange(offset + PAGE_SIZE)}><ChevronRight size={17} /></button>
       </div>
+    </div>
+  );
+}
+
+function sentimentTone(score: number): 'positive' | 'neutral' | 'negative' {
+  if (score > 12) return 'positive';
+  if (score < -12) return 'negative';
+  return 'neutral';
+}
+
+function scoreLabel(score: number): string {
+  return `${score > 0 ? '+' : ''}${score}`;
+}
+
+function SentimentScore({ sentiment, score }: { sentiment: string; score: number }) {
+  const clamped = Math.max(-100, Math.min(100, score));
+  const left = clamped < 0 ? 50 + clamped / 2 : 50;
+  const width = Math.abs(clamped) / 2;
+  return (
+    <div className={`xAgentSentimentScore ${sentimentTone(clamped)}`}>
+      <div><span>{sentiment}</span><strong>{scoreLabel(clamped)}</strong></div>
+      <div className="xAgentSentimentTrack" aria-label={`情绪分数 ${scoreLabel(clamped)}`}><i style={{ left: `${left}%`, width: `${width}%` }} /></div>
+    </div>
+  );
+}
+
+function MarketHistoryModal({
+  instrument,
+  history,
+  loading,
+  error,
+  onClose,
+}: {
+  instrument: XAgentMarketSentimentItem;
+  history: XAgentMarketSentimentHistory | null;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+}) {
+  const snapshots = history?.items || [];
+  const points = snapshots.map((item, index) => {
+    const x = snapshots.length === 1 ? 320 : 30 + index * 580 / (snapshots.length - 1);
+    const y = 20 + (100 - Math.max(-100, Math.min(100, item.score))) * 0.8;
+    return `${x},${y}`;
+  }).join(' ');
+  return (
+    <div className="xAgentModalBackdrop" role="presentation" onMouseDown={onClose}>
+      <section className="xAgentHistoryModal" role="dialog" aria-modal="true" aria-label={`${instrument.instrumentName} 情绪变化`} onMouseDown={(event) => event.stopPropagation()}>
+        <header><div><span>每 12 小时快照</span><h2>{history?.instrumentName || instrument.instrumentName}{(history?.ticker || instrument.ticker) && <small>{history?.ticker || instrument.ticker}</small>}</h2></div><button className="iconButton" type="button" title="关闭" aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
+        {loading && <div className="xAgentHistoryLoading">正在读取情绪快照…</div>}
+        {error && <div className="notice error xAgentHistoryNotice"><CircleAlert size={16} /> {error}</div>}
+        {!loading && !error && snapshots.length === 0 && <div className="xAgentHistoryLoading">首个快照将在有有效市场情绪的 12 小时周期结束后出现。</div>}
+        {!loading && !error && snapshots.length > 0 && <>
+          <div className="xAgentHistoryChart" aria-label="情绪分数变化曲线">
+            <div className="xAgentHistoryAxis top">狂热 +100</div><div className="xAgentHistoryAxis middle">中性 0</div><div className="xAgentHistoryAxis bottom">恐慌 -100</div>
+            <svg viewBox="0 0 640 200" role="img" aria-label={`${instrument.instrumentName} 的情绪曲线`} preserveAspectRatio="none">
+              <line x1="30" x2="610" y1="100" y2="100" className="xAgentHistoryZero" />
+              <polyline points={points} className="xAgentHistoryLine" />
+              {snapshots.map((item, index) => {
+                const x = snapshots.length === 1 ? 320 : 30 + index * 580 / (snapshots.length - 1);
+                const y = 20 + (100 - Math.max(-100, Math.min(100, item.score))) * 0.8;
+                return <circle key={item.snapshotAt} cx={x} cy={y} r="4" className={`xAgentHistoryPoint ${sentimentTone(item.score)}`}><title>{`${formatTime(item.snapshotAt)} ${scoreLabel(item.score)} · ${item.mentionCount} 人提及`}</title></circle>;
+              })}
+            </svg>
+          </div>
+          <div className="xAgentHistoryList">
+            {snapshots.map((item) => <div key={item.snapshotAt}><time>{formatTime(item.snapshotAt)}</time><SentimentScore sentiment={item.sentiment} score={item.score} /><span>{item.mentionCount} 人提及</span></div>)}
+          </div>
+        </>}
+      </section>
     </div>
   );
 }
@@ -248,6 +320,10 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [marketDetailLoading, setMarketDetailLoading] = useState(false);
   const [marketDetailError, setMarketDetailError] = useState('');
   const [marketDetailOffset, setMarketDetailOffset] = useState(0);
+  const [marketHistoryInstrument, setMarketHistoryInstrument] = useState<XAgentMarketSentimentItem | null>(null);
+  const [marketHistory, setMarketHistory] = useState<XAgentMarketSentimentHistory | null>(null);
+  const [marketHistoryLoading, setMarketHistoryLoading] = useState(false);
+  const [marketHistoryError, setMarketHistoryError] = useState('');
 
   const [projectItems, setProjectItems] = useState<XAgentProjectPromotionItem[]>([]);
   const [projectTotal, setProjectTotal] = useState(0);
@@ -466,6 +542,27 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       .finally(() => { if (active) setProjectDetailLoading(false); });
     return () => { active = false; };
   }, [tab, projectSelectedKey, projectWindow, projectDetailOffset]);
+
+  useEffect(() => {
+    if (!marketHistoryInstrument) {
+      setMarketHistory(null);
+      return;
+    }
+    let active = true;
+    setMarketHistoryLoading(true);
+    setMarketHistory(null);
+    setMarketHistoryError('');
+    void getXAgentMarketSentimentHistory({ instrumentKey: marketHistoryInstrument.instrumentKey })
+      .then((result) => {
+        if (!active) return;
+        setMarketHistory(result);
+      })
+      .catch((cause) => {
+        if (active) setMarketHistoryError(cause instanceof Error ? cause.message : '无法读取情绪快照');
+      })
+      .finally(() => { if (active) setMarketHistoryLoading(false); });
+    return () => { active = false; };
+  }, [marketHistoryInstrument]);
 
   function setSubscriptionPending(key: string, pending: boolean) {
     if (pending) pendingSubscriptionKeysRef.current.add(key);
@@ -717,25 +814,26 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       </section>}
 
       {tab === 'market_sentiment' && <section className="xAgentTableSection">
-        <div className="sectionHeader"><div><h2>市场情绪</h2><span>标的与态度的内部观察</span></div><span>{marketLoading ? '加载中' : `${marketTotal.toLocaleString()} 个标的`}</span></div>
+        <div className="sectionHeader"><div><h2>市场情绪</h2><span>按提及账号数排序的标的情绪观察</span></div><span>{marketLoading ? '加载中' : `${marketTotal.toLocaleString()} 个标的`}</span></div>
         <div className="xAgentFilters xAgentResultFilters">
           <label><Search size={16} /><input value={marketQuery} onChange={(event) => { setMarketQuery(event.target.value); setMarketOffset(0); setMarketSelectedKey(null); }} placeholder="搜索标的" /></label>
           <select value={marketWindow} onChange={(event) => { setMarketWindow(event.target.value); setMarketOffset(0); setMarketSelectedKey(null); }}>{MARKET_WINDOW_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
-          <select value={marketSentiment} onChange={(event) => { setMarketSentiment(event.target.value); setMarketOffset(0); setMarketSelectedKey(null); }}><option value="all">全部态度</option>{SENTIMENT_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select>
+          <select value={marketSentiment} onChange={(event) => { setMarketSentiment(event.target.value); setMarketOffset(0); setMarketSelectedKey(null); }}><option value="all">全部情绪</option>{SENTIMENT_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select>
         </div>
         {marketError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {marketError}</div>}
         <div className="xAgentTableWrap" role="table">
-          <div className="xAgentMarketHead" role="row"><span>标的</span><span>范围</span><span>态度</span><span>汇总说明</span><span>最近提及</span></div>
+          <div className="xAgentMarketHead" role="row"><span>标的</span><span>情绪</span><span>汇总说明</span><span>最近提及</span></div>
           {!marketLoading && marketItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前窗口暂无运行时观察。</span><div className="inlineActions"><button className="secondaryButton compact" type="button" onClick={() => { setMarketWindow('7d'); setMarketOffset(0); setMarketSelectedKey(null); }}>查看近 7 天</button><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('market_sentiment')}>查看 {dashboard?.accounts.marketSentimentEnabled ?? 0} 个订阅账号</button></div></div>}
           {marketItems.map((item) => <div key={item.instrumentKey} className="xAgentResultGroup">
             <div className={marketSelectedKey === item.instrumentKey ? 'xAgentMarketRow active' : 'xAgentMarketRow'} role="row">
-              <button className="xAgentDetailTrigger" type="button" aria-expanded={marketSelectedKey === item.instrumentKey} onClick={() => toggleMarketDetail(item.instrumentKey)}><ChevronDown size={16} className={marketSelectedKey === item.instrumentKey ? 'rotated' : ''} /><span><strong>{item.instrumentName}</strong>{item.ticker && <small>{item.ticker}</small>}</span></button>
-              <span>{item.scope || '-'}</span><span className="xAgentSentimentPill">{item.sentiment || '-'}</span><span className="xAgentReason">{item.reason || '-'}</span><span>{formatTime(item.latestAt)}</span>
+              <div className="xAgentInstrumentCell"><button className="xAgentDetailTrigger" type="button" aria-expanded={marketSelectedKey === item.instrumentKey} onClick={() => toggleMarketDetail(item.instrumentKey)}><ChevronDown size={16} className={marketSelectedKey === item.instrumentKey ? 'rotated' : ''} /><span><strong>{item.instrumentName}</strong>{item.ticker && <small>{item.ticker}</small>}<em>{item.mentionCount} 人提及</em></span></button><button className="iconButton xAgentHistoryButton" type="button" title="查看情绪变化" aria-label={`查看 ${item.instrumentName} 的情绪变化`} onClick={() => setMarketHistoryInstrument(item)}><ChartLine size={16} /></button></div>
+              <SentimentScore sentiment={item.sentiment || '-'} score={item.score} /><span className="xAgentReason">{item.reason || '-'}</span><span>{formatTime(item.latestAt)}</span>
             </div>
             {marketSelectedKey === item.instrumentKey && <MarketDetail detail={marketDetail} loading={marketDetailLoading} error={marketDetailError} offset={marketDetailOffset} onOffsetChange={setMarketDetailOffset} />}
           </div>)}
         </div>
         <PageControls offset={marketOffset} total={marketTotal} disabled={marketLoading} onChange={(offset) => { setMarketOffset(offset); setMarketSelectedKey(null); }} />
+        {marketHistoryInstrument && <MarketHistoryModal instrument={marketHistoryInstrument} history={marketHistory} loading={marketHistoryLoading} error={marketHistoryError} onClose={() => setMarketHistoryInstrument(null)} />}
       </section>}
 
       {tab === 'project_promotion' && <section className="xAgentTableSection">

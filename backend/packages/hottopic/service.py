@@ -130,6 +130,19 @@ CREATE TABLE IF NOT EXISTS x_agent_sentiment_results (
 );
 CREATE INDEX IF NOT EXISTS idx_x_agent_sentiment_window
   ON x_agent_sentiment_results(posted_at DESC, instrument_key);
+CREATE TABLE IF NOT EXISTS x_agent_sentiment_snapshots (
+  instrument_key TEXT NOT NULL,
+  snapshot_at TEXT NOT NULL,
+  instrument_name TEXT NOT NULL,
+  ticker TEXT NOT NULL DEFAULT '',
+  sentiment TEXT NOT NULL CHECK (sentiment IN ('极度狂热','偏多/乐观','中性/分歧','偏空/谨慎','极度恐慌')),
+  score INTEGER NOT NULL CHECK (score BETWEEN -100 AND 100),
+  mention_count INTEGER NOT NULL,
+  source_count INTEGER NOT NULL,
+  PRIMARY KEY (instrument_key, snapshot_at)
+);
+CREATE INDEX IF NOT EXISTS idx_x_agent_sentiment_snapshots_history
+  ON x_agent_sentiment_snapshots(instrument_key, snapshot_at DESC);
 CREATE TABLE IF NOT EXISTS x_agent_project_observations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   identity_key TEXT NOT NULL,
@@ -1311,56 +1324,60 @@ class HotTopicService:
               WHERE posted_at>=? AND sentiment<>'证据不足'
             ), grouped AS (
               SELECT instrument_key,COUNT(*) AS source_count,COUNT(DISTINCT account_lower) AS account_count,
-                MAX(posted_at) AS latest_at,MIN(score) AS min_score,MAX(score) AS max_score,AVG(score) AS average_score
+                MAX(posted_at) AS latest_at,AVG(score) AS average_score
               FROM filtered GROUP BY instrument_key
             ), snapshots AS (
               SELECT *,CASE
-                WHEN min_score<0 AND max_score>0 THEN '中性/分歧'
                 WHEN average_score>=1.5 THEN '极度狂热'
                 WHEN average_score>0.25 THEN '偏多/乐观'
                 WHEN average_score<=-1.5 THEN '极度恐慌'
                 WHEN average_score<-0.25 THEN '偏空/谨慎'
                 ELSE '中性/分歧'
-              END AS snapshot
+              END AS snapshot,CAST(ROUND(average_score * 50) AS INTEGER) AS score
               FROM grouped
             ), latest AS (
               SELECT *,ROW_NUMBER() OVER (PARTITION BY instrument_key ORDER BY posted_at DESC,id DESC) AS row_number
               FROM filtered
             ), result_rows AS (
-              SELECT l.instrument_key,l.instrument_name,l.ticker,l.scope,s.snapshot,s.source_count,s.account_count,s.latest_at,
+              SELECT l.instrument_key,l.instrument_name,l.ticker,l.scope,s.snapshot,s.score,s.source_count,s.account_count,s.latest_at,
                 CASE WHEN l.sentiment=s.snapshot THEN l.reason ELSE '来源态度综合为' || s.snapshot || '，展开查看各来源。' END AS reason
               FROM snapshots s JOIN latest l ON l.instrument_key=s.instrument_key AND l.row_number=1
             )
         """
         total = int(self.db.execute(f"{cte} SELECT COUNT(*) FROM result_rows{where}", params).fetchone()[0])
         rows = self.db.execute(
-            f"{cte} SELECT instrument_key,instrument_name,ticker,scope,snapshot,source_count,account_count,latest_at,reason "
-            f"FROM result_rows{where} ORDER BY latest_at DESC LIMIT ? OFFSET ?",
+            f"{cte} SELECT instrument_key,instrument_name,ticker,scope,snapshot,score,source_count,account_count,latest_at,reason "
+            f"FROM result_rows{where} ORDER BY account_count DESC,latest_at DESC LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
         return {"items": [{
             "instrumentKey": row["instrument_key"], "instrumentName": row["instrument_name"], "ticker": row["ticker"],
-            "scope": row["scope"], "sentiment": row["snapshot"], "latestAt": row["latest_at"], "reason": row["reason"],
+            "scope": row["scope"], "sentiment": row["snapshot"], "score": int(row["score"]),
+            "mentionCount": int(row["account_count"]), "latestAt": row["latest_at"], "reason": row["reason"],
         } for row in rows], "total": total}
 
-    @staticmethod
-    def _snapshot_sentiment(values: list[str]) -> str:
-        scores = {"极度恐慌": -2, "偏空/谨慎": -1, "中性/分歧": 0, "偏多/乐观": 1, "极度狂热": 2}
-        numeric = [scores[value] for value in values if value in scores]
-        if not numeric:
-            return "中性/分歧"
-        if min(numeric) < 0 < max(numeric):
-            return "中性/分歧"
-        average = sum(numeric) / len(numeric)
-        if average >= 1.5:
-            return "极度狂热"
-        if average > 0.25:
-            return "偏多/乐观"
-        if average <= -1.5:
-            return "极度恐慌"
-        if average < -0.25:
-            return "偏空/谨慎"
-        return "中性/分歧"
+    @_serialized
+    def market_sentiment_history(self, instrument_key: str, *, limit: int = 120) -> dict[str, Any]:
+        if not instrument_key.strip():
+            raise ValueError("instrument_key 不能为空")
+        safe_limit = min(240, max(1, int(limit)))
+        rows = self.db.execute(
+            "SELECT instrument_key,snapshot_at,instrument_name,ticker,sentiment,score,mention_count,source_count "
+            "FROM x_agent_sentiment_snapshots WHERE instrument_key=? ORDER BY snapshot_at DESC LIMIT ?",
+            (instrument_key, safe_limit),
+        ).fetchall()
+        items = list(reversed(rows))
+        instrument_name = str(items[-1]["instrument_name"]) if items else ""
+        ticker = str(items[-1]["ticker"]) if items else ""
+        return {
+            "instrumentKey": instrument_key,
+            "instrumentName": instrument_name,
+            "ticker": ticker,
+            "items": [{
+                "snapshotAt": row["snapshot_at"], "sentiment": row["sentiment"], "score": int(row["score"]),
+                "mentionCount": int(row["mention_count"]), "sourceCount": int(row["source_count"]),
+            } for row in items],
+        }
 
     @_serialized
     def market_sentiment_detail(
@@ -1474,6 +1491,53 @@ class HotTopicService:
                 "WHERE lower(p.activity_account)=hottopic_accounts.screen_name_lower AND t.retention_tier='permanent')"
             )
 
+    def _snapshot_x_agent_sentiment(self, current: datetime) -> int:
+        """Persist one rolling 12-hour sentiment point for each active instrument."""
+        latest = self.db.execute("SELECT MAX(snapshot_at) FROM x_agent_sentiment_snapshots").fetchone()[0]
+        if latest and current - datetime.fromisoformat(str(latest)) < timedelta(hours=12):
+            return 0
+        snapshot_at = iso(current)
+        cutoff = iso(current - timedelta(hours=12))
+        rows = self.db.execute(
+            """
+            WITH filtered AS (
+              SELECT instrument_key,instrument_name,ticker,account_lower,
+                CASE sentiment
+                  WHEN '极度恐慌' THEN -2 WHEN '偏空/谨慎' THEN -1 WHEN '中性/分歧' THEN 0
+                  WHEN '偏多/乐观' THEN 1 WHEN '极度狂热' THEN 2
+                END AS score
+              FROM x_agent_sentiment_results
+              WHERE posted_at>=? AND sentiment<>'证据不足'
+            ), grouped AS (
+              SELECT instrument_key,MAX(instrument_name) AS instrument_name,MAX(ticker) AS ticker,
+                COUNT(DISTINCT account_lower) AS mention_count,COUNT(*) AS source_count,AVG(score) AS average_score
+              FROM filtered GROUP BY instrument_key
+            )
+            SELECT instrument_key,instrument_name,ticker,mention_count,source_count,
+              CAST(ROUND(average_score * 50) AS INTEGER) AS score,
+              CASE
+                WHEN average_score>=1.5 THEN '极度狂热'
+                WHEN average_score>0.25 THEN '偏多/乐观'
+                WHEN average_score<=-1.5 THEN '极度恐慌'
+                WHEN average_score<-0.25 THEN '偏空/谨慎'
+                ELSE '中性/分歧'
+              END AS sentiment
+            FROM grouped
+            """,
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            self.db.execute(
+                "INSERT OR REPLACE INTO x_agent_sentiment_snapshots("
+                "instrument_key,snapshot_at,instrument_name,ticker,sentiment,score,mention_count,source_count"
+                ") VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    row["instrument_key"], snapshot_at, row["instrument_name"], row["ticker"], row["sentiment"],
+                    row["score"], row["mention_count"], row["source_count"],
+                ),
+            )
+        return len(rows)
+
     def maintain(self, *, force: bool = False) -> dict[str, int] | None:
         try:
             return self._maintain(force=force)
@@ -1504,8 +1568,15 @@ class HotTopicService:
                     (inbox_cutoff,),
                 ).rowcount
                 events = self.db.execute("DELETE FROM hottopic_events WHERE at<?", (event_cutoff,)).rowcount
+                sentiment_snapshots = self._snapshot_x_agent_sentiment(current)
                 self.db.execute("UPDATE hottopic_meta SET last_maintenance_at=? WHERE singleton_key='global'", (iso(current),))
-        return {**state, "deleted_inbox": inbox, "deleted_events": events, "merged_topics": len(reconciled["topic_merges"])}
+        return {
+            **state,
+            "deleted_inbox": inbox,
+            "deleted_events": events,
+            "sentiment_snapshots": sentiment_snapshots,
+            "merged_topics": len(reconciled["topic_merges"]),
+        }
 
     @_serialized
     def health(self) -> dict[str, Any]:

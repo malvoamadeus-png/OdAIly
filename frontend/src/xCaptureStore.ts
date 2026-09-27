@@ -211,8 +211,25 @@ export type XAgentMarketSentimentItem = {
   ticker: string | null;
   scope: string;
   sentiment: string;
+  score: number;
+  mentionCount: number;
   latestAt: string | null;
   reason: string | null;
+};
+
+export type XAgentMarketSentimentSnapshot = {
+  snapshotAt: string;
+  sentiment: string;
+  score: number;
+  mentionCount: number;
+  sourceCount: number;
+};
+
+export type XAgentMarketSentimentHistory = {
+  instrumentKey: string;
+  instrumentName: string;
+  ticker: string | null;
+  items: XAgentMarketSentimentSnapshot[];
 };
 
 export type XAgentProjectPromotionItem = {
@@ -1519,6 +1536,19 @@ export async function getXAgentMarketSentimentDetail({
     instrument_key: instrumentKey,
     window,
     offset,
+    limit,
+  });
+}
+
+export async function getXAgentMarketSentimentHistory({
+  instrumentKey,
+  limit = 120,
+}: {
+  instrumentKey: string;
+  limit?: number;
+}): Promise<XAgentMarketSentimentHistory> {
+  return consoleApiPost<XAgentMarketSentimentHistory>('/console/x-agent/market-sentiment/history', {
+    instrument_key: instrumentKey,
     limit,
   });
 }

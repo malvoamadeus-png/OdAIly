@@ -22,13 +22,15 @@ X Agent 的运行数据位于 `data/runtime/hottopic.sqlite`，但业务上独�
 
 `odaily-hottopic.service` 对一个账号只调用一次 X 抓取。新帖以 `tweet_id` 存入共享 inbox；热点话题使用既有消费位，市场情绪与项目推介各自创建一条唯一的分析任务，因此两个模块不会相互抢占或重复调用。所有 FXTwitter 请求由同一进程节流器错峰，默认相隔 2 秒；收到 429 时暂停共享节流器 5 分钟或遵从更长的 `Retry-After`，对应账号按指数退避。这使 2,538 个账号在上游配额下逐步覆盖，不会用并发轮询反复撞限流。
 
-市场情绪先用确定性信号过滤，再以 `gpt-5.6-luna`、`reasoning_effort=none` 提取大盘、主流 CEX Crypto、美股、指数或 ETF 的标的和五级态度。Luna 失败时改用 `gpt-5.6-terra`、`reasoning_effort=none`。纯价格、新闻转发、链上新币和无态度内容不生成情绪结果；引用帖只取被跟踪账号自己的正文，不把被引用账号的观点归给它。模型失败、超时或非法 JSON 保留在任务错误中。
+市场情绪先用确定性信号过滤，再以 `gpt-5.6-luna`、`reasoning_effort=none` 提取大盘、主流 CEX Crypto、美股、指数或 ETF 的标的和五级情绪。Luna 失败时改用 `gpt-5.6-terra`、`reasoning_effort=none`。五档情绪映射为 `-100 / -50 / 0 / +50 / +100`，同一标的按原帖的算术平均分汇总；主表按独立提及账号数降序，显示带零点的深绿至红色情绪条与数值。纯价格、新闻转发、链上新币和无明确情绪内容不生成结果；引用帖只取被跟踪账号自己的正文，不把被引用账号的观点归给它。模型失败、超时或非法 JSON 保留在任务错误中。
 
 项目推介采用同一模型路由，提取项目、ticker、链、合约或官网和账号给出的逻辑。逻辑是可直接展示的事实或推介理由句，例如“马斯克关注了该 Meme 代币的发行者”，不使用“作者认为”“作者称”等归因开头；写库前会清理这类常见前缀，但不会回写既有观察。调用前要求明确链上/Crypto 信号，或 `$ticker` 与代币语境同时出现；单独的 `token`、`launch`、`protocol`、`points`、`liquidity`、`contract` 或“项目”不会触发模型，因此泛 AI 或公司产品帖不会进入项目推介。合约地址优先于官网作为归并身份；没有稳定身份时以原帖隔离，不按同名项目强行合并。同一账号对同一稳定项目重复相同逻辑时只更新最近时间。主表只展示项目、链或合约、逻辑和最近提及，不显示推介强度或账号/原帖计数；展开后才显示原帖。
 
 X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与结果证据；被引用正文不会发送给市场情绪或项目推介提取器。
 
 模型请求在 SQLite 写事务外执行。每轮最多领取 12 个任务，默认两路并发，单任务最多三次 worker 级尝试；5 分钟未完成的 `processing` 任务会带着原有尝试次数回收，避免 worker 重启后永久卡住，即使启动时模型路由缺失。模型路由缺失时，任务会成为可见失败而非无限 pending。失败任务可通过 `x-agent-retry-failed` 有界重排；`pending`、`processing` 和 `failed` 任务的 inbox 原帖均不会被保留清理提前删除。结果页在 SQLite 内按标的或项目归并、计数和分页，不将整个窗口结果载入控制台进程。
+
+`odaily-hottopic.service` 在维护轮次中每 12 小时以最近 12 小时有效市场情绪原帖为窗口，按标的持久化一条快照：汇总情绪、`-100` 至 `+100` 分数、独立提及账号数和原帖数。快照是独立于 inbox 的长期 SQLite 记录；市场情绪主表的曲线按钮读取快照并在弹窗中展示变化，首次存在有效原帖的周期结束后才会出现第一个点。
 
 ## 模型配置
 
@@ -50,6 +52,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `/console/x-agent/account`
 - `/console/x-agent/subscriptions`
 - `/console/x-agent/market-sentiment` 及 `/detail`
+- `/console/x-agent/market-sentiment/history`
 - `/console/x-agent/project-promotion` 及 `/detail`
 - `/console/x-agent/retry-failed`
 

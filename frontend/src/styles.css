@@ -261,7 +261,7 @@ button.xAgentMetric {
 
 .xAgentMarketHead,
 .xAgentMarketRow {
-  grid-template-columns: 180px 112px 112px minmax(0, 1fr) 124px;
+  grid-template-columns: 200px 210px minmax(0, 1fr) 124px;
   min-width: 0;
 }
 
@@ -371,6 +371,24 @@ button.xAgentMetric {
   min-width: 0;
 }
 
+.xAgentInstrumentCell {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.xAgentInstrumentCell .xAgentDetailTrigger {
+  flex: 1 1 auto;
+}
+
+.xAgentHistoryButton {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  color: #236e91;
+}
+
 .xAgentMarketRow.active,
 .xAgentProjectRow.active {
   background: #f0f8f5;
@@ -420,6 +438,15 @@ button.xAgentMetric {
   font-size: 11px;
 }
 
+.xAgentDetailTrigger em {
+  overflow: hidden;
+  color: #76828b;
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .xAgentSentimentPill {
   width: max-content;
   max-width: 100%;
@@ -432,6 +459,75 @@ button.xAgentMetric {
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.xAgentSentimentScore {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.xAgentSentimentScore > div:first-child {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  color: #53616a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.xAgentSentimentScore strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.xAgentSentimentScore.positive strong {
+  color: #c54445;
+}
+
+.xAgentSentimentScore.neutral strong {
+  color: #257aa0;
+}
+
+.xAgentSentimentScore.negative strong {
+  color: #14765d;
+}
+
+.xAgentSentimentTrack {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #e6ecef;
+}
+
+.xAgentSentimentTrack::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: #97a6ae;
+  content: '';
+}
+
+.xAgentSentimentTrack i {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 3px;
+}
+
+.xAgentSentimentScore.positive .xAgentSentimentTrack i {
+  background: #d8534f;
+}
+
+.xAgentSentimentScore.neutral .xAgentSentimentTrack i {
+  background: #328bb0;
+}
+
+.xAgentSentimentScore.negative .xAgentSentimentTrack i {
+  background: #178063;
 }
 
 .xAgentReason,
@@ -531,6 +627,130 @@ button.xAgentMetric {
   margin: 10px 16px 14px 42px;
 }
 
+.xAgentModalBackdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(19 31 39 / 48%);
+}
+
+.xAgentHistoryModal {
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid #cdd8dd;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgb(27 43 52 / 24%);
+}
+
+.xAgentHistoryModal > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #e7edef;
+}
+
+.xAgentHistoryModal header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.xAgentHistoryModal header > div > span {
+  color: #6b7b85;
+  font-size: 12px;
+}
+
+.xAgentHistoryModal h2 {
+  margin: 0;
+  color: #21323b;
+  font-size: 18px;
+}
+
+.xAgentHistoryModal h2 small {
+  margin-left: 8px;
+  color: #6b7b85;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.xAgentHistoryLoading,
+.xAgentHistoryNotice {
+  margin: 18px 20px;
+}
+
+.xAgentHistoryLoading {
+  color: #65747d;
+  font-size: 13px;
+}
+
+.xAgentHistoryChart {
+  position: relative;
+  height: 240px;
+  margin: 18px 20px 8px 76px;
+}
+
+.xAgentHistoryChart svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.xAgentHistoryAxis {
+  position: absolute;
+  left: -68px;
+  color: #71808a;
+  font-size: 11px;
+}
+
+.xAgentHistoryAxis.top { top: 0; color: #b44a47; }
+.xAgentHistoryAxis.middle { top: calc(50% - 7px); color: #277b9f; }
+.xAgentHistoryAxis.bottom { bottom: 0; color: #19735b; }
+
+.xAgentHistoryZero {
+  stroke: #8da0a9;
+  stroke-dasharray: 4 5;
+  stroke-width: 1;
+}
+
+.xAgentHistoryLine {
+  fill: none;
+  stroke: #2b839f;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.xAgentHistoryPoint {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.xAgentHistoryPoint.positive { fill: #d8534f; }
+.xAgentHistoryPoint.neutral { fill: #328bb0; }
+.xAgentHistoryPoint.negative { fill: #178063; }
+
+.xAgentHistoryList {
+  display: grid;
+  gap: 8px;
+  padding: 12px 20px 20px;
+  border-top: 1px solid #e7edef;
+}
+
+.xAgentHistoryList > div {
+  display: grid;
+  grid-template-columns: 116px minmax(160px, 1fr) 76px;
+  gap: 14px;
+  align-items: center;
+  color: #65747d;
+  font-size: 12px;
+}
+
 @media (max-width: 1050px) {
   .xAgentSummary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -563,6 +783,32 @@ button.xAgentMetric {
 
   .xAgentDetailNotice {
     margin-left: 16px;
+  }
+
+  .xAgentModalBackdrop {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .xAgentHistoryModal {
+    max-height: calc(100vh - 24px);
+  }
+
+  .xAgentHistoryChart {
+    height: 200px;
+    margin-left: 66px;
+  }
+
+  .xAgentHistoryAxis {
+    left: -60px;
+    font-size: 10px;
+  }
+
+  .xAgentHistoryList > div {
+    grid-template-columns: 1fr;
+    gap: 5px;
+    padding: 8px 0;
+    border-bottom: 1px solid #edf1f3;
   }
 }
 

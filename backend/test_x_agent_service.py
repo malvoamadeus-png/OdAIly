@@ -188,6 +188,53 @@ def test_single_collected_post_fans_out_to_both_internal_modules(tmp_path: Path)
         value.close()
 
 
+def test_market_sentiment_orders_by_distinct_accounts_and_persists_12_hour_snapshots(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        now = utc_now()
+
+        def save(tweet_id: str, account: str, instrument: str, ticker: str, sentiment: str) -> None:
+            source = {
+                "account_screen_name": account,
+                "tweet_id": tweet_id,
+                "url": f"https://x.com/{account}/status/{tweet_id}",
+                "text": f"{ticker} view",
+                "created_at_iso": iso(now),
+            }
+            result = AnalysisResult("market_sentiment", "gpt-5.6-luna", None, [{
+                "scope": "Crypto具体标的",
+                "instrument_name": instrument,
+                "ticker": ticker,
+                "sentiment": sentiment,
+                "reason": f"{ticker} {sentiment}",
+            }])
+            value._save_sentiment_results(source, result, iso(now))
+
+        with value.db:
+            save("btc-alice", "alice", "Bitcoin", "BTC", "偏多/乐观")
+            save("btc-bob", "bob", "Bitcoin", "BTC", "偏空/谨慎")
+            save("eth-carol", "carol", "Ethereum", "ETH", "极度狂热")
+            assert value._snapshot_x_agent_sentiment(now) == 2
+            assert value._snapshot_x_agent_sentiment(now + timedelta(hours=11, minutes=59)) == 0
+
+        market = value.list_market_sentiment(window="7d")
+        assert [item["ticker"] for item in market["items"]] == ["BTC", "ETH"]
+        assert market["items"][0]["mentionCount"] == 2
+        assert market["items"][0]["score"] == 0
+        assert market["items"][1]["score"] == 100
+        history = value.market_sentiment_history("Crypto具体标的:btc")
+        assert history["instrumentName"] == "Bitcoin"
+        assert history["items"] == [{
+            "snapshotAt": iso(now),
+            "sentiment": "中性/分歧",
+            "score": 0,
+            "mentionCount": 2,
+            "sourceCount": 2,
+        }]
+    finally:
+        value.close()
+
+
 def test_model_failure_stays_visible_and_is_not_interpreted_as_no_result(tmp_path: Path) -> None:
     value = service(tmp_path)
     try:
