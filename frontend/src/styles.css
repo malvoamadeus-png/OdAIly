@@ -261,14 +261,14 @@ button.xAgentMetric {
 
 .xAgentMarketHead,
 .xAgentMarketRow {
-  grid-template-columns: minmax(190px, 1.3fr) minmax(110px, .8fr) minmax(110px, .8fr) minmax(260px, 2.2fr) minmax(124px, .9fr);
-  min-width: 820px;
+  grid-template-columns: 180px 112px 112px minmax(0, 1fr) 124px;
+  min-width: 0;
 }
 
 .xAgentProjectHead,
 .xAgentProjectRow {
-  grid-template-columns: minmax(190px, 1.2fr) minmax(190px, 1.2fr) minmax(260px, 2.1fr) minmax(124px, .9fr);
-  min-width: 760px;
+  grid-template-columns: 180px 180px minmax(0, 1fr) 124px;
+  min-width: 0;
 }
 
 .xAgentAccountHead,
@@ -363,7 +363,12 @@ button.xAgentMetric {
 }
 
 .xAgentResultGroup {
-  min-width: max-content;
+  min-width: 0;
+}
+
+.xAgentMarketRow > *,
+.xAgentProjectRow > * {
+  min-width: 0;
 }
 
 .xAgentMarketRow.active,
@@ -431,11 +436,10 @@ button.xAgentMetric {
 
 .xAgentReason,
 .xAgentContract {
-  overflow: hidden;
   color: #53616a;
   line-height: 1.45;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .xAgentContract {

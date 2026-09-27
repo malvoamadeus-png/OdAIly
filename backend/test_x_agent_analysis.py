@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from packages.x_agent.analysis import XAgentAnalyzer, is_relevant
+from packages.x_agent.analysis import XAgentAnalyzer, _validate_items, is_relevant
 
 
 def test_project_relevance_gate_rejects_generic_ai_and_product_language() -> None:
@@ -38,3 +38,21 @@ def test_quote_text_is_not_sent_to_x_agent_extractor() -> None:
     assert "I will keep watching this." in prompt
     assert "$EXAMPLE token has airdrop upside." not in prompt
     assert "quoted_context" not in prompt
+
+
+def test_project_logic_is_displayed_without_author_attribution_prefix() -> None:
+    result = _validate_items("project_promotion", {
+        "items": [{
+            "project_name": "Example",
+            "logic": "作者认为，马斯克关注了该 Meme 代币的发行者。",
+        }],
+    })
+
+    assert result == [{
+        "project_name": "Example",
+        "ticker": "",
+        "chain": "",
+        "contract_address": "",
+        "official_url": "",
+        "logic": "马斯克关注了该 Meme 代币的发行者。",
+    }]

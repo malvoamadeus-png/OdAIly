@@ -30,6 +30,14 @@ PROJECT_CRYPTO_SIGNALS = re.compile(
 )
 PROJECT_TICKER = re.compile(r"\$[A-Za-z][A-Za-z0-9_]{1,14}")
 PROJECT_TOKEN_REFERENCE = re.compile(r"(?:\btoken\b|代币)", re.IGNORECASE)
+PROJECT_LOGIC_ATTRIBUTION = re.compile(
+    r"^(?:(?:该)?作者|账号|发帖者)(?:认为|称|表示|指出|提及|提到|看好|判断|觉得|认为值得关注)[，,:：\s]*",
+    re.IGNORECASE,
+)
+PROJECT_LOGIC_ENGLISH_ATTRIBUTION = re.compile(
+    r"^(?:the\s+)?(?:author|account|poster)\s+(?:believes|says|states|notes|mentions|thinks|argues)\s+(?:that\s+)?",
+    re.IGNORECASE,
+)
 SENTIMENTS = {"极度狂热", "偏多/乐观", "中性/分歧", "偏空/谨慎", "极度恐慌", "证据不足"}
 SCOPES = {"大盘", "Crypto具体标的", "美股具体标的"}
 
@@ -187,7 +195,8 @@ class XAgentAnalyzer:
                 "你是严格的信息抽取器。只抽取链上新项目、degen 或低流动性项目中，作者给出可理解逻辑、理由或看法的内容。"
                 "允许项目研究、推荐、持仓披露和项目介绍；纯新闻、转发、抽奖、口号、没有项目主体或没有逻辑时返回空 items。"
                 "不要把 BTC、ETH 等主流资产的一般行情讨论当作项目推介，也不要猜测合约、链或官网。只可根据 author_text "
-                "判断被跟踪账号的项目观点。"
+                "判断被跟踪账号的项目观点。logic 必须是可以直接展示的、简洁的事实或推介逻辑句，不要写“作者认为”、“作者称”、"
+                "“账号表示”或任何归因开头。例如写“马斯克关注了该 Meme 代币的发行者”，而不是“作者认为马斯克关注了该发行者”。"
             )
             shape = {
                 "items": [
@@ -256,7 +265,7 @@ def _validate_items(module: str, payload: dict[str, Any]) -> list[dict[str, Any]
             result.append({"scope": scope, "instrument_name": name or ticker, "ticker": ticker, "sentiment": sentiment, "reason": reason[:300]})
         elif module == "project_promotion":
             name = str(raw.get("project_name") or "").strip()
-            logic = str(raw.get("logic") or "").strip()
+            logic = _project_logic_without_attribution(str(raw.get("logic") or ""))
             if not name or len(logic) < 4:
                 continue
             url = str(raw.get("official_url") or "").strip()
@@ -271,6 +280,14 @@ def _validate_items(module: str, payload: dict[str, Any]) -> list[dict[str, Any]
                 "logic": logic[:500],
             })
     return result
+
+
+def _project_logic_without_attribution(value: str) -> str:
+    """Keep a project rationale directly readable in the result table."""
+    logic = value.strip()
+    logic = PROJECT_LOGIC_ATTRIBUTION.sub("", logic)
+    logic = PROJECT_LOGIC_ENGLISH_ATTRIBUTION.sub("", logic)
+    return logic.strip()
 
 
 def _retryable(error: Exception) -> bool:
