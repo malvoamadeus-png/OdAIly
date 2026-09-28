@@ -17,6 +17,7 @@ from .models import (
     ACTIVE_CANDIDATE_TTL,
     AI_SOURCE,
     COMPETITOR_SOURCES,
+    EVENT_TRACKING_SOURCE,
     JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
     MSX_SOURCE,
@@ -593,6 +594,7 @@ class PostgresXProcessingRepository:
                     (t.source = 'x' AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = %(jin10_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
+                    OR (t.source = %(event_tracking_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                 )
             """
@@ -635,6 +637,7 @@ class PostgresXProcessingRepository:
                     "search_first_sources": list(SEARCH_FIRST_SOURCES),
                     "crypto_search_first_sources": list(CRYPTO_SEARCH_FIRST_SOURCES),
                     "ai_source": AI_SOURCE,
+                    "event_tracking_source": EVENT_TRACKING_SOURCE,
                     "jin10_source": JIN10_SOURCE,
                 },
             ).fetchone()

@@ -105,6 +105,7 @@ import {
   type PublisherRuleProfileKey,
   type Settings,
   type TaskItem,
+  type DuplicateTargetSnapshot,
   type TaskFailureDiagnostics,
   type WhaleWatchActivity,
   type WhaleWatchAddress,
@@ -516,6 +517,35 @@ function taskTitleTrace(task: TaskItem): TitleTrace | null {
   if (!writerOutput || typeof writerOutput !== 'object') return null;
   const trace = writerOutput.trace;
   return trace && typeof trace === 'object' ? trace as TitleTrace : null;
+}
+
+function taskDuplicateTarget(task: TaskItem): DuplicateTargetSnapshot | null {
+  if (task.status !== 'duplicate') return null;
+  const value = task.pipeline?.search_result?.duplicate_target;
+  if (!value || typeof value !== 'object') return null;
+  const target = value as Partial<DuplicateTargetSnapshot>;
+  if (typeof target.target_type !== 'string' || !target.target_type.trim()) return null;
+  return {
+    target_type: target.target_type,
+    target_id: typeof target.target_id === 'string' ? target.target_id : null,
+    candidate_id: typeof target.candidate_id === 'number' ? target.candidate_id : null,
+    title: typeof target.title === 'string' ? target.title : null,
+    source_url: typeof target.source_url === 'string' ? target.source_url : null,
+    similarity: typeof target.similarity === 'number' ? target.similarity : null,
+  };
+}
+
+function duplicateTargetTypeLabel(value: string): string {
+  switch (value) {
+    case 'odaily_published':
+      return '已发布快讯';
+    case 'inflight_candidate':
+      return '运行中候选';
+    case 'recent_processed':
+      return '近期已处理';
+    default:
+      return value;
+  }
 }
 
 function TaskTable({ tasks, emptyText }: { tasks: TaskItem[]; emptyText: string }) {
@@ -2382,6 +2412,7 @@ function TaskTraceDetails({
   const pipeline = task.pipeline;
   const knownSubjects = trace?.matched_known_subjects || [];
   const titleRules = trace?.matched_title_rules || [];
+  const duplicateTarget = taskDuplicateTarget(task);
   const judgeRuleSet = typeof pipeline?.judge_output?.rule_set === 'string' ? pipeline.judge_output.rule_set : '-';
   const judgeRuleVersion = typeof pipeline?.judge_output?.rule_version === 'string' ? pipeline.judge_output.rule_version : '-';
   return (
@@ -2398,6 +2429,23 @@ function TaskTraceDetails({
         <div><span>写作模型</span><strong>{pipeline?.writer_model || '-'}</strong></div>
         <div><span>判断规则</span><strong>{judgeRuleSet} · {judgeRuleVersion}</strong></div>
       </div>
+      {task.status === 'duplicate' && (
+        <div className="taskDuplicateTarget">
+          <span>重复对象</span>
+          {duplicateTarget?.title && duplicateTarget.source_url ? (
+            <a href={duplicateTarget.source_url} target="_blank" rel="noreferrer">{duplicateTarget.title}</a>
+          ) : (
+            <strong>{duplicateTarget?.title || '旧任务未保存重复对象快照'}</strong>
+          )}
+          {duplicateTarget && (
+            <small>
+              {duplicateTargetTypeLabel(duplicateTarget.target_type)}
+              {duplicateTarget.target_id ? ` · ID ${duplicateTarget.target_id}` : ''}
+              {duplicateTarget.similarity !== null ? ` · 相似度 ${(duplicateTarget.similarity * 100).toFixed(1)}%` : ''}
+            </small>
+          )}
+        </div>
+      )}
       {trace && (
         <div className="taskTraceNarrative">
           {trace.title_strategy_reason && <p><strong>策略原因</strong>{trace.title_strategy_reason}</p>}

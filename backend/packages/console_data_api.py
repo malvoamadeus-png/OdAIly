@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -121,8 +122,77 @@ class ConsoleDataApi:
             if include_pipeline:
                 for row in rows:
                     pipeline = conn.execute("SELECT * FROM x_task_pipeline WHERE task_id=?", (row["id"],)).fetchone()
-                    row["x_task_pipeline"] = _decode_row(pipeline) if pipeline else None
+                    decoded_pipeline = _decode_row(pipeline) if pipeline else None
+                    if decoded_pipeline is not None:
+                        self._hydrate_duplicate_target(conn, decoded_pipeline)
+                    row["x_task_pipeline"] = decoded_pipeline
         return rows
+
+    @staticmethod
+    def _hydrate_duplicate_target(conn: sqlite3.Connection, pipeline: dict[str, Any]) -> None:
+        search_result = pipeline.get("search_result")
+        if not isinstance(search_result, dict) or not search_result.get("is_duplicate"):
+            return
+        existing = search_result.get("duplicate_target")
+        target = dict(existing) if isinstance(existing, dict) else {}
+        target_type = str(target.get("target_type") or search_result.get("duplicate_target_type") or "")
+        target_id = str(target.get("target_id") or search_result.get("duplicate_target_id") or "")
+        if not target_type or not target_id:
+            return
+        target.setdefault("target_type", target_type)
+        target.setdefault("target_id", target_id)
+        observed_matches = search_result.get("observed_matches")
+        if isinstance(observed_matches, list):
+            observed = next(
+                (
+                    item
+                    for item in observed_matches
+                    if isinstance(item, dict)
+                    and str(item.get("target_type") or "") == target_type
+                    and str(item.get("target_id") or "") == target_id
+                ),
+                None,
+            )
+            if observed is not None:
+                for key in ("candidate_id", "title", "source_url", "similarity"):
+                    if observed.get(key) is not None:
+                        target[key] = observed[key]
+        if target.get("title"):
+            search_result["duplicate_target"] = target
+            return
+
+        resolved: sqlite3.Row | None = None
+        try:
+            if target_type == "odaily_published":
+                resolved = conn.execute(
+                    "SELECT source_item_id AS target_id, title, source_url FROM odaily_reference_items WHERE source_item_id=?",
+                    (target_id,),
+                ).fetchone()
+            elif target_type in {"inflight_candidate", "recent_processed"}:
+                resolved = conn.execute(
+                    """
+                    SELECT c.id AS target_id, c.title,
+                           COALESCE(es.source_url, t.source_url) AS source_url
+                    FROM search_event_candidates c
+                    LEFT JOIN search_event_sources es
+                      ON es.candidate_id = c.id AND es.role = 'primary'
+                    LEFT JOIN tasks t ON t.id = c.primary_task_id
+                    WHERE c.id=?
+                    ORDER BY es.id DESC
+                    LIMIT 1
+                    """,
+                    (int(target_id),),
+                ).fetchone()
+        except (TypeError, ValueError, sqlite3.OperationalError):
+            resolved = None
+        if resolved is not None:
+            for key in ("target_id", "title", "source_url"):
+                if resolved[key] is not None:
+                    target[key] = str(resolved[key])
+            if target_type in {"inflight_candidate", "recent_processed"}:
+                target.setdefault("candidate_id", int(target_id))
+        search_result["duplicate_target"] = target
+        pipeline["search_result"] = search_result
 
     def _mutate(self, table: str, operation: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         where, where_params = self._where(payload)

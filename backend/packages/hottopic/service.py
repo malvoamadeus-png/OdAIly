@@ -22,6 +22,7 @@ from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.x_agent import XAgentAnalyzer, is_relevant
 
 from .capture import AccountRow, ContentItem, scan_account
+from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
 from .topic_aggregator import ModelBriefWriter, TopicAggregator
 
 
@@ -241,7 +242,16 @@ def _serialized(method: Any) -> Any:
 
 
 class HotTopicService:
-    def __init__(self, database_path: Path | None = None, *, model: str | None = None, workers: int = 8) -> None:
+    def __init__(
+        self,
+        database_path: Path | None = None,
+        *,
+        model: str | None = None,
+        workers: int = 8,
+        primary_database_path: Path | None = None,
+        event_tracking_ai: EventTrackingAI | None = None,
+        event_tracking_dispatcher: EventTrackingTaskDispatcher | None = None,
+    ) -> None:
         paths = get_paths()
         ensure_runtime_dirs(paths)
         self.path = database_path or paths.runtime_dir / "hottopic.sqlite"
@@ -273,6 +283,18 @@ class HotTopicService:
                 maximum=60.0,
             )
         )
+        # Event tracking owns its own tables and temporary account directory;
+        # it never joins the baseline HotTopic/X Agent account pool.
+        event_primary_database = primary_database_path
+        if event_primary_database is None:
+            event_primary_database = paths.primary_database_path if database_path is None else self.path.parent / "odaily.sqlite"
+        self.event_tracker = EventTracker(
+            open_worker_database(self.path),
+            primary_database_path=event_primary_database,
+            ai=event_tracking_ai,
+            dispatcher=event_tracking_dispatcher,
+            owns_connection=True,
+        )
         self.rate_limit_cooldown_seconds = configured_seconds(
             "HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS",
             DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
@@ -291,6 +313,7 @@ class HotTopicService:
             self.x_agent_analyzer_error = f"{type(exc).__name__}: {exc}"
 
     def close(self) -> None:
+        self.event_tracker.close()
         self.aggregator.close()
         self.db.close()
 
@@ -835,14 +858,46 @@ class HotTopicService:
         return [AccountRow(screen_name=row["screen_name"], name=row["display_name"], description="", followers_count=0,
                            statuses_count=0, protected=bool(row["protected"]), url=f"https://x.com/{row['screen_name']}") for row in rows]
 
+    def _scan_event_account(self, account: AccountRow, cutoff: datetime) -> tuple[list[ContentItem], Any, dict[str, Any] | None]:
+        return scan_account(
+            account,
+            cutoff=cutoff,
+            timeline_count=100,
+            retries=1,
+            before_request=self.collect_request_pacer.wait,
+            on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
+                max(self.rate_limit_cooldown_seconds, retry_after)
+            ),
+        )
+
+    def _advance_event_tracking(self, *, poll_accounts: bool) -> dict[str, Any]:
+        discovery = self.event_tracker.discover_official_accounts()
+        polling = self.event_tracker.poll_due_accounts(self._scan_event_account, workers=self.workers) if poll_accounts else {
+            "polled": 0, "accepted": 0, "errors": 0,
+        }
+        updates = self.event_tracker.classify_official_updates()
+        outbox = self.event_tracker.dispatch_publications()
+        lifecycle = self.event_tracker.maintain()
+        return {"discovery": discovery, "polling": polling, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
+
     def poll_once(self) -> dict[str, int]:
+        # Existing events first: their 1-minute schedule has priority over the
+        # broad baseline account pool while sharing the same FXTwitter pacer.
+        self.event_tracker.observe_topics()
+        event_before = self._advance_event_tracking(poll_accounts=True)
         accounts = self._due_accounts()
         if not accounts:
             self.aggregate()
+            event_after = self._advance_event_tracking(poll_accounts=True)
             analyzed = self.process_x_agent_jobs()
             self.process_account_cleanup_jobs()
             self.maintain()
-            return {"polled": 0, "accepted": 0, "analyzed": analyzed}
+            return {
+                "polled": 0,
+                "accepted": 0,
+                "analyzed": analyzed,
+                "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
+            }
         cutoff = datetime.fromisoformat(self.deployment_started_at())
         accepted = 0
         with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor:
@@ -870,10 +925,16 @@ class HotTopicService:
                 added = self._store_poll(account, items, error, now)
                 accepted += added
         self.aggregate()
+        event_after = self._advance_event_tracking(poll_accounts=True)
         analyzed = self.process_x_agent_jobs()
         self.process_account_cleanup_jobs()
         self.maintain()
-        return {"polled": len(accounts), "accepted": accepted, "analyzed": analyzed}
+        return {
+            "polled": len(accounts),
+            "accepted": accepted,
+            "analyzed": analyzed,
+            "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
+        }
 
     @_serialized
     def _store_poll(self, account: AccountRow, items: list[ContentItem], error: dict[str, Any] | None, at: str) -> int:
@@ -953,7 +1014,7 @@ class HotTopicService:
             max(float(POLL_INTERVAL_SECONDS), backoff),
         )
 
-    def aggregate(self) -> None:
+    def aggregate(self) -> dict[str, Any] | None:
         with self.lock:
             rows = self.db.execute(
                 "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i JOIN hottopic_accounts a "
@@ -962,7 +1023,7 @@ class HotTopicService:
                 (AGGREGATION_BATCH_SIZE,),
             ).fetchall()
         if not rows:
-            return
+            return None
         try:
             payloads = [json.loads(row["payload_json"]) for row in rows]
             result = self.aggregator.process_batch(payloads, utc_now())
@@ -971,8 +1032,14 @@ class HotTopicService:
                     self.db.executemany("UPDATE hottopic_inbox SET processed_at=? WHERE tweet_id=?", [(iso(utc_now()), row["tweet_id"]) for row in rows])
                 self._refresh_hot_topic_counts()
             self.event("aggregate_ok", result.get("metrics", {}))
+            # Task 1 only sees deterministic, successfully aggregated HotTopic
+            # state. Its own model calls are deliberately outside the HotTopic
+            # aggregation transaction.
+            self.event_tracker.observe_topics(result.get("metrics", {}).get("affected_topic_ids") or [])
+            return result
         except Exception as exc:
             self._record_worker_failure("aggregate_error", exc)
+            return None
 
     @staticmethod
     def _is_sqlite_lock_error(error: BaseException) -> bool:
@@ -1620,6 +1687,20 @@ class HotTopicService:
         return {"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": row["brief"] or "正文生成中",
                 "hotness": row["hotness_score"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"]},
                 "speakers": [{"account": item["activity_account"], "lastParticipationAt": item["last_participation_at"], "sourceUrl": item["source_url"]} for item in speakers]}
+
+    @_serialized
+    def auto_newsflash_dashboard(self) -> dict[str, Any]:
+        """Read-only projection for autonomous official-event tracking."""
+        return self.event_tracker.dashboard()
+
+    @_serialized
+    def auto_newsflash_event_detail(self, event_id: str) -> dict[str, Any] | None:
+        return self.event_tracker.event_detail(event_id)
+
+    @_serialized
+    def auto_newsflash_prompts(self) -> list[dict[str, Any]]:
+        # Prompt versions are immutable and intentionally have no mutation API.
+        return self.event_tracker.prompt_versions(include_content=True)
 
 
 def run_worker(*, database_path: Path | None = None, seed_path: Path | None = None, once: bool = False, model: str | None = None, workers: int = 8) -> int:

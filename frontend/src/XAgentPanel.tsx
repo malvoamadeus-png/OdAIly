@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { ChartLine, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, Flame, Plus, Power, RefreshCcw, Rocket, Search, TrendingUp, X } from 'lucide-react';
 import { HotTopicPanel } from './HotTopicPanel';
+import { AutoNewsflashPanel } from './AutoNewsflashPanel';
 import {
   addXAgentAccount,
   getXAgentDashboard,
@@ -286,6 +287,7 @@ function ProjectDetail({
 export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [tab, setTab] = useState<XAgentTab>('accounts');
   const [hotTopicRefreshToken, setHotTopicRefreshToken] = useState(0);
+  const [autoNewsflashRefreshToken, setAutoNewsflashRefreshToken] = useState(0);
   const [dashboard, setDashboard] = useState<XAgentDashboard | null>(null);
   const [dashboardError, setDashboardError] = useState('');
 
@@ -693,6 +695,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   function refreshActiveTab() {
     void refreshDashboard();
     if (tab === 'hot_topic') setHotTopicRefreshToken((value) => value + 1);
+    if (tab === 'auto_newsflash') setAutoNewsflashRefreshToken((value) => value + 1);
     if (tab === 'accounts') setAccountReload((value) => value + 1);
     if (tab === 'market_sentiment') setMarketReload((value) => value + 1);
     if (tab === 'project_promotion') setProjectReload((value) => value + 1);
@@ -757,7 +760,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
 
       {tab === 'hot_topic' && <HotTopicPanel key={hotTopicRefreshToken} hotTopicAccountCount={dashboard?.accounts.hotTopicEnabled} />}
 
-      {tab === 'auto_newsflash' && <div className="xAgentPlaceholder">由既有专项任务承接</div>}
+      {tab === 'auto_newsflash' && <AutoNewsflashPanel key={autoNewsflashRefreshToken} />}
 
       {tab === 'accounts' && <section className="xAgentTableSection">
         <div className="sectionHeader">

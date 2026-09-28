@@ -31,6 +31,7 @@ from .models import (
     BINANCE_SQUARE_SOURCE,
     COMPETITOR_SOURCES,
     DISCARD_TYPES,
+    EVENT_TRACKING_SOURCE,
     JUDGE_ROUTES,
     JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
@@ -354,6 +355,7 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     AI_SOURCE: "external_media",
     MSX_SOURCE: "external_media",
     "x": "x",
+    EVENT_TRACKING_SOURCE: "x",
     BINANCE_SQUARE_SOURCE: "x",
     "blockbeats": "competitor",
     "panews": "competitor",
@@ -871,6 +873,14 @@ class XProcessingWorker:
         if decision and decision.is_duplicate:
             result = {
                 **decision.to_result(),
+                "duplicate_target": self._duplicate_target_snapshot(
+                    decision=decision,
+                    documents_by_type={
+                        "odaily_published": odaily_documents,
+                        "inflight_candidate": active_candidate_documents,
+                        "recent_processed": recent_processed_documents,
+                    },
+                ),
                 **self._search_diagnostics(
                     started_at=started_at,
                     odaily_documents=odaily_documents,
@@ -1014,6 +1024,29 @@ class XProcessingWorker:
             "similarity": round(match.similarity, 6),
         }
 
+    @staticmethod
+    def _duplicate_target_snapshot(
+        *,
+        decision: SearchDecision,
+        documents_by_type: dict[str, list[SearchDocument]],
+    ) -> dict[str, Any]:
+        target = next(
+            (
+                document
+                for document in documents_by_type.get(decision.duplicate_target_type, [])
+                if document.doc_id == decision.duplicate_target_id
+            ),
+            None,
+        )
+        return {
+            "target_type": decision.duplicate_target_type,
+            "target_id": decision.duplicate_target_id,
+            "candidate_id": target.candidate_id if target is not None else decision.candidate_id,
+            "title": target.title if target is not None else None,
+            "source_url": target.source_url if target is not None else None,
+            "similarity": round(decision.similarity, 6),
+        }
+
     def _search_diagnostics(
         self,
         *,
@@ -1121,6 +1154,10 @@ class XProcessingWorker:
             )
             self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
             raise HandledStageError(error)
+
+        if task.source == EVENT_TRACKING_SOURCE:
+            self._complete_event_tracking_publish(task=task, pipeline=pipeline, decided_at=decided_at)
+            return
 
         publisher_settings = self.repository.get_publisher_settings()
         context_output = {
@@ -1304,6 +1341,78 @@ class XProcessingWorker:
             task.id,
             release_reason="auto_published" if should_publish else "ready_review",
         )
+
+    def _complete_event_tracking_publish(
+        self,
+        *,
+        task: TaskRecord,
+        pipeline: PipelineRecord,
+        decided_at: datetime,
+    ) -> None:
+        """Material official event posts bypass the generic manual-review model.
+
+        They have already passed the event-specific materiality decision and
+        the shared global searcher.  Retry safety comes from the official X
+        tweet id rather than the mutable main-database task id.
+        """
+        publisher_channel = "x"
+        context_output = {
+            "source": task.source,
+            "publisher_channel": publisher_channel,
+            "decision": "material_official_progress",
+            "reason": "已通过官方账号核验、事件实质进展判断和全站查重，按事件自动快讯规则直发。",
+            "event_tracking": (task.metadata or {}).get("event_tracking", {}),
+        }
+        push_result = self.push_client.push(
+            title=pipeline.final_title or task.title or "",
+            content=pipeline.final_content or task.content,
+            dry_run=self.settings.dry_run,
+            source_url=task.source_url,
+            is_publish=True,
+            is_push=False,
+            idempotency_key=f"event-tracking:{task.source_item_id}",
+        )
+        if not push_result.ok:
+            error = push_result.error or "push failed"
+            self.repository.complete_publish(
+                task.id,
+                publisher_channel=publisher_channel,
+                publisher_model=None,
+                publisher_category="other",
+                publisher_decision="failed",
+                publisher_reason_code="event_tracking_push_failed",
+                publisher_output=context_output,
+                push_result=push_result.model_dump(mode="json"),
+                telegram_result={},
+                decided_at=decided_at,
+                status="publisher_failed",
+                last_error=error,
+            )
+            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
+            raise HandledStageError(error)
+        telegram_result = self._send_publish_notice(task=task, pipeline=pipeline)
+        self.repository.complete_publish(
+            task.id,
+            publisher_channel=publisher_channel,
+            publisher_model=None,
+            publisher_category="other",
+            publisher_decision="auto_publish",
+            publisher_reason_code="event_tracking_material_progress",
+            publisher_output=context_output,
+            push_result=push_result.model_dump(mode="json"),
+            telegram_result=telegram_result.model_dump(mode="json"),
+            decided_at=decided_at,
+            status="auto_published",
+        )
+        self._write_newsflash_feed(
+            task=task,
+            pipeline=pipeline,
+            status="auto_published",
+            publisher_decision="auto_publish",
+            publisher_reason_code="event_tracking_material_progress",
+            decided_at=decided_at,
+        )
+        self._release_local_candidate_for_task(task.id, release_reason="auto_published")
 
     def _complete_manual_review_publish(
         self,

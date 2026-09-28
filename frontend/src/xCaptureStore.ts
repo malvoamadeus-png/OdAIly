@@ -165,6 +165,104 @@ export type HotTopicDetail = {
   speakers: Array<{ account: string; lastParticipationAt: string; sourceUrl: string | null }>;
 };
 
+export type AutoNewsflashPrompt = {
+  id: number;
+  key: string;
+  version: number;
+  createdAt: string;
+  callCount: number;
+  content?: string;
+};
+
+export type AutoNewsflashEventCycle = {
+  id: string;
+  status: string;
+  startedAt: string;
+  expiresAt: string;
+  hardExpiresAt: string;
+  lastMaterialProgressAt: string | null;
+  endReason: string | null;
+  remainingSeconds?: number | null;
+  activeAccountCount?: number;
+  materialProgressCount?: number;
+};
+
+export type AutoNewsflashEventCard = {
+  id: string;
+  title: string;
+  trackingType: string;
+  readerValue: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  lastHotTopicAt: string | null;
+  lastMaterialProgressAt: string | null;
+  endReason: string | null;
+  cycle: AutoNewsflashEventCycle | null;
+};
+
+export type AutoNewsflashDashboard = {
+  generatedAt: string;
+  enabled: boolean;
+  summary: {
+    eventsByStatus: Record<string, number>;
+    activeAccounts: number;
+    maxActiveAccounts: number;
+    pendingUpdates: number;
+    pendingOutbox: number;
+  };
+  prompts: AutoNewsflashPrompt[];
+  events: AutoNewsflashEventCard[];
+};
+
+export type AutoNewsflashEventDetail = {
+  event: {
+    id: string;
+    title: string;
+    identityKey: string;
+    trackingType: string;
+    readerValue: string;
+    status: string;
+    confirmedFacts: string[];
+    unconfirmedClaims: string[];
+    rationale: string;
+    officialResponseHypothesis: { entities?: string[]; why_likely?: string; next_information?: string };
+    createdAt: string;
+    updatedAt: string;
+    endReason: string | null;
+  };
+  cycles: AutoNewsflashEventCycle[];
+  topics: Array<{ topicId: string; linkedAt: string; updatedAt: string; snapshot: { title?: string } }>;
+  accounts: Array<{
+    handle: string;
+    displayName: string;
+    officialEntity: string;
+    officialRelation: string;
+    status: string;
+    lastPolledAt: string | null;
+    lastError: string | null;
+  }>;
+  updates: Array<{
+    id: string;
+    cycleId: string;
+    tweetId: string;
+    handle: string;
+    status: string;
+    classification: string | null;
+    newsType: string | null;
+    factSummary: string | null;
+    difference: string | null;
+    confirmedFacts: string[];
+    unconfirmedClaims: string[];
+    reason: string | null;
+    classifiedAt: string | null;
+    post: { url?: string; expanded_text?: string; text?: string };
+  }>;
+  outbox: Array<{ id: string; updateId: string; tweetId: string; status: string; taskId: number | null; attempts: number; error: string | null; submittedAt: string | null }>;
+  discoveries: Array<{ id: string; cycleId: string; status: string; citations: string[]; error: string | null; completedAt: string }>;
+  promptVersions: AutoNewsflashPrompt[];
+};
+
 export type XAgentDashboard = {
   accounts: {
     total: number;
@@ -469,6 +567,15 @@ export type TaskPipelineSummary = {
   publish_completed_at: string | null;
   push_result: Record<string, unknown>;
   last_error: string | null;
+};
+
+export type DuplicateTargetSnapshot = {
+  target_type: string;
+  target_id: string | null;
+  candidate_id: number | null;
+  title: string | null;
+  source_url: string | null;
+  similarity: number | null;
 };
 
 export type TaskFailureDiagnostics = {
@@ -1439,6 +1546,18 @@ export async function getHotTopicDashboard(): Promise<HotTopicDashboard> {
 
 export async function getHotTopicDetail(topicId: string): Promise<HotTopicDetail | null> {
   return consoleApiPost<HotTopicDetail | null>('/console/hottopic/topic', { topic_id: topicId });
+}
+
+export async function getAutoNewsflashDashboard(): Promise<AutoNewsflashDashboard> {
+  return consoleApiPost<AutoNewsflashDashboard>('/console/auto-newsflash/dashboard');
+}
+
+export async function getAutoNewsflashEvent(eventId: string): Promise<AutoNewsflashEventDetail | null> {
+  return consoleApiPost<AutoNewsflashEventDetail | null>('/console/auto-newsflash/event', { event_id: eventId });
+}
+
+export async function getAutoNewsflashPrompts(): Promise<AutoNewsflashPrompt[]> {
+  return consoleApiPost<AutoNewsflashPrompt[]>('/console/auto-newsflash/prompts');
 }
 
 export async function getXAgentDashboard(): Promise<XAgentDashboard> {

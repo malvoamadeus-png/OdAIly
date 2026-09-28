@@ -2,9 +2,17 @@
 
 ## 边界
 
-`X Agent` 是控制台一级工作区。它包含热点话题、热点自动快讯、账号目录、市场情绪和项目推介；热点自动快讯只在这里作为与热点话题平级的入口，本模块不改变其既有专项设计。
+`X Agent` 是控制台一级工作区。它包含热点话题、热点自动快讯、账号目录、市场情绪和项目推介。热点自动快讯已接入本地流水线；其自动发布契约见《热点自动快讯：事件追踪升级计划书》。
 
-X Agent 的运行数据位于 `data/runtime/hottopic.sqlite`，但业务上独立于 X 快讯信源：不读取或修改主 SQLite 的 `x_capture_accounts`、`tasks`、`write_flow` 或发布队列。市场情绪和项目推介只生成控制台内部结果，绝不发快讯。
+当前 X Agent 的运行数据位于 `data/runtime/hottopic.sqlite`，且热点话题、市场情绪和项目推介业务上独立于 X 快讯信源：不读取或修改主 SQLite 的 `x_capture_accounts`、`tasks`、`write_flow` 或发布队列。市场情绪和项目推介只生成控制台内部结果，绝不发快讯。热点自动快讯是唯一窄例外：只有实质官方事件进展可以通过专用 outbox 写入主快讯链路，绝不把事件账号的普通原帖当作一般 X 信源。
+
+## 热点自动快讯（已接入，待部署）
+
+热点自动快讯不是账号目录的第四个订阅开关。它从 HotTopic 的 `track` 判断创建独立事件和 cycle，以 GPT Web Search 发现并自动核验官方账号，使用 `event_tracking_*` 表和事件专用 inbox 进行 1 分钟轮询。媒体、链上追踪、研究、KOL、社区和未证实账号都不能进入该账号池。
+
+每条新官方帖都先经过“实质进展”判断。只有 `material_progress` 才会更新事件时间线并通过 outbox 进入 `tasks.source = 'event_tracking'`；该任务复用全站搜索、写作和格式化，查重通过后以官方 `tweet_id` 为幂等键自动发布。`relevant_no_progress`、`irrelevant`、普通官方营销和重复澄清都只保存审计，不创建普通 HotTopic 或快讯任务。
+
+控制台标签只读展示当前/已结束事件、官方账号与身份证据、官方原帖、进展判断、快讯结果、GPT 搜索引用、Prompt 版本和自动失败。它不提供手工添加账号、人工确认、暂停、恢复、结束或 Prompt 编辑；任务 1 只有 `track` / `do_not_track`，账号发现与运行失败由系统自动重试、拒绝或结束。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
 
 ## 账号目录
 
@@ -42,6 +50,16 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `X_AGENT_ANALYSIS_WORKERS`：单个 worker 的分析并发，默认 `2`。
 - `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小间隔，默认 `2`。
 - `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后暂停共享请求节流器的最短秒数，默认 `300`。
+
+### 事件自动追踪模型
+
+热点自动快讯使用 GPT Responses 调用：任务 1 用文本 JSON 判断是否追踪，官方账号发现则强制启用 `web_search` 工具。默认沿用既有 HotTopic / `ODAILY_LLM` 中转站；只有需要单独隔离路由时才配置事件专用 endpoint。只有响应中同时存在真实 `web_search_call` 和 URL citations 时，发现结果才有效；网关返回的普通文本“搜索结果”会被拒绝，事件不会加入账号池。
+
+- `HOTTOPIC_EVENT_TRACKING_ENABLED`：默认 `true`；关闭时不再创建或推进事件追踪。
+- `HOTTOPIC_EVENT_OPENAI_BASE_URL` / `HOTTOPIC_EVENT_OPENAI_API_KEY`：可选的专用 Responses-compatible 路由与凭据，不是启动前置条件；为空时按既有 `HOTTOPIC`、`ODAILY_LLM`、`OPENAI_API_KEY` 回退顺序读取。
+- `HOTTOPIC_EVENT_TOPIC_MODEL` / `HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL`：任务 1 与实质进展判断的主/回退模型，默认 `gpt-5.6-luna` / `gpt-5.6-terra`。
+- `HOTTOPIC_EVENT_WEB_SEARCH_MODEL` / `HOTTOPIC_EVENT_WEB_SEARCH_RETRY_MODEL`：官方账号核验的主/回退模型，默认同上。
+- `HOTTOPIC_EVENT_REQUEST_TIMEOUT_SECONDS`：单次 GPT 请求超时，默认 `90` 秒，范围为 `1–180` 秒。
 
 ## 控制台接口
 

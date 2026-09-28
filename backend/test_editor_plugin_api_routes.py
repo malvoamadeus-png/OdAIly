@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from packages.editor_plugin_api import (
     AuthenticatedEditor,
+    EditorPluginApiError,
     EditorPluginApiServer,
     EditorPluginForbiddenError,
     EditorPluginNewsGenService,
@@ -52,6 +53,33 @@ class _XAgentSubscriptionService:
     def update_x_agent_subscriptions(self, _actor: AuthenticatedEditor, payload: dict[str, object]) -> dict[str, object]:
         self.subscription_payloads.append(payload)
         return {"items": []}
+
+
+class _AutoNewsflashReadOnlyService:
+    api_settings = SimpleNamespace(cors_allow_origin="*")
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def authenticate_console_admin(self, _authorization_header: str | None) -> AuthenticatedEditor:
+        return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+    def get_auto_newsflash_dashboard(self, _actor: AuthenticatedEditor) -> dict[str, object]:
+        self.calls.append(("dashboard", None))
+        return {"events": []}
+
+    def get_auto_newsflash_event(self, _actor: AuthenticatedEditor, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append(("event", payload.get("event_id")))
+        if not payload.get("event_id"):
+            raise EditorPluginApiError("event_id 不能为空")
+        return {"event_id": payload["event_id"]}
+
+    def get_auto_newsflash_prompts(self, _actor: AuthenticatedEditor) -> list[dict[str, object]]:
+        self.calls.append(("prompts", None))
+        return [{"prompt_key": "topic_judgment", "immutable": True}]
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"unexpected auto-newsflash mutation or route: {name}")
 
 
 def _post_json(server: EditorPluginApiServer, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
@@ -129,6 +157,35 @@ def test_x_agent_subscription_route_requires_console_admin() -> None:
         assert status == HTTPStatus.OK
         assert body == {"ok": True, "data": {"items": []}}
         assert allowed.subscription_payloads == [payload]
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_auto_newsflash_routes_are_read_only_and_validate_event_id() -> None:
+    service = _AutoNewsflashReadOnlyService()
+    server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/auto-newsflash/dashboard", {})
+        assert status == HTTPStatus.OK
+        assert body == {"ok": True, "data": {"events": []}}
+
+        status, body = _post_json(server, "/console/auto-newsflash/prompts", {})
+        assert status == HTTPStatus.OK
+        assert body["ok"] is True
+        assert body["data"][0]["immutable"] is True
+
+        status, body = _post_json(server, "/console/auto-newsflash/event", {"event_id": "event:giwa"})
+        assert status == HTTPStatus.OK
+        assert body == {"ok": True, "data": {"event_id": "event:giwa"}}
+
+        status, body = _post_json(server, "/console/auto-newsflash/event", {})
+        assert status == HTTPStatus.BAD_REQUEST
+        assert body == {"ok": False, "message": "event_id 不能为空"}
+        assert service.calls == [("dashboard", None), ("prompts", None), ("event", "event:giwa"), ("event", None)]
     finally:
         server.shutdown()
         thread.join(timeout=2)

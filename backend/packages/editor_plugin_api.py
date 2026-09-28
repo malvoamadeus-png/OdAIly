@@ -516,6 +516,21 @@ class EditorPluginNewsGenService:
             raise EditorPluginApiError("topic_id 不能为空")
         return self.hottopic.topic_detail(topic_id)
 
+    def get_auto_newsflash_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.hottopic.auto_newsflash_dashboard()
+
+    def get_auto_newsflash_event(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any] | None:
+        del actor
+        event_id = str(payload.get("event_id") or "").strip()
+        if not event_id:
+            raise EditorPluginApiError("event_id 不能为空")
+        return self.hottopic.auto_newsflash_event_detail(event_id)
+
+    def get_auto_newsflash_prompts(self, actor: AuthenticatedEditor) -> list[dict[str, Any]]:
+        del actor
+        return self.hottopic.auto_newsflash_prompts()
+
     def get_x_agent_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.hottopic.x_agent_dashboard()
@@ -1123,6 +1138,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/newsflash-operations",
         "/console/hottopic/dashboard",
         "/console/hottopic/topic",
+        "/console/auto-newsflash/dashboard",
+        "/console/auto-newsflash/event",
+        "/console/auto-newsflash/prompts",
         "/console/x-agent/dashboard",
         "/console/x-agent/accounts",
         "/console/x-agent/account",
@@ -1257,6 +1275,15 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/hottopic/topic":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_topic(actor, self._read_json())})
+                    return
+                if self.path == "/console/auto-newsflash/dashboard":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_auto_newsflash_dashboard(actor)})
+                    return
+                if self.path == "/console/auto-newsflash/event":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_auto_newsflash_event(actor, self._read_json())})
+                    return
+                if self.path == "/console/auto-newsflash/prompts":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_auto_newsflash_prompts(actor)})
                     return
                 if self.path == "/console/x-agent/dashboard":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_dashboard(actor)})

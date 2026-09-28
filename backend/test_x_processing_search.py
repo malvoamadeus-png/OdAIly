@@ -193,6 +193,15 @@ def test_search_blocks_strategy_purchase_when_duplicate_is_not_top_one(
     assert result.failed == 0
     assert repository.get_task(query.id).status == "duplicate"
     assert repository.get_pipeline(query.id).candidate_id == 29558
+    search_result = repository.get_pipeline(query.id).search_result
+    assert search_result["duplicate_target"] == {
+        "target_type": "recent_processed",
+        "target_id": "29558",
+        "candidate_id": 29558,
+        "title": "斥资3.7亿美元，Strategy上周增持4603枚比特币",
+        "source_url": None,
+        "similarity": 0.639691,
+    }
     assert len(ai_client.prompts) == 1
     assert "514025" in ai_client.prompts[0]
     assert "29558" in ai_client.prompts[0]
