@@ -82,6 +82,33 @@ class _AutoNewsflashReadOnlyService:
         raise AssertionError(f"unexpected auto-newsflash mutation or route: {name}")
 
 
+class _XAgentHistoryService:
+    api_settings = SimpleNamespace(cors_allow_origin="*")
+
+    def authenticate_console_admin(self, _authorization_header: str | None) -> AuthenticatedEditor:
+        return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+    def get_x_agent_market_sentiment_history(
+        self, _actor: AuthenticatedEditor, payload: dict[str, object]
+    ) -> dict[str, object]:
+        return {"instrument_key": payload.get("instrument_key"), "items": []}
+
+
+def test_x_agent_market_sentiment_history_route_is_exposed() -> None:
+    service = _XAgentHistoryService()
+    server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/x-agent/market-sentiment/history", {"instrument_key": "btc"})
+        assert status == HTTPStatus.OK
+        assert body == {"ok": True, "data": {"instrument_key": "btc", "items": []}}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def _post_json(server: EditorPluginApiServer, path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=2)
     try:

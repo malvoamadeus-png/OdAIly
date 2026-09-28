@@ -1147,6 +1147,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/x-agent/subscriptions",
         "/console/x-agent/market-sentiment",
         "/console/x-agent/market-sentiment/detail",
+        "/console/x-agent/market-sentiment/history",
         "/console/x-agent/project-promotion",
         "/console/x-agent/project-promotion/detail",
         "/console/x-agent/retry-failed",
