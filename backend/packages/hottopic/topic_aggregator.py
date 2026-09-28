@@ -37,6 +37,7 @@ RE_HASHTAG = re.compile(r"#[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{1,30}"
 RE_MENTION = re.compile(r"@[A-Za-z0-9_]{2,30}")
 RE_URL = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
 RE_CONTRACT = re.compile(r"\b(?:0x[a-fA-F0-9]{8,}|[1-9A-HJ-NP-Za-km-z]{32,44})\b")
+RE_BARE_ASSET = re.compile(r"(?<![A-Za-z0-9$])([A-Z][A-Z0-9]{2,9})(?![A-Za-z0-9])")
 RE_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_#$-]{1,30}|[\u4e00-\u9fff]{2,}")
 
 STOPWORDS = {
@@ -72,6 +73,10 @@ GENERIC_NAMED_EVENT_ENTITIES = IDENTITY_STOPWORDS | {
 }
 GENERIC_ASSET_IDENTITIES = {
     "btc", "eth", "sol", "bnb", "usdc", "usdt", "xrp", "doge",
+}
+GENERIC_BARE_ASSET_LABELS = {
+    "AI", "API", "ATH", "ATL", "BSC", "CA", "CEX", "DAO", "DEX", "ERC",
+    "FAQ", "FDV", "KOL", "L2", "NFT", "ROI", "TVL", "USD", "URL",
 }
 GENERIC_CHINESE_IDENTITY_TERMS = {
     "一个", "一些", "因为", "可以", "已经", "这个", "那个", "以及", "我们", "你们", "现在",
@@ -189,13 +194,26 @@ def subject_tags(text: str) -> set[str]:
     return values
 
 
+def asset_labels(text: str) -> set[str]:
+    """Return cashtags and unambiguous bare ticker-style asset labels."""
+    values = subject_tags(text)
+    scan_text = RE_URL.sub(" ", text)
+    values.update(
+        value.lower()
+        for value in RE_BARE_ASSET.findall(scan_text)
+        if value not in GENERIC_BARE_ASSET_LABELS
+        and value.lower() not in GENERIC_ASSET_IDENTITIES
+    )
+    return values
+
+
 def hard_keys(item: "ContentItem", text: str) -> set[str]:
     quote_id = item.references.get("quote_id")
     reply_to = item.references.get("reply_to")
     result = {f"quote:{quote_id}"} if quote_id else set()
     if reply_to:
         result.add(f"reply:{reply_to}")
-    result.update(f"asset:{value}" for value in subject_tags(text))
+    result.update(f"asset:{value}" for value in asset_labels(text))
     result.update(f"url:{x.lower().rstrip('.,')}" for x in RE_URL.findall(text))
     result.update(f"contract:{x.lower()}" for x in RE_CONTRACT.findall(text))
     return result
@@ -1199,7 +1217,7 @@ class TopicAggregator:
     @classmethod
     def _plain_identity_aliases(cls, text: str) -> set[str]:
         """Find broad recall aliases without treating them as event identity."""
-        aliases = set(subject_tags(text))
+        aliases = set(asset_labels(text))
         aliases.update(value.lower().lstrip("#") for value in RE_HASHTAG.findall(text))
         for raw in RE_WORD.findall(text.lower()):
             if not re.fullmatch(r"[\u4e00-\u9fff]{2,}", raw):
@@ -1220,7 +1238,7 @@ class TopicAggregator:
         lookup_terms: set[str] = set()
         for row in rows:
             text = compact(row["claim_text"])
-            for normalized in subject_tags(text):
+            for normalized in asset_labels(text):
                 merge_anchors.add(f"asset:{normalized}")
                 if normalized not in GENERIC_ASSET_IDENTITIES:
                     named_entities.add(normalized)
@@ -1315,11 +1333,11 @@ class TopicAggregator:
                 launch_accounts.add(row["activity_account"])
             if any(signal in lower for signal in MECHANISM_SIGNALS):
                 mechanism_accounts.add(row["activity_account"])
-            for asset in subject_tags(text):
+            for asset in asset_labels(text):
                 asset_accounts[asset].add(row["activity_account"])
             for label in RE_HASHTAG.findall(text):
                 subject_label_accounts[label.lower().lstrip("#")].add(row["activity_account"])
-            for asset in subject_tags(text):
+            for asset in asset_labels(text):
                 subject_label_accounts[asset].add(row["activity_account"])
             for contract in RE_CONTRACT.findall(text):
                 contract_accounts[contract.lower()].add(row["activity_account"])
@@ -1406,6 +1424,16 @@ class TopicAggregator:
             if connected:
                 return True, f"repeated subordinate event asset={sorted(connected)[:6]}"
 
+        # A topic with a concrete asset cannot be merged into an unanchored
+        # event merely because both happen to mention a platform or wallet.
+        # The only valid asset-to-prose bridge was handled above through an
+        # exact asset alias; continuing into named-entity matching would turn
+        # unrelated Binance, exchange, and wallet events into asset evidence.
+        left_has_explicit_asset = any(anchor.startswith(("asset:", "contract:")) for anchor in left_identity.merge_anchors)
+        right_has_explicit_asset = any(anchor.startswith(("asset:", "contract:")) for anchor in right_identity.merge_anchors)
+        if bool(left_assets) != bool(right_assets) and (left_has_explicit_asset or right_has_explicit_asset):
+            return False, "asset topic lacks an exact prose alias"
+
         # Non-asset events (product releases, corporate actions, protocol
         # changes) need an identity path too.  Use only stable named entities,
         # never broad recall aliases or CJK n-grams, and require the same
@@ -1489,7 +1517,7 @@ class TopicAggregator:
 
         asset_accounts: defaultdict[str, set[str]] = defaultdict(set)
         for row in rows:
-            for asset in subject_tags(row["claim_text"]):
+            for asset in asset_labels(row["claim_text"]):
                 asset_accounts[asset].add(row["activity_account"])
         primary_assets = self._primary_identity_values(asset_accounts)
 
@@ -1622,7 +1650,7 @@ class TopicAggregator:
             text = compact(row["claim_text"])
             for label in RE_HASHTAG.findall(text):
                 label_support[label.lower().lstrip("#")].add(row["activity_account"])
-            for asset in subject_tags(text):
+            for asset in asset_labels(text):
                 label_support[asset].add(row["activity_account"])
                 dollar_support.add(asset)
         queue = list(sorted(dirty_topic_ids))
@@ -1859,7 +1887,7 @@ class TopicAggregator:
             for key in ("quote_id", "reply_to"):
                 if references.get(key):
                     root_accounts[f"{key}:{references[key]}"].add(row["activity_account"])
-            for tag in subject_tags(row["claim_text"]):
+            for tag in asset_labels(row["claim_text"]):
                 tag_accounts[tag].add(row["activity_account"])
             for contract in RE_CONTRACT.findall(row["claim_text"]):
                 contract_accounts[contract.lower()].add(row["activity_account"])
@@ -2013,10 +2041,7 @@ class TopicAggregator:
             "GROUP BY cl.claim_id ORDER BY ci.created_at", (topic_id,)
         ).fetchall()
         context_claims = self._nearby_context_claims(topic_id, topic, claims)
-        subject_terms = {
-            self._normalized_identity(value)
-            for value in (*RE_CASHTAG.findall(topic["canonical_subject"]), *RE_HASHTAG.findall(topic["canonical_subject"]))
-        }
+        subject_terms = asset_labels(topic["canonical_subject"])
         selected_claims = self._select_narrative_claims(list(claims), context_claims, subject_terms)
         if not self.brief_writer:
             return self._brief_generation_error(
@@ -2137,11 +2162,11 @@ class TopicAggregator:
         those fragments auditable as context-only evidence.
         """
         own_text = " ".join(row["claim_text"] for row in own_claims)
-        stable = set(RE_CASHTAG.findall(own_text))
+        stable = asset_labels(own_text)
         if not stable:
-            stable = set(RE_CASHTAG.findall(topic["working_title"])) | set(RE_MENTION.findall(topic["working_title"]))
+            stable = asset_labels(topic["working_title"]) | set(RE_MENTION.findall(topic["working_title"]))
         if not stable:
-            stable = set(RE_CASHTAG.findall(topic["canonical_subject"])) | set(RE_MENTION.findall(topic["canonical_subject"]))
+            stable = asset_labels(topic["canonical_subject"]) | set(RE_MENTION.findall(topic["canonical_subject"]))
         if not stable:
             return []
         rows = self.connection.execute(
@@ -2185,6 +2210,23 @@ class TopicAggregator:
         """
         rows = [dict(row) for row in own_claims] + context_claims
         subject_terms = {value.lower() for value in (subject_terms or set()) if value}
+        if not subject_terms:
+            subject_terms.update(
+                asset
+                for row in own_claims
+                for asset in asset_labels(row["claim_text"])
+            )
+        # Context is allowed to add price or market background, but a claim
+        # that explicitly names another asset is a separate narrative and must
+        # not enter this topic just because its neighbor also mentioned QNT.
+        if subject_terms:
+            filtered: list[dict[str, Any]] = []
+            for row in rows:
+                row_assets = asset_labels(row["claim_text"])
+                if row_assets and not row_assets & subject_terms:
+                    continue
+                filtered.append(row)
+            rows = filtered
         citation_counts: Counter[str] = Counter()
         for row in rows:
             refs = json_loads(row.get("references_json"), {})
@@ -2261,7 +2303,7 @@ class TopicAggregator:
         score += 1 if re.search(r"\b\d+(?:\.\d+)?%?\b", RE_CONTRACT.sub("", text)) else 0
         score += 1 if row.get("action_or_issue") not in {"", "一般讨论", None} else 0
         score += 1 if row.get("claim_kind") in {"interpretation", "prediction"} else 0
-        cashtags = subject_tags(text)
+        cashtags = asset_labels(text)
         score -= max(0, len(cashtags) - 1) * 2
         if any(marker in lower for marker in ("idk", "怎么/", "怎麼玩", "谁在车上", "join for free")):
             score -= 3
@@ -2387,9 +2429,10 @@ class ModelBriefWriter:
 3. 合并重复表达和相似情绪，不逐条罗列谁说了什么；保留能改变理解的数字、术语、动作、结果和分歧。
 4. 分析、预测、归因和押注必须贴着具体账号、机构或来源表达，不能改写成已经证实的事实。
 5. 优先使用“明确主体 + 强动作动词 + 对象或结果”的主动句，少用空泛连接词和总结套话。
-6. 不出现 Topic、claim、source、context、聚类、监控账号等后台词，不输出统一的证据免责声明；信息不足时直接写短，不用空话补长度。
-7. 不新增材料之外的事实、因果、动机或数字；外文来源要准确转写为自然中文，专有名词、代码和数字保持原样。
-8. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。
+6. 只写材料中的事实和来源明确表达的观点，不要加入编辑者自己的判断、免责声明或结论性提醒；不要写“上述判断……并非已兑现”“不构成确定性结论”“风险已经上升”等编辑者总结。信息不足时直接写短，不用空话补长度。
+7. 同一行情事实只保留一次；不同来源的数字只有在口径、时间或来源明确不同且对读者有增量信息时才并列，否则合并或舍弃重复数字。
+8. 不出现 Topic、claim、source、context、聚类、监控账号等后台词，不新增材料之外的事实、因果、动机或数字；外文来源要准确转写为自然中文，专有名词、代码和数字保持原样。
+9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。
 
 严格输出 JSON：{{"title":"准确具体的新闻式标题","brief":"信息密度高的自然中文正文","source_claim_ids":["实际使用的 claim_id"]}}
 
@@ -2436,7 +2479,44 @@ class ModelBriefWriter:
         source_ids = [str(value) for value in parsed.get("source_claim_ids", []) if str(value) in valid_ids]
         if not source_ids:
             source_ids = [row["claim_id"] for row in evidence[:8]]
-        return {"title": compact(parsed.get("title") or topic["working_title"]), "brief": str(parsed.get("brief") or "").strip(), "source_claim_ids": source_ids}
+        return {
+            "title": compact(parsed.get("title") or topic["working_title"]),
+            "brief": self._clean_generated_brief(str(parsed.get("brief") or "")),
+            "source_claim_ids": source_ids,
+        }
+
+    @staticmethod
+    def _clean_generated_brief(value: str) -> str:
+        """Remove recurring editor meta-text without rewriting source facts."""
+        text = value.strip()
+        text = re.sub(
+            r"(?:^|(?<=[。！？!?])|\n)\s*上述判断属于.*?并非已兑现的结果[。.!！]?\s*",
+            "",
+            text,
+        )
+        text = re.sub(
+            r"[，,]\s*(?:但\s*)?(?:这些内容|上述内容|上述说法)并不构成确定性结论[。.!！]?",
+            "。",
+            text,
+        )
+        text = re.sub(r"(?:^|\n)\s*(?:这些内容|上述内容|上述说法)并不构成确定性结论[。.!！]?\s*", "", text)
+
+        paragraphs: list[str] = []
+        seen: set[str] = set()
+        for paragraph in re.split(r"\n+", text):
+            unique: list[str] = []
+            for sentence in re.split(r"(?<=[。！？!?])\s*", paragraph):
+                normalized = compact(sentence)
+                if not normalized:
+                    continue
+                key = re.sub(r"[。！？!?]$", "", normalized)
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(normalized)
+            if unique:
+                paragraphs.append("".join(unique))
+        return "\n".join(paragraphs).strip()
 
     def _post_json(self, request: urllib.request.Request) -> dict[str, Any]:
         last_error: Exception | None = None

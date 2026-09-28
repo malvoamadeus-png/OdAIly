@@ -113,6 +113,18 @@ def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
     assert result["source_claim_ids"] == ["claim:1"]
     assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
     assert all(call["reasoning_effort"] == "none" for call in calls)
+    prompt = calls[-1]["messages"][0]["content"]
+    assert "不要加入编辑者自己的判断、免责声明或结论性提醒" in prompt
+    assert "同一行情事实只保留一次" in prompt
+
+
+def test_model_brief_writer_removes_editor_meta_text_and_exact_duplicates() -> None:
+    brief = ModelBriefWriter._clean_generated_brief(
+        "QNT价格快速上涨。上述判断属于市场参与者对项目机制和前景的分析，并非已兑现的结果。"
+        "市场参与者建议关注流动性，但这些内容并不构成确定性结论。QNT价格快速上涨。"
+    )
+
+    assert brief == "QNT价格快速上涨。市场参与者建议关注流动性。"
 
 
 def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_path: Path) -> None:
@@ -254,6 +266,65 @@ def test_non_asset_event_identity_rejects_weak_or_conflicting_matches() -> None:
     assert TopicAggregator._topics_share_continuous_subject(base, one_shared_entity)[0] is False
     assert TopicAggregator._topics_share_continuous_subject(base, different_event)[0] is False
     assert TopicAggregator._topics_share_continuous_subject(base, conflicting_assets)[0] is False
+
+
+def test_asset_topic_does_not_merge_with_unanchored_named_event() -> None:
+    now = datetime.now(UTC)
+    qnt = profile(
+        now,
+        entities={"qnt", "binance", "wallet"},
+        event_kinds={"launch"},
+        participants={"qnt_account", "qnt_commentator"},
+        primary_assets={"qnt"},
+        identity=EventIdentity(
+            frozenset({"asset:qnt"}),
+            frozenset({"qnt", "binance", "wallet"}),
+            frozenset({"qnt", "binance", "wallet"}),
+            frozenset(),
+            frozenset({"qnt", "binance", "wallet"}),
+        ),
+    )
+    unrelated_wallet_event = profile(
+        now + timedelta(minutes=20),
+        entities={"binance", "wallet", "usdt"},
+        event_kinds={"launch"},
+        participants={"wallet_official"},
+    )
+
+    assert TopicAggregator._topics_share_continuous_subject(qnt, unrelated_wallet_event)[0] is False
+
+
+def test_narrative_selection_drops_context_claims_for_competing_assets(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    try:
+        own = {
+            "claim_id": "claim:qnt",
+            "content_item_id": "content:qnt",
+            "claim_text": "$QNT price rose sharply",
+            "activity_account": "qnt_account",
+            "created_at": "2026-09-28T00:00:00+00:00",
+            "confidence": 1.0,
+            "information_value": 1.0,
+            "claim_kind": "reported_fact",
+            "action_or_issue": "市场波动",
+            "references_json": "{}",
+            "tweet_id": "qnt",
+        }
+        competing = {
+            **own,
+            "claim_id": "claim:pha",
+            "content_item_id": "content:pha",
+            "claim_text": "$PHA, $NOM, $XPL and $RARE also rose",
+            "activity_account": "market_account",
+            "tweet_id": "pha",
+            "context_only": True,
+        }
+
+        selected = aggregator._select_narrative_claims([own], [competing], {"qnt"})
+
+        assert [row["claim_id"] for row in selected] == ["claim:qnt"]
+    finally:
+        aggregator.close()
 
 
 def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path) -> None:
