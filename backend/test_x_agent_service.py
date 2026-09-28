@@ -272,6 +272,37 @@ def test_project_same_identity_and_logic_updates_instead_of_creating_a_second_ro
         value.close()
 
 
+def test_project_detail_shows_one_source_once_and_merges_project_logics(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        source = {
+            "account_screen_name": "alice",
+            "tweet_id": "same-source",
+            "url": "https://x.com/alice/status/same-source",
+            "expanded_text": "Snowmoon zipcoin zc Emerald",
+            "created_at_iso": iso(utc_now()),
+        }
+        result = AnalysisResult("project_promotion", "gpt-5.6-luna", None, [
+            {"project_name": "SNOWMOON", "ticker": "SNOWMOON", "chain": "", "contract_address": "", "official_url": "", "logic": "小说书名成为传播叙事。"},
+            {"project_name": "ZC", "ticker": "ZC", "chain": "", "contract_address": "", "official_url": "", "logic": "小说中的虚构货币被拿来发币。"},
+            {"project_name": "EMERALD", "ticker": "EMERALD", "chain": "", "contract_address": "", "official_url": "", "logic": "小说中的本地 AI 助手被拿来发币。"},
+        ])
+        value._save_project_results(source, result, iso(utc_now()))
+
+        detail = value.project_promotion_detail("tweet:same-source", window="30d")
+
+        assert detail["total"] == 1
+        assert len(detail["items"]) == 1
+        assert detail["items"][0]["sourceTweetId"] == "same-source"
+        assert set(detail["items"][0]["logic"].split("；")) == {
+            "小说书名成为传播叙事。",
+            "小说中的虚构货币被拿来发币。",
+            "小说中的本地 AI 助手被拿来发币。",
+        }
+    finally:
+        value.close()
+
+
 def test_luna_failure_uses_terra_with_reasoning_disabled() -> None:
     calls: list[dict[str, object]] = []
 

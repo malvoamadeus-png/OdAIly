@@ -1533,13 +1533,32 @@ class HotTopicService:
             raise ValueError("identity_key 不能为空")
         cutoff = self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)})
         safe_offset, safe_limit = self._page(offset, limit)
+        cte = """
+            WITH filtered AS (
+              SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason
+              FROM x_agent_project_observations
+              WHERE identity_key=? AND last_mentioned_at>=?
+            ), logic_groups AS (
+              SELECT source_tweet_id,group_concat(logic,'；') AS logic
+              FROM (SELECT DISTINCT source_tweet_id,logic FROM filtered)
+              GROUP BY source_tweet_id
+            ), latest AS (
+              SELECT *,ROW_NUMBER() OVER (PARTITION BY source_tweet_id ORDER BY last_mentioned_at DESC,id DESC) AS row_number
+              FROM filtered
+            ), result_rows AS (
+              SELECT l.id,l.account_lower,l.source_url,l.source_text,l.source_tweet_id,g.logic,l.last_mentioned_at,
+                l.actual_model,l.fallback_reason
+              FROM latest l JOIN logic_groups g ON g.source_tweet_id=l.source_tweet_id
+              WHERE l.row_number=1
+            )
+        """
         total = int(self.db.execute(
-            "SELECT COUNT(*) FROM x_agent_project_observations WHERE identity_key=? AND last_mentioned_at>=?",
+            f"{cte} SELECT COUNT(*) FROM result_rows",
             (identity_key, cutoff),
         ).fetchone()[0])
         rows = self.db.execute(
-            "SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason "
-            "FROM x_agent_project_observations WHERE identity_key=? AND last_mentioned_at>=? ORDER BY last_mentioned_at DESC LIMIT ? OFFSET ?",
+            f"{cte} SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason "
+            "FROM result_rows ORDER BY last_mentioned_at DESC,id DESC LIMIT ? OFFSET ?",
             (identity_key, cutoff, safe_limit, safe_offset),
         ).fetchall()
         return {"items": [{
