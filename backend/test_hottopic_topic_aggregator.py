@@ -127,6 +127,15 @@ def test_model_brief_writer_removes_editor_meta_text_and_exact_duplicates() -> N
     assert brief == "QNT价格快速上涨。市场参与者建议关注流动性。"
 
 
+def test_model_brief_writer_removes_market_interpretation_disclaimer_tail() -> None:
+    brief = ModelBriefWriter._clean_generated_brief(
+        "围绕《Snowmoon》的叙事，有人进一步猜测 Vitalik 是在小说中伪装了一份隐私币白皮书，"
+        "但这一说法来自市场参与者的解读。"
+    )
+
+    assert brief == "围绕《Snowmoon》的叙事，有人进一步猜测 Vitalik 是在小说中伪装了一份隐私币白皮书。"
+
+
 def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_path: Path) -> None:
     now = datetime(2026, 9, 25, tzinfo=UTC)
     aggregator = TopicAggregator(tmp_path / "topics.sqlite")
