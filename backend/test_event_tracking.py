@@ -322,6 +322,41 @@ def test_legacy_multi_topic_event_is_not_propagated_by_merge_history(tmp_path: P
         connection.close()
 
 
+def test_operator_tracking_starts_after_automatic_rejection_and_survives_rescan(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    try:
+        _seed_topic(connection, clock)
+        snapshot = tracker._topic_snapshots(["topic:giwa"])[0]
+        with connection:
+            connection.execute(
+                "INSERT INTO event_tracking_topic_assessments(topic_id,snapshot_hash,snapshot_json,decision,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                ("topic:giwa", snapshot["snapshot_hash"], json.dumps(snapshot), "do_not_track", clock().isoformat(), clock().isoformat()),
+            )
+        event_id = tracker.start_tracking_topic(
+            "topic:giwa", actor="operator", reason="Follow the official response to the security incident",
+            tracking_type="security_asset_incident", reader_value="asset_trading",
+            confirmed_facts=["GIWA has acknowledged the bridge incident"],
+            unconfirmed_claims=["Loss amount is not confirmed"],
+            official_response_hypothesis={"entities": ["GIWA"], "why_likely": "Investigation is ongoing", "next_information": "Impact and remediation"},
+        )
+        assert tracker.start_tracking_topic(
+            "topic:giwa", actor="operator", reason="Follow the official response to the security incident",
+            tracking_type="security_asset_incident", reader_value="asset_trading",
+            confirmed_facts=["GIWA has acknowledged the bridge incident"],
+            unconfirmed_claims=["Loss amount is not confirmed"],
+            official_response_hypothesis={"entities": ["GIWA"], "why_likely": "Investigation is ongoing", "next_information": "Impact and remediation"},
+        ) == event_id
+        with connection:
+            connection.execute("UPDATE topics SET working_title='GIWA bridge investigation continues' WHERE topic_id='topic:giwa'")
+        assert tracker.observe_topics(["topic:giwa"])["assessed"] == 0
+        assert connection.execute("SELECT status FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()[0] == "discovering"
+        assert connection.execute("SELECT actual_model FROM event_tracking_topic_assessments WHERE topic_id='topic:giwa'").fetchone()[0] == "operator_override"
+        assert tracker.discover_official_accounts(event_id=event_id)["bound"] == 1
+    finally:
+        connection.close()
+
+
 def test_openai_web_search_adapter_requires_real_tool_call_and_citation(monkeypatch) -> None:
     requests: list[dict[str, Any]] = []
 

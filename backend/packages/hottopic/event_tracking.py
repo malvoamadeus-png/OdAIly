@@ -941,9 +941,11 @@ class EventTracker:
         current = utc_iso(self.now())
         for snapshot in snapshots:
             assessment = self.db.execute(
-                "SELECT snapshot_hash,decision,next_attempt_at FROM event_tracking_topic_assessments WHERE topic_id=?",
+                "SELECT snapshot_hash,decision,next_attempt_at,actual_model FROM event_tracking_topic_assessments WHERE topic_id=?",
                 (snapshot["topic_id"],),
             ).fetchone()
+            if assessment is not None and assessment["actual_model"] == "operator_override":
+                continue
             if assessment is not None and assessment["snapshot_hash"] == snapshot["snapshot_hash"]:
                 if assessment["decision"] in {"track", "do_not_track"}:
                     continue
@@ -978,6 +980,71 @@ class EventTracker:
                     tracked += 1
             self._audit("topic_judgment_completed", {"topic_count": len(pending), "tracked": tracked})
         return {"assessed": len(pending), "tracked": tracked, "failed": 0}
+
+    def start_tracking_topic(
+        self,
+        topic_id: str,
+        *,
+        actor: str,
+        reason: str,
+        tracking_type: str,
+        reader_value: str,
+        confirmed_facts: list[str],
+        unconfirmed_claims: list[str],
+        official_response_hypothesis: dict[str, Any],
+    ) -> str:
+        """Start a single operator-selected HotTopic through normal discovery and lifecycle."""
+        if not self.enabled:
+            raise RuntimeError("event tracking is disabled")
+        if not actor.strip() or not reason.strip():
+            raise ValueError("operator and reason are required")
+        if tracking_type not in TRACKING_TYPES or reader_value not in {"asset_trading", "gossip_entertainment", "both"}:
+            raise ValueError("invalid tracking type or reader value")
+        if not isinstance(official_response_hypothesis, dict) or not _string_list(official_response_hypothesis.get("entities")):
+            raise ValueError("official response hypothesis needs named entities")
+        snapshots = self._topic_snapshots([topic_id])
+        if len(snapshots) != 1 or snapshots[0]["topic_id"] != topic_id:
+            raise ValueError("visible active HotTopic not found")
+        snapshot = snapshots[0]
+        existing = self._find_event(snapshot)
+        if existing is not None and self._is_event_dismissed(str(existing["event_id"])):
+            raise ValueError("tracking event was dismissed")
+        if existing is None and self._is_identity_dismissed(stable_id("event-topic", topic_id)):
+            raise ValueError("tracking topic was dismissed")
+        assessment = self.db.execute(
+            "SELECT actual_model FROM event_tracking_topic_assessments WHERE topic_id=?", (topic_id,)
+        ).fetchone()
+        if assessment is not None and assessment["actual_model"] == "operator_override" and existing is not None:
+            return str(existing["event_id"])
+        decision = {
+            "topic_id": topic_id,
+            "decision": "track",
+            "tracking_type": tracking_type,
+            "reader_value": reader_value,
+            "event_identity": topic_id,
+            "confirmed_facts": _string_list(confirmed_facts),
+            "unconfirmed_claims": _string_list(unconfirmed_claims),
+            "reason": reason.strip(),
+            "official_response_hypothesis": official_response_hypothesis,
+            "recommended_initial_window_hours": 72,
+            "stop_conditions": ["事件解决", "24 小时无实质官方进展"],
+            "confidence": 1.0,
+            "operator": actor.strip(),
+        }
+        model_result = EventModelResult(compact_json(decision), "operator_override", {}, 0.0, {}, [], [])
+        with self.db:
+            self._store_topic_assessment(snapshot, decision, self._prompt("topic_judgment"), model_result)
+            self._link_tracked_topic(snapshot, decision)
+            linked = self._find_event(snapshot)
+            if linked is None:
+                raise RuntimeError("operator-selected topic was not linked to an event")
+            event_id = str(linked["event_id"])
+            self._audit(
+                "operator_topic_tracking_started",
+                {"topic_id": topic_id, "actor": actor.strip(), "reason": reason.strip()},
+                event_id=event_id,
+            )
+        return event_id
 
     def _parse_topic_decisions(self, parsed: list[Any], snapshots: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         allowed = {item["topic_id"]: item for item in snapshots}
@@ -1290,7 +1357,7 @@ class EventTracker:
         )
         return cycle_id
 
-    def discover_official_accounts(self) -> dict[str, int]:
+    def discover_official_accounts(self, *, event_id: str | None = None) -> dict[str, int]:
         """Run task 0 for newly opened cycles; a failed search ends autonomously."""
         if not self.enabled:
             return {"discovered": 0, "failed": 0, "bound": 0}
@@ -1301,10 +1368,11 @@ class EventTracker:
             FROM event_tracking_cycles c
             JOIN event_tracking_events e ON e.event_id=c.event_id
             LEFT JOIN event_tracking_account_discoveries d ON d.cycle_id=c.cycle_id
-            WHERE c.status='discovering' AND d.discovery_id IS NULL
+            WHERE c.status='discovering' AND d.discovery_id IS NULL AND (? IS NULL OR c.event_id=?)
             ORDER BY c.created_at
             LIMIT 12
-            """
+            """,
+            (event_id, event_id),
         ).fetchall()
         discovered = failed = bound = 0
         for row in rows:
