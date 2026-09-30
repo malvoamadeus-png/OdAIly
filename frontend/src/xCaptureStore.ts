@@ -140,7 +140,9 @@ export type HotTopicCard = {
   title: string;
   brief: string;
   firstSeenAt: string;
+  firstGeneratedAt: string;
   lastEvidenceAt: string | null;
+  lastUpdatedAt: string;
   hotness: number;
   participants: { oneHour: number; sixHours: number; twentyFourHours: number; velocity: number };
 };
@@ -160,6 +162,8 @@ export type HotTopicDetail = {
   id: string;
   title: string;
   brief: string;
+  firstGeneratedAt: string;
+  lastUpdatedAt: string;
   hotness: number;
   participants: { oneHour: number; sixHours: number; twentyFourHours: number };
   speakers: Array<{ account: string; lastParticipationAt: string; sourceUrl: string | null }>;
@@ -258,9 +262,36 @@ export type AutoNewsflashEventDetail = {
     classifiedAt: string | null;
     post: { url?: string; expanded_text?: string; text?: string };
   }>;
-  outbox: Array<{ id: string; updateId: string; tweetId: string; status: string; taskId: number | null; attempts: number; error: string | null; submittedAt: string | null }>;
+  outbox: Array<{
+    id: string;
+    updateId: string;
+    tweetId: string;
+    status: string;
+    taskId: number | null;
+    attempts: number;
+    error: string | null;
+    submittedAt: string | null;
+    taskStatus: string | null;
+    sourceUrl: string | null;
+    title: string | null;
+    content: string | null;
+    contentStage: 'draft' | 'final' | null;
+    publisherDecision: string | null;
+    publisherReasonCode: string | null;
+    publishedAt: string | null;
+    updatedAt: string | null;
+  }>;
   discoveries: Array<{ id: string; cycleId: string; status: string; citations: string[]; error: string | null; completedAt: string }>;
   promptVersions: AutoNewsflashPrompt[];
+};
+
+export type AutoNewsflashDismissResult = {
+  eventId: string;
+  dismissed: boolean;
+  alreadyDismissed: boolean;
+  dismissedAt: string;
+  cancelledOutbox: number;
+  cancelledTasks: number;
 };
 
 export type XAgentDashboard = {
@@ -1558,6 +1589,10 @@ export async function getAutoNewsflashEvent(eventId: string): Promise<AutoNewsfl
 
 export async function getAutoNewsflashPrompts(): Promise<AutoNewsflashPrompt[]> {
   return consoleApiPost<AutoNewsflashPrompt[]>('/console/auto-newsflash/prompts');
+}
+
+export async function dismissAutoNewsflashEvent(eventId: string): Promise<AutoNewsflashDismissResult> {
+  return consoleApiPost<AutoNewsflashDismissResult>('/console/auto-newsflash/dismiss', { event_id: eventId });
 }
 
 export async function getXAgentDashboard(): Promise<XAgentDashboard> {

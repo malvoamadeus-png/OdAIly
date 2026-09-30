@@ -1,9 +1,10 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Activity, AlertTriangle, ChevronRight, ExternalLink, FileText, Radio, ShieldCheck } from 'lucide-react';
+import { Activity, AlertTriangle, ChevronRight, ExternalLink, FileText, Radio, ShieldCheck, Trash2 } from 'lucide-react';
 import {
   getAutoNewsflashDashboard,
   getAutoNewsflashEvent,
   getAutoNewsflashPrompts,
+  dismissAutoNewsflashEvent,
   type AutoNewsflashDashboard,
   type AutoNewsflashEventCard,
   type AutoNewsflashEventDetail,
@@ -35,10 +36,23 @@ function statusLabel(value: string): string {
     relevant_no_progress: '相关但无进展',
     irrelevant: '无关',
     submitted: '已投递',
+    pending: '待投递',
+    cancelled: '已取消',
     duplicate: '全站重复',
     published: '已发布',
     failed: '失败',
     succeeded: '完成',
+    judging: '生成中',
+    deduping: '查重中',
+    writing: '生成中',
+    written: '已生成草稿',
+    formatting: '格式化中',
+    publisher_pending: '等待发布',
+    publishing: '发布中',
+    auto_published: '已发布',
+    ready_review: '待人工复核',
+    publisher_failed: '失败',
+    event_tracking_cancelled: '已取消',
   };
   return labels[value] || value;
 }
@@ -58,6 +72,8 @@ export function AutoNewsflashPanel() {
   const [selected, setSelected] = useState<string | null>(null);
   const [prompts, setPrompts] = useState<AutoNewsflashPrompt[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [dismissing, setDismissing] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -70,7 +86,7 @@ export function AutoNewsflashPanel() {
       })
       .catch((cause) => active && setError(cause instanceof Error ? cause.message : '无法读取热点自动快讯'));
     return () => { active = false; };
-  }, []);
+  }, [refreshToken]);
 
   useEffect(() => {
     if (!selected) {
@@ -83,6 +99,24 @@ export function AutoNewsflashPanel() {
       .catch((cause) => active && setError(cause instanceof Error ? cause.message : '无法读取事件详情'));
     return () => { active = false; };
   }, [selected]);
+
+  async function dismissSelectedEvent() {
+    if (!selected || dismissing) return;
+    const current = dashboard?.events.find((event) => event.id === selected);
+    if (!current || !window.confirm(`确认删除热点自动快讯“${current.title}”？\n\n这会停止后续追踪并取消尚未发布的任务，已发布内容不会删除。`)) return;
+    setDismissing(true);
+    setError(null);
+    try {
+      await dismissAutoNewsflashEvent(selected);
+      setSelected(null);
+      setDetail(null);
+      setRefreshToken((value) => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '删除热点自动快讯失败');
+    } finally {
+      setDismissing(false);
+    }
+  }
 
   return (
     <section className="autoNewsflashLayout">
@@ -103,7 +137,7 @@ export function AutoNewsflashPanel() {
           </div>
         </section>
         <section className="autoNewsflashDetail">
-          {detail ? <EventDetail detail={detail} /> : <span className="muted">选择事件查看时间线</span>}
+          {detail ? <EventDetail detail={detail} dismissing={dismissing} onDismiss={dismissSelectedEvent} /> : <span className="muted">选择事件查看时间线</span>}
         </section>
       </div>
       <section className="autoNewsflashPrompts">
@@ -132,11 +166,16 @@ function EventRow({ event, active, onSelect }: { event: AutoNewsflashEventCard; 
   );
 }
 
-function EventDetail({ detail }: { detail: AutoNewsflashEventDetail }) {
+function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashEventDetail; dismissing: boolean; onDismiss: () => void }) {
   const { event } = detail;
   return (
     <article className="autoNewsflashDetailCopy">
-      <div className="autoNewsflashDetailMeta"><span className={`autoNewsflashStatus ${event.status}`}>{statusLabel(event.status)}</span><span>{trackingTypeLabel(event.trackingType)}</span><span>{time(event.updatedAt)}</span></div>
+      <div className="autoNewsflashDetailHeader">
+        <div className="autoNewsflashDetailMeta"><span className={`autoNewsflashStatus ${event.status}`}>{statusLabel(event.status)}</span><span>{trackingTypeLabel(event.trackingType)}</span><span>更新于 {time(event.updatedAt)}</span></div>
+        <button className="danger ghostButton" type="button" onClick={onDismiss} disabled={dismissing} title="删除这条热点自动快讯并停止追踪">
+          <Trash2 size={15} /> {dismissing ? '删除中' : '删除自动快讯'}
+        </button>
+      </div>
       <h2>{event.title}</h2>
       <p>{event.rationale}</p>
       <DetailList title="官方账号">
@@ -146,7 +185,27 @@ function EventDetail({ detail }: { detail: AutoNewsflashEventDetail }) {
         {detail.updates.length === 0 ? <span className="muted">尚未发现新官方帖子</span> : detail.updates.map((update) => <div className="autoNewsflashUpdate" key={update.id}><div><span className={`autoNewsflashStatus ${update.classification || update.status}`}>{statusLabel(update.classification || update.status)}</span><small>@{update.handle} · {time(update.classifiedAt)}</small></div>{update.factSummary && <strong>{update.factSummary}</strong>}{update.difference && <p>{update.difference}</p>}{update.post.url && <a href={update.post.url} target="_blank" rel="noreferrer" title="打开官方原帖"><ExternalLink size={15} /></a>}</div>)}
       </DetailList>
       <DetailList title="快讯投递">
-        {detail.outbox.length === 0 ? <span className="muted">暂无可投递实质进展</span> : detail.outbox.map((item) => <div className="autoNewsflashOutbox" key={item.id}><span className={`autoNewsflashStatus ${item.status}`}>{statusLabel(item.status)}</span><small>{item.taskId ? `任务 ${item.taskId}` : '-'} · 尝试 {item.attempts}</small></div>)}
+        {detail.outbox.length === 0 ? <span className="muted">暂无可投递实质进展</span> : detail.outbox.map((item) => (
+          <article className="autoNewsflashOutbox" key={item.id}>
+            <div className="autoNewsflashOutboxHeader">
+              <span className={`autoNewsflashStatus ${item.status}`}>{statusLabel(item.status)}</span>
+              {item.taskStatus && <span className={`autoNewsflashStatus ${item.taskStatus}`}>{statusLabel(item.taskStatus)}</span>}
+              <small>{item.taskId ? `任务 ${item.taskId}` : '任务尚未创建'} · 尝试 {item.attempts}</small>
+            </div>
+            {item.title && <strong className="autoNewsflashGeneratedTitle">{item.title}</strong>}
+            {item.content && <p className="autoNewsflashGeneratedContent">{item.content}</p>}
+            <div className="autoNewsflashOutboxMeta">
+              {item.contentStage && <span>{item.contentStage === 'final' ? '最终稿' : '草稿'}</span>}
+              {item.publisherDecision && <span>发布决定：{item.publisherDecision}</span>}
+              {item.publisherReasonCode && <span>{item.publisherReasonCode}</span>}
+              {item.submittedAt && <span>投递时间：{time(item.submittedAt)}</span>}
+              {item.publishedAt && <span>发布时间：{time(item.publishedAt)}</span>}
+              {!item.submittedAt && item.updatedAt && <span>更新时间：{time(item.updatedAt)}</span>}
+              {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer" title="打开官方原帖"><ExternalLink size={14} /> 官方原帖</a>}
+            </div>
+            {item.error && <p className="autoNewsflashOutboxError">{item.error}</p>}
+          </article>
+        ))}
       </DetailList>
       <DetailList title="Web Search 核验">
         {detail.discoveries.length === 0 ? <span className="muted">暂无核验记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{statusLabel(discovery.status)}</span><small>{discovery.citations.length} 个引用 · {time(discovery.completedAt)}</small></div>)}

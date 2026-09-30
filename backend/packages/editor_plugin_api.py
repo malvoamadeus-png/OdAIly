@@ -531,6 +531,17 @@ class EditorPluginNewsGenService:
         del actor
         return self.hottopic.auto_newsflash_prompts()
 
+    def dismiss_auto_newsflash_event(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        event_id = str(payload.get("event_id") or "").strip()
+        if not event_id:
+            raise EditorPluginApiError("event_id 不能为空")
+        try:
+            return self.hottopic.dismiss_auto_newsflash_event(event_id, actor=actor.email)
+        except ValueError as exc:
+            error = EditorPluginApiError(str(exc))
+            error.status_code = HTTPStatus.NOT_FOUND
+            raise error from exc
+
     def get_x_agent_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.hottopic.x_agent_dashboard()
@@ -1140,6 +1151,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/hottopic/topic",
         "/console/auto-newsflash/dashboard",
         "/console/auto-newsflash/event",
+        "/console/auto-newsflash/dismiss",
         "/console/auto-newsflash/prompts",
         "/console/x-agent/dashboard",
         "/console/x-agent/accounts",
@@ -1282,6 +1294,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/auto-newsflash/event":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_auto_newsflash_event(actor, self._read_json())})
+                    return
+                if self.path == "/console/auto-newsflash/dismiss":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.dismiss_auto_newsflash_event(actor, self._read_json())})
                     return
                 if self.path == "/console/auto-newsflash/prompts":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_auto_newsflash_prompts(actor)})

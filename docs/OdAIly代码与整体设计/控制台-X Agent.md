@@ -12,7 +12,9 @@
 
 每条新官方帖都先经过“实质进展”判断。只有 `material_progress` 才会更新事件时间线并通过 outbox 进入 `tasks.source = 'event_tracking'`；该任务复用全站搜索、写作和格式化，查重通过后以官方 `tweet_id` 为幂等键自动发布。`relevant_no_progress`、`irrelevant`、普通官方营销和重复澄清都只保存审计，不创建普通 HotTopic 或快讯任务。
 
-控制台标签只读展示当前/已结束事件、官方账号与身份证据、官方原帖、进展判断、快讯结果、GPT 搜索引用、Prompt 版本和自动失败。它不提供手工添加账号、人工确认、暂停、恢复、结束或 Prompt 编辑；任务 1 只有 `track` / `do_not_track`，账号发现与运行失败由系统自动重试、拒绝或结束。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
+控制台展示当前/已结束事件、官方账号与身份证据、官方原帖、进展判断、快讯结果、GPT 搜索引用、Prompt 版本和自动失败。只有被判定为 `material_progress` 的帖子才会显示在快讯投递区；该区同时展示任务状态、生成阶段、可用草稿或终稿标题/正文、发布决定、时间和官方原帖链接。`relevant_no_progress` 与 `irrelevant` 仍只保留审计记录。
+
+管理员可以在事件详情中删除热点自动快讯。删除是软删除：通过 `POST /console/auto-newsflash/dismiss` 写入人工忽略记录，停止后续追踪、结束活动 cycle、释放账号绑定、取消尚未发布的 outbox 和主 SQLite 任务，并从默认事件列表隐藏；事件、官方帖子、判断、已发布内容和审计记录都保留。已经 `auto_published` 的任务不回滚、不删除。重复删除返回幂等结果，不提供网页恢复入口。任务 1 仍只有 `track` / `do_not_track`，账号发现与运行失败由系统自动重试、拒绝或结束。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
 
 ## 账号目录
 
@@ -42,7 +44,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 ## 模型配置
 
-热点话题、市场情绪和项目推介默认路由均为 `gpt-5.6-luna`，fallback 为 `gpt-5.6-terra`，两次请求都固定 `reasoning_effort=none`。部署配置已为这两个名称加入显式路由，部署后由生产 LiteLLM 提供；这三个内部模块不复用快讯编写模型。
+热点话题正文、市场情绪和项目推介默认路由均为 `gpt-5.6-luna`，fallback 为 `gpt-5.6-terra`，正文/情绪/推介请求固定 `reasoning_effort=none`。确定性热点候选另有 claim 级语义复核：主模型为 `gpt-5.6-luna`、`reasoning_effort=high`，失败时回退 `gpt-5.6-terra`、仍为 `high`。部署配置已为这些名称加入显式路由，部署后由生产 LiteLLM 提供；这些内部模块不复用快讯编写模型。
 
 - `X_AGENT_OPENAI_BASE_URL`：可选的兼容 API base URL；为空时依次使用 `ODAILY_LLM_BASE_URL`、`OPENAI_BASE_URL`。
 - `X_AGENT_OPENAI_API_KEY`：可选的专用凭据；本机 LiteLLM 路由优先使用 `LITELLM_MASTER_KEY`，然后使用 `ODAILY_LLM_API_KEY` 或 `OPENAI_API_KEY`。
@@ -50,6 +52,13 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `X_AGENT_ANALYSIS_WORKERS`：单个 worker 的分析并发，默认 `2`。
 - `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小间隔，默认 `2`。
 - `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后暂停共享请求节流器的最短秒数，默认 `300`。
+- `HOTTOPIC_CLAIM_REVIEW_OPENAI_BASE_URL` / `HOTTOPIC_CLAIM_REVIEW_OPENAI_API_KEY`：语义复核的可选专用兼容 API 与凭据；为空时沿用 `ODAILY_LLM_BASE_URL` 和本机 LiteLLM 凭据。
+- `HOTTOPIC_CLAIM_REVIEW_MODEL` / `HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL`：claim 复核主/回退模型，默认 `gpt-5.6-luna` / `gpt-5.6-terra`。
+- `HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT`：claim 复核思考等级，默认 `high`。
+- `HOTTOPIC_CLAIM_REVIEW_TIMEOUT_SECONDS`：claim 复核单次请求超时，默认 `90` 秒。
+- `HOTTOPIC_CLAIM_REVIEW_ENABLED`：是否启用 claim 级语义复核，默认 `true`；路由或凭据不可用时自动退回机械结果。
+- `HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE`：单次语义复核最多发送的 claim-topic case 数，默认 `40`。
+- `HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT`：每轮维护补审旧 membership 的上限，默认 `120`。
 
 ### 事件自动追踪模型
 
@@ -73,6 +82,10 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `/console/x-agent/market-sentiment/history`
 - `/console/x-agent/project-promotion` 及 `/detail`
 - `/console/x-agent/retry-failed`
+- `/console/auto-newsflash/dashboard`
+- `/console/auto-newsflash/event`
+- `/console/auto-newsflash/dismiss`（请求体 `{ "event_id": "tracking-event:..." }`）
+- `/console/auto-newsflash/prompts`
 
 市场情绪支持 `1h / 24h / 7d` 窗口，默认 `7d`；项目推介支持 `24h / 7d / 30d`，默认 `7d`。两个结果页只展示运行时从新帖抽取的观察，初始化筛选只写订阅开关，不把历史分类伪装成实时结果；结果为空时可直接切换到近 7 天，或跳转到对应的已开启账号列表。两个结果页都按服务端分页加载原帖，并提供回到原帖的链接。
 

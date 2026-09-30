@@ -221,6 +221,14 @@ CREATE TABLE IF NOT EXISTS event_tracking_events (
   end_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_event_tracking_events_status ON event_tracking_events(status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS event_tracking_dismissals (
+  event_id TEXT PRIMARY KEY REFERENCES event_tracking_events(event_id),
+  identity_key TEXT NOT NULL UNIQUE,
+  dismissed_at TEXT NOT NULL,
+  dismissed_by TEXT NOT NULL DEFAULT '',
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_event_tracking_dismissals_identity ON event_tracking_dismissals(identity_key);
 CREATE TABLE IF NOT EXISTS event_tracking_cycles (
   cycle_id TEXT PRIMARY KEY,
   event_id TEXT NOT NULL REFERENCES event_tracking_events(event_id),
@@ -367,6 +375,8 @@ CREATE TABLE IF NOT EXISTS event_tracking_publication_outbox (
   last_error TEXT,
   created_at TEXT NOT NULL,
   submitted_at TEXT,
+  cancelled_at TEXT,
+  cancelled_by TEXT,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_event_tracking_outbox_due ON event_tracking_publication_outbox(status, next_attempt_at, created_at);
@@ -405,6 +415,12 @@ class EventTrackingTaskDispatcher(Protocol):
     def submit(self, *, task_id: int, tweet_id: str) -> None: ...
 
     def task_status(self, task_id: int) -> str | None: ...
+
+    def is_event_tracking_cancelled(self, task_id: int) -> bool: ...
+
+    def task_detail(self, task_id: int) -> dict[str, Any] | None: ...
+
+    def dismiss_event_tasks(self, *, event_id: str, dismissed_at: str, dismissed_by: str) -> dict[str, Any]: ...
 
 
 class OpenAIEventTrackingAI:
@@ -600,6 +616,93 @@ class SQLiteEventTrackingTaskDispatcher:
         except sqlite3.Error:
             return None
 
+    def is_event_tracking_cancelled(self, task_id: int) -> bool:
+        try:
+            with connect_sqlite(self.database_path) as conn:
+                row = conn.execute(
+                    "SELECT source,status,metadata FROM tasks WHERE id=?",
+                    (task_id,),
+                ).fetchone()
+            if row is None or str(row["source"]) != EVENT_TRACKING_SOURCE:
+                return False
+            metadata = json_value(row["metadata"], {})
+            event_metadata = metadata.get("event_tracking") if isinstance(metadata, dict) else None
+            return str(row["status"]) == "event_tracking_cancelled" or bool(
+                isinstance(event_metadata, dict) and event_metadata.get("dismissed_at")
+            )
+        except sqlite3.Error:
+            return False
+
+    def task_detail(self, task_id: int) -> dict[str, Any] | None:
+        try:
+            with connect_sqlite(self.database_path) as conn:
+                row = conn.execute(
+                    """
+                    SELECT t.id,t.source,t.source_item_id,t.source_url,t.status,t.metadata,
+                           t.updated_at,p.draft_title,p.draft_content,p.final_title,p.final_content,
+                           p.publisher_decision,p.publisher_reason_code,p.publisher_decided_at,
+                           p.publish_completed_at,p.last_error
+                    FROM tasks t
+                    LEFT JOIN x_task_pipeline p ON p.task_id=t.id
+                    WHERE t.id=?
+                    """,
+                    (task_id,),
+                ).fetchone()
+            if row is None:
+                return None
+            return {
+                "taskId": int(row["id"]),
+                "sourceItemId": str(row["source_item_id"]),
+                "sourceUrl": row["source_url"],
+                "status": str(row["status"]),
+                "updatedAt": row["updated_at"],
+                "draftTitle": row["draft_title"],
+                "draftContent": row["draft_content"],
+                "finalTitle": row["final_title"],
+                "finalContent": row["final_content"],
+                "publisherDecision": row["publisher_decision"],
+                "publisherReasonCode": row["publisher_reason_code"],
+                "publisherDecidedAt": row["publisher_decided_at"],
+                "publishedAt": row["publish_completed_at"],
+                "error": row["last_error"],
+            }
+        except sqlite3.Error:
+            return None
+
+    def dismiss_event_tasks(self, *, event_id: str, dismissed_at: str, dismissed_by: str) -> dict[str, Any]:
+        cancelled: list[int] = []
+        published: list[int] = []
+        terminal: list[int] = []
+        with connect_sqlite(self.database_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id,status,metadata FROM tasks WHERE source=? AND json_extract(metadata,'$.event_tracking.event_id')=?",
+                (EVENT_TRACKING_SOURCE, event_id),
+            ).fetchall()
+            for row in rows:
+                task_id = int(row["id"])
+                metadata = json_value(row["metadata"], {})
+                event_metadata = metadata.get("event_tracking")
+                if not isinstance(event_metadata, dict):
+                    event_metadata = {}
+                    metadata["event_tracking"] = event_metadata
+                event_metadata["dismissed_at"] = dismissed_at
+                event_metadata["dismissed_by"] = dismissed_by
+                status = str(row["status"])
+                if status == "auto_published":
+                    published.append(task_id)
+                elif status in {"duplicate", "discarded", "expired", "legacy_skipped"}:
+                    terminal.append(task_id)
+                else:
+                    cancelled.append(task_id)
+                next_status = "event_tracking_cancelled" if task_id in cancelled else status
+                conn.execute(
+                    "UPDATE tasks SET metadata=?,status=?,locked_by=NULL,locked_until=NULL,updated_at=? WHERE id=?",
+                    (compact_json(metadata), next_status, dismissed_at, task_id),
+                )
+            conn.commit()
+        return {"cancelledTaskIds": cancelled, "publishedTaskIds": published, "terminalTaskIds": terminal}
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -758,11 +861,20 @@ class EventTracker:
         self.discovery_model = os.getenv("HOTTOPIC_EVENT_WEB_SEARCH_MODEL") or self.topic_model
         self.discovery_retry_model = os.getenv("HOTTOPIC_EVENT_WEB_SEARCH_RETRY_MODEL") or self.topic_fallback_model
         self.db.executescript(EVENT_TRACKING_SCHEMA)
+        self._ensure_event_tracking_schema()
         self._seed_prompt_versions()
 
     def close(self) -> None:
         if self._owns_connection:
             self.db.close()
+
+    def _ensure_event_tracking_schema(self) -> None:
+        columns = {str(row["name"]) for row in self.db.execute("PRAGMA table_info(event_tracking_publication_outbox)").fetchall()}
+        with self.db:
+            if "cancelled_at" not in columns:
+                self.db.execute("ALTER TABLE event_tracking_publication_outbox ADD COLUMN cancelled_at TEXT")
+            if "cancelled_by" not in columns:
+                self.db.execute("ALTER TABLE event_tracking_publication_outbox ADD COLUMN cancelled_by TEXT")
 
     def _seed_prompt_versions(self) -> None:
         now = utc_iso(self.now())
@@ -1032,11 +1144,21 @@ class EventTracker:
     def _link_tracked_topic(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> None:
         event = self._find_event(snapshot, decision)
         now = self.now()
+        if event is not None and self._is_event_dismissed(str(event["event_id"])):
+            self._audit(
+                "tracked_topic_suppressed",
+                {"topic_id": snapshot["topic_id"], "identity_key": event["identity_key"]},
+                event_id=str(event["event_id"]),
+            )
+            return
         if event is None:
             tokens = _normalize_identity_tokens(
                 decision.get("event_identity"), snapshot.get("core_entities"), snapshot.get("canonical_subject"), snapshot.get("title"),
             )
             identity_key = stable_id("event", *tokens) if tokens else stable_id("event", snapshot["topic_id"])
+            if self._is_identity_dismissed(identity_key):
+                self._audit("tracked_topic_suppressed", {"topic_id": snapshot["topic_id"], "identity_key": identity_key})
+                return
             event_id = stable_id("tracking-event", identity_key)
             now_text = utc_iso(now)
             self.db.execute(
@@ -1076,6 +1198,16 @@ class EventTracker:
             """,
             (event_id, snapshot["topic_id"], snapshot["snapshot_hash"], compact_json(snapshot), now_text, now_text),
         )
+
+    def _is_event_dismissed(self, event_id: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM event_tracking_dismissals WHERE event_id=? LIMIT 1", (event_id,)
+        ).fetchone() is not None
+
+    def _is_identity_dismissed(self, identity_key: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM event_tracking_dismissals WHERE identity_key=? LIMIT 1", (identity_key,)
+        ).fetchone() is not None
 
     def _find_event(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> sqlite3.Row | None:
         by_topic = self.db.execute(
@@ -1567,6 +1699,8 @@ class EventTracker:
         return {"classified": classified, "material": material, "failed": failed}
 
     def _classify_one_update(self, binding: dict[str, Any], inbox: dict[str, Any], post: dict[str, Any]) -> dict[str, bool]:
+        if self._is_event_dismissed(str(binding["event_id"])):
+            return {"classified": False, "material": False, "failed": False, "terminal": True}
         existing = self.db.execute(
             "SELECT * FROM event_tracking_updates WHERE cycle_id=? AND tweet_id=?",
             (binding["cycle_id"], inbox["tweet_id"]),
@@ -1676,6 +1810,8 @@ class EventTracker:
                 ),
             )
             if decision["classification"] == "material_progress":
+                if self._is_event_dismissed(str(binding["event_id"])):
+                    return {"classified": True, "material": False, "failed": False, "terminal": True}
                 material_at = _datetime(str(post.get("created_at_iso") or post.get("created_at") or now_text), fallback=now)
                 cycle = self.db.execute("SELECT * FROM event_tracking_cycles WHERE cycle_id=?", (binding["cycle_id"],)).fetchone()
                 if cycle is not None:
@@ -1744,7 +1880,9 @@ class EventTracker:
             JOIN event_tracking_events e ON e.event_id=o.event_id
             JOIN event_tracking_cycles c ON c.cycle_id=o.cycle_id
             JOIN event_tracking_inbox i ON i.tweet_id=o.tweet_id
-            WHERE o.status IN ('pending','failed') AND (o.next_attempt_at IS NULL OR o.next_attempt_at<=?)
+            WHERE o.cancelled_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM event_tracking_dismissals d WHERE d.event_id=o.event_id)
+              AND o.status IN ('pending','failed') AND (o.next_attempt_at IS NULL OR o.next_attempt_at<=?)
               AND o.attempts<?
             ORDER BY o.created_at LIMIT ?
             """,
@@ -1761,6 +1899,13 @@ class EventTracker:
     def _dispatch_one(self, row: dict[str, Any]) -> str:
         now = self.now()
         now_text = utc_iso(now)
+        if self._is_event_dismissed(str(row["event_id"])):
+            with self.db:
+                self.db.execute(
+                    "UPDATE event_tracking_publication_outbox SET cancelled_at=?,cancelled_by='system',next_attempt_at=NULL,updated_at=? WHERE outbox_id=? AND cancelled_at IS NULL",
+                    (now_text, now_text, row["outbox_id"]),
+                )
+            return "cancelled"
         with self.db:
             self.db.execute(
                 "UPDATE event_tracking_publication_outbox SET status='submitting',attempts=attempts+1,updated_at=? WHERE outbox_id=?",
@@ -1777,6 +1922,16 @@ class EventTracker:
         post = json_value(row["payload_json"], {})
         try:
             task_id = int(row["primary_task_id"] or self.dispatcher.ensure_task(event=event, cycle=cycle, update=update, post=post))
+            if self._is_event_dismissed(str(row["event_id"])):
+                dismiss_tasks = getattr(self.dispatcher, "dismiss_event_tasks", None)
+                if callable(dismiss_tasks):
+                    dismiss_tasks(event_id=str(row["event_id"]), dismissed_at=now_text, dismissed_by="system")
+                with self.db:
+                    self.db.execute(
+                        "UPDATE event_tracking_publication_outbox SET cancelled_at=?,cancelled_by='system',next_attempt_at=NULL,updated_at=? WHERE outbox_id=? AND cancelled_at IS NULL",
+                        (now_text, now_text, row["outbox_id"]),
+                    )
+                return "cancelled"
             self.dispatcher.submit(task_id=task_id, tweet_id=str(row["tweet_id"]))
         except Exception as exc:
             attempts = int(row["attempts"] or 0) + 1
@@ -1805,7 +1960,7 @@ class EventTracker:
 
     def refresh_publication_statuses(self) -> dict[str, int]:
         rows = self.db.execute(
-            "SELECT outbox_id,primary_task_id,status,event_id,cycle_id FROM event_tracking_publication_outbox WHERE primary_task_id IS NOT NULL"
+            "SELECT outbox_id,primary_task_id,status,event_id,cycle_id FROM event_tracking_publication_outbox WHERE primary_task_id IS NOT NULL AND cancelled_at IS NULL"
         ).fetchall()
         duplicate = published = 0
         with self.db:
@@ -1901,6 +2056,105 @@ class EventTracker:
         lifecycle = self.maintain()
         return {"topics": topic, "discovery": discovery, "poll": polled, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
 
+    def dismiss_event(self, event_id: str, *, actor: str = "") -> dict[str, Any]:
+        """Stop one event without deleting its evidence or published output."""
+        normalized_id = str(event_id or "").strip()
+        if not normalized_id:
+            raise ValueError("event_id 不能为空")
+        dismissed_at = utc_iso(self.now())
+        with self.db:
+            event = self.db.execute("SELECT * FROM event_tracking_events WHERE event_id=?", (normalized_id,)).fetchone()
+            if event is None:
+                raise ValueError("自动快讯事件不存在")
+            previous = self.db.execute(
+                "SELECT dismissed_at FROM event_tracking_dismissals WHERE event_id=?", (normalized_id,)
+            ).fetchone()
+            if previous is not None:
+                return {
+                    "eventId": normalized_id,
+                    "dismissed": True,
+                    "alreadyDismissed": True,
+                    "dismissedAt": previous["dismissed_at"],
+                    "cancelledOutbox": 0,
+                    "cancelledTasks": 0,
+                }
+        dismiss_tasks = getattr(self.dispatcher, "dismiss_event_tasks", None)
+        task_result = (
+            dismiss_tasks(event_id=normalized_id, dismissed_at=dismissed_at, dismissed_by=actor)
+            if callable(dismiss_tasks)
+            else {"cancelledTaskIds": [], "publishedTaskIds": [], "terminalTaskIds": []}
+        )
+        published_task_ids = {int(item) for item in task_result.get("publishedTaskIds", [])}
+        terminal_task_ids = {int(item) for item in task_result.get("terminalTaskIds", [])}
+        with self.db:
+            self.db.execute(
+                "INSERT INTO event_tracking_dismissals(event_id,identity_key,dismissed_at,dismissed_by,detail_json) VALUES(?,?,?,?,?)",
+                (
+                    normalized_id,
+                    event["identity_key"],
+                    dismissed_at,
+                    actor,
+                    compact_json({"actor": actor, "task_result": task_result}),
+                ),
+            )
+            cycles = self.db.execute(
+                "SELECT * FROM event_tracking_cycles WHERE event_id=? AND status IN ('discovering','active')",
+                (normalized_id,),
+            ).fetchall()
+            for cycle in cycles:
+                self._end_cycle(dict(cycle), "manual_dismissed", dismissed_at)
+            self.db.execute(
+                "UPDATE event_tracking_events SET status='ended',ended_at=?,end_reason='manual_dismissed',updated_at=? WHERE event_id=?",
+                (dismissed_at, dismissed_at, normalized_id),
+            )
+            outbox_rows = self.db.execute(
+                "SELECT outbox_id,status,primary_task_id,cancelled_at FROM event_tracking_publication_outbox WHERE event_id=?",
+                (normalized_id,),
+            ).fetchall()
+            cancelled_outbox = 0
+            for row in outbox_rows:
+                if row["cancelled_at"] is not None:
+                    continue
+                task_id = int(row["primary_task_id"] or 0)
+                should_cancel = str(row["status"]) in {"pending", "submitting", "failed"}
+                if str(row["status"]) == "submitted" and task_id not in published_task_ids and task_id not in terminal_task_ids:
+                    should_cancel = True
+                if should_cancel:
+                    self.db.execute(
+                        "UPDATE event_tracking_publication_outbox SET cancelled_at=?,cancelled_by=?,last_error=NULL,next_attempt_at=NULL,updated_at=? WHERE outbox_id=?",
+                        (dismissed_at, actor, dismissed_at, row["outbox_id"]),
+                    )
+                    cancelled_outbox += 1
+            self.db.execute(
+                """
+                UPDATE event_tracking_accounts
+                SET status='inactive',next_due_at=NULL,updated_at=?
+                WHERE status='active' AND NOT EXISTS(
+                  SELECT 1 FROM event_tracking_bindings b
+                  WHERE b.handle_lower=event_tracking_accounts.handle_lower AND b.status='active'
+                )
+                """,
+                (dismissed_at,),
+            )
+            self._audit(
+                "event_manually_dismissed",
+                {
+                    "actor": actor,
+                    "cancelled_outbox": cancelled_outbox,
+                    "cancelled_tasks": task_result.get("cancelledTaskIds", []),
+                    "published_tasks": sorted(published_task_ids),
+                },
+                event_id=normalized_id,
+            )
+        return {
+            "eventId": normalized_id,
+            "dismissed": True,
+            "alreadyDismissed": False,
+            "dismissedAt": dismissed_at,
+            "cancelledOutbox": cancelled_outbox,
+            "cancelledTasks": len(task_result.get("cancelledTaskIds", [])),
+        }
+
     def dashboard(self, *, limit: int = 100) -> dict[str, Any]:
         now = self.now()
         rows = self.db.execute(
@@ -1911,6 +2165,7 @@ class EventTracker:
                    (SELECT COUNT(*) FROM event_tracking_updates u WHERE u.cycle_id=c.cycle_id AND u.classification='material_progress' AND u.status='succeeded') AS material_progress_count
             FROM event_tracking_events e
             LEFT JOIN event_tracking_cycles c ON c.cycle_id=e.current_cycle_id
+            WHERE NOT EXISTS (SELECT 1 FROM event_tracking_dismissals d WHERE d.event_id=e.event_id)
             ORDER BY CASE e.status WHEN 'active' THEN 0 WHEN 'discovering' THEN 1 ELSE 2 END,e.updated_at DESC
             LIMIT ?
             """,
@@ -1918,7 +2173,12 @@ class EventTracker:
         ).fetchall()
         events = [self._event_card(dict(row), now) for row in rows]
         counts = self.db.execute(
-            "SELECT status,COUNT(*) AS count FROM event_tracking_events GROUP BY status"
+            """
+            SELECT e.status,COUNT(*) AS count
+            FROM event_tracking_events e
+            WHERE NOT EXISTS (SELECT 1 FROM event_tracking_dismissals d WHERE d.event_id=e.event_id)
+            GROUP BY e.status
+            """
         ).fetchall()
         active_accounts = self.db.execute(
             "SELECT COUNT(DISTINCT handle_lower) AS count FROM event_tracking_bindings WHERE status='active'"
@@ -1931,8 +2191,20 @@ class EventTracker:
                 "eventsByStatus": {str(row["status"]): int(row["count"]) for row in counts},
                 "activeAccounts": int(active_accounts["count"] if active_accounts else 0),
                 "maxActiveAccounts": EVENT_TRACKING_MAX_ACTIVE_ACCOUNTS,
-                "pendingUpdates": int(self.db.execute("SELECT COUNT(*) FROM event_tracking_updates WHERE status IN ('pending','processing','failed')").fetchone()[0]),
-                "pendingOutbox": int(self.db.execute("SELECT COUNT(*) FROM event_tracking_publication_outbox WHERE status IN ('pending','submitting','failed')").fetchone()[0]),
+                "pendingUpdates": int(self.db.execute(
+                    """
+                    SELECT COUNT(*) FROM event_tracking_updates u
+                    WHERE u.status IN ('pending','processing','failed')
+                      AND NOT EXISTS (SELECT 1 FROM event_tracking_dismissals d WHERE d.event_id=u.event_id)
+                    """
+                ).fetchone()[0]),
+                "pendingOutbox": int(self.db.execute(
+                    """
+                    SELECT COUNT(*) FROM event_tracking_publication_outbox o
+                    WHERE o.cancelled_at IS NULL AND o.status IN ('pending','submitting','failed')
+                      AND NOT EXISTS (SELECT 1 FROM event_tracking_dismissals d WHERE d.event_id=o.event_id)
+                    """
+                ).fetchone()[0]),
             },
             "prompts": prompts,
             "events": events,
@@ -1971,7 +2243,7 @@ class EventTracker:
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         event = self.db.execute("SELECT * FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()
-        if event is None:
+        if event is None or self._is_event_dismissed(event_id):
             return None
         event_value = dict(event)
         cycles = [dict(row) for row in self.db.execute("SELECT * FROM event_tracking_cycles WHERE event_id=? ORDER BY started_at DESC", (event_id,)).fetchall()]
@@ -2032,13 +2304,44 @@ class EventTracker:
                 (event_id,),
             ).fetchall()
         ]
-        outbox = [
-            {
-                "id": row["outbox_id"], "updateId": row["update_id"], "tweetId": row["tweet_id"], "status": row["status"],
-                "taskId": row["primary_task_id"], "attempts": row["attempts"], "error": row["last_error"], "submittedAt": row["submitted_at"],
-            }
-            for row in self.db.execute("SELECT * FROM event_tracking_publication_outbox WHERE event_id=? ORDER BY created_at DESC", (event_id,)).fetchall()
-        ]
+        outbox = []
+        task_detail = getattr(self.dispatcher, "task_detail", None)
+        for row in self.db.execute("SELECT * FROM event_tracking_publication_outbox WHERE event_id=? ORDER BY created_at DESC", (event_id,)).fetchall():
+            task = task_detail(int(row["primary_task_id"])) if callable(task_detail) and row["primary_task_id"] else None
+            post = self.db.execute(
+                "SELECT payload_json FROM event_tracking_inbox WHERE tweet_id=?",
+                (row["tweet_id"],),
+            ).fetchone()
+            post_value = json_value(post["payload_json"], {}) if post is not None else {}
+            if not isinstance(post_value, dict):
+                post_value = {}
+            status = "cancelled" if row["cancelled_at"] else str(row["status"])
+            task_status = str((task or {}).get("status") or "")
+            if row["cancelled_at"]:
+                status = "cancelled"
+            elif task_status == "auto_published":
+                status = "published"
+            elif task_status == "duplicate":
+                status = "duplicate"
+            elif task_status == "event_tracking_cancelled":
+                status = "cancelled"
+            elif task_status.endswith("_failed"):
+                status = "failed"
+            generated_title = (task or {}).get("finalTitle") or (task or {}).get("draftTitle")
+            generated_content = (task or {}).get("finalContent") or (task or {}).get("draftContent")
+            outbox.append(
+                {
+                    "id": row["outbox_id"], "updateId": row["update_id"], "tweetId": row["tweet_id"], "status": status,
+                    "taskId": row["primary_task_id"], "attempts": row["attempts"],
+                    "error": row["last_error"] or (task or {}).get("error"), "submittedAt": row["submitted_at"],
+                    "taskStatus": task_status or None, "sourceUrl": (task or {}).get("sourceUrl") or post_value.get("url"),
+                    "title": generated_title, "content": generated_content,
+                    "contentStage": "final" if (task or {}).get("finalContent") else "draft" if (task or {}).get("draftContent") else None,
+                    "publisherDecision": (task or {}).get("publisherDecision"),
+                    "publisherReasonCode": (task or {}).get("publisherReasonCode"),
+                    "publishedAt": (task or {}).get("publishedAt"), "updatedAt": (task or {}).get("updatedAt"),
+                }
+            )
         discoveries = [
             {
                 "id": row["discovery_id"], "cycleId": row["cycle_id"], "status": row["status"], "attempts": row["attempts"],

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, CircleAlert, Flame, RefreshCcw, Users } from 'lucide-react';
+import { CalendarClock, ChevronRight, CircleAlert, Flame, RefreshCcw, Users } from 'lucide-react';
 import {
   getHotTopicDashboard,
   getHotTopicDetail,
@@ -86,11 +86,11 @@ function Metric({ label, value, warning = false }: { label: string; value: numbe
 
 function TopicRow({ topic, active, onSelect }: { topic: HotTopicCard; active: boolean; onSelect: (topic: HotTopicCard) => void }) {
   return <button className={active ? 'hottopicTopicRow active' : 'hottopicTopicRow'} type="button" onClick={() => onSelect(topic)}>
-    <div><strong>{topic.title}</strong><p>{topic.brief}</p><span><Users size={14} /> 1h {topic.participants.oneHour} · 6h {topic.participants.sixHours} · 24h {topic.participants.twentyFourHours}</span></div>
+    <div><strong>{topic.title}</strong><p>{topic.brief}</p><span><Users size={14} /> 1h {topic.participants.oneHour} · 6h {topic.participants.sixHours} · 24h {topic.participants.twentyFourHours}</span><span><CalendarClock size={14} /> 首次 {formatTime(topic.firstGeneratedAt)} · 更新 {formatTime(topic.lastUpdatedAt)}</span></div>
     <div className="hottopicScore"><span><Flame size={14} /> {topic.hotness.toFixed(1)}</span><ChevronRight size={18} /></div>
   </button>;
 }
 
 function TopicDetail({ detail }: { detail: HotTopicDetail }) {
-  return <article className="hottopicDetailCopy"><div className="hottopicDetailMeta"><span><Flame size={15} /> 热度 {detail.hotness.toFixed(1)}</span><span><Users size={15} /> {detail.participants.twentyFourHours} 位参与者</span></div><h2>{detail.title}</h2><p>{detail.brief}</p><section><h3>参与账号</h3>{detail.speakers.length === 0 ? <span className="muted">暂无参与记录</span> : <div className="hottopicSpeakers">{detail.speakers.map((speaker) => <a key={speaker.account} href={speaker.sourceUrl || `https://x.com/${speaker.account}`} target="_blank" rel="noreferrer"><span>@{speaker.account}</span><time>{formatTime(speaker.lastParticipationAt)}</time></a>)}</div>}</section></article>;
+  return <article className="hottopicDetailCopy"><div className="hottopicDetailMeta"><span><Flame size={15} /> 热度 {detail.hotness.toFixed(1)}</span><span><Users size={15} /> {detail.participants.twentyFourHours} 位参与者</span><span><CalendarClock size={15} /> 首次生成 {formatTime(detail.firstGeneratedAt)}</span><span><CalendarClock size={15} /> 最后更新 {formatTime(detail.lastUpdatedAt)}</span></div><h2>{detail.title}</h2><p>{detail.brief}</p><section><h3>参与账号</h3>{detail.speakers.length === 0 ? <span className="muted">暂无参与记录</span> : <div className="hottopicSpeakers">{detail.speakers.map((speaker) => <a key={speaker.account} href={speaker.sourceUrl || `https://x.com/${speaker.account}`} target="_blank" rel="noreferrer"><span>@{speaker.account}</span><time>{formatTime(speaker.lastParticipationAt)}</time></a>)}</div>}</section></article>;
 }

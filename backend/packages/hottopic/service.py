@@ -23,7 +23,7 @@ from packages.x_agent import XAgentAnalyzer, is_relevant
 
 from .capture import AccountRow, ContentItem, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
-from .topic_aggregator import ModelBriefWriter, TopicAggregator
+from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicAggregator
 
 
 POLL_INTERVAL_SECONDS = 600
@@ -206,6 +206,21 @@ def configured_seconds(name: str, default: float, *, minimum: float, maximum: fl
     return min(maximum, max(minimum, value))
 
 
+def configured_integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name) or default)
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
+
+
+def configured_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 class CollectRequestPacer:
     """Space FXTwitter requests across all poll threads in one worker process."""
 
@@ -251,6 +266,7 @@ class HotTopicService:
         primary_database_path: Path | None = None,
         event_tracking_ai: EventTrackingAI | None = None,
         event_tracking_dispatcher: EventTrackingTaskDispatcher | None = None,
+        semantic_reviewer: Any | None = None,
     ) -> None:
         paths = get_paths()
         ensure_runtime_dirs(paths)
@@ -270,7 +286,35 @@ class HotTopicService:
                 # The topic engine remains useful during credential incidents;
                 # active topics stay visible with their working title.
                 writer = None
-        self.aggregator = TopicAggregator(self.path, brief_writer=writer)
+        self.semantic_reviewer_error: str | None = None
+        if semantic_reviewer is None and configured_bool("HOTTOPIC_CLAIM_REVIEW_ENABLED", True):
+            configured_review_model = os.getenv("HOTTOPIC_CLAIM_REVIEW_MODEL") or "gpt-5.6-luna"
+            configured_review_fallback = os.getenv("HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL") or "gpt-5.6-terra"
+            configured_review_effort = os.getenv("HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT") or "high"
+            try:
+                semantic_reviewer = TopicClaimReviewer(
+                    configured_review_model,
+                    fallback_model=configured_review_fallback,
+                    reasoning_effort=configured_review_effort,
+                    timeout=float(os.getenv("HOTTOPIC_CLAIM_REVIEW_TIMEOUT_SECONDS") or "90"),
+                )
+            except (RuntimeError, ValueError) as exc:
+                # Deterministic aggregation remains available during a model
+                # credential or route incident; the review is fail-open and
+                # is enabled automatically on the next worker restart.
+                semantic_reviewer = None
+                self.semantic_reviewer_error = f"{type(exc).__name__}: {exc}"
+        self.aggregator = TopicAggregator(
+            self.path,
+            brief_writer=writer,
+            semantic_reviewer=semantic_reviewer,
+            semantic_review_batch_size=configured_integer(
+                "HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100
+            ),
+            semantic_review_backfill_limit=configured_integer(
+                "HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000
+            ),
+        )
         # The console HTTP server is threaded while this service intentionally
         # owns one long-lived SQLite connection. All exposed read/write methods
         # therefore use this re-entrant lock around their SQLite work.
@@ -1673,7 +1717,9 @@ class HotTopicService:
         topic_counts = self.db.execute("SELECT matching_status,COUNT(*) FROM topics GROUP BY matching_status").fetchall()
         return {"deploymentStartedAt": self.deployment_started_at(), "accounts": dict(counts),
                 "inboxPending": self.db.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE processed_at IS NULL").fetchone()[0],
-                "topics": dict(topic_counts), "databasePath": str(self.path)}
+                "topics": dict(topic_counts), "databasePath": str(self.path),
+                "semanticReviewEnabled": bool(self.aggregator.semantic_reviewer),
+                "semanticReviewError": self.semantic_reviewer_error}
 
     @_serialized
     def dashboard(self) -> dict[str, Any]:
@@ -1685,7 +1731,9 @@ class HotTopicService:
             "WHERE t.matching_status='active' AND t.visibility='visible' ORDER BY t.hotness_score DESC,t.last_evidence_at DESC LIMIT 100"
         ).fetchall()
         topics = [{"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": row["brief"] or "正文生成中",
-                   "startedAt": row["started_at"], "firstSeenAt": row["first_seen_at"], "lastEvidenceAt": row["last_evidence_at"],
+                   "startedAt": row["started_at"], "firstSeenAt": row["first_seen_at"],
+                   "firstGeneratedAt": row["first_seen_at"], "lastEvidenceAt": row["last_evidence_at"],
+                   "lastUpdatedAt": row["last_evidence_at"] or row["first_seen_at"],
                    "lastParticipationAt": row["last_participation_at"], "hotness": row["hotness_score"],
                    "briefGeneratedAt": row["generated_at"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"], "velocity": row["participant_velocity"]}}
                   for row in rows]
@@ -1704,6 +1752,8 @@ class HotTopicService:
             "LEFT JOIN content_items ci ON ci.content_item_id=p.last_content_item_id WHERE p.topic_id=? ORDER BY p.last_participation_at DESC", (topic_id,)
         ).fetchall()
         return {"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": row["brief"] or "正文生成中",
+                "firstGeneratedAt": row["first_seen_at"],
+                "lastUpdatedAt": row["last_evidence_at"] or row["first_seen_at"],
                 "hotness": row["hotness_score"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"]},
                 "speakers": [{"account": item["activity_account"], "lastParticipationAt": item["last_participation_at"], "sourceUrl": item["source_url"]} for item in speakers]}
 
@@ -1720,6 +1770,10 @@ class HotTopicService:
     def auto_newsflash_prompts(self) -> list[dict[str, Any]]:
         # Prompt versions are immutable and intentionally have no mutation API.
         return self.event_tracker.prompt_versions(include_content=True)
+
+    @_serialized
+    def dismiss_auto_newsflash_event(self, event_id: str, *, actor: str = "") -> dict[str, Any]:
+        return self.event_tracker.dismiss_event(event_id, actor=actor)
 
 
 def run_worker(*, database_path: Path | None = None, seed_path: Path | None = None, once: bool = False, model: str | None = None, workers: int = 8) -> int:

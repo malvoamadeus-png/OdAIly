@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, stable_id
+from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, TopicClaimReviewer, stable_id
 
 
 def profile(
@@ -116,6 +117,137 @@ def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
     prompt = calls[-1]["messages"][0]["content"]
     assert "不要加入编辑者自己的判断、免责声明或结论性提醒" in prompt
     assert "同一行情事实只保留一次" in prompt
+    assert "必须分成 2 至 4 个自然段" in prompt
+
+
+def test_semantic_reviewer_uses_luna_with_high_reasoning() -> None:
+    calls: list[dict[str, object]] = []
+    reviewer = TopicClaimReviewer(
+        "gpt-5.6-luna",
+        fallback_model="",
+        reasoning_effort="high",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        max_attempts=1,
+    )
+
+    def post(request):
+        payload = json.loads(request.data.decode("utf-8"))
+        calls.append(payload)
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "reviews": [{"case_id": "case:1", "decision": "unrelated", "reason": "事件对象不同"}],
+            })}}]
+        }
+
+    reviewer._post_json = post  # type: ignore[method-assign]
+    result = reviewer([{
+        "case_id": "case:1",
+        "claim": {"text": "$GPU HBM demand rises"},
+        "topic": {
+            "title": "Aave collateral expansion",
+            "canonical_subject": "$aave",
+            "core_entities": ["Aave"],
+            "event_or_issue": "collateral",
+            "evidence": [],
+        },
+    }])
+
+    assert result[0]["decision"] == "unrelated"
+    assert calls[0]["model"] == "gpt-5.6-luna"
+    assert calls[0]["reasoning_effort"] == "high"
+    assert "共享一个资产名、合约、平台或引用关系不是 support 的充分条件" in calls[0]["messages"][0]["content"]
+    assert "HBM、Micron、NVIDIA 或 GPU 供需" in calls[0]["messages"][0]["content"]
+
+
+def test_semantic_reviewer_falls_back_to_terra_for_the_same_batch() -> None:
+    calls: list[dict[str, object]] = []
+    reviewer = TopicClaimReviewer(
+        "gpt-5.6-luna",
+        fallback_model="gpt-5.6-terra",
+        reasoning_effort="high",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        max_attempts=1,
+    )
+
+    def post(request):
+        payload = json.loads(request.data.decode("utf-8"))
+        calls.append(payload)
+        if payload["model"] == "gpt-5.6-luna":
+            raise RuntimeError("luna unavailable")
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "reviews": [{
+                    "case_id": "case:1",
+                    "decision": "context",
+                    "confidence": 0.91,
+                    "reason": "只提供相关背景",
+                }],
+            })}}]
+        }
+
+    reviewer._post_json = post  # type: ignore[method-assign]
+    result = reviewer([{"case_id": "case:1", "claim": {"text": "background"}, "topic": {
+        "title": "Topic", "canonical_subject": "$TOPIC", "core_entities": [],
+        "event_or_issue": "general", "evidence": [],
+    }}])
+
+    assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert result[0]["decision"] == "context"
+    assert result[0]["model"] == "gpt-5.6-terra"
+    assert result[0]["confidence"] == 0.91
+
+
+def test_semantic_review_excludes_unrelated_claim_from_participants(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 30, tzinfo=UTC)
+
+    class Reviewer:
+        model = "gpt-5.6-luna"
+        reasoning_effort = "high"
+
+        def __call__(self, cases):
+            return [
+                {
+                    "case_id": case["case_id"],
+                    "decision": "unrelated" if any(word in case["claim"]["text"].lower() for word in ("hbm", "micron")) else "support",
+                    "reason": "独立的芯片/内存事件" if "hbm" in case["claim"]["text"].lower() else "同一抵押品事件",
+                }
+                for case in cases
+            ]
+
+    def content(account: str, tweet_id: str, text: str, minutes: int) -> ContentItem:
+        at = now + timedelta(minutes=minutes)
+        return ContentItem(
+            f"content:{tweet_id}", tweet_id, account, account, "original", text, text, at.isoformat(),
+            f"https://x.com/{account}/status/{tweet_id}", {}, {}, {},
+        )
+
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite", semantic_reviewer=Reviewer())
+    try:
+        result = aggregator.process_batch([
+            content("aave_news", "1", "$AAVE expands collateral into tokenized stocks and $GPU infrastructure", 1),
+            content("aave_update", "2", "$AAVE adds tokenized stocks and $GPU space infrastructure to collateral", 2),
+            content("chip_news", "3", "$GPU HBM demand rises as Micron reports strong memory sales", 3),
+        ], now + timedelta(minutes=5))
+
+        review_rows = aggregator.connection.execute(
+            "SELECT decision FROM topic_claim_reviews WHERE decision='unrelated'"
+        ).fetchall()
+        participants = {
+            row["activity_account"]
+            for row in aggregator.connection.execute("SELECT activity_account FROM topic_participations")
+        }
+        assert result["metrics"]["semantic_review"]["unrelated"] == 1
+        assert len(review_rows) == 1
+        assert "chip_news" not in participants
+        assert {"aave_news", "aave_update"} <= participants
+        assert aggregator.connection.execute(
+            "SELECT last_evidence_at FROM topics WHERE topic_id=("
+            "SELECT topic_id FROM topic_participations WHERE activity_account='aave_update' LIMIT 1)"
+        ).fetchone()[0] == (now + timedelta(minutes=2)).isoformat()
+    finally:
+        aggregator.close()
 
 
 def test_model_brief_writer_removes_editor_meta_text_and_exact_duplicates() -> None:
@@ -391,6 +523,114 @@ def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path)
             "SELECT COUNT(*) FROM topic_participations WHERE topic_id=("
             "SELECT topic_id FROM topics WHERE matching_status='active')"
         ).fetchone()[0] == 5
+    finally:
+        aggregator.close()
+
+
+def test_reconcile_reviews_existing_memberships_before_merging(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 30, tzinfo=UTC)
+
+    class Reviewer:
+        model = "gpt-5.6-luna"
+        reasoning_effort = "high"
+
+        def __call__(self, cases):
+            return [
+                {
+                    "case_id": case["case_id"],
+                    "decision": "unrelated" if "Micron" in case["claim"]["text"] else "support",
+                    "reason": "独立的内存事件" if "Micron" in case["claim"]["text"] else "同一主线",
+                }
+                for case in cases
+            ]
+
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite", semantic_reviewer=Reviewer())
+    try:
+        def insert_topic(topic_id: str, account: str, text: str, index: int) -> None:
+            item_id, claim_id = f"content:{index}", f"claim:{index}"
+            at = (now + timedelta(minutes=index)).isoformat()
+            aggregator.connection.execute(
+                "INSERT INTO content_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item_id, f"tweet:{index}", account, account, "original", text, text, at,
+                 f"https://x.com/{account}/status/{index}", "{}", "{}", "{}", f"fingerprint:{index}"),
+            )
+            aggregator.connection.execute(
+                "INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (claim_id, item_id, text, "official_statement", "[]", "发布/上线", "", "", 1.0, 1.0, at),
+            )
+            aggregator.connection.execute(
+                "INSERT OR IGNORE INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                "seed_expires_at,last_evidence_at,last_participation_at,matching_status,visibility,identity_revision,participant_count_1h,"
+                "participant_count_6h,participant_count_24h,participant_velocity,hotness_score,retention_tier) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (topic_id, text, text, "[]", "发布/上线", at, at, (now + timedelta(hours=24)).isoformat(), at, at,
+                 "seed", "hidden", 1, 0, 0, 0, 0.0, 0.0, "transient"),
+            )
+            aggregator.connection.execute(
+                "INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (stable_id("membership", claim_id, topic_id), claim_id, topic_id, None, "primary", "new_fact", 1.0, "test", "test", at, None),
+            )
+            aggregator.connection.execute(
+                "INSERT INTO topic_participations VALUES (?,?,?,?)",
+                (topic_id, account, at, item_id),
+            )
+            aggregator._update_retrieval(topic_id, at)
+
+        with aggregator.connection:
+            insert_topic("topic:main", "a", "$GPU launch on Aave collateral", 1)
+            insert_topic("topic:main", "b", "$GPU launch on Aave collateral", 2)
+            insert_topic("topic:main", "c", "$GPU launch on Aave collateral", 3)
+            insert_topic("topic:main", "d", "$GPU launch on Aave collateral", 4)
+            insert_topic("topic:main", "e", "$GPU launch on Aave collateral", 5)
+            insert_topic("topic:other", "micron", "Micron HBM memory sales launch", 6)
+
+        result = aggregator.reconcile_recent_topics(now + timedelta(minutes=10))
+
+        assert result["semantic_review"]["unrelated"] == 1
+        assert not result["topic_merges"]
+        assert aggregator.connection.execute(
+            "SELECT COUNT(*) FROM topics WHERE matching_status IN ('seed','active')"
+        ).fetchone()[0] == 2
+    finally:
+        aggregator.close()
+
+
+def test_topic_claim_review_migrates_legacy_input_fingerprint(tmp_path: Path) -> None:
+    database = tmp_path / "topics.sqlite"
+    current = TopicAggregator(database)
+    current.close()
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(
+            """
+            DROP TABLE topic_claim_reviews;
+            CREATE TABLE topic_claim_reviews (
+              claim_id TEXT NOT NULL,
+              topic_id TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              model TEXT NOT NULL,
+              reasoning_effort TEXT NOT NULL,
+              input_fingerprint TEXT NOT NULL,
+              reviewed_at TEXT NOT NULL,
+              error TEXT,
+              PRIMARY KEY(claim_id, topic_id)
+            );
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    aggregator = TopicAggregator(database)
+    try:
+        columns = {
+            row["name"] for row in aggregator.connection.execute("PRAGMA table_info(topic_claim_reviews)")
+        }
+        assert "input_hash" in columns
+        assert "input_fingerprint" not in columns
+        assert "confidence" in columns
     finally:
         aggregator.close()
 

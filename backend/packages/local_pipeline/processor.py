@@ -42,6 +42,7 @@ from .queue import LocalPipelineJob
 X_TERMINAL_STATUSES: set[str] = {
     "auto_published",
     "ready_review",
+    "event_tracking_cancelled",
     "discarded",
     "duplicate",
     "expired",

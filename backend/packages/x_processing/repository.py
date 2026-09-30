@@ -194,6 +194,7 @@ class XProcessingRepository(Protocol):
         worker_id: str,
         lock_seconds: int = 300,
     ) -> TaskRecord | None: ...
+    def is_event_tracking_cancelled(self, task_id: int) -> bool: ...
     def get_pipeline(self, task_id: int) -> PipelineRecord: ...
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion: ...
     def append_prompt_version(
@@ -650,6 +651,18 @@ class PostgresXProcessingRepository:
             )
             conn.commit()
             return _row_to_task(row)
+
+    def is_event_tracking_cancelled(self, task_id: int) -> bool:
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT source,status,metadata->'event_tracking'->>'dismissed_at' AS dismissed_at FROM tasks WHERE id = %s",
+                (task_id,),
+            ).fetchone()
+        return bool(
+            row
+            and row["source"] == EVENT_TRACKING_SOURCE
+            and (row["status"] == "event_tracking_cancelled" or row["dismissed_at"])
+        )
 
     def get_pipeline(self, task_id: int) -> PipelineRecord:
         with self._connect(autocommit=True) as conn:
@@ -1372,6 +1385,15 @@ class InMemoryXProcessingRepository:
             self.pipelines.setdefault(task.id, PipelineRecord(task_id=task.id))
             return updated
         return None
+
+    def is_event_tracking_cancelled(self, task_id: int) -> bool:
+        task = self.tasks.get(task_id)
+        if task is None or task.source != EVENT_TRACKING_SOURCE:
+            return False
+        event_metadata = task.metadata.get("event_tracking")
+        return task.status == "event_tracking_cancelled" or bool(
+            isinstance(event_metadata, dict) and event_metadata.get("dismissed_at")
+        )
 
     def get_pipeline(self, task_id: int) -> PipelineRecord:
         return self.pipelines[task_id]

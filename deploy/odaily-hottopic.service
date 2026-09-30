@@ -10,6 +10,10 @@ EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=HOTTOPIC_MODEL=gpt-5.6-luna
 Environment=HOTTOPIC_FALLBACK_MODEL=gpt-5.6-terra
+Environment=HOTTOPIC_CLAIM_REVIEW_ENABLED=true
+Environment=HOTTOPIC_CLAIM_REVIEW_MODEL=gpt-5.6-luna
+Environment=HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL=gpt-5.6-terra
+Environment=HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT=high
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py hottopic-worker --seed --workers 8
 Restart=always
 RestartSec=10

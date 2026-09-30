@@ -844,7 +844,7 @@ body {
 .hottopicDetail { min-width: 0; overflow: auto; }
 .hottopicDetailCopy { max-width: 760px; }
 .hottopicDetailCopy > p { white-space: pre-wrap; color: #35444d; line-height: 1.75; }
-.hottopicDetailMeta { display: flex; gap: 14px; margin-bottom: 12px; color: #66717d; font-size: 13px; }
+.hottopicDetailMeta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 12px; color: #66717d; font-size: 13px; }
 .hottopicDetailMeta span { display: inline-flex; align-items: center; gap: 5px; }
 .hottopicDetailCopy section { margin-top: 28px; }
 .hottopicDetailCopy h3 { margin: 0 0 9px; font-size: 14px; }
@@ -881,17 +881,29 @@ body {
 .autoNewsflashRowStatus { display: inline-flex; align-items: flex-start; gap: 7px; color: #77838b; }
 .autoNewsflashDetail { min-width: 0; overflow: auto; }
 .autoNewsflashDetailCopy { max-width: 800px; }
+.autoNewsflashDetailHeader { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .autoNewsflashDetailCopy > p { margin: 10px 0 0; color: #35444d; line-height: 1.7; white-space: pre-wrap; }
-.autoNewsflashDetailMeta { display: flex; flex-wrap: wrap; gap: 8px 12px; color: #6a7780; font-size: 12px; }
+.autoNewsflashDetailMeta { display: flex; flex: 1 1 180px; min-width: 0; flex-wrap: wrap; gap: 8px 12px; color: #6a7780; font-size: 12px; }
+.autoNewsflashDetailHeader .ghostButton { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; min-height: 30px; padding: 5px 9px; border: 1px solid #e0c0bb; border-radius: 5px; background: #fffafa; color: #a43b31; cursor: pointer; font-size: 12px; }
+.autoNewsflashDetailHeader .ghostButton:hover { background: #fff2ef; }
+.autoNewsflashDetailHeader .ghostButton:disabled { cursor: wait; opacity: .6; }
 .autoNewsflashStatus { display: inline-flex; width: max-content; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid #d7e0e1; border-radius: 5px; color: #53616a; font-size: 11px; line-height: 1.3; }
 .autoNewsflashStatus.active, .autoNewsflashStatus.material_progress, .autoNewsflashStatus.published { border-color: #a9d8c8; background: #edf9f4; color: #087451; }
 .autoNewsflashStatus.discovering, .autoNewsflashStatus.submitted { border-color: #b8d9e6; background: #f0f9fc; color: #236c89; }
-.autoNewsflashStatus.discovery_failed, .autoNewsflashStatus.capacity_exhausted, .autoNewsflashStatus.failed { border-color: #e9c5bf; background: #fff5f2; color: #aa3e32; }
-.autoNewsflashStatus.duplicate, .autoNewsflashStatus.ended, .autoNewsflashStatus.relevant_no_progress, .autoNewsflashStatus.irrelevant { background: #f7f8f8; color: #68747c; }
+.autoNewsflashStatus.discovery_failed, .autoNewsflashStatus.capacity_exhausted, .autoNewsflashStatus.failed, .autoNewsflashStatus.publisher_failed { border-color: #e9c5bf; background: #fff5f2; color: #aa3e32; }
+.autoNewsflashStatus.pending, .autoNewsflashStatus.judging, .autoNewsflashStatus.deduping, .autoNewsflashStatus.writing, .autoNewsflashStatus.formatting, .autoNewsflashStatus.publishing { border-color: #b8d9e6; background: #f0f9fc; color: #236c89; }
+.autoNewsflashStatus.duplicate, .autoNewsflashStatus.ended, .autoNewsflashStatus.relevant_no_progress, .autoNewsflashStatus.irrelevant, .autoNewsflashStatus.cancelled, .autoNewsflashStatus.event_tracking_cancelled { background: #f7f8f8; color: #68747c; }
 .autoNewsflashDetailSection { margin-top: 25px; }
 .autoNewsflashDetailSection h3 { margin: 0 0 9px; color: #25333d; font-size: 14px; }
 .autoNewsflashDetailSection > div { display: grid; gap: 8px; }
 .autoNewsflashDetailSection a, .autoNewsflashUpdate, .autoNewsflashOutbox, .autoNewsflashDiscovery { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 9px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #155f50; text-decoration: none; }
+.autoNewsflashOutbox { color: #35444d; }
+.autoNewsflashOutboxHeader { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 7px; }
+.autoNewsflashGeneratedTitle { grid-column: 1 / -1; overflow-wrap: anywhere; color: #25333d; font-size: 14px; line-height: 1.5; }
+.autoNewsflashGeneratedContent { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; color: #35444d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.autoNewsflashOutboxMeta { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 7px 12px; color: #74808a; font-size: 11px; }
+.autoNewsflashOutboxMeta a { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; color: #28735d; font-size: 11px; }
+.autoNewsflashOutboxError { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; color: #aa3e32; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .autoNewsflashDetailSection a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .autoNewsflashDetailSection small, .autoNewsflashUpdate small, .autoNewsflashOutbox small, .autoNewsflashDiscovery small { color: #74808a; font-size: 11px; }
 .autoNewsflashUpdate > div { display: flex; grid-column: 1 / -1; align-items: center; gap: 8px; }

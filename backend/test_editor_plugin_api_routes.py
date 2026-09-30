@@ -82,6 +82,40 @@ class _AutoNewsflashReadOnlyService:
         raise AssertionError(f"unexpected auto-newsflash mutation or route: {name}")
 
 
+class _AutoNewsflashDismissService:
+    api_settings = SimpleNamespace(cors_allow_origin="*")
+
+    def __init__(self, *, allowed: bool) -> None:
+        self.allowed = allowed
+        self.dismissed: set[str] = set()
+
+    def authenticate_console_admin(self, _authorization_header: str | None) -> AuthenticatedEditor:
+        if not self.allowed:
+            raise EditorPluginForbiddenError("当前账号不是控制台管理员")
+        return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+    def dismiss_auto_newsflash_event(
+        self, _actor: AuthenticatedEditor, payload: dict[str, object]
+    ) -> dict[str, object]:
+        event_id = str(payload.get("event_id") or "").strip()
+        if not event_id:
+            raise EditorPluginApiError("event_id 不能为空")
+        if event_id == "event:missing":
+            error = EditorPluginApiError("自动快讯事件不存在")
+            error.status_code = HTTPStatus.NOT_FOUND
+            raise error
+        already_dismissed = event_id in self.dismissed
+        self.dismissed.add(event_id)
+        return {
+            "eventId": event_id,
+            "dismissed": True,
+            "alreadyDismissed": already_dismissed,
+            "dismissedAt": "2026-09-30T00:00:00+00:00",
+            "cancelledOutbox": 1 if not already_dismissed else 0,
+            "cancelledTasks": 1 if not already_dismissed else 0,
+        }
+
+
 class _XAgentHistoryService:
     api_settings = SimpleNamespace(cors_allow_origin="*")
 
@@ -190,7 +224,7 @@ def test_x_agent_subscription_route_requires_console_admin() -> None:
         server.server_close()
 
 
-def test_auto_newsflash_routes_are_read_only_and_validate_event_id() -> None:
+def test_auto_newsflash_routes_validate_event_id() -> None:
     service = _AutoNewsflashReadOnlyService()
     server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -213,6 +247,47 @@ def test_auto_newsflash_routes_are_read_only_and_validate_event_id() -> None:
         assert status == HTTPStatus.BAD_REQUEST
         assert body == {"ok": False, "message": "event_id 不能为空"}
         assert service.calls == [("dashboard", None), ("prompts", None), ("event", "event:giwa"), ("event", None)]
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_auto_newsflash_dismiss_route_requires_admin_and_is_idempotent() -> None:
+    denied = _AutoNewsflashDismissService(allowed=False)
+    server = EditorPluginApiServer(("127.0.0.1", 0), denied)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/auto-newsflash/dismiss", {"event_id": "event:one"})
+        assert status == HTTPStatus.FORBIDDEN
+        assert body == {"ok": False, "message": "当前账号不是控制台管理员"}
+        assert denied.dismissed == set()
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+    allowed = _AutoNewsflashDismissService(allowed=True)
+    server = EditorPluginApiServer(("127.0.0.1", 0), allowed)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/auto-newsflash/dismiss", {})
+        assert status == HTTPStatus.BAD_REQUEST
+        assert body == {"ok": False, "message": "event_id 不能为空"}
+
+        status, body = _post_json(server, "/console/auto-newsflash/dismiss", {"event_id": "event:missing"})
+        assert status == HTTPStatus.NOT_FOUND
+        assert body == {"ok": False, "message": "自动快讯事件不存在"}
+
+        status, body = _post_json(server, "/console/auto-newsflash/dismiss", {"event_id": "event:one"})
+        assert status == HTTPStatus.OK
+        assert body["data"]["alreadyDismissed"] is False
+
+        status, body = _post_json(server, "/console/auto-newsflash/dismiss", {"event_id": "event:one"})
+        assert status == HTTPStatus.OK
+        assert body["data"]["alreadyDismissed"] is True
     finally:
         server.shutdown()
         thread.join(timeout=2)

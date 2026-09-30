@@ -606,6 +606,8 @@ class XProcessingWorker:
             print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
     def _process_task(self, task: TaskRecord) -> None:
+        if self._event_tracking_cancelled(task.id):
+            return
         if self.stage in {"judge", "judge_crypto", "judge_ai", "judge_jin10"}:
             self._run_judge(task)
         elif self.stage == "search":
@@ -618,6 +620,12 @@ class XProcessingWorker:
             self._run_publish(task)
         else:
             raise ValueError(f"unknown stage: {self.stage}")
+
+    def _event_tracking_cancelled(self, task_id: int) -> bool:
+        if self.stage not in {"search", "write", "format_publish", "publish"}:
+            return False
+        checker = getattr(self.repository, "is_event_tracking_cancelled", None)
+        return bool(checker(task_id)) if callable(checker) else False
 
     def _resolve_task_author_name(self, task: TaskRecord) -> TaskRecord:
         if task.source == BINANCE_SQUARE_SOURCE:
@@ -903,6 +911,8 @@ class XProcessingWorker:
                         "[odaily] search archive link failed "
                         f"task_id={task.id} candidate_id={decision.candidate_id}: {exc}"
                     )
+            if self._event_tracking_cancelled(task.id):
+                return
             self.repository.complete_search_duplicate(task.id, result=result)
             return
         result = {
@@ -929,8 +939,12 @@ class XProcessingWorker:
             result["review_similarity"] = non_duplicate_review.similarity
             if non_duplicate_review.raw_ai_output:
                 result["raw_ai_output"] = non_duplicate_review.raw_ai_output
+        if self._event_tracking_cancelled(task.id):
+            return
         candidate_id, archive_is_primary = self.repository.create_candidate_for_task(task, search_result=result)
         self._mirror_active_candidate(task=task, candidate_id=candidate_id)
+        if self._event_tracking_cancelled(task.id):
+            return
         self.repository.complete_search_ready(
             task.id,
             candidate_id=candidate_id,
@@ -1096,6 +1110,8 @@ class XProcessingWorker:
             known_subjects=known_subjects,
             feature_mode_enabled=prompt.feature_mode_enabled,
         )
+        if self._event_tracking_cancelled(task.id):
+            return
         self.repository.complete_write(
             task.id,
             prompt=prompt,
@@ -1123,6 +1139,8 @@ class XProcessingWorker:
             self.repository.fail_task(task.id, stage=self.stage, error=str(exc), status="format_failed")
             self._release_local_candidate_for_task(task.id, release_reason="format_failed")
             raise HandledStageError(str(exc)) from exc
+        if self._event_tracking_cancelled(task.id):
+            return
         self.repository.complete_format_publish(
             task.id,
             final_title=final.title,
@@ -1130,6 +1148,8 @@ class XProcessingWorker:
         )
 
     def _run_publish(self, task: TaskRecord) -> None:
+        if self._event_tracking_cancelled(task.id):
+            return
         pipeline = self.repository.get_pipeline(task.id)
         decided_at = datetime.now(UTC)
         publisher_channel = resolve_publisher_channel(task)
@@ -1156,6 +1176,8 @@ class XProcessingWorker:
             raise HandledStageError(error)
 
         if task.source == EVENT_TRACKING_SOURCE:
+            if self._event_tracking_cancelled(task.id):
+                return
             self._complete_event_tracking_publish(task=task, pipeline=pipeline, decided_at=decided_at)
             return
 
@@ -1363,6 +1385,8 @@ class XProcessingWorker:
             "reason": "已通过官方账号核验、事件实质进展判断和全站查重，按事件自动快讯规则直发。",
             "event_tracking": (task.metadata or {}).get("event_tracking", {}),
         }
+        if self._event_tracking_cancelled(task.id):
+            return
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,

@@ -31,6 +31,9 @@ MIN_VISIBLE_PARTICIPANTS = 5
 TRANSIENT_RETENTION_HOURS = 48
 BRIEF_RETRY_BASE_MINUTES = 5
 BRIEF_RETRY_MAX_MINUTES = 60
+SEMANTIC_REVIEW_BATCH_SIZE = 40
+SEMANTIC_REVIEW_BACKFILL_LIMIT = 120
+SEMANTIC_REVIEW_DECISIONS = frozenset({"support", "context", "unrelated"})
 
 RE_CASHTAG = re.compile(r"\$[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{1,30}")
 RE_HASHTAG = re.compile(r"#[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{1,30}")
@@ -341,6 +344,7 @@ class EventIdentity:
 
 Extractor = Callable[[ContentItem], Sequence[Claim]]
 Resolver = Callable[[Claim, Sequence[Candidate], sqlite3.Connection], dict[str, Any] | None]
+SemanticReviewer = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
 
 
 SCHEMA = """
@@ -495,6 +499,20 @@ CREATE TABLE IF NOT EXISTS topic_merges (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_topic_merge_target ON topic_merges(target_topic_id);
+CREATE TABLE IF NOT EXISTS topic_claim_reviews (
+  claim_id TEXT NOT NULL REFERENCES claims(claim_id),
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  decision TEXT NOT NULL CHECK(decision IN ('support','context','unrelated')),
+  confidence REAL NOT NULL DEFAULT 0.0,
+  reason TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '',
+  reasoning_effort TEXT NOT NULL DEFAULT '',
+  input_hash TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL,
+  error TEXT,
+  PRIMARY KEY(claim_id, topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_claim_reviews_topic ON topic_claim_reviews(topic_id, decision);
 """
 
 
@@ -514,6 +532,9 @@ class TopicAggregator:
         extractor: Extractor | None = None,
         resolver: Resolver | None = None,
         brief_writer: Callable[..., dict[str, Any]] | None = None,
+        semantic_reviewer: SemanticReviewer | None = None,
+        semantic_review_batch_size: int = SEMANTIC_REVIEW_BATCH_SIZE,
+        semantic_review_backfill_limit: int = SEMANTIC_REVIEW_BACKFILL_LIMIT,
     ) -> None:
         self.database = str(database)
         # The live dashboard reads the state from separate connections, while
@@ -534,12 +555,16 @@ class TopicAggregator:
         self._migrate_brief_status_schema()
         self._migrate_retention_schema()
         self._migrate_topic_evidence()
+        self._migrate_topic_claim_reviews()
         self._retrieval_cache: dict[str, dict[str, Any]] = {}
         self._feature_index: defaultdict[str, set[str]] = defaultdict(set)
         self._load_retrieval_cache()
         self.extractor = extractor or self._extract_claims
         self.resolver = resolver
         self.brief_writer = brief_writer
+        self.semantic_reviewer = semantic_reviewer
+        self.semantic_review_batch_size = max(1, int(semantic_review_batch_size))
+        self.semantic_review_backfill_limit = max(0, int(semantic_review_backfill_limit))
 
     def _migrate_single_brief_schema(self) -> None:
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(brief_revisions)")}
@@ -624,6 +649,30 @@ class TopicAggregator:
                         "SELECT ?,claim_id FROM claims WHERE claim_id=?",
                         (row["topic_id"], str(claim_id)),
                     )
+
+    def _migrate_topic_claim_reviews(self) -> None:
+        """Keep semantic review records compatible with the first rollout."""
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(topic_claim_reviews)")}
+        if not columns:
+            return
+        with self.connection:
+            if "confidence" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE topic_claim_reviews ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0"
+                )
+            if "input_hash" not in columns:
+                if "input_fingerprint" in columns:
+                    self.connection.execute(
+                        "ALTER TABLE topic_claim_reviews RENAME COLUMN input_fingerprint TO input_hash"
+                    )
+                else:
+                    self.connection.execute(
+                        "ALTER TABLE topic_claim_reviews ADD COLUMN input_hash TEXT NOT NULL DEFAULT ''"
+                    )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_claim_reviews_topic "
+                "ON topic_claim_reviews(topic_id, decision)"
+            )
 
     def close(self) -> None:
         self.connection.close()
@@ -728,6 +777,11 @@ class TopicAggregator:
                     topic_ids,
                 )
                 self.connection.execute(
+                    "DELETE FROM topic_claim_reviews WHERE topic_id IN "
+                    f"({','.join('?' for _ in topic_ids)})",
+                    topic_ids,
+                )
+                self.connection.execute(
                     "DELETE FROM topic_participations WHERE topic_id IN "
                     f"({','.join('?' for _ in topic_ids)})",
                     topic_ids,
@@ -748,6 +802,11 @@ class TopicAggregator:
                     topic_ids,
                 )
             if claim_ids:
+                self.connection.execute(
+                    "DELETE FROM topic_claim_reviews WHERE claim_id IN "
+                    f"({','.join('?' for _ in claim_ids)})",
+                    claim_ids,
+                )
                 self.connection.execute(
                     "DELETE FROM memberships WHERE claim_id IN "
                     f"({','.join('?' for _ in claim_ids)})",
@@ -821,6 +880,7 @@ class TopicAggregator:
             "affected_topic_ids": [],
             "brief_refresh_requests": [],
             "topic_merges": [],
+            "semantic_review": {"enabled": bool(self.semantic_reviewer), "requested": 0, "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0},
             "errors": [],
             "token_usage": {"input": 0, "output": 0, "cached": 0, "total": 0},
         }
@@ -830,6 +890,7 @@ class TopicAggregator:
         }
         decisions: list[dict[str, Any]] = []
         affected: set[str] = set()
+        review_targets: set[tuple[str, str]] = set()
         phase_started = time.perf_counter()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -866,13 +927,27 @@ class TopicAggregator:
                     if action == "attach":
                         metrics["attach_count"] += 1
                         for topic_id in topic_ids:
-                            self._attach_claim(claim, topic_id, candidates, reason, source, item, batch_iso)
+                            self._attach_claim(
+                                claim, topic_id, candidates, reason, source, item, batch_iso,
+                                defer_participation=bool(self.semantic_reviewer),
+                            )
+                            if self.semantic_reviewer:
+                                review_targets.add((claim.claim_id, topic_id))
                             affected.add(topic_id)
                             item_topics.add(topic_id)
                     elif action == "create_seed":
                         metrics["create_seed_count"] += 1
                         topic_id = self._create_seed(claim, item, batch_iso)
-                        self._attach_claim(claim, topic_id, [], reason, source, item, batch_iso)
+                        self._attach_claim(
+                            claim, topic_id, [], reason, source, item, batch_iso,
+                            defer_participation=bool(self.semantic_reviewer),
+                        )
+                        if self.semantic_reviewer:
+                            self._store_topic_claim_review(
+                                claim.claim_id, topic_id, "support", "seed claim is the topic's initial evidence",
+                                confidence=1.0, model="hard_rule", reasoning_effort="", input_hash=stable_id("review-input", claim.claim_id, topic_id),
+                                reviewed_at=batch_iso,
+                            )
                         affected.add(topic_id)
                         item_topics.add(topic_id)
                     elif action == "defer":
@@ -892,6 +967,20 @@ class TopicAggregator:
 
                 if item_topics:
                     metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
+
+            if self.semantic_reviewer:
+                self.connection.commit()
+                review_targets.update(
+                    self._unreviewed_review_targets(
+                        affected,
+                        limit=self.semantic_review_backfill_limit,
+                        exclude=review_targets,
+                    )
+                )
+                review_result = self._review_memberships(review_targets, batch_iso)
+                metrics["semantic_review"] = review_result
+                self.connection.execute("BEGIN IMMEDIATE")
+                self._rebuild_topic_participations(affected, batch_iso)
 
             merge_requests = self._consolidate_dirty_topics(affected, batch_iso)
             metrics["topic_merges"] = merge_requests
@@ -974,8 +1063,19 @@ class TopicAggregator:
                     (cutoff,),
                 )
             }
-            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso)
             affected = set(topic_ids)
+            if self.semantic_reviewer:
+                review_targets = self._unreviewed_review_targets(topic_ids, limit=self.semantic_review_backfill_limit)
+                self.connection.commit()
+                review_result = self._review_memberships(review_targets, batch_iso)
+                self.connection.execute("BEGIN IMMEDIATE")
+                self._rebuild_topic_participations(topic_ids, batch_iso)
+            else:
+                review_result = {
+                    "enabled": False, "requested": 0, "support": 0, "context": 0,
+                    "unrelated": 0, "fallback": 0, "model_calls": 0,
+                }
+            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso)
             for request in merge_requests:
                 affected.add(request["source_topic_id"])
                 affected.add(request["target_topic_id"])
@@ -990,7 +1090,7 @@ class TopicAggregator:
             }
             self.connection.commit()
             brief_requests = self._refresh_briefs(affected | pending_briefs, batch_iso, status_requests["transitions"])
-            return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests}
+            return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests, "semantic_review": review_result}
         except Exception:
             self.connection.rollback()
             raise
@@ -1174,6 +1274,8 @@ class TopicAggregator:
         source: str,
         item: ContentItem,
         at: str,
+        *,
+        defer_participation: bool = False,
     ) -> None:
         best_score = next((candidate.score for candidate in candidates if candidate.topic_id == topic_id), 0.0)
         relation_values = self._relations(claim)
@@ -1188,16 +1290,234 @@ class TopicAggregator:
                     self._membership_role(claim), best_score, source, reason, at, None,
                 ),
             )
-        self.connection.execute(
-            "INSERT INTO topic_participations VALUES (?,?,?,?) ON CONFLICT(topic_id,activity_account) DO UPDATE SET "
-            "last_participation_at=MAX(last_participation_at, excluded.last_participation_at), last_content_item_id=excluded.last_content_item_id",
-            (topic_id, item.activity_account, item.created_at, item.content_item_id),
-        )
+        if not defer_participation:
+            self.connection.execute(
+                "INSERT INTO topic_participations VALUES (?,?,?,?) ON CONFLICT(topic_id,activity_account) DO UPDATE SET "
+                "last_participation_at=MAX(last_participation_at, excluded.last_participation_at), last_content_item_id=excluded.last_content_item_id",
+                (topic_id, item.activity_account, item.created_at, item.content_item_id),
+            )
         self.connection.execute(
             "UPDATE topics SET last_evidence_at=MAX(COALESCE(last_evidence_at, ''), ?) WHERE topic_id=?",
             (item.created_at, topic_id),
         )
         self._update_retrieval(topic_id, at)
+
+    def _store_topic_claim_review(
+        self,
+        claim_id: str,
+        topic_id: str,
+        decision: str,
+        reason: str,
+        *,
+        confidence: float,
+        model: str,
+        reasoning_effort: str,
+        input_hash: str,
+        reviewed_at: str,
+        error: str | None = None,
+    ) -> None:
+        if decision not in SEMANTIC_REVIEW_DECISIONS:
+            raise ValueError(f"invalid semantic review decision: {decision}")
+        confidence = min(1.0, max(0.0, float(confidence)))
+        self.connection.execute(
+            "INSERT OR REPLACE INTO topic_claim_reviews("
+            "claim_id,topic_id,decision,confidence,reason,model,reasoning_effort,input_hash,reviewed_at,error"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                claim_id, topic_id, decision, confidence, compact(reason), model, reasoning_effort,
+                input_hash, reviewed_at, error,
+            ),
+        )
+
+    def _semantic_review_case(self, claim_id: str, topic_id: str, pending: set[tuple[str, str]]) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT cl.*,ci.activity_account,ci.created_at,ci.tweet_id,ci.source_url,"
+            "t.working_title,t.canonical_subject,t.core_entities_json,t.event_or_issue,t.identity_revision "
+            "FROM claims cl JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+            "JOIN topics t ON t.topic_id=? WHERE cl.claim_id=?",
+            (topic_id, claim_id),
+        ).fetchone()
+        if row is None:
+            return None
+        evidence_rows = self.connection.execute(
+            "SELECT cl.claim_id,cl.claim_text,ci.activity_account,ci.created_at "
+            "FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id "
+            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL "
+            "AND COALESCE(r.decision,'support') IN ('support','context') "
+            "ORDER BY ci.created_at DESC LIMIT 12",
+            (topic_id,),
+        ).fetchall()
+        evidence = [
+            {
+                "claim_id": evidence_row["claim_id"],
+                "account": evidence_row["activity_account"],
+                "created_at": evidence_row["created_at"],
+                "text": evidence_row["claim_text"],
+            }
+            for evidence_row in evidence_rows
+            if (evidence_row["claim_id"], topic_id) not in pending and evidence_row["claim_id"] != claim_id
+        ][:8]
+        topic = {
+            "topic_id": topic_id,
+            "title": row["working_title"],
+            "canonical_subject": row["canonical_subject"],
+            "core_entities": json_loads(row["core_entities_json"], []),
+            "event_or_issue": row["event_or_issue"],
+            "identity_revision": int(row["identity_revision"] or 0),
+            "evidence": evidence,
+        }
+        claim = {
+            "claim_id": claim_id,
+            "account": row["activity_account"],
+            "created_at": row["created_at"],
+            "tweet_id": row["tweet_id"],
+            "source_url": row["source_url"],
+            "kind": row["claim_kind"],
+            "entities": json_loads(row["entities_json"], []),
+            "text": row["claim_text"],
+        }
+        fingerprint = hashlib.sha256(json_dumps({"claim": claim, "topic": topic}).encode("utf-8")).hexdigest()
+        return {
+            "case_id": stable_id("semantic-review-case", claim_id, topic_id),
+            "claim_id": claim_id,
+            "topic_id": topic_id,
+            "claim": claim,
+            "topic": topic,
+            "input_hash": fingerprint,
+        }
+
+    def _unreviewed_review_targets(
+        self,
+        topic_ids: Iterable[str],
+        *,
+        limit: int,
+        exclude: set[tuple[str, str]] | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return a bounded queue for old links that predate semantic review."""
+        topic_ids = sorted(set(topic_ids))
+        if not topic_ids or limit <= 0:
+            return set()
+        marks = ",".join("?" for _ in topic_ids)
+        rows = self.connection.execute(
+            "SELECT m.claim_id,m.topic_id FROM memberships m "
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            f"WHERE m.topic_id IN ({marks}) AND m.superseded_by IS NULL "
+            "AND (r.claim_id IS NULL OR r.error IS NOT NULL) "
+            "ORDER BY m.created_at,m.claim_id LIMIT ?",
+            [*topic_ids, int(limit)],
+        ).fetchall()
+        excluded = exclude or set()
+        return {
+            (str(row["claim_id"]), str(row["topic_id"]))
+            for row in rows
+            if (str(row["claim_id"]), str(row["topic_id"])) not in excluded
+        }
+
+    def _review_memberships(self, targets: set[tuple[str, str]], at: str) -> dict[str, Any]:
+        """Review new claim-topic links outside the SQLite write transaction."""
+        if not self.semantic_reviewer or not targets:
+            return {"enabled": bool(self.semantic_reviewer), "requested": 0, "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0}
+        cases: list[dict[str, Any]] = []
+        pending = set(targets)
+        for claim_id, topic_id in sorted(targets):
+            case = self._semantic_review_case(claim_id, topic_id, pending)
+            if case is not None:
+                cases.append(case)
+        result = {"enabled": True, "requested": len(cases), "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0}
+        misses: list[dict[str, Any]] = []
+        for case in cases:
+            cached = self.connection.execute(
+                "SELECT decision,confidence,reason,model,reasoning_effort,error FROM topic_claim_reviews "
+                "WHERE claim_id=? AND topic_id=? AND input_hash=?",
+                (case["claim_id"], case["topic_id"], case["input_hash"]),
+            ).fetchone()
+            if cached is None or cached["error"]:
+                misses.append(case)
+                continue
+            decision = str(cached["decision"])
+            result[decision] = result.get(decision, 0) + 1
+        for start in range(0, len(misses), self.semantic_review_batch_size):
+            chunk = misses[start : start + self.semantic_review_batch_size]
+            response_by_case: dict[str, dict[str, Any]] = {}
+            error_message = ""
+            try:
+                result["model_calls"] += 1
+                raw_response = self.semantic_reviewer(chunk)
+                response_by_case = {
+                    str(row.get("case_id")): dict(row)
+                    for row in raw_response
+                    if isinstance(row, dict) and row.get("case_id")
+                }
+            except Exception as exc:
+                error_message = f"{type(exc).__name__}: {str(exc).strip() or 'semantic reviewer failed'}"
+            for case in chunk:
+                response = response_by_case.get(case["case_id"], {})
+                decision = compact(response.get("decision"))
+                fallback = not error_message and decision not in SEMANTIC_REVIEW_DECISIONS
+                if error_message or fallback:
+                    decision = "support"
+                    result["fallback"] += 1
+                    reason = "AI复核失败，沿用确定性聚合结果" if error_message else "AI复核返回了无效分类，沿用确定性聚合结果"
+                    error = error_message or "invalid_decision"
+                    confidence = 0.0
+                else:
+                    reason = compact(response.get("reason")) or "AI语义复核"
+                    error = None
+                    try:
+                        confidence = min(1.0, max(0.0, float(response.get("confidence", 0.0))))
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                result[decision] = result.get(decision, 0) + 1
+                self._store_topic_claim_review(
+                    case["claim_id"], case["topic_id"], decision, reason,
+                    confidence=confidence,
+                    model=compact(response.get("model")) or getattr(self.semantic_reviewer, "model", ""),
+                    reasoning_effort=compact(response.get("reasoning_effort")) or getattr(self.semantic_reviewer, "reasoning_effort", ""),
+                    input_hash=case["input_hash"], reviewed_at=at, error=error,
+                )
+            self.connection.commit()
+        return result
+
+    def _rebuild_topic_participations(self, topic_ids: set[str], at: str) -> None:
+        """Recompute participants from support claims, excluding context-only links."""
+        for topic_id in sorted(topic_ids):
+            topic = self.connection.execute("SELECT topic_id FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+            if topic is None:
+                continue
+            self.connection.execute("DELETE FROM topic_participations WHERE topic_id=?", (topic_id,))
+            rows = self.connection.execute(
+                "SELECT ci.activity_account,ci.created_at,ci.content_item_id FROM memberships m "
+                "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+                "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+                "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
+                "ORDER BY ci.created_at",
+                (topic_id,),
+            ).fetchall()
+            latest: dict[str, sqlite3.Row] = {}
+            for row in rows:
+                previous = latest.get(row["activity_account"])
+                if previous is None or dt(row["created_at"]) >= dt(previous["created_at"]):
+                    latest[row["activity_account"]] = row
+            self.connection.executemany(
+                "INSERT INTO topic_participations VALUES (?,?,?,?)",
+                [(topic_id, row["activity_account"], row["created_at"], row["content_item_id"]) for row in latest.values()],
+            )
+            latest_evidence = self.connection.execute(
+                "SELECT MAX(ci.created_at) AS latest FROM memberships m "
+                "JOIN claims cl ON cl.claim_id=m.claim_id "
+                "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+                "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+                "WHERE m.topic_id=? AND m.superseded_by IS NULL "
+                "AND COALESCE(r.decision,'support') IN ('support','context')",
+                (topic_id,),
+            ).fetchone()["latest"]
+            self.connection.execute(
+                "UPDATE topics SET last_evidence_at=? WHERE topic_id=?",
+                (latest_evidence, topic_id),
+            )
+            self._update_retrieval(topic_id, at)
 
     @staticmethod
     def _normalized_identity(value: str) -> str:
@@ -1315,7 +1635,9 @@ class TopicAggregator:
         rows = self.connection.execute(
             "SELECT cl.*,ci.activity_account,ci.created_at,ci.tweet_id FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
-            "WHERE m.topic_id=? AND m.superseded_by IS NULL GROUP BY cl.claim_id ORDER BY ci.created_at",
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
+            "GROUP BY cl.claim_id ORDER BY ci.created_at",
             (topic_id,),
         ).fetchall()
         if not rows:
@@ -1509,7 +1831,9 @@ class TopicAggregator:
         rows = self.connection.execute(
             "SELECT cl.*,ci.activity_account FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id "
             "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
-            "WHERE m.topic_id=? AND m.superseded_by IS NULL GROUP BY cl.claim_id",
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
+            "GROUP BY cl.claim_id",
             (topic_id,),
         ).fetchall()
         if not rows:
@@ -1572,7 +1896,8 @@ class TopicAggregator:
             "SELECT m.*,th.relation_to_topic,cl.*,ci.activity_account FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
             "LEFT JOIN threads th ON th.thread_id=m.thread_id "
-            "WHERE m.topic_id=? AND m.superseded_by IS NULL",
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support') IN ('support','context')",
             (source_topic_id,),
         ).fetchall()
         for row in rows:
@@ -1587,6 +1912,21 @@ class TopicAggregator:
                     row["match_score"], "local_merge", reason, at, None,
                 ),
             )
+            review = self.connection.execute(
+                "SELECT decision,confidence,reason,model,reasoning_effort,input_hash,reviewed_at,error "
+                "FROM topic_claim_reviews WHERE claim_id=? AND topic_id=?",
+                (claim.claim_id, source_topic_id),
+            ).fetchone()
+            if review:
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO topic_claim_reviews("
+                    "claim_id,topic_id,decision,confidence,reason,model,reasoning_effort,input_hash,reviewed_at,error"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        claim.claim_id, target_topic_id, review["decision"], review["confidence"], review["reason"],
+                        review["model"], review["reasoning_effort"], review["input_hash"], review["reviewed_at"], review["error"],
+                    ),
+                )
             self.connection.execute(
                 "UPDATE memberships SET superseded_by=? WHERE membership_id=?", (membership_id, row["membership_id"])
             )
@@ -1728,7 +2068,8 @@ class TopicAggregator:
             "SELECT cl.claim_id, cl.claim_text, cl.entities_json, cl.content_item_id, ci.tweet_id, ci.created_at, "
             "ci.activity_account, ci.references_json "
             "FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
-            "WHERE m.topic_id=? ORDER BY ci.created_at DESC", (topic_id,)
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' ORDER BY ci.created_at DESC", (topic_id,)
         ).fetchall()
         all_tokens: set[str] = set()
         all_keys: set[str] = set()
@@ -1871,7 +2212,9 @@ class TopicAggregator:
         rows = self.connection.execute(
             "SELECT cl.*,ci.tweet_id,ci.activity_account,ci.references_json,ci.created_at FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
-            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND ci.created_at>=? GROUP BY cl.claim_id",
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
+            "AND ci.created_at>=? GROUP BY cl.claim_id",
             (topic_id, cutoff),
         ).fetchall()
         all_accounts = {row["activity_account"] for row in rows}
@@ -2036,10 +2379,14 @@ class TopicAggregator:
     def _write_brief(self, topic_id: str, revision: int, at: str, reason: str) -> dict[str, Any]:
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         claims = self.connection.execute(
-            "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id "
-            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id WHERE m.topic_id=? AND m.superseded_by IS NULL "
+            "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json,"
+            "COALESCE(r.decision,'support') AS semantic_decision FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id "
+            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support') IN ('support','context') "
             "GROUP BY cl.claim_id ORDER BY ci.created_at", (topic_id,)
         ).fetchall()
+        claims = [dict(row) | {"context_only": row["semantic_decision"] == "context"} for row in claims]
         context_claims = self._nearby_context_claims(topic_id, topic, claims)
         subject_terms = asset_labels(topic["canonical_subject"])
         selected_claims = self._select_narrative_claims(list(claims), context_claims, subject_terms)
@@ -2188,7 +2535,9 @@ class TopicAggregator:
             rows = self.connection.execute(
                 "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json FROM memberships m "
                 "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
-                "WHERE m.topic_id=? GROUP BY cl.claim_id ORDER BY ci.created_at LIMIT 3", (neighbor_id,)
+                "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+                "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support') IN ('support','context') "
+                "GROUP BY cl.claim_id ORDER BY ci.created_at LIMIT 3", (neighbor_id,)
             ).fetchall()
             for row in rows:
                 if row["claim_id"] not in own_ids:
@@ -2344,6 +2693,211 @@ class TopicAggregator:
         return {key: self.connection.execute(f"SELECT COUNT(*) FROM {key}").fetchone()[0] for key in ("batches", "content_items", "claims", "topics", "threads", "memberships", "brief_revisions", "topic_evidence", "decision_audit")}
 
 
+class TopicClaimReviewer:
+    """Batch semantic gate for deterministic topic memberships.
+
+    Interface: receive independent claim/topic cases and return one decision
+    per case. The adapter owns model routing and HTTP only; SQLite caching,
+    fallback-to-mechanical behaviour and participant rebuilding stay in
+    ``TopicAggregator``.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-5.6-luna",
+        *,
+        fallback_model: str = "gpt-5.6-terra",
+        reasoning_effort: str = "high",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 90.0,
+        max_attempts: int = 2,
+        retry_base_seconds: float = 1.0,
+    ) -> None:
+        self.model = model.strip()
+        self.fallback_model = fallback_model.strip()
+        self.reasoning_effort = reasoning_effort.strip() or "high"
+        self.base_url = (
+            base_url
+            or os.environ.get("HOTTOPIC_CLAIM_REVIEW_OPENAI_BASE_URL", "")
+            or os.environ.get("HOTTOPIC_OPENAI_BASE_URL", "")
+            or os.environ.get("ODAILY_LLM_BASE_URL", "")
+            or os.environ.get("X_PROCESS_OPENAI_BASE_URL", "")
+        ).rstrip("/")
+        self.api_key = api_key or self._default_api_key(self.base_url)
+        self.timeout = float(timeout)
+        self.max_attempts = int(max_attempts)
+        self.retry_base_seconds = float(retry_base_seconds)
+        if not self.model:
+            raise ValueError("semantic review model is required")
+        if self.timeout <= 0 or self.max_attempts < 1 or self.retry_base_seconds < 0:
+            raise ValueError("invalid semantic review HTTP settings")
+        if not self.api_key or not self.base_url:
+            raise RuntimeError("semantic review requires a HotTopic-compatible API key and base URL")
+
+    @staticmethod
+    def _default_api_key(base_url: str) -> str:
+        explicit = os.environ.get("HOTTOPIC_CLAIM_REVIEW_OPENAI_API_KEY", "")
+        if explicit:
+            return explicit
+        if base_url.startswith(("http://127.0.0.1:", "http://localhost:", "https://127.0.0.1:", "https://localhost:")):
+            return (
+                os.environ.get("LITELLM_MASTER_KEY", "")
+                or os.environ.get("ODAILY_LLM_API_KEY", "")
+                or os.environ.get("OPENAI_API_KEY", "")
+            )
+        return os.environ.get("ODAILY_LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+
+    def __call__(self, cases: Sequence[dict[str, Any]]) -> Sequence[dict[str, Any]]:
+        if not cases:
+            return []
+        prompt = self._prompt(cases)
+        primary_error: Exception | None = None
+        for model in dict.fromkeys((self.model, self.fallback_model)):
+            if not model:
+                continue
+            try:
+                parsed = self._call_model(model, prompt)
+                expected_ids = {str(case["case_id"]) for case in cases}
+                returned_ids = [str(row.get("case_id")) for row in parsed]
+                if set(returned_ids) != expected_ids or len(returned_ids) != len(expected_ids):
+                    raise ValueError("semantic review returned incomplete or duplicate case results")
+                if any(row.get("decision") not in SEMANTIC_REVIEW_DECISIONS for row in parsed):
+                    raise ValueError("semantic review returned an invalid decision")
+                return [
+                    {
+                        **row,
+                        "model": model,
+                        "reasoning_effort": self.reasoning_effort,
+                    }
+                    for row in parsed
+                ]
+            except Exception as exc:
+                if primary_error is None:
+                    primary_error = exc
+                continue
+        assert primary_error is not None
+        raise RuntimeError(
+            f"HotTopic semantic review models failed: {type(primary_error).__name__}: {primary_error}"
+        ) from primary_error
+
+    def _prompt(self, cases: Sequence[dict[str, Any]]) -> str:
+        topics: dict[str, dict[str, Any]] = {}
+        claim_cases: list[dict[str, Any]] = []
+        for case in cases:
+            topic = case["topic"]
+            claim = case["claim"]
+            topic_key = str(topic.get("topic_id") or case["case_id"])
+            topics.setdefault(
+                topic_key,
+                {
+                    "title": topic["title"],
+                    "canonical_subject": topic["canonical_subject"],
+                    "core_entities": topic["core_entities"],
+                    "event_or_issue": topic["event_or_issue"],
+                    "representative_evidence": topic["evidence"][:6],
+                },
+            )
+            claim_cases.append(
+                {
+                    "case_id": case["case_id"],
+                    "topic_id": topic_key,
+                    "claim": {
+                        "account": claim.get("account", ""),
+                        "created_at": claim.get("created_at", ""),
+                        "kind": claim.get("kind", ""),
+                        "entities": claim.get("entities", []),
+                        "text": claim.get("text", ""),
+                    },
+                }
+            )
+        payload = {"topics": topics, "cases": claim_cases}
+        return f"""
+你是 X Agent 热点话题的语义复核器。确定性规则已经把每个 claim 放进一个候选话题；你的任务是逐条判断它是否真正属于该话题主线。
+
+对每个 case 只返回一个分类：
+- support：claim 讨论同一事件、公告、产品进展，或明确是该主线的独立市场反应；计入参与账号、热度和正文。
+- context：claim 与主线有关，是背景、对比、价格环境或补充说明，但不是该话题的独立参与；不计入参与账号，可在正文需要时作为背景。
+- unrelated：claim 实际讨论另一个事件/资产/争议，只因为共享 ticker、合约、平台、引用链或泛化实体而被机械归并；不计入参与账号和正文。
+
+判定规则：
+1. 按 claim 单独判断，不能因为同一账号的其他内容相关就放行；同一账号可以同时有三类结果。
+2. 共享一个资产名、合约、平台或引用关系不是 support 的充分条件。优先比较事件、动作、时间、主体和材料是否指向同一主线。
+3. 不要因为观点是预测、反对或质疑就判 unrelated；只要它明确围绕同一主线，仍可为 support 或 context。
+4. 例如主线是 Aave 抵押品扩展时，单独讨论 HBM、Micron、NVIDIA 或 GPU 供需的 claim，即使共用了资产名或合约，也应判 unrelated；只有明确把这些内容用于解释 Aave 主线时才判 context 或 support。
+5. 只依据输入材料，不补充外部事实。reason 用简短中文说明最关键的判断依据，confidence 为 0 到 1 的数字。
+
+严格返回 JSON，不要 Markdown：
+{{"reviews":[{{"case_id":"原样返回","decision":"support|context|unrelated","confidence":0.0,"reason":"简短中文原因"}}]}}
+
+待复核材料：
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
+
+    def _call_model(self, model: str, prompt: str) -> list[dict[str, Any]]:
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(
+                {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "reasoning_effort": self.reasoning_effort,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        raw = self._post_json(request)
+        content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if isinstance(content, list):
+            content = "".join(
+                str(part.get("text") or part.get("content") or "")
+                for part in content if isinstance(part, dict)
+            )
+        match = re.search(r"\{.*\}", str(content), flags=re.S)
+        if not match:
+            raise ValueError("semantic review returned no JSON object")
+        parsed = json.loads(match.group(0))
+        reviews = parsed.get("reviews") if isinstance(parsed, dict) else parsed
+        if not isinstance(reviews, list):
+            raise ValueError("semantic review returned no reviews array")
+        return [dict(row) for row in reviews if isinstance(row, dict)]
+
+    def _post_json(self, request: urllib.request.Request) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("semantic review endpoint returned a non-object JSON response")
+                return payload
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_attempts or not self._is_retryable(exc):
+                    break
+                delay = self.retry_base_seconds * (2 ** (attempt - 1))
+                if delay:
+                    time.sleep(delay)
+        assert last_error is not None
+        raise RuntimeError(
+            f"semantic review request failed after {attempt} attempts: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
+
+    @staticmethod
+    def _is_retryable(error: Exception) -> bool:
+        if isinstance(error, urllib.error.HTTPError):
+            return error.code in {408, 409, 425, 429} or 500 <= error.code < 600
+        return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
 class ModelBriefWriter:
     """Evidence-grounded AI writer for visible topics.
 
@@ -2432,7 +2986,7 @@ class ModelBriefWriter:
 6. 只写材料中的事实和来源明确表达的观点，不要加入编辑者自己的判断、免责声明或结论性提醒；不要写“上述判断……并非已兑现”“不构成确定性结论”“这一说法来自市场参与者的解读”“风险已经上升”等编辑者总结。信息不足时直接写短，不用空话补长度。
 7. 同一行情事实只保留一次；不同来源的数字只有在口径、时间或来源明确不同且对读者有增量信息时才并列，否则合并或舍弃重复数字。
 8. 不出现 Topic、claim、source、context、聚类、监控账号等后台词，不新增材料之外的事实、因果、动机或数字；外文来源要准确转写为自然中文，专有名词、代码和数字保持原样。
-9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。
+9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。若材料包含明显不同的叙事层次，必须分成 2 至 4 个自然段：例如先写事件背景或前因，再写价格、市值、交易量等数据变化，最后写社区观点、争议或分歧；只有材料单一且很短时才使用一个自然段。每段围绕一个主要问题展开，不要为了分段切碎同一条因果链。
 
 严格输出 JSON：{{"title":"准确具体的新闻式标题","brief":"信息密度高的自然中文正文","source_claim_ids":["实际使用的 claim_id"]}}
 
@@ -2561,4 +3115,4 @@ class ModelBriefWriter:
             raise ValueError("model writer returned an incomplete brief")
         return parsed
 
-__all__ = ["Claim", "ContentItem", "Candidate", "ModelBriefWriter", "TopicAggregator"]
+__all__ = ["Claim", "ContentItem", "Candidate", "ModelBriefWriter", "TopicClaimReviewer", "TopicAggregator"]

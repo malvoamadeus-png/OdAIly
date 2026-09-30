@@ -24,6 +24,7 @@ from .models import (
 from .repository import (
     CRYPTO_SEARCH_FIRST_SOURCES,
     DEFAULT_FEATURE_MODE_TEXT,
+    EVENT_TRACKING_SOURCE,
     LEGACY_SKIP_SOURCES,
     LEGACY_SKIP_UNFINISHED_STATUSES,
     PROMPT_FEATURE_MODE_DEFAULTS,
@@ -225,6 +226,20 @@ class SQLiteXProcessingRepository:
         if row is None:
             raise ValueError(f"task not found: {task_id}")
         return _row_to_task(_record(row))
+
+    def is_event_tracking_cancelled(self, task_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source,status,metadata FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        if row is None or str(row["source"]) != EVENT_TRACKING_SOURCE:
+            return False
+        metadata = _decode(row["metadata"])
+        event_metadata = metadata.get("event_tracking")
+        return str(row["status"]) == "event_tracking_cancelled" or bool(
+            isinstance(event_metadata, dict) and event_metadata.get("dismissed_at")
+        )
 
     def ensure_pipeline(self, task_id: int) -> None:
         with self._connect() as conn:
