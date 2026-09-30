@@ -5,7 +5,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, TopicClaimReviewer, stable_id
+from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, TopicClaimReviewer, TopicEventMergeReviewer, stable_id
 
 
 def profile(
@@ -49,6 +49,107 @@ def test_non_asset_event_identity_merges_across_independent_accounts() -> None:
         True,
         "shared named event identity=['binance', 'binancewallet', 'pancakeswap']; kind=launch",
     )
+
+
+def test_topic_pair_review_merges_stages_but_separates_other_incident(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 30, tzinfo=UTC)
+
+    def reviewer(cases):
+        rows = []
+        for case in cases:
+            texts = " ".join(item["text"] for side in ("left", "right") for item in case[side]["evidence"])
+            same = "investigation" in texts and "withdrawals" in texts and "security" not in texts
+            rows.append({
+                "case_id": case["case_id"], "decision": "merge" if same else "separate",
+                "confidence": 0.95, "reason": "同一资金事件的后续处置" if same else "不同事件",
+                "shared_event_fact": "Bitget withdrawal incident" if same else "",
+                "evidence_claim_ids": [case["left"]["evidence"][0]["claim_id"], case["right"]["evidence"][0]["claim_id"]],
+                "model": "gpt-5.6-luna", "reasoning_effort": "high",
+            })
+        return rows
+
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite", topic_merge_reviewer=reviewer)
+    try:
+        examples = [
+            ("topic:withdrawals", "Bitget paused withdrawals after a hot wallet incident", "withdrawals"),
+            ("topic:investigation", "Bitget published investigation progress on the hot wallet incident", "investigation"),
+            ("topic:security", "Bitget launched a separate security product", "security"),
+        ]
+        with aggregator.connection:
+            for index, (topic_id, title, _kind) in enumerate(examples):
+                at = (now + timedelta(minutes=index)).isoformat()
+                aggregator.connection.execute(
+                    "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                    "seed_expires_at,last_evidence_at,matching_status,visibility) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (topic_id, title, "Bitget", '["Bitget"]', "event", at, at, (now + timedelta(days=1)).isoformat(), at, "seed", "hidden"),
+                )
+                for actor in range(2):
+                    item_id, claim_id = f"content:{index}:{actor}", f"claim:{index}:{actor}"
+                    account = f"account:{index}:{actor}"
+                    aggregator.connection.execute(
+                        "INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (item_id, item_id, account, account, "original", title, title, at, "https://x.com/example", "{}", "{}", "{}", item_id),
+                    )
+                    aggregator.connection.execute(
+                        "INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (claim_id, item_id, title, "reported_fact", '["Bitget"]', "event", "", "", 1.0, 1.0, at),
+                    )
+                    aggregator.connection.execute(
+                        "INSERT INTO memberships VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"membership:{index}:{actor}", claim_id, topic_id, None, "primary", "new_fact", 1.0, "test", "test", at, None),
+                    )
+                    aggregator.connection.execute("INSERT INTO topic_participations VALUES(?,?,?,?)", (topic_id, account, at, item_id))
+                aggregator._update_retrieval(topic_id, at)
+        result = aggregator.reconcile_recent_topics(now + timedelta(hours=1))
+        assert len(result["topic_merges"]) == 1
+        assert {row["decision"] for row in aggregator.connection.execute("SELECT decision FROM topic_pair_reviews")} == {"merge", "separate"}
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topics WHERE matching_status='archived'").fetchone()[0] == 1
+        assert aggregator.reconcile_recent_topics(now + timedelta(hours=1))["topic_merges"] == []
+    finally:
+        aggregator.close()
+
+
+def test_topic_merge_reviewer_falls_back_with_high_reasoning() -> None:
+    reviewer = TopicEventMergeReviewer(base_url="https://example.test/v1", api_key="test", max_attempts=1)
+    requests = []
+
+    def post(request):
+        payload = json.loads(request.data.decode("utf-8"))
+        requests.append(payload)
+        if payload["model"] == "gpt-5.6-luna":
+            raise RuntimeError("primary unavailable")
+        return {"choices": [{"message": {"content": json.dumps({"reviews": [
+            {"case_id": "pair:1", "decision": "separate", "confidence": 0.9, "reason": "different event"}
+        ]})}}]}
+
+    reviewer._post_json = post  # type: ignore[method-assign]
+    result = reviewer([{"case_id": "pair:1", "left": {"evidence": []}, "right": {"evidence": []}}])
+    assert result[0]["model"] == "gpt-5.6-terra"
+    assert [request["model"] for request in requests] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert all(request["reasoning_effort"] == "high" for request in requests)
+
+
+def test_transient_pruning_removes_topic_pair_reviews_before_topics(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    old = datetime(2026, 9, 25, tzinfo=UTC)
+    try:
+        with aggregator.connection:
+            for topic_id in ("topic:old-a", "topic:old-b"):
+                aggregator.connection.execute(
+                    "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                    "seed_expires_at,last_evidence_at,matching_status,visibility) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (topic_id, topic_id, topic_id, "[]", "event", old.isoformat(), old.isoformat(),
+                     (old + timedelta(days=1)).isoformat(), old.isoformat(), "archived", "hidden"),
+                )
+            aggregator.connection.execute(
+                "INSERT INTO topic_pair_reviews(left_topic_id,right_topic_id,input_hash,decision,reason,reviewed_at) VALUES(?,?,?,?,?,?)",
+                ("topic:old-a", "topic:old-b", "hash", "separate", "different", old.isoformat()),
+            )
+        aggregator.prune_transient_state(old + timedelta(days=4))
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topic_pair_reviews").fetchone()[0] == 0
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 0
+    finally:
+        aggregator.close()
 
 
 def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatch) -> None:
@@ -231,6 +332,10 @@ def test_semantic_review_excludes_unrelated_claim_from_participants(tmp_path: Pa
             content("chip_news", "3", "$GPU HBM demand rises as Micron reports strong memory sales", 3),
         ], now + timedelta(minutes=5))
 
+        assert result["metrics"]["semantic_review"]["unrelated"] == 0
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topic_claim_reviews WHERE decision='unrelated'").fetchone()[0] == 0
+        reconciled = aggregator.reconcile_recent_topics(now + timedelta(hours=1))
+
         review_rows = aggregator.connection.execute(
             "SELECT decision FROM topic_claim_reviews WHERE decision='unrelated'"
         ).fetchall()
@@ -238,7 +343,7 @@ def test_semantic_review_excludes_unrelated_claim_from_participants(tmp_path: Pa
             row["activity_account"]
             for row in aggregator.connection.execute("SELECT activity_account FROM topic_participations")
         }
-        assert result["metrics"]["semantic_review"]["unrelated"] == 1
+        assert reconciled["semantic_review"]["unrelated"] == 1
         assert len(review_rows) == 1
         assert "chip_news" not in participants
         assert {"aave_news", "aave_update"} <= participants

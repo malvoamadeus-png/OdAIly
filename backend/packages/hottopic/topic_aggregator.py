@@ -345,6 +345,7 @@ class EventIdentity:
 Extractor = Callable[[ContentItem], Sequence[Claim]]
 Resolver = Callable[[Claim, Sequence[Candidate], sqlite3.Connection], dict[str, Any] | None]
 SemanticReviewer = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
+TopicMergeReviewer = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
 
 
 SCHEMA = """
@@ -499,6 +500,20 @@ CREATE TABLE IF NOT EXISTS topic_merges (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_topic_merge_target ON topic_merges(target_topic_id);
+CREATE TABLE IF NOT EXISTS topic_pair_reviews (
+  left_topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  right_topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  input_hash TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK(decision IN ('merge','separate','failed')),
+  reason TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  model TEXT NOT NULL DEFAULT '',
+  reasoning_effort TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  reviewed_at TEXT NOT NULL,
+  next_attempt_at TEXT,
+  PRIMARY KEY(left_topic_id,right_topic_id)
+);
 CREATE TABLE IF NOT EXISTS topic_claim_reviews (
   claim_id TEXT NOT NULL REFERENCES claims(claim_id),
   topic_id TEXT NOT NULL REFERENCES topics(topic_id),
@@ -533,6 +548,7 @@ class TopicAggregator:
         resolver: Resolver | None = None,
         brief_writer: Callable[..., dict[str, Any]] | None = None,
         semantic_reviewer: SemanticReviewer | None = None,
+        topic_merge_reviewer: TopicMergeReviewer | None = None,
         semantic_review_batch_size: int = SEMANTIC_REVIEW_BATCH_SIZE,
         semantic_review_backfill_limit: int = SEMANTIC_REVIEW_BACKFILL_LIMIT,
     ) -> None:
@@ -563,6 +579,7 @@ class TopicAggregator:
         self.resolver = resolver
         self.brief_writer = brief_writer
         self.semantic_reviewer = semantic_reviewer
+        self.topic_merge_reviewer = topic_merge_reviewer
         self.semantic_review_batch_size = max(1, int(semantic_review_batch_size))
         self.semantic_review_backfill_limit = max(0, int(semantic_review_backfill_limit))
 
@@ -744,6 +761,12 @@ class TopicAggregator:
                     claim_ids,
                 )
             if topic_ids:
+                self.connection.execute(
+                    "DELETE FROM topic_pair_reviews WHERE left_topic_id IN "
+                    f"({','.join('?' for _ in topic_ids)}) OR right_topic_id IN "
+                    f"({','.join('?' for _ in topic_ids)})",
+                    [*topic_ids, *topic_ids],
+                )
                 # SQLite limits expression-tree depth, so large historical
                 # cleanups cannot combine every Topic ID into one OR clause.
                 for start in range(0, len(topic_ids), 100):
@@ -890,7 +913,6 @@ class TopicAggregator:
         }
         decisions: list[dict[str, Any]] = []
         affected: set[str] = set()
-        review_targets: set[tuple[str, str]] = set()
         phase_started = time.perf_counter()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -929,10 +951,8 @@ class TopicAggregator:
                         for topic_id in topic_ids:
                             self._attach_claim(
                                 claim, topic_id, candidates, reason, source, item, batch_iso,
-                                defer_participation=bool(self.semantic_reviewer),
+                                defer_participation=False,
                             )
-                            if self.semantic_reviewer:
-                                review_targets.add((claim.claim_id, topic_id))
                             affected.add(topic_id)
                             item_topics.add(topic_id)
                     elif action == "create_seed":
@@ -940,7 +960,7 @@ class TopicAggregator:
                         topic_id = self._create_seed(claim, item, batch_iso)
                         self._attach_claim(
                             claim, topic_id, [], reason, source, item, batch_iso,
-                            defer_participation=bool(self.semantic_reviewer),
+                            defer_participation=False,
                         )
                         if self.semantic_reviewer:
                             self._store_topic_claim_review(
@@ -968,21 +988,11 @@ class TopicAggregator:
                 if item_topics:
                     metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
 
-            if self.semantic_reviewer:
+            merge_requests = self._consolidate_dirty_topics(affected, batch_iso) if not self.topic_merge_reviewer else []
+            if self.topic_merge_reviewer:
                 self.connection.commit()
-                review_targets.update(
-                    self._unreviewed_review_targets(
-                        affected,
-                        limit=self.semantic_review_backfill_limit,
-                        exclude=review_targets,
-                    )
-                )
-                review_result = self._review_memberships(review_targets, batch_iso)
-                metrics["semantic_review"] = review_result
+                merge_requests.extend(self._review_topic_pairs(affected, batch_iso))
                 self.connection.execute("BEGIN IMMEDIATE")
-                self._rebuild_topic_participations(affected, batch_iso)
-
-            merge_requests = self._consolidate_dirty_topics(affected, batch_iso)
             metrics["topic_merges"] = merge_requests
             for request in merge_requests:
                 affected.add(request["source_topic_id"])
@@ -1065,17 +1075,29 @@ class TopicAggregator:
             }
             affected = set(topic_ids)
             if self.semantic_reviewer:
-                review_targets = self._unreviewed_review_targets(topic_ids, limit=self.semantic_review_backfill_limit)
+                review_topic_ids = {
+                    row["topic_id"] for row in self.connection.execute(
+                        "SELECT topic_id FROM topics WHERE matching_status IN ('seed','active')"
+                    )
+                }
+                review_targets = self._unreviewed_review_targets(review_topic_ids, limit=self.semantic_review_backfill_limit)
                 self.connection.commit()
                 review_result = self._review_memberships(review_targets, batch_iso)
                 self.connection.execute("BEGIN IMMEDIATE")
-                self._rebuild_topic_participations(topic_ids, batch_iso)
+                reviewed_topic_ids = {topic_id for _, topic_id in review_targets}
+                self._rebuild_topic_participations(reviewed_topic_ids, batch_iso)
+                topic_ids.update(reviewed_topic_ids)
+                affected.update(reviewed_topic_ids)
             else:
                 review_result = {
                     "enabled": False, "requested": 0, "support": 0, "context": 0,
                     "unrelated": 0, "fallback": 0, "model_calls": 0,
                 }
-            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso)
+            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso) if not self.topic_merge_reviewer else []
+            if self.topic_merge_reviewer:
+                self.connection.commit()
+                merge_requests.extend(self._review_topic_pairs(topic_ids, batch_iso))
+                self.connection.execute("BEGIN IMMEDIATE")
             for request in merge_requests:
                 affected.add(request["source_topic_id"])
                 affected.add(request["target_topic_id"])
@@ -1090,7 +1112,8 @@ class TopicAggregator:
             }
             self.connection.commit()
             brief_requests = self._refresh_briefs(affected | pending_briefs, batch_iso, status_requests["transitions"])
-            return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests, "semantic_review": review_result}
+            pending_reviews = self._count_pending_claim_reviews()
+            return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests, "semantic_review": {**review_result, "pending": pending_reviews}}
         except Exception:
             self.connection.rollback()
             raise
@@ -1977,6 +2000,108 @@ class TopicAggregator:
             "target_topic_id": target_topic_id,
             "reason": reason,
         }
+
+    def _count_pending_claim_reviews(self) -> int:
+        return self.connection.execute(
+            "SELECT COUNT(*) FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+            "WHERE t.matching_status IN ('seed','active') AND m.superseded_by IS NULL "
+            "AND (r.claim_id IS NULL OR r.error IS NOT NULL)"
+        ).fetchone()[0]
+
+    def _review_topic_pairs(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        if not self.topic_merge_reviewer:
+            return []
+        pairs: dict[tuple[str, str], dict[str, Any]] = {}
+        for topic_id in sorted(dirty_topic_ids):
+            profile = self._topic_event_profile(topic_id)
+            if not profile:
+                continue
+            candidates: set[str] = set()
+            for feature in profile["identity"].lookup_terms:
+                candidates.update(self._feature_index.get(f"t:{feature}", set()))
+            for candidate_id in sorted(candidates - {topic_id}):
+                other = self._topic_event_profile(candidate_id)
+                if not other:
+                    continue
+                left_id, right_id = sorted((topic_id, candidate_id))
+                if (left_id, right_id) in pairs:
+                    continue
+                left, right = (profile, other) if topic_id == left_id else (other, profile)
+
+                def snapshot(value: dict[str, Any]) -> dict[str, Any]:
+                    return {
+                        "topic_id": value["topic_id"],
+                        "title": value["topic"]["working_title"],
+                        "subject": value["topic"]["canonical_subject"],
+                        "event_or_issue": value["topic"]["event_or_issue"],
+                        "started_at": value["topic"]["started_at"],
+                        "last_evidence_at": value["topic"]["last_evidence_at"],
+                        "evidence": [
+                            {"claim_id": row["claim_id"], "account": row["activity_account"], "text": row["claim_text"]}
+                            for row in value["rows"][-6:]
+                        ],
+                    }
+
+                case = {"case_id": stable_id("topic-pair", left_id, right_id), "left": snapshot(left), "right": snapshot(right)}
+                case["input_hash"] = hashlib.sha256(json_dumps(case).encode("utf-8")).hexdigest()
+                old = self.connection.execute(
+                    "SELECT input_hash,decision,next_attempt_at FROM topic_pair_reviews WHERE left_topic_id=? AND right_topic_id=?",
+                    (left_id, right_id),
+                ).fetchone()
+                if old and old["input_hash"] == case["input_hash"]:
+                    if old["decision"] != "failed" or (old["next_attempt_at"] and old["next_attempt_at"] > at):
+                        continue
+                pairs[(left_id, right_id)] = case
+        selected = list(pairs.items())[:40]
+        requests: list[dict[str, str]] = []
+        for offset in range(0, len(selected), 10):
+            chunk = selected[offset:offset + 10]
+            error = "invalid topic pair review"
+            try:
+                responses = self.topic_merge_reviewer([case for _, case in chunk])
+                by_id = {str(row["case_id"]): row for row in responses}
+            except Exception as exc:
+                by_id = {}
+                error = f"{type(exc).__name__}: {exc}"[:1000]
+            for (left_id, right_id), case in chunk:
+                response = by_id.get(case["case_id"], {})
+                decision = str(response.get("decision") or "")
+                evidence_ids = set(response.get("evidence_claim_ids") or [])
+                left_ids = {row["claim_id"] for row in case["left"]["evidence"]}
+                right_ids = {row["claim_id"] for row in case["right"]["evidence"]}
+                try:
+                    confidence = float(response.get("confidence") or 0)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                if decision == "merge" and not (
+                    confidence >= 0.8 and evidence_ids & left_ids and evidence_ids & right_ids
+                    and compact(response.get("shared_event_fact"))
+                ):
+                    decision = "failed"
+                if decision not in {"merge", "separate"}:
+                    decision = "failed"
+                reason = compact(response.get("reason")) if decision != "failed" else error
+                next_attempt = iso(dt(at) + timedelta(minutes=15)) if decision == "failed" else None
+                with self.connection:
+                    self.connection.execute(
+                        "INSERT INTO topic_pair_reviews(left_topic_id,right_topic_id,input_hash,decision,reason,evidence_json,model,reasoning_effort,attempts,reviewed_at,next_attempt_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,1,?,?) ON CONFLICT(left_topic_id,right_topic_id) DO UPDATE SET "
+                        "input_hash=excluded.input_hash,decision=excluded.decision,reason=excluded.reason,evidence_json=excluded.evidence_json,"
+                        "model=excluded.model,reasoning_effort=excluded.reasoning_effort,attempts=topic_pair_reviews.attempts+1,"
+                        "reviewed_at=excluded.reviewed_at,next_attempt_at=excluded.next_attempt_at",
+                        (left_id, right_id, case["input_hash"], decision, reason, json_dumps(response),
+                         str(response.get("model") or ""), str(response.get("reasoning_effort") or ""), at, next_attempt),
+                    )
+                    if decision == "merge":
+                        left = self._topic_event_profile(left_id)
+                        right = self._topic_event_profile(right_id)
+                        if left and right:
+                            left_rank = (left["topic"]["matching_status"] == "active", -dt(left["topic"]["started_at"]).timestamp())
+                            right_rank = (right["topic"]["matching_status"] == "active", -dt(right["topic"]["started_at"]).timestamp())
+                            target, source = (left, right) if left_rank >= right_rank else (right, left)
+                            requests.append(self._merge_topic(source["topic_id"], target["topic_id"], at, f"semantic: {reason}"))
+        return requests
 
     def _consolidate_dirty_topics(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
         requests: list[dict[str, str]] = []
@@ -2896,6 +3021,40 @@ class TopicClaimReviewer:
         if isinstance(error, urllib.error.HTTPError):
             return error.code in {408, 409, 425, 429} or 500 <= error.code < 600
         return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+class TopicEventMergeReviewer(TopicClaimReviewer):
+    """Use the existing model transport to compare two complete HotTopics."""
+
+    def __call__(self, cases: Sequence[dict[str, Any]]) -> Sequence[dict[str, Any]]:
+        prompt = self._prompt(cases)
+        last_error: Exception | None = None
+        for model in dict.fromkeys((self.model, self.fallback_model)):
+            if not model:
+                continue
+            try:
+                rows = self._call_model(model, prompt)
+                expected = {case["case_id"] for case in cases}
+                if len(rows) != len(expected) or {row.get("case_id") for row in rows} != expected:
+                    raise ValueError("incomplete topic pair review")
+                if any(row.get("decision") not in {"merge", "separate"} for row in rows):
+                    raise ValueError("invalid topic pair decision")
+                return [{**row, "model": model, "reasoning_effort": self.reasoning_effort} for row in rows]
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"topic merge models failed: {last_error}")
+
+    def _prompt(self, cases: Sequence[dict[str, Any]]) -> str:
+        return (
+            "你是热点话题之间的真实事件复核器。判断每对话题是否为同一事件的连续阶段，"
+            "例如事故、暂停提币、调查进展。社区反应和官方动作也可能属于同一事件。"
+            "同一平台、资产、产品或普通词相同不足以归并；不同事故、发布或争议必须分开。"
+            "只根据输入证据判断，不补充外部事实。不确定就 separate。"
+            "严格返回 JSON 对象，reviews 数组每个 case 含 case_id、decision(merge|separate)、"
+            "confidence(0到1)、reason(中文)、shared_event_fact(共同事件事实，分开时为空)、"
+            "evidence_claim_ids(合并时两边各至少一条 claim_id)。\n"
+            f"待复核话题对：{json.dumps(list(cases), ensure_ascii=False)}"
+        )
 
 
 class ModelBriefWriter:

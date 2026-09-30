@@ -40,7 +40,6 @@ EVENT_TRACKING_SOURCE = "event_tracking"
 
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
-TOKEN_RE = re.compile(r"(?:0x[a-fA-F0-9]{8,}|\$[A-Za-z][A-Za-z0-9_]{1,30}|[\w\-]{3,})")
 
 # These are sources of reporting or observation, never official event channels.
 THIRD_PARTY_HANDLE_MARKERS = {
@@ -55,32 +54,6 @@ THIRD_PARTY_HANDLE_MARKERS = {
     "decryptmedia",
     "theblock",
     "arkham",
-}
-GENERIC_IDENTITY_TOKENS = {
-    "crypto",
-    "bitcoin",
-    "ethereum",
-    "blockchain",
-    "official",
-    "project",
-    "protocol",
-    "network",
-    "mainnet",
-    "token",
-    "update",
-    "incident",
-    "security",
-    "event",
-    "news",
-    "chain",
-    "bridge",
-    "交易",
-    "项目",
-    "官方",
-    "事件",
-    "安全",
-    "进展",
-    "账户",
 }
 TRACKING_TYPES = {
     "security_asset_incident",
@@ -799,23 +772,6 @@ def _response_citations(payload: Any) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def _normalize_identity_tokens(*values: Any) -> list[str]:
-    tokens: list[str] = []
-    for value in values:
-        if isinstance(value, list):
-            tokens.extend(_normalize_identity_tokens(*value))
-            continue
-        raw = str(value or "")
-        for token in TOKEN_RE.findall(raw):
-            normalized = token.lower().strip("_- ")
-            if not normalized or normalized in GENERIC_IDENTITY_TOKENS:
-                continue
-            if len(normalized) < 3 and not normalized.startswith("$"):
-                continue
-            tokens.append(normalized)
-    return sorted(set(tokens))
-
-
 def _datetime(value: str | None, *, fallback: datetime | None = None) -> datetime:
     if value:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -1142,7 +1098,7 @@ class EventTracker:
         )
 
     def _link_tracked_topic(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> None:
-        event = self._find_event(snapshot, decision)
+        event = self._find_event(snapshot)
         now = self.now()
         if event is not None and self._is_event_dismissed(str(event["event_id"])):
             self._audit(
@@ -1152,10 +1108,7 @@ class EventTracker:
             )
             return
         if event is None:
-            tokens = _normalize_identity_tokens(
-                decision.get("event_identity"), snapshot.get("core_entities"), snapshot.get("canonical_subject"), snapshot.get("title"),
-            )
-            identity_key = stable_id("event", *tokens) if tokens else stable_id("event", snapshot["topic_id"])
+            identity_key = stable_id("event-topic", snapshot["topic_id"])
             if self._is_identity_dismissed(identity_key):
                 self._audit("tracked_topic_suppressed", {"topic_id": snapshot["topic_id"], "identity_key": identity_key})
                 return
@@ -1170,7 +1123,7 @@ class EventTracker:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?, 'discovering',NULL,?,?,?)
                 """,
                 (
-                    event_id, identity_key, compact_json(tokens), snapshot["title"], decision["tracking_type"], decision["reader_value"],
+                    event_id, identity_key, compact_json([snapshot["topic_id"]]), snapshot["title"], decision["tracking_type"], decision["reader_value"],
                     compact_json(decision["confirmed_facts"]), compact_json(decision["unconfirmed_claims"]), decision["reason"],
                     compact_json(decision["official_response_hypothesis"] or {}), now_text, now_text, now_text,
                 ),
@@ -1209,8 +1162,8 @@ class EventTracker:
             "SELECT 1 FROM event_tracking_dismissals WHERE identity_key=? LIMIT 1", (identity_key,)
         ).fetchone() is not None
 
-    def _find_event(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> sqlite3.Row | None:
-        by_topic = self.db.execute(
+    def _find_event(self, snapshot: dict[str, Any]) -> sqlite3.Row | None:
+        return self.db.execute(
             """
             SELECT e.* FROM event_tracking_topic_links l
             JOIN event_tracking_events e ON e.event_id=l.event_id
@@ -1218,30 +1171,105 @@ class EventTracker:
             """,
             (snapshot["topic_id"],),
         ).fetchone()
-        if by_topic is not None:
-            return by_topic
-        tokens = set(_normalize_identity_tokens(
-            decision.get("event_identity"), snapshot.get("core_entities"), snapshot.get("canonical_subject"), snapshot.get("title"),
-        ))
-        if not tokens:
-            return None
-        direct_key = stable_id("event", *sorted(tokens))
-        direct = self.db.execute("SELECT * FROM event_tracking_events WHERE identity_key=?", (direct_key,)).fetchone()
-        if direct is not None:
-            return direct
-        for event in self.db.execute("SELECT * FROM event_tracking_events ORDER BY updated_at DESC LIMIT 200").fetchall():
-            known = set(_string_list(json_value(event["identity_tokens_json"], [])))
-            shared = tokens & known
-            # Cashtags/contracts are strong identity anchors.  For named
-            # entities require two terms, except a single non-generic proper
-            # entity can connect the successive stages of one incident.
-            if any(item.startswith(("$", "0x")) for item in shared):
-                return event
-            if len(shared) >= 2:
-                return event
-            if len(shared) == 1 and next(iter(shared)) not in GENERIC_IDENTITY_TOKENS:
-                return event
-        return None
+
+    def reconcile_topic_merges(self) -> dict[str, int]:
+        """Make one tracking cycle owner follow the surviving HotTopic."""
+        merges = self.db.execute(
+            "SELECT source_topic_id,target_topic_id FROM topic_merges ORDER BY created_at,merge_id"
+        ).fetchall()
+        moved = retired = 0
+        for merge in merges:
+            source_id, target_id = merge["source_topic_id"], merge["target_topic_id"]
+            source = self.db.execute(
+                "SELECT e.* FROM event_tracking_topic_links l JOIN event_tracking_events e ON e.event_id=l.event_id "
+                "WHERE l.topic_id=? ORDER BY e.updated_at DESC LIMIT 1", (source_id,),
+            ).fetchone()
+            if source is None:
+                continue
+            linked_topics = {
+                row["topic_id"] for row in self.db.execute(
+                    "SELECT topic_id FROM event_tracking_topic_links WHERE event_id=?", (source["event_id"],)
+                )
+            }
+            if linked_topics - {source_id, target_id}:
+                continue
+            target = self.db.execute(
+                "SELECT e.* FROM event_tracking_topic_links l JOIN event_tracking_events e ON e.event_id=l.event_id "
+                "WHERE l.topic_id=? ORDER BY e.updated_at DESC LIMIT 1", (target_id,),
+            ).fetchone()
+            if target is not None and target["event_id"] != source["event_id"]:
+                target_links = {
+                    row["topic_id"] for row in self.db.execute(
+                        "SELECT topic_id FROM event_tracking_topic_links WHERE event_id=?", (target["event_id"],)
+                    )
+                }
+                if target_links - {source_id, target_id}:
+                    continue
+            if target is not None and target["event_id"] == source["event_id"]:
+                continue
+            winner = source
+            if target is not None and target["event_id"] != source["event_id"]:
+                def rank(event: sqlite3.Row) -> tuple[int, int, str]:
+                    published = self.db.execute(
+                        "SELECT COUNT(*) FROM event_tracking_publication_outbox WHERE event_id=? AND status IN ('submitted','published')",
+                        (event["event_id"],),
+                    ).fetchone()[0]
+                    return (int(published > 0), int(event["status"] == "active"), str(event["created_at"]))
+
+                winner, loser = (source, target) if rank(source) > rank(target) else (target, source)
+                self._retire_merged_event(str(loser["event_id"]), str(winner["event_id"]))
+                retired += 1
+            now_text = utc_iso(self.now())
+            with self.db:
+                if target is None or target["event_id"] != winner["event_id"]:
+                    prior = self.db.execute(
+                        "SELECT snapshot_hash,snapshot_json FROM event_tracking_topic_links WHERE event_id=? AND topic_id=?",
+                        (winner["event_id"], source_id),
+                    ).fetchone()
+                    if prior:
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO event_tracking_topic_links(event_id,topic_id,snapshot_hash,snapshot_json,linked_at,updated_at) "
+                            "VALUES(?,?,?,?,?,?)",
+                            (winner["event_id"], target_id, prior["snapshot_hash"], prior["snapshot_json"], now_text, now_text),
+                        )
+                        moved += 1
+                self.db.execute(
+                    "DELETE FROM event_tracking_topic_links WHERE topic_id=? AND event_id<>?",
+                    (target_id, winner["event_id"]),
+                )
+                self.db.execute(
+                    "DELETE FROM event_tracking_topic_links WHERE topic_id=?",
+                    (source_id,),
+                )
+                self._audit("topic_merge_tracking_reconciled", {"source_topic_id": source_id, "target_topic_id": target_id}, event_id=winner["event_id"])
+        return {"moved": moved, "retired": retired}
+
+    def _retire_merged_event(self, event_id: str, winner_event_id: str) -> None:
+        now_text = utc_iso(self.now())
+        cancel_tasks = getattr(self.dispatcher, "dismiss_event_tasks", None)
+        if callable(cancel_tasks):
+            cancel_tasks(event_id=event_id, dismissed_at=now_text, dismissed_by="topic_merge")
+        with self.db:
+            for cycle in self.db.execute(
+                "SELECT * FROM event_tracking_cycles WHERE event_id=? AND status IN ('discovering','active')", (event_id,),
+            ).fetchall():
+                self._end_cycle(dict(cycle), "topic_merged", now_text)
+            self.db.execute(
+                "UPDATE event_tracking_events SET status='ended',ended_at=?,end_reason='topic_merged',updated_at=? WHERE event_id=?",
+                (now_text, now_text, event_id),
+            )
+            self.db.execute(
+                "UPDATE event_tracking_publication_outbox SET cancelled_at=?,cancelled_by='topic_merge',next_attempt_at=NULL,updated_at=? "
+                "WHERE event_id=? AND cancelled_at IS NULL AND status NOT IN ('published','duplicate')",
+                (now_text, now_text, event_id),
+            )
+            self.db.execute(
+                "UPDATE event_tracking_accounts SET status='inactive',next_due_at=NULL,updated_at=? "
+                "WHERE status='active' AND NOT EXISTS (SELECT 1 FROM event_tracking_bindings b "
+                "WHERE b.handle_lower=event_tracking_accounts.handle_lower AND b.status='active')",
+                (now_text,),
+            )
+            self._audit("event_retired_after_topic_merge", {"winner_event_id": winner_event_id}, event_id=event_id)
 
     def _open_cycle(self, event: dict[str, Any], now: datetime) -> str:
         cycle_id = stable_id("tracking-cycle", event["event_id"], utc_iso(now))

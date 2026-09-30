@@ -30,6 +30,7 @@ class FakeDispatcher:
         self.created: list[dict[str, Any]] = []
         self.submitted: list[tuple[int, str]] = []
         self.statuses: dict[int, str] = {}
+        self.dismissed: list[str] = []
 
     def ensure_task(self, **kwargs: Any) -> int:
         task_id = self.next_task_id
@@ -43,6 +44,10 @@ class FakeDispatcher:
 
     def task_status(self, task_id: int) -> str | None:
         return self.statuses.get(task_id)
+
+    def dismiss_event_tasks(self, *, event_id: str, dismissed_at: str, dismissed_by: str) -> dict[str, Any]:
+        self.dismissed.append(event_id)
+        return {"cancelledTaskIds": [], "publishedTaskIds": [], "terminalTaskIds": []}
 
 
 class FakeAI:
@@ -253,6 +258,66 @@ def test_web_search_without_citations_never_creates_a_manual_or_third_party_trac
         event = connection.execute("SELECT status,end_reason FROM event_tracking_events").fetchone()
         assert dict(event) == {"status": "discovery_failed", "end_reason": "discovery_failed"}
         assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries WHERE status='failed'").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_distinct_topics_never_share_tracking_event_from_model_identity(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    try:
+        _seed_topic(connection, clock, "topic:first")
+        _seed_topic(connection, clock, "topic:second")
+        assert tracker.observe_topics(["topic:first", "topic:second"]) == {
+            "assessed": 2, "tracked": 2, "failed": 0,
+        }
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_events").fetchone()[0] == 2
+    finally:
+        connection.close()
+
+
+def test_topic_merge_retires_duplicate_tracking_cycle(tmp_path: Path) -> None:
+    tracker, connection, clock, dispatcher = _tracker(tmp_path)
+    try:
+        _seed_topic(connection, clock, "topic:first")
+        _seed_topic(connection, clock, "topic:second")
+        tracker.observe_topics(["topic:first", "topic:second"])
+        events = {row["topic_id"]: row["event_id"] for row in connection.execute("SELECT topic_id,event_id FROM event_tracking_topic_links")}
+        with connection:
+            connection.execute(
+                "INSERT INTO topic_merges VALUES(?,?,?,?,?)",
+                ("merge:1", "topic:second", "topic:first", "same incident", clock().isoformat()),
+            )
+            connection.execute("UPDATE topics SET matching_status='archived',visibility='hidden' WHERE topic_id='topic:second'")
+        result = tracker.reconcile_topic_merges()
+        assert result["retired"] == 1
+        assert len(dispatcher.dismissed) == 1
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_events WHERE status='discovering'").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_events WHERE end_reason='topic_merged'").fetchone()[0] == 1
+        assert tracker.reconcile_topic_merges() == {"moved": 0, "retired": 0}
+        assert set(events.values()) == {row["event_id"] for row in connection.execute("SELECT event_id FROM event_tracking_events")}
+    finally:
+        connection.close()
+
+
+def test_legacy_multi_topic_event_is_not_propagated_by_merge_history(tmp_path: Path) -> None:
+    tracker, connection, clock, dispatcher = _tracker(tmp_path)
+    try:
+        for topic_id in ("topic:first", "topic:second", "topic:unrelated"):
+            _seed_topic(connection, clock, topic_id)
+        tracker.observe_topics(["topic:first"])
+        event_id = connection.execute("SELECT event_id FROM event_tracking_events").fetchone()[0]
+        with connection:
+            connection.execute(
+                "INSERT INTO event_tracking_topic_links VALUES(?,?,?,?,?,?)",
+                (event_id, "topic:unrelated", "old", "{}", clock().isoformat(), clock().isoformat()),
+            )
+            connection.execute(
+                "INSERT INTO topic_merges VALUES(?,?,?,?,?)",
+                ("merge:legacy", "topic:first", "topic:second", "same incident", clock().isoformat()),
+            )
+        assert tracker.reconcile_topic_merges() == {"moved": 0, "retired": 0}
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_topic_links WHERE topic_id='topic:second'").fetchone()[0] == 0
+        assert dispatcher.dismissed == []
     finally:
         connection.close()
 

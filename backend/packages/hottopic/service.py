@@ -23,7 +23,7 @@ from packages.x_agent import XAgentAnalyzer, is_relevant
 
 from .capture import AccountRow, ContentItem, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
-from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicAggregator
+from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicEventMergeReviewer, TopicAggregator
 
 
 POLL_INTERVAL_SECONDS = 600
@@ -304,10 +304,26 @@ class HotTopicService:
                 # is enabled automatically on the next worker restart.
                 semantic_reviewer = None
                 self.semantic_reviewer_error = f"{type(exc).__name__}: {exc}"
+        topic_merge_reviewer = None
+        self.topic_merge_reviewer_error: str | None = None
+        if configured_bool("HOTTOPIC_TOPIC_MERGE_REVIEW_ENABLED", True):
+            try:
+                topic_merge_reviewer = TopicEventMergeReviewer(
+                    os.getenv("HOTTOPIC_TOPIC_MERGE_MODEL") or "gpt-5.6-luna",
+                    fallback_model=os.getenv("HOTTOPIC_TOPIC_MERGE_FALLBACK_MODEL") or "gpt-5.6-terra",
+                    reasoning_effort="high",
+                    timeout=float(os.getenv("HOTTOPIC_TOPIC_MERGE_TIMEOUT_SECONDS") or "90"),
+                )
+            except (RuntimeError, ValueError) as exc:
+                self.topic_merge_reviewer_error = f"{type(exc).__name__}: {exc}"
+                def unavailable_topic_merge_reviewer(_cases):
+                    raise RuntimeError(self.topic_merge_reviewer_error or "topic merge reviewer unavailable")
+                topic_merge_reviewer = unavailable_topic_merge_reviewer
         self.aggregator = TopicAggregator(
             self.path,
             brief_writer=writer,
             semantic_reviewer=semantic_reviewer,
+            topic_merge_reviewer=topic_merge_reviewer,
             semantic_review_batch_size=configured_integer(
                 "HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100
             ),
@@ -927,6 +943,7 @@ class HotTopicService:
     def poll_once(self) -> dict[str, int]:
         # Existing events first: their 1-minute schedule has priority over the
         # broad baseline account pool while sharing the same FXTwitter pacer.
+        self.event_tracker.reconcile_topic_merges()
         self.event_tracker.observe_topics()
         event_before = self._advance_event_tracking(poll_accounts=True)
         accounts = self._due_accounts()
@@ -1071,6 +1088,7 @@ class HotTopicService:
         try:
             payloads = [json.loads(row["payload_json"]) for row in rows]
             result = self.aggregator.process_batch(payloads, utc_now())
+            self.event_tracker.reconcile_topic_merges()
             with self.lock:
                 with self.db:
                     self.db.executemany("UPDATE hottopic_inbox SET processed_at=? WHERE tweet_id=?", [(iso(utc_now()), row["tweet_id"]) for row in rows])
@@ -1684,6 +1702,8 @@ class HotTopicService:
         if not force and row[0] and current - datetime.fromisoformat(row[0]) < MAINTENANCE_INTERVAL:
             return None
         reconciled = self.aggregator.reconcile_recent_topics(current)
+        tracking_reconciled = self.event_tracker.reconcile_topic_merges()
+        self.event_tracker.observe_topics()
         self._refresh_hot_topic_counts()
         state = self.aggregator.prune_transient_state(current, retention_hours=TRANSIENT_RETENTION_HOURS)
         inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
@@ -1706,6 +1726,8 @@ class HotTopicService:
             "deleted_events": events,
             "sentiment_snapshots": sentiment_snapshots,
             "merged_topics": len(reconciled["topic_merges"]),
+            "tracking_merges": tracking_reconciled,
+            "semantic_review_pending": reconciled["semantic_review"].get("pending", 0),
         }
 
     @_serialized
@@ -1719,7 +1741,12 @@ class HotTopicService:
                 "inboxPending": self.db.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE processed_at IS NULL").fetchone()[0],
                 "topics": dict(topic_counts), "databasePath": str(self.path),
                 "semanticReviewEnabled": bool(self.aggregator.semantic_reviewer),
-                "semanticReviewError": self.semantic_reviewer_error}
+                "semanticReviewError": self.semantic_reviewer_error,
+                "semanticReviewPending": self.aggregator._count_pending_claim_reviews(),
+                "topicMergeReviewError": self.topic_merge_reviewer_error,
+                "topicMergeReviewPending": self.db.execute(
+                    "SELECT COUNT(*) FROM topic_pair_reviews WHERE decision='failed'"
+                ).fetchone()[0]}
 
     @_serialized
     def dashboard(self) -> dict[str, Any]:
