@@ -178,6 +178,9 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
       </div>
       <h2>{event.title}</h2>
       <p>{event.rationale}</p>
+      <DetailList title="关联热点" description="事件从这些热点话题中发现；事件账号帖子不会回灌到热点话题列表。">
+        {detail.topics.length === 0 ? <span className="muted">暂无关联热点</span> : detail.topics.map((topic) => <article className="autoNewsflashTopicLink" key={topic.topicId}><strong>{topic.snapshot.title || topic.topicId}</strong>{topic.snapshot.brief ? <p>{topic.snapshot.brief}</p> : <p className="muted">正文生成中</p>}<small>{topic.topicId} · {time(topic.updatedAt)}</small></article>)}
+      </DetailList>
       <DetailList title="官方账号">
         {detail.accounts.length === 0 ? <span className="muted">暂无已核验账号</span> : detail.accounts.map((account) => <a key={account.handle} href={`https://x.com/${account.handle}`} target="_blank" rel="noreferrer"><span>@{account.handle} · {account.officialEntity}</span><small>{statusLabel(account.status)} · {time(account.lastPolledAt)}</small></a>)}
       </DetailList>
@@ -207,13 +210,13 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
           </article>
         ))}
       </DetailList>
-      <DetailList title="Web Search 核验">
+      <DetailList title="官方账号发现与身份核验" description="Web Search 只用于寻找事件主体的官方账号并保存身份依据；后续帖子由事件专用账号轮询获取。">
         {detail.discoveries.length === 0 ? <span className="muted">暂无核验记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{statusLabel(discovery.status)}</span><small>{discovery.citations.length} 个引用 · {time(discovery.completedAt)}</small></div>)}
       </DetailList>
     </article>
   );
 }
 
-function DetailList({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="autoNewsflashDetailSection"><h3>{title}</h3><div>{children}</div></section>;
+function DetailList({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
+  return <section className="autoNewsflashDetailSection"><h3>{title}</h3>{description && <p className="muted">{description}</p>}<div>{children}</div></section>;
 }

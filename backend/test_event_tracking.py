@@ -213,6 +213,8 @@ def test_official_only_discovery_material_progress_outbox_and_silence_lifecycle(
     try:
         _seed_topic(connection, clock)
         assert tracker.observe_topics(["topic:giwa"]) == {"assessed": 1, "tracked": 1, "failed": 0}
+        event_title = connection.execute("SELECT title FROM event_tracking_events").fetchone()[0]
+        assert event_title == "GIWA fake bridge security incident"
         assert tracker.discover_official_accounts() == {"discovered": 1, "failed": 0, "bound": 1}
 
         handles = [row["handle_lower"] for row in connection.execute("SELECT handle_lower FROM event_tracking_accounts")]

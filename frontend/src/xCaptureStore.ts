@@ -236,7 +236,7 @@ export type AutoNewsflashEventDetail = {
     endReason: string | null;
   };
   cycles: AutoNewsflashEventCycle[];
-  topics: Array<{ topicId: string; linkedAt: string; updatedAt: string; snapshot: { title?: string } }>;
+  topics: Array<{ topicId: string; linkedAt: string; updatedAt: string; snapshot: { title?: string; brief?: string } }>;
   accounts: Array<{
     handle: string;
     displayName: string;

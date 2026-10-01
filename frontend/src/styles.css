@@ -896,6 +896,10 @@ body {
 .autoNewsflashDetailSection { margin-top: 25px; }
 .autoNewsflashDetailSection h3 { margin: 0 0 9px; color: #25333d; font-size: 14px; }
 .autoNewsflashDetailSection > div { display: grid; gap: 8px; }
+.autoNewsflashTopicLink { display: grid; gap: 6px; padding: 9px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #35444d; }
+.autoNewsflashTopicLink strong, .autoNewsflashTopicLink p { overflow-wrap: anywhere; margin: 0; }
+.autoNewsflashTopicLink p { color: #35444d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.autoNewsflashTopicLink small { color: #74808a; font-size: 11px; }
 .autoNewsflashDetailSection a, .autoNewsflashUpdate, .autoNewsflashOutbox, .autoNewsflashDiscovery { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 9px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #155f50; text-decoration: none; }
 .autoNewsflashOutbox { color: #35444d; }
 .autoNewsflashOutboxHeader { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 7px; }

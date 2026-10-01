@@ -1167,6 +1167,7 @@ class EventTracker:
     def _link_tracked_topic(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> None:
         event = self._find_event(snapshot)
         now = self.now()
+        event_title = str(decision.get("event_identity") or "").strip() or snapshot["title"]
         if event is not None and self._is_event_dismissed(str(event["event_id"])):
             self._audit(
                 "tracked_topic_suppressed",
@@ -1190,7 +1191,7 @@ class EventTracker:
                 ) VALUES(?,?,?,?,?,?,?,?,?,?, 'discovering',NULL,?,?,?)
                 """,
                 (
-                    event_id, identity_key, compact_json([snapshot["topic_id"]]), snapshot["title"], decision["tracking_type"], decision["reader_value"],
+                    event_id, identity_key, compact_json([snapshot["topic_id"]]), event_title, decision["tracking_type"], decision["reader_value"],
                     compact_json(decision["confirmed_facts"]), compact_json(decision["unconfirmed_claims"]), decision["reason"],
                     compact_json(decision["official_response_hypothesis"] or {}), now_text, now_text, now_text,
                 ),
@@ -1201,9 +1202,11 @@ class EventTracker:
             self._audit("event_created", {"topic_id": snapshot["topic_id"], "tracking_type": decision["tracking_type"]}, event_id=event_id)
         else:
             event_id = str(event["event_id"])
+            # A HotTopic may contain several related claims. Keep the event's
+            # own identity instead of replacing it with the broader topic title.
             self.db.execute(
-                "UPDATE event_tracking_events SET updated_at=?,last_hot_topic_at=?,title=COALESCE(NULLIF(?,''),title) WHERE event_id=?",
-                (utc_iso(now), utc_iso(now), snapshot["title"], event_id),
+                "UPDATE event_tracking_events SET updated_at=?,last_hot_topic_at=?,title=? WHERE event_id=?",
+                (utc_iso(now), utc_iso(now), event_title, event_id),
             )
             if str(event["status"]) in {"ended", "discovery_failed", "capacity_exhausted"}:
                 self._open_cycle(dict(event), now)
