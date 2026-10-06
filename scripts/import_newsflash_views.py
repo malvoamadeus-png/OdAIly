@@ -162,23 +162,28 @@ def ssh_command(remote_command: str, *, input_text: str | None = None) -> str:
     return run_process([str(SSH), "-F", SSH_CONFIG, SSH_ALIAS, remote_command], input_text=input_text)
 
 
-def remote_existing_ids(ids: set[str]) -> set[str]:
+def remote_state(ids: set[str]) -> tuple[set[str], set[str]]:
     payload = json.dumps(sorted(ids), ensure_ascii=False)
     code = """
 import json, sqlite3, sys
 ids = json.load(sys.stdin)
-found = set()
+facts = set()
+references = set()
 with sqlite3.connect('data/database/odaily.sqlite') as conn:
     for offset in range(0, len(ids), 500):
         batch = ids[offset:offset + 500]
         marks = ','.join('?' for _ in batch)
-        found.update(row[0] for row in conn.execute(
+        facts.update(row[0] for row in conn.execute(
             f'SELECT source_item_id FROM newsflash_operation_facts WHERE source_item_id IN ({marks})', batch
         ))
-print(json.dumps(sorted(found), ensure_ascii=False))
+        references.update(row[0] for row in conn.execute(
+            f'SELECT source_item_id FROM odaily_reference_items WHERE source_item_id IN ({marks})', batch
+        ))
+print(json.dumps({'facts': sorted(facts), 'references': sorted(references)}, ensure_ascii=False))
 """
     output = ssh_command(f"cd {shlex.quote(REMOTE_ROOT)} && .venv/bin/python -c {shlex.quote(code)}", input_text=payload)
-    return set(json.loads(output.strip() or "[]"))
+    result = json.loads(output.strip() or "{}")
+    return set(result.get("facts", [])), set(result.get("references", []))
 
 
 def import_workbook(info: WorkbookInfo, index: int) -> None:
@@ -194,7 +199,10 @@ def import_workbook(info: WorkbookInfo, index: int) -> None:
         output = ssh_command(command)
         print(output, end="")
     finally:
-        ssh_command(f"rm -f -- {shlex.quote(remote_name)}")
+        try:
+            ssh_command(f"rm -f -- {shlex.quote(remote_name)}")
+        except RuntimeError as exc:
+            print(f"Warning: could not remove remote temporary file yet: {remote_name} ({exc})", file=sys.stderr)
 
 
 def main() -> int:
@@ -206,7 +214,7 @@ def main() -> int:
         print("No compatible Odaily XLSX files found in the repository root or data/raw.", file=sys.stderr)
         return 2
     all_ids = set().union(*(info.ids for info in workbooks))
-    existing = remote_existing_ids(all_ids)
+    existing, references = remote_state(all_ids)
     local_weeks: dict[str, int] = defaultdict(int)
     week_existing: dict[str, set[str]] = defaultdict(set)
     for info in workbooks:
@@ -224,7 +232,7 @@ def main() -> int:
         known = len(week_existing[key])
         state = "complete" if known >= count else "missing"
         print(f"  {key}: local={count} server_existing={known} state={state}")
-    pending = [info for info in workbooks if info.ids - existing]
+    pending = [info for info in workbooks if (info.ids & references) - existing]
     if not pending:
         print("Nothing to import. Existing operation facts were preserved.")
         return 0
