@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import all locally available newsflash XLSX coverage without overwriting facts.
+"""Import all locally available newsflash statistics XLSX files.
 
 Run from the repository root with no arguments:
 
@@ -7,7 +7,8 @@ Run from the repository root with no arguments:
 
 The script intentionally uses the Windows OpenSSH client configured for this
 workspace. It performs a read-only production comparison first, then uploads
-each needed workbook to /tmp and invokes the repository's safe import mode.
+matching workbooks to /tmp in modification-time order. Newer workbooks run
+last and may overwrite values from older workbooks.
 """
 
 from __future__ import annotations
@@ -126,7 +127,7 @@ def parse_xlsx(path: Path) -> WorkbookInfo | None:
 
 
 def find_workbooks() -> list[WorkbookInfo]:
-    candidates = list(ROOT.glob("*.xlsx")) + list((ROOT / "data" / "raw").rglob("*.xlsx"))
+    candidates = list(ROOT.glob("快讯统计*.xlsx")) + list((ROOT / "data" / "raw").rglob("快讯统计*.xlsx"))
     result: list[WorkbookInfo] = []
     seen: set[Path] = set()
     for path in sorted(candidates):
@@ -194,7 +195,7 @@ def import_workbook(info: WorkbookInfo, index: int) -> None:
             f"cd {shlex.quote(REMOTE_ROOT)} && .venv/bin/python backend/src/main.py "
             f"newsflash-ops-import-xlsx --path {shlex.quote(remote_name)} "
             f"--start-date {info.start_date.isoformat()} --end-date {info.end_date.isoformat()} "
-            "--preserve-existing"
+            ""
         )
         output = ssh_command(command)
         print(output, end="")
@@ -243,14 +244,10 @@ def main() -> int:
             f"  {key}: local={count} server_existing={known} "
             f"importable_missing={missing_facts} server_missing_reference={missing_references} state={state}"
         )
-    pending = [info for info in workbooks if (info.ids & references) - existing]
-    if not pending:
-        print("Nothing to import. Existing operation facts were preserved.")
-        return 0
-    print(f"Importing {len(pending)} workbook(s) in preserve-existing mode...")
-    for index, info in enumerate(pending, start=1):
+    print(f"Importing {len(workbooks)} workbook(s) in modification-time order; newest runs last...")
+    for index, info in enumerate(workbooks, start=1):
         import_workbook(info, index)
-    print("Import complete. Existing operation facts were not overwritten; remote temporary files were removed.")
+    print("Import complete. Newer workbook values were applied last; remote temporary files were removed.")
     return 0
 
 
