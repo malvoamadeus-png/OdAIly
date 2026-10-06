@@ -285,6 +285,11 @@ def parse_args() -> argparse.Namespace:
     newsflash_import.add_argument("--path", required=True, help="Path to the Odaily XLSX export.")
     newsflash_import.add_argument("--start-date", required=True, help="Inclusive Beijing date, YYYY-MM-DD.")
     newsflash_import.add_argument("--end-date", required=True, help="Exclusive Beijing date, YYYY-MM-DD.")
+    newsflash_import.add_argument(
+        "--preserve-existing",
+        action="store_true",
+        help="Skip existing operation facts and do not update existing reference rows.",
+    )
     subparsers.add_parser("newsflash-ops-seed-confirmed-week", help="Seed the confirmed 2026-07-20 duty schedule and July reporting assignment.")
 
     whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch SQLite tables.")
@@ -1224,10 +1229,12 @@ def newsflash_ops_import_xlsx_command(args: argparse.Namespace) -> int:
         Path(args.path).expanduser().resolve(),
         start_date=date.fromisoformat(args.start_date),
         end_date=date.fromisoformat(args.end_date),
+        preserve_existing=args.preserve_existing,
     )
     print(
         "[odaily] newsflash operations XLSX imported "
         f"read={result['read']} matched={result['matched']} skipped={result['skipped']} "
+        f"skipped_existing={result['skipped_existing']} "
         f"reconciled_odaily={result['reconciled_odaily']}"
     )
     return 0

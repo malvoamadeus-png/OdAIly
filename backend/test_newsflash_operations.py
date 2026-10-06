@@ -531,6 +531,33 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(fact["view_count"], 321)
         self.assertEqual(fact["is_pushed"], 1)
 
+    def test_xlsx_import_preserve_existing_skips_fact_and_reference_updates(self) -> None:
+        self.add_reference("preserve", "Original title", "2026-07-20T08:00:00+08:00")
+        self.repository.upsert_source_facts([
+            {"source_item_id": "preserve", "operator_raw": "Z", "view_count": 111, "is_pushed": 0},
+        ])
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["ID", "标题", "操作人", "链接", "发布时间", "阅读量", "是否推送", "推送时间"])
+        sheet.append(["preserve", "New title", "南枳", "https://example.com/new", datetime(2026, 7, 20, 9, 0), 999, "是", None])
+        path = Path(self.temp_dir.name) / "preserve.xlsx"
+        workbook.save(path)
+
+        result = self.repository.import_xlsx(
+            path,
+            start_date=date(2026, 7, 20),
+            end_date=date(2026, 7, 27),
+            preserve_existing=True,
+        )
+
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(result["skipped_existing"], 1)
+        with connect_sqlite(self.path) as conn:
+            reference = conn.execute("SELECT title,source_url FROM odaily_reference_items WHERE source_item_id='preserve'").fetchone()
+            fact = conn.execute("SELECT operator_raw,view_count,is_pushed FROM newsflash_operation_facts WHERE source_item_id='preserve'").fetchone()
+        self.assertEqual(dict(reference), {"title": "Original title", "source_url": None})
+        self.assertEqual(dict(fact), {"operator_raw": "Z", "view_count": 111, "is_pushed": 0})
+
     def test_unmapped_human_is_counted_as_unassigned(self) -> None:
         self.add_reference("40", "Unknown", "2026-07-20T09:00:00+08:00")
         self.repository.upsert_source_facts([

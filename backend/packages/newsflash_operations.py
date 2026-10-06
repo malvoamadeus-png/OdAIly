@@ -367,9 +367,11 @@ class NewsflashOperationsRepository:
         facts: list[dict[str, Any]],
         *,
         snapshot_at: str | None = None,
+        preserve_existing: bool = False,
     ) -> dict[str, int]:
         matched = 0
         skipped = 0
+        skipped_existing = 0
         matched_source_item_ids: list[str] = []
         with connect_sqlite(self.path) as conn:
             for fact in facts:
@@ -383,6 +385,12 @@ class NewsflashOperationsRepository:
                 ).fetchone()
                 if reference is None:
                     skipped += 1
+                    continue
+                if preserve_existing and conn.execute(
+                    "SELECT 1 FROM newsflash_operation_facts WHERE source_item_id=?",
+                    (source_item_id,),
+                ).fetchone():
+                    skipped_existing += 1
                     continue
                 existing = conn.execute(
                     "SELECT publisher_locked FROM newsflash_operation_facts WHERE source_item_id=?",
@@ -417,15 +425,22 @@ class NewsflashOperationsRepository:
                         snapshot_at or _iso(),
                     ),
                 )
-                conn.execute(
-                    "UPDATE odaily_reference_items SET source_url=COALESCE(?,source_url),title=COALESCE(?,title),"
-                    "published_at=COALESCE(?,published_at),updated_at=CURRENT_TIMESTAMP WHERE source_item_id=?",
-                    (fact.get("source_url"), fact.get("title"), fact.get("published_at"), source_item_id),
-                )
+                if not preserve_existing:
+                    conn.execute(
+                        "UPDATE odaily_reference_items SET source_url=COALESCE(?,source_url),title=COALESCE(?,title),"
+                        "published_at=COALESCE(?,published_at),updated_at=CURRENT_TIMESTAMP WHERE source_item_id=?",
+                        (fact.get("source_url"), fact.get("title"), fact.get("published_at"), source_item_id),
+                    )
                 matched += 1
             conn.commit()
         reconciled = self.reconcile_ai_publishers(source_item_ids=matched_source_item_ids)
-        return {"read": len(facts), "matched": matched, "skipped": skipped, "reconciled_odaily": reconciled}
+        return {
+            "read": len(facts),
+            "matched": matched,
+            "skipped": skipped,
+            "skipped_existing": skipped_existing,
+            "reconciled_odaily": reconciled,
+        }
 
     def reconcile_ai_publishers(self, *, source_item_ids: Iterable[str] | None = None) -> int:
         now = datetime.now(SHANGHAI_TZ)
@@ -1766,7 +1781,14 @@ class NewsflashOperationsRepository:
                 })
         return {"items": items, "page": page, "pages": max(1, (total + page_size - 1) // page_size), "total": total, "page_size": page_size}
 
-    def import_xlsx(self, path: Path, *, start_date: date, end_date: date) -> dict[str, int]:
+    def import_xlsx(
+        self,
+        path: Path,
+        *,
+        start_date: date,
+        end_date: date,
+        preserve_existing: bool = False,
+    ) -> dict[str, int]:
         try:
             from openpyxl import load_workbook
         except ImportError as exc:
@@ -1795,7 +1817,11 @@ class NewsflashOperationsRepository:
                 "pushed_at": pushed_at.isoformat() if pushed_at else None,
             })
         workbook.close()
-        return self.upsert_source_facts(facts, snapshot_at=datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat())
+        return self.upsert_source_facts(
+            facts,
+            snapshot_at=datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
+            preserve_existing=preserve_existing,
+        )
 
     def seed_confirmed_week(self, *, actor_email: str = "codex@local") -> None:
         week_start = date(2026, 7, 20)
