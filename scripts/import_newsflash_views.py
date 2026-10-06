@@ -215,23 +215,34 @@ def main() -> int:
         return 2
     all_ids = set().union(*(info.ids for info in workbooks))
     existing, references = remote_state(all_ids)
-    local_weeks: dict[str, int] = defaultdict(int)
+    local_week_ids: dict[str, set[str]] = defaultdict(set)
     week_existing: dict[str, set[str]] = defaultdict(set)
     for info in workbooks:
         for row in info.rows:
             key = week_start(row.published_at.date()).isoformat()
-            local_weeks[key] += 1
+            local_week_ids[key].add(row.source_item_id)
             if row.source_item_id in existing:
                 week_existing[key].add(row.source_item_id)
     print("Local XLSX coverage:")
     for info in workbooks:
         print(f"  {info.path.relative_to(ROOT)}: {info.weeks}")
     print("Server comparison:")
-    for key in sorted(local_weeks):
-        count = local_weeks[key]
+    for key in sorted(local_week_ids):
+        ids = local_week_ids[key]
+        count = len(ids)
         known = len(week_existing[key])
-        state = "complete" if known >= count else "missing"
-        print(f"  {key}: local={count} server_existing={known} state={state}")
+        missing_facts = len((ids & references) - existing)
+        missing_references = len(ids - references)
+        if missing_facts:
+            state = "missing"
+        elif missing_references:
+            state = "missing-reference"
+        else:
+            state = "complete"
+        print(
+            f"  {key}: local={count} server_existing={known} "
+            f"importable_missing={missing_facts} server_missing_reference={missing_references} state={state}"
+        )
     pending = [info for info in workbooks if (info.ids & references) - existing]
     if not pending:
         print("Nothing to import. Existing operation facts were preserved.")
