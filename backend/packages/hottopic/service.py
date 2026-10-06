@@ -278,7 +278,7 @@ class HotTopicService:
         self._init_meta()
         writer = None
         configured_model = model or os.getenv("HOTTOPIC_MODEL") or "gpt-5.6-luna"
-        configured_fallback_model = os.getenv("HOTTOPIC_FALLBACK_MODEL") or "gpt-5.6-terra"
+        configured_fallback_model = os.getenv("HOTTOPIC_FALLBACK_MODEL") or "gpt-5.6-luna"
         if configured_model:
             try:
                 writer = ModelBriefWriter(configured_model, fallback_model=configured_fallback_model)
@@ -289,7 +289,7 @@ class HotTopicService:
         self.semantic_reviewer_error: str | None = None
         if semantic_reviewer is None and configured_bool("HOTTOPIC_CLAIM_REVIEW_ENABLED", True):
             configured_review_model = os.getenv("HOTTOPIC_CLAIM_REVIEW_MODEL") or "gpt-5.6-luna"
-            configured_review_fallback = os.getenv("HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL") or "gpt-5.6-terra"
+            configured_review_fallback = os.getenv("HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL") or "gpt-5.6-luna"
             configured_review_effort = os.getenv("HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT") or "high"
             try:
                 semantic_reviewer = TopicClaimReviewer(
@@ -310,7 +310,7 @@ class HotTopicService:
             try:
                 topic_merge_reviewer = TopicEventMergeReviewer(
                     os.getenv("HOTTOPIC_TOPIC_MERGE_MODEL") or "gpt-5.6-luna",
-                    fallback_model=os.getenv("HOTTOPIC_TOPIC_MERGE_FALLBACK_MODEL") or "gpt-5.6-terra",
+                    fallback_model=os.getenv("HOTTOPIC_TOPIC_MERGE_FALLBACK_MODEL") or "gpt-5.6-luna",
                     reasoning_effort="high",
                     timeout=float(os.getenv("HOTTOPIC_TOPIC_MERGE_TIMEOUT_SECONDS") or "90"),
                 )

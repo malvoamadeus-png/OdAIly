@@ -811,7 +811,7 @@ class EventTracker:
         self.ai = ai if ai is not None else OpenAIEventTrackingAI.from_environment()
         self.dispatcher = dispatcher or SQLiteEventTrackingTaskDispatcher(primary_database_path)
         self.topic_model = os.getenv("HOTTOPIC_EVENT_TOPIC_MODEL") or "gpt-5.6-luna"
-        self.topic_fallback_model = os.getenv("HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL") or "gpt-5.6-terra"
+        self.topic_fallback_model = os.getenv("HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL") or "gpt-5.6-luna"
         self.update_model = os.getenv("HOTTOPIC_EVENT_UPDATE_MODEL") or self.topic_model
         self.update_fallback_model = os.getenv("HOTTOPIC_EVENT_UPDATE_FALLBACK_MODEL") or self.topic_fallback_model
         self.discovery_model = os.getenv("HOTTOPIC_EVENT_WEB_SEARCH_MODEL") or self.topic_model

@@ -32,7 +32,7 @@
 
 `odaily-hottopic.service` 对一个账号只调用一次 X 抓取。新帖以 `tweet_id` 存入共享 inbox；热点话题使用既有消费位，市场情绪与项目推介各自创建一条唯一的分析任务，因此两个模块不会相互抢占或重复调用。所有 FXTwitter 请求由同一进程节流器错峰，默认相隔 2 秒；收到 429 时暂停共享节流器 5 分钟或遵从更长的 `Retry-After`，对应账号按指数退避。这使 2,538 个账号在上游配额下逐步覆盖，不会用并发轮询反复撞限流。
 
-市场情绪先用确定性信号过滤，再以 `gpt-5.6-luna`、`reasoning_effort=none` 提取大盘、主流 CEX Crypto、美股、指数或 ETF 的标的和五级情绪。Luna 失败时改用 `gpt-5.6-terra`、`reasoning_effort=none`。五档情绪映射为 `-100 / -50 / 0 / +50 / +100`，同一标的按原帖的算术平均分汇总；主表按独立提及账号数降序，显示带零点的深绿至红色情绪条与数值。纯价格、新闻转发、链上新币和无明确情绪内容不生成结果；引用帖只取被跟踪账号自己的正文，不把被引用账号的观点归给它。模型失败、超时或非法 JSON 保留在任务错误中。
+市场情绪先用确定性信号过滤，再以 `gpt-5.6-luna`、`reasoning_effort=none` 提取大盘、主流 CEX Crypto、美股、指数或 ETF 的标的和五级情绪；请求失败时按同一思考等级重试。五档情绪映射为 `-100 / -50 / 0 / +50 / +100`，同一标的按原帖的算术平均分汇总；主表按独立提及账号数降序，显示带零点的深绿至红色情绪条与数值。纯价格、新闻转发、链上新币和无明确情绪内容不生成结果；引用帖只取被跟踪账号自己的正文，不把被引用账号的观点归给它。模型失败、超时或非法 JSON 保留在任务错误中。
 
 项目推介采用同一模型路由，提取项目、ticker、链、合约或官网和账号给出的逻辑。逻辑是可直接展示的事实或推介理由句，例如“马斯克关注了该 Meme 代币的发行者”，不使用“作者认为”“作者称”等归因开头；写库前会清理这类常见前缀，但不会回写既有观察。调用前要求明确链上/Crypto 信号，或 `$ticker` 与代币语境同时出现；单独的 `token`、`launch`、`protocol`、`points`、`liquidity`、`contract` 或“项目”不会触发模型，因此泛 AI 或公司产品帖不会进入项目推介。合约地址优先于官网作为归并身份；没有稳定身份时以原帖隔离，不按同名项目强行合并。同一账号对同一稳定项目重复相同逻辑时只更新最近时间。主表只展示项目、链或合约、逻辑和最近提及，不显示推介强度或账号/原帖计数；展开详情按 `source_tweet_id` 一条原帖展示一次，同一原帖下的多个项目逻辑合并显示。
 
@@ -44,16 +44,16 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 ## 模型配置
 
-热点话题正文、市场情绪和项目推介默认路由均为 `gpt-5.6-luna`，fallback 为 `gpt-5.6-terra`，正文/情绪/推介请求固定 `reasoning_effort=none`。确定性热点候选另有 claim 级语义复核：主模型为 `gpt-5.6-luna`、`reasoning_effort=high`，失败时回退 `gpt-5.6-terra`、仍为 `high`。部署配置已为这些名称加入显式路由，部署后由生产 LiteLLM 提供；这些内部模块不复用快讯编写模型。
+热点话题正文、市场情绪和项目推介统一使用 `gpt-5.6-luna`，正文/情绪/推介请求固定 `reasoning_effort=none`，失败时按原等级重试。确定性热点候选的 claim 级语义复核也使用 `gpt-5.6-luna`、`reasoning_effort=high`，失败时按 `high` 重试。部署配置仅暴露这一 GPT 路由；这些内部模块不复用快讯编写模型。
 
 - `X_AGENT_OPENAI_BASE_URL`：可选的兼容 API base URL；为空时依次使用 `ODAILY_LLM_BASE_URL`、`OPENAI_BASE_URL`。
 - `X_AGENT_OPENAI_API_KEY`：可选的专用凭据；本机 LiteLLM 路由优先使用 `LITELLM_MASTER_KEY`，然后使用 `ODAILY_LLM_API_KEY` 或 `OPENAI_API_KEY`。
-- `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：默认 `gpt-5.6-luna` / `gpt-5.6-terra`。
+- `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：默认均为 `gpt-5.6-luna`，失败时按原思考等级重试。
 - `X_AGENT_ANALYSIS_WORKERS`：单个 worker 的分析并发，默认 `2`。
 - `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小间隔，默认 `2`。
 - `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后暂停共享请求节流器的最短秒数，默认 `300`。
 - `HOTTOPIC_CLAIM_REVIEW_OPENAI_BASE_URL` / `HOTTOPIC_CLAIM_REVIEW_OPENAI_API_KEY`：语义复核的可选专用兼容 API 与凭据；为空时沿用 `ODAILY_LLM_BASE_URL` 和本机 LiteLLM 凭据。
-- `HOTTOPIC_CLAIM_REVIEW_MODEL` / `HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL`：claim 复核主/回退模型，默认 `gpt-5.6-luna` / `gpt-5.6-terra`。
+- `HOTTOPIC_CLAIM_REVIEW_MODEL` / `HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL`：claim 复核模型与重试模型，默认均为 `gpt-5.6-luna`。
 - `HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT`：claim 复核思考等级，默认 `high`。
 - `HOTTOPIC_CLAIM_REVIEW_TIMEOUT_SECONDS`：claim 复核单次请求超时，默认 `90` 秒。
 - `HOTTOPIC_CLAIM_REVIEW_ENABLED`：是否启用 claim 级语义复核，默认 `true`；路由或凭据不可用时自动退回机械结果。
@@ -66,7 +66,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 - `HOTTOPIC_EVENT_TRACKING_ENABLED`：默认 `true`；关闭时不再创建或推进事件追踪。
 - `HOTTOPIC_EVENT_OPENAI_BASE_URL` / `HOTTOPIC_EVENT_OPENAI_API_KEY`：可选的专用 Responses-compatible 路由与凭据，不是启动前置条件；为空时按既有 `HOTTOPIC`、`ODAILY_LLM`、`OPENAI_API_KEY` 回退顺序读取。
-- `HOTTOPIC_EVENT_TOPIC_MODEL` / `HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL`：任务 1 与实质进展判断的主/回退模型，默认 `gpt-5.6-luna` / `gpt-5.6-terra`。
+- `HOTTOPIC_EVENT_TOPIC_MODEL` / `HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL`：任务 1 与实质进展判断的模型与重试模型，默认均为 `gpt-5.6-luna`。
 - `HOTTOPIC_EVENT_WEB_SEARCH_MODEL` / `HOTTOPIC_EVENT_WEB_SEARCH_RETRY_MODEL`：官方账号核验的主/回退模型，默认同上。
 - `HOTTOPIC_EVENT_REQUEST_TIMEOUT_SECONDS`：单次 GPT 请求超时，默认 `90` 秒，范围为 `1–180` 秒。
 
@@ -102,7 +102,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
   --days 30 --workers 1 --request-interval 1
 ```
 
-再将该目录中的 `content_items.json` 作为 `x_agent_local_screen.py --posts` 输入。筛选过程将缓存成功判断，并写入独立进度 JSON；`model_calls` 记录实际 HTTP 请求数，单独显示 Luna、Terra、缓存命中和失败数。初始化完成后使用明确命令把经证据复核的建议导入独立账号目录；之后由管理员在网页逐项审阅和切换开关：
+再将该目录中的 `content_items.json` 作为 `x_agent_local_screen.py --posts` 输入。筛选过程将缓存成功判断，并写入独立进度 JSON；`model_calls` 记录实际 HTTP 请求数，单独显示 Luna、Luna 重试、缓存命中和失败数。初始化完成后使用明确命令把经证据复核的建议导入独立账号目录；之后由管理员在网页逐项审阅和切换开关：
 
 ```bash
 .venv/bin/python backend/src/main.py x-agent-import-screening \
@@ -125,4 +125,4 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
   --limit 100
 ```
 
-省略 `--apply` 时只统计候选，不写库；确认输出后加 `--apply` 才会把对应模块的相关 inbox 帖子以幂等 `pending` 任务入队。命令只读取 `followed` 且已打开该模块的账号，不改订阅开关、不调用模型；模型仍由 `odaily-hottopic.service` 使用 Luna、Terra fallback 消费。可重复执行，已存在的同模块任务会跳过；`--limit` 单次最多 500，适合分批运行。市场情绪和项目推介默认显示最近 7 天；需要更严格的实时窗口时可切换到 `24h`。
+省略 `--apply` 时只统计候选，不写库；确认输出后加 `--apply` 才会把对应模块的相关 inbox 帖子以幂等 `pending` 任务入队。命令只读取 `followed` 且已打开该模块的账号，不改订阅开关、不调用模型；模型仍由 `odaily-hottopic.service` 使用 Luna，并按原思考等级重试。可重复执行，已存在的同模块任务会跳过；`--limit` 单次最多 500，适合分批运行。市场情绪和项目推介默认显示最近 7 天；需要更严格的实时窗口时可切换到 `24h`。

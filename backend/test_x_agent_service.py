@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from packages.hottopic.capture import AccountRow, ContentItem
 from packages.hottopic.service import HotTopicService, iso, utc_now
 from packages.x_agent.analysis import AnalysisResult, XAgentAnalyzer
@@ -303,7 +305,7 @@ def test_project_detail_shows_one_source_once_and_merges_project_logics(tmp_path
         value.close()
 
 
-def test_luna_failure_uses_terra_with_reasoning_disabled() -> None:
+def test_luna_failure_does_not_switch_model_with_reasoning_disabled() -> None:
     calls: list[dict[str, object]] = []
 
     def post(_base: str, _key: str, body: bytes, _timeout: float) -> dict[str, object]:
@@ -315,16 +317,15 @@ def test_luna_failure_uses_terra_with_reasoning_disabled() -> None:
 
     analyzer = XAgentAnalyzer(
         primary_model="gpt-5.6-luna",
-        fallback_model="gpt-5.6-terra",
+        fallback_model="gpt-5.6-luna",
         base_url="https://example.test/v1",
         api_key="test-key",
         max_attempts=1,
         post_json=post,
     )
-    result = analyzer.analyze("market_sentiment", {"tweet_id": "x", "account_screen_name": "alice", "text": "BTC bullish"})
-    assert result.actual_model == "gpt-5.6-terra"
-    assert result.fallback_reason == "RuntimeError: luna unavailable"
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    with pytest.raises(Exception, match="luna unavailable"):
+        analyzer.analyze("market_sentiment", {"tweet_id": "x", "account_screen_name": "alice", "text": "BTC bullish"})
+    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
     assert all(call["reasoning_effort"] == "none" for call in calls)
 
 

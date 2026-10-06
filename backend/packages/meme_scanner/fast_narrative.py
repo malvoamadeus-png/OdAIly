@@ -1,4 +1,4 @@
-"""Fast Meme narrative: local evidence in, OdAIly Terra prose out."""
+"""Fast Meme narrative: local evidence in, OdAIly Luna prose out."""
 
 from __future__ import annotations
 
@@ -113,11 +113,11 @@ def write_json_with_metrics(
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError("Terra response has no chat-completion content") from exc
+        raise RuntimeError("Luna response has no chat-completion content") from exc
     if not isinstance(content, str):
-        raise RuntimeError("Terra response content is not text")
+        raise RuntimeError("Luna response content is not text")
     return (
-        narrative_v2.extract_json_object(content, "Terra"),
+        narrative_v2.extract_json_object(content, "Luna"),
         narrative_v2.performance_entry("", started, data),
     )
 
@@ -195,9 +195,9 @@ def run(
         except Exception as exc:
             raise narrative_v2.NarrativeStageError("final_validation", exc) from exc
         if final["reader_text"]:
-            status, decision_code, decision_reason = "success", "completed", "已由 Terra 基于快速信源生成叙事"
+            status, decision_code, decision_reason = "success", "completed", "已由 Luna 基于快速信源生成叙事"
         else:
-            status, decision_code, decision_reason = "empty", "writer_returned_empty", "Terra 未形成可核验的具体叙事"
+            status, decision_code, decision_reason = "empty", "writer_returned_empty", "Luna 未形成可核验的具体叙事"
 
     result = {
         "status": status,

@@ -67,7 +67,7 @@ def is_relevant(module: str, text: str) -> bool:
 
 
 class XAgentAnalyzer:
-    """OpenAI-compatible client with Luna primary and Terra fallback."""
+    """OpenAI-compatible client using the Luna route for analysis and retries."""
 
     def __init__(
         self,
@@ -81,7 +81,7 @@ class XAgentAnalyzer:
         post_json: Callable[[str, str, bytes, float], dict[str, Any]] | None = None,
     ) -> None:
         self.primary_model = primary_model or os.getenv("X_AGENT_MODEL") or "gpt-5.6-luna"
-        self.fallback_model = fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-terra"
+        self.fallback_model = fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-luna"
         self.base_url = (
             base_url
             or os.getenv("X_AGENT_OPENAI_BASE_URL")

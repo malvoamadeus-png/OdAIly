@@ -446,7 +446,7 @@ def report_markdown(report: dict[str, Any]) -> str:
         f"- 样本窗口：{window['cutoff']} 至 {window['as_of']}（{kind_text}；以提供的本地快照最新帖子为准）。",
         f"- 输入账号文件：`{report['accounts_file']}`。",
         f"- 输入帖子快照：{len(report['post_files'])} 个；快照中可用帖子时间范围：{window.get('earliest_post') or '-'} 至 {window.get('latest_post') or '-'}。",
-        f"- 总账号：{report['total_accounts']}；模型候选：{report['candidate_accounts']}；缓存命中：{report.get('cache_hits', 0)}；实际 HTTP 请求：{report['model_calls']}（Luna {report.get('primary_model_calls', 0)}，Terra {report.get('fallback_calls', 0)}）；失败：{report['failures']}。",
+        f"- 总账号：{report['total_accounts']}；模型候选：{report['candidate_accounts']}；缓存命中：{report.get('cache_hits', 0)}；实际 HTTP 请求：{report['model_calls']}（Luna {report.get('primary_model_calls', 0)}，Luna 重试 {report.get('fallback_calls', 0)}）；失败：{report['failures']}。",
         f"- 估算 token：输入 {report.get('estimated_input_tokens', 0)}，输出 {report.get('estimated_output_tokens', 0)}；成本估算：{report.get('estimated_cost_note') or '未提供兼容路由定价，未伪造美元金额。'}",
         "",
     ]
@@ -519,7 +519,7 @@ def main() -> int:
         help="Send every rule candidate, or only strong candidates, to the model. Weak candidates stay review in strong_only mode.",
     )
     parser.add_argument("--model", help="Primary model. Defaults to X_AGENT_MODEL or gpt-5.6-luna.")
-    parser.add_argument("--fallback-model", help="Fallback model. Defaults to X_AGENT_FALLBACK_MODEL or gpt-5.6-terra.")
+    parser.add_argument("--fallback-model", help="Fallback model. Defaults to X_AGENT_FALLBACK_MODEL or gpt-5.6-luna.")
     parser.add_argument("--max-accounts", type=int, default=0)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=45.0)
@@ -529,7 +529,7 @@ def main() -> int:
 
     load_env(args.env_file.resolve())
     args.model = args.model or os.getenv("X_AGENT_MODEL") or "gpt-5.6-luna"
-    args.fallback_model = args.fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-terra"
+    args.fallback_model = args.fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-luna"
     supplied_posts = [path.resolve() for path in args.posts]
     raw_post_times: list[datetime] = []
     for path in supplied_posts:

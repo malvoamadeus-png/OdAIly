@@ -109,23 +109,21 @@ def test_topic_pair_review_merges_stages_but_separates_other_incident(tmp_path: 
         aggregator.close()
 
 
-def test_topic_merge_reviewer_falls_back_with_high_reasoning() -> None:
+def test_topic_merge_reviewer_uses_luna_with_high_reasoning() -> None:
     reviewer = TopicEventMergeReviewer(base_url="https://example.test/v1", api_key="test", max_attempts=1)
     requests = []
 
     def post(request):
         payload = json.loads(request.data.decode("utf-8"))
         requests.append(payload)
-        if payload["model"] == "gpt-5.6-luna":
-            raise RuntimeError("primary unavailable")
         return {"choices": [{"message": {"content": json.dumps({"reviews": [
             {"case_id": "pair:1", "decision": "separate", "confidence": 0.9, "reason": "different event"}
         ]})}}]}
 
     reviewer._post_json = post  # type: ignore[method-assign]
     result = reviewer([{"case_id": "pair:1", "left": {"evidence": []}, "right": {"evidence": []}}])
-    assert result[0]["model"] == "gpt-5.6-terra"
-    assert [request["model"] for request in requests] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert result[0]["model"] == "gpt-5.6-luna"
+    assert [request["model"] for request in requests] == ["gpt-5.6-luna"]
     assert all(request["reasoning_effort"] == "high" for request in requests)
 
 
@@ -172,7 +170,7 @@ def test_aggregator_connection_matches_the_shared_worker_lock_policy(tmp_path: P
         aggregator.close()
 
 
-def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
+def test_model_brief_writer_uses_luna_without_reasoning() -> None:
     calls: list[dict[str, object]] = []
 
     class Cursor:
@@ -185,7 +183,7 @@ def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
 
     writer = ModelBriefWriter(
         "gpt-5.6-luna",
-        fallback_model="gpt-5.6-terra",
+        fallback_model="gpt-5.6-luna",
         base_url="https://example.test/v1",
         api_key="test-key",
         max_attempts=1,
@@ -194,8 +192,6 @@ def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
     def post(request):
         payload = json.loads(request.data.decode("utf-8"))
         calls.append(payload)
-        if payload["model"] == "gpt-5.6-luna":
-            raise RuntimeError("luna unavailable")
         return {
             "choices": [{"message": {"content": json.dumps({
                 "title": "Example topic",
@@ -213,7 +209,7 @@ def test_model_brief_writer_uses_luna_then_terra_without_reasoning() -> None:
     )
 
     assert result["source_claim_ids"] == ["claim:1"]
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
     assert all(call["reasoning_effort"] == "none" for call in calls)
     prompt = calls[-1]["messages"][0]["content"]
     assert "不要加入编辑者自己的判断、免责声明或结论性提醒" in prompt
@@ -261,11 +257,11 @@ def test_semantic_reviewer_uses_luna_with_high_reasoning() -> None:
     assert "HBM、Micron、NVIDIA 或 GPU 供需" in calls[0]["messages"][0]["content"]
 
 
-def test_semantic_reviewer_falls_back_to_terra_for_the_same_batch() -> None:
+def test_semantic_reviewer_uses_luna_for_the_same_batch() -> None:
     calls: list[dict[str, object]] = []
     reviewer = TopicClaimReviewer(
         "gpt-5.6-luna",
-        fallback_model="gpt-5.6-terra",
+        fallback_model="gpt-5.6-luna",
         reasoning_effort="high",
         base_url="https://example.test/v1",
         api_key="test-key",
@@ -275,8 +271,6 @@ def test_semantic_reviewer_falls_back_to_terra_for_the_same_batch() -> None:
     def post(request):
         payload = json.loads(request.data.decode("utf-8"))
         calls.append(payload)
-        if payload["model"] == "gpt-5.6-luna":
-            raise RuntimeError("luna unavailable")
         return {
             "choices": [{"message": {"content": json.dumps({
                 "reviews": [{
@@ -294,9 +288,9 @@ def test_semantic_reviewer_falls_back_to_terra_for_the_same_batch() -> None:
         "event_or_issue": "general", "evidence": [],
     }}])
 
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna", "gpt-5.6-terra"]
+    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
     assert result[0]["decision"] == "context"
-    assert result[0]["model"] == "gpt-5.6-terra"
+    assert result[0]["model"] == "gpt-5.6-luna"
     assert result[0]["confidence"] == 0.91
 
 
