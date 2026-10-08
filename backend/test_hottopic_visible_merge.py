@@ -70,10 +70,14 @@ def test_full_visible_scan_merges_groups_and_keeps_periodic_schedule(tmp_path: P
     drake = ["topic:drake:1", "topic:drake:2", "topic:drake:3"]
     coinbase = ["topic:coinbase:1", "topic:coinbase:2"]
     reviewer = Reviewer([drake, coinbase])
+    written_evidence: list[list[str]] = []
+
+    def write_brief(_db, _id, _at, evidence):
+        written_evidence.append([row["claim_id"] for row in evidence])
+        return {"title": "Combined topic", "brief": "Combined evidence", "source_claim_ids": written_evidence[-1]}
+
     aggregator = TopicAggregator(tmp_path / "topics.sqlite", visible_merge_reviewer=reviewer,
-                                 brief_writer=lambda _db, _id, _at, evidence: {
-                                     "title": "Combined topic", "brief": "Combined evidence", "source_claim_ids": [row["claim_id"] for row in evidence[:5]],
-                                 })
+                                 brief_writer=write_brief)
     try:
         for index, topic_id in enumerate([*drake, *coinbase, "topic:other"]):
             subject = "Justin Drake announced bunker mode ECDSA" if topic_id in drake else (
@@ -87,6 +91,10 @@ def test_full_visible_scan_merges_groups_and_keeps_periodic_schedule(tmp_path: P
         assert len(reviewer.coarse_calls) == 1
         assert len(reviewer.coarse_calls[0]) == 6
         assert len(reviewer.deep_calls) == 2
+        assert [len(evidence) for evidence in written_evidence] == [2, 3]
+        assert aggregator.connection.execute(
+            "SELECT working_title FROM topics WHERE topic_id=?", (coinbase[0],)
+        ).fetchone()[0].startswith("Coinbase")
         assert aggregator.connection.execute(
             "SELECT COUNT(*) FROM topics WHERE matching_status='active' AND visibility='visible'"
         ).fetchone()[0] == 3
@@ -97,6 +105,9 @@ def test_full_visible_scan_merges_groups_and_keeps_periodic_schedule(tmp_path: P
         immediate = aggregator.scan_visible_topics(NOW + timedelta(hours=2))
         assert immediate is not None and immediate["groups"] == 0
         assert aggregator.visible_merge_scan_due(NOW + timedelta(hours=4)) == "periodic"
+        repaired = aggregator.repair_visible_merge_brief(first["merges"][0]["merge_id"], NOW + timedelta(hours=2))
+        assert repaired["brief_status"] == "ready"
+        assert len(written_evidence[-1]) == 2
     finally:
         aggregator.close()
 

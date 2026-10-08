@@ -1225,7 +1225,7 @@ class TopicAggregator:
 
     def _visible_merge_cards(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
-            "SELECT t.topic_id,t.first_seen_at,b.revision,b.title,b.brief,b.content_hash "
+            "SELECT t.topic_id,t.first_seen_at,b.revision,b.title,b.brief,b.content_hash,b.source_claim_ids_json "
             "FROM topics t JOIN brief_revisions b ON b.topic_id=t.topic_id "
             "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) "
             "WHERE t.matching_status='active' AND t.visibility='visible' AND t.brief_status='ready' "
@@ -1327,12 +1327,19 @@ class TopicAggregator:
                         self.connection.rollback()
                         raise RuntimeError("visible topic changed during merge review")
                     target_id = min(ids, key=lambda topic_id: (by_id[topic_id]["first_seen_at"], topic_id))
+                    cited_ids = {
+                        claim_id for topic_id in ids
+                        for claim_id in json_loads(by_id[topic_id]["source_claim_ids_json"], [])
+                    }
+                    cited_ids.update(
+                        claim_id for values in evidence.values() for claim_id in values
+                    )
                     for source_id in ids:
                         if source_id != target_id:
-                            merges.append(self._merge_topic(source_id, target_id, scan_at, f"editorial: {compact(decision.get('reason'))}"))
+                            merges.append(self._merge_topic(source_id, target_id, scan_at, f"editorial: {compact(decision.get('reason'))}", preserve_identity=True))
                     self._refresh_all_topics(scan_at)
                     self.connection.commit()
-                    brief_requests = self._refresh_briefs({target_id}, scan_at, {}, force_topic_ids={target_id})
+                    brief_requests = self._refresh_briefs({target_id}, scan_at, {}, force_topic_ids={target_id}, evidence_claim_ids=cited_ids)
                     if any(request.get("brief_status") == "error" for request in brief_requests):
                         raise RuntimeError("merged topic brief refresh failed")
             self.connection.execute(
@@ -1360,6 +1367,56 @@ class TopicAggregator:
             )
             self.connection.commit()
             return {"scan_id": scan_id, "topics": len(cards), "groups": len(deep), "merges": merges, "error": str(exc), "retry_at": retry_at}
+
+    def repair_visible_merge_brief(self, merge_id: str, at: datetime | str) -> dict[str, Any]:
+        merge = self.connection.execute(
+            "SELECT * FROM topic_merges WHERE merge_id=? AND reason LIKE 'editorial:%'", (merge_id,)
+        ).fetchone()
+        if not merge:
+            raise ValueError("editorial merge not found")
+        target_id, source_id = merge["target_topic_id"], merge["source_topic_id"]
+        topic = self.connection.execute("SELECT matching_status FROM topics WHERE topic_id=?", (target_id,)).fetchone()
+        if not topic or topic["matching_status"] != "active":
+            raise ValueError("editorial merge target is no longer active")
+        prior = {}
+        for topic_id in (target_id, source_id):
+            row = self.connection.execute(
+                "SELECT title,source_claim_ids_json FROM brief_revisions "
+                "WHERE topic_id=? AND generated_at<? ORDER BY revision DESC LIMIT 1",
+                (topic_id, merge["created_at"]),
+            ).fetchone()
+            if not row:
+                raise ValueError("pre-merge brief missing")
+            prior[topic_id] = row
+        scan = self.connection.execute(
+            "SELECT deep_json FROM topic_merge_scans WHERE merge_ids_json LIKE ? ORDER BY started_at DESC LIMIT 1",
+            (f'%"{merge_id}"%',),
+        ).fetchone()
+        if not scan:
+            raise ValueError("editorial review audit missing")
+        decisions = json_loads(scan["deep_json"], [])
+        decision = next((row for row in decisions if target_id in row.get("ids", []) and source_id in row.get("ids", [])), None)
+        if not decision or decision.get("decision") != "merge":
+            raise ValueError("editorial merge review missing")
+        cited_ids = {
+            claim_id for row in prior.values()
+            for claim_id in json_loads(row["source_claim_ids_json"], [])
+        }
+        cited_ids.update(
+            claim_id for values in decision["evidence_claim_ids"].values() for claim_id in values
+        )
+        title = prior[target_id]["title"]
+        self.connection.execute(
+            "UPDATE topics SET working_title=?,canonical_subject=? WHERE topic_id=?",
+            (title, title, target_id),
+        )
+        self.connection.commit()
+        requests = self._refresh_briefs(
+            {target_id}, iso(at), {}, force_topic_ids={target_id}, evidence_claim_ids=cited_ids
+        )
+        if not requests or requests[0].get("brief_status") != "ready":
+            raise RuntimeError("editorial merge brief repair failed")
+        return requests[0]
 
     def _extract_claims(self, item: ContentItem) -> Sequence[Claim]:
         text = item.expanded_text
@@ -2157,7 +2214,7 @@ class TopicAggregator:
             (title, canonical, json_dumps(sorted(entities)), ",".join(sorted(issues)) or "一般讨论", topic_id),
         )
 
-    def _merge_topic(self, source_topic_id: str, target_topic_id: str, at: str, reason: str) -> dict[str, str]:
+    def _merge_topic(self, source_topic_id: str, target_topic_id: str, at: str, reason: str, *, preserve_identity: bool = False) -> dict[str, str]:
         rows = self.connection.execute(
             "SELECT m.*,th.relation_to_topic,cl.*,ci.activity_account FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
@@ -2232,7 +2289,8 @@ class TopicAggregator:
             "INSERT OR IGNORE INTO topic_merges VALUES (?,?,?,?,?)",
             (merge_id, source_topic_id, target_topic_id, reason, at),
         )
-        self._refresh_topic_identity(target_topic_id)
+        if not preserve_identity:
+            self._refresh_topic_identity(target_topic_id)
         self._update_retrieval(target_topic_id, at)
         cached = self._retrieval_cache.get(source_topic_id)
         if cached:
@@ -2680,6 +2738,7 @@ class TopicAggregator:
         transitions: dict[str, dict[str, str]],
         *,
         force_topic_ids: set[str] | None = None,
+        evidence_claim_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         requests: list[dict[str, Any]] = []
         current = dt(at)
@@ -2721,7 +2780,7 @@ class TopicAggregator:
             else:
                 reason = "ordinary_substantive_update"
             revision = last_revision + 1
-            result = self._write_brief(topic_id, revision, at, reason)
+            result = self._write_brief(topic_id, revision, at, reason, evidence_claim_ids=evidence_claim_ids)
             # Do not hold a brief write transaction while generating a later
             # brief in this same batch.
             self.connection.commit()
@@ -2771,7 +2830,7 @@ class TopicAggregator:
             "retry_after": retry_after,
         }
 
-    def _write_brief(self, topic_id: str, revision: int, at: str, reason: str) -> dict[str, Any]:
+    def _write_brief(self, topic_id: str, revision: int, at: str, reason: str, *, evidence_claim_ids: set[str] | None = None) -> dict[str, Any]:
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         claims = self.connection.execute(
             "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json,"
@@ -2782,9 +2841,15 @@ class TopicAggregator:
             "GROUP BY cl.claim_id ORDER BY ci.created_at", (topic_id,)
         ).fetchall()
         claims = [dict(row) | {"context_only": row["semantic_decision"] == "context"} for row in claims]
-        context_claims = self._nearby_context_claims(topic_id, topic, claims)
+        if evidence_claim_ids is not None:
+            claims = [row for row in claims if row["claim_id"] in evidence_claim_ids]
+        context_claims = [] if evidence_claim_ids is not None else self._nearby_context_claims(topic_id, topic, claims)
         subject_terms = asset_labels(topic["canonical_subject"])
-        selected_claims = self._select_narrative_claims(list(claims), context_claims, subject_terms)
+        selected_claims = (
+            sorted(claims, key=lambda row: row["created_at"])
+            if evidence_claim_ids is not None
+            else self._select_narrative_claims(list(claims), context_claims, subject_terms)
+        )
         if not self.brief_writer:
             return self._brief_generation_error(
                 topic_id,
