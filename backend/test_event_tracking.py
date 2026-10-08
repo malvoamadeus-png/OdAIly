@@ -51,8 +51,9 @@ class FakeDispatcher:
 
 
 class FakeAI:
-    def __init__(self, *, include_citations: bool = True) -> None:
+    def __init__(self, *, include_citations: bool = True, prefix_discovery: bool = False) -> None:
         self.include_citations = include_citations
+        self.prefix_discovery = prefix_discovery
         self.web_search_calls = 0
 
     @staticmethod
@@ -137,8 +138,11 @@ class FakeAI:
                 "person_involvement": "",
             },
         ]
+        discovery_text = json.dumps({"accounts": accounts, "reason": "仅项目官方账号应被追踪"}, ensure_ascii=False)
+        if self.prefix_discovery:
+            discovery_text = "我会先核验事件主体的官方账号。\n" + discovery_text
         return self._result(
-            json.dumps({"accounts": accounts, "reason": "仅项目官方账号应被追踪"}, ensure_ascii=False),
+            discovery_text,
             model=model,
             citations=["https://giwa.example/official-x"] if self.include_citations else [],
             tool_calls=[{"type": "web_search_call", "id": "ws_1"}],
@@ -252,6 +256,7 @@ def test_web_search_without_citations_never_creates_a_manual_or_third_party_trac
     try:
         _seed_topic(connection, clock)
         tracker.observe_topics(["topic:giwa"])
+        tracker.discovery_retry_model = "gpt-fallback"
         outcome = tracker.discover_official_accounts()
 
         assert outcome == {"discovered": 1, "failed": 1, "bound": 0}
@@ -260,6 +265,42 @@ def test_web_search_without_citations_never_creates_a_manual_or_third_party_trac
         event = connection.execute("SELECT status,end_reason FROM event_tracking_events").fetchone()
         assert dict(event) == {"status": "discovery_failed", "end_reason": "discovery_failed"}
         assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries WHERE status='failed'").fetchone()[0] == 1
+        discovery = connection.execute(
+            "SELECT raw_output,search_tool_calls_json,citations_json FROM event_tracking_account_discoveries"
+        ).fetchone()
+        assert "GIWAofficial" in discovery[0]
+        assert json.loads(discovery[1])[0]["type"] == "web_search_call"
+        assert json.loads(discovery[2]) == []
+    finally:
+        connection.close()
+
+
+def test_official_discovery_recovers_json_after_explanatory_prefix(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path, ai=FakeAI(prefix_discovery=True))
+    try:
+        _seed_topic(connection, clock)
+        tracker.observe_topics(["topic:giwa"])
+
+        assert tracker.discover_official_accounts() == {"discovered": 1, "failed": 0, "bound": 1}
+        assert connection.execute("SELECT screen_name FROM event_tracking_accounts").fetchone()[0] == "GIWAofficial"
+    finally:
+        connection.close()
+
+
+def test_discovery_failure_does_not_reopen_cycle_on_topic_refresh(tmp_path: Path) -> None:
+    ai = FakeAI(include_citations=False)
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path, ai=ai)
+    try:
+        _seed_topic(connection, clock)
+        tracker.observe_topics(["topic:giwa"])
+        tracker.discover_official_accounts()
+
+        with connection:
+            connection.execute("UPDATE topics SET working_title=? WHERE topic_id=?", ("GIWA 事故处置更新", "topic:giwa"))
+        clock.advance(minutes=1)
+        assert tracker.observe_topics(["topic:giwa"])["tracked"] == 1
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_cycles").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries").fetchone()[0] == 1
     finally:
         connection.close()
 
@@ -359,7 +400,7 @@ def test_operator_tracking_starts_after_automatic_rejection_and_survives_rescan(
         connection.close()
 
 
-def test_openai_web_search_adapter_requires_real_tool_call_and_citation(monkeypatch) -> None:
+def test_openai_web_search_adapter_exposes_tool_calls_and_missing_citations(monkeypatch) -> None:
     requests: list[dict[str, Any]] = []
 
     class Response:
@@ -404,5 +445,6 @@ def test_openai_web_search_adapter_requires_real_tool_call_and_citation(monkeypa
             return payload
 
     monkeypatch.setattr("packages.hottopic.event_tracking.requests.post", lambda *_args, **_kwargs: NoCitationResponse())
-    with pytest.raises(ValueError, match="citations"):
-        client.web_search_json(model="gpt-web", prompt="find official account")
+    result = client.web_search_json(model="gpt-web", prompt="find official account")
+    assert result.tool_calls[0]["type"] == "web_search_call"
+    assert result.citations == []

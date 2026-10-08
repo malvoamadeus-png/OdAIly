@@ -397,7 +397,7 @@ class EventTrackingTaskDispatcher(Protocol):
 
 
 class OpenAIEventTrackingAI:
-    """Typed Responses adapter; Web Search success requires actual tool output."""
+    """Typed Responses adapter; the discovery workflow validates search success."""
 
     def __init__(self, *, api_key: str, base_url: str, timeout_seconds: float = 90.0) -> None:
         self.api_key = api_key
@@ -428,12 +428,7 @@ class OpenAIEventTrackingAI:
         return self._request(model=model, prompt=prompt, web_search=False)
 
     def web_search_json(self, *, model: str, prompt: str) -> EventModelResult:
-        result = self._request(model=model, prompt=prompt, web_search=True)
-        if not result.tool_calls:
-            raise ValueError("Responses result did not contain a web_search_call")
-        if not result.citations:
-            raise ValueError("Responses web search result did not contain citations")
-        return result
+        return self._request(model=model, prompt=prompt, web_search=True)
 
     def _request(self, *, model: str, prompt: str, web_search: bool) -> EventModelResult:
         payload: dict[str, Any] = {"model": model, "input": prompt}
@@ -728,6 +723,18 @@ def _parse_json_output(raw: str) -> Any:
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    decoder = json.JSONDecoder()
+    first_error: json.JSONDecodeError | None = None
+    for index, character in enumerate(text):
+        if character not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+            return value
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
     return json.loads(text)
 
 
@@ -1034,7 +1041,7 @@ class EventTracker:
         model_result = EventModelResult(compact_json(decision), "operator_override", {}, 0.0, {}, [], [])
         with self.db:
             self._store_topic_assessment(snapshot, decision, self._prompt("topic_judgment"), model_result)
-            self._link_tracked_topic(snapshot, decision)
+            self._link_tracked_topic(snapshot, decision, allow_failed_reopen=True)
             linked = self._find_event(snapshot)
             if linked is None:
                 raise RuntimeError("operator-selected topic was not linked to an event")
@@ -1164,7 +1171,13 @@ class EventTracker:
             ),
         )
 
-    def _link_tracked_topic(self, snapshot: dict[str, Any], decision: dict[str, Any]) -> None:
+    def _link_tracked_topic(
+        self,
+        snapshot: dict[str, Any],
+        decision: dict[str, Any],
+        *,
+        allow_failed_reopen: bool = False,
+    ) -> None:
         event = self._find_event(snapshot)
         now = self.now()
         event_title = str(decision.get("event_identity") or "").strip() or snapshot["title"]
@@ -1208,7 +1221,10 @@ class EventTracker:
                 "UPDATE event_tracking_events SET updated_at=?,last_hot_topic_at=?,title=? WHERE event_id=?",
                 (utc_iso(now), utc_iso(now), event_title, event_id),
             )
-            if str(event["status"]) in {"ended", "discovery_failed", "capacity_exhausted"}:
+            reopenable_statuses = {"ended"}
+            if allow_failed_reopen:
+                reopenable_statuses.update({"discovery_failed", "capacity_exhausted"})
+            if str(event["status"]) in reopenable_statuses:
                 self._open_cycle(dict(event), now)
                 self._audit("event_cycle_reopened", {"topic_id": snapshot["topic_id"]}, event_id=event_id)
         event_id = str(event["event_id"])
@@ -1413,24 +1429,30 @@ class EventTracker:
         else:
             for model in dict.fromkeys((self.discovery_model, self.discovery_retry_model)):
                 attempts += 1
+                candidate: EventModelResult | None = None
                 try:
-                    result = self.ai.web_search_json(model=model, prompt=prompt)
-                    if not result.tool_calls or not result.citations:
+                    candidate = self.ai.web_search_json(model=model, prompt=prompt)
+                    result = candidate
+                    if not candidate.tool_calls or not candidate.citations:
                         raise ValueError("Web Search did not return both tool calls and citations")
                     break
                 except Exception as exc:
                     error = exc
-                    result = None
+                    if candidate is not None:
+                        result = candidate
         now = self.now()
-        if result is None:
+        search_contract_failed = result is not None and (not result.tool_calls or not result.citations)
+        if search_contract_failed:
+            error = ValueError("Web Search did not return both tool calls and citations")
+        if result is None or search_contract_failed:
             message = f"{type(error).__name__}: {error}" if error else "unknown Web Search failure"
             with self.db:
                 self._finish_discovery(
                     row,
                     prompt_version,
                     status="failed",
-                    result=None,
-                    payload={},
+                    result=result,
+                    payload={"failure_stage": "web_search_response" if result is not None else "web_search_request"},
                     error=message,
                     bound=0,
                     now=now,
@@ -1449,7 +1471,7 @@ class EventTracker:
                     prompt_version,
                     status="failed",
                     result=result,
-                    payload={},
+                    payload={"failure_stage": "structured_output"},
                     error=f"{type(exc).__name__}: {exc}",
                     bound=0,
                     now=now,

@@ -53,8 +53,15 @@ function statusLabel(value: string): string {
     ready_review: '待人工复核',
     publisher_failed: '失败',
     event_tracking_cancelled: '已取消',
+    no_official_account: '未发现可核验账号',
   };
   return labels[value] || value;
+}
+
+function discoveryStatusLabel(value: string): string {
+  if (value === 'failed') return '发现失败';
+  if (value === 'succeeded') return '发现成功';
+  return statusLabel(value);
 }
 
 function trackingTypeLabel(value: string): string {
@@ -211,7 +218,7 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
         ))}
       </DetailList>
       <DetailList title="官方账号发现与身份核验" description="Web Search 只用于寻找事件主体的官方账号并保存身份依据；后续帖子由事件专用账号轮询获取。">
-        {detail.discoveries.length === 0 ? <span className="muted">暂无核验记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{statusLabel(discovery.status)}</span><small>{discovery.citations.length} 个引用 · {time(discovery.completedAt)}</small></div>)}
+        {detail.discoveries.length === 0 ? <span className="muted">暂无核验记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{discoveryStatusLabel(discovery.status)}</span><small>{discovery.citations.length} 个引用 · {time(discovery.completedAt)}</small>{discovery.error && <p className="autoNewsflashDiscoveryError">{discovery.error}</p>}</div>)}
       </DetailList>
     </article>
   );

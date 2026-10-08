@@ -910,6 +910,7 @@ body {
 .autoNewsflashOutboxError { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; color: #aa3e32; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .autoNewsflashDetailSection a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .autoNewsflashDetailSection small, .autoNewsflashUpdate small, .autoNewsflashOutbox small, .autoNewsflashDiscovery small { color: #74808a; font-size: 11px; }
+.autoNewsflashDiscoveryError { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; color: #aa3e32; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .autoNewsflashUpdate > div { display: flex; grid-column: 1 / -1; align-items: center; gap: 8px; }
 .autoNewsflashUpdate strong { color: #2c3b44; font-size: 13px; line-height: 1.5; }
 .autoNewsflashUpdate p { grid-column: 1 / -1; margin: 0; color: #65727b; font-size: 12px; line-height: 1.55; }
