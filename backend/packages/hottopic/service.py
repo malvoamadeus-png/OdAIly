@@ -313,7 +313,7 @@ class HotTopicService:
                     "gpt-5.6-luna",
                     fallback_model="gpt-5.6-luna",
                     reasoning_effort="high",
-                    timeout=float(os.getenv("HOTTOPIC_TOPIC_MERGE_TIMEOUT_SECONDS") or "90"),
+                    timeout=float(os.getenv("HOTTOPIC_TOPIC_MERGE_TIMEOUT_SECONDS") or "300"),
                 )
             except (RuntimeError, ValueError) as exc:
                 self.topic_merge_reviewer_error = f"{type(exc).__name__}: {exc}"
