@@ -232,5 +232,8 @@ def test_merged_brief_prompt_carries_distinct_facts(tmp_path: Path) -> None:
         )
         assert "Portfolio Margin differs from the launch timetable" in prompts[0]
         assert "planned availability is not live availability" in prompts[0]
+        assert len(prompts) == 2
+        assert "草稿" in prompts[1]
+        assert "Portfolio Margin differs from the launch timetable" in prompts[1]
     finally:
         aggregator.close()

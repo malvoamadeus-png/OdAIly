@@ -3559,17 +3559,33 @@ class ModelBriefWriter:
 {json.dumps(payload, ensure_ascii=False)}
 """.strip()
         try:
-            return self._write_with_model(self.model, prompt, topic, evidence)
+            draft = self._write_with_model(self.model, prompt, topic, evidence)
         except Exception as primary_error:
             if not self.fallback_model or self.fallback_model == self.model:
                 raise
             try:
-                return self._write_with_model(self.fallback_model, prompt, topic, evidence)
+                draft = self._write_with_model(self.fallback_model, prompt, topic, evidence)
             except Exception as fallback_error:
                 raise RuntimeError(
                     f"HotTopic brief models failed: primary={type(primary_error).__name__}: {primary_error}; "
                     f"fallback={type(fallback_error).__name__}: {fallback_error}"
                 ) from fallback_error
+        if not editorial_guidance:
+            return draft
+        revision_prompt = (
+            "你是热点报道的终审编辑。下面的草稿来自两个已确认可合并的话题。"
+            "保留草稿中有证据支持的主线和时间口径，并补齐草稿遗漏的、由原始证据支持的另一侧独有事实或观点。"
+            "特别逐项检查‘必须保留的差异’；观点必须明确归因，计划不得写成已经全面上线。"
+            "不要加入编辑者免责声明或审查过程文字。输出自然中文正文，不用清单。"
+            "严格返回 JSON 对象，包含 title、brief、source_claim_ids；引用实际使用的两侧 claim_id。\n"
+            f"草稿：{json.dumps(draft, ensure_ascii=False)}\n"
+            f"共同事实：{compact(editorial_guidance.get('shared_fact'))}\n"
+            f"必须保留的差异：{compact(editorial_guidance.get('distinct_facts'))}\n"
+            f"失真风险：{compact(editorial_guidance.get('risk'))}\n"
+            f"两侧证据 ID：{json.dumps(editorial_guidance.get('evidence_claim_ids', {}), ensure_ascii=False)}\n"
+            f"原始证据：{json.dumps(payload, ensure_ascii=False)}"
+        )
+        return self._write_with_model(self.model, revision_prompt, topic, evidence)
 
     def _write_with_model(
         self,
