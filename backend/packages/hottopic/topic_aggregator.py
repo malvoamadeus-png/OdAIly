@@ -1018,6 +1018,29 @@ class TopicAggregator:
             metrics["phase_ms"] = {"state_commit": round((time.perf_counter() - phase_started) * 1000, 2)}
             self.connection.commit()
             brief_requests = self._refresh_briefs(brief_topic_ids, batch_iso, status_requests["transitions"])
+            newly_visible = {
+                request["topic_id"]
+                for request in brief_requests
+                if request.get("brief_status") == "ready"
+                and request.get("visibility") == "visible"
+                and request.get("reason") in {"became_visible", "visibility_or_lifecycle_change"}
+            }
+            if newly_visible:
+                visible_merges = self._merge_visible_topics(newly_visible, batch_iso)
+                for request in visible_merges:
+                    affected.add(request["source_topic_id"])
+                    affected.add(request["target_topic_id"])
+                if visible_merges:
+                    merge_targets = {request["target_topic_id"] for request in visible_merges}
+                    brief_requests.extend(
+                        self._refresh_briefs(
+                            merge_targets,
+                            batch_iso,
+                            {},
+                            force_topic_ids=merge_targets,
+                        )
+                    )
+                metrics["topic_merges"].extend(visible_merges)
             metrics["affected_topic_ids"] = sorted(affected)
             metrics["brief_refresh_requests"] = brief_requests
             metrics["brief_deferred_count"] = sum(
@@ -1060,17 +1083,15 @@ class TopicAggregator:
             raise
 
     def reconcile_recent_topics(self, at: datetime | str) -> dict[str, Any]:
-        """Reapply generic merge identity to recent open topics without new input."""
+        """Reapply topic merge identity to every visible open topic."""
         batch_iso = iso(at)
-        cutoff = (dt(batch_iso) - timedelta(hours=24)).isoformat()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             topic_ids = {
                 row["topic_id"]
                 for row in self.connection.execute(
-                    "SELECT topic_id FROM topics WHERE matching_status IN ('seed','active') "
-                    "AND COALESCE(last_evidence_at, started_at)>=?",
-                    (cutoff,),
+                    "SELECT topic_id FROM topics "
+                    "WHERE matching_status IN ('seed','active') AND visibility='visible'"
                 )
             }
             affected = set(topic_ids)
@@ -1112,11 +1133,45 @@ class TopicAggregator:
             }
             self.connection.commit()
             brief_requests = self._refresh_briefs(affected | pending_briefs, batch_iso, status_requests["transitions"])
+            newly_visible = {
+                request["topic_id"]
+                for request in brief_requests
+                if request.get("brief_status") == "ready"
+                and request.get("visibility") == "visible"
+                and request.get("reason") in {"became_visible", "visibility_or_lifecycle_change"}
+            }
+            if newly_visible:
+                visible_merges = self._merge_visible_topics(newly_visible, batch_iso)
+                for request in visible_merges:
+                    affected.add(request["source_topic_id"])
+                    affected.add(request["target_topic_id"])
+                if visible_merges:
+                    merge_targets = {request["target_topic_id"] for request in visible_merges}
+                    brief_requests.extend(
+                        self._refresh_briefs(
+                            merge_targets,
+                            batch_iso,
+                            {},
+                            force_topic_ids=merge_targets,
+                        )
+                    )
+                merge_requests.extend(visible_merges)
             pending_reviews = self._count_pending_claim_reviews()
             return {"topic_merges": merge_requests, "brief_refresh_requests": brief_requests, "semantic_review": {**review_result, "pending": pending_reviews}}
         except Exception:
             self.connection.rollback()
             raise
+
+    def _merge_visible_topics(self, topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        """Run the configured merge path after topics become visible."""
+        self.connection.commit()
+        requests = (
+            self._review_topic_pairs(topic_ids, at)
+            if self.topic_merge_reviewer
+            else self._consolidate_dirty_topics(topic_ids, at)
+        )
+        self.connection.commit()
+        return requests
 
     def _extract_claims(self, item: ContentItem) -> Sequence[Claim]:
         text = item.expanded_text
@@ -2012,8 +2067,15 @@ class TopicAggregator:
     def _review_topic_pairs(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
         if not self.topic_merge_reviewer:
             return []
+        visible_ids = {
+            row["topic_id"]
+            for row in self.connection.execute(
+                "SELECT topic_id FROM topics "
+                "WHERE matching_status IN ('seed','active') AND visibility='visible'"
+            )
+        } & dirty_topic_ids
         pairs: dict[tuple[str, str], dict[str, Any]] = {}
-        for topic_id in sorted(dirty_topic_ids):
+        for topic_id in sorted(visible_ids):
             profile = self._topic_event_profile(topic_id)
             if not profile:
                 continue
@@ -2022,7 +2084,7 @@ class TopicAggregator:
                 candidates.update(self._feature_index.get(f"t:{feature}", set()))
             for candidate_id in sorted(candidates - {topic_id}):
                 other = self._topic_event_profile(candidate_id)
-                if not other:
+                if not other or other["topic"]["visibility"] != "visible":
                     continue
                 left_id, right_id = sorted((topic_id, candidate_id))
                 if (left_id, right_id) in pairs:
@@ -2108,8 +2170,11 @@ class TopicAggregator:
         label_support: defaultdict[str, set[str]] = defaultdict(set)
         dollar_support: set[str] = set()
         support_rows = self.connection.execute(
-            "SELECT cl.claim_text,ci.activity_account FROM claims cl "
-            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id"
+            "SELECT DISTINCT cl.claim_text,ci.activity_account FROM claims cl "
+            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+            "JOIN memberships m ON m.claim_id=cl.claim_id AND m.superseded_by IS NULL "
+            "JOIN topics t ON t.topic_id=m.topic_id "
+            "WHERE t.matching_status IN ('seed','active') AND t.visibility='visible'"
         ).fetchall()
         for row in support_rows:
             text = compact(row["claim_text"])
@@ -2118,7 +2183,14 @@ class TopicAggregator:
             for asset in asset_labels(text):
                 label_support[asset].add(row["activity_account"])
                 dollar_support.add(asset)
-        queue = list(sorted(dirty_topic_ids))
+        visible_ids = {
+            row["topic_id"]
+            for row in self.connection.execute(
+                "SELECT topic_id FROM topics "
+                "WHERE matching_status IN ('seed','active') AND visibility='visible'"
+            )
+        } & dirty_topic_ids
+        queue = list(sorted(visible_ids))
         considered: set[tuple[str, str]] = set()
         while queue:
             topic_id = queue.pop(0)
@@ -2134,7 +2206,7 @@ class TopicAggregator:
                     continue
                 considered.add(pair)
                 candidate = self._topic_event_profile(candidate_id)
-                if not candidate:
+                if not candidate or candidate["topic"]["visibility"] != "visible":
                     continue
                 should_merge, reason = self._topics_share_continuous_subject(
                     profile, candidate, label_support, dollar_support
@@ -2413,15 +2485,23 @@ class TopicAggregator:
         )
         return TopicAssessment(frozenset(qualified), round(coherence, 4), anchor, substantive)
 
-    def _refresh_briefs(self, topic_ids: set[str], at: str, transitions: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    def _refresh_briefs(
+        self,
+        topic_ids: set[str],
+        at: str,
+        transitions: dict[str, dict[str, str]],
+        *,
+        force_topic_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         requests: list[dict[str, Any]] = []
         current = dt(at)
+        forced = force_topic_ids or set()
         for topic_id in sorted(topic_ids):
             row = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
             if not row or row["matching_status"] != "active":
                 continue
             retry_after = row["brief_retry_after"]
-            if retry_after and current < dt(retry_after):
+            if retry_after and current < dt(retry_after) and topic_id not in forced:
                 requests.append(
                     {
                         "topic_id": topic_id,
@@ -2442,7 +2522,9 @@ class TopicAggregator:
             last_revision = self.connection.execute("SELECT MAX(revision) AS revision FROM brief_revisions WHERE topic_id=?", (topic_id,)).fetchone()["revision"] or 0
             last_generated = self.connection.execute("SELECT MAX(generated_at) AS generated_at FROM brief_revisions WHERE topic_id=?", (topic_id,)).fetchone()["generated_at"]
             transition = transitions.get(topic_id, {})
-            if not last_revision:
+            if topic_id in forced:
+                reason = "topic_merge"
+            elif not last_revision:
                 reason = "became_visible"
             elif transition.get("to", "").startswith("active+"):
                 reason = "visibility_or_lifecycle_change"

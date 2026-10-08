@@ -83,6 +83,22 @@ def test_hot_topic_read_models_expose_lifecycle_times(service: HotTopicService) 
     assert detail["lastUpdatedAt"] == last_updated
 
 
+def test_hidden_topic_is_not_exposed_by_detail_read_model(service: HotTopicService) -> None:
+    with service.db:
+        service.db.execute(
+            "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+            "seed_expires_at,last_evidence_at,last_participation_at,matching_status,visibility,identity_revision,participant_count_1h,"
+            "participant_count_6h,participant_count_24h,participant_velocity,hotness_score,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "topic:hidden-detail", "Hidden topic", "Hidden topic", "[]", "event", "2026-09-29T01:00:00+00:00",
+                "2026-09-29T01:00:00+00:00", "2026-09-30T01:00:00+00:00", "2026-09-29T03:00:00+00:00",
+                "2026-09-29T03:00:00+00:00", "active", "hidden", 1, 0, 0, 0, 0.0, 0.0, "transient",
+            ),
+        )
+
+    assert service.topic_detail("topic:hidden-detail") is None
+
+
 def test_legacy_status_endpoint_cannot_create_a_hidden_blacklist(service: HotTopicService) -> None:
     service.add_account("TeamTrump")
     with pytest.raises(ValueError, match="不支持"):

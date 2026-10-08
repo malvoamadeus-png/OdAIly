@@ -1772,7 +1772,8 @@ class HotTopicService:
     def topic_detail(self, topic_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT t.*,b.title,b.brief,b.generated_at FROM topics t LEFT JOIN brief_revisions b ON b.topic_id=t.topic_id "
-            "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) WHERE t.topic_id=?", (topic_id,)
+            "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) "
+            "WHERE t.topic_id=? AND t.matching_status='active' AND t.visibility='visible'", (topic_id,)
         ).fetchone()
         if row is None:
             return None

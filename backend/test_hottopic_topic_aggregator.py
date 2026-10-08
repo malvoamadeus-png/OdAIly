@@ -81,7 +81,7 @@ def test_topic_pair_review_merges_stages_but_separates_other_incident(tmp_path: 
                 aggregator.connection.execute(
                     "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
                     "seed_expires_at,last_evidence_at,matching_status,visibility) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (topic_id, title, "Bitget", '["Bitget"]', "event", at, at, (now + timedelta(days=1)).isoformat(), at, "seed", "hidden"),
+                    (topic_id, title, "Bitget", '["Bitget"]', "event", at, at, (now + timedelta(days=1)).isoformat(), at, "seed", "visible"),
                 )
                 for actor in range(2):
                     item_id, claim_id = f"content:{index}:{actor}", f"claim:{index}:{actor}"
@@ -105,6 +105,54 @@ def test_topic_pair_review_merges_stages_but_separates_other_incident(tmp_path: 
         assert {row["decision"] for row in aggregator.connection.execute("SELECT decision FROM topic_pair_reviews")} == {"merge", "separate"}
         assert aggregator.connection.execute("SELECT COUNT(*) FROM topics WHERE matching_status='archived'").fetchone()[0] == 1
         assert aggregator.reconcile_recent_topics(now + timedelta(hours=1))["topic_merges"] == []
+    finally:
+        aggregator.close()
+
+
+def test_topic_pair_review_excludes_hidden_topics(tmp_path: Path) -> None:
+    reviewed_cases = []
+
+    def reviewer(cases):
+        reviewed_cases.extend(cases)
+        return []
+
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite", topic_merge_reviewer=reviewer)
+    now = datetime(2026, 9, 30, tzinfo=UTC)
+    try:
+        with aggregator.connection:
+            for index, (topic_id, visibility) in enumerate((("topic:visible", "visible"), ("topic:hidden", "hidden"))):
+                at = (now + timedelta(minutes=index)).isoformat()
+                aggregator.connection.execute(
+                    "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                    "seed_expires_at,last_evidence_at,last_participation_at,matching_status,visibility,identity_revision,participant_count_1h,"
+                    "participant_count_6h,participant_count_24h,participant_velocity,hotness_score,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (topic_id, "Justin Drake fortress mode", "Justin Drake fortress mode", '["Justin Drake", "fortress"]', "event", at, at,
+                     (now + timedelta(days=1)).isoformat(), at, at, "seed", visibility, 1, 0, 0, 0, 0.0, 0.0, "transient"),
+                )
+                item_id, claim_id = f"content:{index}", f"claim:{index}"
+                account = f"account:{index}"
+                text = "Justin Drake called for fortress mode preparation"
+                aggregator.connection.execute(
+                    "INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (item_id, item_id, account, account, "original", text, text, at, "https://x.com/example", "{}", "{}", "{}", item_id),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (claim_id, item_id, text, "reported_fact", '["Justin Drake", "fortress"]', "event", "", "", 1.0, 1.0, at),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO memberships VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (f"membership:{index}", claim_id, topic_id, None, "primary", "new_fact", 1.0, "test", "test", at, None),
+                )
+                aggregator.connection.execute("INSERT INTO topic_participations VALUES(?,?,?,?)", (topic_id, account, at, item_id))
+                aggregator._update_retrieval(topic_id, at)
+        aggregator._reload_retrieval_cache()
+
+        result = aggregator._review_topic_pairs({"topic:visible", "topic:hidden"}, now.isoformat())
+
+        assert result == []
+        assert reviewed_cases == []
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM topic_pair_reviews").fetchone()[0] == 0
     finally:
         aggregator.close()
 
@@ -599,7 +647,7 @@ def test_reconcile_recent_topics_merges_existing_non_asset_seeds(tmp_path: Path)
                         "participant_count_6h,participant_count_24h,participant_velocity,hotness_score,retention_tier) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (topic_id, text, text, "[]", "发布/上线", at, at, (now + timedelta(hours=24)).isoformat(), at, at,
-                         "seed", "hidden", 1, 0, 0, 0, 0.0, 0.0, "transient"),
+                         "seed", "visible", 1, 0, 0, 0, 0.0, 0.0, "transient"),
                     )
                     created_topics.add(topic_id)
                 aggregator.connection.execute(

@@ -29,7 +29,11 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
       const nextDashboard = await getHotTopicDashboard();
       setDashboard(nextDashboard);
       setError('');
-      if (!selected && nextDashboard.topics[0]) setSelected(nextDashboard.topics[0]);
+      setSelected((previous) => (
+        previous && nextDashboard.topics.some((topic) => topic.id === previous.id)
+          ? previous
+          : nextDashboard.topics[0] ?? null
+      ));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '热点话题数据暂不可用');
     } finally {
