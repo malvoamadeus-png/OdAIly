@@ -255,6 +255,9 @@ function soundKeyForFeedItem(item) {
   if (item.feed_kind === "newsflash") {
     return item.status_label === "已直发" ? "newsflash_direct" : "newsflash_backstage";
   }
+  if (item.feed_kind === "auto_newsflash_event") {
+    return "newsflash_backstage";
+  }
   return null;
 }
 
@@ -391,6 +394,7 @@ function renderFeedCard(item) {
   const feedbackStatus = cardFeedbackStatus(item);
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
+  const isAutoNewsflashEvent = item.feed_kind === "auto_newsflash_event";
   const isFastLane = item.lane !== "low";
   const titleShouldLink = Boolean(detailUrlForItem(item)) && !isFastLane;
   const isExpanded = state.expandedFeedKeys.has(itemKey);
@@ -425,7 +429,11 @@ function renderFeedCard(item) {
           item.feed_item_id
         )}" data-feed-kind="${escapeHtml(item.feed_kind)}">复制全文</button>
       `
-    : "";
+    : isAutoNewsflashEvent
+      ? `<button class="textButton cardToolButton" data-action="open-url" data-feed-id="${escapeHtml(
+          item.feed_item_id
+        )}" data-feed-kind="${escapeHtml(item.feed_kind)}">进入后台</button>`
+      : "";
 
   return `
     <article class="feedCard feedCard--${escapeHtml(item.feed_kind)} feedCard--lane-${escapeHtml(item.lane || "high")} ${escapeHtml(sourceClass)}${
@@ -967,6 +975,22 @@ function wireCardToolButtons() {
           button.textContent = originalLabel;
           button.disabled = false;
           render();
+        }
+      }
+
+      if (action === "open-url") {
+        const item = findFeedItem(feedKind, feedItemId);
+        const url = item?.action_schema?.url;
+        if (!url) {
+          state.error = "未配置控制台地址，请联系管理员设置 EDITOR_PLUGIN_CONSOLE_URL";
+          renderAuthedShell();
+          return;
+        }
+        try {
+          await chrome.tabs.create({ url, active: true });
+        } catch (error) {
+          state.error = error instanceof Error ? error.message : "打开后台失败";
+          renderAuthedShell();
         }
       }
     });

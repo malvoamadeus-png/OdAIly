@@ -81,6 +81,7 @@ export function AutoNewsflashPanel() {
   const [error, setError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [dismissing, setDismissing] = useState(false);
+  const requestedEventId = new URLSearchParams(window.location.search).get('event_id');
 
   useEffect(() => {
     let active = true;
@@ -89,7 +90,14 @@ export function AutoNewsflashPanel() {
         if (!active) return;
         setDashboard(nextDashboard);
         setPrompts(nextPrompts);
-        setSelected((current) => current && nextDashboard.events.some((event) => event.id === current) ? current : nextDashboard.events[0]?.id || null);
+        setSelected((current) => {
+          if (requestedEventId && nextDashboard.events.some((event) => event.id === requestedEventId)) {
+            return requestedEventId;
+          }
+          return current && nextDashboard.events.some((event) => event.id === current)
+            ? current
+            : nextDashboard.events[0]?.id || null;
+        });
       })
       .catch((cause) => active && setError(cause instanceof Error ? cause.message : '无法读取热点自动快讯'));
     return () => { active = false; };

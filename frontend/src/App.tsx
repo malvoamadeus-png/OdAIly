@@ -901,7 +901,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [jin10Tasks, setJin10Tasks] = useState<TaskItem[]>([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [view, setView] = useState<ConsoleView>('x');
+  const requestedView = new URLSearchParams(window.location.search).get('view');
+  const initialView: ConsoleView = requestedView === 'x_agent' ? 'x_agent' : 'x';
+  const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');

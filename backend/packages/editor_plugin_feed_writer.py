@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.editor_plugin_local_store import LocalEditorPluginStore
@@ -41,6 +43,24 @@ def _odaily_newsflash_url(source_item_id: str | None, fallback: str | None) -> s
     return fallback
 
 
+def _auto_newsflash_console_url(event_id: str) -> str | None:
+    base_url = (os.getenv("EDITOR_PLUGIN_CONSOLE_URL") or "").strip().rstrip("/")
+    if not base_url:
+        return None
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.extend((
+        ("view", "x_agent"),
+        ("x_agent_tab", "auto_newsflash"),
+        ("event_id", event_id),
+    ))
+    # Drop any old hash route such as /#tasks; the console reads these
+    # parameters from the URL query before rendering its initial view.
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", urlencode(query), ""))
+
+
 class LocalEditorPluginFeedWriter:
     def __init__(self, store: LocalEditorPluginStore | None = None) -> None:
         if store is None:
@@ -48,6 +68,49 @@ class LocalEditorPluginFeedWriter:
             ensure_runtime_dirs(paths)
             store = LocalEditorPluginStore(paths.runtime_dir / "editor_plugin_local.sqlite")
         self.store = store
+
+    def upsert_auto_newsflash_event(
+        self,
+        *,
+        event_id: str,
+        title: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Publish the one-time operator reminder for a newly tracked event."""
+        clean_event_id = str(event_id or "").strip()
+        clean_title = str(title or "").strip() or "未命名热点"
+        console_url = _auto_newsflash_console_url(clean_event_id)
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": clean_event_id,
+                    "feed_kind": "auto_newsflash_event",
+                    "lane": "high",
+                    "priority": 96,
+                    "title": f"热点自动快讯新增：{clean_title}",
+                    "summary": "AI 已将该热点加入自动追踪，后续可能自动生成快讯；如不合适，请进入后台删除。",
+                    "badges": [
+                        {"label": "类型", "value": "热点自动快讯", "tone": "accent"},
+                        {"label": "处理", "value": "请人工确认", "tone": "warning"},
+                    ],
+                    "status_label": "自动追踪",
+                    "status_tone": "warning",
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": console_url,
+                    "detail_url": console_url,
+                    "action_schema": {
+                        "type": "open_url",
+                        "label": "进入后台",
+                        "url": console_url,
+                    },
+                    "meta_json": {
+                        "event_id": clean_event_id,
+                        "event_title": clean_title,
+                        "console_url": console_url,
+                    },
+                }
+            ]
+        )
 
     def upsert_newsflash(
         self,

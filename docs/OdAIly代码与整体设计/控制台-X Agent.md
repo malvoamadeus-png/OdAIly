@@ -12,6 +12,8 @@
 
 每条新官方帖都先经过“实质进展”判断。只有 `material_progress` 才会更新事件时间线并通过 outbox 进入 `tasks.source = 'event_tracking'`；该任务复用全站搜索、写作和格式化，查重通过后以官方 `tweet_id` 为幂等键自动发布。`relevant_no_progress`、`irrelevant`、普通官方营销和重复澄清都只保存审计，不创建普通 HotTopic 或快讯任务。
 
+AI 首次将热点判定为 `track` 并创建事件后，后端会向 Chrome 信息流写入一条高频提醒，标题为 `热点自动快讯新增：{事件标题}`。提醒使用 `event_id` 幂等，不为历史事件补发，也不会因标题更新、重复观察或 worker 重启重复出现；提醒卡片可进入控制台的 X Agent/热点自动快讯页，人工可在那里删除不合适的追踪事件。插件提醒属于次级展示链路，写入失败只保留审计，不阻断事件追踪。
+
 控制台展示当前/已结束事件、官方账号与身份证据、官方原帖、进展判断、快讯结果、GPT 搜索引用、Prompt 版本和自动失败。只有被判定为 `material_progress` 的帖子才会显示在快讯投递区；该区同时展示任务状态、生成阶段、可用草稿或终稿标题/正文、发布决定、时间和官方原帖链接。`relevant_no_progress` 与 `irrelevant` 仍只保留审计记录。
 
 管理员可以在事件详情中删除热点自动快讯。删除是软删除：通过 `POST /console/auto-newsflash/dismiss` 写入人工忽略记录，停止后续追踪、结束活动 cycle、释放账号绑定、取消尚未发布的 outbox 和主 SQLite 任务，并从默认事件列表隐藏；事件、官方帖子、判断、已发布内容和审计记录都保留。已经 `auto_published` 的任务不回滚、不删除。重复删除返回幂等结果，不提供网页恢复入口。任务 1 仍只有 `track` / `do_not_track`，账号发现与运行失败由系统自动重试、拒绝或结束。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
@@ -52,6 +54,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `X_AGENT_ANALYSIS_WORKERS`：单个 worker 的分析并发，默认 `2`。
 - `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小间隔，默认 `2`。
 - `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后暂停共享请求节流器的最短秒数，默认 `300`。
+- `EDITOR_PLUGIN_CONSOLE_URL`：控制台网页地址，例如 `https://od-a-ily.vercel.app/#tasks`；用于生成热点自动快讯提醒卡片的“进入后台”链接。生成链接时会清除旧 Hash 路由，并附带 X Agent 模块和事件 ID。
 - `HOTTOPIC_CLAIM_REVIEW_OPENAI_BASE_URL` / `HOTTOPIC_CLAIM_REVIEW_OPENAI_API_KEY`：语义复核的可选专用兼容 API 与凭据；为空时沿用 `ODAILY_LLM_BASE_URL` 和本机 LiteLLM 凭据。
 - `HOTTOPIC_CLAIM_REVIEW_MODEL` / `HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL`：claim 复核模型与重试模型，默认均为 `gpt-5.6-luna`。
 - `HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT`：claim 复核思考等级，默认 `high`。

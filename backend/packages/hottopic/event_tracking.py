@@ -382,6 +382,16 @@ class EventTrackingAI(Protocol):
     def web_search_json(self, *, model: str, prompt: str) -> EventModelResult: ...
 
 
+class EventTrackingFeedWriter(Protocol):
+    def upsert_auto_newsflash_event(
+        self,
+        *,
+        event_id: str,
+        title: str,
+        occurred_at: datetime,
+    ) -> None: ...
+
+
 class EventTrackingTaskDispatcher(Protocol):
     def ensure_task(self, *, event: dict[str, Any], cycle: dict[str, Any], update: dict[str, Any], post: dict[str, Any]) -> int: ...
 
@@ -807,6 +817,7 @@ class EventTracker:
         primary_database_path: Path,
         ai: EventTrackingAI | None = None,
         dispatcher: EventTrackingTaskDispatcher | None = None,
+        feed_writer: EventTrackingFeedWriter | None = None,
         now: Callable[[], datetime] = utc_now,
         enabled: bool | None = None,
         owns_connection: bool = False,
@@ -817,6 +828,7 @@ class EventTracker:
         self.enabled = _bool_env("HOTTOPIC_EVENT_TRACKING_ENABLED", True) if enabled is None else enabled
         self.ai = ai if ai is not None else OpenAIEventTrackingAI.from_environment()
         self.dispatcher = dispatcher or SQLiteEventTrackingTaskDispatcher(primary_database_path)
+        self.feed_writer = feed_writer
         self.topic_model = os.getenv("HOTTOPIC_EVENT_TOPIC_MODEL") or "gpt-5.6-luna"
         self.topic_fallback_model = os.getenv("HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL") or "gpt-5.6-luna"
         self.update_model = os.getenv("HOTTOPIC_EVENT_UPDATE_MODEL") or self.topic_model
@@ -1212,7 +1224,19 @@ class EventTracker:
             event = self.db.execute("SELECT * FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()
             self._open_cycle(dict(event), now)
             event = self.db.execute("SELECT * FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()
+            notification_error: str | None = None
+            if self.feed_writer is not None:
+                try:
+                    self.feed_writer.upsert_auto_newsflash_event(
+                        event_id=event_id,
+                        title=event_title,
+                        occurred_at=now,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive boundary for the secondary feed store.
+                    notification_error = f"{type(exc).__name__}: {exc}"[:2000]
             self._audit("event_created", {"topic_id": snapshot["topic_id"], "tracking_type": decision["tracking_type"]}, event_id=event_id)
+            if notification_error:
+                self._audit("event_plugin_notification_failed", {"error": notification_error}, event_id=event_id)
         else:
             event_id = str(event["event_id"])
             # A HotTopic may contain several related claims. Keep the event's

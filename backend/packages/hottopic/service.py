@@ -20,6 +20,7 @@ from typing import Any, Iterable
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.x_agent import XAgentAnalyzer, is_relevant
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
 from .capture import AccountRow, ContentItem, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
@@ -353,6 +354,7 @@ class HotTopicService:
             primary_database_path=event_primary_database,
             ai=event_tracking_ai,
             dispatcher=event_tracking_dispatcher,
+            feed_writer=LocalEditorPluginFeedWriter(),
             owns_connection=True,
         )
         self.rate_limit_cooldown_seconds = configured_seconds(

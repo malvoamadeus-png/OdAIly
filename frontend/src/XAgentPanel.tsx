@@ -285,7 +285,12 @@ function ProjectDetail({
 }
 
 export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
-  const [tab, setTab] = useState<XAgentTab>('accounts');
+  const initialTab = new URLSearchParams(window.location.search).get('x_agent_tab');
+  const [tab, setTab] = useState<XAgentTab>(
+    initialTab === 'hot_topic' || initialTab === 'auto_newsflash' || initialTab === 'accounts' || initialTab === 'market_sentiment' || initialTab === 'project_promotion'
+      ? initialTab
+      : 'accounts',
+  );
   const [hotTopicRefreshToken, setHotTopicRefreshToken] = useState(0);
   const [autoNewsflashRefreshToken, setAutoNewsflashRefreshToken] = useState(0);
   const [dashboard, setDashboard] = useState<XAgentDashboard | null>(null);

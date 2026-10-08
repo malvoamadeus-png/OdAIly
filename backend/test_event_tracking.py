@@ -50,6 +50,14 @@ class FakeDispatcher:
         return {"cancelledTaskIds": [], "publishedTaskIds": [], "terminalTaskIds": []}
 
 
+class FakeFeedWriter:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def upsert_auto_newsflash_event(self, **kwargs: Any) -> None:
+        self.events.append(kwargs)
+
+
 class FakeAI:
     def __init__(self, *, include_citations: bool = True, prefix_discovery: bool = False) -> None:
         self.include_citations = include_citations
@@ -167,7 +175,12 @@ def _seed_topic(connection, clock: Clock, topic_id: str = "topic:giwa") -> None:
         )
 
 
-def _tracker(tmp_path: Path, *, ai: FakeAI | None = None) -> tuple[EventTracker, Any, Clock, FakeDispatcher]:
+def _tracker(
+    tmp_path: Path,
+    *,
+    ai: FakeAI | None = None,
+    feed_writer: FakeFeedWriter | None = None,
+) -> tuple[EventTracker, Any, Clock, FakeDispatcher]:
     database_path = tmp_path / "hottopic.sqlite"
     aggregator = TopicAggregator(database_path)
     aggregator.close()
@@ -182,6 +195,7 @@ def _tracker(tmp_path: Path, *, ai: FakeAI | None = None) -> tuple[EventTracker,
         primary_database_path=tmp_path / "odaily.sqlite",
         ai=ai or FakeAI(),
         dispatcher=dispatcher,
+        feed_writer=feed_writer,
         now=clock,
     )
     return tracker, connection, clock, dispatcher
@@ -213,10 +227,16 @@ def _official_update(clock: Clock, tweet_id: str = "official-progress") -> Conte
 
 
 def test_official_only_discovery_material_progress_outbox_and_silence_lifecycle(tmp_path: Path) -> None:
-    tracker, connection, clock, dispatcher = _tracker(tmp_path)
+    feed_writer = FakeFeedWriter()
+    tracker, connection, clock, dispatcher = _tracker(tmp_path, feed_writer=feed_writer)
     try:
         _seed_topic(connection, clock)
         assert tracker.observe_topics(["topic:giwa"]) == {"assessed": 1, "tracked": 1, "failed": 0}
+        assert len(feed_writer.events) == 1
+        assert feed_writer.events[0]["title"] == "GIWA fake bridge security incident"
+        assert feed_writer.events[0]["occurred_at"] == clock()
+        tracker.observe_topics(["topic:giwa"])
+        assert len(feed_writer.events) == 1
         event_title = connection.execute("SELECT title FROM event_tracking_events").fetchone()[0]
         assert event_title == "GIWA fake bridge security incident"
         assert tracker.discover_official_accounts() == {"discovered": 1, "failed": 0, "bound": 1}
