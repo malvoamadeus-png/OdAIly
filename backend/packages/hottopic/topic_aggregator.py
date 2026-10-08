@@ -528,6 +528,26 @@ CREATE TABLE IF NOT EXISTS topic_claim_reviews (
   PRIMARY KEY(claim_id, topic_id)
 );
 CREATE INDEX IF NOT EXISTS idx_topic_claim_reviews_topic ON topic_claim_reviews(topic_id, decision);
+CREATE TABLE IF NOT EXISTS topic_merge_scan_state (
+  singleton_key TEXT PRIMARY KEY CHECK(singleton_key='global'),
+  pending_new_visible INTEGER NOT NULL DEFAULT 0,
+  request_seq INTEGER NOT NULL DEFAULT 0,
+  last_periodic_success_at TEXT,
+  next_retry_at TEXT
+);
+CREATE TABLE IF NOT EXISTS topic_merge_scans (
+  scan_id TEXT PRIMARY KEY,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  trigger_kind TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  topic_ids_json TEXT NOT NULL,
+  coarse_json TEXT NOT NULL DEFAULT '[]',
+  deep_json TEXT NOT NULL DEFAULT '[]',
+  merge_ids_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  error TEXT
+);
 """
 
 
@@ -549,6 +569,7 @@ class TopicAggregator:
         brief_writer: Callable[..., dict[str, Any]] | None = None,
         semantic_reviewer: SemanticReviewer | None = None,
         topic_merge_reviewer: TopicMergeReviewer | None = None,
+        visible_merge_reviewer: Any | None = None,
         semantic_review_batch_size: int = SEMANTIC_REVIEW_BATCH_SIZE,
         semantic_review_backfill_limit: int = SEMANTIC_REVIEW_BACKFILL_LIMIT,
     ) -> None:
@@ -567,6 +588,10 @@ class TopicAggregator:
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA synchronous=FULL")
         self.connection.executescript(SCHEMA)
+        self.connection.execute(
+            "INSERT OR IGNORE INTO topic_merge_scan_state(singleton_key) VALUES('global')"
+        )
+        self.connection.commit()
         self._migrate_single_brief_schema()
         self._migrate_brief_status_schema()
         self._migrate_retention_schema()
@@ -580,6 +605,7 @@ class TopicAggregator:
         self.brief_writer = brief_writer
         self.semantic_reviewer = semantic_reviewer
         self.topic_merge_reviewer = topic_merge_reviewer
+        self.visible_merge_reviewer = visible_merge_reviewer
         self.semantic_review_batch_size = max(1, int(semantic_review_batch_size))
         self.semantic_review_backfill_limit = max(0, int(semantic_review_backfill_limit))
 
@@ -988,8 +1014,8 @@ class TopicAggregator:
                 if item_topics:
                     metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
 
-            merge_requests = self._consolidate_dirty_topics(affected, batch_iso) if not self.topic_merge_reviewer else []
-            if self.topic_merge_reviewer:
+            merge_requests = self._consolidate_dirty_topics(affected, batch_iso) if not (self.topic_merge_reviewer or self.visible_merge_reviewer) else []
+            if self.topic_merge_reviewer and not self.visible_merge_reviewer:
                 self.connection.commit()
                 merge_requests.extend(self._review_topic_pairs(affected, batch_iso))
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -1025,7 +1051,9 @@ class TopicAggregator:
                 and request.get("visibility") == "visible"
                 and request.get("reason") in {"became_visible", "visibility_or_lifecycle_change"}
             }
-            if newly_visible:
+            if newly_visible and self.visible_merge_reviewer:
+                self.queue_visible_merge_scan()
+            elif newly_visible:
                 visible_merges = self._merge_visible_topics(newly_visible, batch_iso)
                 for request in visible_merges:
                     affected.add(request["source_topic_id"])
@@ -1114,8 +1142,8 @@ class TopicAggregator:
                     "enabled": False, "requested": 0, "support": 0, "context": 0,
                     "unrelated": 0, "fallback": 0, "model_calls": 0,
                 }
-            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso) if not self.topic_merge_reviewer else []
-            if self.topic_merge_reviewer:
+            merge_requests = self._consolidate_dirty_topics(topic_ids, batch_iso) if not (self.topic_merge_reviewer or self.visible_merge_reviewer) else []
+            if self.topic_merge_reviewer and not self.visible_merge_reviewer:
                 self.connection.commit()
                 merge_requests.extend(self._review_topic_pairs(topic_ids, batch_iso))
                 self.connection.execute("BEGIN IMMEDIATE")
@@ -1140,7 +1168,9 @@ class TopicAggregator:
                 and request.get("visibility") == "visible"
                 and request.get("reason") in {"became_visible", "visibility_or_lifecycle_change"}
             }
-            if newly_visible:
+            if newly_visible and self.visible_merge_reviewer:
+                self.queue_visible_merge_scan()
+            elif newly_visible:
                 visible_merges = self._merge_visible_topics(newly_visible, batch_iso)
                 for request in visible_merges:
                     affected.add(request["source_topic_id"])
@@ -1172,6 +1202,164 @@ class TopicAggregator:
         )
         self.connection.commit()
         return requests
+
+    def queue_visible_merge_scan(self) -> None:
+        self.connection.execute(
+            "UPDATE topic_merge_scan_state SET pending_new_visible=1,request_seq=request_seq+1 WHERE singleton_key='global'"
+        )
+        self.connection.commit()
+
+    def visible_merge_scan_due(self, at: datetime | str, *, force: bool = False) -> str | None:
+        if not self.visible_merge_reviewer:
+            return None
+        row = self.connection.execute(
+            "SELECT * FROM topic_merge_scan_state WHERE singleton_key='global'"
+        ).fetchone()
+        current = dt(iso(at))
+        if not force and row["next_retry_at"] and current < dt(row["next_retry_at"]):
+            return None
+        periodic = not row["last_periodic_success_at"] or current - dt(row["last_periodic_success_at"]) >= timedelta(hours=4)
+        if force or periodic:
+            return "periodic"
+        return "new_visible" if row["pending_new_visible"] else None
+
+    def _visible_merge_cards(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT t.topic_id,t.first_seen_at,b.revision,b.title,b.brief,b.content_hash "
+            "FROM topics t JOIN brief_revisions b ON b.topic_id=t.topic_id "
+            "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) "
+            "WHERE t.matching_status='active' AND t.visibility='visible' AND t.brief_status='ready' "
+            "ORDER BY t.hotness_score DESC,t.last_evidence_at DESC,t.topic_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _visible_merge_evidence(self, topic_id: str) -> list[dict[str, str]]:
+        brief = self.connection.execute(
+            "SELECT source_claim_ids_json FROM brief_revisions WHERE topic_id=? ORDER BY revision DESC LIMIT 1",
+            (topic_id,),
+        ).fetchone()
+        cited = set(json.loads(brief[0])) if brief else set()
+        rows = self.connection.execute(
+            "SELECT cl.claim_id,cl.claim_text,ci.activity_account FROM memberships m "
+            "JOIN claims cl ON cl.claim_id=m.claim_id "
+            "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+            "LEFT JOIN topic_claim_reviews r ON r.claim_id=cl.claim_id AND r.topic_id=m.topic_id "
+            "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
+            "GROUP BY cl.claim_id ORDER BY ci.created_at DESC",
+            (topic_id,),
+        ).fetchall()
+        evidence = [{"claim_id": row["claim_id"], "text": row["claim_text"], "account": row["activity_account"]} for row in rows]
+        return sorted(evidence, key=lambda row: row["claim_id"] not in cited)[:15]
+
+    @staticmethod
+    def _combine_merge_groups(groups: Sequence[dict[str, Any]], valid_ids: set[str]) -> list[list[str]]:
+        components: list[set[str]] = []
+        for group in groups:
+            raw_ids = group.get("ids")
+            if not isinstance(raw_ids, list) or any(not isinstance(value, str) or value not in valid_ids for value in raw_ids):
+                raise ValueError("coarse review returned an unknown topic")
+            ids = set(raw_ids)
+            if len(ids) < 2:
+                continue
+            overlapping = [component for component in components if component & ids]
+            for component in overlapping:
+                ids.update(component)
+                components.remove(component)
+            components.append(ids)
+        return [sorted(component) for component in sorted(components, key=lambda value: sorted(value)[0])]
+
+    def scan_visible_topics(self, at: datetime | str, *, force: bool = False) -> dict[str, Any] | None:
+        trigger = self.visible_merge_scan_due(at, force=force)
+        if not trigger:
+            return None
+        scan_at = iso(at)
+        request_seq = self.connection.execute(
+            "SELECT request_seq FROM topic_merge_scan_state WHERE singleton_key='global'"
+        ).fetchone()[0]
+        cards = self._visible_merge_cards()
+        evidence_by_id = {row["topic_id"]: self._visible_merge_evidence(row["topic_id"]) for row in cards}
+        snapshot = {
+            row["topic_id"]: (row["revision"], row["content_hash"], hashlib.sha256(json_dumps(evidence_by_id[row["topic_id"]]).encode()).hexdigest())
+            for row in cards
+        }
+        input_hash = hashlib.sha256(json_dumps(snapshot).encode()).hexdigest()
+        scan_id = stable_id("topic-merge-scan", scan_at, input_hash)
+        self.connection.execute(
+            "INSERT INTO topic_merge_scans(scan_id,started_at,trigger_kind,input_hash,topic_ids_json,status) "
+            "VALUES(?,?,?,?,?,'running')",
+            (scan_id, scan_at, trigger, input_hash, json_dumps(sorted(snapshot))),
+        )
+        self.connection.commit()
+        coarse: list[dict[str, Any]] = []
+        deep: list[dict[str, Any]] = []
+        merges: list[dict[str, str]] = []
+        try:
+            if len(cards) >= 2:
+                coarse = list(self.visible_merge_reviewer.propose([
+                    {"id": row["topic_id"], "title": row["title"], "summary": row["brief"][:700]}
+                    for row in cards
+                ]))
+                groups = self._combine_merge_groups(coarse, set(snapshot))
+                by_id = {row["topic_id"]: row for row in cards}
+                for ids in groups:
+                    case = [{
+                        "id": topic_id, "title": by_id[topic_id]["title"], "brief": by_id[topic_id]["brief"],
+                        "evidence": evidence_by_id[topic_id],
+                    } for topic_id in ids]
+                    decision = dict(self.visible_merge_reviewer.review(case))
+                    decision["ids"] = ids
+                    deep.append(decision)
+                    if decision.get("decision") != "merge" or float(decision.get("confidence") or 0) < 0.8:
+                        continue
+                    evidence = decision.get("evidence_claim_ids")
+                    if not isinstance(evidence, dict) or any(
+                        not isinstance(evidence.get(topic_id), list)
+                        or not set(evidence[topic_id]) & {row["claim_id"] for row in topic["evidence"]}
+                        for topic_id, topic in zip(ids, case)
+                    ) or not compact(decision.get("shared_fact")):
+                        raise ValueError("visible topic merge review lacks evidence for every topic")
+                    self.connection.execute("BEGIN IMMEDIATE")
+                    current = {
+                        row["topic_id"]: (row["revision"], row["content_hash"], hashlib.sha256(json_dumps(self._visible_merge_evidence(row["topic_id"])).encode()).hexdigest())
+                        for row in self._visible_merge_cards()
+                    }
+                    if any(current.get(topic_id) != snapshot[topic_id] for topic_id in ids):
+                        self.connection.rollback()
+                        raise RuntimeError("visible topic changed during merge review")
+                    target_id = min(ids, key=lambda topic_id: (by_id[topic_id]["first_seen_at"], topic_id))
+                    for source_id in ids:
+                        if source_id != target_id:
+                            merges.append(self._merge_topic(source_id, target_id, scan_at, f"editorial: {compact(decision.get('reason'))}"))
+                    self._refresh_all_topics(scan_at)
+                    self.connection.commit()
+                    brief_requests = self._refresh_briefs({target_id}, scan_at, {}, force_topic_ids={target_id})
+                    if any(request.get("brief_status") == "error" for request in brief_requests):
+                        raise RuntimeError("merged topic brief refresh failed")
+            self.connection.execute(
+                "UPDATE topic_merge_scans SET completed_at=?,coarse_json=?,deep_json=?,merge_ids_json=?,status='succeeded' WHERE scan_id=?",
+                (iso(UTC_NOW()), json_dumps(coarse), json_dumps(deep), json_dumps([row["merge_id"] for row in merges]), scan_id),
+            )
+            self.connection.execute(
+                "UPDATE topic_merge_scan_state SET pending_new_visible=CASE WHEN request_seq=? THEN 0 ELSE pending_new_visible END,next_retry_at=NULL,"
+                "last_periodic_success_at=CASE WHEN ?='periodic' THEN ? ELSE last_periodic_success_at END "
+                "WHERE singleton_key='global'",
+                (request_seq, trigger, scan_at),
+            )
+            self.connection.commit()
+            return {"scan_id": scan_id, "topics": len(cards), "groups": len(deep), "merges": merges}
+        except Exception as exc:
+            self.connection.rollback()
+            retry_at = iso(dt(scan_at) + timedelta(minutes=15))
+            self.connection.execute(
+                "UPDATE topic_merge_scans SET completed_at=?,coarse_json=?,deep_json=?,merge_ids_json=?,status='failed',error=? WHERE scan_id=?",
+                (iso(UTC_NOW()), json_dumps(coarse), json_dumps(deep), json_dumps([row["merge_id"] for row in merges]),
+                 f"{type(exc).__name__}: {exc}"[:1000], scan_id),
+            )
+            self.connection.execute(
+                "UPDATE topic_merge_scan_state SET next_retry_at=? WHERE singleton_key='global'", (retry_at,)
+            )
+            self.connection.commit()
+            return {"scan_id": scan_id, "topics": len(cards), "groups": len(deep), "merges": merges, "error": str(exc), "retry_at": retry_at}
 
     def _extract_claims(self, item: ContentItem) -> Sequence[Claim]:
         text = item.expanded_text
@@ -3137,6 +3325,44 @@ class TopicEventMergeReviewer(TopicClaimReviewer):
             "evidence_claim_ids(合并时两边各至少一条 claim_id)。\n"
             f"待复核话题对：{json.dumps(list(cases), ensure_ascii=False)}"
         )
+
+
+class TopicVisibleMergeReviewer(TopicClaimReviewer):
+    """Two-stage editorial review of the complete visible topic list."""
+
+    def propose(self, cards: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        prompt = (
+            "你是新闻编辑。请从全部热点卡片中找出可能属于同一个读者眼中的新闻话题的卡片组。"
+            "优先按核心人物、具体行动、争议或公告判断；不同来源、原因、影响、技术细节和后续回应可以属于同一组，"
+            "只要能写成一篇连贯且不失真的综合报道。仅同公司、资产、行业或会议但实际讨论不同独立事件时不要成组。"
+            "这是初筛，宁可提出值得进一步核查的组，但不要把宏观行业话题混为一组。"
+            "每组至少两条，允许重叠；只依据输入，不补充外部事实。"
+            "严格返回 JSON：{\"reviews\":[{\"ids\":[\"原样话题id\"],\"reason\":\"共同具体主线\",\"uncertainty\":\"需核查的差异\"}]}。"
+            "无候选则 reviews 为空数组。\n全部可见卡片："
+            f"{json.dumps(list(cards), ensure_ascii=False)}"
+        )
+        return self._call_model(self.model, prompt)
+
+    def review(self, cards: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        prompt = (
+            "你是热点话题的复核编辑。判断这一组可见卡片能否合成一个读者眼中的热点，"
+            "写成一篇连贯、准确的综合报道。细节和后续回应不同不阻止合并；"
+            "若只是共同公司、资产、行业或会议，实际是不同独立事件则分开。"
+            "必须逐个核对原始 claim，合并时为每个话题列出至少一个支持共同主线的 claim_id。"
+            "若证据不足或不确定，输出 separate。只依据输入，不补充外部事实。"
+            "严格返回 JSON：{\"reviews\":[{\"ids\":[\"原样话题id\"],"
+            "\"decision\":\"merge|separate\",\"confidence\":0.0,\"reason\":\"简短理由\","
+            "\"shared_fact\":\"共同的具体事实\",\"distinct_facts\":\"应保留的不同事实\","
+            "\"risk\":\"误并或失真的风险\",\"evidence_claim_ids\":{\"话题id\":[\"claim_id\"]}}]}。"
+            "\n待复核组："
+            f"{json.dumps(list(cards), ensure_ascii=False)}"
+        )
+        reviews = self._call_model(self.model, prompt)
+        if len(reviews) != 1 or set(reviews[0].get("ids", [])) != {card["id"] for card in cards}:
+            raise ValueError("incomplete visible topic group review")
+        if reviews[0].get("decision") not in {"merge", "separate"}:
+            raise ValueError("invalid visible topic group decision")
+        return reviews[0]
 
 
 class ModelBriefWriter:

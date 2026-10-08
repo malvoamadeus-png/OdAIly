@@ -24,7 +24,7 @@ from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
 from .capture import AccountRow, ContentItem, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
-from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicEventMergeReviewer, TopicAggregator
+from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicVisibleMergeReviewer, TopicAggregator
 
 
 POLL_INTERVAL_SECONDS = 600
@@ -305,26 +305,34 @@ class HotTopicService:
                 # is enabled automatically on the next worker restart.
                 semantic_reviewer = None
                 self.semantic_reviewer_error = f"{type(exc).__name__}: {exc}"
-        topic_merge_reviewer = None
+        visible_merge_reviewer = None
         self.topic_merge_reviewer_error: str | None = None
         if configured_bool("HOTTOPIC_TOPIC_MERGE_REVIEW_ENABLED", True):
             try:
-                topic_merge_reviewer = TopicEventMergeReviewer(
-                    os.getenv("HOTTOPIC_TOPIC_MERGE_MODEL") or "gpt-5.6-luna",
-                    fallback_model=os.getenv("HOTTOPIC_TOPIC_MERGE_FALLBACK_MODEL") or "gpt-5.6-luna",
+                visible_merge_reviewer = TopicVisibleMergeReviewer(
+                    "gpt-5.6-luna",
+                    fallback_model="gpt-5.6-luna",
                     reasoning_effort="high",
                     timeout=float(os.getenv("HOTTOPIC_TOPIC_MERGE_TIMEOUT_SECONDS") or "90"),
                 )
             except (RuntimeError, ValueError) as exc:
                 self.topic_merge_reviewer_error = f"{type(exc).__name__}: {exc}"
-                def unavailable_topic_merge_reviewer(_cases):
-                    raise RuntimeError(self.topic_merge_reviewer_error or "topic merge reviewer unavailable")
-                topic_merge_reviewer = unavailable_topic_merge_reviewer
+                class UnavailableVisibleMergeReviewer:
+                    def propose(_self, _cards):
+                        raise RuntimeError(self.topic_merge_reviewer_error or "visible topic reviewer unavailable")
+
+                visible_merge_reviewer = UnavailableVisibleMergeReviewer()
+        else:
+            class DisabledVisibleMergeReviewer:
+                def propose(_self, _cards):
+                    return []
+
+            visible_merge_reviewer = DisabledVisibleMergeReviewer()
         self.aggregator = TopicAggregator(
             self.path,
             brief_writer=writer,
             semantic_reviewer=semantic_reviewer,
-            topic_merge_reviewer=topic_merge_reviewer,
+            visible_merge_reviewer=visible_merge_reviewer,
             semantic_review_batch_size=configured_integer(
                 "HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100
             ),
@@ -948,6 +956,7 @@ class HotTopicService:
         self.event_tracker.reconcile_topic_merges()
         self.event_tracker.observe_topics()
         event_before = self._advance_event_tracking(poll_accounts=True)
+        self.scan_visible_topic_merges()
         accounts = self._due_accounts()
         if not accounts:
             self.aggregate()
@@ -1090,6 +1099,7 @@ class HotTopicService:
         try:
             payloads = [json.loads(row["payload_json"]) for row in rows]
             result = self.aggregator.process_batch(payloads, utc_now())
+            self.scan_visible_topic_merges()
             self.event_tracker.reconcile_topic_merges()
             with self.lock:
                 with self.db:
@@ -1697,6 +1707,15 @@ class HotTopicService:
             self._record_worker_failure("maintain_busy", exc)
             return None
 
+    def scan_visible_topic_merges(self, *, force: bool = False) -> dict[str, Any] | None:
+        result = self.aggregator.scan_visible_topics(utc_now(), force=force)
+        if result and result.get("error"):
+            self.event("topic_merge_scan_failed", {"scan_id": result["scan_id"], "error": result["error"]})
+        if result and result.get("merges"):
+            self.event_tracker.reconcile_topic_merges()
+            self._refresh_hot_topic_counts()
+        return result
+
     def _maintain(self, *, force: bool) -> dict[str, int] | None:
         with self.lock:
             row = self.db.execute("SELECT last_maintenance_at FROM hottopic_meta WHERE singleton_key='global'").fetchone()
@@ -1704,6 +1723,7 @@ class HotTopicService:
         if not force and row[0] and current - datetime.fromisoformat(row[0]) < MAINTENANCE_INTERVAL:
             return None
         reconciled = self.aggregator.reconcile_recent_topics(current)
+        merge_scan = self.scan_visible_topic_merges(force=force)
         tracking_reconciled = self.event_tracker.reconcile_topic_merges()
         self.event_tracker.observe_topics()
         self._refresh_hot_topic_counts()
@@ -1727,7 +1747,7 @@ class HotTopicService:
             "deleted_inbox": inbox,
             "deleted_events": events,
             "sentiment_snapshots": sentiment_snapshots,
-            "merged_topics": len(reconciled["topic_merges"]),
+            "merged_topics": len(reconciled["topic_merges"]) + len((merge_scan or {}).get("merges", [])),
             "tracking_merges": tracking_reconciled,
             "semantic_review_pending": reconciled["semantic_review"].get("pending", 0),
         }
@@ -1746,9 +1766,9 @@ class HotTopicService:
                 "semanticReviewError": self.semantic_reviewer_error,
                 "semanticReviewPending": self.aggregator._count_pending_claim_reviews(),
                 "topicMergeReviewError": self.topic_merge_reviewer_error,
-                "topicMergeReviewPending": self.db.execute(
-                    "SELECT COUNT(*) FROM topic_pair_reviews WHERE decision='failed'"
-                ).fetchone()[0]}
+                "topicMergeReviewPending": int(bool(self.aggregator.visible_merge_scan_due(utc_now()) or self.db.execute(
+                    "SELECT pending_new_visible OR next_retry_at IS NOT NULL FROM topic_merge_scan_state WHERE singleton_key='global'"
+                ).fetchone()[0]))}
 
     @_serialized
     def dashboard(self) -> dict[str, Any]:
