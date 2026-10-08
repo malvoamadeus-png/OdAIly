@@ -108,6 +108,8 @@ def test_full_visible_scan_merges_groups_and_keeps_periodic_schedule(tmp_path: P
         repaired = aggregator.repair_visible_merge_brief(first["merges"][0]["merge_id"], NOW + timedelta(hours=2))
         assert repaired["brief_status"] == "ready"
         assert len(written_evidence[-1]) == 2
+        aggregator._refresh_briefs({coinbase[0]}, (NOW + timedelta(hours=3)).isoformat(), {})
+        assert len(written_evidence[-1]) == 2
     finally:
         aggregator.close()
 

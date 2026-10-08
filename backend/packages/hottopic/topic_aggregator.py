@@ -2844,6 +2844,32 @@ class TopicAggregator:
         editorial_guidance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+        if evidence_claim_ids is None:
+            merge = self.connection.execute(
+                "SELECT merge_id FROM topic_merges WHERE target_topic_id=? AND reason LIKE 'editorial:%' "
+                "ORDER BY created_at DESC LIMIT 1", (topic_id,),
+            ).fetchone()
+            if merge:
+                previous = self.connection.execute(
+                    "SELECT source_claim_ids_json FROM brief_revisions WHERE topic_id=? ORDER BY revision DESC LIMIT 1",
+                    (topic_id,),
+                ).fetchone()
+                scan = self.connection.execute(
+                    "SELECT deep_json FROM topic_merge_scans WHERE merge_ids_json LIKE ? "
+                    "ORDER BY started_at DESC LIMIT 1", (f'%"{merge["merge_id"]}"%',),
+                ).fetchone()
+                if previous and scan:
+                    decisions = json_loads(scan["deep_json"], [])
+                    editorial_guidance = next(
+                        (row for row in decisions if topic_id in row.get("ids", []) and row.get("decision") == "merge"),
+                        None,
+                    )
+                    if editorial_guidance:
+                        evidence_claim_ids = set(json_loads(previous["source_claim_ids_json"], []))
+                        evidence_claim_ids.update(
+                            claim_id for values in editorial_guidance["evidence_claim_ids"].values()
+                            for claim_id in values
+                        )
         claims = self.connection.execute(
             "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json,"
             "COALESCE(r.decision,'support') AS semantic_decision FROM memberships m JOIN claims cl ON cl.claim_id=m.claim_id "
