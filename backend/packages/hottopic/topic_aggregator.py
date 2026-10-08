@@ -2846,7 +2846,7 @@ class TopicAggregator:
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         if evidence_claim_ids is None:
             merge = self.connection.execute(
-                "SELECT merge_id FROM topic_merges WHERE target_topic_id=? AND reason LIKE 'editorial:%' "
+                "SELECT merge_id,created_at FROM topic_merges WHERE target_topic_id=? AND reason LIKE 'editorial:%' "
                 "ORDER BY created_at DESC LIMIT 1", (topic_id,),
             ).fetchone()
             if merge:
@@ -2869,6 +2869,17 @@ class TopicAggregator:
                         evidence_claim_ids.update(
                             claim_id for values in editorial_guidance["evidence_claim_ids"].values()
                             for claim_id in values
+                        )
+                        evidence_claim_ids.update(
+                            row["claim_id"] for row in self.connection.execute(
+                                "SELECT DISTINCT cl.claim_id FROM memberships m "
+                                "JOIN claims cl ON cl.claim_id=m.claim_id "
+                                "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+                                "JOIN topic_claim_reviews r ON r.claim_id=cl.claim_id AND r.topic_id=m.topic_id "
+                                "WHERE m.topic_id=? AND m.superseded_by IS NULL "
+                                "AND ci.created_at>? AND r.decision='support'",
+                                (topic_id, merge["created_at"]),
+                            )
                         )
         claims = self.connection.execute(
             "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json,"

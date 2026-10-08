@@ -108,8 +108,32 @@ def test_full_visible_scan_merges_groups_and_keeps_periodic_schedule(tmp_path: P
         repaired = aggregator.repair_visible_merge_brief(first["merges"][0]["merge_id"], NOW + timedelta(hours=2))
         assert repaired["brief_status"] == "ready"
         assert len(written_evidence[-1]) == 2
+        with aggregator.connection:
+            for index, reviewed in enumerate((True, False)):
+                item_id, claim_id = f"new:item:{index}", f"new:claim:{index}"
+                created_at = (NOW + timedelta(hours=2, minutes=30)).isoformat()
+                aggregator.connection.execute(
+                    "INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (item_id, item_id, f"new:account:{index}", f"new:account:{index}", "original",
+                     "New Deribit detail", "New Deribit detail", created_at, "https://x.com/example", "{}", "{}", "{}", item_id),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (claim_id, item_id, "New Deribit detail", "reported_fact", "[]", "一般讨论", "", "", 1.0, 1.0, created_at),
+                )
+                aggregator.connection.execute(
+                    "INSERT INTO memberships VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (f"new:membership:{index}", claim_id, coinbase[0], None, "primary", "new_fact", 1.0,
+                     "test", "test", created_at, None),
+                )
+                if reviewed:
+                    aggregator.connection.execute(
+                        "INSERT INTO topic_claim_reviews VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (claim_id, coinbase[0], "support", 0.95, "same topic", "test", "high", "hash", created_at, None),
+                    )
         aggregator._refresh_briefs({coinbase[0]}, (NOW + timedelta(hours=3)).isoformat(), {})
-        assert len(written_evidence[-1]) == 2
+        assert "new:claim:0" in written_evidence[-1]
+        assert "new:claim:1" not in written_evidence[-1]
     finally:
         aggregator.close()
 
