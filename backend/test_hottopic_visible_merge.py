@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import TopicAggregator
+from packages.hottopic.topic_aggregator import ModelBriefWriter, TopicAggregator
 
 
 NOW = datetime(2026, 10, 8, 12, tzinfo=UTC)
@@ -202,5 +202,35 @@ def test_merge_requires_evidence_from_every_topic(tmp_path: Path) -> None:
         assert result is not None and "lacks evidence" in result["error"]
         assert aggregator.connection.execute("SELECT COUNT(*) FROM topic_merges").fetchone()[0] == 0
         assert aggregator.visible_merge_scan_due(NOW + timedelta(minutes=15)) == "periodic"
+    finally:
+        aggregator.close()
+
+
+def test_merged_brief_prompt_carries_distinct_facts(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    try:
+        add_topic(aggregator, "topic:a", "Coinbase and Deribit", "Portfolio margin", 0)
+        writer = object.__new__(ModelBriefWriter)
+        writer.model = "gpt-5.6-luna"
+        writer.fallback_model = "gpt-5.6-luna"
+        prompts = []
+
+        def capture(_model, prompt, _topic, _evidence):
+            prompts.append(prompt)
+            return {"title": "Coinbase", "brief": "Combined", "source_claim_ids": ["claim:a"]}
+
+        writer._write_with_model = capture  # type: ignore[method-assign]
+        writer(
+            aggregator.connection, "topic:a", NOW.isoformat(),
+            [{"claim_id": "claim:a", "claim_text": "Deribit Portfolio Margin", "tweet_id": "tweet:a"}],
+            editorial_guidance={
+                "shared_fact": "Coinbase integrates Deribit",
+                "distinct_facts": "Portfolio Margin differs from the launch timetable",
+                "risk": "planned availability is not live availability",
+                "evidence_claim_ids": {"topic:a": ["claim:a"]},
+            },
+        )
+        assert "Portfolio Margin differs from the launch timetable" in prompts[0]
+        assert "planned availability is not live availability" in prompts[0]
     finally:
         aggregator.close()

@@ -1339,7 +1339,10 @@ class TopicAggregator:
                             merges.append(self._merge_topic(source_id, target_id, scan_at, f"editorial: {compact(decision.get('reason'))}", preserve_identity=True))
                     self._refresh_all_topics(scan_at)
                     self.connection.commit()
-                    brief_requests = self._refresh_briefs({target_id}, scan_at, {}, force_topic_ids={target_id}, evidence_claim_ids=cited_ids)
+                    brief_requests = self._refresh_briefs(
+                        {target_id}, scan_at, {}, force_topic_ids={target_id},
+                        evidence_claim_ids=cited_ids, editorial_guidance=decision,
+                    )
                     if any(request.get("brief_status") == "error" for request in brief_requests):
                         raise RuntimeError("merged topic brief refresh failed")
             self.connection.execute(
@@ -1412,7 +1415,8 @@ class TopicAggregator:
         )
         self.connection.commit()
         requests = self._refresh_briefs(
-            {target_id}, iso(at), {}, force_topic_ids={target_id}, evidence_claim_ids=cited_ids
+            {target_id}, iso(at), {}, force_topic_ids={target_id},
+            evidence_claim_ids=cited_ids, editorial_guidance=decision,
         )
         if not requests or requests[0].get("brief_status") != "ready":
             raise RuntimeError("editorial merge brief repair failed")
@@ -2739,6 +2743,7 @@ class TopicAggregator:
         *,
         force_topic_ids: set[str] | None = None,
         evidence_claim_ids: set[str] | None = None,
+        editorial_guidance: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         requests: list[dict[str, Any]] = []
         current = dt(at)
@@ -2780,7 +2785,10 @@ class TopicAggregator:
             else:
                 reason = "ordinary_substantive_update"
             revision = last_revision + 1
-            result = self._write_brief(topic_id, revision, at, reason, evidence_claim_ids=evidence_claim_ids)
+            result = self._write_brief(
+                topic_id, revision, at, reason, evidence_claim_ids=evidence_claim_ids,
+                editorial_guidance=editorial_guidance,
+            )
             # Do not hold a brief write transaction while generating a later
             # brief in this same batch.
             self.connection.commit()
@@ -2830,7 +2838,11 @@ class TopicAggregator:
             "retry_after": retry_after,
         }
 
-    def _write_brief(self, topic_id: str, revision: int, at: str, reason: str, *, evidence_claim_ids: set[str] | None = None) -> dict[str, Any]:
+    def _write_brief(
+        self, topic_id: str, revision: int, at: str, reason: str, *,
+        evidence_claim_ids: set[str] | None = None,
+        editorial_guidance: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         claims = self.connection.execute(
             "SELECT cl.*,ci.source_url,ci.tweet_id,ci.activity_account,ci.created_at,ci.references_json,"
@@ -2867,7 +2879,13 @@ class TopicAggregator:
                 retryable=False,
             )
         try:
-            payload = self.brief_writer(self.connection, topic_id, at, selected_claims)
+            if editorial_guidance and isinstance(self.brief_writer, ModelBriefWriter):
+                payload = self.brief_writer(
+                    self.connection, topic_id, at, selected_claims,
+                    editorial_guidance=editorial_guidance,
+                )
+            else:
+                payload = self.brief_writer(self.connection, topic_id, at, selected_claims)
         except Exception as exc:
             message = str(exc).strip() or "AI 正文生成器返回异常。"
             return self._brief_generation_error(
@@ -3490,7 +3508,10 @@ class ModelBriefWriter:
             )
         return os.environ.get("ODAILY_LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
 
-    def __call__(self, connection: sqlite3.Connection, topic_id: str, at: str, evidence: Sequence[dict[str, Any]]) -> dict[str, str]:
+    def __call__(
+        self, connection: sqlite3.Connection, topic_id: str, at: str,
+        evidence: Sequence[dict[str, Any]], *, editorial_guidance: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         topic = connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         payload = [
             {
@@ -3502,6 +3523,17 @@ class ModelBriefWriter:
             }
             for row in evidence[:18]
         ]
+        merge_guidance = ""
+        if editorial_guidance:
+            merge_guidance = (
+                "\n本次已确认两个话题可合为一篇报道。请在材料支持的范围内同时写出共同主线和两侧的独有信息，"
+                "明确区分已发生事实、计划上线和评论判断；不要把审查文字本身当作事实。"
+                "正文须实际使用来自每个原话题的证据，并在 source_claim_ids 中包含每侧至少一个 claim_id。\n"
+                f"共同主线：{compact(editorial_guidance.get('shared_fact'))}\n"
+                f"必须保留的差异：{compact(editorial_guidance.get('distinct_facts'))}\n"
+                f"失真风险：{compact(editorial_guidance.get('risk'))}\n"
+                f"各话题证据 ID：{json.dumps(editorial_guidance.get('evidence_claim_ids', {}), ensure_ascii=False)}\n"
+            )
         prompt = f"""
 你是 HotTopic 的中文热点编辑。请把给定信息点写成一篇让终极读者获得有效信息的热点正文。
 
@@ -3521,6 +3553,7 @@ class ModelBriefWriter:
 9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。若材料包含明显不同的叙事层次，必须分成 2 至 4 个自然段：例如先写事件背景或前因，再写价格、市值、交易量等数据变化，最后写社区观点、争议或分歧；只有材料单一且很短时才使用一个自然段。每段围绕一个主要问题展开，不要为了分段切碎同一条因果链。
 
 严格输出 JSON：{{"title":"准确具体的新闻式标题","brief":"信息密度高的自然中文正文","source_claim_ids":["实际使用的 claim_id"]}}
+{merge_guidance}
 
 信息点：
 {json.dumps(payload, ensure_ascii=False)}
