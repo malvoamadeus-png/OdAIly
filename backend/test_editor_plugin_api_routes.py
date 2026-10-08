@@ -12,7 +12,11 @@ from packages.editor_plugin_api import (
     EditorPluginApiServer,
     EditorPluginForbiddenError,
     EditorPluginNewsGenService,
+    EditorPluginRequestModel,
 )
+from packages.x_processing.worker import build_writer_prompt
+from packages.x_processing.models import PromptTemplateVersion
+from packages.x_capture.client import FXTwitterClient
 
 
 class UnusedService:
@@ -28,6 +32,49 @@ class _AuthenticatedEditor:
 
     def authenticate(self, _authorization_header: str | None) -> AuthenticatedEditor:
         return self.actor
+
+
+def test_plugin_generation_uses_context_chain_without_replacing_edited_current_text() -> None:
+    service = object.__new__(EditorPluginNewsGenService)
+    service.x_capture_repository = SimpleNamespace(resolve_effective_author_name=lambda **_kwargs: "链上分析师Ai姨")
+    fetched = []
+    client = FXTwitterClient()
+
+    def fetch(username: str, tweet_id: str) -> dict:
+        fetched.append((username, tweet_id))
+        if tweet_id == "2108221765877133461":
+            return {"id": tweet_id, "replying_to_status": "previous", "replying_to": "ai_9684xtpa"}
+        return {"id": tweet_id, "text": "麻吉再次减仓 ETH 多单", "author": {"screen_name": "ai_9684xtpa"}}
+
+    client.fetch_detail = fetch
+    service.x_context_client = client
+    request = EditorPluginRequestModel(
+        post_text="编辑后的最新事实：仅剩 1 万枚，亏损 262.8 万美元",
+        post_url="https://x.com/ai_9684xtpa/status/2108221765877133461",
+        post_id="2108221765877133461",
+        author_handle="@ai_9684xtpa",
+    )
+
+    task = service._build_task_record(request, route="onchain")
+    prompt = build_writer_prompt(
+        task=task,
+        prompt=PromptTemplateVersion(id=1, template_key="x_onchain_writer", version_number=1, content="只写事实"),
+    )
+
+    assert fetched == [("ai_9684xtpa", "2108221765877133461"), ("ai_9684xtpa", "previous")]
+    assert task.content == request.post_text
+    assert prompt.index("编辑后的最新事实") < prompt.index("麻吉再次减仓")
+
+
+def test_plugin_manual_text_without_post_url_does_not_fetch_quotes() -> None:
+    service = object.__new__(EditorPluginNewsGenService)
+    service.x_capture_repository = SimpleNamespace(resolve_effective_author_name=lambda **_kwargs: None)
+    service.x_context_client = SimpleNamespace(fetch_detail=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected fetch")))
+
+    task = service._build_task_record(EditorPluginRequestModel(post_text="手动输入正文"), route="regular")
+
+    assert task.content == "手动输入正文"
+    assert "context_chain" not in task.metadata
 
 
 class _ConsoleAdminRepository:

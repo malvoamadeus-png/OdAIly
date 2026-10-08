@@ -129,7 +129,7 @@ def _article_text(article: dict[str, Any]) -> str:
     return _text(article.get("body") or article.get("text") or article.get("preview_text"))
 
 
-def _find_articles(payload: Any) -> list[dict[str, Any]]:
+def _find_articles(payload: dict[str, Any]) -> list[dict[str, Any]]:
     articles: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
@@ -151,8 +151,66 @@ def _find_articles(payload: Any) -> list[dict[str, Any]]:
             for nested in value:
                 visit(nested)
 
-    visit(payload)
+    # Historical posts' Articles belong to their own context layers.
+    visit({key: value for key, value in payload.items() if key not in {*QUOTE_KEYS, "replying_to_status"}})
     return articles
+
+
+QUOTE_KEYS = ("quote", "quoted_tweet", "quote_tweet", "quoted_status")
+QUOTE_ID_KEYS = ("quote_id", "quoted_tweet_id", "quoted_status_id")
+
+
+def has_context_reference(payload: dict[str, Any]) -> bool:
+    replying_to = payload.get("replying_to")
+    return bool(
+        any(payload.get(key) for key in (*QUOTE_KEYS, *QUOTE_ID_KEYS, "replying_to_status"))
+        or (isinstance(replying_to, dict) and replying_to.get("status"))
+    )
+
+
+def _context_ref(payload: dict[str, Any]) -> tuple[dict[str, Any], str, str] | None:
+    for key in QUOTE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict) and value:
+            quote_id = str(value.get("id") or value.get("id_str") or "").strip()
+            if quote_id:
+                return value, quote_id, "quote"
+        elif isinstance(value, (str, int)) and str(value).strip():
+            return {"id": str(value)}, str(value), "quote"
+    for key in QUOTE_ID_KEYS:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return {"id": value}, value, "quote"
+    reply = payload.get("replying_to")
+    status = payload.get("replying_to_status")
+    embedded = status if isinstance(status, dict) else {}
+    reply_id = str(embedded.get("id") or embedded.get("status") or (status if not isinstance(status, dict) else "") or "").strip()
+    if not reply_id and isinstance(reply, dict):
+        reply_id = str(reply.get("status") or "").strip()
+    if reply_id:
+        embedded = {**embedded, "id": reply_id}
+        if isinstance(reply, dict):
+            embedded.setdefault("url", reply.get("url"))
+            embedded.setdefault("author", {"screen_name": reply.get("screen_name")})
+        elif isinstance(reply, str):
+            embedded.setdefault("author", {"screen_name": reply})
+        return embedded, reply_id, "reply"
+    return None
+
+
+def _context_item(payload: dict[str, Any], tweet_id: str, relation: str) -> dict[str, Any]:
+    author = payload.get("author") if isinstance(payload.get("author"), dict) else {}
+    username = str(author.get("screen_name") or payload.get("author_username") or "").strip().lstrip("@")
+    text, _ = _compose_x_content(_text(payload.get("text") or payload.get("raw_text")), _find_articles(payload))
+    return {
+        "id": tweet_id,
+        "relation": relation,
+        "url": str(payload.get("url") or (f"https://x.com/{username}/status/{tweet_id}" if username else "")),
+        "author_username": username,
+        "author_display_name": str(author.get("name") or "").strip(),
+        "created_at": str(payload.get("created_at") or "").strip(),
+        "text": text,
+    }
 
 
 def _compose_x_content(post_text: str, articles: list[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -291,6 +349,59 @@ class FXTwitterClient:
         tweet = payload.get("tweet")
         return tweet if isinstance(tweet, dict) else {}
 
+    def collect_context_chain(
+        self, detail: dict[str, Any], *, root_id: str, author_hint: str = "",
+        raw_layers: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], str, str | None]:
+        chain: list[dict[str, Any]] = []
+        visited = {root_id}
+        current = detail
+        partial_error = None
+        if has_context_reference(current) and _context_ref(current) is None:
+            return chain, "partial", "context reference has no id"
+        while ref := _context_ref(current):
+            embedded, tweet_id, relation = ref
+            if tweet_id in visited:
+                return chain, "partial", f"context cycle at {tweet_id}"
+            visited.add(tweet_id)
+            author = embedded.get("author") if isinstance(embedded.get("author"), dict) else {}
+            username = str(author.get("screen_name") or embedded.get("author_username") or "").strip().lstrip("@")
+            if not username:
+                url = str(embedded.get("url") or "")
+                match = re.search(r"(?:x\.com|twitter\.com)/([A-Za-z0-9_]+)/status/" + re.escape(tweet_id), url)
+                username = match.group(1) if match else ""
+            if not username:
+                current_author = current.get("author") if isinstance(current.get("author"), dict) else {}
+                username = str(current_author.get("screen_name") or author_hint or "").strip().lstrip("@")
+            if not username:
+                return chain, "partial", f"context author missing for {tweet_id}"
+            try:
+                fetched = self.fetch_detail(username, tweet_id)
+                if not fetched or str(fetched.get("id") or tweet_id) != tweet_id:
+                    raise ValueError("context detail missing or id mismatch")
+            except Exception as exc:
+                if raw_layers is not None:
+                    raw_layers.append({"id": tweet_id, "relation": relation, "embedded": embedded, "fetch_error": str(exc)})
+                item = _context_item(embedded, tweet_id, relation)
+                if item["text"]:
+                    chain.append(item)
+                partial_error = f"context {tweet_id}: {type(exc).__name__}: {exc}"
+                if has_context_reference(embedded):
+                    current = embedded
+                    continue
+                return chain, "partial", partial_error
+            if raw_layers is not None:
+                raw_layers.append({"id": tweet_id, "relation": relation, "detail": fetched})
+            item = _context_item(fetched, tweet_id, relation)
+            if not item["text"]:
+                return chain, "partial", f"context text missing for {tweet_id}"
+            item["text"] = replace_token_ca_tokens(item["text"], self._resolve_token_symbol)
+            chain.append(item)
+            current = fetched if has_context_reference(fetched) else embedded
+            if has_context_reference(current) and _context_ref(current) is None:
+                return chain, "partial", f"context reference has no id in {tweet_id}"
+        return chain, "partial" if partial_error else "complete", partial_error
+
     def build_record(
         self,
         username: str,
@@ -298,6 +409,10 @@ class FXTwitterClient:
         *,
         detail: dict[str, Any] | None = None,
         detail_error: str | None = None,
+        context_chain: list[dict[str, Any]] | None = None,
+        context_chain_status: str = "complete",
+        context_chain_error: str | None = None,
+        context_raw_layers: list[dict[str, Any]] | None = None,
     ) -> CaptureRecord:
         detail = detail or {}
         author = detail.get("author") if isinstance(detail.get("author"), dict) else {}
@@ -319,6 +434,12 @@ class FXTwitterClient:
             metadata["article_titles"] = article_titles
         if detail_error:
             metadata["detail_error"] = detail_error
+        if context_chain:
+            metadata["context_chain"] = context_chain
+        if context_chain or context_chain_status != "complete":
+            metadata["context_chain_status"] = context_chain_status
+        if context_chain_error:
+            metadata["context_chain_error"] = context_chain_error
 
         return CaptureRecord(
             platform="x",
@@ -335,5 +456,9 @@ class FXTwitterClient:
             view_count=_int(detail.get("views") or candidate.view_count),
             media_urls=media_urls,
             metadata=metadata,
-            raw_payload={"timeline": candidate.raw_payload, "detail": detail},
+            raw_payload={
+                "timeline": candidate.raw_payload,
+                "detail": detail,
+                **({"context_layers": context_raw_layers} if context_raw_layers else {}),
+            },
         )

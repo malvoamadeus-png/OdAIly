@@ -86,3 +86,43 @@ def test_structured_writer_prompt_does_not_require_title_deduplication() -> None
     )
 
     assert "不要复述 title" not in prompt
+
+
+def test_context_chain_keeps_latest_post_primary_and_labels_old_facts() -> None:
+    task = TaskRecord(
+        id=1,
+        source="x",
+        source_item_id="2108221765877133461",
+        source_url="https://x.com/ai_9684xtpa/status/2108221765877133461",
+        title=None,
+        content="更新：只剩 1 万枚，实质性亏损扩大到 262.8 万美元，清算价 2418.4 美元",
+        metadata={
+            "effective_author_name": "链上分析师Ai姨",
+            "context_chain": [
+                {"id": "2108218549844250691", "author_username": "ai_9684xtpa", "text": "麻吉再次减仓 1 万枚 ETH，剩余 14500 ETH 多单，清算价 2442.16 美元"},
+                {"id": "older", "author_username": "ai_9684xtpa", "text": "麻吉此前持有 ETH 多单"},
+            ],
+        },
+    )
+
+    prompt = build_structured_writer_prompt(task=task, prompt=_prompt(), known_subjects=[])
+
+    assert "【本次播报（最新帖）】" in prompt
+    assert "【引用/回复前序链背景（由近到远）】" in prompt
+    assert prompt.index("262.8 万美元") < prompt.index("14500 ETH") < prompt.index("此前持有 ETH")
+    assert "旧数值" in prompt and "此前" in prompt
+    assert "不得把前序帖" in prompt
+
+
+def test_unrelated_context_cannot_be_promoted_to_current_event() -> None:
+    task = TaskRecord(
+        id=2, source="x", source_item_id="3", source_url="https://x.com/a/status/3",
+        title=None, content="本次更新：ETH 多单剩余 1 万枚",
+        metadata={"context_chain": [{"id": "2", "text": "另一个事件：BTC ETF 资金流入"}]},
+    )
+
+    prompt = build_structured_writer_prompt(task=task, prompt=_prompt(), known_subjects=[])
+
+    assert "只有同一主体同一事件的相关旧事实才可简述" in prompt
+    assert "不得把前序帖的其他事件、作者观点或旧状态提升为标题和核心播报" in prompt
+    assert prompt.index("本次更新：ETH") < prompt.index("BTC ETF")

@@ -1827,6 +1827,38 @@ def build_writer_prompt(
         or task.title
         or "Odaily"
     )
+    context_chain = task.metadata.get("context_chain") if task.source == "x" else None
+    if isinstance(context_chain, list) and context_chain:
+        prompt_content = render_prompt_content(prompt)
+        if is_x_article_content_format(task.metadata) and X_ARTICLE_RULE_MARKER not in prompt_content:
+            prompt_content = f"{prompt_content}\n\n{X_ARTICLE_WRITER_RULES}"
+        context = f"{X_ARTICLE_WRITER_CONTEXT}\n" if is_x_article_content_format(task.metadata) else ""
+        context_lines = []
+        for index, item in enumerate(context_chain, start=1):
+            if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+                continue
+            context_lines.append(
+                f"{index}. {item.get('relation') or '前序'} @{item.get('author_username') or 'unknown'} "
+                f"({item.get('created_at') or '时间未知'}; {item.get('url') or item.get('id') or '链接未知'})\n"
+                f"{item['text']}"
+            )
+        if context_lines:
+            context_text = "\n\n".join(context_lines)
+            return (
+                f"{prompt_content}\n\n"
+                "【引用/回复前序链写作规则】\n"
+                "本次播报只由最新帖决定：标题和正文优先写最新动作、结果与最新数值。"
+                "前序链仅用于确认当前帖省略的主体、资产、连续动作和必要背景。"
+                "只有同一主体同一事件的相关旧事实才可简述；旧数值必须明确标为“此前”或写明旧帖时间，"
+                "不得当成当前状态。不得把前序帖的其他事件、作者观点或旧状态提升为标题和核心播报。"
+                "不得因为前序帖作者与当前作者相同，就把作者当作事件主体；无法确认的主体不要猜测。\n\n"
+                f"{context}"
+                "【本次播报（最新帖）】\n"
+                f"发布人：{author}\n来源链接：{task.source_url or ''}\n原文内容：{task.content}\n\n"
+                "【引用/回复前序链背景（由近到远）】\n"
+                f"{context_text}\n\n"
+                f"{output_instruction}"
+            )
     if task.source == "x" and is_x_article_content_format(task.metadata):
         prompt_content = render_prompt_content(prompt)
         if X_ARTICLE_RULE_MARKER not in prompt_content:

@@ -52,13 +52,16 @@ worker 启动时加载配置。运行中不再保留专门的数据库监听连�
 - 同一收集进程会缓存 CA 查询结果，避免一条帖子或同一轮重复调用 GMGN；查询仍复用 `meme_scanner` 的 CLI 节流与退避规则，身份查询失败不会阻断 X 内容入库。
 - `tasks.raw_payload` 保留 FXTwitter 返回的原始文本；只有供判断者、编写者和后续链路使用的 `tasks.content` 做身份标准化。
 
-X Article 处理规则：
+X Article 与引用/回复前序链处理规则：
 
-- 收集者-X 从 FXTwitter 详情响应读取顶层 `article`，也读取普通帖子引用内容中的嵌套 `quote.article`。
+- 收集者-X 从 FXTwitter 详情响应读取当前帖的 `article`。引用帖内的 `article` 归属于对应历史引用层，不再混入当前帖正文。
 - 如果一条 X 同时包含普通帖子和文章，`tasks.content` 会按“普通帖子 -> 文章标题 -> 文章正文”的顺序合并，文章 Draft.js blocks 中的完整文字全部进入后续判断与编写 Prompt。
 - 文章标题和正文使用 `【X文章】`、`标题：`、`正文：` 标记；标题层级、引用和列表块转换为可读文本。
 - Article 不拆成独立任务，仍以外层 X 帖子的 `source_item_id` 做去重；原始完整响应继续保存在 `tasks.raw_payload`。
 - 任务元数据会记录 `content_format`、`article_count` 和 `article_titles`；普通帖子没有文章时保持原有正文格式。
+- 引用帖或回复指向的前序帖逐层追溯到最早一帖，不设置固定层数。优先用详情响应里的 `quote` 或 `replying_to_status`，详情缺字段时回退到时间线里的 `quote` 或 `replying_to.status`；每层按关系类型（`quote/reply`）、ID、URL、作者、时间、正文存入 `tasks.metadata.context_chain`（由近到远）。已访问 ID 阻止循环。
+- `tasks.content`、任务标题和 `source_url` 仍只代表当前帖；前序链是写作背景，不参与当前帖的源头排除、判断和搜索查重。`tasks.raw_payload.raw_payload.context_layers` 保留逐层原始详情（抓取失败时保留嵌入对象及错误）；前序正文归入 `metadata` 以供编写者1直接读取。
+- 单层抓取失败、前序 ID 缺失或循环时保留已取得的内容，并写入 `context_chain_status=partial` 与 `context_chain_error`。没有前序关系时不增加这些字段。前序链缺失不阻止当前帖继续入库和发布。
 
 判断时效使用来源原始发布时间，而不是任务入库时间。
 

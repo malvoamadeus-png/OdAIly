@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from packages.pipeline_timing import (
     create_pipeline_timing_repository,
 )
 from packages.x_capture.repository import create_x_capture_repository
+from packages.x_capture.client import FXTwitterClient
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
@@ -386,6 +388,7 @@ class EditorPluginNewsGenService:
         self.meme_dashboard_store = MemeDashboardStore()
         self.auth_repository = create_editor_plugin_auth_repository(database_url)
         self.x_capture_repository = create_x_capture_repository(database_url)
+        self.x_context_client = FXTwitterClient()
         self.x_repository = create_x_processing_repository(database_url)
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
         self.newsflash_operations = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
@@ -907,6 +910,9 @@ class EditorPluginNewsGenService:
                 "title": final.title,
                 "content": final.content,
                 "raw_source_text": request.post_text,
+                "context_chain": task.metadata.get("context_chain") or [],
+                "context_chain_status": task.metadata.get("context_chain_status") or "not_requested",
+                "context_chain_error": task.metadata.get("context_chain_error"),
             }
             self._log_request(
                 actor=actor,
@@ -957,6 +963,38 @@ class EditorPluginNewsGenService:
             author_username=request.author_handle,
             author_display_name=request.author_display_name,
         )
+        metadata = {
+            "author_display_name": request.author_display_name,
+            "author_username": request.author_handle,
+            "effective_author_name": effective_author_name,
+            "site_display_name": "外媒" if route == "external_media" else None,
+            "original_title": None,
+        }
+        post_url = urlparse(str(request.post_url)) if request.post_url else None
+        match = re.fullmatch(r"/([A-Za-z0-9_]+)/status/(\d+)/?", post_url.path) if post_url else None
+        if (
+            route != "external_media"
+            and match
+            and post_url.hostname in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
+            and (not request.post_id or request.post_id == match.group(2))
+        ):
+            try:
+                detail = self.x_context_client.fetch_detail(match.group(1), match.group(2))
+                if detail:
+                    chain, status, error = self.x_context_client.collect_context_chain(
+                        detail, root_id=match.group(2), author_hint=match.group(1)
+                    )
+                    if chain:
+                        metadata["context_chain"] = chain
+                    metadata["context_chain_status"] = status
+                    if error:
+                        metadata["context_chain_error"] = error
+                else:
+                    metadata["context_chain_status"] = "partial"
+                    metadata["context_chain_error"] = "current detail unavailable"
+            except Exception as exc:
+                metadata["context_chain_status"] = "partial"
+                metadata["context_chain_error"] = f"current detail: {type(exc).__name__}: {exc}"
         return TaskRecord(
             id=0,
             source="mainstream_media" if route == "external_media" else "x",
@@ -965,13 +1003,7 @@ class EditorPluginNewsGenService:
             title=None,
             content=request.post_text,
             published_at=request.posted_at,
-            metadata={
-                "author_display_name": request.author_display_name,
-                "author_username": request.author_handle,
-                "effective_author_name": effective_author_name,
-                "site_display_name": "外媒" if route == "external_media" else None,
-                "original_title": None,
-            },
+            metadata=metadata,
         )
 
     def _resolve_generation_route(self, request: EditorPluginRequestModel) -> PluginGenerationRoute:

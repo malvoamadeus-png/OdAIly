@@ -1,8 +1,12 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from packages.x_capture.client import FXTwitterClient
-from packages.x_capture.models import TweetCandidate
+from packages.x_capture.models import TweetCandidate, XCaptureAccount
+from packages.x_capture.sqlite_repository import SQLiteXCaptureRepository
+from packages.x_capture.worker import XCaptureWorker
+from packages.common.storage import connect_sqlite
 from packages.x_capture.token_identity import (
     resolve_solana_token_symbol_with_gmgn,
     resolve_token_symbol_with_gmgn,
@@ -53,23 +57,201 @@ def test_build_record_merges_top_level_article_into_post_text() -> None:
     assert record.metadata["article_titles"] == ["Article title"]
 
 
-def test_build_record_merges_article_nested_in_quote() -> None:
+def test_build_record_keeps_quoted_article_out_of_current_content() -> None:
     record = FXTwitterClient().build_record(
         "tradexyz",
         _candidate("Outer post with quoted article"),
         detail={
             "text": "Outer post with quoted article",
             "quote": {
+                "id": "122",
                 "text": "https://x.com/i/article/1",
                 "article": _article(article_id="article-2"),
             },
         },
+        context_chain=[{"id": "122", "text": "【X文章】\n标题：Article title\n正文：First paragraph."}],
     )
 
-    assert "Outer post with quoted article" in record.text
-    assert "Article title" in record.text
-    assert "First paragraph." in record.text
-    assert record.metadata["content_format"] == "x_post_with_article"
+    assert record.text == "Outer post with quoted article"
+    assert record.metadata["context_chain"][0]["id"] == "122"
+    assert "Article title" in record.metadata["context_chain"][0]["text"]
+    assert "content_format" not in record.metadata
+
+
+def test_collect_context_chain_fetches_each_predecessor_until_the_earliest() -> None:
+    client = FXTwitterClient()
+    calls = []
+    posts = {
+        "2": {"id": "2", "text": "麻吉再次减仓 1 万枚 ETH", "author": {"screen_name": "ai_9684xtpa", "name": "Ai 姨"}, "quote": {"id": "1", "author": {"screen_name": "ai_9684xtpa"}}},
+        "1": {"id": "1", "text": "麻吉持有 ETH 多单", "author": {"screen_name": "ai_9684xtpa", "name": "Ai 姨"}},
+    }
+
+    def fetch(username: str, tweet_id: str) -> dict:
+        calls.append((username, tweet_id))
+        return posts[tweet_id]
+
+    client.fetch_detail = fetch
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "text": "更新：只剩 1 万枚，实质性亏损 262.8 万美元", "quote": {"id": "2", "author": {"screen_name": "ai_9684xtpa"}}},
+        root_id="3",
+    )
+
+    assert [item["id"] for item in chain] == ["2", "1"]
+    assert chain[0]["text"] == "麻吉再次减仓 1 万枚 ETH"
+    assert calls == [("ai_9684xtpa", "2"), ("ai_9684xtpa", "1")]
+    assert (status, error) == ("complete", None)
+
+
+def test_collect_context_chain_without_reference_keeps_single_post_path() -> None:
+    client = FXTwitterClient()
+    client.fetch_detail = lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected fetch"))
+
+    chain, status, error = client.collect_context_chain({"id": "3", "text": "独立快讯"}, root_id="3")
+
+    assert (chain, status, error) == ([], "complete", None)
+
+
+def test_collect_context_chain_keeps_embedded_post_on_fetch_failure() -> None:
+    client = FXTwitterClient()
+    client.fetch_detail = lambda _username, _id: (_ for _ in ()).throw(TimeoutError("upstream timeout"))
+
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "quote": {"id": "2", "text": "麻吉减仓 ETH", "author": {"screen_name": "ai_9684xtpa"}}},
+        root_id="3",
+    )
+
+    assert [item["text"] for item in chain] == ["麻吉减仓 ETH"]
+    assert status == "partial"
+    assert "upstream timeout" in error
+
+
+def test_collect_context_chain_continues_through_embedded_post_after_fetch_failure() -> None:
+    client = FXTwitterClient()
+    raw_layers = []
+    client.fetch_detail = lambda _username, _id: (_ for _ in ()).throw(TimeoutError("upstream timeout"))
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "quote": {
+            "id": "2", "text": "麻吉减仓 ETH", "author": {"screen_name": "ai_9684xtpa"},
+            "quote": {"id": "1", "text": "麻吉持有 ETH 多单", "author": {"screen_name": "ai_9684xtpa"}},
+        }},
+        root_id="3", raw_layers=raw_layers,
+    )
+
+    assert [item["id"] for item in chain] == ["2", "1"]
+    assert [item["id"] for item in raw_layers] == ["2", "1"]
+    assert status == "partial"
+    assert "upstream timeout" in error
+
+
+def test_collect_context_chain_stops_at_cycle() -> None:
+    client = FXTwitterClient()
+    client.fetch_detail = lambda _username, _id: {
+        "id": "2", "text": "previous", "author": {"screen_name": "ai_9684xtpa"},
+        "quote": {"id": "3", "author": {"screen_name": "ai_9684xtpa"}},
+    }
+
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "quote": {"id": "2", "author": {"screen_name": "ai_9684xtpa"}}},
+        root_id="3",
+    )
+
+    assert [item["id"] for item in chain] == ["2"]
+    assert status == "partial"
+    assert "cycle" in error
+
+
+def test_collect_context_chain_follows_id_only_reference() -> None:
+    client = FXTwitterClient()
+    calls = []
+
+    def fetch(username: str, tweet_id: str) -> dict:
+        calls.append((username, tweet_id))
+        return {"id": tweet_id, "text": "麻吉 ETH 多单", "author": {"screen_name": "ai_9684xtpa"}}
+
+    client.fetch_detail = fetch
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "author": {"screen_name": "ai_9684xtpa"}, "quote_id": "2"},
+        root_id="3",
+    )
+
+    assert [item["id"] for item in chain] == ["2"]
+    assert calls == [("ai_9684xtpa", "2")]
+    assert (status, error) == ("complete", None)
+
+
+def test_collect_context_chain_follows_production_reply_shape() -> None:
+    client = FXTwitterClient()
+    fetched = []
+
+    def fetch(username: str, tweet_id: str) -> dict:
+        fetched.append((username, tweet_id))
+        return {
+            "id": tweet_id,
+            "text": "麻吉再次减仓 1 万枚 ETH",
+            "author": {"screen_name": "ai_9684xtpa"},
+            "quote": {"id": "2108193057229455562", "author": {"screen_name": "ai_9684xtpa"}},
+        } if tweet_id == "2108218549844250691" else {
+            "id": tweet_id, "text": "麻吉又濒临清算", "author": {"screen_name": "ai_9684xtpa"},
+        }
+
+    client.fetch_detail = fetch
+    chain, status, error = client.collect_context_chain(
+        {
+            "id": "2108221765877133461",
+            "author": {"screen_name": "ai_9684xtpa"},
+            "replying_to": "ai_9684xtpa",
+            "replying_to_status": "2108218549844250691",
+        },
+        root_id="2108221765877133461",
+    )
+
+    assert [item["id"] for item in chain] == ["2108218549844250691", "2108193057229455562"]
+    assert [item["relation"] for item in chain] == ["reply", "quote"]
+    assert fetched == [("ai_9684xtpa", "2108218549844250691"), ("ai_9684xtpa", "2108193057229455562")]
+    assert (status, error) == ("complete", None)
+
+
+def test_collect_context_chain_follows_timeline_reply_object() -> None:
+    client = FXTwitterClient()
+    client.fetch_detail = lambda _username, tweet_id: {
+        "id": tweet_id, "text": "麻吉减仓 ETH", "author": {"screen_name": "ai_9684xtpa"},
+    }
+    chain, status, error = client.collect_context_chain(
+        {"id": "3", "replying_to": {"screen_name": "ai_9684xtpa", "status": "2", "url": "https://x.com/ai_9684xtpa/status/2"}},
+        root_id="3",
+    )
+
+    assert chain[0]["id"] == "2"
+    assert chain[0]["relation"] == "reply"
+    assert (status, error) == ("complete", None)
+
+
+def test_capture_uses_timeline_quote_when_detail_omits_it_and_persists_context(tmp_path) -> None:
+    client = FXTwitterClient()
+    client.fetch_detail = lambda _username, tweet_id: (
+        {"id": "3", "text": "更新：仅剩 1 万枚 ETH", "author": {"screen_name": "ai_9684xtpa"}}
+        if tweet_id == "3" else
+        {"id": "2", "text": "麻吉再次减仓 ETH 多单", "author": {"screen_name": "ai_9684xtpa"}}
+    )
+    worker = object.__new__(XCaptureWorker)
+    worker.client = client
+    account = XCaptureAccount(id=1, username="ai_9684xtpa", username_lower="ai_9684xtpa")
+    candidate = TweetCandidate(
+        tweet_id="3", author_username="ai_9684xtpa", author_display_name="Ai 姨",
+        text="更新：仅剩 1 万枚 ETH", raw_payload={"quote_id": "2"},
+    )
+
+    record = worker._record_from_candidate(account, candidate, {})
+    repository = SQLiteXCaptureRepository(tmp_path / "odaily.sqlite")
+    task_id = repository.save_task(account, record)
+    with connect_sqlite(tmp_path / "odaily.sqlite") as conn:
+        task = conn.execute("SELECT content,metadata,raw_payload FROM tasks WHERE id=?", (task_id,)).fetchone()
+    metadata = json.loads(task["metadata"])
+
+    assert task["content"] == "更新：仅剩 1 万枚 ETH"
+    assert metadata["context_chain"][0]["text"] == "麻吉再次减仓 ETH 多单"
+    assert metadata["context_chain_status"] == "complete"
+    assert json.loads(task["raw_payload"])["raw_payload"]["context_layers"][0]["detail"]["id"] == "2"
 
 
 def test_build_record_keeps_plain_post_content_unchanged() -> None:

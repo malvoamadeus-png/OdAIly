@@ -18,7 +18,7 @@ from packages.common.freshness import (
 )
 from packages.local_pipeline.client import LocalPipelineClient
 
-from .client import FXTwitterClient
+from .client import FXTwitterClient, has_context_reference
 from .models import CaptureRunStats, TweetCandidate, XCaptureAccount, XCaptureSettings
 from .repository import XCaptureRepository, utc_now
 
@@ -369,7 +369,29 @@ class XCaptureWorker:
         except Exception as exc:
             detail_error = str(exc)
             detail_errors[candidate.tweet_id] = detail_error
-        return self.client.build_record(account.username, candidate, detail=detail, detail_error=detail_error)
+        context_chain: list[dict[str, Any]] = []
+        context_raw_layers: list[dict[str, Any]] = []
+        context_chain_status = "complete"
+        context_chain_error = None
+        context_source = detail if has_context_reference(detail) else candidate.raw_payload
+        if context_source:
+            context_chain, context_chain_status, context_chain_error = self.client.collect_context_chain(
+                context_source, root_id=candidate.tweet_id, author_hint=account.username,
+                raw_layers=context_raw_layers,
+            )
+        if detail_error:
+            context_chain_status = "partial"
+            context_chain_error = f"current detail: {detail_error}" + (f"; {context_chain_error}" if context_chain_error else "")
+        return self.client.build_record(
+            account.username,
+            candidate,
+            detail=detail,
+            detail_error=detail_error,
+            context_chain=context_chain,
+            context_chain_status=context_chain_status,
+            context_chain_error=context_chain_error,
+            context_raw_layers=context_raw_layers,
+        )
 
 def parse_record_created_at(value: str | None) -> datetime | None:
     if not value:
