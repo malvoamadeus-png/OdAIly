@@ -192,6 +192,11 @@ export type ContributionsPayload = {
       base_score: number;
       high_view_bonus: number;
       score: number;
+      score_before_exclusion: number;
+      score_excluded: boolean;
+      score_zeroed_by_rules: boolean;
+      score_exclusion_reasons: string[];
+      score_exclusion_reason_labels: string[];
     }>;
   }>;
 };

@@ -1554,7 +1554,7 @@ class NewsflashOperationsRepository:
         ).fetchall()]
         rows = [dict(row) for row in conn.execute(
             """
-            SELECT r.source_item_id,r.source_url,r.title,r.published_at,f.view_count,f.contribution_type,
+            SELECT r.source_item_id,r.source_url,r.raw_payload,r.title,r.published_at,f.view_count,f.contribution_type,
                    f.contributor_person_key,p.display_name AS contributor_name
             FROM newsflash_operation_facts f JOIN odaily_reference_items r ON r.source_item_id=f.source_item_id
             JOIN newsflash_roster p ON p.person_key=f.contributor_person_key
@@ -1563,9 +1563,31 @@ class NewsflashOperationsRepository:
             """,
             (period_start, period_end),
         ).fetchall()]
+        regular_accounts = {account.casefold() for account in QUALITY_REGULAR_SOURCE_ACCOUNTS}
         for row in rows:
-            row["first_publication"] = self._event_info(conn, str(row["source_item_id"]))
-            score = self._contribution_score(row["view_count"], row["contribution_type"], average_views)
+            source_item_id = str(row["source_item_id"])
+            original_url = self._quality_original_url(row)
+            username = self._x_username(original_url)
+            exclusion_reasons: list[str] = []
+            exclusion_reason_labels: list[str] = []
+            if username and username in regular_accounts:
+                exclusion_reasons.append("regular_source")
+                exclusion_reason_labels.append("常规信源")
+            first_publication, first_sources = self._quality_first_publication(conn, source_item_id)
+            if first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources:
+                exclusion_reasons.append("competitor_first")
+                exclusion_reason_labels.append("竞品先发")
+            score = self._contribution_score(
+                row["view_count"],
+                row["contribution_type"],
+                average_views,
+                excluded=bool(exclusion_reasons),
+            )
+            row["first_publication"] = first_publication
+            row["original_url"] = original_url
+            row["score_exclusion_reasons"] = exclusion_reasons
+            row["score_exclusion_reason_labels"] = exclusion_reason_labels
+            row["score_zeroed_by_rules"] = bool(exclusion_reasons and score["score_before_exclusion"] > 0)
             row.update(score)
         groups = []
         for person in people:
@@ -1679,25 +1701,40 @@ class NewsflashOperationsRepository:
         }
 
     @staticmethod
-    def _contribution_score(view_count: Any, contribution_type: str | None, average_views: float | None) -> dict[str, float]:
+    def _contribution_score(
+        view_count: Any,
+        contribution_type: str | None,
+        average_views: float | None,
+        *,
+        excluded: bool = False,
+    ) -> dict[str, float | bool]:
         if contribution_type in {"night", "ppp"}:
-            return {"base_score": 0.5, "high_view_bonus": 0.0, "score": 0.5}
-        if view_count is None or average_views is None:
-            return {"base_score": 0.0, "high_view_bonus": 0.0, "score": 0.0}
-        views = float(view_count)
-        if views < average_views * 0.5:
-            base_score = 0.0
-        elif views < average_views * 0.75:
-            base_score = 0.25
-        elif views <= average_views * 2:
             base_score = 0.5
+            high_view_bonus = 0.0
+        elif view_count is None or average_views is None:
+            base_score = 0.0
+            high_view_bonus = 0.0
         else:
-            base_score = 1.0
-        high_view_bonus = CONTRIBUTION_HIGH_VIEW_BONUS if views > average_views * 2 else 0.0
+            views = float(view_count)
+            if views < average_views * 0.5:
+                base_score = 0.0
+            elif views < average_views * 0.75:
+                base_score = 0.25
+            elif views <= average_views * 2:
+                base_score = 0.5
+            else:
+                base_score = 1.0
+            high_view_bonus = CONTRIBUTION_HIGH_VIEW_BONUS if views > average_views * 2 else 0.0
+        score_before_exclusion = base_score
+        if excluded:
+            base_score = 0.0
+            high_view_bonus = 0.0
         return {
             "base_score": base_score,
             "high_view_bonus": high_view_bonus,
             "score": base_score,
+            "score_before_exclusion": score_before_exclusion,
+            "score_excluded": excluded,
         }
 
     def list_events(self, payload: dict[str, Any]) -> dict[str, Any]:

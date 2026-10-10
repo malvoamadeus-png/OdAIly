@@ -332,6 +332,65 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(asher["high_view_bonus"], 0)
         self.assertEqual(asher["total_score"], 3.25)
 
+    def test_contribution_exclusion_rules_zero_existing_items_and_explain_reason(self) -> None:
+        for source_item_id, title, published_at in (
+            ("exclusion-base", "Baseline", "2026-08-10T08:00:00+08:00"),
+            ("exclusion-regular", "Regular source", "2026-08-10T09:00:00+08:00"),
+            ("exclusion-competitor", "Competitor first", "2026-08-10T10:00:00+08:00"),
+            ("exclusion-normal", "Normal contribution", "2026-08-10T11:00:00+08:00"),
+        ):
+            self.add_reference(source_item_id, title, published_at)
+        self.repository.upsert_source_facts([
+            {"source_item_id": "exclusion-base", "operator_raw": None, "view_count": 100, "is_pushed": 1},
+            {"source_item_id": "exclusion-regular", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+            {"source_item_id": "exclusion-competitor", "operator_raw": "Z", "view_count": 300, "is_pushed": 0},
+            {"source_item_id": "exclusion-normal", "operator_raw": "Z", "view_count": 200, "is_pushed": 0},
+        ])
+        for source_item_id in ("exclusion-regular", "exclusion-competitor", "exclusion-normal"):
+            self.repository.update_newsflash(
+                {
+                    "source_item_id": source_item_id,
+                    "patch": {"is_contribution": True, "contributor_person_key": "asher", "contribution_type": "regular"},
+                },
+                actor_email="test@example.com",
+            )
+
+        before_rules = self.repository.list_contributions({"week_start": "2026-08-10"})
+        before_items = {item["source_item_id"]: item for item in next(group for group in before_rules["groups"] if group["person_key"] == "asher")["items"]}
+        self.assertEqual(before_items["exclusion-regular"]["score"], 0.5)
+        self.assertEqual(before_items["exclusion-competitor"]["score"], 1.0)
+
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                "UPDATE odaily_reference_items SET raw_payload=? WHERE source_item_id=?",
+                (json.dumps({"sourceUrl": "https://x.com/LinChen91162689/status/1"}), "exclusion-regular"),
+            )
+            conn.commit()
+        events = SQLiteCompetitorMonitorRepository(self.path)
+        records = events.upsert_newsflash_items([
+            NewsflashItem(source="blockbeats", source_item_id="b-exclusion", title="Competitor first", content="x", published_at="2026-08-10T09:59:00+08:00"),
+            NewsflashItem(source="odaily", source_item_id="exclusion-competitor", title="Competitor first", content="x", published_at="2026-08-10T10:00:00+08:00"),
+        ])
+        event_id = events.create_event_with_source(records[0])
+        events.assign_item_to_event(EventAssignment(
+            item_id=records[1].id, event_id=event_id, role="supporting", match_method="test",
+            similarity=1.0, matched_item_id=records[0].id, ai_result={}, needs_review=False,
+        ))
+
+        result = self.repository.list_contributions({"week_start": "2026-08-10"})
+        asher = next(group for group in result["groups"] if group["person_key"] == "asher")
+        items = {item["source_item_id"]: item for item in asher["items"]}
+        self.assertEqual(items["exclusion-regular"]["score"], 0)
+        self.assertEqual(items["exclusion-regular"]["score_before_exclusion"], 0.5)
+        self.assertTrue(items["exclusion-regular"]["score_zeroed_by_rules"])
+        self.assertEqual(items["exclusion-regular"]["score_exclusion_reasons"], ["regular_source"])
+        self.assertEqual(items["exclusion-competitor"]["score"], 0)
+        self.assertEqual(items["exclusion-competitor"]["score_before_exclusion"], 1.0)
+        self.assertTrue(items["exclusion-competitor"]["score_zeroed_by_rules"])
+        self.assertEqual(items["exclusion-competitor"]["score_exclusion_reasons"], ["competitor_first"])
+        self.assertEqual(items["exclusion-normal"]["score"], 0.5)
+        self.assertEqual(asher["total_score"], 0.5)
+
     def test_contribution_score_cap_limits_final_score_after_bonus(self) -> None:
         references = [("cap-base", "Baseline", "2026-08-11T08:00:00+08:00")]
         references += [(f"cap-asher-{index}", f"Asher {index}", "2026-08-11T09:00:00+08:00") for index in range(30)]

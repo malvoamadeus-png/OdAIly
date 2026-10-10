@@ -1567,6 +1567,19 @@ body {
   font-weight: 700;
 }
 
+.contributionScoreExcluded td {
+  background: #fff9ed;
+}
+
+.contributionScoreExcluded .contributionItemScore {
+  color: #a15c00;
+}
+
+.contributionScoreReason {
+  color: #a15c00 !important;
+  font-weight: 600;
+}
+
 .contributionRules p + p {
   margin-top: 6px;
 }
