@@ -3587,7 +3587,7 @@ class ModelBriefWriter:
 6. 只写材料中的事实和来源明确表达的观点，不要加入编辑者自己的判断、免责声明或结论性提醒；不要写“上述判断……并非已兑现”“不构成确定性结论”“这一说法来自市场参与者的解读”“风险已经上升”等编辑者总结。信息不足时直接写短，不用空话补长度。
 7. 同一行情事实只保留一次；不同来源的数字只有在口径、时间或来源明确不同且对读者有增量信息时才并列，否则合并或舍弃重复数字。
 8. 不出现 Topic、claim、source、context、聚类、监控账号等后台词，不新增材料之外的事实、因果、动机或数字；外文来源要准确转写为自然中文，专有名词、代码和数字保持原样。
-9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。若材料包含明显不同的叙事层次，必须分成 2 至 4 个自然段：例如先写事件背景或前因，再写价格、市值、交易量等数据变化，最后写社区观点、争议或分歧；只有材料单一且很短时才使用一个自然段。每段围绕一个主要问题展开，不要为了分段切碎同一条因果链。
+9. 正文只使用自然段，不使用项目符号、编号清单、表格或“事实/分析/反应”等固定栏目标题。若材料包含明显不同的叙事层次，必须分成 2 至 4 个自然段，并在 brief 字符串中用换行符分隔：例如把交易机制、上线安排、代币规则、社区争议分别写成段落；只有材料单一且很短时才使用一个自然段。每段围绕一个主要问题展开，不要为了分段切碎同一条因果链。
 
 严格输出 JSON：{{"title":"准确具体的新闻式标题","brief":"信息密度高的自然中文正文","source_claim_ids":["实际使用的 claim_id"]}}
 {merge_guidance}
@@ -3653,9 +3653,53 @@ class ModelBriefWriter:
             source_ids = [row["claim_id"] for row in evidence[:8]]
         return {
             "title": compact(parsed.get("title") or topic["working_title"]),
-            "brief": self._clean_generated_brief(str(parsed.get("brief") or "")),
+            "brief": self._format_generated_brief(model, self._clean_generated_brief(str(parsed.get("brief") or ""))),
             "source_claim_ids": source_ids,
         }
+
+    def _format_generated_brief(self, model: str, brief: str) -> str:
+        if "\n" in brief or len(brief) < 180:
+            return brief
+        prompt = (
+            "只为以下中文热点正文按子话题插入2至4个自然段的换行符。"
+            "不得添加、删除、改写或重排任何文字、标点或空格。"
+            "严格返回 JSON 对象，只有 brief 字段，值为插入换行后的原文。\n"
+            f"原文：{brief}"
+        )
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "reasoning_effort": "none",
+            }).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            raw = self._post_json(request)
+            content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+            formatted = str(self._parse_json(content)["brief"])
+            if len(formatted.splitlines()) >= 2 and formatted.replace("\n", "") == brief:
+                return formatted
+        except (KeyError, TypeError, ValueError, RuntimeError):
+            pass
+        return self._split_long_brief(brief)
+
+    @staticmethod
+    def _split_long_brief(brief: str) -> str:
+        sentences = re.split(r"(?<=[。！？!?])", brief)
+        paragraphs: list[str] = []
+        current = ""
+        for sentence in sentences:
+            if current and len(current) >= 160:
+                paragraphs.append(current)
+                current = ""
+            current += sentence
+        if current:
+            paragraphs.append(current)
+        return "\n".join(paragraphs)
 
     @staticmethod
     def _clean_generated_brief(value: str) -> str:
@@ -3685,6 +3729,10 @@ class ModelBriefWriter:
             for sentence in re.split(r"(?<=[。！？!?])\s*", paragraph):
                 normalized = compact(sentence)
                 if not normalized:
+                    continue
+                if re.match(r"^(?:上述|这些|以上|相关)(?:安排|内容|说法|规则|计划|信息|参数|判断|结论|上线|代币|项目)", normalized) and re.search(
+                    r"(?:不应视为|不能视为|不等同于|并非)(?:[^。！？!?]{0,40})(?:实际结果|已全面上线|已兑现|已得到证实|事实确认)", normalized,
+                ):
                     continue
                 key = re.sub(r"[。！？!?]$", "", normalized)
                 if key in seen:

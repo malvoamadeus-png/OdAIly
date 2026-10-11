@@ -1779,7 +1779,7 @@ class HotTopicService:
             "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) "
             "WHERE t.matching_status='active' AND t.visibility='visible' ORDER BY t.hotness_score DESC,t.last_evidence_at DESC LIMIT 100"
         ).fetchall()
-        topics = [{"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": row["brief"] or "正文生成中",
+        topics = [{"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": self._display_brief(row["brief"]),
                    "startedAt": row["started_at"], "firstSeenAt": row["first_seen_at"],
                    "firstGeneratedAt": row["first_seen_at"], "lastEvidenceAt": row["last_evidence_at"],
                    "lastUpdatedAt": row["last_evidence_at"] or row["first_seen_at"],
@@ -1787,6 +1787,13 @@ class HotTopicService:
                    "briefGeneratedAt": row["generated_at"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"], "velocity": row["participant_velocity"]}}
                   for row in rows]
         return {"generatedAt": iso(utc_now()), "health": self.health(), "topics": topics}
+
+    @staticmethod
+    def _display_brief(value: str | None) -> str:
+        if not value:
+            return "正文生成中"
+        brief = ModelBriefWriter._clean_generated_brief(value)
+        return ModelBriefWriter._split_long_brief(brief) if len(brief) >= 180 and "\n" not in brief else brief
 
     @_serialized
     def topic_detail(self, topic_id: str) -> dict[str, Any] | None:
@@ -1801,7 +1808,7 @@ class HotTopicService:
             "SELECT p.activity_account,p.last_participation_at,ci.source_url FROM topic_participations p "
             "LEFT JOIN content_items ci ON ci.content_item_id=p.last_content_item_id WHERE p.topic_id=? ORDER BY p.last_participation_at DESC", (topic_id,)
         ).fetchall()
-        return {"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": row["brief"] or "正文生成中",
+        return {"id": row["topic_id"], "title": row["title"] or row["working_title"], "brief": self._display_brief(row["brief"]),
                 "firstGeneratedAt": row["first_seen_at"],
                 "lastUpdatedAt": row["last_evidence_at"] or row["first_seen_at"],
                 "hotness": row["hotness_score"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"]},

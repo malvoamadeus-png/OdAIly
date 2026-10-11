@@ -83,6 +83,41 @@ def test_hot_topic_read_models_expose_lifecycle_times(service: HotTopicService) 
     assert detail["lastUpdatedAt"] == last_updated
 
 
+def test_hot_topic_read_models_clean_existing_single_paragraph_brief(service: HotTopicService) -> None:
+    first_generated = "2026-10-11T01:00:00+00:00"
+    original = (
+        "项目方公布PaperTrade交易机制，使用Hyperliquid报价作为参考，由自身LP充当交易对手方。"
+        "项目方预计在网络升级后开放前端交易，并提醒用户提前存入资金。"
+        "项目方还公布单个仓位上限及市场各方向的短时持仓容量，并说明管理员调整参数的权限。"
+        "社区用户称两个钱包在Hyperliquid进行大额交易，同时在PaperTrade建立多头仓位。"
+        "相关用户描述了利用外部价格波动平仓获利的路径，并要求项目方修复报价机制。"
+        "另一则社区转述提供代币铸造与盈利支付队列的参数，但没有描述实际执行结果。"
+        "上述上线安排、代币铸造和偿付规则属于项目方公布或社区转述的计划与参数，"
+        "不应视为已全面上线后的实际结果。"
+    )
+    with service.db:
+        service.db.execute(
+            "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+            "seed_expires_at,last_evidence_at,matching_status,visibility,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("topic:papertrade", "PaperTrade", "PaperTrade", "[]", "event", first_generated, first_generated,
+             first_generated, first_generated, "active", "visible", "permanent"),
+        )
+        service.db.execute(
+            "INSERT INTO brief_revisions VALUES(?,?,?,?,?,?,?,?,?)",
+            ("topic:papertrade", 1, "PaperTrade", original, "[]", "[]", first_generated, "became_visible", "hash"),
+        )
+
+    dashboard_brief = next(item["brief"] for item in service.dashboard()["topics"] if item["id"] == "topic:papertrade")
+    detail = service.topic_detail("topic:papertrade")
+
+    assert detail is not None
+    assert detail["brief"] == dashboard_brief
+    assert len(dashboard_brief.splitlines()) >= 2
+    assert "不应视为已全面上线后的实际结果" not in dashboard_brief
+    assert "社区用户称两个钱包" in dashboard_brief
+    assert service.db.execute("SELECT brief FROM brief_revisions WHERE topic_id='topic:papertrade'").fetchone()[0] == original
+
+
 def test_hidden_topic_is_not_exposed_by_detail_read_model(service: HotTopicService) -> None:
     with service.db:
         service.db.execute(

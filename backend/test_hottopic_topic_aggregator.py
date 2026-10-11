@@ -415,6 +415,64 @@ def test_model_brief_writer_removes_market_interpretation_disclaimer_tail() -> N
     assert brief == "围绕《Snowmoon》的叙事，有人进一步猜测 Vitalik 是在小说中伪装了一份隐私币白皮书。"
 
 
+def test_model_brief_writer_removes_plan_disclaimer_without_dropping_attribution() -> None:
+    brief = ModelBriefWriter._clean_generated_brief(
+        "项目方称PaperTrade计划开放交易。社区称两个钱包利用报价套利。"
+        "上述上线安排、代币铸造和偿付规则属于项目方公布或社区转述的计划与参数，"
+        "不应视为已全面上线后的实际结果。"
+    )
+
+    assert brief == "项目方称PaperTrade计划开放交易。社区称两个钱包利用报价套利。"
+
+
+def test_model_brief_writer_formats_long_single_paragraph_without_rewriting() -> None:
+    writer = ModelBriefWriter(
+        "gpt-5.6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
+    )
+    first = (
+        "项目方公布交易机制，采用Hyperliquid的BBO中间价作为参考，由自身LP作为交易对手方。"
+        "项目方预计在网络升级后开放前端交易，并提醒用户提前存入资金以避开拥堵。"
+        "项目方还公布了单个仓位上限及市场各方向的短时持仓容量。"
+    )
+    second = (
+        "社区称两个钱包在Hyperliquid进行大额交易，同时在PaperTrade建立多头仓位。"
+        "相关用户描述了利用外部价格波动平仓获利的路径，并要求项目方修复报价机制。"
+        "截至这条爆料发布时，项目方尚未确认相关钱包的交易行为。"
+    )
+    calls = []
+
+    def post(request):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        brief = first + second if len(calls) == 1 else first + "\n" + second
+        return {"choices": [{"message": {"content": json.dumps({
+            "title": "PaperTrade机制与社区爆料", "brief": brief, "source_claim_ids": ["claim:1"],
+        }, ensure_ascii=False)}}]}
+
+    writer._post_json = post  # type: ignore[method-assign]
+    result = writer._write_with_model("gpt-5.6-luna", "prompt", {"working_title": "PaperTrade"}, [  # type: ignore[arg-type]
+        {"claim_id": "claim:1"},
+    ])
+
+    assert result["brief"] == first + "\n" + second
+    assert len(calls) == 2
+
+
+def test_model_brief_writer_falls_back_when_formatter_rewrites_text() -> None:
+    writer = ModelBriefWriter(
+        "gpt-5.6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
+    )
+    brief = "项目方公布交易机制、上线安排和代币规则。" * 8 + "社区用户提出报价套利指称。" * 8
+
+    def post(_request):
+        return {"choices": [{"message": {"content": json.dumps({"brief": "已改写的内容。"})}}]}
+
+    writer._post_json = post  # type: ignore[method-assign]
+    formatted = writer._format_generated_brief("gpt-5.6-luna", brief)
+
+    assert len(formatted.splitlines()) >= 2
+    assert formatted.replace("\n", "") == brief
+
+
 def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_path: Path) -> None:
     now = datetime(2026, 9, 25, tzinfo=UTC)
     aggregator = TopicAggregator(tmp_path / "topics.sqlite")
