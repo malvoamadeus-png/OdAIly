@@ -14,31 +14,20 @@ from .fast_evidence import (
 )
 
 
-TRENDING_SCRIPT = """async ({jwt, networks, timeoutMs}) => {
-  return await new Promise((resolve, reject) => {
-    const ws = new WebSocket('wss://prod-api.fomo.family/ws');
-    const timer = setTimeout(() => done(new Error('snapshot_timeout')), timeoutMs);
-    let finished = false;
-    function done(error, value) {
-      if (finished) return;
-      finished = true; clearTimeout(timer); ws.close();
-      if (error) reject(error); else resolve(value);
-    }
-    ws.onmessage = event => {
-      let message; try { message = JSON.parse(event.data); } catch (_) { return; }
-      if (message.type === 'challenge') ws.send(JSON.stringify({type:'challengeResponse', jwt}));
-      if (message.type === 'challengeAccepted') ws.send(JSON.stringify({
-        type:'subscribe', topicType:'trending_tokens', topicId:networks.join(',')
-      }));
-      if (message.type === 'error') done(new Error('trending_auth_or_subscription_failed'));
-      if (message.type === 'data' && message.topicType === 'trending_tokens'
-          && message.payload?.kind === 'snapshot' && Array.isArray(message.payload.tokens))
-        done(null, message.payload.tokens);
-    };
-    ws.onerror = () => done(new Error('websocket_failed'));
-    ws.onclose = () => { if (!finished) done(new Error('websocket_closed')); };
-  });
-}"""
+def trending_snapshot(raw: str | bytes) -> list[dict] | None:
+    try:
+        message = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(message, dict):
+        return None
+    topic = set(str(message.get('topicId') or '').split(','))
+    payload = message.get('payload') or {}
+    if (message.get('type') == 'data' and message.get('topicType') == 'trending_tokens'
+            and {'56','1399811149'} <= topic and isinstance(payload, dict)
+            and payload.get('kind') == 'snapshot' and isinstance(payload.get('tokens'), list)):
+        return payload['tokens']
+    return None
 
 
 def normalize_tokens(entries: list[dict]) -> list[dict]:
@@ -84,14 +73,15 @@ def run(request: dict) -> dict:
             try:
                 page = context.pages[0] if context.pages else context.new_page()
                 page.route('**/*', _block_heavy_resources)
-                auth = {}
-                def capture(response):
-                    if response.status != 200 or not response.url.startswith('https://prod-api.fomo.family/v2/users'):
-                        return
-                    value = response.request.headers.get('authorization', '')
-                    if value.startswith('Bearer '):
-                        auth['jwt'] = value[7:]
-                page.on('response', capture)
+                snapshot = {}
+                def capture_frame(raw):
+                    entries = trending_snapshot(raw)
+                    if entries is not None and 'tokens' not in snapshot:
+                        snapshot['tokens'] = entries
+                def capture_socket(socket):
+                    if socket.url.startswith('wss://prod-api.fomo.family/ws'):
+                        socket.on('framereceived', capture_frame)
+                page.on('websocket', capture_socket)
                 page.goto(FOMO_ENTRY_URL, wait_until='domcontentloaded', timeout=30000)
                 if operation == 'thesis':
                     page.wait_for_timeout(1500)
@@ -100,11 +90,11 @@ def run(request: dict) -> dict:
                         raise RuntimeError(str(response.get('code') or 'thesis_failed'))
                     return {'items': _fomo_items(response.get('body'))}
                 deadline = time.monotonic() + 35
-                while not auth and time.monotonic() < deadline:
+                while 'tokens' not in snapshot and time.monotonic() < deadline:
                     page.wait_for_timeout(250)
-                if not auth:
-                    raise RuntimeError('authenticated_session_unavailable')
-                entries = page.evaluate(TRENDING_SCRIPT, {'jwt':auth['jwt'], 'networks':[56,1399811149], 'timeoutMs':20000})
+                if 'tokens' not in snapshot:
+                    raise RuntimeError('complete_trending_snapshot_unavailable')
+                entries = snapshot['tokens']
                 return {'status':'success', 'complete_chains':['bsc','solana'],
                         'observed_at':datetime.now(timezone.utc).isoformat(),
                         'tokens':normalize_tokens(entries)}
