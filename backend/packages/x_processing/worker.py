@@ -60,10 +60,12 @@ from .publisher_config import (
     profile_key_for_task,
 )
 from .prompt_rules import (
+    EVENT_TRACKING_WRITER_RULES,
     X_ARTICLE_RULE_MARKER,
     X_ARTICLE_WRITER_CONTEXT,
     X_ARTICLE_WRITER_RULES,
     is_x_article_content_format,
+    validate_event_tracking_attribution,
 )
 from .repository import XProcessingRepository
 from .searcher import (
@@ -1110,6 +1112,8 @@ class XProcessingWorker:
             known_subjects=known_subjects,
             feature_mode_enabled=prompt.feature_mode_enabled,
         )
+        if task.source == EVENT_TRACKING_SOURCE:
+            validate_event_tracking_attribution(structured.draft.content)
         if self._event_tracking_cancelled(task.id):
             return
         self.repository.complete_write(
@@ -1763,6 +1767,41 @@ def build_writer_prompt(
         if structured_output
         else "请严格输出一行标题、空一行、正文。不要输出解释。"
     )
+    if task.source == EVENT_TRACKING_SOURCE:
+        event_context = task.metadata.get("event_tracking")
+        event_context = event_context if isinstance(event_context, dict) else {}
+        official_post = task.raw_payload.get("official_post")
+        official_post = official_post if isinstance(official_post, dict) else {}
+        author = (
+            task.metadata.get("author_display_name")
+            or official_post.get("author_name")
+            or official_post.get("account_name")
+            or task.metadata.get("author_username")
+            or event_context.get("official_handle")
+            or "官方账号"
+        )
+        handle = str(
+            task.metadata.get("author_username")
+            or official_post.get("author_screen_name")
+            or event_context.get("official_handle")
+            or ""
+        ).lstrip("@")
+        writing_context = {key: event_context[key] for key in (
+            "fact_summary", "difference_from_timeline", "confirmed_facts", "unconfirmed_claims",
+        ) if event_context.get(key)}
+        return (
+            f"{render_prompt_content(prompt)}\n\n"
+            f"{EVENT_TRACKING_WRITER_RULES}\n\n"
+            "【正在追踪的事件与本次进展（参考，不作为新增信源）】\n"
+            f"事件标题：{task.title or ''}\n"
+            f"{json.dumps(writing_context, ensure_ascii=False)}\n\n"
+            "【本次播报：官方原帖】\n"
+            f"发布人：{author}\n"
+            f"官方账号：@{handle}\n"
+            f"来源链接：{task.source_url or ''}\n"
+            f"原文内容：{task.content}\n\n"
+            f"{output_instruction}"
+        )
     if is_jin10_task(task):
         return (
             f"{render_prompt_content(prompt)}\n\n"

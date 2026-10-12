@@ -98,6 +98,7 @@ def test_event_tracking_dispatcher_creates_one_prejudged_task_and_reuses_tweet_i
     post = {
         "tweet_id": "official-tweet-91",
         "account_screen_name": "GIWAofficial",
+        "author_name": "GIWA",
         "created_at_iso": "2026-09-28T08:01:00+00:00",
         "url": "https://x.com/GIWAofficial/status/official-tweet-91",
         "expanded_text": "We froze a portion of the funds.",
@@ -114,6 +115,8 @@ def test_event_tracking_dispatcher_creates_one_prejudged_task_and_reuses_tweet_i
         pipeline = connection.execute("SELECT news_type,judge_output FROM x_task_pipeline WHERE task_id=?", (first,)).fetchone()
     assert row[:3] == (EVENT_TRACKING_SOURCE, "official-tweet-91", "judged")
     assert json.loads(row[3])["event_tracking"]["auto_publish"] is True
+    assert json.loads(row[3])["author_display_name"] == "GIWA"
+    assert json.loads(row[3])["author_username"] == "GIWAofficial"
     assert pipeline[0] == "onchain"
     assert json.loads(pipeline[1])["rule_set"] == "event_tracking_material_progress"
 

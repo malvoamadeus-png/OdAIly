@@ -495,6 +495,8 @@ class SQLiteEventTrackingTaskDispatcher:
         tweet_id = str(post["tweet_id"])
         metadata = {
             "source_kind": EVENT_TRACKING_SOURCE,
+            "author_display_name": post.get("author_name") or post.get("account_name") or "",
+            "author_username": post.get("author_screen_name") or post.get("account_screen_name") or update["handle_lower"],
             "event_tracking": {
                 "event_id": event["event_id"],
                 "cycle_id": cycle["cycle_id"],
