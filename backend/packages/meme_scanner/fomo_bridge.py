@@ -67,6 +67,7 @@ def run(request: dict) -> dict:
     if operation == 'health':
         return {'ready': True, 'browser': 'on_demand'}
     chain = str(request.get('chain') or '').lower()
+    chain = {'sol': 'solana', 'eth': 'ethereum'}.get(chain, chain)
     address = str(request.get('token_address') or '')
     if operation == 'thesis' and (chain not in FOMO_NETWORK_IDS or not address or len(address) > 64):
         raise ValueError('invalid thesis target')
