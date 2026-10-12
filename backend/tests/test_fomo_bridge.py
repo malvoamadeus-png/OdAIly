@@ -1,9 +1,15 @@
 import json
 import unittest
-from packages.meme_scanner.fomo_bridge import normalize_tokens, trending_snapshot
+from packages.meme_scanner.fomo_bridge import normalize_tokens, trending_snapshot, normalize_theses
 
 
 class BridgeTests(unittest.TestCase):
+    def test_thesis_prose_has_no_nested_market_payload(self):
+        items = normalize_theses([{'id':'x','comment':{'comment':'hello','marketCapAtCreation':100},'authorTrade':{'usdValue':10}}])
+        self.assertEqual(items[0]['comment'],'hello')
+        self.assertNotIn('marketCapAtCreation',json.dumps(items))
+        self.assertNotIn('authorTrade',json.dumps(items))
+
     def test_only_complete_snapshot_for_both_chains(self):
         message = {'type':'data','topicType':'trending_tokens','topicId':'1,56,1399811149',
                    'payload':{'kind':'snapshot','tokens':[]}}

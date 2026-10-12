@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from .browser_lock import exclusive_browser
 from .fast_evidence import (
     FOMO_ENTRY_URL, FOMO_NETWORK_IDS, _block_heavy_resources,
-    _fomo_page_fetch, _fomo_items, _fomo_profile_dir,
+    _fomo_page_fetch, _fomo_items, _fomo_profile_dir, _fomo_statement,
 )
 
 
@@ -48,6 +48,13 @@ def normalize_tokens(entries: list[dict]) -> list[dict]:
             'market_cap_usd': entry.get('marketCap', token.get('marketCap')),
         }
     return list(result.values())
+
+
+def normalize_theses(items: list[dict]) -> list[dict]:
+    # Nested FOMO comments contain price/cap/trade data. Return public prose
+    # only, preserving the collector's text interface and blind evaluation.
+    return [{key:item.get(key) for key in ('id','createdAt','userHandle','displayName')}
+            | {'comment':_fomo_statement(item)} for item in items if _fomo_statement(item)]
 
 
 def run(request: dict) -> dict:
@@ -88,7 +95,7 @@ def run(request: dict) -> dict:
                     response = _fomo_page_fetch(page, contract=address, network_id=FOMO_NETWORK_IDS[chain], last_id=None, timeout_ms=15000)
                     if not response.get('ok'):
                         raise RuntimeError(str(response.get('code') or 'thesis_failed'))
-                    return {'items': _fomo_items(response.get('body'))}
+                    return {'items': normalize_theses(_fomo_items(response.get('body')))}
                 deadline = time.monotonic() + 35
                 while 'tokens' not in snapshot and time.monotonic() < deadline:
                     page.wait_for_timeout(250)
