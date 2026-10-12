@@ -316,6 +316,8 @@ export type XAgentAccount = {
   hotTopicEnabled: boolean;
   marketSentimentEnabled: boolean;
   projectPromotionEnabled: boolean;
+  cumulativeContentCount: number;
+  cumulativeHotTopicCount: number;
   lastPolledAt: string | null;
   lastSuccessAt: string | null;
   lastAnalyzedAt: string | null;

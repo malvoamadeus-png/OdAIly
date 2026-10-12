@@ -65,6 +65,30 @@ def service(tmp_path: Path) -> HotTopicService:
     return HotTopicService(tmp_path / "x-agent.sqlite", workers=1)
 
 
+def test_account_directory_preserves_collection_and_hot_topic_counts(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        fresh = value.add_x_agent_account("alice")
+        assert fresh["cumulativeContentCount"] == 0
+        assert fresh["cumulativeHotTopicCount"] == 0
+        with value.db:
+            value.db.execute(
+                "UPDATE hottopic_accounts SET cumulative_content_count=123,cumulative_hot_topic_count=0 "
+                "WHERE screen_name_lower='alice'"
+            )
+        row = value.list_x_agent_accounts(query="alice")["items"][0]
+        assert row["cumulativeContentCount"] == 123
+        assert row["cumulativeHotTopicCount"] == 0
+        with value.db:
+            value.db.execute("UPDATE hottopic_accounts SET cumulative_hot_topic_count=7")
+        updated = value.set_x_agent_subscriptions(["alice"], {"market_sentiment_enabled": True})[0]
+        assert updated["cumulativeContentCount"] == 123
+        assert updated["cumulativeHotTopicCount"] == 7
+        assert value.list_x_agent_accounts()["items"][0]["cumulativeHotTopicCount"] == 7
+    finally:
+        value.close()
+
+
 def test_existing_hottopic_sqlite_receives_additive_x_agent_migration(tmp_path: Path) -> None:
     path = tmp_path / "legacy.sqlite"
     legacy = sqlite3.connect(path)

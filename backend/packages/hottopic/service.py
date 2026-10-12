@@ -620,7 +620,8 @@ class HotTopicService:
         total = int(self.db.execute(f"SELECT COUNT(*) FROM hottopic_accounts{where}", params).fetchone()[0])
         rows = self.db.execute(
             "SELECT screen_name,screen_name_lower,display_name,status,hot_topic_enabled,market_sentiment_enabled,"
-            "project_promotion_enabled,last_polled_at,last_success_at,last_error,last_x_agent_analyzed_at,last_x_agent_error "
+            "project_promotion_enabled,cumulative_content_count,cumulative_hot_topic_count,"
+            "last_polled_at,last_success_at,last_error,last_x_agent_analyzed_at,last_x_agent_error "
             f"FROM hottopic_accounts{where} "
             "ORDER BY hot_topic_enabled DESC,market_sentiment_enabled DESC,project_promotion_enabled DESC,screen_name_lower "
             "LIMIT ? OFFSET ?",
@@ -713,6 +714,8 @@ class HotTopicService:
             "hotTopicEnabled": bool(row.get("hot_topic_enabled")),
             "marketSentimentEnabled": bool(row.get("market_sentiment_enabled")),
             "projectPromotionEnabled": bool(row.get("project_promotion_enabled")),
+            "cumulativeContentCount": int(row.get("cumulative_content_count") or 0),
+            "cumulativeHotTopicCount": int(row.get("cumulative_hot_topic_count") or 0),
             "lastPolledAt": row.get("last_polled_at"),
             "lastSuccessAt": row.get("last_success_at"),
             "lastError": row.get("last_error"),

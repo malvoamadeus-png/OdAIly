@@ -289,7 +289,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [tab, setTab] = useState<XAgentTab>(
     initialTab === 'hot_topic' || initialTab === 'auto_newsflash' || initialTab === 'accounts' || initialTab === 'market_sentiment' || initialTab === 'project_promotion'
       ? initialTab
-      : 'accounts',
+      : 'hot_topic',
   );
   const [hotTopicRefreshToken, setHotTopicRefreshToken] = useState(0);
   const [autoNewsflashRefreshToken, setAutoNewsflashRefreshToken] = useState(0);
@@ -804,12 +804,14 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         </div>
         {accountsError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {accountsError}</div>}
         <div className="xAgentTableWrap" role="table">
-          <div className="xAgentAccountHead" role="row"><span>账号</span><span>热点话题</span><span>市场情绪</span><span>项目推介</span><span>最近采集</span><span>最近分析</span></div>
+          <div className="xAgentAccountHead" role="row"><span>账号</span><span title="累计去重收录的发言条数，不随短期原帖清理减少">收录发言</span><span title="包含该账号的不同永久热点话题数">热点包含数</span><span>热点话题</span><span>市场情绪</span><span>项目推介</span><span>最近采集</span><span>最近分析</span></div>
           {!accountsLoading && accounts.length === 0 && <div className="emptyState">没有匹配的账号。</div>}
           {accounts.map((account) => {
             const accountError = combineErrors(account);
             return <div className="xAgentAccountRow" key={account.screenName} role="row">
               <div className="xAgentAccountIdentity"><a href={accountUrl(account)} target="_blank" rel="noreferrer">@{account.screenName}</a>{account.displayName && <span>{account.displayName}</span>}{accountError && <small title={accountError}><CircleAlert size={13} /> {accountError}</small>}</div>
+              <span>{account.cumulativeContentCount?.toLocaleString() ?? '-'}</span>
+              <span>{account.cumulativeHotTopicCount?.toLocaleString() ?? '-'}</span>
               <AccountSubscriptionToggle account={account} field="hotTopicEnabled" label="热点话题" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'hotTopicEnabled'))} onChange={saveSubscriptionChange} />
               <AccountSubscriptionToggle account={account} field="marketSentimentEnabled" label="市场情绪" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'marketSentimentEnabled'))} onChange={saveSubscriptionChange} />
               <AccountSubscriptionToggle account={account} field="projectPromotionEnabled" label="项目推介" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'projectPromotionEnabled'))} onChange={saveSubscriptionChange} />

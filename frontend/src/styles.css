@@ -255,8 +255,8 @@ button.xAgentMetric {
 
 .xAgentAccountHead,
 .xAgentAccountRow {
-  grid-template-columns: minmax(210px, 2fr) 104px 104px 104px minmax(122px, 1fr) minmax(122px, 1fr);
-  min-width: 860px;
+  grid-template-columns: minmax(210px, 2fr) 80px 90px 104px 104px 104px minmax(122px, 1fr) minmax(122px, 1fr);
+  min-width: 1050px;
 }
 
 .xAgentMarketHead,
