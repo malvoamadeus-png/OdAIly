@@ -189,3 +189,41 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12)
     report['coverage']={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
     store.save_global('test_mining_progress',report,[])
     return report
+
+
+def preview_cases(store: NewsStore, *, limit: int = 15) -> dict[str, Any]:
+    """Choose representative real cases and write review copy without tasks/push."""
+    from packages.common.config import load_x_processing_settings
+    from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
+    from packages.x_processing.worker import XProcessingWorker
+    from packages.x_processing.models import TaskRecord, HYPERLIQUID_SOURCE
+    from .copy import source_url
+    from .preview import generate_preview
+    if not 1 <= limit <= 30:
+        raise ValueError('Preview limit must be 1..30')
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        rows=conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
+    events=[json.loads(r[0]) for r in rows]
+    settings=load_x_processing_settings()
+    worker=XProcessingWorker(stage='write',repository=SQLiteXProcessingRepository(store.path),settings=settings)
+    prompt=worker.repository.get_active_prompt('hyperliquid_writer')
+    selected=[]; covered=set()
+    for scenario in SCENARIOS:
+        if scenario[0] in covered:continue
+        match=next((e for e in events if scenario[0] in case_scenarios(e)),None)
+        if match and match['key'] not in {e['key'] for e in selected}:
+            selected.append(match);covered.update(case_scenarios(match))
+    selected=selected[:limit]
+    report={'selected':len(selected),'generated':0,'failed':{},'coverage':sorted(covered)}
+    for event in selected:
+        try:
+            task=TaskRecord(id=0,source=HYPERLIQUID_SOURCE,source_item_id=event['key'],source_url=source_url(event),
+                            title=None,content='',raw_payload=event)
+            result=generate_preview(task=task,prompt=prompt,settings=settings,ai_client=worker._get_ai_client())
+            store.save_global('editorial_preview:'+event['key'],result,[])
+            report['generated']+=1
+            print(encode({'event_key':event['key'],'scenarios':case_scenarios(event),'title':result['title']}),flush=True)
+        except Exception as exc:report['failed'][event['key']]=str(exc)
+    store.save_global('test_preview_progress',report,[])
+    return report

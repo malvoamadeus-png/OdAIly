@@ -226,3 +226,5 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 ## 上线前真实案例挖掘（临时验收工具）
 
 历史成交重建只用于本次上线前补足案例和调整规则，不接入 `NewsMonitor.run_once`，不改变常规监测路线。命令 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 单独保存真实地址的历史操作到 `hl_news_test_cases`；完整行为证据、属性截止时间与执行价折算口径均保留。正常采集状态不被回放覆盖，测试回放不调用发布接口。控制台按 dataset 展示，不能把历史试稿当作当前新闻。
+
+测试稿命令 `hyperliquid-news preview-test-cases --limit 15` 对已覆盖方向挑选代表案例并生成独立 Prompt 编辑预览，复用固定数据组装，仅保存本地管理后台预览。正式搜索者查重、编写者2与发布阶段没有运行，不能据此认定正式投递链路测试完成。

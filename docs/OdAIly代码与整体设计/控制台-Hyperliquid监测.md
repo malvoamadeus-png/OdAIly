@@ -37,3 +37,5 @@
 场景页增加“正常监测 / 上线前测试案例”切换，接口 `dataset=live|test` 默认 live。测试案例独立写入 `hl_news_test_cases`，不进入候选、tasks、投递或正式地址基线。固定方向的计数、分页针对所选数据集计算。历史事实标注发生时间、重建来源与金额折算口径；缺少历史浮盈亏、清算价时不补造。历史回放仅用于上线前规则与文本验收，不作为常规地址监测方法。
 
 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 顺序获取官方多周期盈利/亏损榜地址的近期保留成交样本，按成交前仓位连续性与一小时动作窗口识别真实开平仓、加减仓、反手、兑现、实际清算，并使用动作发生前的成交计算历史属性。请求及进度缓存在独立 `test_fills:*` / `test_mining_progress` metadata，可限量重复运行。数量断裂、同时间顺序歧义不拼接成完整交易轮。窗口金额按末笔成交价折算，不能当作历史标记价快照。新观察时间不能凭历史建仓时间补造。
+
+`hyperliquid-news preview-test-cases --limit 15` 为各已覆盖方向选择代表性真实案例，用独立 Hyperliquid Prompt 生成编辑预览。结果存入 `editorial_preview:{test事件key}`，页面展示标题正文、模型和 Prompt 版本。不会创建 task、不运行正式查重或编写者2、不挂外部后台；它是文稿预览，不代表完整发稿链路已经验收。
