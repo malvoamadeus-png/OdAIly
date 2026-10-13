@@ -97,3 +97,7 @@
 因此可以直接按周/月等周期分别取盈利和亏损端的候选，不需要遍历这些地址后再计算榜单。新代码保留官方 PnL、周期、排名和观测时间，也将其作为独立官方盈利亮点，不能混称为自行计算的已实现盈亏。榜单整体账户属性不能替代某资产专项表现。
 
 额外核验 [官方 Python SDK 的 `portfolio`](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/info.py)，实际返回 `day / week / month / allTime / perpDay / perpWeek / perpMonth / perpAllTime` 及 `pnlHistory / accountValueHistory / vlm`。本次样本的 `perp*` 与排行榜窗口数字不能直接对齐；未进一步确认 builder DEX 覆盖和榜单的口径对应关系。因此当前直接保留公开榜单原始 PnL，不用 `portfolio` 换算出一个声称等价的榜单收益。
+
+## 官方服务器免费市值接口补验
+
+2026-10-13，odaily-official / root / /opt/OdAIly 通过现有 CoinGeckoMarketCaps 适配请求免费 coins/markets（未提供 API key），精确映射 bitcoin/ethereum/hyperliquid，成功取得三个币种 market_cap 和 last_updated，且通过缓存时效验证。此前本机超时不再作为市值能力未验证结论。真实映射仍需逐币确认；不把美股、贵金属、原油映射成同名代币。

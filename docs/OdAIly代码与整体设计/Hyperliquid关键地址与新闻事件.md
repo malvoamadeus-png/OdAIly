@@ -101,7 +101,7 @@ HTTP 采集以保守估算将本客户端限制到 600 request-weight/分钟，�
 | 方向 | 底层状态 | 数据与验证边界 |
 |---|---|---|
 | 巨大持仓金额、OI 占比 | 已实现；接口与离线验证 | OI 名义金额为 `openInterest × markPx`，只提供描述性占比 |
-| 持仓相当于市值比例 | CoinGecko 适配与离线测试已实现 | 免费 Demo 文档已确认；本机真实查询超时，尚未完成实网验证；精确 coin ID 映射需配置 |
+| 持仓相当于市值比例 | CoinGecko 适配与离线测试已实现 | 官方服务器免费无 key 接口已真实返回 BTC/ETH/HYPE 市值；精确 coin ID 映射需配置 |
 | 巨额浮盈浮亏 | 已实现；接口与离线验证 | 首次建立基线，数量不变的仓位可因后续盈亏变化跨线触发 |
 | 单资产高胜率地址操作 | 已实现；成交字段与离线验证 | 限于取得的完整轮，固定附轮数与实际时间范围 |
 | 单资产高盈利地址操作 | 已实现；成交字段与离线验证 | 所观察成交已实现盈亏，不是可证明的全历史盈利 |
@@ -160,7 +160,7 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 
 `NewsMonitor` 可传入 `market_cap_client` 和 `market_cap_mapping`，例如主 DEX BTC 精确映射 `bitcoin`；未显式映射的合约不请求、不猜测，不能凭 ticker 同名就对应代币。黄金、美股、原油不走加密币市值映射。每批最多 250 个唯一 CoinGecko ID，默认缓存 1 小时，并验证 provider 的 `last_updated`；null、零值、过期数据和未知 ID 均不成为占比分母。HTTP 失败只记录 `market_caps:coingecko` 并跳过市值占比，其余持仓/盈亏方向继续。
 
-市值证据保存 CoinGecko ID、数据来源、请求时间、供应商更新时间；缓存写 `hl_news_metadata.coingecko_market_caps`。目前测试验证适配、映射、缓存、过期和失败处理；真实 CoinGecko 请求在本机网络连接超时，不能宣称市值已能稳定实时取得。调研记录见 `docs/讨论与修改日志/调研与测试/2026-10-13-Hyperliquid市值与单资产统计数据源.md`。
+市值证据保存 CoinGecko ID、数据来源、请求时间、供应商更新时间；缓存写 `hl_news_metadata.coingecko_market_caps`。测试验证适配、映射、缓存、过期和失败处理；此前本机连接超时，后续在官方服务器通过免费无 key 接口实际取得 bitcoin / ethereum / hyperliquid 市值及供应商更新时间。已验证可取得，不代表所有币种已完成映射或长期稳定性已验证。调研记录见 `docs/讨论与修改日志/调研与测试/2026-10-13-Hyperliquid市值与单资产统计数据源.md`。
 
 
 ## 限量测试与写作接入（2026-10-13）
