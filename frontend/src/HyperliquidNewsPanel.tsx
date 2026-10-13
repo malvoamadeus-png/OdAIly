@@ -40,7 +40,7 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
         <div><dt>连续亏损轮数</dt><dd>{asset.consecutive_losing_rounds ?? '未取得'}</dd></div>
         <div><dt>实际成交样本范围</dt><dd>{time(history.first_observed_fill_ms)} 至 {time(history.last_observed_fill_ms)}</dd></div></>}
       {history.account_closed_pnl_less_fees != null && <div><dt>账户历史已实现盈亏</dt><dd>{money(history.account_closed_pnl_less_fees)}</dd></div>}
-      {history.official_account_performance && Object.entries(history.official_account_performance.windows).map(([window, data]) => <div key={window}><dt>官方榜单 PnL · {{ day: '近1天', week: '近7天', month: '近30天', allTime: '全部时间' }[window] || window}</dt><dd>{money((data as any).pnl)} · 排名 {(data as any).rank}</dd></div>)}
+      {history.official_account_performance && Object.entries(history.official_account_performance.windows).map(([window, data]) => <div key={window}><dt>官方周期 PnL · {{ day: '近1天', week: '近7天', month: '近30天', allTime: '全部时间' }[window] || window}</dt><dd>{money((data as any).pnl)}{(data as any).rank != null ? ` · 排名 ${(data as any).rank}` : ''} · {time((data as any).observed_ms)}</dd></div>)}
       {e.actions?.liquidated_notional && Number(e.actions.liquidated_notional) > 0 && <div><dt>实际清算成交</dt><dd>{money(e.actions.liquidated_notional)}</dd></div>}
       {e.actions && <><div><dt>本次取得开 / 平仓成交</dt><dd>{money(e.actions.open_notional)} / {money(e.actions.close_notional)}</dd></div><div><dt>本次成交已实现盈亏</dt><dd>{money(e.actions.closed_pnl)}</dd></div></>}
       {p?.liquidation && <div><dt>当前清算价</dt><dd>{Number(p.liquidation).toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 美元</dd></div>}
@@ -84,7 +84,9 @@ function eventChange(event: HyperliquidNewsEvent) {
 
 function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: Record<string, string> }) {
   const p = event.pipeline, preview = event.editorial_preview;
-  const stages = [
+  const stages = event.evidence.test_replay ? [
+    ['规则核验', '已取得测试证据'], ['编辑预览', preview ? '已生成' : '待生成'], ['正式投递', '测试不投递'],
+  ] : [
     ['硬规则', '已命中'], ['行为防重', p.dispatch_status ? statuses[p.dispatch_status] || p.dispatch_status : '待处理'],
     ['搜索者查重', p.search_completed_at ? p.search_result?.is_duplicate ? '重复' : '已完成' : '待处理'],
     ['编写者1', p.write_completed_at ? '已完成' : '待处理'], ['编写者2', p.format_completed_at ? '已完成' : '待处理'],
@@ -100,8 +102,8 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
       <details><summary>搜索者跨来源查重记录</summary><p className="hlMuted">与已收集的 X 动态及已有快讯查重，包括 Lookonchain 等来源。</p>{p.search_result && Object.keys(p.search_result).length ? <><p>{p.search_result.is_duplicate ? '重复，停止后续写稿' : p.search_completed_at ? '查重通过' : '待完成'} · {time(p.search_completed_at)}</p><pre>{JSON.stringify(p.search_result, null, 2)}</pre></> : <p className="hlMuted">暂无查重记录</p>}</details>
       {(p.last_error || p.dispatch_error) && <p className="notice error" role="alert">{p.last_error || p.dispatch_error}</p>}
     </section>
-    <section className="hlDetailSection"><h4><FileText size={16} />快讯文本<span className="hlMuted">仅挂后台</span></h4>
-      {preview && <p className="hlMuted">{event.news_eligibility?.eligible === false ? '历史文本试稿' : '修订预览'} · 沿用原观察时点事实 · 未重新挂后台</p>}
+<section className="hlDetailSection"><h4><FileText size={16} />快讯文本<span className="hlMuted">{event.evidence.test_replay ? '管理页预览 · 未投递' : '仅挂后台'}</span></h4>
+      {preview && <p className="hlMuted">{event.evidence.test_replay ? '测试稿预览' : event.news_eligibility?.eligible === false ? '历史文本试稿' : '修订预览'} · 沿用原观察时点事实 · 未重新挂后台</p>}
       <div className="hlNewsCopy"><h3>{preview?.title || p.final_title || p.draft_title || '暂未生成快讯'}</h3><p className="hlCopy">{preview?.content || p.final_content || p.draft_content || '后续文本将在这里展示。'}</p></div>
       <p className="hlMuted">模型：{preview?.writer_model || p.writer_model || '—'} · Prompt 版本：{preview?.prompt_version_number || p.prompt_version_number || '—'}</p>
       <a className="hlSourceLink" href={event.source_url} target="_blank" rel="noreferrer">查看 Hyperbot 地址 <ArrowRight size={14} /></a>
@@ -131,7 +133,7 @@ export function HyperliquidNewsPanel() {
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
     <div className="autoNewsflashSummary">
-      {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, '监测记录', data?.counts.events ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, '已投递任务', data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
+      {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, dataset === 'test' ? '测试案例' : '监测记录', (dataset === 'test' ? data?.counts.test_cases : data?.counts.events) ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, dataset === 'test' ? '已有案例方向' : '已投递任务', dataset === 'test' ? data?.scenarios.filter(s => s.count > 0).length ?? '—' : data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
     <div className="hlToolbar"><div className="segmentedControl">{[['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
     {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
