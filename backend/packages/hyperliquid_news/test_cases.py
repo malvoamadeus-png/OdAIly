@@ -190,7 +190,7 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
                 fills=client._post_info({'type':'userFills','user':address,'aggregateByTime':False})
                 if not isinstance(fills,list):raise ValueError('Unexpected fills')
                 store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,'source':'userFills_latest_retained_sample'},[])
-            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)
+            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills)
             save_cases(store,cases)
             report['processed']+=1
             report['case_count']+=len(cases)
@@ -290,7 +290,7 @@ def replay_execution_prices(address: str, fills: list[dict[str, Any]], *, rules:
                 if b and cost<=0:break
                 floating=b*(px-cost) if b else ZERO
                 p=Position(coin,b,abs(b)*px,px,floating,None) if b else None
-                hist=summarize(preceding,start_ms=0,end_ms=t-1)
+                hist={}  # Price/size rules do not require expensive history statistics.
                 # Reprice unchanged exposure immediately before the next fill.
                 events,state=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
                     positions={coin:p} if p else {},previous=state,markets={},history=hist,new_fills=[],rules=rules)
@@ -337,12 +337,71 @@ def replay_cached_cases(store: NewsStore) -> dict[str, Any]:
     initialize_cases(store)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'").fetchall()
+    copy_observed_case_examples(store)
     report={'addresses':len(rows),'cases':0,'failed':{}}
     for row in rows:
         address=row['key'].split(':',1)[1]
         try:
             fills=json.loads(row['payload'])['fills']
-            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)
+            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills)
             save_cases(store,cases);report['cases']+=len(cases)
+            print(encode({'address':address,'cases':len(cases),'mode':'cached_test_replay'}),flush=True)
         except Exception as exc:report['failed'][address]=str(exc)
     return report
+
+
+def replay_test_startup(address: str, fills: list[dict], *, rules: Rules | None = None) -> list[dict]:
+    """Real opening actions with an explicitly simulated historical monitor start.
+
+    This tests startup behavior, not wallet creation age or our actual discovery.
+    Only a first observed zero-position fill can establish the empty test baseline.
+    """
+    rules=rules or Rules()
+    valid=sorted([f for f in fills if valid_test_fill(f)],key=lambda f:int(f['time']))
+    if not valid:return []
+    start=int(valid[0]['time'])
+    grouped={}
+    for f in valid:
+        if int(f['time'])-start<=rules.new_address_window_ms:grouped.setdefault(f['coin'],[]).append(f)
+    results=[]
+    for coin,raw in grouped.items():
+        ordered=_ordered_by_position(raw)
+        if not ordered or number(ordered[0]['startPosition'])!=0 or any(f.get('_ambiguous_order') for f in ordered):continue
+        expected=ZERO
+        for f in ordered:
+            if number(f['startPosition'])!=expected:break
+            expected+=number(f['sz']) if f['side']=='B' else -number(f['sz'])
+        else:
+            last=ordered[-1];px=number(last['px']);t=int(last['time'])
+            if not expected:continue
+            p=Position(coin,expected,abs(expected)*px,px,ZERO,None)
+            events,_=evaluate_address(address=address,observed_ms=t,first_seen_ms=start,
+                positions={coin:p},previous={'observed_ms':start-1,'positions':{}},markets={},history={},new_fills=ordered,rules=rules)
+            for candidate in events:
+                if 'newly_observed_address_position' not in candidate.kinds:continue
+                event=asdict(candidate);event['kinds']=['newly_observed_address_position']
+                event['evidence']['position']['unrealized_pnl']=None
+                event['evidence']['position']['mark']=None
+                event['evidence']['test_replay']={'mode':'historical_monitor_start_simulation',
+                    'simulated_monitor_start_ms':start,'simulated_monitor_start':True,
+                    'not_wallet_creation_time':True,'not_actual_discovery_time':True,
+                    'start_ms':start,'end_ms':t,'real_address':True,'real_fills':True,
+                    'valuation_basis':'quantity_times_window_last_execution_price',
+                    'purpose':'prelaunch_startup_rule_review_only'}
+                event['key']='test-startup:'+hashlib.sha256(encode({'address':address,'coin':coin,'fills':[fill_key(f) for f in ordered]}).encode()).hexdigest()
+                results.append(event)
+    return results
+
+
+def copy_observed_case_examples(store: NewsStore) -> None:
+    from .eligibility import news_eligibility
+    cases=[]
+    for original in store.candidates():
+        if not news_eligibility(original)['eligible']:continue
+        event=json.loads(encode(original))
+        event['key']='test-observed:'+original['key']
+        event['evidence']['test_replay']={'mode':'existing_observed_evidence',
+            'original_event_key':original['key'],'start_ms':original['observed_ms'],
+            'end_ms':original['observed_ms'],'real_address':True,'purpose':'prelaunch_case_review_only'}
+        cases.append(event)
+    save_cases(store,cases)

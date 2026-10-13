@@ -45,3 +45,5 @@
 价格重建测试证据标识 `execution_price_cost_reconstruction`，保留实际成交参考价、成本和重建阶段。浮盈峰值仅是回放取得的价格时点峰值，不是全部盘中最高值；页面完整证据可核查。`hyperliquid-news replay-cached-test-cases` 可重放缓存，仍只写测试数据集。
 
 可传 `mine-test-cases --addresses 0x… 0x… --address-limit 40` 针对剩余场景验证已知真实地址，不查询榜单。测试工具排除 `#` 结果代币及零价格/无效数量的结算记录，只分析合约成交，避免非合约记录中断整地址回放。
+
+“新观察地址快速建仓”测试可在真实历史首次空仓成交时点虚拟启动监测，后续真实成交仍须在规定窗口达到原金额门槛。此类样本明确标注 `historical_monitor_start_simulation`、虚拟启动时间、非钱包创建时间、非实际发现时间，页面专门说明；这是启动状态测试，不能算成我们已在生产实时发现过该新地址。原有合格监测事件可复制为 `existing_observed_evidence` 测试例，保留原事件 key、地址和时间，不再次投递。

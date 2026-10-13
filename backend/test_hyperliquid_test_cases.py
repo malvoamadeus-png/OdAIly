@@ -53,3 +53,12 @@ def test_price_replay_inconsistent_closed_pnl_breaks_path():
     fills=[fill(0,5000,stamp=1),fill(5000,1,'A',stamp=2,pnl='999'),
            {**fill(4999,1,stamp=3),'px':'10000'}]
     assert replay_execution_prices(A,fills)==[]
+
+
+def test_startup_simulation_is_explicit_not_wallet_age():
+    from packages.hyperliquid_news.test_cases import replay_test_startup
+    cases=replay_test_startup(A,[fill(0,2000)])
+    assert len(cases)==1
+    proof=cases[0]['evidence']['test_replay']
+    assert proof['simulated_monitor_start'] and proof['not_wallet_creation_time'] and proof['not_actual_discovery_time']
+    assert replay_test_startup(A,[fill(1000,2000)])==[]
