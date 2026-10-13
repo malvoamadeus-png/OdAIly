@@ -2521,6 +2521,7 @@ export type HyperliquidNewsEvent = {
   editorial_preview?: { title: string; content: string; writer_model: string; prompt_version_number: number; generated_at: string };
   pipeline: { task_id?: number; task_status?: string; dispatch_status?: string; dispatch_error?: string;
     draft_title?: string; draft_content?: string; final_title?: string; final_content?: string;
+    search_result?: Record<string, any>; search_completed_at?: string;
     writer_model?: string; prompt_version_id?: number; prompt_version_number?: number; write_completed_at?: string; format_completed_at?: string;
     publish_completed_at?: string; last_error?: string; push_result?: Record<string, unknown> };
 };

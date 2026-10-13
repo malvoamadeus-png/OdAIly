@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import pytest
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 
 from packages.common.config import XProcessingSettings
@@ -63,7 +64,7 @@ def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_e
     e, _ = event()
     task = TaskRecord(id=77, source=HYPERLIQUID_SOURCE, source_item_id=e['key'], source_url=source_url(e),
         title=None, content='event', raw_payload=e, status='publisher_pending', published_at=datetime.now(UTC))
-    assert LocalPipelineProcessor._write_flow_sequence(None, task) == ['write','format_publish','publish']
+    assert LocalPipelineProcessor._write_flow_sequence(None, task) == ['search','write','format_publish','publish']
     repo = InMemoryXProcessingRepository(); repo.add_task(task)
     repo.pipelines[77] = PipelineRecord(task_id=77, final_title='STRK大仓监测', final_content='据Odaily监测，某地址持有大额多仓。')
     push = Push()
@@ -91,7 +92,7 @@ def test_dispatch_durable_task_dedup_enqueue_failure_and_dashboard(tmp_path):
     task_id=result[0]['task_id']
     assert result[0]['status']=='queued'
     task=repo.get_task(task_id)
-    assert task.status=='deduped' and task.metadata['writer_template_key']=='hyperliquid_writer'
+    assert task.status=='judged' and task.metadata['writer_template_key']=='hyperliquid_writer'
     assert dispatcher.dispatch(limit=1)==[]
     # Replaying the same state evidence at another observation time is still the same fact.
     another=replace(candidate,key='repeat',observed_ms=2000)
@@ -270,3 +271,62 @@ def test_change_material_includes_before_after_not_only_current_state():
     assert facts['previous_position']['position_value_usd']=='5000000'
     assert facts['previous_floating_pnl_usd']=='0'
     assert len(facts['change_period'])==2
+
+
+@pytest.mark.parametrize('reference_type', ['odaily_reference','candidate','recent_processed'])
+@pytest.mark.parametrize('same_event', [True,False])
+def test_shared_searcher_reviews_lookonchain_fact_and_releases_later_actions(tmp_path,monkeypatch,reference_type,same_event):
+    import math
+    from packages.x_processing.searcher import SearchDocument
+    import packages.x_processing.worker as worker_module
+    monkeypatch.setattr(worker_module,'_search_cache_path_for_repository',lambda _:tmp_path/'search.sqlite')
+    repo=SQLiteXProcessingRepository(tmp_path/'db.sqlite');repo.init_schema()
+    store=NewsStore(repo.path);store.initialize()
+    now=datetime.now(UTC)
+    e,state=event(int(now.timestamp()*1000))
+    from packages.hyperliquid_news.models import Candidate
+    store.discover(A,source={'kind':'test'},now_ms=e['observed_ms'])
+    store.commit_observation(address=A,now_ms=e['observed_ms'],state=state,history={},coverage={},fills=[],candidates=[Candidate(**e)])
+    result=EventDispatcher(store,pipeline_client=Pipeline()).dispatch(limit=1)[0]
+    task=repo.get_task(result['task_id'])
+    class Embeddings:
+        cache=None
+        def embed_one(self,**kwargs):
+            assert 'STRK' in kwargs['text'] and 'threshold_rules' not in kwargs['text']
+            return [1.,0.]
+        def embed_documents(self,documents):return [(d,[.99,math.sqrt(1-.99**2)]) for d in documents]
+    class AI:
+        calls=[]
+        def generate_text(self,**kwargs):
+            self.calls.append(kwargs['prompt'])
+            assert 'Lookonchain' in kwargs['prompt']
+            return json.dumps({'is_duplicate':same_event,'duplicate_target_type':
+                {'odaily_reference':'odaily_published','candidate':'inflight_candidate','recent_processed':'recent_processed'}[reference_type] if same_event else 'none',
+                'duplicate_target_id':'reference' if same_event else '',
+                'reason':'same_event' if same_event else 'update_of_existing_event'})
+    ai=AI()
+    worker=XProcessingWorker(stage='search',repository=repo,settings=XProcessingSettings(),
+        search_embedding_service=Embeddings(),search_ai_client=ai)
+    document=SearchDocument(doc_type=reference_type,doc_id='reference',title='Lookonchain：某地址加仓STRK',
+        content='Lookonchain报道：'+('该地址刚加仓至1000万美元STRK多单。' if same_event else '该地址昨日持有500万美元STRK多单。'),
+        source='x',source_url=source_url(e),published_at=now,
+        metadata={'hyperliquid_event_key':'older'} if reference_type!='odaily_reference' else {},
+        task_id=999,expires_at=now+timedelta(hours=1),status='active')
+    worker._load_odaily_reference_documents=lambda **_: [document] if reference_type=='odaily_reference' else []
+    worker._load_active_candidate_documents=lambda **_: [document] if reference_type=='candidate' else []
+    worker._load_recent_processed_documents=lambda **_: [document] if reference_type=='recent_processed' else []
+    worker._run_search(task)
+    assert len(ai.calls)==1  # .99 similarity must not auto-block later actions.
+    assert repo.get_task(task.id).status==('duplicate' if same_event else 'deduped')
+    search=repo.get_pipeline(task.id)
+    assert search.search_completed_at is not None
+    assert search.search_result['is_duplicate'] is same_event
+
+
+def test_same_hyperbot_profile_or_generic_heading_is_not_exact_duplicate():
+    from packages.x_processing.searcher import SearchDocument,exact_duplicate_decision
+    query=SearchDocument(doc_type='task',doc_id='new',title='ETH 大仓重要加减仓',
+        content='今日加仓至1亿美元',source='hyperliquid_news',source_url='https://hyperbot.network/trader/'+A)
+    old=SearchDocument(doc_type='candidate',doc_id='old',title=query.title,
+        content='昨日减仓至5000万美元',source='x',source_url=query.source_url)
+    assert exact_duplicate_decision(query=query,documents=[old],target_type='inflight_candidate') is None

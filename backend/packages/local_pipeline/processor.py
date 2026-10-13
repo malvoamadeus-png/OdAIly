@@ -284,7 +284,7 @@ class LocalPipelineProcessor:
 
     def _write_flow_sequence(self, task: TaskRecord) -> list[str]:
         if task.source == HYPERLIQUID_SOURCE:
-            return ["write", "format_publish", "publish"]
+            return ["search", "write", "format_publish", "publish"]
         if task.source == EVENT_TRACKING_SOURCE:
             # Event tracking already made the only allowed initial judgment:
             # an official post with material progress. It must still pass the

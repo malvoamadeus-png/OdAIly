@@ -137,6 +137,8 @@ def summarize(fills: list[dict[str, Any]], *, start_ms: int, end_ms: int,
                 break
             streak += 1
         assets[coin] = {
+            'first_observed_fill_ms': min(int(f['time']) for f in items),
+            'last_observed_fill_ms': max(int(f['time']) for f in items),
             'closed_pnl_less_fees': str(total), 'rounds': len(rounds), 'wins': wins,
             'win_rate': str(Decimal(wins) / len(rounds)) if rounds else None,
             'completed_rounds': round_details, 'completed_round_pnl': [str(p) for p in rounds], 'consecutive_losing_rounds': streak,

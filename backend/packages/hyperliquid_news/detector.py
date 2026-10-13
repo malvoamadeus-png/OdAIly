@@ -47,17 +47,24 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
     old_positions = {coin: Position.restore(p) for coin, p in (previous or {}).get('positions', {}).items()}
     old_signals = (previous or {}).get('signals', {})
     old_peaks = (previous or {}).get('peaks', {})
+    old_pnl_anchors = (previous or {}).get('pnl_news_anchors', {})
+    pnl_anchors = {}
+    pnl_anchor_times = {}
     signals: dict[str, dict[str, int]] = {}
     peaks: dict[str, str] = {}
     peak_times = {}
     episodes = {}
+    ratio_snapshots = {}
     actions: dict[str, dict[str, Any]] = {}
     for fill in new_fills:
         if not perp_fill(fill):
             continue
         coin = str(fill['coin'])
         data = actions.setdefault(coin, {'open_notional': ZERO, 'close_notional': ZERO,
-                                          'closed_pnl': ZERO, 'liquidated_notional': ZERO, 'fill_keys': []})
+                                          'closed_pnl': ZERO, 'liquidated_notional': ZERO, 'fill_keys': [],
+                                          'open_long_notional': ZERO, 'open_short_notional': ZERO,
+                                          'close_long_notional': ZERO, 'close_short_notional': ZERO,
+                                          'first_fill_ms': int(fill['time']), 'last_fill_ms': int(fill['time'])})
         before = number(fill['startPosition'])
         size = number(fill['sz'])
         price = number(fill['px'])
@@ -67,6 +74,11 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
         closing_size = min(abs(before), size) if before * delta < 0 else ZERO
         data['close_notional'] += closing_size * price
         data['open_notional'] += (size - closing_size) * price
+        data['open_long_notional' if delta > 0 else 'open_short_notional'] += (size-closing_size)*price
+        if closing_size:
+            data['close_long_notional' if before > 0 else 'close_short_notional'] += closing_size*price
+        data['first_fill_ms'] = min(data['first_fill_ms'], int(fill['time']))
+        data['last_fill_ms'] = max(data['last_fill_ms'], int(fill['time']))
         data['closed_pnl'] += number(fill.get('closedPnl', '0'))
         liquidation = fill.get('liquidation')
         if isinstance(liquidation, dict) and str(liquidation.get('liquidatedUser', '')).lower() == address.lower():
@@ -84,14 +96,17 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                                   'first_observation': previous is None, 'threshold_rules': asdict(rules)}
         current: dict[str, int] = {}
         same_episode = p is not None and old is not None and p.size * old.size > 0
-        peak = max(number(old_peaks.get(coin, '0')) if same_episode else ZERO,
+        comparable_pnl = (same_episode and p.size == old.size
+                          and not actions.get(coin, {}).get('open_notional')
+                          and not actions.get(coin, {}).get('close_notional'))
+        peak = max(number(old_peaks.get(coin, '0')) if comparable_pnl else ZERO,
                    p.unrealized_pnl if p else ZERO)
         if p:
             episode = (previous or {}).get('episodes', {}).get(coin, observed_ms) if same_episode else observed_ms
             episodes[coin] = episode
             facts['episode_started_ms'] = episode
-            old_peak = number(old_peaks.get(coin, '0')) if same_episode else ZERO
-            peak_time = (previous or {}).get('peak_times', {}).get(coin, observed_ms) if same_episode and old_peak >= p.unrealized_pnl else observed_ms
+            old_peak = number(old_peaks.get(coin, '0')) if comparable_pnl else ZERO
+            peak_time = (previous or {}).get('peak_times', {}).get(coin, observed_ms) if comparable_pnl and old_peak >= p.unrealized_pnl else observed_ms
             peak_times[coin] = peak_time
             peaks[coin] = str(peak)
             market = markets.get(coin, {})
@@ -101,6 +116,8 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             ratios = {'oi_share': p.notional / oi if oi > 0 else None,
                       'market_cap_share': p.notional / cap if cap > 0 else None}
             facts['ratios'] = {k: str(v) if v is not None else None for k, v in ratios.items()}
+            ratio_snapshots[coin] = facts['ratios']
+            facts['previous_ratios'] = (previous or {}).get('ratios', {}).get(coin, {})
             metrics = {
                 'large_position': (p.notional, rules.large_position),
                 'oi_share': (ratios['oi_share'] or ZERO, rules.oi_share),
@@ -119,7 +136,17 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                 current['near_liquidation'] = int(p.notional >= rules.action and distance <= rules.liquidation_distance)
                 if current['near_liquidation'] > old_signals.get(coin, {}).get('near_liquidation', 0):
                     kinds.append('near_liquidation')
-            if same_episode and peak >= rules.pnl_line(coin):
+            anchor = number(old_pnl_anchors.get(coin, str(old.unrealized_pnl))) if comparable_pnl else p.unrealized_pnl
+            pnl_anchors[coin] = str(anchor)
+            pnl_anchor_times[coin] = (previous or {}).get('pnl_anchor_times', {}).get(coin, previous['observed_ms']) if comparable_pnl else observed_ms
+            if comparable_pnl and abs(p.unrealized_pnl-anchor) >= rules.pnl_line(coin):
+                if p.unrealized_pnl >= rules.pnl_line(coin):
+                    kinds.append('large_profit')
+                elif p.unrealized_pnl <= -rules.pnl_line(coin):
+                    kinds.append('large_loss')
+                facts['previous_reported_floating_pnl'] = str(anchor)
+                facts['previous_reported_floating_pnl_ms'] = pnl_anchor_times[coin]
+            if comparable_pnl and peak >= rules.pnl_line(coin):
                 giveback = peak - p.unrealized_pnl
                 facts['episode_peak_unrealized_pnl'] = str(peak)
                 facts['episode_peak_ms'] = peak_time
@@ -148,6 +175,27 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if (previous is not None and old is None and p is not None and p.notional >= rules.action
                     and action['open_notional'] >= rules.action and observed_ms - first_seen_ms <= rules.new_address_window_ms):
                 kinds.append('newly_observed_address_position')
+        # Net quantity snapshots also prove an important change when fills are
+        # unavailable, but must never imply a reconstructed execution price.
+        if previous is not None and old is not None:
+            snapshot_amount = abs((abs(p.size) if p else ZERO)-abs(old.size)) * (p.mark if p else old.mark)
+            if snapshot_amount >= rules.action and (p is None or p.size*old.size > 0):
+                if max(old.notional, p.notional if p else ZERO) >= rules.large_position:
+                    kinds.append('large_position_action')
+                if labels:
+                    kinds.append('highlighted_address_action')
+                if p is not None and old.unrealized_pnl <= -rules.pnl_line(coin) and abs(p.size)>abs(old.size):
+                    kinds.append('loss_addition')
+                facts['net_position_change'] = {
+                    'direction': '减仓' if p is None or abs(p.size)<abs(old.size) else '加仓',
+                    'side': '多单' if old.size>0 else '空单',
+                    'quantity': str(abs((abs(p.size) if p else ZERO)-abs(old.size))),
+                    'estimated_value': str(snapshot_amount), 'closed': p is None}
+        if previous is not None and p is not None and old is not None and p.size*old.size < 0 and min(old.notional,p.notional)>=rules.action and labels:
+            kinds.append('highlighted_address_action')
+            facts['net_position_change'] = {'direction':'反手', 'previous_side':'多单' if old.size>0 else '空单',
+                                          'side':'多单' if p.size>0 else '空单', 'quantity':str(abs(p.size)),
+                                          'estimated_value':str(p.notional), 'closed':False}
         if previous is not None:
             completed = [r for r in history.get('assets', {}).get(coin, {}).get('completed_rounds', [])
                          if int(r['end_ms']) in {int(f['time']) for f in new_fills if f['coin'] == coin} and
@@ -165,6 +213,9 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                 kinds = [k for k in kinds if k not in {'large_position', 'oi_share', 'market_cap_share'}]
             if p.unrealized_pnl == old.unrealized_pnl:
                 kinds = [k for k in kinds if k not in {'large_profit', 'large_loss'}]
+        if p and any(k in kinds for k in ('large_profit','large_loss','profit_giveback','profit_to_loss')):
+            pnl_anchors[coin] = str(p.unrealized_pnl)
+            pnl_anchor_times[coin] = observed_ms
         if kinds and previous is not None:
             facts['news_change'] = {
                 'previous_observed_ms': previous['observed_ms'],
@@ -184,7 +235,7 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             candidates.append(Candidate(hashlib.sha256(identity.encode()).hexdigest(), observed_ms,
                                         (address,), coin, tuple(kinds), facts))
     state = {'positions': {coin: p.facts() for coin, p in positions.items()},
-             'signals': signals, 'peaks': peaks, 'peak_times': peak_times, 'episodes': episodes, 'observed_ms': observed_ms}
+             'signals': signals, 'pnl_news_anchors': pnl_anchors, 'pnl_anchor_times': pnl_anchor_times, 'ratios': ratio_snapshots, 'peaks': peaks, 'peak_times': peak_times, 'episodes': episodes, 'observed_ms': observed_ms}
     return candidates, state
 
 

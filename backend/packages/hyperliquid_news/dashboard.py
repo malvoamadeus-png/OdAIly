@@ -36,7 +36,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
                     LEFT JOIN prompt_template_versions v ON v.id=p.prompt_version_id''' if dispatch else ''
         columns = '''d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,
                      p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
-                     p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
+                     p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
                      p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
         rows = conn.execute(f'''SELECT c.payload,{columns} FROM hl_news_candidates c {joined}
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1, page*page_size)).fetchall()
@@ -44,6 +44,8 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
         for row in rows[:page_size]:
             item = json.loads(row['payload'])
             pipeline = {key: row[key] for key in row.keys() if key != 'payload'}
+            if pipeline.get('search_result'):
+                pipeline['search_result'] = json.loads(pipeline['search_result'])
             if pipeline.get('push_result'):
                 pipeline['push_result'] = json.loads(pipeline['push_result'])
             item['pipeline'] = pipeline
@@ -68,4 +70,4 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
     return {'initialized': True, 'events': events, 'addresses': addresses, 'rules': asdict(Rules()), 'labels': KIND_LABELS,
             'last_pass': store.metadata('last_pass', {}), 'has_next': len(rows) > page_size, 'page': page,
             'counts': counts, 'publication_mode': 'backend_only',
-            'flow': ['硬规则命中', '行为重复控制', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}
+            'flow': ['硬规则命中', '内部行为防重', '搜索者（跨来源查重）', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}

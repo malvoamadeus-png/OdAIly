@@ -227,6 +227,12 @@ def normalize_title_key(value: str | None) -> str:
     return normalized or re.sub(r"\s+", " ", lowered)
 
 
+def requires_fact_review(query: SearchDocument, document: SearchDocument) -> bool:
+    """A trader's next action can have near-identical text and the same profile URL."""
+    return any(d.source == 'hyperliquid_news' or d.metadata.get('hyperliquid_event_key')
+               for d in (query, document))
+
+
 def exact_duplicate_decision(
     *,
     query: SearchDocument,
@@ -237,7 +243,8 @@ def exact_duplicate_decision(
     query_url = normalize_compare_url(query.source_url)
     query_title = normalize_title_key(query.title)
     for document in documents:
-        if query_url and normalize_compare_url(document.source_url) == query_url:
+        if (query_url and "/hyperbot.network/trader/" not in query_url
+                and normalize_compare_url(document.source_url) == query_url):
             return _duplicate_decision_for_document(
                 document=document,
                 target_type=target_type,
@@ -249,7 +256,7 @@ def exact_duplicate_decision(
                 target_type=target_type,
                 similarity=1.0,
             )
-        if query_title and query_title == normalize_title_key(document.title):
+        if query_title and not requires_fact_review(query, document) and query_title == normalize_title_key(document.title):
             return _duplicate_decision_for_document(
                 document=document,
                 target_type=target_type,
@@ -1048,6 +1055,8 @@ def build_ai_batch_review_prompt(
         "例如被盗金额与风险保护基金规模是不同事实；若新材料首次披露基金的具体资产构成或钱包地址，即使候选提到基金总额，也不是重复。\n"
         "同一行动的购买数量、金额、均价、总持仓、浮盈等不同表述，若没有独立的新事实，仍属重复。\n"
         "同一主体后来发生的新动作、新交易、正式修正或事件发生后的实质进展，不是重复。\n"
+        "Hyperliquid 同一地址、合约或 Hyperbot 主页相同不代表事件相同；比较动作时间、方向、前后仓位和盈亏变化。\n"
+        "Lookonchain 等账号已经披露同一次操作，即使本材料是直接监测数据，也属于重复；后续新的加减仓或独立盈亏变化应放行。\n"
         "只要任意一个候选已经覆盖新材料的核心事实，就必须返回 is_duplicate=true，并原样返回该候选的类型和ID。\n"
         "不能因为某一个候选缺少核心事实，就忽略其他候选已经披露它。\n"
         "如果没有任何候选覆盖核心事实，返回 is_duplicate=false。只输出 JSON，不输出解释。\n\n"

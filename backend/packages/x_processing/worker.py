@@ -82,6 +82,7 @@ from .searcher import (
     exact_duplicate_decision,
     parse_ai_review_output,
     top_matches,
+    requires_fact_review,
 )
 from .telegram import TelegramClient, skipped_telegram_result
 from .title_trace import (
@@ -970,6 +971,7 @@ class XProcessingWorker:
         best_match = max(matches, key=lambda item: item[0].similarity)[0]
         direct_duplicates = [
             item for item in matches if item[0].similarity >= self.settings.search_duplicate_threshold
+            and not requires_fact_review(query, item[0].document)
         ]
         if direct_duplicates:
             match, target_type = max(direct_duplicates, key=lambda item: item[0].similarity)

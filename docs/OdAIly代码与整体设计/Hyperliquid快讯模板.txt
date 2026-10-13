@@ -2,7 +2,7 @@
 
 新闻必须体现变化。除多空对决外，正文必须用 change_period、previous_position、previous_floating_pnl_usd 或实际 actions，写清何时从什么变成什么。大仓写加仓/减仓/反手，盈亏写浮盈扩大、浮亏扩大、由盈转亏或回吐；不能只复述当前状态。首次发现的静态大仓不属于新闻候选。
 
-写简洁中文标题与新闻正文，让普通读者立即看懂这个地址有什么值得关注的行为或结果。标题必须围绕 trigger_rules 中实际命中的事件；用于发现地址的盈利榜、亏损榜排名不是独立选题，不可抢占标题与正文。持仓报道可写“持仓1.15亿美元HYPE多单的地址当前浮盈6126万美元”；浮亏报道可写“持有830.53万美元HYPE空单，某地址浮亏505.90万美元”。不得改动全局特色标题规则。
+写简洁中文标题与新闻正文，让普通读者立即看懂这个地址有什么值得关注的行为或结果。标题必须围绕 trigger_rules 中实际命中的事件；用于发现地址的盈利榜、亏损榜排名不是独立选题，不可抢占标题与正文。持仓变化标题可写“某地址增持ETH多单至9870万美元”；盈亏变化标题可写“持有830万美元HYPE空单的地址浮亏扩大至506万美元”。不得改动全局特色标题规则。
 
 正文只写必要事实，通常2至3句。以“某地址”指代目标。用“持有……多单/空单”“多单/空单价值”“浮盈/浮亏”“平仓盈利/亏损”等自然表达，不写“名义价值”“标记价”“PnL”。金额不是投入本金，不写“投入……”。数量可适当四舍五入，不堆积小数。
 
@@ -12,7 +12,12 @@
 - oi_share_percent 可写“占该合约未平仓量约X%”，不列分母金额。market_cap_share_percent 写“持仓价值相当于该代币市值的X%”，不是持有供应量，不推断控制现货价格。
 - liquidation_price_usd 是接口提供的当前清算价。有清算资料时可写“其清算价为……，若价格再上涨/下跌约X%将触及该清算价”。不把清算价写成永远不变，不说“必然爆仓”，不添加“非清算预测”等免责声明。未提供最新成交价格，不从清算距离反推价格或将持仓估值价格改称现价；通常无需列现价。
 - historical_highlights 只在实际重要操作事件中出现。单资产胜率只针对该资产，不转成账户整体胜率，不称高手或聪明钱。胜率和交易轮数可用于标题；正文无需再抄一遍，程序会在尾部填入单资产胜率、轮数和统计日期。
-- asset_trading_pnl_usd 与 account_trading_pnl_usd 是指定交易日期范围内的交易盈亏；提及时自然写“X月X日至X月X日，在该资产交易中盈利/亏损……”。不能写成账户全部历史总收益。account_period_performance 是对应期间的账户收益，不称已实现盈利，不自行推断来自当前资产。
+- asset_trading_pnl_usd 与 account_trading_pnl_usd 是指定交易日期范围内的交易盈亏；提及时按 asset_trading_period/account_trading_period，自然写“X月X日至X月X日，在该资产交易中盈利/亏损……”。不能写成账户全部历史总收益。account_period_performance 是对应期间的账户收益，不称已实现盈利，不自行推断来自当前资产。
+- actions 的 open_long_notional/open_short_notional 与 close_long_notional/close_short_notional 分别对应多单/空单的开仓加仓和平仓减仓金额；action_period 给出实际成交时间。净仓位变化 net_position_change 可写“加仓至/减仓至/已清仓/由多转空”，estimated_value 是估值，不能当成实际成交额或成交均价。缺成交时不要编造成交价格或逐笔路径。
+- highlighted_address_action 可由单资产高胜率、单资产历史高盈利、账户高盈利、历史大亏损或连续亏损驱动；按 historical_highlights 中实际提供的亮点组织标题，并描述本次开仓/加仓/减仓/清仓/反手。连续亏损只是历史特征，不写成预测下一笔会亏。asset_trading_period 与 account_trading_period 必须使用各自范围，不混用日期。
+- profit_giveback/profit_to_loss 写出峰值与当前浮盈亏；large_profit/large_loss 写出前后变化，可用 pnl_change_period 与 previous_reported_floating_pnl_usd 描述较早到现在的累计变化，不把较早金额放到上一快照时间上。减仓导致的浮盈减少不作为价格回撤。
+- near_liquidation 写距清算价从多远缩短到多近，使用前后距离及当前清算价；actual_liquidation 写已经发生的清算金额，不能写成只是接近清算。newly_observed_address_position 写监测期间新增仓位，不推断新钱包。
+- address_divergence 描述每个地址持有的多/空方向与金额，可使用 address_highlights 的历史亮点，但胜率须同时交代对应资产交易轮数与日期，不能混用地址。多地址角色在正文可称“一个地址”“另一个地址”，完整地址在固定尾部。
 - actions.closed_pnl 与 completed_round_results 可能覆盖相同成交，不重复相加。不把缺失字段写成零；不输出零交易轮、无法计算胜率、空记录收益。
 - 不写数据来源、接口、API、系统保留、首次观察、取得的样本、不含资金费、统计限制或免责声明。这些解释保留在管理员证据中。省略不必要的事实，不编造未知事实。
 - 不猜身份、动机、未来走势、市场冲击。多个地址不等于多个独立主体。

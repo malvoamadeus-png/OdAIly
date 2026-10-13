@@ -10,6 +10,7 @@ from packages.common.storage import connect_sqlite
 from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.models import HYPERLIQUID_SOURCE
 from .copy import source_url
+from .search import search_material
 from .eligibility import news_eligibility
 from .store import NewsStore, encode
 
@@ -19,7 +20,13 @@ def fingerprint(event: dict[str, Any]) -> str:
     stable = {'addresses': sorted(event['addresses']), 'coin': event['coin'],
               'kinds': sorted(event['kinds']), 'signals': evidence.get('trigger_levels', {}),
               'fills': sorted(evidence.get('actions', {}).get('fill_keys', [])),
-              'sides': evidence.get('sides'), 'reversal': evidence.get('reversal_basis')}
+              'sides': evidence.get('sides'), 'reversal': evidence.get('reversal_basis'),
+              'net_change': evidence.get('net_position_change')}
+    if set(event['kinds']) & {'large_profit','large_loss','profit_giveback','profit_to_loss'}:
+        stable['pnl_change'] = {
+            'anchor': evidence.get('previous_reported_floating_pnl'),
+            'previous': evidence.get('news_change', {}).get('previous_floating_pnl'),
+            'current': (evidence.get('position') or {}).get('unrealized_pnl')}
     if evidence.get('reversal_basis'):
         stable['direction'] = (evidence.get('position') or {}).get('size')
     if evidence.get('sides'):
@@ -96,16 +103,16 @@ class EventDispatcher:
             metadata = {'writer_template_key': 'hyperliquid_writer', 'force_backend_only': True,
                         'hyperliquid_event_key': event['key'], 'rule_kinds': event['kinds']}
             url = source_url(event)
+            search_title, search_content = search_material(event)
             conn.execute('''INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,
                 published_at,raw_payload,metadata,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?, 'deduped',?,?)''',
-                (HYPERLIQUID_SOURCE, event['key'], url, f'{event["coin"]} 合约监测', encode(event),
+                VALUES(?,?,?,?,?,?,?,?, 'judged',?,?)''',
+                (HYPERLIQUID_SOURCE, event['key'], url, search_title, search_content,
                  datetime.fromtimestamp(event['observed_ms']/1000, UTC).isoformat(), encode(event), encode(metadata), now, now))
             task_id = conn.execute('SELECT id FROM tasks WHERE source=? AND source_item_id=?',
                                    (HYPERLIQUID_SOURCE, event['key'])).fetchone()['id']
-            conn.execute('INSERT OR IGNORE INTO x_task_pipeline(task_id,news_type,search_result,search_completed_at) VALUES(?,?,?,?)',
-                         (task_id, 'onchain', encode({'mode': 'hard_rule_semantic_dedup', 'signature': signature,
-                                                     'no_news_value_judge': True}), now))
+            conn.execute('INSERT OR IGNORE INTO x_task_pipeline(task_id,news_type) VALUES(?,?)',
+                         (task_id, 'onchain'))
             conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
                          (event['key'], signature, task_id, 'created', None, now, now))
         return {'event_key': event['key'], 'task_id': task_id, 'status': 'created'}

@@ -41,7 +41,8 @@ def footer(event: dict[str, Any]) -> str:
         asset = history.get('assets', {}).get(event['coin'], {})
         if 'asset_high_win_rate' in event['evidence'].get('highlights', []) and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
             lines.append(f'{event["coin"]} 交易轮数：{asset["rounds"]}；胜率：{number(asset["win_rate"]) * 100:.2f}%')
-            start, end = history.get('first_observed_fill_ms'), history.get('last_observed_fill_ms')
+            start = asset.get('first_observed_fill_ms', history.get('first_observed_fill_ms'))
+            end = asset.get('last_observed_fill_ms', history.get('last_observed_fill_ms'))
             if start is not None and end is not None:
                 lines.append(f'统计时间：{timestamp(start)[:10]} 至 {timestamp(end)[:10]}')
     return '\n'.join(lines)
@@ -89,8 +90,12 @@ def _highlight_material(evidence: dict[str, Any], coin: str) -> dict[str, Any]:
              'profit_usd': data['pnl']}
             for window, data in history.get('official_account_performance', {}).get('windows', {}).items()
             if number(data['pnl']) >= threshold]
-    if facts and history.get('first_observed_fill_ms') is not None and history.get('last_observed_fill_ms') is not None:
-        facts['trading_period'] = [timestamp(history['first_observed_fill_ms'])[:10], timestamp(history['last_observed_fill_ms'])[:10]]
+    asset_start = asset.get('first_observed_fill_ms', history.get('first_observed_fill_ms'))
+    asset_end = asset.get('last_observed_fill_ms', history.get('last_observed_fill_ms'))
+    if asset_start is not None and asset_end is not None and any(k.startswith('asset_') for k in facts):
+        facts['asset_trading_period'] = [timestamp(asset_start)[:10], timestamp(asset_end)[:10]]
+    if 'account_trading_pnl_usd' in facts and history.get('first_observed_fill_ms') is not None and history.get('last_observed_fill_ms') is not None:
+        facts['account_trading_period'] = [timestamp(history['first_observed_fill_ms'])[:10], timestamp(history['last_observed_fill_ms'])[:10]]
     return facts
 
 
@@ -112,14 +117,25 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
         ratio = e.get('ratios', {}).get(kind)
         if kind in kinds and ratio is not None:
             facts[kind + '_percent'] = str(number(ratio) * 100)
+            old_ratio = e.get('previous_ratios', {}).get(kind)
+            if old_ratio is not None:
+                facts['previous_'+kind+'_percent'] = str(number(old_ratio)*100)
             if kind == 'market_cap_share':
                 facts['token_market_cap_usd'] = e.get('market', {}).get('market_cap')
     if any(k in kinds for k in ('profit_giveback', 'profit_to_loss')):
         facts['peak_floating_profit_usd'] = e.get('episode_peak_unrealized_pnl')
         if e.get('episode_peak_ms') is not None:
             facts['peak_time'] = timestamp(e['episode_peak_ms'])
+    if e.get('net_position_change'):
+        facts['net_position_change'] = e['net_position_change']
+    if e.get('previous_reported_floating_pnl') is not None:
+        facts['previous_reported_floating_pnl_usd'] = e['previous_reported_floating_pnl']
+        if e.get('previous_reported_floating_pnl_ms') is not None:
+            facts['pnl_change_period'] = [timestamp(e['previous_reported_floating_pnl_ms']), timestamp(event['observed_ms'])]
     if e.get('actions'):
-        facts['actions'] = {k: v for k, v in e['actions'].items() if k != 'fill_keys'}
+        facts['actions'] = {k: v for k, v in e['actions'].items() if k not in ('fill_keys','first_fill_ms','last_fill_ms')}
+        if e['actions'].get('first_fill_ms') is not None:
+            facts['action_period'] = [timestamp(e['actions']['first_fill_ms']), timestamp(e['actions']['last_fill_ms'])]
     if e.get('completed_round_results'):
         facts['completed_round_results'] = e['completed_round_results']
     if 'highlighted_address_action' in kinds:

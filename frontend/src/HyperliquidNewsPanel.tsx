@@ -10,9 +10,9 @@ function time(value: unknown): string {
   if (!value) return '—';
   return new Date(typeof value === 'number' ? value : String(value)).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
-const statuses: Record<string, string> = { deduped: '待撰写', writing: '编写者1处理中', written: '草稿完成',
+const statuses: Record<string, string> = { judged: '待搜索者查重', deduping: '搜索者查重中', deduped: '待撰写', search_failed: '搜索者查重失败', writing: '编写者1处理中', written: '草稿完成',
   formatting: '编写者2处理中', publisher_pending: '待挂后台', publishing: '挂后台中', ready_review: '已挂后台',
-  write_failed: '撰写失败', format_failed: '定稿失败', publisher_failed: '挂后台失败', duplicate: '重复行为',
+  write_failed: '撰写失败', format_failed: '定稿失败', publisher_failed: '挂后台失败', duplicate: '重复内容或行为',
   no_change_evidence: '仅监测基线，无变化证据', queued: '已进入写作队列', enqueue_failed: '入队失败', created: '等待入队' };
 
 function Evidence({ event }: { event: HyperliquidNewsEvent }) {
@@ -51,7 +51,7 @@ export function HyperliquidNewsPanel() {
   useEffect(() => { let live = true; setLoading(true); getHyperliquidNewsDashboard(page).then(d => { if (live) { setData(d); setError(''); } }).catch(e => { if(live) setError(String(e)); }).finally(() => { if(live) setLoading(false); }); return () => { live = false; }; }, [page]);
   return <section className="section hlMonitor">
     <div className="sectionHeader"><h2>Hyperliquid监测</h2><button type="button" onClick={() => void load()} disabled={loading}>刷新</button></div>
-    <p>硬规则命中 → 行为重复控制 → 编写者1 → 编写者2 → 固定数据组装 → 挂后台</p>
+    <p>变化证据与硬规则命中 → 内部行为防重 → 搜索者跨来源查重 → 编写者1 → 编写者2 → 固定数据组装 → 挂后台</p>
     <div className="whaleTabs">{[['events','事件与快讯'],['addresses','地址监测'],['rules','规则与运行']].map(([key,label]) => <button type="button" key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}</div>
     {error && <p role="alert">{error}</p>}
     {loading && <p>正在读取…</p>}
@@ -63,6 +63,11 @@ export function HyperliquidNewsPanel() {
         <p>{event.kinds.map(k => data.labels[k] || k).join(' · ')} · {statuses[event.pipeline.task_status || event.pipeline.dispatch_status || ''] || '硬规则已命中，待投递'}{event.pipeline.task_id ? ` · 任务 #${event.pipeline.task_id}` : ''}</p>
         {(event.pipeline.last_error || event.pipeline.dispatch_error) && <p role="alert">{event.pipeline.last_error || event.pipeline.dispatch_error}</p>}
         {event.news_eligibility?.eligible === false && <p role="note">仅作监测基线：缺少变化证据，按当前规则不应生成快讯；下方保留历史试稿供对照。</p>}
+        {event.pipeline.search_result && Object.keys(event.pipeline.search_result).length>0 && <details><summary>搜索者：是否与已报道内容重复</summary>
+          <p>{event.pipeline.search_result.is_duplicate ? '重复，已停止后续写稿' : event.pipeline.search_completed_at ? '查重通过' : '等待查重'} · {time(event.pipeline.search_completed_at)}</p>
+          {event.pipeline.search_result.duplicate_target && <p>重复对象：{event.pipeline.search_result.duplicate_target.title || event.pipeline.search_result.duplicate_target.target_id}</p>}
+          <pre>{JSON.stringify(event.pipeline.search_result, null, 2)}</pre>
+        </details>}
         <details><summary>为什么触发：地址、持仓与变化</summary><Evidence event={event} /></details>
         {event.editorial_preview && <section>
           <p>{event.news_eligibility?.eligible === false ? '历史文本试稿（非合格新闻事件）' : '修订预览'} · 沿用 {time(event.observed_ms)} 的事实 · 未重新挂后台</p>
