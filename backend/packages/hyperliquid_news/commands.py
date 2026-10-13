@@ -45,10 +45,10 @@ def run_command(args: Any) -> int:
             print(encode({'task_id': task.id, **result}))
     elif action == 'collect':
         from .client import NewsClient
-        from .market_cap import CoinGeckoMarketCaps
+        from .market_cap import CoinGeckoMarketCaps, DEFAULT_MARKET_CAP_MAPPING
         from .service import NewsMonitor
         import json
-        mapping = json.loads(Path(args.market_cap_mapping).read_text()) if args.market_cap_mapping else {}
+        mapping = json.loads(Path(args.market_cap_mapping).read_text()) if args.market_cap_mapping else dict(DEFAULT_MARKET_CAP_MAPPING)
         report = NewsMonitor(store=store, client=NewsClient(),
             addresses_per_pass=args.addresses_per_pass, leaderboard_seeds=args.leaderboard_seeds,
             markets_per_discovery=args.markets_per_discovery,

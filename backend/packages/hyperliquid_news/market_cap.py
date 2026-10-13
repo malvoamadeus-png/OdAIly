@@ -9,6 +9,10 @@ import requests
 from .models import number
 
 
+# Explicit main-DEX IDs verified against the free endpoint; never ticker guessing.
+DEFAULT_MARKET_CAP_MAPPING = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'HYPE': 'hyperliquid'}
+
+
 class CoinGeckoMarketCaps:
     def __init__(self, *, session: requests.Session | None = None, demo_api_key: str | None = None,
                  timeout_seconds: float = 20, ttl_ms: int = 3600000) -> None:

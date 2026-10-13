@@ -158,7 +158,7 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 
 按用户顺序优先采用 CoinGecko 免费 Demo `/coins/markets`。`market_cap.py` 实现可选 `CoinGeckoMarketCaps`，显式传入 Demo key 或尝试 keyless，不读取现有环境密钥；免费方案和 Keyless 的具体权益应按开通时官方页面确认。CoinMarketCap 免费/API 路线作为备选调研，不同时接多家造成口径混杂。
 
-`NewsMonitor` 可传入 `market_cap_client` 和 `market_cap_mapping`，例如主 DEX BTC 精确映射 `bitcoin`；未显式映射的合约不请求、不猜测，不能凭 ticker 同名就对应代币。黄金、美股、原油不走加密币市值映射。每批最多 250 个唯一 CoinGecko ID，默认缓存 1 小时，并验证 provider 的 `last_updated`；null、零值、过期数据和未知 ID 均不成为占比分母。HTTP 失败只记录 `market_caps:coingecko` 并跳过市值占比，其余持仓/盈亏方向继续。
+`NewsMonitor` 可传入 `market_cap_client` 和 `market_cap_mapping`，例如主 DEX BTC 精确映射 `bitcoin`；服务器 collect 默认使用已实网核验的主 DEX BTC→bitcoin / ETH→ethereum / HYPE→hyperliquid；`--market-cap-mapping` 显式 JSON 替换默认映射（传空对象可关闭）。未显式映射的合约不请求、不猜测，不能凭 ticker 同名就对应代币。黄金、美股、原油不走加密币市值映射。每批最多 250 个唯一 CoinGecko ID，默认缓存 1 小时，并验证 provider 的 `last_updated`；null、零值、过期数据和未知 ID 均不成为占比分母。HTTP 失败只记录 `market_caps:coingecko` 并跳过市值占比，其余持仓/盈亏方向继续。
 
 市值证据保存 CoinGecko ID、数据来源、请求时间、供应商更新时间；缓存写 `hl_news_metadata.coingecko_market_caps`。测试验证适配、映射、缓存、过期和失败处理；此前本机连接超时，后续在官方服务器通过免费无 key 接口实际取得 bitcoin / ethereum / hyperliquid 市值及供应商更新时间。已验证可取得，不代表所有币种已完成映射或长期稳定性已验证。调研记录见 `docs/讨论与修改日志/调研与测试/2026-10-13-Hyperliquid市值与单资产统计数据源.md`。
 
