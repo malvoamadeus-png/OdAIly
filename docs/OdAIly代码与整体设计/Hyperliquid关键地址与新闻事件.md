@@ -222,3 +222,7 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 2026-10-13 两轮各限量采集 6 个地址，均无接口失败；第一轮仅建立/更新基线，无候选，第二轮取得 1 条 ETH 多空对决候选。任务 828552 经过共享搜索，召回 Odaily 已发布、PANews 与 X 的近期内容并进行 AI 事实复核，结论非重复，随后 ready_review，挂后台接口 HTTP 200/ok，dry_run=false。没有运行新闻价值判断或启用公开发布/常驻采集。
 
 真实多空对决稿核验发现两笔空单合计 499721880.4479600191 美元，原始标题错误写成“超5亿”；写作材料新增 Decimal 计算的 side_totals_usd，模板限制超过/约的舍入表述，旧稿保留追溯，修订预览独立生成。此处只证明实际多空对决链路通过，不宣称13类方向全部已在真实市场取得样本。
+
+## 上线前真实案例挖掘（临时验收工具）
+
+历史成交重建只用于本次上线前补足案例和调整规则，不接入 `NewsMonitor.run_once`，不改变常规监测路线。命令 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 单独保存真实地址的历史操作到 `hl_news_test_cases`；完整行为证据、属性截止时间与执行价折算口径均保留。正常采集状态不被回放覆盖，测试回放不调用发布接口。控制台按 dataset 展示，不能把历史试稿当作当前新闻。

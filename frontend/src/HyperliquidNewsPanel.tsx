@@ -66,6 +66,7 @@ function ruleValue(key: string, value: unknown) {
 }
 const shortAddress = (value: string) => `${value.slice(0, 8)}…${value.slice(-6)}`;
 function eventStatus(event: HyperliquidNewsEvent) {
+  if (event.evidence.test_replay) return '测试回放';
   if (event.news_eligibility?.eligible === false) return '监测基线';
   return statuses[event.pipeline.task_status || event.pipeline.dispatch_status || ''] || '待投递';
 }
@@ -91,8 +92,9 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
   ];
   return <article className="hlDetail">
     <header className="hlDetailHeader"><div><div className="hlEyebrow">触发依据</div><h3>{event.coin} · {event.kinds.map(k => labels[k] || k).join(' / ')}</h3><p className="hlMuted">{time(event.observed_ms)}{p.task_id ? ` · 任务 #${p.task_id}` : ''}</p></div><span className="autoNewsflashStatus">{eventStatus(event)}</span></header>
-    <div className={`hlReason ${event.news_eligibility?.eligible === false ? 'baseline' : ''}`}><Activity size={17} /><div><strong>{eventChange(event)}</strong><p>{event.news_eligibility?.eligible === false ? '这条记录只建立监测基线，不符合当前变化性准入。下方旧稿保留供对照。' : '以下展示事件发生时保存的事实，可对照场景门槛理解为什么触发。'}</p></div></div>
+    <div className={`hlReason ${event.news_eligibility?.eligible === false ? 'baseline' : ''}`}><Activity size={17} /><div><strong>{eventChange(event)}</strong><p>{event.news_eligibility?.eligible === false ? '这条记录只建立监测基线，不符合当前变化性准入。下方旧稿保留供对照。' : '以下展示事件对应的事实，可对照场景门槛理解为什么触发。'}</p></div></div>
     {event.evidence.highlights?.length > 0 && <div className="hlRuleChips">{event.evidence.highlights.map((key: string) => <span key={key}>{highlightNames[key] || key}</span>)}</div>}
+    {event.evidence.test_replay && <p className="notice" role="note">上线前测试案例 · {time(event.evidence.test_replay.start_ms)} 至 {time(event.evidence.test_replay.end_ms)}。{event.evidence.test_replay.valuation_basis === 'quantity_times_window_last_execution_price' ? '仓位金额按该窗口末笔实际成交价折算；历史浮盈亏与清算价未补造。' : '重建口径及来源见完整证据。'} 不作为当前动态投递。</p>}
     <Evidence event={event} />
     <section className="hlDetailSection"><h4><ShieldCheck size={16} />处理流程</h4><div className="hlStages">{stages.map(([label, result], index) => <div key={label}><small>{String(index + 1).padStart(2, '0')} · {label}</small><strong>{result}</strong></div>)}</div>
       <details><summary>搜索者跨来源查重记录</summary><p className="hlMuted">与已收集的 X 动态及已有快讯查重，包括 Lookonchain 等来源。</p>{p.search_result && Object.keys(p.search_result).length ? <><p>{p.search_result.is_duplicate ? '重复，停止后续写稿' : p.search_completed_at ? '查重通过' : '待完成'} · {time(p.search_completed_at)}</p><pre>{JSON.stringify(p.search_result, null, 2)}</pre></> : <p className="hlMuted">暂无查重记录</p>}</details>
@@ -109,6 +111,7 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
 }
 
 export function HyperliquidNewsPanel() {
+  const [dataset, setDataset] = useState<'live' | 'test'>('live');
   const [tab, setTab] = useState('scenarios'), [page, setPage] = useState(0);
   const [scenarioKey, setScenarioKey] = useState('large_position'), [selected, setSelected] = useState<string | null>(null);
   const [data, setData] = useState<HyperliquidNewsDashboard | null>(null), [error, setError] = useState('');
@@ -116,21 +119,22 @@ export function HyperliquidNewsPanel() {
   useEffect(() => {
     let live = true;
     setLoading(true); setError('');
-    getHyperliquidNewsDashboard(page, scenarioKey).then(d => {
+    getHyperliquidNewsDashboard(page, scenarioKey, dataset).then(d => {
       if (!live) return;
       setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : d.events[0]?.key || null);
     }).catch(e => { if (live) setError(String(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [page, scenarioKey, refresh]);
+  }, [page, scenarioKey, refresh, dataset]);
   const scenario = data?.scenarios.find(s => s.key === scenarioKey);
   const current = data?.events.find(e => e.key === selected);
-  const ready = data?.scenario === scenarioKey && data.page === page;
+  const ready = data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
     <div className="autoNewsflashSummary">
       {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, '监测记录', data?.counts.events ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, '已投递任务', data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
     <div className="hlToolbar"><div className="segmentedControl">{[['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
+    {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
     {error && <p className="notice error" role="alert">{error}</p>}
     {loading && <p className="hlMuted" role="status">正在读取监测记录…</p>}
     {data && tab === 'scenarios' && <div className="hlWorkspace" aria-busy={loading}>
