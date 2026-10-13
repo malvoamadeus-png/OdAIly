@@ -57,12 +57,14 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     return DraftBrief(title=normalized.title, content=PREFIX + body + '\n' + footer(event))
 
 
-def _position_material(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+def _position_material(raw: dict[str, Any] | None, *, include_pnl: bool = False) -> dict[str, Any] | None:
     if not raw:
         return None
-    return {'direction': '多单' if number(raw['size']) > 0 else '空单',
-            'quantity': str(abs(number(raw['size']))), 'position_value_usd': raw['notional'],
-            'floating_pnl_usd': raw['unrealized_pnl']}
+    facts = {'direction': '多单' if number(raw['size']) > 0 else '空单',
+             'quantity': str(abs(number(raw['size']))), 'position_value_usd': raw['notional']}
+    if include_pnl:
+        facts['floating_pnl_usd'] = raw['unrealized_pnl']
+    return facts
 
 
 def _highlight_material(evidence: dict[str, Any], coin: str) -> dict[str, Any]:
@@ -96,9 +98,11 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
     """Allowlist editorial facts. Full provenance remains in the admin evidence."""
     from .dashboard import KIND_LABELS
     e, kinds = event['evidence'], event['kinds']
-    facts: dict[str, Any] = {'position': _position_material(e.get('position'))}
+    show_pnl = any(k in kinds for k in ('large_profit', 'large_loss', 'profit_giveback',
+                                        'profit_to_loss', 'loss_addition', 'near_liquidation'))
+    facts: dict[str, Any] = {'position': _position_material(e.get('position'), include_pnl=show_pnl)}
     if e.get('previous_position') and any(k in kinds for k in ('large_reversal', 'large_position_action', 'loss_addition')):
-        facts['previous_position'] = _position_material(e['previous_position'])
+        facts['previous_position'] = _position_material(e['previous_position'], include_pnl='loss_addition' in kinds)
     for kind in ('oi_share', 'market_cap_share'):
         ratio = e.get('ratios', {}).get(kind)
         if kind in kinds and ratio is not None:

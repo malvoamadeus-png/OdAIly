@@ -167,6 +167,7 @@ def test_reader_material_keeps_trigger_not_discovery_and_footer_only_address():
     text=json.dumps(material,ensure_ascii=False,default=str)
     assert 'official_account_performance' not in text and '-11854548' not in text
     assert '-2263209' not in text and 'first_observation' not in text
+    assert 'floating_pnl_usd' not in text
     assert footer(e)=='地址：'+A
 
 
