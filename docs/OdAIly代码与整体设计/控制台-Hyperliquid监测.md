@@ -39,3 +39,5 @@
 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 顺序获取官方多周期盈利/亏损榜地址的近期保留成交样本，按成交前仓位连续性与一小时动作窗口识别真实开平仓、加减仓、反手、兑现、实际清算，并使用动作发生前的成交计算历史属性。请求及进度缓存在独立 `test_fills:*` / `test_mining_progress` metadata，可限量重复运行。数量断裂、同时间顺序歧义不拼接成完整交易轮。窗口金额按末笔成交价折算，不能当作历史标记价快照。新观察时间不能凭历史建仓时间补造。
 
 `hyperliquid-news preview-test-cases --limit 15` 为各已覆盖方向选择代表性真实案例，用独立 Hyperliquid Prompt 生成编辑预览。结果存入 `editorial_preview:{test事件key}`，页面展示标题正文、模型和 Prompt 版本。不会创建 task、不运行正式查重或编写者2、不挂外部后台；它是文稿预览，不代表完整发稿链路已经验收。
+
+测试扫描同时从已收集 Hyperliquid 报道中提取完整地址作为发现种子（最多读取最近 1,500 条相关任务），再通过公共成交验证操作。报道只用于找地址，不能代替触发证据、也不能赋予报道声称的胜率或盈利属性。

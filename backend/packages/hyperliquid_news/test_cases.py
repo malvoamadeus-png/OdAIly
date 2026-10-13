@@ -165,7 +165,13 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12)
         neg=[a for a,s in discoveries if s['window']==window and s['side']=='loss']
         for pair in zip(pos,neg):
             mixed.extend(pair)
-    selected=list(dict.fromkeys(mixed+selected))[:address_limit]
+    # Existing reporting is only an address discovery seed, never proof of a rule.
+    import re
+    reported=[]
+    with connect_sqlite(store.path) as conn:
+        for row in conn.execute("SELECT title,content FROM tasks WHERE source!='hyperliquid_news' AND (lower(content) LIKE '%hyperliquid%' OR lower(title) LIKE '%hyperliquid%') ORDER BY id DESC LIMIT 1500"):
+            reported.extend(re.findall(r'0x[0-9a-fA-F]{40}', (row['title'] or '')+' '+row['content']))
+    selected=list(dict.fromkeys([a.lower() for a in reported]+mixed+selected))[:address_limit]
     report={'mode':'prelaunch_case_mining','addresses':len(selected),'processed':0,'failed':{},'case_count':0,'coverage':{}}
     for address in selected:
         cache=store.metadata('test_fills:'+address,{})
