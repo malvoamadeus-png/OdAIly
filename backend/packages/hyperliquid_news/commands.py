@@ -51,7 +51,7 @@ def run_command(args: Any) -> int:
         print(encode(preview_cases(store, limit=args.limit)))
     elif action == 'mine-test-cases':
         from .test_cases import mine_cases
-        print(encode(mine_cases(store, address_limit=args.address_limit, per_side=args.per_side)))
+        print(encode(mine_cases(store, address_limit=args.address_limit, per_side=args.per_side, addresses=args.addresses)))
     elif action == 'collect':
         from .client import NewsClient
         from .market_cap import CoinGeckoMarketCaps, DEFAULT_MARKET_CAP_MAPPING

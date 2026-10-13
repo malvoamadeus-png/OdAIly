@@ -39,6 +39,13 @@ def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
                          (event['key'], event['observed_ms'], encode(event), now))
 
 
+def valid_test_fill(fill: dict[str, Any]) -> bool:
+    # Outcome tokens are not perpetuals and can carry zero settlement prices.
+    return (perp_fill(fill) and not str(fill['coin']).startswith('#')
+            and fill.get('side') in ('B','A') and number(fill.get('sz',0)) > 0
+            and number(fill.get('px',0)) > 0)
+
+
 def replay_fills(address: str, fills: list[dict[str, Any]], *, rules: Rules | None = None) -> list[dict[str, Any]]:
     """Reconstruct quantity/action facts only; no invented mark, PnL, OI or liquidation.
 
@@ -47,7 +54,7 @@ def replay_fills(address: str, fills: list[dict[str, Any]], *, rules: Rules | No
     One-hour action windows allow split orders; discontinuities break replay state.
     """
     rules = rules or Rules()
-    unique = {fill_key(f): f for f in fills if perp_fill(f)}
+    unique = {fill_key(f): f for f in fills if valid_test_fill(f)}
     groups: dict[str, list[dict[str, Any]]] = {}
     for f in unique.values():
         groups.setdefault(f['coin'], []).append(f)
@@ -147,7 +154,7 @@ def _action_case(address: str, coin: str, batch: list[dict], preceding: list[dic
     return result
 
 
-def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12) -> dict[str, Any]:
+def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12, addresses: list[str] | None = None) -> dict[str, Any]:
     """Bounded sequential test scan; resumable cache separate from live history."""
     if not 1 <= address_limit <= 200 or not 1 <= per_side <= 50:
         raise ValueError('Invalid test mining budget')
@@ -155,7 +162,7 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12)
     client=NewsClient()
     now=int(time.time()*1000)
     from .discovery import leaderboard_candidates
-    rows=client.leaderboard()
+    rows=client.leaderboard() if not addresses else []
     discoveries=list(leaderboard_candidates(rows,per_side,now))
     selected=list(dict.fromkeys(a for a,_ in discoveries))
     # Mix positive and negative period leaders before using remaining candidates.
@@ -171,7 +178,8 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12)
     with connect_sqlite(store.path) as conn:
         for row in conn.execute("SELECT title,content FROM tasks WHERE source!='hyperliquid_news' AND (lower(content) LIKE '%hyperliquid%' OR lower(title) LIKE '%hyperliquid%') ORDER BY id DESC LIMIT 1500"):
             reported.extend(re.findall(r'0x[0-9a-fA-F]{40}', (row['title'] or '')+' '+row['content']))
-    selected=list(dict.fromkeys([a.lower() for a in reported]+mixed+selected))[:address_limit]
+    from .client import address_key
+    selected=list(dict.fromkeys([address_key(a) for a in addresses] if addresses else [a.lower() for a in reported]+mixed+selected))[:address_limit]
     report={'mode':'prelaunch_case_mining','addresses':len(selected),'processed':0,'failed':{},'case_count':0,'coverage':{}}
     for address in selected:
         cache=store.metadata('test_fills:'+address,{})
@@ -245,7 +253,7 @@ def replay_execution_prices(address: str, fills: list[dict[str, Any]], *, rules:
     """
     rules=rules or Rules()
     groups={}
-    for f in {fill_key(f):f for f in fills if perp_fill(f)}.values():groups.setdefault(f['coin'],[]).append(f)
+    for f in {fill_key(f):f for f in fills if valid_test_fill(f)}.values():groups.setdefault(f['coin'],[]).append(f)
     result=[]
     for coin,items in groups.items():
         ordered=_ordered_by_position(items)
