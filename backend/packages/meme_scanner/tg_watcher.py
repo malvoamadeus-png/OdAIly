@@ -33,7 +33,7 @@ DEFAULT_ALLOWED_CHATS = PATHS.config_dir / "meme_whitelist.txt"
 DEFAULT_BLOCKED_SENDERS = PATHS.config_dir / "meme_blocked_senders.txt"
 WINDOW_MINUTES = 20
 COOLDOWN_HOURS = 6
-RETENTION_DAYS = 90
+RETENTION_DAYS = 3
 MIN_MENTIONS = 5
 MIN_SENDERS = 3
 

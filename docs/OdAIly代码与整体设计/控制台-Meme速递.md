@@ -94,7 +94,7 @@ python backend/src/main.py meme tg-watch
 - FOMO 的 `login_required` 不阻断已有 Telegram/FxTwitter 材料；若三路均无正文且 FOMO 登录缺失，任务进入 `retry_wait`，每 `MEME_FOMO_LOGIN_RETRY_SECONDS`（默认 300 秒）再试一次，不受通常 3 次临时重试上限限制，但仍在入队 1 小时后按 `queue_expired` 结束；同时通知在冷却窗口内只发一次。FOMO 其他浏览器或页面错误保留安全错误码，不导出会话或上游原始响应。
 - `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、3 天起止时间、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 Dexscreener 查询。历史库新增该字段时优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
-- TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 90 天。
+- TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 3 天。
 
 ## 页面字段
 
@@ -121,3 +121,11 @@ python backend/src/main.py meme tg-watch
 ## 白名单外发现
 
 执行 meme tg-discover 可通过 Telegram 全局搜索 0x，列出当前账号可见且不在白名单中的群组/频道、真人、机器人和频道帖子命中数及代表性消息。命令只输出 JSON 和 Markdown 报告，不自动修改白名单。
+
+## 三天数据保留与空间回收
+
+scanner 常驻循环每小时执行清理（启动后的第一次循环也执行），失败写入 poll 日志并重试。普通 `token_snapshots` 按 `observed_at` 保留滚动 72 小时；达到 300 万美元档位的 `market_cap_milestones.snapshot_id` 对应首次突破快照长期保留，不延长跟踪。`ca_mentions` 按 `sent_at` 保留三天；`tg_candidates` 按 `detected_at` 清理三天前且没有任务引用的记录。任务仅清理 `publisher_pending`、`discarded`、`publish_failed`，按 `completed_at`（旧记录回退 `updated_at`）保留三天；其他任务保留直到结束。
+
+过期及旧版 `observations` 清理展示、调度和错误详情，但保留链+CA、跟踪生命周期、来源及最高市值水位，防止旧币重新开启跟踪；`market_cap_milestones` 保留链+CA+档位幂等账本，清理后低档位无快照时 `snapshot_id=0` 表示已清理，失效 `job_id` 置空。300 万美元突破任务的状态、原因、标题和结束时间以 `key_breakthrough_results` 保存，不保留大型叙事材料。此表仅供审计，不重新放回控制台任务列表。`scanner_meta` 保留初始化、扫描节奏及告警冷却状态。
+
+行情快照分批每 1000 条提交，限制运行中写锁和 WAL 膨胀；索引 `idx_token_snapshots_retention` 支持按时间清理。普通删除使空间可复用，不自动缩小数据库文件。首次历史清理及文件压缩必须停止 scanner、TG watcher 和所有其他数据库写入者，运行 `PYTHONPATH=backend .venv/bin/python -m packages.meme_scanner.retention --db data/processed/meme_scanner.sqlite3 --vacuum`，检查输出、SQLite 完整性和磁盘余量后恢复服务。VACUUM 必须预留压缩后数据库及临时文件所需空间；空间不足时不要运行。浏览器认证 profile 和已发布到其他存储的稿件不属于本数据库保留规则。
