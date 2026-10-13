@@ -24,7 +24,6 @@ from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import content_to_paragraph_html
 from packages.x_processing.telegram import TelegramClient
 
-from .retention import prune as prune_history
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .browser_lock import BrowserLockTimeout, exclusive_browser
 from .dexscreener import DexScreenerClient
@@ -1937,9 +1936,11 @@ def token_info_worker(db_path: str, args: argparse.Namespace, stop_event: Any) -
 
 
 def run(args: argparse.Namespace) -> int:
+    from .retention import prune as prune_history
+
     load_dotenv()
     store = Store(Path(args.db))
-    last_retention = 0.0
+    last_retention = -3600.0
     recovered = store.recover_inflight()
     if recovered:
         print(f"[meme-scan] recovered={recovered}")
