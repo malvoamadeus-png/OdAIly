@@ -48,18 +48,21 @@ def baseline(p):
 def test_large_position_oi_cap_and_no_repeat_or_fake_action():
     market = {COIN: {'oi_notional': '50000000', 'market_cap': '100000000'}}
     events, state = evaluate(position(), markets=market)
-    assert kinds(events) == {'large_position', 'oi_share', 'market_cap_share'}
-    assert len(events) == 1 and events[0].evidence['first_observation']
+    assert events == []
+    assert state['signals'][COIN]['large_position'] == 1
     assert not evaluate(position(), previous=state, markets=market, stamp=300)[0]
-    assert 'oi_share' in kinds(evaluate(position(), previous=state,
-        markets={COIN: {'oi_notional': '10000000', 'market_cap': '100000000'}}, stamp=300)[0])
+    assert not evaluate(position(), previous=state,
+        markets={COIN: {'oi_notional': '10000000', 'market_cap': '100000000'}}, stamp=300)[0]
+    changed = evaluate(position(size='150',notional='15000000'),previous=state,
+        markets={COIN:{'oi_notional':'10000000','market_cap':'100000000'}},stamp=400)[0]
+    assert 'oi_share' in kinds(changed)
 
 
 @pytest.mark.parametrize('coin,line', [('BTC', '5000000'), ('ETH', '5000000'), ('xyz:GOLD', '2000000'), ('xyz:BTC', '2000000')])
 def test_pnl_thresholds_by_market(coin, line):
     p = position(notional='3000000', coin=coin, pnl=line)
     events, state = evaluate(p)
-    assert 'large_profit' in kinds(events)
+    assert events==[]
     assert not evaluate(p, previous=state, stamp=300)[0]
     assert 'large_profit' in kinds(evaluate(replace(p, unrealized_pnl=D(line) * 2), previous=state, stamp=300)[0])
     assert 'large_loss' in kinds(evaluate(replace(p, unrealized_pnl=-D(line)), previous=state, stamp=300)[0])
@@ -115,7 +118,7 @@ def test_small_reduction_not_important_based_on_remaining_position():
 def test_price_move_not_an_addition():
     old = baseline(position(size='100', notional='9000000'))
     events, _ = evaluate(position(size='100', notional='12000000'), previous=old, history=stats())
-    assert kinds(events) == {'large_position'}
+    assert events==[]
 
 
 def test_large_position_action_without_doubling():
@@ -156,7 +159,9 @@ def test_loss_addition_merge_highlights_and_big_loss():
 def test_liquidation_distance_and_actual_fill_not_disappearance():
     p = position(size='100', notional='10000000', liquidation='98000')
     events, state = evaluate(p)
-    assert 'near_liquidation' in kinds(events)
+    assert events==[]
+    old=baseline(replace(p,liquidation=D('80000')))
+    assert 'near_liquidation' in kinds(evaluate(p,previous=old,stamp=300)[0])
     events, _ = evaluate(None, previous=state, fills=[fill(before='100', side='A', stamp=200,
                                 liquidation={'liquidatedUser': A, 'method': 'market'})])
     assert 'actual_liquidation' in kinds(events)
@@ -207,19 +212,19 @@ def test_service_discovery_restart_failure_preserves_baseline_and_dedup(tmp_path
     first = monitor.run_once(now_ms=100000)
     assert first['processed'] == 1
     assert len(store.addresses(100)) == 2
-    assert len(store.candidates()) == 1
+    assert len(store.candidates()) == 0
     monitor = NewsMonitor(store=NewsStore(store.path), client=client, leaderboard_seeds=0, addresses_per_pass=2)
     monitor.run_once(now_ms=200000)
-    assert len(store.candidates()) == 2
+    assert len(store.candidates()) == 0
     client.fail = True
     report = monitor.run_once(now_ms=300000)
     assert len(report['failed']) == 2
     assert store.load(A)['state']['observed_ms'] == 200000
-    assert len(store.candidates()) == 2
+    assert len(store.candidates()) == 0
     client.fail = False
     client.pnl = '2000000'
     monitor.run_once(now_ms=400000)
-    assert len(store.candidates()) == 4
+    assert len(store.candidates()) == 2
 
 
 def test_atomic_observation_rolls_back_invalid_fill(tmp_path):
@@ -254,7 +259,7 @@ def test_offline_replay_runs_persistence_and_merges_candidates():
         {'observed_ms': 200, 'addresses': {A: {'positions': [raw(position(pnl='2000000'))]}}},
         {'observed_ms': 300, 'addresses': {A: {'positions': [raw(position(pnl='2000000'))]}}}]}
     result = replay(payload)
-    assert len(result['candidates']) == 2
+    assert len(result['candidates']) == 1
     assert result['candidates'][-1]['kinds'] == ['large_profit']
 
 
@@ -396,3 +401,39 @@ def test_coingecko_failure_does_not_prevent_position_observation(tmp_path):
                           leaderboard_seeds=0, market_cap_client=Caps(), market_cap_mapping={COIN: 'explicit-test-id'})
     result = monitor.run_once(now_ms=100000)
     assert result['processed'] == 2 and result['failed']['market_caps:coingecko'] == 'HTTP 429'
+
+
+def test_first_snapshot_is_baseline_even_with_huge_pnl_and_near_liquidation():
+    events,state=evaluate(position(pnl='6000000',liquidation='98000'),
+        markets={COIN:{'market_cap':'100000000','oi_notional':'50000000'}})
+    assert events==[]
+    assert state['signals'][COIN]['large_profit']>0
+
+
+def test_price_only_large_position_crossing_is_not_position_news():
+    old=baseline(position(notional='9000000'))
+    assert evaluate(position(notional='12000000'),previous=old)[0]==[]
+
+
+def test_profit_crossing_contains_comparable_before_after_and_does_not_repeat():
+    old=baseline(position(pnl='1000000'))
+    events,state=evaluate(position(pnl='2000000'),previous=old)
+    assert kinds(events)=={'large_profit'}
+    assert events[0].evidence['news_change']['previous_observed_ms']==old['observed_ms']
+    assert events[0].evidence['news_change']['previous_floating_pnl']=='1000000'
+    assert not evaluate(position(pnl='2000000'),previous=state,stamp=300)[0]
+
+
+def test_newly_visible_old_position_without_fills_is_baseline_not_new_action():
+    _,old=evaluate(None)
+    events,state=evaluate(position(pnl='6000000'),previous=old)
+    assert events==[] and COIN in state['positions']
+
+
+def test_repeated_daily_snapshots_of_large_position_never_emit():
+    p=position(pnl='6000000')
+    events,state=evaluate(p)
+    assert events==[]
+    for stamp in (86400000,172800000,259200000):
+        events,state=evaluate(p,previous=state,stamp=stamp)
+        assert events==[]

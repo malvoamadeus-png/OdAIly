@@ -10,6 +10,7 @@ from packages.common.storage import connect_sqlite
 from packages.local_pipeline.client import LocalPipelineClient
 from packages.x_processing.models import HYPERLIQUID_SOURCE
 from .copy import source_url
+from .eligibility import news_eligibility
 from .store import NewsStore, encode
 
 
@@ -51,7 +52,7 @@ class EventDispatcher:
             import json
             event = json.loads(row['payload'])
             result = self._create_task(event)
-            if result['status'] == 'duplicate':
+            if result['status'] in ('duplicate', 'no_change_evidence'):
                 results.append(result)
                 continue
             try:
@@ -76,8 +77,16 @@ class EventDispatcher:
         with connect_sqlite(self.store.path) as conn:
             conn.execute('BEGIN IMMEDIATE')
             existing = conn.execute('SELECT * FROM hl_news_dispatch WHERE event_key=?', (event['key'],)).fetchone()
-            if existing:
+            if existing and news_eligibility(event)['eligible']:
                 return {'event_key': event['key'], 'task_id': existing['task_id'], 'status': existing['status']}
+            if not news_eligibility(event)['eligible']:
+                if existing:
+                    conn.execute('UPDATE hl_news_dispatch SET status=?,error=?,updated_at=? WHERE event_key=?',
+                                 ('no_change_evidence', 'baseline_without_change', now, event['key']))
+                    return {'event_key': event['key'], 'task_id': existing['task_id'], 'status': 'no_change_evidence'}
+                conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
+                             (event['key'], signature, None, 'no_change_evidence', 'baseline_without_change', now, now))
+                return {'event_key': event['key'], 'task_id': None, 'status': 'no_change_evidence'}
             duplicate = conn.execute('SELECT task_id FROM hl_news_dispatch WHERE signature=? AND status!=?',
                                      (signature, 'duplicate')).fetchone()
             if duplicate:

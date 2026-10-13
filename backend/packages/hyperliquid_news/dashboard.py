@@ -7,6 +7,7 @@ from typing import Any
 from packages.common.storage import connect_sqlite
 from .models import Rules
 from .store import NewsStore
+from .eligibility import news_eligibility
 
 KIND_LABELS = {
     'large_position': '巨大持仓', 'oi_share': '未平仓量占比突出', 'market_cap_share': '相当于市值占比突出',
@@ -46,6 +47,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
             if pipeline.get('push_result'):
                 pipeline['push_result'] = json.loads(pipeline['push_result'])
             item['pipeline'] = pipeline
+            item['news_eligibility'] = news_eligibility(item)
             preview = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?',
                                    ('editorial_preview:' + item['key'],)).fetchone()
             if preview:
@@ -62,7 +64,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
         counts = {name: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
                   for name, table in [('addresses', 'hl_news_addresses'), ('events', 'hl_news_candidates')]}
         if dispatch:
-            counts['submitted'] = conn.execute("SELECT count(*) FROM hl_news_dispatch WHERE status!='duplicate'").fetchone()[0]
+            counts['submitted'] = conn.execute("SELECT count(*) FROM hl_news_dispatch WHERE task_id IS NOT NULL AND status!='duplicate'").fetchone()[0]
     return {'initialized': True, 'events': events, 'addresses': addresses, 'rules': asdict(Rules()), 'labels': KIND_LABELS,
             'last_pass': store.metadata('last_pass', {}), 'has_next': len(rows) > page_size, 'page': page,
             'counts': counts, 'publication_mode': 'backend_only',

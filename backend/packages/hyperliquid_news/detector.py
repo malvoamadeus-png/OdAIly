@@ -155,6 +155,25 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if completed and action:
                 kinds.append('large_realized_result')
                 facts['completed_round_results'] = completed
+        # Magnitude qualifies a change; discovering an old state is not a change.
+        magnitude_kinds = {'large_position', 'oi_share', 'market_cap_share', 'large_profit', 'large_loss', 'near_liquidation'}
+        if previous is None or (p is not None and old is None):
+            kinds = [k for k in kinds if k not in magnitude_kinds]
+        elif p is not None and old is not None:
+            important_size_change = abs(abs(p.size) - abs(old.size)) * p.mark >= rules.action
+            if not important_size_change:
+                kinds = [k for k in kinds if k not in {'large_position', 'oi_share', 'market_cap_share'}]
+            if p.unrealized_pnl == old.unrealized_pnl:
+                kinds = [k for k in kinds if k not in {'large_profit', 'large_loss'}]
+        if kinds and previous is not None:
+            facts['news_change'] = {
+                'previous_observed_ms': previous['observed_ms'],
+                'observed_ms': observed_ms,
+                'previous_floating_pnl': str(old.unrealized_pnl) if old else None,
+                'previous_position_value': str(old.notional) if old else None,
+                'previous_size': str(old.size) if old else None,
+                'current_size': str(p.size) if p else '0',
+            }
         facts['trigger_levels'] = current
         if not p and old:
             facts['episode_started_ms'] = (previous or {}).get('episodes', {}).get(coin, (previous or {}).get('observed_ms'))

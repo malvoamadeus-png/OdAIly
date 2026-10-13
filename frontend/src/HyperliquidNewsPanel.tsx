@@ -13,7 +13,7 @@ function time(value: unknown): string {
 const statuses: Record<string, string> = { deduped: '待撰写', writing: '编写者1处理中', written: '草稿完成',
   formatting: '编写者2处理中', publisher_pending: '待挂后台', publishing: '挂后台中', ready_review: '已挂后台',
   write_failed: '撰写失败', format_failed: '定稿失败', publisher_failed: '挂后台失败', duplicate: '重复行为',
-  queued: '已进入写作队列', enqueue_failed: '入队失败', created: '等待入队' };
+  no_change_evidence: '仅监测基线，无变化证据', queued: '已进入写作队列', enqueue_failed: '入队失败', created: '等待入队' };
 
 function Evidence({ event }: { event: HyperliquidNewsEvent }) {
   const e = event.evidence, p = e.position, history = e.history || {}, asset = history.assets?.[event.coin];
@@ -62,9 +62,10 @@ export function HyperliquidNewsPanel() {
         <header><strong>{event.editorial_preview?.title || event.pipeline.final_title || event.pipeline.draft_title || `${event.coin} · ${event.kinds.map(k => data.labels[k] || k).join(' / ')}`}</strong><span>{time(event.observed_ms)}</span></header>
         <p>{event.kinds.map(k => data.labels[k] || k).join(' · ')} · {statuses[event.pipeline.task_status || event.pipeline.dispatch_status || ''] || '硬规则已命中，待投递'}{event.pipeline.task_id ? ` · 任务 #${event.pipeline.task_id}` : ''}</p>
         {(event.pipeline.last_error || event.pipeline.dispatch_error) && <p role="alert">{event.pipeline.last_error || event.pipeline.dispatch_error}</p>}
+        {event.news_eligibility?.eligible === false && <p role="note">仅作监测基线：缺少变化证据，按当前规则不应生成快讯；下方保留历史试稿供对照。</p>}
         <details><summary>为什么触发：地址、持仓与变化</summary><Evidence event={event} /></details>
         {event.editorial_preview && <section>
-          <p>修订预览 · 沿用 {time(event.observed_ms)} 的事实 · 未重新挂后台</p>
+          <p>{event.news_eligibility?.eligible === false ? '历史文本试稿（非合格新闻事件）' : '修订预览'} · 沿用 {time(event.observed_ms)} 的事实 · 未重新挂后台</p>
           <h3>{event.editorial_preview.title}</h3><p className="hlCopy">{event.editorial_preview.content}</p>
           <p>模型：{event.editorial_preview.writer_model} · Prompt版本：{event.editorial_preview.prompt_version_number} · 生成时间：{time(event.editorial_preview.generated_at)}</p>
         </section>}

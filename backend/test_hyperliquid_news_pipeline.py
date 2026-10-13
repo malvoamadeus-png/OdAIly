@@ -25,7 +25,7 @@ A = '0x'+'1'*40
 def event(stamp=1000):
     events, state = evaluate_address(address=A, observed_ms=stamp, first_seen_ms=stamp,
         positions={'STRK': Position('STRK', D(100), D(10000000), D(100000), D(2000000), None)},
-        previous=None, markets={'STRK': {'market_cap': '100000000', 'market_cap_source': 'coingecko', 'oi_notional': '50000000'}},
+        previous={'observed_ms': stamp-1, 'positions': {'STRK': Position('STRK', D(50), D(5000000), D(100000), D(0), None).facts()}}, markets={'STRK': {'market_cap': '100000000', 'market_cap_source': 'coingecko', 'oi_notional': '50000000'}},
         history={}, new_fills=[], rules=Rules())
     from dataclasses import asdict
     return asdict(events[0]), state
@@ -239,3 +239,34 @@ def test_editorial_preview_uses_real_writer_format_and_preserves_original(tmp_pa
     assert task.status=='ready_review'
     with connect_sqlite(repo.path) as conn:
         assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0]==0
+
+
+def test_legacy_first_observation_is_not_dispatchable_news(tmp_path):
+    from packages.hyperliquid_news.models import Candidate
+    repo=SQLiteXProcessingRepository(tmp_path/'db.sqlite');repo.init_schema()
+    store=NewsStore(repo.path);store.initialize()
+    e,state=event();e['evidence'].pop('news_change',None)
+    e['evidence']['first_observation']=True;e['evidence']['previous_position']=None
+    store.discover(A,source={'kind':'test'},now_ms=1000)
+    store.commit_observation(address=A,now_ms=1000,state=state,history={},coverage={},fills=[],candidates=[Candidate(**e)])
+    client=Pipeline()
+    result=EventDispatcher(store,pipeline_client=client).dispatch(limit=1)
+    assert result[0]['status']=='no_change_evidence' and client.jobs==[]
+    assert dashboard(store)['events'][0]['news_eligibility']['eligible'] is False
+    # An old enqueue retry must also be blocked, rather than returned early.
+    with connect_sqlite(repo.path) as conn:
+        conn.execute("UPDATE hl_news_dispatch SET status='enqueue_failed'")
+        conn.commit()
+    assert EventDispatcher(store,pipeline_client=client).dispatch(limit=1)[0]['status']=='no_change_evidence'
+    assert client.jobs==[]
+    with connect_sqlite(repo.path) as conn:
+        assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0]==0
+
+
+def test_change_material_includes_before_after_not_only_current_state():
+    from packages.hyperliquid_news.copy import writer_material
+    e,_=event()
+    facts=writer_material(e)['facts']
+    assert facts['previous_position']['position_value_usd']=='5000000'
+    assert facts['previous_floating_pnl_usd']=='0'
+    assert len(facts['change_period'])==2

@@ -27,12 +27,15 @@ def run_command(args: Any) -> int:
         from packages.x_processing.worker import XProcessingWorker
         from packages.x_processing.models import HYPERLIQUID_SOURCE
         from .preview import generate_preview
+        from .eligibility import news_eligibility
         if not 1 <= len(args.task_ids) <= 10:
             raise ValueError('Preview requires 1..10 task IDs')
         repo = SQLiteXProcessingRepository(path)
         tasks = [repo.get_task(task_id) for task_id in args.task_ids]
         if any(task.source != HYPERLIQUID_SOURCE for task in tasks):
             raise ValueError('Only Hyperliquid tasks support this preview')
+        if any(not news_eligibility(task.raw_payload)['eligible'] for task in tasks):
+            raise ValueError('Baseline without change evidence is not eligible for a news preview')
         settings = load_x_processing_settings()
         worker = XProcessingWorker(stage='write', repository=repo, settings=settings)
         prompt = repo.get_active_prompt('hyperliquid_writer')

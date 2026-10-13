@@ -2517,6 +2517,7 @@ export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> 
 export type HyperliquidNewsEvent = {
   key: string; observed_ms: number; addresses: string[]; coin: string; kinds: string[];
   evidence: Record<string, any>; source_url: string;
+  news_eligibility?: { eligible: boolean; reason: string };
   editorial_preview?: { title: string; content: string; writer_model: string; prompt_version_number: number; generated_at: string };
   pipeline: { task_id?: number; task_status?: string; dispatch_status?: string; dispatch_error?: string;
     draft_title?: string; draft_content?: string; final_title?: string; final_content?: string;

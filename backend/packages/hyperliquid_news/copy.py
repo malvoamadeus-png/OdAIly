@@ -101,8 +101,13 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
     show_pnl = any(k in kinds for k in ('large_profit', 'large_loss', 'profit_giveback',
                                         'profit_to_loss', 'loss_addition', 'near_liquidation'))
     facts: dict[str, Any] = {'position': _position_material(e.get('position'), include_pnl=show_pnl)}
-    if e.get('previous_position') and any(k in kinds for k in ('large_reversal', 'large_position_action', 'loss_addition')):
-        facts['previous_position'] = _position_material(e['previous_position'], include_pnl='loss_addition' in kinds)
+    if e.get('previous_position'):
+        facts['previous_position'] = _position_material(e['previous_position'], include_pnl=show_pnl)
+    change = e.get('news_change')
+    if change:
+        facts['change_period'] = [timestamp(change['previous_observed_ms']), timestamp(change['observed_ms'])]
+        if show_pnl and change.get('previous_floating_pnl') is not None:
+            facts['previous_floating_pnl_usd'] = change['previous_floating_pnl']
     for kind in ('oi_share', 'market_cap_share'):
         ratio = e.get('ratios', {}).get(kind)
         if kind in kinds and ratio is not None:
@@ -125,6 +130,10 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
         short = number(p['size']) < 0
         if liq > 0 and ((short and liq > mark) or (not short and liq < mark)):
             facts['liquidation_price_usd'] = p['liquidation']
+            old = e.get('previous_position')
+            if 'near_liquidation' in kinds and old and old.get('liquidation') is not None:
+                old_mark, old_liq = number(old['mark']), number(old['liquidation'])
+                facts['previous_price_move_to_liquidation_percent'] = str(abs(old_mark-old_liq)/old_mark*100)
             facts['price_move_to_liquidation'] = '上涨' if short else '下跌'
             facts['price_move_to_liquidation_percent'] = str(abs(mark-liq) / mark * 100)
     if 'address_divergence' in kinds:
