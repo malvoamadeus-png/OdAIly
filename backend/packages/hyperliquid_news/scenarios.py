@@ -4,7 +4,7 @@ from __future__ import annotations
 SCENARIOS = [
     ('large_position', '巨大持仓', '持仓达到金额、市值占比或未平仓量占比门槛，并有重要建仓、加减仓变化。', ['large_position', 'large_position_action', 'oi_share', 'market_cap_share'], [], ['large_position', 'action', 'market_cap_share', 'oi_share']),
     ('large_pnl', '巨额单资产浮盈 / 浮亏', '单资产浮盈亏达到门槛，并出现可核对的前后变化；首次快照仅建立基线。', ['large_profit', 'large_loss'], [], ['major_pnl', 'other_pnl']),
-    ('asset_win_rate', '单资产高胜率地址操作', '该资产胜率达到门槛，且发生重要开仓、加仓、减仓、清仓或反手。', ['highlighted_address_action'], ['asset_high_win_rate'], ['win_rate', 'min_rounds', 'action']),
+    ('asset_win_rate', '单资产高胜率地址操作', '该资产胜率达到门槛，且发生至少100万美元的开仓、加仓、减仓、清仓或反手。', ['highlighted_address_action'], ['asset_high_win_rate'], ['win_rate', 'min_rounds', 'win_rate_action']),
     ('asset_profit', '单资产高盈利地址操作', '该资产历史已实现盈利达到门槛，且发生重要操作。', ['highlighted_address_action'], ['asset_high_profit'], ['asset_profit', 'action']),
     ('account_profit', '账户高盈利地址操作', '账户历史盈利或官方周期收益达到门槛，且发生重要操作；两种收益口径分开展示。', ['highlighted_address_action'], ['account_high_profit', 'official_account_high_profit'], ['account_profit', 'action']),
     ('historical_loss', '历史巨亏 / 连亏地址操作', '单资产历史亏损或连续亏损轮数达到门槛，且发生重要操作。', ['highlighted_address_action'], ['historical_loss'], ['historical_loss', 'losing_rounds', 'action']),

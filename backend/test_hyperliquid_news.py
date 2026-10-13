@@ -460,3 +460,23 @@ def test_history_continues_at_500_time_blocks_even_below_2000_fills():
     client=Client();rows,status=client.history(A,0,1000)
     assert len(rows)==501 and status['pagination_complete']
     assert client.requests[1]['startTime']==500
+
+
+@pytest.mark.parametrize('amount,qualifies', [('999999',False),('1000000',True),('2999999',True)])
+def test_win_rate_action_has_own_one_million_threshold(amount,qualifies):
+    h=stats()
+    p=position(size='10',notional=amount)
+    events,_=evaluate(p,previous={'positions':{},'observed_ms':100},
+        fills=[fill(size='10',px=str(D(amount)/10))],history=h)
+    assert ('highlighted_address_action' in kinds(events))==qualifies
+    if qualifies:
+        event=next(e for e in events if 'highlighted_address_action' in e.kinds)
+        assert event.evidence['highlights']==['asset_high_win_rate']
+    assert 'newly_observed_address_position' not in kinds(events)
+
+
+def test_high_profit_only_action_still_requires_three_million():
+    h=stats(win='0.2')
+    events,_=evaluate(position(size='10',notional='1000000'),previous={'positions':{},'observed_ms':100},
+        fills=[fill(size='10',px='100000')],history=h)
+    assert 'highlighted_address_action' not in kinds(events)

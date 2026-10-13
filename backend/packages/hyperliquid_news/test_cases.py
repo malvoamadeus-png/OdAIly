@@ -45,8 +45,11 @@ def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
                     cutoff = old['evidence'].get('test_replay', {}).get('official_pnl_cutoff_ms')
                     if cutoff is not None:
                         event['evidence'].setdefault('test_replay', {})['official_pnl_cutoff_ms'] = cutoff
-                    from .detector import highlights
-                    event['evidence']['highlights'] = highlights(event['evidence']['history'], event['coin'], Rules())
+                    from .detector import highlights, action_highlights
+                    action = event['evidence'].get('actions', {})
+                    event['evidence']['highlights'] = action_highlights(
+                        highlights(event['evidence']['history'], event['coin'], Rules()),
+                        max(number(action.get('open_notional',0)), number(action.get('close_notional',0))), Rules())
                     if 'official_account_high_profit' in event['evidence']['highlights'] and 'highlighted_address_action' not in event['kinds']:
                         event['kinds'].append('highlighted_address_action')
                 if previous['payload'] == encode(event):
@@ -133,11 +136,12 @@ def replay_fills(address: str, fills: list[dict[str, Any]], *, rules: Rules | No
         history = summarize([f for f in all_ordered if int(f['time']) < start],
                             start_ms=0, end_ms=start-1)
         event['evidence']['history'] = history
-        from .detector import highlights
-        labels = highlights(history, event['coin'], rules)
+        from .detector import highlights, action_highlights
+        labels = action_highlights(highlights(history, event['coin'], rules),
+            max(number(event['evidence']['actions']['open_notional']),
+                number(event['evidence']['actions']['close_notional'])), rules)
         event['evidence']['highlights'] = labels
-        if labels and max(number(event['evidence']['actions']['open_notional']),
-                          number(event['evidence']['actions']['close_notional'])) >= rules.action:
+        if labels:
             if 'highlighted_address_action' not in event['kinds']:
                 event['kinds'].append('highlighted_address_action')
         event['test_scenarios'] = case_scenarios(event)

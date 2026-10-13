@@ -42,7 +42,7 @@ def trade_candidates(trades: list[dict[str, Any]], coin: str, rules: Rules, now_
         for address in set(address_key(a) for a in trade.get('users', [])):
             totals[address] = totals.get(address, ZERO) + value
     for address, value in totals.items():
-        if value >= rules.action:
+        if value >= min(rules.action, rules.win_rate_action):
             yield address, {'kind': 'large_observed_trade', 'coin': coin,
                             'sample_notional': str(value), 'observed_ms': now_ms,
                             'basis': 'recent_trades_sample_not_complete_window'}
@@ -55,7 +55,7 @@ def enrichment_reasons(positions: dict[str, Position], sources: list[dict[str, A
         if source['kind'] in ('leaderboard', 'large_observed_trade', 'manual', 'asset_leaderboard'):
             reasons.add(source['kind'])
     for coin, p in positions.items():
-        if p.notional >= rules.action:
+        if p.notional >= min(rules.action, rules.win_rate_action):
             reasons.add('important_position')
         if abs(p.unrealized_pnl) >= rules.pnl_line(coin):
             reasons.add('large_unrealized_pnl')

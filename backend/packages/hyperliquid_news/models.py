@@ -26,6 +26,7 @@ class Rules:
     major_pnl: Decimal = Decimal('5000000')
     other_pnl: Decimal = Decimal('2000000')
     action: Decimal = Decimal('3000000')
+    win_rate_action: Decimal = Decimal('1000000')
     win_rate: Decimal = Decimal('0.70')
     asset_profit: Decimal = Decimal('8000000')
     account_profit: Decimal = Decimal('20000000')
@@ -39,7 +40,7 @@ class Rules:
 
     def __post_init__(self) -> None:
         for key in ('large_position', 'major_pnl', 'other_pnl', 'action', 'asset_profit',
-                    'account_profit', 'historical_loss'):
+                    'account_profit', 'historical_loss', 'win_rate_action'):
             if number(getattr(self, key)) <= 0:
                 raise ValueError(f'{key} must be positive')
         for key in ('oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'):

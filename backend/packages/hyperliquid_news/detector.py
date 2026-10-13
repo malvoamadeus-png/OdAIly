@@ -40,6 +40,11 @@ def level(value: Decimal, threshold: Decimal, rules: Rules) -> int:
     return result
 
 
+def action_highlights(labels: list[str], amount: Decimal, rules: Rules) -> list[str]:
+    return [label for label in labels if amount >= (
+        rules.win_rate_action if label == 'asset_high_win_rate' else rules.action)]
+
+
 def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                      positions: dict[str, Position], previous: dict[str, Any] | None,
                      markets: dict[str, dict[str, Any]], history: dict[str, Any],
@@ -88,7 +93,13 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
     for coin in sorted(set(positions) | set(old_positions) | set(actions)):
         p = positions.get(coin)
         old = old_positions.get(coin)
-        labels = highlights(history, coin, rules)
+        amount = max(actions.get(coin, {}).get('open_notional', ZERO),
+                     actions.get(coin, {}).get('close_notional', ZERO))
+        if previous is not None and old is not None:
+            snapshot_amount = (min(old.notional, p.notional) if p and p.size*old.size < 0
+                               else abs((abs(p.size) if p else ZERO)-abs(old.size)) * (p.mark if p else old.mark))
+            amount = max(amount, snapshot_amount)
+        labels = action_highlights(highlights(history, coin, rules), amount, rules)
         kinds: list[str] = []
         facts: dict[str, Any] = {'position': p.facts() if p else None,
                                   'previous_position': old.facts() if old else None,
@@ -163,7 +174,7 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if max(p.notional if p else ZERO, old.notional if old else ZERO) >= rules.large_position and max(action['open_notional'], action['close_notional']) >= rules.action:
                 kinds.append('large_position_action')
             facts['actions'] = {k: str(v) if isinstance(v, Decimal) else v for k, v in action.items()}
-            if labels and max(action['open_notional'], action['close_notional']) >= rules.action:
+            if labels:
                 kinds.append('highlighted_address_action')
             if action['close_notional'] >= rules.action and abs(action['closed_pnl']) >= rules.pnl_line(coin):
                 kinds.append('large_realized_result')
@@ -179,19 +190,19 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
         # unavailable, but must never imply a reconstructed execution price.
         if previous is not None and old is not None:
             snapshot_amount = abs((abs(p.size) if p else ZERO)-abs(old.size)) * (p.mark if p else old.mark)
-            if snapshot_amount >= rules.action and (p is None or p.size*old.size > 0):
-                if max(old.notional, p.notional if p else ZERO) >= rules.large_position:
+            if snapshot_amount >= min(rules.action, rules.win_rate_action) and (p is None or p.size*old.size > 0):
+                if snapshot_amount >= rules.action and max(old.notional, p.notional if p else ZERO) >= rules.large_position:
                     kinds.append('large_position_action')
                 if labels:
                     kinds.append('highlighted_address_action')
-                if p is not None and old.unrealized_pnl <= -rules.pnl_line(coin) and abs(p.size)>abs(old.size):
+                if snapshot_amount >= rules.action and p is not None and old.unrealized_pnl <= -rules.pnl_line(coin) and abs(p.size)>abs(old.size):
                     kinds.append('loss_addition')
                 facts['net_position_change'] = {
                     'direction': '减仓' if p is None or abs(p.size)<abs(old.size) else '加仓',
                     'side': '多单' if old.size>0 else '空单',
                     'quantity': str(abs((abs(p.size) if p else ZERO)-abs(old.size))),
                     'estimated_value': str(snapshot_amount), 'closed': p is None}
-        if previous is not None and p is not None and old is not None and p.size*old.size < 0 and min(old.notional,p.notional)>=rules.action and labels:
+        if previous is not None and p is not None and old is not None and p.size*old.size < 0 and labels:
             kinds.append('highlighted_address_action')
             facts['net_position_change'] = {'direction':'反手', 'previous_side':'多单' if old.size>0 else '空单',
                                           'side':'多单' if p.size>0 else '空单', 'quantity':str(abs(p.size)),
