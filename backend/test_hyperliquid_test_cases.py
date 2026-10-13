@@ -72,3 +72,28 @@ def test_split_loss_addition_uses_real_cost_and_original_threshold():
     assert any('loss_addition' in e['kinds'] for e in cases)
     e=next(e for e in cases if 'loss_addition' in e['kinds'])
     assert e['evidence']['previous_position']['unrealized_pnl']=='-10000000'
+
+
+def test_official_account_attribute_uses_only_pre_action_samples(tmp_path, monkeypatch):
+    from packages.hyperliquid_news.test_cases import enrich_account_cases
+    path=tmp_path/'account.sqlite';SQLiteXProcessingRepository(path).init_schema()
+    store=NewsStore(path);store.initialize()
+    events=replay_fills(A,[fill(2000,4000,'A',stamp=100)])
+    save_cases(store,events)
+    store.save_global('test_portfolio:'+A,{'data':[['perpAllTime',{'pnlHistory':[[50,'21000000'],[200,'99000000']]}]]},[])
+    assert enrich_account_cases(store,limit=1)['added']==1
+    data=dashboard(store,scenario='account_profit',dataset='test')
+    windows=data['events'][0]['evidence']['history']['official_account_performance']['windows']
+    assert windows['allTime']['pnl']=='21000000' and windows['allTime']['observed_ms']==50
+    assert data['events'][0]['evidence']['test_replay']['official_pnl_cutoff_ms']==99
+    # The same positive result occurring after an action must never qualify it.
+    other=NewsStore(tmp_path/'future.sqlite');SQLiteXProcessingRepository(other.path).init_schema();other.initialize()
+    save_cases(other,events)
+    other.save_global('test_portfolio:'+A,{'data':[['perpAllTime',{'pnlHistory':[[200,'99000000']]}]]},[])
+    assert enrich_account_cases(other,limit=1)['added']==0
+    assert dashboard(other,scenario='account_profit',dataset='test')['events']==[]
+
+
+def test_outcome_settlements_do_not_abort_perp_case_replay():
+    cases=replay_fills(A,[fill(2000,4000,'A'),{**fill(0,1,stamp=200),'coin':'#123','px':'0'}])
+    assert any('large_reversal' in e['kinds'] for e in cases)
