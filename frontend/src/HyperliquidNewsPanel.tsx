@@ -123,7 +123,7 @@ export function HyperliquidNewsPanel() {
     setLoading(true); setError('');
     getHyperliquidNewsDashboard(page, scenarioKey, dataset).then(d => {
       if (!live) return;
-      setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : d.events[0]?.key || null);
+      setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : (dataset === 'test' ? d.events.find(e => e.editorial_preview)?.key : null) || d.events[0]?.key || null);
     }).catch(e => { if (live) setError(String(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [page, scenarioKey, refresh, dataset]);
