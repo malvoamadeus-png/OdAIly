@@ -146,7 +146,7 @@ def summarize(fills: list[dict[str, Any]], *, start_ms: int, end_ms: int,
         'start_ms': start_ms, 'end_ms': end_ms, 'coverage': coverage,
         'fills': len(unique), 'first_observed_fill_ms': min((int(f['time']) for f in unique.values()), default=None),
         'last_observed_fill_ms': max((int(f['time']) for f in unique.values()), default=None), 'assets': assets,
-        'account_closed_pnl_less_fees': str(sum((number(a['closed_pnl_less_fees']) for a in assets.values()), ZERO)),
+        'account_closed_pnl_less_fees': str(sum((number(a['closed_pnl_less_fees']) for a in assets.values()), ZERO)) if assets else None,
         'pnl_scope': 'observed_perp_fills_excluding_funding',
         'fee_currency_complete': not any(a['unsupported_fee_currency'] for a in assets.values()),
     }

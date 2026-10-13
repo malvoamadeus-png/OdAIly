@@ -21,7 +21,8 @@ def highlights(history: dict[str, Any], coin: str, rules: Rules) -> list[str]:
             labels.append('asset_high_profit')
         if pnl <= -rules.historical_loss or asset.get('consecutive_losing_rounds', 0) >= rules.losing_rounds:
             labels.append('historical_loss')
-    if history.get('fee_currency_complete', False) and number(history.get('account_closed_pnl_less_fees', '0')) >= rules.account_profit:
+    if (history.get('fee_currency_complete', False) and history.get('account_closed_pnl_less_fees') is not None
+            and number(history['account_closed_pnl_less_fees']) >= rules.account_profit):
         labels.append('account_high_profit')
     official = history.get('official_account_performance', {})
     if any(number(data['pnl']) >= rules.account_profit for data in official.get('windows', {}).values()):

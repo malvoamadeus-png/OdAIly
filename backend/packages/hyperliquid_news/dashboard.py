@@ -31,10 +31,11 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
                     'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}}
         dispatch = 'hl_news_dispatch' in tables
         joined = '''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
-                    LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id''' if dispatch else ''
+                    LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id
+                    LEFT JOIN prompt_template_versions v ON v.id=p.prompt_version_id''' if dispatch else ''
         columns = '''d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,
                      p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
-                     p.prompt_version_id,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
+                     p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
                      p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
         rows = conn.execute(f'''SELECT c.payload,{columns} FROM hl_news_candidates c {joined}
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1, page*page_size)).fetchall()
@@ -45,6 +46,10 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
             if pipeline.get('push_result'):
                 pipeline['push_result'] = json.loads(pipeline['push_result'])
             item['pipeline'] = pipeline
+            preview = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?',
+                                   ('editorial_preview:' + item['key'],)).fetchone()
+            if preview:
+                item['editorial_preview'] = json.loads(preview['payload'])
             item['source_url'] = 'https://hyperbot.network/trader/' + item['addresses'][0]
             events.append(item)
         addresses = []

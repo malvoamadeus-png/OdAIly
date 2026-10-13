@@ -2517,9 +2517,10 @@ export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> 
 export type HyperliquidNewsEvent = {
   key: string; observed_ms: number; addresses: string[]; coin: string; kinds: string[];
   evidence: Record<string, any>; source_url: string;
+  editorial_preview?: { title: string; content: string; writer_model: string; prompt_version_number: number; generated_at: string };
   pipeline: { task_id?: number; task_status?: string; dispatch_status?: string; dispatch_error?: string;
     draft_title?: string; draft_content?: string; final_title?: string; final_content?: string;
-    writer_model?: string; prompt_version_id?: number; write_completed_at?: string; format_completed_at?: string;
+    writer_model?: string; prompt_version_id?: number; prompt_version_number?: number; write_completed_at?: string; format_completed_at?: string;
     publish_completed_at?: string; last_error?: string; push_result?: Record<string, unknown> };
 };
 export type HyperliquidNewsDashboard = {

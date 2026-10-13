@@ -35,6 +35,7 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
         <div><dt>实际成交样本范围</dt><dd>{time(history.first_observed_fill_ms)} 至 {time(history.last_observed_fill_ms)}</dd></div></>}
       {history.official_account_performance && Object.entries(history.official_account_performance.windows).map(([window, data]) => <div key={window}><dt>官方榜单 PnL · {window}</dt><dd>{money((data as any).pnl)} · 排名 {(data as any).rank}</dd></div>)}
       {e.actions && <><div><dt>本次取得开 / 平仓成交</dt><dd>{money(e.actions.open_notional)} / {money(e.actions.close_notional)}</dd></div><div><dt>本次成交已实现盈亏</dt><dd>{money(e.actions.closed_pnl)}</dd></div></>}
+      {p?.liquidation && <div><dt>当前清算价</dt><dd>{Number(p.liquidation).toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 美元</dd></div>}
       {e.liquidation_distance !== undefined && <div><dt>距清算价</dt><dd>{(Number(e.liquidation_distance) * 100).toFixed(2)}%（非清算预测）</dd></div>}
     </dl>
     {e.sides && <div className="hlFacts">{Object.entries(e.sides).map(([side, addresses]) => <p key={side}>{side === 'long' ? '多方' : '空方'}：{(addresses as string[]).map(a => `${a}（${money(e.positions?.[a]?.notional)}）`).join('；')}</p>)}</div>}
@@ -58,14 +59,19 @@ export function HyperliquidNewsPanel() {
     {data && tab === 'events' && <>
       <p>{data.counts.events || 0} 条事件 · {data.counts.submitted || 0} 条已投递 · 强制挂后台</p>
       {data.events.map(event => <article className="hlEvent" key={event.key}>
-        <header><strong>{event.pipeline.final_title || event.pipeline.draft_title || `${event.coin} · ${event.kinds.map(k => data.labels[k] || k).join(' / ')}`}</strong><span>{time(event.observed_ms)}</span></header>
+        <header><strong>{event.editorial_preview?.title || event.pipeline.final_title || event.pipeline.draft_title || `${event.coin} · ${event.kinds.map(k => data.labels[k] || k).join(' / ')}`}</strong><span>{time(event.observed_ms)}</span></header>
         <p>{event.kinds.map(k => data.labels[k] || k).join(' · ')} · {statuses[event.pipeline.task_status || event.pipeline.dispatch_status || ''] || '硬规则已命中，待投递'}{event.pipeline.task_id ? ` · 任务 #${event.pipeline.task_id}` : ''}</p>
         {(event.pipeline.last_error || event.pipeline.dispatch_error) && <p role="alert">{event.pipeline.last_error || event.pipeline.dispatch_error}</p>}
         <details><summary>为什么触发：地址、持仓与变化</summary><Evidence event={event} /></details>
-        <details open={Boolean(event.pipeline.final_content)}><summary>快讯与流程记录</summary>
+        {event.editorial_preview && <section>
+          <p>修订预览 · 沿用 {time(event.observed_ms)} 的事实 · 未重新挂后台</p>
+          <h3>{event.editorial_preview.title}</h3><p className="hlCopy">{event.editorial_preview.content}</p>
+          <p>模型：{event.editorial_preview.writer_model} · Prompt版本：{event.editorial_preview.prompt_version_number} · 生成时间：{time(event.editorial_preview.generated_at)}</p>
+        </section>}
+        <details open={!event.editorial_preview && Boolean(event.pipeline.final_content)}><summary>{event.editorial_preview ? '原稿与流程记录' : '快讯与流程记录'}</summary>
           <h3>{event.pipeline.final_title || event.pipeline.draft_title || '等待编写'}</h3><p className="hlCopy">{event.pipeline.final_content || event.pipeline.draft_content || '暂未生成'}</p>
           <p>编写完成：{time(event.pipeline.write_completed_at)} · 定稿：{time(event.pipeline.format_completed_at)} · 挂后台：{time(event.pipeline.publish_completed_at)}</p>
-          <p>模型：{event.pipeline.writer_model || '—'} · Prompt版本：{event.pipeline.prompt_version_id || '—'}</p>
+          <p>模型：{event.pipeline.writer_model || '—'} · Prompt版本：{event.pipeline.prompt_version_number || '—'}</p>
           <a href={event.source_url} target="_blank" rel="noreferrer">原文链接（Hyperbot目标地址）</a>
           {event.pipeline.push_result && <pre>{JSON.stringify(event.pipeline.push_result, null, 2)}</pre>}
         </details>

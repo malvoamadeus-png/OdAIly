@@ -166,9 +166,9 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 
 用户确认不增加新闻价值筛选。每条硬规则事件只经过事件/行为重复控制，不调用判断者、搜索者或发布者价值模型。`dispatch.py` 用事件键与结构化行为指纹，在同一 SQLite 事务中落库 task 与投递映射；队列提交失败保留同一个 task 重试。硬规则状态持续不变已经在检测层抑制，投递层再做持久化去重。
 
-`hyperliquid_writer` 为独立、可版本化 Prompt，初始文件 `Hyperliquid快讯模板.txt`。编写者1只写标题与描述性中间正文，保留必要统计范围；不写固定开头、地址尾部或链接。输入材料只保留当前资产历史汇总，不把所有完整交易轮数组塞进模型；原始证据仍留库可审计。
+`hyperliquid_writer` 为独立、可版本化 Prompt，初始文件 `Hyperliquid快讯模板.txt`。编写者1只写标题与描述性中间正文，保留必要统计范围；不写固定开头、地址尾部或链接。输入采用明确字段白名单，只提供实际命中规则对应的新闻事实；发现地址的榜单排名、负收益、接口与观察状态不进入写作材料。历史亮点只在重要操作或多空分歧事件中提供，单纯大仓/浮盈/浮亏事件不附带历史账户成绩；原始证据仍留库可审计。
 
-编写者2来源分支复用 `format_brief` 校验/格式化，随后固定开头 `据Odaily监测，`，确定性填入与当前事件相关的数据尾部：地址、合约、仓位、浮盈亏、占比或回吐、统计范围、单资产已实现盈亏/完整轮数/胜率、官方周期 PnL。没有可靠整体总盈利时不编造总盈利。原文链接使用首个目标地址的 Hyperbot 页面，`sourceUrl` 不让模型生成。
+编写者2来源分支复用 `format_brief` 校验/格式化，随后固定开头 `据Odaily监测，`，确定性尾部默认只写地址；单资产高胜率地址的重要操作补该资产交易轮数、胜率、统计日期。持仓、盈亏、占比、回吐与清算价放在正文，不重复填尾部。读者文本不输出来源解释、API、技术名词或统计免责声明；未知历史不编造成零，也不称全部历史总收益。原文链接使用首个目标地址的 Hyperbot 页面，`sourceUrl` 不让模型生成。
 
 `hyperliquid_news` 直接从 `deduped` 状态进入共享 `write / format_publish / publish`，跳过 judge/search。发布阶段强制挂后台，与常规/AI信源发布开关无关，`isPublish=false / isPush=false`，使用稳定 task Idempotency-Key。正文、Prompt 版本、模型、流程时间及提交结果都复用共享流水线留存。
 
@@ -181,13 +181,15 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 .venv/bin/python backend/src/main.py hyperliquid-news collect --addresses-per-pass 6 --leaderboard-seeds 2 --markets-per-discovery 3
 .venv/bin/python backend/src/main.py hyperliquid-news dispatch --limit 3
 .venv/bin/python backend/src/main.py hyperliquid-news status --page 0
+.venv/bin/python backend/src/main.py hyperliquid-news activate-prompt
+.venv/bin/python backend/src/main.py hyperliquid-news preview --task-ids 827705 827706 827707
 ```
 
-`init` 初始化主 SQLite 独立表及专用 Prompt；不覆盖已经发布的 Prompt 版本。`collect` 只取得公开事实、不投递；可传 `--market-cap-mapping` 指向服务器本地运行配置。`dispatch` 最多按 limit 投递，可以用 `--event-keys` 精确指定样稿事件；超出 1..100 拒绝执行。`status` 查看候选与共享流水线结果。采集、生成、投递分开，可单独复盘和重试。
+`init` 初始化主 SQLite 独立表及专用 Prompt；不覆盖已经发布的 Prompt 版本。`collect` 只取得公开事实、不投递；可传 `--market-cap-mapping` 指向服务器本地运行配置。`dispatch` 最多按 limit 投递，可以用 `--event-keys` 精确指定样稿事件；超出 1..100 拒绝执行。`status` 查看候选与共享流水线结果。`activate-prompt` 读取已提交的专用模板全文，事务内创建并激活新版本；内容相同不新增版本，旧版本不覆盖。`preview` 接受 1..10 个已有 Hyperliquid task，调用相同编写者1/编写者2路径，将修订结果保存到事件关联元数据；不修改原任务状态、不入队、不调用挂稿或发布接口。写作失败不覆盖已成功预览。采集、生成、投递分开，可单独复盘和重试。
 
 
 ### 官方服务器首轮试稿结果
 
 已限量采集 6 个地址，命中 3 条候选；以任务 `827705 / 827706 / 827707` 进入共用写作链路，三条均 `ready_review`，挂后台接口返回 HTTP 200/ok，`dry_run=false`。分别覆盖 HYPE 巨额浮亏、HYPE 大仓与巨额浮盈、ETH 大仓。没有自动发布，没有启动常驻采集。
 
-首轮 Prompt 版本暴露“首次观察”等内部说明进入读者正文和普通清算距离堆入正文的问题。模板进一步明确不输出内部术语、不展开未命中门槛的普通指标；程序尾部仅在接近清算事件提供清算距离，没有成交样本时不填账户已观察成交收益为零，金额舍入为零不显示负零。已挂后台样稿保留供用户评阅，不重发同一事实。后续确认后才决定常驻运行。
+首轮稿件暴露技术术语、免责声明、榜单抢占主线、正文尾部重复等问题。修订版白名单输入排除无关发现信息，使用多单/空单价值与浮盈/浮亏表达；不列 OI 分母；仅巨大浮亏或接近清算事件提供当前接口清算价及到达该价格所需的不利涨跌幅，正文写条件句，不写非清算预测。估值价格不冒充最新成交价，默认省略价格。空成交历史的账户交易收益存 null；小额其他资产历史不作为本资产或账户完整收益。页面版本号读取关联版本的 version_number，不把数据库行 id 当版本。原稿保留，修订预览单独展示且标明事实观察时间；后续确认后才决定常驻运行。

@@ -34,58 +34,16 @@ def source_url(event: dict[str, Any]) -> str:
 
 
 def footer(event: dict[str, Any]) -> str:
-    evidence = event['evidence']
-    coin = event['coin']
-    lines = ['地址：' + '；'.join(address_key(a) for a in event['addresses']), f'合约：{coin}']
-    p = evidence.get('position')
-    if p:
-        direction = '多仓' if number(p['size']) > 0 else '空仓'
-        lines += [f'当前持仓：{direction}，名义价值 {money(p["notional"])}',
-                  f'当前浮盈亏：{money(p["unrealized_pnl"])}']
-    market = evidence.get('market', {})
-    ratios = evidence.get('ratios', {})
-    if 'market_cap_share' in event['kinds'] and market.get('market_cap'):
-        lines += [f'代币市值：{money(market["market_cap"])}（{market.get("market_cap_source", "外部市值来源")}）',
-                  f'持仓相当于市值：{number(ratios["market_cap_share"]) * 100:.2f}%']
-    if 'oi_share' in event['kinds'] and ratios.get('oi_share'):
-        lines.append(f'占本合约未平仓名义金额：{number(ratios["oi_share"]) * 100:.2f}%')
-    peak = evidence.get('episode_peak_unrealized_pnl')
-    if peak is not None and p:
-        lines += [f'监测期间浮盈峰值：{money(peak)}',
-                  f'浮盈回吐：{money(number(peak) - number(p["unrealized_pnl"]))}']
-        if evidence.get('episode_peak_ms'):
-            lines.append(f'峰值观察时间：{timestamp(evidence["episode_peak_ms"])}（北京时间）')
-    history = evidence.get('history', {})
-    asset = history.get('assets', {}).get(coin)
-    if asset:
-        start = history.get('first_observed_fill_ms')
-        end = history.get('last_observed_fill_ms')
-        if start is not None and end is not None:
-            lines.append(f'成交样本时间：{timestamp(start)} 至 {timestamp(end)}（北京时间）')
-        lines.append(f'{coin} 已观察成交已实现盈亏：{money(asset["closed_pnl_less_fees"])}（扣可计价手续费，不含资金费）')
-        lines.append(f'{coin} 完整交易轮数：{asset["rounds"]}')
-        if asset.get('win_rate') is not None:
-            lines.append(f'{coin} 胜率：{number(asset["win_rate"]) * 100:.2f}%')
-        lines.append('统计范围：已取得的成交样本，非保证完整历史')
-    official = history.get('official_account_performance', {})
-    for window, data in official.get('windows', {}).items():
-        label = {'day': '近1天', 'week': '近7天', 'month': '近30天', 'allTime': '全部时间'}.get(window, window)
-        lines.append(f'官方榜单账户 PnL（{label}）：{money(data["pnl"])}')
-    if history.get('fills', 0) > 0 and history.get('fee_currency_complete') and history.get('account_closed_pnl_less_fees') is not None:
-        lines.append(f'账户已观察合约成交已实现盈亏：{money(history["account_closed_pnl_less_fees"])}（不含资金费）')
-    action = evidence.get('actions', {})
-    if action:
-        lines += [f'本次取得成交开仓金额：{money(action["open_notional"])}',
-                  f'本次取得成交平仓金额：{money(action["close_notional"])}']
-    for result in evidence.get('completed_round_results', []):
-        lines.append(f'本轮平仓累计已实现盈亏：{money(result["pnl"])}')
-    if 'near_liquidation' in event['kinds'] and evidence.get('liquidation_distance') is not None:
-        lines.append(f'观察时点距清算价：{number(evidence["liquidation_distance"]) * 100:.2f}%（非清算预测）')
-    if evidence.get('sides'):
-        for side, addresses in evidence['sides'].items():
-            for address in addresses:
-                pos = evidence['positions'][address]
-                lines.append(f'{"多方" if side == "long" else "空方"}地址 {address}：持仓 {money(pos["notional"])}')
+    """Only supplemental statistics; narrative position facts belong in the body."""
+    lines = ['地址：' + '；'.join(address_key(a) for a in event['addresses'])]
+    if 'highlighted_address_action' in event['kinds']:
+        history = event['evidence'].get('history', {})
+        asset = history.get('assets', {}).get(event['coin'], {})
+        if 'asset_high_win_rate' in event['evidence'].get('highlights', []) and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
+            lines.append(f'{event["coin"]} 交易轮数：{asset["rounds"]}；胜率：{number(asset["win_rate"]) * 100:.2f}%')
+            start, end = history.get('first_observed_fill_ms'), history.get('last_observed_fill_ms')
+            if start is not None and end is not None:
+                lines.append(f'统计时间：{timestamp(start)[:10]} 至 {timestamp(end)[:10]}')
     return '\n'.join(lines)
 
 
@@ -99,20 +57,82 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     return DraftBrief(title=normalized.title, content=PREFIX + body + '\n' + footer(event))
 
 
-def writer_material(event: dict[str, Any]) -> dict[str, Any]:
-    """Keep relevant facts while avoiding thousands of historical round arrays."""
-    from copy import deepcopy
-    result = deepcopy(event)
-    evidence = result['evidence']
+def _position_material(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    return {'direction': '多单' if number(raw['size']) > 0 else '空单',
+            'quantity': str(abs(number(raw['size']))), 'position_value_usd': raw['notional'],
+            'floating_pnl_usd': raw['unrealized_pnl']}
+
+
+def _highlight_material(evidence: dict[str, Any], coin: str) -> dict[str, Any]:
     history = evidence.get('history', {})
-    assets = history.get('assets', {})
-    selected = assets.get(event['coin'])
-    if selected is not None:
-        selected.pop('completed_round_pnl', None)
-        selected.pop('completed_rounds', None)
-    if 'assets' in history:
-        history['assets'] = {event['coin']: selected} if selected is not None else {}
-    for h in evidence.get('histories', {}).values():
-        asset = h.get('assets', {}).get(event['coin'])
-        h['assets'] = {event['coin']: {k: v for k, v in asset.items() if k not in ('completed_round_pnl', 'completed_rounds')}} if asset else {}
-    return result
+    asset = history.get('assets', {}).get(coin, {})
+    labels = evidence.get('highlights', [])
+    facts: dict[str, Any] = {}
+    if 'asset_high_win_rate' in labels and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
+        facts['asset_win_rate'] = asset['win_rate']
+        facts['asset_trade_rounds'] = asset['rounds']
+    if any(label in labels for label in ('asset_high_profit', 'historical_loss')) and asset.get('closed_pnl_less_fees') is not None:
+        facts['asset_trading_pnl_usd'] = asset['closed_pnl_less_fees']
+        if asset.get('consecutive_losing_rounds', 0):
+            facts['asset_consecutive_losing_rounds'] = asset['consecutive_losing_rounds']
+    if 'account_high_profit' in labels and history.get('fills', 0) > 0 and history.get('account_closed_pnl_less_fees') is not None:
+        facts['account_trading_pnl_usd'] = history['account_closed_pnl_less_fees']
+    if 'official_account_high_profit' in labels:
+        # Positive performance is eligible background only for an actual action.
+        threshold = number(evidence.get('threshold_rules', {}).get('account_profit', '20000000'))
+        facts['account_period_performance'] = [
+            {'period': {'day': '近1天', 'week': '近7天', 'month': '近30天', 'allTime': '累计'}.get(window, window),
+             'profit_usd': data['pnl']}
+            for window, data in history.get('official_account_performance', {}).get('windows', {}).items()
+            if number(data['pnl']) >= threshold]
+    if facts and history.get('first_observed_fill_ms') is not None and history.get('last_observed_fill_ms') is not None:
+        facts['trading_period'] = [timestamp(history['first_observed_fill_ms'])[:10], timestamp(history['last_observed_fill_ms'])[:10]]
+    return facts
+
+
+def writer_material(event: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist editorial facts. Full provenance remains in the admin evidence."""
+    from .dashboard import KIND_LABELS
+    e, kinds = event['evidence'], event['kinds']
+    facts: dict[str, Any] = {'position': _position_material(e.get('position'))}
+    if e.get('previous_position') and any(k in kinds for k in ('large_reversal', 'large_position_action', 'loss_addition')):
+        facts['previous_position'] = _position_material(e['previous_position'])
+    for kind in ('oi_share', 'market_cap_share'):
+        ratio = e.get('ratios', {}).get(kind)
+        if kind in kinds and ratio is not None:
+            facts[kind + '_percent'] = str(number(ratio) * 100)
+            if kind == 'market_cap_share':
+                facts['token_market_cap_usd'] = e.get('market', {}).get('market_cap')
+    if any(k in kinds for k in ('profit_giveback', 'profit_to_loss')):
+        facts['peak_floating_profit_usd'] = e.get('episode_peak_unrealized_pnl')
+        if e.get('episode_peak_ms') is not None:
+            facts['peak_time'] = timestamp(e['episode_peak_ms'])
+    if e.get('actions'):
+        facts['actions'] = {k: v for k, v in e['actions'].items() if k != 'fill_keys'}
+    if e.get('completed_round_results'):
+        facts['completed_round_results'] = e['completed_round_results']
+    if 'highlighted_address_action' in kinds:
+        facts['historical_highlights'] = _highlight_material(e, event['coin'])
+    p = e.get('position')
+    if p and p.get('liquidation') is not None and any(k in kinds for k in ('large_loss', 'near_liquidation')):
+        mark, liq = number(p['mark']), number(p['liquidation'])
+        short = number(p['size']) < 0
+        if liq > 0 and ((short and liq > mark) or (not short and liq < mark)):
+            facts['liquidation_price_usd'] = p['liquidation']
+            facts['price_move_to_liquidation'] = '上涨' if short else '下跌'
+            facts['price_move_to_liquidation_percent'] = str(abs(mark-liq) / mark * 100)
+    if 'address_divergence' in kinds:
+        facts['sides'] = e['sides']
+        facts['positions'] = {a: _position_material(p) for a, p in e['positions'].items()}
+        from .detector import highlights
+        from .models import Rules
+        defaults = Rules()
+        rules = Rules(**{k: number(v) if isinstance(getattr(defaults, k), Decimal) else int(v)
+                         for k, v in e.get('threshold_rules', {}).items()})
+        facts['address_highlights'] = {a: _highlight_material({'history': h,
+            'highlights': highlights(h, event['coin'], rules),
+            'threshold_rules': e.get('threshold_rules', {})}, event['coin'])
+            for a, h in e.get('histories', {}).items()}
+    return {'coin': event['coin'], 'trigger_rules': [KIND_LABELS.get(k, k) for k in kinds], 'facts': facts}
