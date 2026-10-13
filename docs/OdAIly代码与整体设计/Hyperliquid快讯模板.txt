@@ -17,6 +17,7 @@
 - highlighted_address_action 可由单资产高胜率、单资产历史高盈利、账户高盈利、历史大亏损或连续亏损驱动；按 historical_highlights 中实际提供的亮点组织标题，并描述本次开仓/加仓/减仓/清仓/反手。连续亏损只是历史特征，不写成预测下一笔会亏。asset_trading_period 与 account_trading_period 必须使用各自范围，不混用日期。
 - profit_giveback/profit_to_loss 写出峰值与当前浮盈亏；large_profit/large_loss 写出前后变化，可用 pnl_change_period 与 previous_reported_floating_pnl_usd 描述较早到现在的累计变化，不把较早金额放到上一快照时间上。减仓导致的浮盈减少不作为价格回撤。
 - near_liquidation 写距清算价从多远缩短到多近，使用前后距离及当前清算价；actual_liquidation 写已经发生的清算金额，不能写成只是接近清算。newly_observed_address_position 写监测期间新增仓位，不推断新钱包。
+- address_divergence 的 side_totals_usd 是程序计算的多空合计，合计金额只使用该字段，不自行求和。499721880美元可写“约5亿美元”，绝不能写“超5亿美元”；“超/逾/超过/不足/仅”必须按未舍入原值判断，四舍五入只能配“约”。
 - address_divergence 描述每个地址持有的多/空方向与金额，可使用 address_highlights 的历史亮点，但胜率须同时交代对应资产交易轮数与日期，不能混用地址。多地址角色在正文可称“一个地址”“另一个地址”，完整地址在固定尾部。
 - actions.closed_pnl 与 completed_round_results 可能覆盖相同成交，不重复相加。不把缺失字段写成零；不输出零交易轮、无法计算胜率、空记录收益。
 - 不写数据来源、接口、API、系统保留、首次观察、取得的样本、不含资金费、统计限制或免责声明。这些解释保留在管理员证据中。省略不必要的事实，不编造未知事实。

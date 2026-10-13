@@ -104,6 +104,7 @@ def test_every_direction_reaches_searchable_task_and_reader_material(tmp_path,na
     if name in ('profit_giveback','profit_to_loss'):
         assert facts['peak_floating_profit_usd']=='8000000'
     if name=='actual_liquidation':assert facts['actions']['liquidated_notional']=='10000000'
+    if name=='address_divergence':assert facts['side_totals_usd']=={'long':'10000000','short':'10000000'}
     if name=='near_liquidation':assert facts['previous_price_move_to_liquidation_percent']=='20.0'
     final=format_news(DraftBrief(title='事件报道',content='某地址发生重要仓位变化。'),event)
     assert final.content.startswith('据Odaily监测，') and A in final.content

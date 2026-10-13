@@ -154,6 +154,8 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
             facts['price_move_to_liquidation_percent'] = str(abs(mark-liq) / mark * 100)
     if 'address_divergence' in kinds:
         facts['sides'] = e['sides']
+        facts['side_totals_usd'] = {side: str(sum((number(e['positions'][a]['notional']) for a in addresses), Decimal(0)))
+                                    for side, addresses in e['sides'].items()}
         facts['positions'] = {a: _position_material(p) for a, p in e['positions'].items()}
         from .detector import highlights
         from .models import Rules
