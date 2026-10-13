@@ -8,6 +8,7 @@ from packages.common.storage import connect_sqlite
 from .models import Rules
 from .store import NewsStore
 from .eligibility import news_eligibility
+from .scenarios import SCENARIOS, scenario_cards, scenario_condition
 
 KIND_LABELS = {
     'large_position': '巨大持仓', 'oi_share': '未平仓量占比突出', 'market_cap_share': '相当于市值占比突出',
@@ -19,17 +20,18 @@ KIND_LABELS = {
 }
 
 
-def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[str, Any]:
+def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario: str | None = None) -> dict[str, Any]:
     if page < 0 or not 1 <= page_size <= 100:
         raise ValueError('Invalid page')
+    condition = scenario_condition(scenario) if scenario else '1=1'
     if not store.path.exists():
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
-                'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}}
+                'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(), 'scenario': scenario}
     with connect_sqlite(store.path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'hl_news_candidates' not in tables:
             return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
-                    'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}}
+                    'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(), 'scenario': scenario}
         dispatch = 'hl_news_dispatch' in tables
         joined = '''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
                     LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id
@@ -38,8 +40,11 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
                      p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
                      p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
                      p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
-        rows = conn.execute(f'''SELECT c.payload,{columns} FROM hl_news_candidates c {joined}
+        rows = conn.execute(f'''SELECT c.payload,{columns} FROM hl_news_candidates c {joined} WHERE {condition}
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1, page*page_size)).fetchall()
+        count_columns = ','.join(f'SUM(CASE WHEN {scenario_condition(s[0])} THEN 1 ELSE 0 END) AS "{s[0]}"' for s in SCENARIOS)
+        scenario_counts = dict(conn.execute(f'SELECT {count_columns} FROM hl_news_candidates c').fetchone())
+        scenarios = scenario_cards({k: v or 0 for k, v in scenario_counts.items()})
         events = []
         for row in rows[:page_size]:
             item = json.loads(row['payload'])
@@ -69,5 +74,5 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30) -> dict[s
             counts['submitted'] = conn.execute("SELECT count(*) FROM hl_news_dispatch WHERE task_id IS NOT NULL AND status!='duplicate'").fetchone()[0]
     return {'initialized': True, 'events': events, 'addresses': addresses, 'rules': asdict(Rules()), 'labels': KIND_LABELS,
             'last_pass': store.metadata('last_pass', {}), 'has_next': len(rows) > page_size, 'page': page,
-            'counts': counts, 'publication_mode': 'backend_only',
+            'counts': counts, 'scenarios': scenarios, 'scenario': scenario, 'publication_mode': 'backend_only',
             'flow': ['硬规则命中', '内部行为防重', '搜索者（跨来源查重）', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}

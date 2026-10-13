@@ -330,3 +330,48 @@ def test_same_hyperbot_profile_or_generic_heading_is_not_exact_duplicate():
     old=SearchDocument(doc_type='candidate',doc_id='old',title=query.title,
         content='昨日减仓至5000万美元',source='x',source_url=query.source_url)
     assert exact_duplicate_decision(query=query,documents=[old],target_type='inflight_candidate') is None
+
+
+def test_dashboard_fixed_scenarios_without_data(tmp_path):
+    from packages.hyperliquid_news.scenarios import SCENARIOS
+    store = NewsStore(tmp_path / 'empty.sqlite')
+    data = dashboard(store, scenario='giveback')
+    assert not data['initialized'] and len(data['scenarios']) == 13
+    assert [s['key'] for s in data['scenarios']] == [s[0] for s in SCENARIOS]
+    assert all(s['count'] == 0 for s in data['scenarios'])
+    assert not store.path.exists()  # Reading an empty dashboard must not create state.
+    with pytest.raises(ValueError, match='Unknown Hyperliquid scenario'):
+        dashboard(store, scenario="x' OR 1=1")
+
+
+def test_dashboard_scenario_counts_and_pagination_are_not_global(tmp_path):
+    from packages.hyperliquid_news.store import encode
+    path = tmp_path / 'scenarios.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path)
+    store.initialize()
+    e, _ = event()
+    # Newer records from other directions must not hide older matching records.
+    samples = [
+        ('win-old', 1, ['highlighted_address_action'], ['asset_high_win_rate']),
+        ('win-new', 2, ['highlighted_address_action'], ['asset_high_win_rate', 'asset_high_profit']),
+        ('account', 3, ['highlighted_address_action'], ['official_account_high_profit']),
+        ('loss', 4, ['highlighted_address_action'], ['historical_loss']),
+        ('position', 5, ['large_position', 'oi_share', 'large_position_action'], []),
+        ('giveback', 6, ['profit_giveback', 'profit_to_loss'], []),
+    ]
+    with connect_sqlite(path) as conn:
+        for key, stamp, kinds, highlights in samples:
+            item = {**e, 'key': key, 'observed_ms': stamp, 'kinds': kinds,
+                    'evidence': {**e['evidence'], 'highlights': highlights}}
+            conn.execute('INSERT INTO hl_news_candidates VALUES(?,?,?,?)', (key, stamp, e['coin'], encode(item)))
+    first = dashboard(store, scenario='asset_win_rate', page_size=1)
+    assert [e['key'] for e in first['events']] == ['win-new'] and first['has_next']
+    counts = {s['key']: s['count'] for s in first['scenarios']}
+    assert counts == dict(large_position=1, large_pnl=0, asset_win_rate=2, asset_profit=1,
+                         account_profit=1, historical_loss=1, reversal=0, giveback=1,
+                         loss_addition=0, realized=0, liquidation=0, divergence=0, new_address=0)
+    second = dashboard(store, scenario='asset_win_rate', page_size=1, page=1)
+    assert [e['key'] for e in second['events']] == ['win-old'] and not second['has_next']
+    assert dashboard(store, scenario='divergence')['events'] == []
+    assert first['counts']['events'] == 6  # One record can belong to several directions.

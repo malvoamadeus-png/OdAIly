@@ -2529,7 +2529,8 @@ export type HyperliquidNewsDashboard = {
   initialized: boolean; events: HyperliquidNewsEvent[]; addresses: Array<Record<string, any>>;
   rules: Record<string, unknown>; labels: Record<string, string>; last_pass: Record<string, any>;
   counts: Record<string, number>; page: number; has_next: boolean; flow?: string[];
+  scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number }>; scenario: string | null;
 };
-export async function getHyperliquidNewsDashboard(page = 0): Promise<HyperliquidNewsDashboard> {
-  return consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page });
+export async function getHyperliquidNewsDashboard(page = 0, scenario = 'large_position'): Promise<HyperliquidNewsDashboard> {
+  return consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page, scenario });
 }

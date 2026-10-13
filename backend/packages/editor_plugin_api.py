@@ -731,7 +731,8 @@ class EditorPluginNewsGenService:
         from packages.common.storage import load_storage_settings
         from packages.hyperliquid_news.dashboard import dashboard
         from packages.hyperliquid_news.store import NewsStore
-        return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)))
+        return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)),
+                         scenario=payload.get('scenario') or None)
 
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
