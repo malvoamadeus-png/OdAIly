@@ -1,0 +1,67 @@
+{
+  "observations": [
+    {
+      "observed_ms": 1000,
+      "markets": {
+        "xyz:CL": {
+          "oi_notional": "50000000"
+        }
+      },
+      "addresses": {
+        "0x1111111111111111111111111111111111111111": {
+          "positions": [
+            {
+              "coin": "xyz:CL",
+              "szi": "100",
+              "positionValue": "10000000",
+              "unrealizedPnl": "6000000",
+              "liquidationPx": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "observed_ms": 2000,
+      "markets": {
+        "xyz:CL": {
+          "oi_notional": "50000000"
+        }
+      },
+      "addresses": {
+        "0x1111111111111111111111111111111111111111": {
+          "positions": [
+            {
+              "coin": "xyz:CL",
+              "szi": "100",
+              "positionValue": "10000000",
+              "unrealizedPnl": "2000000",
+              "liquidationPx": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "observed_ms": 3000,
+      "markets": {
+        "xyz:CL": {
+          "oi_notional": "50000000"
+        }
+      },
+      "addresses": {
+        "0x1111111111111111111111111111111111111111": {
+          "positions": [
+            {
+              "coin": "xyz:CL",
+              "szi": "100",
+              "positionValue": "10000000",
+              "unrealizedPnl": "-100000",
+              "liquidationPx": null
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

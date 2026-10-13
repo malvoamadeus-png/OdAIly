@@ -64,4 +64,3 @@ def enrichment_reasons(positions: dict[str, Position], sources: list[dict[str, A
             if denominator > 0 and p.notional / denominator >= threshold:
                 reasons.add(field + '_share')
     return sorted(reasons)
-
