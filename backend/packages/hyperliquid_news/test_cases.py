@@ -182,7 +182,7 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12)
                 fills=client._post_info({'type':'userFills','user':address,'aggregateByTime':False})
                 if not isinstance(fills,list):raise ValueError('Unexpected fills')
                 store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,'source':'userFills_latest_retained_sample'},[])
-            cases=replay_fills(address,fills)
+            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)
             save_cases(store,cases)
             report['processed']+=1
             report['case_count']+=len(cases)
@@ -232,4 +232,109 @@ def preview_cases(store: NewsStore, *, limit: int = 15) -> dict[str, Any]:
             print(encode({'event_key':event['key'],'scenarios':case_scenarios(event),'title':result['title']}),flush=True)
         except Exception as exc:report['failed'][event['key']]=str(exc)
     store.save_global('test_preview_progress',report,[])
+    return report
+
+
+def replay_execution_prices(address: str, fills: list[dict[str, Any]], *, rules: Rules | None = None) -> list[dict[str, Any]]:
+    """Test-only cost reconstruction using closedPnl and actual fill prices.
+
+    Before a closing fill, entry = execution price minus closed PnL / signed
+    closed quantity. Walk backwards through preceding additions to establish
+    the first sampled cost. Reject gaps/ambiguous order or inconsistent costs.
+    This is price-referenced floating PnL, not a saved historical mark snapshot.
+    """
+    rules=rules or Rules()
+    groups={}
+    for f in {fill_key(f):f for f in fills if perp_fill(f)}.values():groups.setdefault(f['coin'],[]).append(f)
+    result=[]
+    for coin,items in groups.items():
+        ordered=_ordered_by_position(items)
+        # Partition into position-continuous paths.
+        paths=[];path=[];expected=None
+        for f in ordered:
+            before=number(f['startPosition'])
+            if f.get('_ambiguous_order') or expected is not None and before!=expected:
+                if path:paths.append(path)
+                path=[]
+            if f.get('_ambiguous_order'):
+                expected=None;continue
+            path.append(f);expected=before+(number(f['sz']) if f['side']=='B' else -number(f['sz']))
+        if path:paths.append(path)
+        for path in paths:
+            cost=None
+            if number(path[0]['startPosition'])==0:cost=ZERO
+            else:
+                # First close establishes the cost at that point; preceding
+                # fills must be additions of the same side to walk backwards.
+                seed_index=next((i for i,f in enumerate(path) if number(f['startPosition'])*(number(f['sz']) if f['side']=='B' else -number(f['sz']))<0),None)
+                if seed_index is not None:
+                    f=path[seed_index];b=number(f['startPosition']);q=min(abs(b),number(f['sz']))
+                    cost=number(f['px'])-number(f.get('closedPnl','0'))/q*(1 if b>0 else -1)
+                    for earlier in reversed(path[:seed_index]):
+                        b=number(earlier['startPosition']);q=number(earlier['sz'])
+                        if not b:cost=ZERO;break
+                        cost=((abs(b)+q)*cost-q*number(earlier['px']))/abs(b)
+            if cost is None or cost<0:continue
+            state=None;preceding=[];path_result=[];consistent=True
+            for f in path:
+                t=int(f['time']);b=number(f['startPosition']);q=number(f['sz']);px=number(f['px'])
+                delta=q if f['side']=='B' else -q;a=b+delta
+                if b and cost<=0:break
+                floating=b*(px-cost) if b else ZERO
+                p=Position(coin,b,abs(b)*px,px,floating,None) if b else None
+                hist=summarize(preceding,start_ms=0,end_ms=t-1)
+                # Reprice unchanged exposure immediately before the next fill.
+                events,state=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
+                    positions={coin:p} if p else {},previous=state,markets={},history=hist,new_fills=[],rules=rules)
+                path_result.extend(_price_cases(events,address,[f],cost,'before_fill_price',rules))
+                close=min(abs(b),q) if b*delta<0 else ZERO
+                if close:
+                    expected_pnl=close*(px-cost)*(1 if b>0 else -1)
+                    if abs(expected_pnl-number(f.get('closedPnl','0'))) > Decimal('0.10'):
+                        # Fee is separate; an inconsistent closedPnl proves a
+                        # missing cost-changing event. Do not continue that path.
+                        consistent=False
+                        break
+                if b==0 or b*a<0:next_cost=px
+                elif close:next_cost=cost
+                else:next_cost=(abs(b)*cost+q*px)/abs(a)
+                current=Position(coin,a,abs(a)*px,px,a*(px-next_cost),None) if a else None
+                if state:state['observed_ms']=max(0,t-1)
+                events,state=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
+                    positions={coin:current} if current else {},previous=state,markets={},history=hist,new_fills=[f],rules=rules)
+                path_result.extend(_price_cases(events,address,[f],cost,'after_fill_price',rules))
+                cost=next_cost if a else ZERO;preceding.append(f)
+            if consistent:result.extend(path_result)
+    return result
+
+
+def _price_cases(events: list[Candidate], address: str, fills: list[dict], cost: Decimal, phase: str, rules: Rules) -> list[dict]:
+    result=[]
+    for candidate in events:
+        event=asdict(candidate)
+        event['kinds']=[k for k in event['kinds'] if k in {'large_profit','large_loss','profit_giveback','profit_to_loss','loss_addition'}]
+        if not event['kinds']:continue
+        event['evidence']['test_replay']={'mode':'execution_price_cost_reconstruction',
+            'valuation_basis':'actual_execution_price_with_reconstructed_entry_cost',
+            'cost_basis_usd':str(cost),'reference_execution_price':fills[-1]['px'],
+            'start_ms':event['evidence'].get('news_change',{}).get('previous_observed_ms',int(fills[0]['time'])-1),
+            'end_ms':int(fills[-1]['time']), 'phase':phase,'real_address':True,
+            'purpose':'prelaunch_case_review_only','not_historical_mark_snapshot':True}
+        event['key']='test-price:'+hashlib.sha256(encode({'address':address,'coin':event['coin'],'tid':fill_key(fills[-1]),'phase':phase,'kinds':event['kinds']}).encode()).hexdigest()
+        event['test_scenarios']=case_scenarios(event);result.append(event)
+    return result
+
+
+def replay_cached_cases(store: NewsStore) -> dict[str, Any]:
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        rows=conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'").fetchall()
+    report={'addresses':len(rows),'cases':0,'failed':{}}
+    for row in rows:
+        address=row['key'].split(':',1)[1]
+        try:
+            fills=json.loads(row['payload'])['fills']
+            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)
+            save_cases(store,cases);report['cases']+=len(cases)
+        except Exception as exc:report['failed'][address]=str(exc)
     return report

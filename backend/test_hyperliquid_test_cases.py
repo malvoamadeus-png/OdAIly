@@ -37,3 +37,19 @@ def test_gap_and_future_history_do_not_create_high_win_rate():
 def test_split_reverse_within_one_hour():
     events=replay_fills(A,[fill(2000,2000,'A'),fill(0,2000,'A',101)])
     assert any('large_reversal' in e['kinds'] for e in events)
+
+
+def test_price_replay_giveback_from_continuous_cost_and_real_prices():
+    from packages.hyperliquid_news.test_cases import replay_execution_prices
+    fills=[fill(0,5000,stamp=1),{**fill(5000,1,stamp=2),'px':'5000'},
+           {**fill(5001,1,stamp=3),'px':'3500'}]
+    events=replay_execution_prices(A,fills)
+    assert any('profit_giveback' in e['kinds'] for e in events)
+    assert all(e['evidence']['test_replay']['not_historical_mark_snapshot'] for e in events)
+
+
+def test_price_replay_inconsistent_closed_pnl_breaks_path():
+    from packages.hyperliquid_news.test_cases import replay_execution_prices
+    fills=[fill(0,5000,stamp=1),fill(5000,1,'A',stamp=2,pnl='999'),
+           {**fill(4999,1,stamp=3),'px':'10000'}]
+    assert replay_execution_prices(A,fills)==[]

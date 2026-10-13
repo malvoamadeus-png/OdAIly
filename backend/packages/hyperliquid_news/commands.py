@@ -43,6 +43,9 @@ def run_command(args: Any) -> int:
             result = generate_preview(task=task, prompt=prompt, settings=settings, ai_client=worker._get_ai_client())
             store.save_global('editorial_preview:' + task.raw_payload['key'], result, [])
             print(encode({'task_id': task.id, **result}))
+    elif action == 'replay-cached-test-cases':
+        from .test_cases import replay_cached_cases
+        print(encode(replay_cached_cases(store)))
     elif action == 'preview-test-cases':
         from .test_cases import preview_cases
         print(encode(preview_cases(store, limit=args.limit)))

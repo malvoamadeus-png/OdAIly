@@ -228,3 +228,5 @@ PYTHONPATH=backend .venv/bin/python -m packages.hyperliquid_news \
 历史成交重建只用于本次上线前补足案例和调整规则，不接入 `NewsMonitor.run_once`，不改变常规监测路线。命令 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 单独保存真实地址的历史操作到 `hl_news_test_cases`；完整行为证据、属性截止时间与执行价折算口径均保留。正常采集状态不被回放覆盖，测试回放不调用发布接口。控制台按 dataset 展示，不能把历史试稿当作当前新闻。
 
 测试稿命令 `hyperliquid-news preview-test-cases --limit 15` 对已覆盖方向挑选代表案例并生成独立 Prompt 编辑预览，复用固定数据组装，仅保存本地管理后台预览。正式搜索者查重、编写者2与发布阶段没有运行，不能据此认定正式投递链路测试完成。
+
+价格变化类测试可使用真实成交的 `startPosition / side / sz / px / closedPnl` 连续路径重建持仓成本：平仓成交盈亏反推当时成本，再逆向扣除此前加仓；从零建仓可直接累计成本。与后续平仓结果不一致超过 0.10 美元、仓位数量断裂或同时间排序不确定的路径不用于价格案例。只在实际成交时点按成交价重估同一仓位浮盈亏，不声称取得历史标记价或完整盘中峰值；不产生历史接近清算信号。测试事件 `test_replay` 保留成本和价格口径。`replay-cached-test-cases` 仅重放已缓存测试成交，不发网络请求、不推进正式状态。

@@ -298,6 +298,7 @@ def parse_args() -> argparse.Namespace:
     hl_actions.add_parser("activate-prompt", help="Activate dedicated writer file as a new version; preserve previous versions.")
     hl_preview = hl_actions.add_parser("preview", help="Rewrite saved evidence for console review without publishing.")
     hl_preview.add_argument("--task-ids", type=int, nargs="+", required=True)
+    hl_actions.add_parser("replay-cached-test-cases", help="Replay cached test history without querying or publishing.")
     hl_test_preview = hl_actions.add_parser("preview-test-cases", help="Generate representative isolated test copy without publishing.")
     hl_test_preview.add_argument("--limit", type=int, default=15)
     hl_mine = hl_actions.add_parser("mine-test-cases", help="Mine historical real-address cases for pre-launch review only.")

@@ -41,3 +41,5 @@
 `hyperliquid-news preview-test-cases --limit 15` 为各已覆盖方向选择代表性真实案例，用独立 Hyperliquid Prompt 生成编辑预览。结果存入 `editorial_preview:{test事件key}`，页面展示标题正文、模型和 Prompt 版本。不会创建 task、不运行正式查重或编写者2、不挂外部后台；它是文稿预览，不代表完整发稿链路已经验收。
 
 测试扫描同时从已收集 Hyperliquid 报道中提取完整地址作为发现种子（最多读取最近 1,500 条相关任务），再通过公共成交验证操作。报道只用于找地址，不能代替触发证据、也不能赋予报道声称的胜率或盈利属性。
+
+价格重建测试证据标识 `execution_price_cost_reconstruction`，保留实际成交参考价、成本和重建阶段。浮盈峰值仅是回放取得的价格时点峰值，不是全部盘中最高值；页面完整证据可核查。`hyperliquid-news replay-cached-test-cases` 可重放缓存，仍只写测试数据集。
