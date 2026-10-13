@@ -62,3 +62,13 @@ def test_startup_simulation_is_explicit_not_wallet_age():
     proof=cases[0]['evidence']['test_replay']
     assert proof['simulated_monitor_start'] and proof['not_wallet_creation_time'] and proof['not_actual_discovery_time']
     assert replay_test_startup(A,[fill(1000,2000)])==[]
+
+
+def test_split_loss_addition_uses_real_cost_and_original_threshold():
+    from packages.hyperliquid_news.test_cases import replay_execution_prices
+    fills=[fill(0,10000,stamp=1),{**fill(10000,1000,stamp=4000000),'px':'2000'},
+           {**fill(11000,1000,stamp=4000100),'px':'2000'}]
+    cases=replay_execution_prices(A,fills)
+    assert any('loss_addition' in e['kinds'] for e in cases)
+    e=next(e for e in cases if 'loss_addition' in e['kinds'])
+    assert e['evidence']['previous_position']['unrealized_pnl']=='-10000000'

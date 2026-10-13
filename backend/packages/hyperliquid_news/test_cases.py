@@ -283,13 +283,18 @@ def replay_execution_prices(address: str, fills: list[dict[str, Any]], *, rules:
                         if not b:cost=ZERO;break
                         cost=((abs(b)+q)*cost-q*number(earlier['px']))/abs(b)
             if cost is None or cost<0:continue
-            state=None;preceding=[];path_result=[];consistent=True
+            state=None;preceding=[];path_result=[];consistent=True;action_batch=[];batch_previous=None;batch_cost=None
             for f in path:
                 t=int(f['time']);b=number(f['startPosition']);q=number(f['sz']);px=number(f['px'])
                 delta=q if f['side']=='B' else -q;a=b+delta
                 if b and cost<=0:break
+                if action_batch and t-int(action_batch[0]['time']) > 3600000:
+                    action_batch=[];batch_previous=None;batch_cost=None
                 floating=b*(px-cost) if b else ZERO
                 p=Position(coin,b,abs(b)*px,px,floating,None) if b else None
+                if not action_batch:
+                    batch_previous={'observed_ms':t-1,'positions':{coin:p.facts()} if p else {}}
+                    batch_cost=cost
                 hist={}  # Price/size rules do not require expensive history statistics.
                 # Reprice unchanged exposure immediately before the next fill.
                 events,state=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
@@ -311,6 +316,13 @@ def replay_execution_prices(address: str, fills: list[dict[str, Any]], *, rules:
                 events,state=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
                     positions={coin:current} if current else {},previous=state,markets={},history=hist,new_fills=[f],rules=rules)
                 path_result.extend(_price_cases(events,address,[f],cost,'after_fill_price',rules))
+                action_batch.append(f)
+                if batch_previous and len(action_batch)>1:
+                    batch_events,_=evaluate_address(address=address,observed_ms=t,first_seen_ms=0,
+                        positions={coin:current} if current else {},previous=batch_previous,
+                        markets={},history={},new_fills=action_batch,rules=rules)
+                    batch_events=[e for e in batch_events if 'loss_addition' in e.kinds]
+                    path_result.extend(_price_cases(batch_events,address,action_batch,batch_cost,'hourly_loss_addition',rules))
                 cost=next_cost if a else ZERO;preceding.append(f)
             if consistent:result.extend(path_result)
     return result
@@ -405,3 +417,52 @@ def copy_observed_case_examples(store: NewsStore) -> None:
             'end_ms':original['observed_ms'],'real_address':True,'purpose':'prelaunch_case_review_only'}
         cases.append(event)
     save_cases(store,cases)
+
+
+def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]:
+    """Historical official portfolio PnL before the action; no future leaderboard."""
+    rules=Rules();client=NewsClient();now=int(time.time()*1000)
+    with connect_sqlite(store.path) as conn:
+        rows=conn.execute("SELECT payload FROM hl_news_test_cases WHERE json_extract(payload,'$.evidence.actions') IS NOT NULL ORDER BY observed_ms DESC").fetchall()
+    groups={}
+    for r in rows:
+        e=json.loads(r[0])
+        if e['evidence']['test_replay'].get('simulated_monitor_start'):continue
+        action=e['evidence']['actions']
+        if max(number(action['open_notional']),number(action['close_notional']))>=rules.action:
+            groups.setdefault(e['addresses'][0],[]).append(e)
+    report={'processed':0,'added':0,'failed':{}}
+    for address,events in list(groups.items())[:limit]:
+        try:
+            cached=store.metadata('test_portfolio:'+address,{})
+            data=cached.get('data')
+            if not data:
+                data=client._post_info({'type':'portfolio','user':address})
+                store.save_global('test_portfolio:'+address,{'data':data,'fetched_ms':now},[])
+            for event in events:
+                cutoff=int(event['evidence']['actions']['first_fill_ms'])-1
+                windows={}
+                for window,values in data:
+                    if window not in ('perpDay','perpWeek','perpMonth','perpAllTime'):continue
+                    points=[p for p in values.get('pnlHistory',[]) if int(p[0])<=cutoff]
+                    if not points:continue
+                    stamp,pnl=max(points,key=lambda p:int(p[0]))
+                    if number(pnl)>=rules.account_profit:
+                        name={'perpDay':'day','perpWeek':'week','perpMonth':'month','perpAllTime':'allTime'}[window]
+                        windows[name]={'pnl':str(pnl),'observed_ms':int(stamp),'rank':None,
+                            'scope':'official_portfolio_window_change','history_sample_ms':int(stamp)}
+                if not windows:continue
+                event['evidence'].setdefault('history',{})['official_account_performance']={
+                    'source':'hyperliquid_portfolio_historical','windows':windows}
+                labels=event['evidence'].setdefault('highlights',[])
+                if 'official_account_high_profit' not in labels:labels.append('official_account_high_profit')
+                if 'highlighted_address_action' not in event['kinds']:event['kinds'].append('highlighted_address_action')
+                event['evidence']['test_replay']['official_pnl_cutoff_ms']=cutoff
+                event['test_scenarios']=case_scenarios(event)
+                with connect_sqlite(store.path) as conn:
+                    conn.execute('UPDATE hl_news_test_cases SET payload=? WHERE event_key=?',(encode(event),event['key']))
+                report['added']+=1
+            report['processed']+=1
+            print(encode({'address':address,**report}),flush=True)
+        except Exception as exc:report['failed'][address]=str(exc)
+    return report
