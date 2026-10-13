@@ -24,6 +24,7 @@ from packages.x_processing.models import (
     BINANCE_SQUARE_SOURCE,
     COMPETITOR_SOURCES,
     EVENT_TRACKING_SOURCE,
+    HYPERLIQUID_SOURCE,
     JIN10_SOURCE,
     MSX_SOURCE,
     NON_MAINSTREAM_MEDIA_SOURCE,
@@ -282,6 +283,8 @@ class LocalPipelineProcessor:
         return LocalPipelineRunResult(task.id, task.status, "alert_only completed")
 
     def _write_flow_sequence(self, task: TaskRecord) -> list[str]:
+        if task.source == HYPERLIQUID_SOURCE:
+            return ["write", "format_publish", "publish"]
         if task.source == EVENT_TRACKING_SOURCE:
             # Event tracking already made the only allowed initial judgment:
             # an official post with material progress. It must still pass the

@@ -726,6 +726,13 @@ class EditorPluginNewsGenService:
         del actor
         return self.pipeline_timing_snapshots.dashboard()
 
+    def get_hyperliquid_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        from packages.common.storage import load_storage_settings
+        from packages.hyperliquid_news.dashboard import dashboard
+        from packages.hyperliquid_news.store import NewsStore
+        return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)))
+
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.gate_market_store.dashboard()
@@ -1172,6 +1179,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
         "/console/gate-market/get",
+        "/console/hyperliquid-news/get",
         "/console/meme/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
@@ -1365,6 +1373,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
+                    return
+                if self.path == "/console/hyperliquid-news/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hyperliquid_news(actor, self._read_json())})
                     return
                 if self.path == "/console/gate-market/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_gate_market(actor)})

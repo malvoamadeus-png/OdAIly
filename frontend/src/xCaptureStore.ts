@@ -2513,3 +2513,20 @@ export async function deleteSourceExclusionRuleGroup(id: number): Promise<void> 
   const { error } = await localApi().from('source_exclusion_rule_groups').delete().eq('id', id);
   raise(error);
 }
+
+export type HyperliquidNewsEvent = {
+  key: string; observed_ms: number; addresses: string[]; coin: string; kinds: string[];
+  evidence: Record<string, any>; source_url: string;
+  pipeline: { task_id?: number; task_status?: string; dispatch_status?: string; dispatch_error?: string;
+    draft_title?: string; draft_content?: string; final_title?: string; final_content?: string;
+    writer_model?: string; prompt_version_id?: number; write_completed_at?: string; format_completed_at?: string;
+    publish_completed_at?: string; last_error?: string; push_result?: Record<string, unknown> };
+};
+export type HyperliquidNewsDashboard = {
+  initialized: boolean; events: HyperliquidNewsEvent[]; addresses: Array<Record<string, any>>;
+  rules: Record<string, unknown>; labels: Record<string, string>; last_pass: Record<string, any>;
+  counts: Record<string, number>; page: number; has_next: boolean; flow?: string[];
+};
+export async function getHyperliquidNewsDashboard(page = 0): Promise<HyperliquidNewsDashboard> {
+  return consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page });
+}

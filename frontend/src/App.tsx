@@ -132,6 +132,7 @@ import {
   type MemeNarrativeMaterial,
   processingTaskSources,
 } from './xCaptureStore';
+import { HyperliquidNewsPanel } from './HyperliquidNewsPanel';
 import { GateMarketPanel } from './GateMarketPanel';
 import {
   workflowFilters,
@@ -155,6 +156,7 @@ type ConsoleView =
   | 'publisher'
   | 'workflow'
   | 'whale'
+  | 'hyperliquid_news'
   | 'prompts'
   | 'competitor'
   | 'newsflash'
@@ -1742,6 +1744,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'AI Duplicate Check'
       : view === 'timing'
         ? 'Timing'
+      : view === 'hyperliquid_news'
+        ? 'Hyperliquid Monitor'
       : view === 'gate_market'
         ? 'Gate Market'
       : view === 'meme'
@@ -1770,6 +1774,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'AI查重'
       : view === 'timing'
         ? '耗时看板'
+      : view === 'hyperliquid_news'
+        ? 'Hyperliquid监测'
       : view === 'gate_market'
         ? 'Gate行情播报'
       : view === 'meme'
@@ -1798,6 +1804,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '粘贴一段快讯内容，检索疑似重复的已发布快讯和运行中候选'
       : view === 'timing'
         ? `本地快照${pipelineTiming.generated_at ? ` · ${fmtTime(pipelineTiming.generated_at)}` : '生成中'} · 每小时刷新`
+      : view === 'hyperliquid_news'
+        ? '硬规则事件、地址属性与写作流程 · 强制挂后台'
       : view === 'gate_market'
         ? `${gateMarket?.symbols.length || 0} 个标的 · ${gateMarket?.mode === 'live' ? '正式发布' : '后台生成'} · 只读`
       : view === 'meme'
@@ -1900,6 +1908,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
             <FileText size={18} /> Prompt及规则管理
+          </button>
+          <button className={view === 'hyperliquid_news' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('hyperliquid_news')}>
+            <Wallet size={18} /> Hyperliquid监测
           </button>
           <button className={view === 'whale' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('whale')}>
             <Wallet size={18} /> 巨鲸
@@ -2178,6 +2189,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'timing' ? (
           <PipelineTimingPanel dashboard={pipelineTiming} loading={loadingPipelineTiming} />
+        ) : view === 'hyperliquid_news' ? (
+          <HyperliquidNewsPanel />
         ) : view === 'gate_market' ? (
           <GateMarketPanel dashboard={gateMarket} loading={loadingGateMarket} />
         ) : view === 'meme' ? (

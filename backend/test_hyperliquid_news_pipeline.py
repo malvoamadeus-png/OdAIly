@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from decimal import Decimal as D
+
+from packages.common.config import XProcessingSettings
+from packages.common.storage import connect_sqlite
+from packages.hyperliquid_news.copy import format_news, source_url
+from packages.hyperliquid_news.dashboard import dashboard
+from packages.hyperliquid_news.detector import evaluate_address
+from packages.hyperliquid_news.dispatch import EventDispatcher
+from packages.hyperliquid_news.models import Position, Rules
+from packages.hyperliquid_news.store import NewsStore
+from packages.local_pipeline.processor import LocalPipelineProcessor
+from packages.publisher.push_client import PushResult
+from packages.x_processing.models import DraftBrief, HYPERLIQUID_SOURCE, PipelineRecord, TaskRecord
+from packages.x_processing.repository import InMemoryXProcessingRepository
+from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
+from packages.x_processing.worker import XProcessingWorker
+
+A = '0x'+'1'*40
+
+
+def event(stamp=1000):
+    events, state = evaluate_address(address=A, observed_ms=stamp, first_seen_ms=stamp,
+        positions={'STRK': Position('STRK', D(100), D(10000000), D(100000), D(2000000), None)},
+        previous=None, markets={'STRK': {'market_cap': '100000000', 'market_cap_source': 'coingecko', 'oi_notional': '50000000'}},
+        history={}, new_fills=[], rules=Rules())
+    from dataclasses import asdict
+    return asdict(events[0]), state
+
+
+class Pipeline:
+    def __init__(self): self.jobs=[]
+    def submit_job(self, **kwargs): self.jobs.append(kwargs)
+
+
+class Feed:
+    def upsert_newsflash(self, **kwargs): pass
+
+
+class Push:
+    def __init__(self): self.calls=[]
+    def push(self, **kwargs):
+        self.calls.append(kwargs)
+        return PushResult(ok=True, status_code=200, response_text='ok')
+
+
+def test_writer2_fixed_prefix_footer_source_without_model_numbers():
+    e, _ = event()
+    result = format_news(DraftBrief(title='STRK大额多仓当前浮盈200万美元',
+        content='某地址当前在 Hyperliquid 持有 STRK 多仓，名义价值为 1000 万美元，目前浮盈为 200 万美元。'), e)
+    assert result.content.startswith('据Odaily监测，')
+    assert 'Odaily星球日报讯' not in result.content
+    assert A in result.content
+    assert '代币市值：10,000.00 万美元' in result.content
+    assert '持仓相当于市值：10.00%' in result.content
+    assert source_url(e) == f'https://hyperbot.network/trader/{A}'
+
+
+def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_enabled():
+    e, _ = event()
+    task = TaskRecord(id=77, source=HYPERLIQUID_SOURCE, source_item_id=e['key'], source_url=source_url(e),
+        title=None, content='event', raw_payload=e, status='publisher_pending', published_at=datetime.now(UTC))
+    assert LocalPipelineProcessor._write_flow_sequence(None, task) == ['write','format_publish','publish']
+    repo = InMemoryXProcessingRepository(); repo.add_task(task)
+    repo.pipelines[77] = PipelineRecord(task_id=77, final_title='STRK大仓监测', final_content='据Odaily监测，某地址持有大额多仓。')
+    push = Push()
+    worker = XProcessingWorker(stage='publish', repository=repo, settings=XProcessingSettings(dry_run=False), push_client=push)
+    worker.feed_writer = Feed()
+    worker._run_publish(task)
+    assert repo.tasks[77].status == 'ready_review'
+    assert repo.pipelines[77].publisher_reason_code == 'hyperliquid_backend_only'
+    assert push.calls[0]['is_publish'] is False and push.calls[0]['is_push'] is False
+    assert push.calls[0]['source_url'] == source_url(e)
+
+
+def test_dispatch_durable_task_dedup_enqueue_failure_and_dashboard(tmp_path):
+    from dataclasses import replace
+    path = tmp_path / 'test.sqlite'
+    repo = SQLiteXProcessingRepository(path); repo.init_schema()
+    store = NewsStore(path); store.initialize()
+    e, state = event()
+    from packages.hyperliquid_news.models import Candidate
+    candidate = Candidate(**e)
+    store.discover(A, source={'kind':'test'}, now_ms=1000)
+    store.commit_observation(address=A, now_ms=1000, state=state, history={}, coverage={}, fills=[], candidates=[candidate])
+    client=Pipeline(); dispatcher=EventDispatcher(store,pipeline_client=client)
+    result=dispatcher.dispatch(limit=1)
+    task_id=result[0]['task_id']
+    assert result[0]['status']=='queued'
+    task=repo.get_task(task_id)
+    assert task.status=='deduped' and task.metadata['writer_template_key']=='hyperliquid_writer'
+    assert dispatcher.dispatch(limit=1)==[]
+    # Replaying the same state evidence at another observation time is still the same fact.
+    another=replace(candidate,key='repeat',observed_ms=2000)
+    store.commit_observation(address=A, now_ms=2000, state=state, history={}, coverage={}, fills=[], candidates=[another])
+    assert dispatcher.dispatch(limit=1)[0]['status']=='duplicate'
+    assert len(client.jobs)==1
+    data=dashboard(store)
+    assert data['counts']['events']==2 and data['counts']['submitted']==1
+    assert any(item['pipeline']['task_id']==task_id for item in data['events'])
+
+
+def test_api_dashboard_route_requires_console_auth():
+    from packages.editor_plugin_api import EditorPluginApiHandler
+    assert '/console/hyperliquid-news/get' in EditorPluginApiHandler.CONSOLE_PATHS
+
+
+def test_dedicated_prompt_seed_and_writer_input(tmp_path):
+    from packages.common.paths import get_paths
+    from packages.x_processing.worker import build_structured_writer_prompt
+    repo=SQLiteXProcessingRepository(tmp_path/'test.sqlite'); repo.init_schema()
+    repo.seed_prompt_templates(root_dir=get_paths().root_dir)
+    prompt=repo.get_active_prompt('hyperliquid_writer')
+    assert '不需要重新判断新闻价值' in prompt.content
+    e,_=event()
+    task=TaskRecord(id=1,source=HYPERLIQUID_SOURCE,source_item_id='1',source_url=None,title=None,content='event',raw_payload=e)
+    built=build_structured_writer_prompt(task=task,prompt=prompt,known_subjects=[])
+    assert '结构化事件证据' in built and 'STRK' in built
+    assert 'X平台' not in built
+
+
+def test_dispatch_enqueue_failure_reuses_task_on_retry(tmp_path):
+    from packages.hyperliquid_news.models import Candidate
+    repo=SQLiteXProcessingRepository(tmp_path/'db.sqlite'); repo.init_schema()
+    store=NewsStore(repo.path); store.initialize()
+    e,state=event(); store.discover(A,source={'kind':'test'},now_ms=1000)
+    store.commit_observation(address=A,now_ms=1000,state=state,history={},coverage={},fills=[],candidates=[Candidate(**e)])
+    class Bad:
+        def submit_job(self,**kwargs): raise RuntimeError('offline')
+    first=EventDispatcher(store,pipeline_client=Bad()).dispatch(limit=1)[0]
+    client=Pipeline(); second=EventDispatcher(store,pipeline_client=client).dispatch(limit=1)[0]
+    assert first['status']=='enqueue_failed' and second['status']=='queued'
+    assert first['task_id']==second['task_id']

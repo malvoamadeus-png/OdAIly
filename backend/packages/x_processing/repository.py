@@ -88,6 +88,7 @@ LEGACY_SKIP_SOURCES = [
 PROMPT_DOCS_DIR = "docs/OdAIly代码与整体设计"
 
 PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
+    "hyperliquid_writer": ("Hyperliquid监测快讯", f"{PROMPT_DOCS_DIR}/Hyperliquid快讯模板.txt", "dedicated structured Hyperliquid writer"),
     "x_regular_writer": ("X 常规快讯", f"{PROMPT_DOCS_DIR}/常规快讯模板.txt", "initial regular writer template"),
     "x_onchain_writer": ("X 链上快讯", f"{PROMPT_DOCS_DIR}/链上快讯模板.txt", "initial onchain writer template"),
     "x_funding_writer": ("X 融资快讯", f"{PROMPT_DOCS_DIR}/融资快讯模板.txt", "initial funding writer template"),

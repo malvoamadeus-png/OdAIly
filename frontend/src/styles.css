@@ -5561,3 +5561,13 @@ textarea:focus {
     width: 100%;
   }
 }
+
+.hlMonitor { display: grid; gap: 16px; }
+.hlEvent { border: 1px solid var(--border, #dce2e8); padding: 18px; border-radius: 12px; display: grid; gap: 10px; }
+.hlEvent header { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.hlEvent summary { cursor: pointer; padding: 8px 0; }
+.hlFacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 12px 0; }
+.hlFacts dt { color: #758397; font-size: 12px; }
+.hlFacts dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.hlMonitor pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; font-size: 12px; }
+.hlCopy { white-space: pre-wrap; line-height: 1.8; }

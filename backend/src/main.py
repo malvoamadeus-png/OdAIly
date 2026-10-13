@@ -292,6 +292,20 @@ def parse_args() -> argparse.Namespace:
     )
     subparsers.add_parser("newsflash-ops-seed-confirmed-week", help="Seed the confirmed 2026-07-20 duty schedule and July reporting assignment.")
 
+    hl_news = subparsers.add_parser("hyperliquid-news", help="Hyperliquid structured news test flow (server only).")
+    hl_actions = hl_news.add_subparsers(dest="hyperliquid_action", required=True)
+    hl_actions.add_parser("init", help="Initialize evidence tables and dedicated writer prompt.")
+    hl_collect = hl_actions.add_parser("collect", help="One bounded public-data collection pass; no writing/pushing.")
+    hl_collect.add_argument("--addresses-per-pass", type=int, default=6)
+    hl_collect.add_argument("--leaderboard-seeds", type=int, default=2)
+    hl_collect.add_argument("--markets-per-discovery", type=int, default=3)
+    hl_collect.add_argument("--market-cap-mapping", help="JSON exact contract-to-CoinGecko-ID mapping.")
+    hl_dispatch = hl_actions.add_parser("dispatch", help="Enqueue a limited batch; always backend-only.")
+    hl_dispatch.add_argument("--limit", type=int, default=3)
+    hl_dispatch.add_argument("--event-keys", nargs="+")
+    hl_status = hl_actions.add_parser("status", help="Read evidence and writing/push state.")
+    hl_status.add_argument("--page", type=int, default=0)
+
     whale_watch_init = subparsers.add_parser("whale-watch-init-db", help="Initialize whale watch SQLite tables.")
 
     whale_watch_worker = subparsers.add_parser("whale-watch-worker", help="Run whale onchain activity monitor.")
@@ -1994,6 +2008,9 @@ def main() -> int:
             return newsflash_ops_import_xlsx_command(args)
         if args.command == "newsflash-ops-seed-confirmed-week":
             return newsflash_ops_seed_confirmed_week_command(args)
+        if args.command == "hyperliquid-news":
+            from packages.hyperliquid_news.commands import run_command
+            return run_command(args)
         if args.command == "whale-watch-init-db":
             return whale_watch_init_db_command(args)
         if args.command == "whale-watch-worker":
