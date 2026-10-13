@@ -107,7 +107,9 @@ class NewsClient(HyperliquidClient):
                 if not start_ms <= stamp <= end_ms:
                     raise ValueError('Fill outside requested time range')
                 collected[fill_key(fill)] = fill
-            if len(page) < 2000:
+            # Time-range APIs may truncate at 500 distinct blocks before hitting
+            # the fills endpoint's 2,000-row cap. Treat timestamps conservatively.
+            if len(page) < 2000 and len({int(f['time']) for f in page}) < 500:
                 status.update(pagination_complete=True, reason='available_history_exhausted')
                 break
             last = max(int(f['time']) for f in page)

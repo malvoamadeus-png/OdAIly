@@ -97,3 +97,45 @@ def test_official_account_attribute_uses_only_pre_action_samples(tmp_path, monke
 def test_outcome_settlements_do_not_abort_perp_case_replay():
     cases=replay_fills(A,[fill(2000,4000,'A'),{**fill(0,1,stamp=200),'coin':'#123','px':'0'}])
     assert any('large_reversal' in e['kinds'] for e in cases)
+
+
+def test_refresh_test_case_replaces_truncated_history_and_invalidates_preview(tmp_path):
+    from packages.common.storage import connect_sqlite
+    from packages.hyperliquid_news.test_cases import revalidate_test_cases
+    path=tmp_path/'refresh.sqlite';SQLiteXProcessingRepository(path).init_schema()
+    store=NewsStore(path);store.initialize()
+    event=replay_fills(A,[fill(0,4000)])[0]
+    event['kinds'].append('highlighted_address_action')
+    event['evidence']['highlights']=['asset_high_win_rate']
+    event['evidence']['history']={'assets':{'ETH':{'rounds':1,'win_rate':'1'}}}
+    save_cases(store,[event])
+    store.save_global('editorial_preview:'+event['key'],{'title':'old'},[])
+    assert revalidate_test_cases(store)['updated']==1
+    data=dashboard(store,dataset='test')['events'][0]
+    assert 'asset_high_win_rate' not in data['evidence']['highlights']
+    assert 'highlighted_address_action' not in data['kinds']
+    assert 'editorial_preview' not in data
+    event['evidence']['history']['assets']['ETH']['rounds']=2
+    event['kinds'].remove('highlighted_address_action');event['evidence']['highlights']=[]
+    save_cases(store,[event])
+    assert dashboard(store,dataset='test')['events'][0]['evidence']['history']['assets']['ETH']['rounds']==2
+
+
+def test_mining_uses_paginated_history_not_latest_fill_slice(tmp_path, monkeypatch):
+    from packages.hyperliquid_news import test_cases
+    path=tmp_path/'mining.sqlite';SQLiteXProcessingRepository(path).init_schema()
+    store=NewsStore(path);store.initialize()
+    fills=[fill(0,4000,stamp=100),fill(4000,4000,'A',stamp=4000000,pnl='100'),
+           fill(0,4000,stamp=8000000)]
+    class Client:
+        def history(self,address,start,end):
+            assert address==A
+            return fills,{'pages':2,'pagination_complete':True}
+        def _post_info(self,payload):
+            return fills[1:]
+    monkeypatch.setattr(test_cases,'NewsClient',Client)
+    result=test_cases.mine_cases(store,addresses=[A])
+    assert result['processed']==1
+    cache=store.metadata('test_fills:'+A,{})
+    assert cache['fills'][0]['startPosition']=='0'
+    assert cache['coverage']['pages']==2

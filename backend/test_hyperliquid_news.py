@@ -437,3 +437,26 @@ def test_repeated_daily_snapshots_of_large_position_never_emit():
     for stamp in (86400000,172800000,259200000):
         events,state=evaluate(p,previous=state,stamp=stamp)
         assert events==[]
+
+
+def test_single_asset_win_rate_requires_five_complete_rounds():
+    from packages.hyperliquid_news.detector import highlights
+    h = stats(profit='0', account='0', win='1')
+    for rounds in (1, 2, 4):
+        h['assets'][COIN]['rounds'] = rounds
+        assert 'asset_high_win_rate' not in highlights(h, COIN, Rules())
+    h['assets'][COIN]['rounds'] = 5
+    assert 'asset_high_win_rate' in highlights(h, COIN, Rules())
+
+
+def test_history_continues_at_500_time_blocks_even_below_2000_fills():
+    class Client(NewsClient):
+        def __init__(self): self.requests=[]
+        def _post_info(self,payload):
+            self.requests.append(payload)
+            if len(self.requests)==1:
+                return [fill(i,stamp=i) for i in range(1,501)]
+            return [fill(500,stamp=500),fill(501,stamp=501)]
+    client=Client();rows,status=client.history(A,0,1000)
+    assert len(rows)==501 and status['pagination_complete']
+    assert client.requests[1]['startTime']==500

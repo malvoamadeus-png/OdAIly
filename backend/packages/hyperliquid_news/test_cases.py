@@ -35,8 +35,50 @@ def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
     now = int(time.time()*1000)
     with connect_sqlite(store.path) as conn:
         for event in events:
-            conn.execute('INSERT OR IGNORE INTO hl_news_test_cases VALUES(?,?,?,NULL,?)',
-                         (event['key'], event['observed_ms'], encode(event), now))
+            previous = conn.execute('SELECT payload FROM hl_news_test_cases WHERE event_key=?', (event['key'],)).fetchone()
+            if previous:
+                old = json.loads(previous['payload'])
+                # Preserve separately enriched, pre-action official portfolio evidence.
+                performance = old['evidence'].get('history', {}).get('official_account_performance')
+                if performance:
+                    event['evidence'].setdefault('history', {})['official_account_performance'] = performance
+                    cutoff = old['evidence'].get('test_replay', {}).get('official_pnl_cutoff_ms')
+                    if cutoff is not None:
+                        event['evidence'].setdefault('test_replay', {})['official_pnl_cutoff_ms'] = cutoff
+                    from .detector import highlights
+                    event['evidence']['highlights'] = highlights(event['evidence']['history'], event['coin'], Rules())
+                    if 'official_account_high_profit' in event['evidence']['highlights'] and 'highlighted_address_action' not in event['kinds']:
+                        event['kinds'].append('highlighted_address_action')
+                if previous['payload'] == encode(event):
+                    continue
+                conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+event['key'],))
+            conn.execute('''INSERT INTO hl_news_test_cases VALUES(?,?,?,NULL,?)
+                ON CONFLICT(event_key) DO UPDATE SET payload=excluded.payload,preview=NULL''',
+                (event['key'], event['observed_ms'], encode(event), now))
+
+
+def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
+    """Apply the current minimum sample to saved test cases; leave live evidence intact."""
+    initialize_cases(store)
+    updated = 0
+    with connect_sqlite(store.path) as conn:
+        rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+        for row in rows:
+            event = json.loads(row['payload'])
+            e = event['evidence']
+            labels = e.get('highlights', [])
+            rounds = e.get('history', {}).get('assets', {}).get(event['coin'], {}).get('rounds', 0)
+            if 'asset_high_win_rate' not in labels or rounds >= Rules().min_rounds:
+                continue
+            e['highlights'] = [label for label in labels if label != 'asset_high_win_rate']
+            e.setdefault('threshold_rules', {})['min_rounds'] = Rules().min_rounds
+            if not e['highlights']:
+                event['kinds'] = [kind for kind in event['kinds'] if kind != 'highlighted_address_action']
+            event['test_scenarios'] = case_scenarios(event)
+            conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?', (encode(event),row['event_key']))
+            conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+row['event_key'],))
+            updated += 1
+    return {'updated': updated}
 
 
 def valid_test_fill(fill: dict[str, Any]) -> bool:
@@ -159,6 +201,7 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
     if not 1 <= address_limit <= 200 or not 1 <= per_side <= 50:
         raise ValueError('Invalid test mining budget')
     initialize_cases(store)
+    revalidate_test_cases(store)
     client=NewsClient()
     now=int(time.time()*1000)
     from .discovery import leaderboard_candidates
@@ -184,12 +227,12 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
     for address in selected:
         cache=store.metadata('test_fills:'+address,{})
         try:
-            if cache.get('fetched_ms',0) > now-3600000:
+            if cache.get('fetched_ms',0) > now-3600000 and cache.get('source') == 'userFillsByTime_paginated':
                 fills=cache['fills']
             else:
-                fills=client._post_info({'type':'userFills','user':address,'aggregateByTime':False})
-                if not isinstance(fills,list):raise ValueError('Unexpected fills')
-                store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,'source':'userFills_latest_retained_sample'},[])
+                fills,coverage=client.history(address,now-90*86400000,now)
+                store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,
+                    'source':'userFillsByTime_paginated','coverage':coverage},[])
             cases=replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills)
             save_cases(store,cases)
             report['processed']+=1
@@ -347,6 +390,7 @@ def _price_cases(events: list[Candidate], address: str, fills: list[dict], cost:
 
 def replay_cached_cases(store: NewsStore) -> dict[str, Any]:
     initialize_cases(store)
+    revalidate_test_cases(store)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'").fetchall()
     copy_observed_case_examples(store)

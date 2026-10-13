@@ -31,7 +31,7 @@ class Rules:
     account_profit: Decimal = Decimal('20000000')
     historical_loss: Decimal = Decimal('2000000')
     losing_rounds: int = 3
-    min_rounds: int = 1
+    min_rounds: int = 5
     liquidation_distance: Decimal = Decimal('0.05')
     giveback_fraction: Decimal = Decimal('0.50')
     escalation: Decimal = Decimal('2')
