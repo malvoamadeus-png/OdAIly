@@ -23,3 +23,5 @@
 原文 `sourceUrl` 固定为 `https://hyperbot.network/trader/{目标地址}`。多地址事件正文尾部列全部地址，主链接使用候选 addresses 的首个地址。
 
 发布阶段在加载任何自动发布配置或调用发布者 AI 前强制挂后台，`isPublish=false / isPush=false`。没有正式自动采集调度；CLI 一次采集和限量投递仅用于用户已授权的官方服务器测试。测试通过、用户确认前不启用常驻自动投递。
+
+页面支持 `?view=hyperliquid_news` 直达；首轮试稿任务为 827705、827706、827707，均成功挂后台，原稿保留供用户审阅。

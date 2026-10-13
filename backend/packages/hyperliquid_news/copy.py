@@ -15,7 +15,10 @@ PREFIX = '据Odaily监测，'
 
 def money(value: Any) -> str:
     amount = number(value)
-    return f'{amount / Decimal(10000):,.2f} 万美元'
+    scaled = (amount / Decimal(10000)).quantize(Decimal('0.01'))
+    if scaled == 0:
+        scaled = abs(scaled)
+    return f'{scaled:,.2f} 万美元'
 
 
 def timestamp(value: Any) -> str:
@@ -68,7 +71,7 @@ def footer(event: dict[str, Any]) -> str:
     for window, data in official.get('windows', {}).items():
         label = {'day': '近1天', 'week': '近7天', 'month': '近30天', 'allTime': '全部时间'}.get(window, window)
         lines.append(f'官方榜单账户 PnL（{label}）：{money(data["pnl"])}')
-    if history.get('fee_currency_complete') and history.get('account_closed_pnl_less_fees') is not None:
+    if history.get('fills', 0) > 0 and history.get('fee_currency_complete') and history.get('account_closed_pnl_less_fees') is not None:
         lines.append(f'账户已观察合约成交已实现盈亏：{money(history["account_closed_pnl_less_fees"])}（不含资金费）')
     action = evidence.get('actions', {})
     if action:
@@ -76,7 +79,7 @@ def footer(event: dict[str, Any]) -> str:
                   f'本次取得成交平仓金额：{money(action["close_notional"])}']
     for result in evidence.get('completed_round_results', []):
         lines.append(f'本轮平仓累计已实现盈亏：{money(result["pnl"])}')
-    if evidence.get('liquidation_distance') is not None:
+    if 'near_liquidation' in event['kinds'] and evidence.get('liquidation_distance') is not None:
         lines.append(f'观察时点距清算价：{number(evidence["liquidation_distance"]) * 100:.2f}%（非清算预测）')
     if evidence.get('sides'):
         for side, addresses in evidence['sides'].items():

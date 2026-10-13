@@ -134,3 +134,13 @@ def test_dispatch_enqueue_failure_reuses_task_on_retry(tmp_path):
     client=Pipeline(); second=EventDispatcher(store,pipeline_client=client).dispatch(limit=1)[0]
     assert first['status']=='enqueue_failed' and second['status']=='queued'
     assert first['task_id']==second['task_id']
+
+
+def test_footer_omits_unrelated_liquidation_and_unknown_empty_account_pnl():
+    from packages.hyperliquid_news.copy import footer, money
+    e,_=event()
+    e['evidence']['liquidation_distance']='0.5'
+    e['evidence']['history']={'fills':0,'fee_currency_complete':True,'account_closed_pnl_less_fees':'0'}
+    text=footer(e)
+    assert '距清算价' not in text and '账户已观察' not in text
+    assert money('-0.01')=='0.00 万美元'
