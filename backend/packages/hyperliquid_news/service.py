@@ -70,6 +70,8 @@ class NewsMonitor:
         self._discover(now_ms, markets, result)
         for row in self.store.addresses(self.addresses_per_pass):
             address = row['address']
+            if self.store.blocked(address):
+                continue
             try:
                 old = self.store.load(address)
                 positions = {}

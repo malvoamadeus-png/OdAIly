@@ -75,7 +75,7 @@ class EventDispatcher:
             if not production_allowed(event, policy):
                 continue
             result = self._create_task(event)
-            if result['status'] in ('duplicate', 'no_change_evidence', 'direction_disabled'):
+            if result['status'] in ('duplicate', 'no_change_evidence', 'direction_disabled', 'address_blocked'):
                 results.append(result)
                 continue
             try:
@@ -99,6 +99,10 @@ class EventDispatcher:
         signature = fingerprint(event)
         with connect_sqlite(self.store.path) as conn:
             conn.execute('BEGIN IMMEDIATE')
+            if self.store.event_blocked(event, conn=conn):
+                conn.execute('INSERT OR IGNORE INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
+                             (event['key'], signature, None, 'address_blocked', None, now, now))
+                return {'event_key': event['key'], 'task_id': None, 'status': 'address_blocked'}
             policy_row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key='production_account_profit'").fetchone()
             import json
             if not production_allowed(event, json.loads(policy_row[0]) if policy_row else None):

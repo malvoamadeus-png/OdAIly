@@ -21,13 +21,15 @@ KIND_LABELS = {
 }
 
 
-def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario: str | None = None, dataset: str = 'live', view: str = 'scenarios') -> dict[str, Any]:
+def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario: str | None = None, dataset: str = 'live', view: str = 'scenarios', address_query: str = '', address_status: str = 'all') -> dict[str, Any]:
     if page < 0 or not 1 <= page_size <= 100:
         raise ValueError('Invalid page')
     if dataset not in ('live', 'test'):
         raise ValueError('Invalid dataset')
     if view not in ('scenarios', 'addresses', 'rules'):
         raise ValueError('Invalid view')
+    if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
+        raise ValueError('Invalid address search')
     condition = scenario_condition(scenario) if scenario else '1=1'
     if not store.path.exists():
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
@@ -68,14 +70,20 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             item['source_url'] = 'https://hyperbot.network/trader/' + item['addresses'][0]
             events.append(item)
         addresses = []
-        for row in conn.execute('''SELECT a.*,s.state,s.history,m.payload AS note_payload FROM hl_news_addresses a
+        for row in conn.execute('''SELECT a.*,s.state,s.history,m.payload AS note_payload,b.payload AS block_payload FROM hl_news_addresses a
             LEFT JOIN hl_news_state s ON s.address=a.address
             LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
-            ORDER BY a.last_polled_ms DESC LIMIT ?''', (100 if view == 'addresses' else 0,)):
+            LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
+            WHERE (instr(lower(a.address),lower(?))>0 OR instr(lower(COALESCE(json_extract(m.payload,'$.note'),'')),lower(?))>0)
+            AND (?='all' OR (?='blocked' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=1)
+                 OR (?='active' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=0))
+            ORDER BY a.last_polled_ms DESC LIMIT ?''', (address_query.strip(), address_query.strip(), address_status, address_status, address_status, 100 if view == 'addresses' else 0)):
+
             item = dict(row)
             for field in ('sources', 'state', 'history'):
                 item[field] = json.loads(item[field]) if item.get(field) else ([] if field == 'sources' else {})
             item['note'] = json.loads(item.pop('note_payload') or '{}').get('note', '')
+            item['blocked'] = bool(json.loads(item.pop('block_payload') or '{}').get('blocked'))
             addresses.append(item)
         counts = {name: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
                   for name, table in [('addresses', 'hl_news_addresses'), ('events', 'hl_news_candidates')]}

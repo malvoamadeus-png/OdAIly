@@ -733,7 +733,14 @@ class EditorPluginNewsGenService:
         from packages.hyperliquid_news.store import NewsStore
         return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)),
                          scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
-                         view=payload.get('view', 'scenarios'))
+                         view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
+                         address_status=payload.get('address_status', 'all'))
+
+    def save_hyperliquid_address_block(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        from packages.common.storage import load_storage_settings
+        from packages.hyperliquid_news.store import NewsStore
+        return NewsStore(load_storage_settings().sqlite_path).save_address_block(
+            payload.get('address'), payload.get('blocked'), updated_by=actor.email)
 
     def save_hyperliquid_address_note(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         from packages.common.storage import load_storage_settings
@@ -1189,6 +1196,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/gate-market/get",
         "/console/hyperliquid-news/get",
         "/console/hyperliquid-news/address-note/save",
+        "/console/hyperliquid-news/address-block/save",
         "/console/meme/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
@@ -1384,6 +1392,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})
+                    return
+                if self.path == "/console/hyperliquid-news/address-block/save":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_hyperliquid_address_block(actor, self._read_json())})
                     return
                 if self.path == "/console/hyperliquid-news/address-note/save":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_hyperliquid_address_note(actor, self._read_json())})

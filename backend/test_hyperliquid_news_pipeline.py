@@ -468,3 +468,64 @@ def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
     store.save_address_note(A,'',updated_by='editor')
     assert store.with_address_notes(e)['evidence']['address_notes'][A]==''
     assert 'Wintermute' not in format_news(result,store.with_address_notes(e)).content
+
+
+def test_address_search_covers_full_pool_and_notes(tmp_path):
+    path = tmp_path/'search.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path); store.initialize()
+    store.discover(A,source={'kind':'test'},now_ms=1000)
+    store.save_address_note(A,'Wintermute做市地址',updated_by='test')
+    for i in range(101):
+        address = '0x'+f'{i:040x}'
+        store.discover(address,source={'kind':'test'},now_ms=2000)
+        with connect_sqlite(path) as conn:
+            conn.execute('UPDATE hl_news_addresses SET last_polled_ms=2000 WHERE address=?',(address,))
+    assert A not in [a['address'] for a in dashboard(store,view='addresses')['addresses']]
+    assert dashboard(store,view='addresses',address_query='winterMUTE')['addresses'][0]['address']==A
+    assert dashboard(store,view='addresses',address_query=A.upper())['addresses'][0]['address']==A
+    store.save_address_block(A,True,updated_by='test')
+    assert dashboard(store,view='addresses',address_status='blocked')['addresses'][0]['address']==A
+    assert not dashboard(store,view='addresses',address_query=A,address_status='active')['addresses']
+
+
+def test_blocked_address_cannot_rediscover_monitor_dispatch_or_publish(tmp_path, monkeypatch):
+    from packages.hyperliquid_news.models import Candidate
+    path = tmp_path/'block.sqlite'
+    repo=SQLiteXProcessingRepository(path);repo.init_schema()
+    store=NewsStore(path);store.initialize()
+    store.discover(A,source={'kind':'test'},now_ms=1000)
+    store.schedule_account(A,now_ms=1000,leaderboard_qualified=True)
+    e,state=event()
+    store.commit_observation(address=A,now_ms=1000,state=state,history={},coverage={},fills=[],candidates=[Candidate(**e)])
+    client=Pipeline(); dispatcher=EventDispatcher(store,pipeline_client=client)
+    result=dispatcher.dispatch(limit=1)[0]
+    task=repo.get_task(result['task_id'])
+    repo.complete_format_publish(task.id,final_title='测试',final_content='测试正文')
+    store.save_address_block(A,True,updated_by='test')
+    assert repo.get_task(task.id).status=='discarded'
+    assert store.blocked(A)
+    assert not store.discover(A,source={'kind':'leaderboard'},now_ms=2000)
+    store.schedule_account(A,now_ms=2000,leaderboard_qualified=True)
+    assert not store.account_due(3000,10) and not store.addresses(100)
+    later,later_state=event(2000)
+    store.commit_observation(address=A,now_ms=2000,state=later_state,history={},coverage={},fills=[],candidates=[Candidate(**later)])
+    store.save_global('test',{},[Candidate(**later)])
+    assert len(store.candidates())==1
+    assert dispatcher._create_task(later)['status']=='address_blocked'
+    push=Push()
+    monkeypatch.setattr('packages.x_processing.worker.LocalEditorPluginFeedWriter', Feed)
+    worker=XProcessingWorker(stage='publish',repository=repo,settings=XProcessingSettings(),push_client=push)
+    worker._process_task(task)
+    # The direct pre-push path must also stop a task already picked up by a worker.
+    worker._run_publish(task)
+    assert not push.calls
+    store.save_address_block(A,False,updated_by='test')
+    assert not store.blocked(A) and store.load(A) is None
+    assert store.event_blocked(e)  # Never replay retired events after unblocking.
+    stamp=store.metadata('address_block:'+A,{})['last_blocked_ms']+1
+    fresh,_=event(stamp)
+    assert not store.event_blocked(fresh)
+    assert store.discover(A,source={'kind':'leaderboard'},now_ms=stamp)
+    store.schedule_account(A,now_ms=stamp)
+    assert store.account_due(stamp,10)[0]['address']==A

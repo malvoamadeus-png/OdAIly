@@ -2536,12 +2536,12 @@ export type HyperliquidNewsDashboard = {
   scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number }>; scenario: string | null; dataset: 'live' | 'test';
 };
 const hyperliquidDashboardRequests = new Map<string, Promise<HyperliquidNewsDashboard>>();
-export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_profit', dataset: 'live' | 'test' = 'live', view: 'scenarios' | 'addresses' | 'rules' = 'scenarios'): Promise<HyperliquidNewsDashboard> {
+export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_profit', dataset: 'live' | 'test' = 'live', view: 'scenarios' | 'addresses' | 'rules' = 'scenarios', addressQuery = '', addressStatus = 'all'): Promise<HyperliquidNewsDashboard> {
   const session = await getCurrentSession();
-  const key = JSON.stringify([session?.access_token, page, scenario, dataset, view]);
+  const key = JSON.stringify([session?.access_token, page, scenario, dataset, view, addressQuery, addressStatus]);
   const pending = hyperliquidDashboardRequests.get(key);
   if (pending) return pending;
-  const request = consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page, scenario, dataset, view })
+  const request = consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page, scenario, dataset, view, address_query: addressQuery, address_status: addressStatus })
     .finally(() => hyperliquidDashboardRequests.delete(key));
   hyperliquidDashboardRequests.set(key, request);
   return request;
@@ -2549,4 +2549,8 @@ export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_
 
 export async function saveHyperliquidAddressNote(address: string, note: string): Promise<{ address: string; note: string }> {
   return consoleApiPost('/console/hyperliquid-news/address-note/save', { address, note });
+}
+
+export async function saveHyperliquidAddressBlock(address: string, blocked: boolean): Promise<{ address: string; blocked: boolean }> {
+  return consoleApiPost('/console/hyperliquid-news/address-block/save', { address, blocked });
 }

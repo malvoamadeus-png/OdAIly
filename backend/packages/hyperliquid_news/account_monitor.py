@@ -95,7 +95,8 @@ class AccountProfitMonitor:
             try:
                 rows = self.client.leaderboard()
                 for address, source in qualifying_leaderboard(rows, self.rules, now_ms):
-                    self.store.discover(address, source=source, now_ms=now_ms, limit=None)
+                    if not self.store.discover(address, source=source, now_ms=now_ms, limit=None):
+                        continue
                     self.store.schedule_account(address, now_ms=now_ms, leaderboard_qualified=True)
                     found.add(address.lower())
                 self.store.save_global('account_leaderboard_checked_ms', now_ms, [])
@@ -117,7 +118,8 @@ class AccountProfitMonitor:
             coin = coins[cursor]
             try:
                 for address, source in trade_candidates(self.client.recent_trades(coin), coin, self.rules, now_ms):
-                    self.store.discover(address, source=source, now_ms=now_ms, limit=None)
+                    if not self.store.discover(address, source=source, now_ms=now_ms, limit=None):
+                        continue
                     self.store.schedule_account(address, now_ms=now_ms)
                     found.add(address.lower())
                 self.store.save_global('account_trade_discovery_ms', now_ms, [])
@@ -126,6 +128,8 @@ class AccountProfitMonitor:
                 report['failed']['discovery:' + coin] = str(exc)
         for row in self.store.account_due(now_ms, self.addresses_per_pass):
             address = row['address']
+            if self.store.blocked(address):
+                continue
             # Wall time is required in production; fixed time is for offline tests.
             observed = clock_ms()
             try:

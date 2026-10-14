@@ -610,7 +610,18 @@ class XProcessingWorker:
         except Exception as exc:
             print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
+    def _hyperliquid_blocked(self, task: TaskRecord) -> bool:
+        if task.source != HYPERLIQUID_SOURCE or not getattr(self.repository, 'path', None):
+            return False
+        from packages.hyperliquid_news.store import NewsStore
+        blocked = NewsStore(self.repository.path).event_blocked(task.raw_payload)
+        if blocked:
+            self.repository.fail_task(task.id, stage=self.stage, error='hyperliquid_address_blocked', status='discarded')
+        return blocked
+
     def _process_task(self, task: TaskRecord) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         if self._event_tracking_cancelled(task.id):
             return
         if self.stage in {"judge", "judge_crypto", "judge_ai", "judge_jin10"}:
@@ -814,6 +825,8 @@ class XProcessingWorker:
         )
 
     def _run_search(self, task: TaskRecord) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         started_at = time.perf_counter()
         if self.search_embedding_service is None:
             raise RuntimeError("search embedding service is not configured")
@@ -950,6 +963,8 @@ class XProcessingWorker:
         self._mirror_active_candidate(task=task, candidate_id=candidate_id)
         if self._event_tracking_cancelled(task.id):
             return
+        if self._hyperliquid_blocked(task):
+            return
         self.repository.complete_search_ready(
             task.id,
             candidate_id=candidate_id,
@@ -1084,6 +1099,8 @@ class XProcessingWorker:
         }
 
     def _run_write(self, task: TaskRecord) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         if task.source == HYPERLIQUID_SOURCE:
             from packages.hyperliquid_news.store import NewsStore
             if getattr(self.repository, 'path', None):
@@ -1130,6 +1147,8 @@ class XProcessingWorker:
             validate_event_tracking_attribution(structured.draft.content)
         if self._event_tracking_cancelled(task.id):
             return
+        if self._hyperliquid_blocked(task):
+            return
         self.repository.complete_write(
             task.id,
             prompt=prompt,
@@ -1141,6 +1160,8 @@ class XProcessingWorker:
         )
 
     def _run_format_publish(self, task: TaskRecord) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         pipeline = self.repository.get_pipeline(task.id)
         if not pipeline.draft_title or not pipeline.draft_content:
             self.repository.fail_task(task.id, stage=self.stage, error="missing draft title or content", status="format_failed")
@@ -1166,6 +1187,8 @@ class XProcessingWorker:
             raise HandledStageError(str(exc)) from exc
         if self._event_tracking_cancelled(task.id):
             return
+        if self._hyperliquid_blocked(task):
+            return
         self.repository.complete_format_publish(
             task.id,
             final_title=final.title,
@@ -1173,6 +1196,8 @@ class XProcessingWorker:
         )
 
     def _run_publish(self, task: TaskRecord) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         if self._event_tracking_cancelled(task.id):
             return
         pipeline = self.repository.get_pipeline(task.id)
@@ -1328,6 +1353,8 @@ class XProcessingWorker:
             publisher_decision = "reject"
             context_output["hard_blocked_term"] = hard_blocked_term
         should_publish = publisher_decision == "pass"
+        if self._hyperliquid_blocked(task):
+            return
         push_result = self.push_client.push(
             title=pipeline.final_title,
             content=pipeline.final_content,
@@ -1421,6 +1448,8 @@ class XProcessingWorker:
         }
         if self._event_tracking_cancelled(task.id):
             return
+        if self._hyperliquid_blocked(task):
+            return
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
@@ -1486,6 +1515,8 @@ class XProcessingWorker:
             **output,
             "reason": output.get("reason") or publisher_manual_review_reason(reason_code, task=task),
         }
+        if self._hyperliquid_blocked(task):
+            return
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
@@ -1550,6 +1581,8 @@ class XProcessingWorker:
         publisher_reason_code: str,
         decided_at: datetime,
     ) -> None:
+        if self._hyperliquid_blocked(task):
+            return
         try:
             self.feed_writer.upsert_newsflash(
                 task_id=task.id,

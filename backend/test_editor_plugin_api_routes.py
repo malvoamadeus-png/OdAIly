@@ -339,3 +339,21 @@ def test_auto_newsflash_dismiss_route_requires_admin_and_is_idempotent() -> None
         server.shutdown()
         thread.join(timeout=2)
         server.server_close()
+
+
+def test_hyperliquid_block_route_requires_admin_and_passes_actor():
+    class Service(_XAgentSubscriptionService):
+        def save_hyperliquid_address_block(self, actor, payload):
+            self.subscription_payloads.append((actor.email,payload))
+            return payload
+    payload={'address':'0x'+'a'*40,'blocked':True}
+    for allowed in (False, True):
+        service=Service(allowed=allowed)
+        server=EditorPluginApiServer(('127.0.0.1',0),service)
+        thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            status,body=_post_json(server,'/console/hyperliquid-news/address-block/save',payload)
+            assert status==(HTTPStatus.OK if allowed else HTTPStatus.FORBIDDEN)
+            assert service.subscription_payloads==([('operator@example.com',payload)] if allowed else [])
+        finally:
+            server.shutdown();thread.join(timeout=2);server.server_close()

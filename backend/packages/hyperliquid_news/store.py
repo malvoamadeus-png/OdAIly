@@ -15,6 +15,9 @@ def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+BLOCK_FILTER = "NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || address AND json_extract(b.payload,'$.blocked')=1)"
+
+
 class NewsStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -52,8 +55,11 @@ class NewsStore:
     def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int | None = 500) -> bool:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if self.blocked(address, conn=conn):
+                return False
             row = conn.execute('SELECT sources FROM hl_news_addresses WHERE address=?', (address,)).fetchone()
-            if row is None and limit is not None and conn.execute('SELECT count(*) FROM hl_news_addresses').fetchone()[0] >= limit:
+            if row is None and limit is not None and conn.execute(f'SELECT count(*) FROM hl_news_addresses WHERE {BLOCK_FILTER}').fetchone()[0] >= limit:
                 return False
             sources = json.loads(row['sources']) if row else []
             if source.get('kind') == 'leaderboard':
@@ -69,7 +75,7 @@ class NewsStore:
 
     def addresses(self, limit: int) -> list[dict[str, Any]]:
         with connect_sqlite(self.path) as conn:
-            return [dict(r) for r in conn.execute('SELECT * FROM hl_news_addresses ORDER BY last_polled_ms,address LIMIT ?', (limit,))]
+            return [dict(r) for r in conn.execute(f'SELECT * FROM hl_news_addresses WHERE {BLOCK_FILTER} ORDER BY last_polled_ms,address LIMIT ?', (limit,))]
 
     def load(self, address: str) -> dict[str, Any] | None:
         with connect_sqlite(self.path) as conn:
@@ -88,6 +94,9 @@ class NewsStore:
                            coverage: dict[str, Any], fills: list[dict[str, Any]], candidates: list[Candidate]) -> None:
         # The evidence, event deduplication and next baseline advance atomically.
         with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if self.event_blocked({'addresses': [address], 'observed_ms': now_ms}, conn=conn):
+                return
             old = conn.execute('SELECT observed_ms FROM hl_news_state WHERE address=?', (address,)).fetchone()
             if old and old['observed_ms'] >= now_ms:
                 raise ValueError('Observation must advance monotonically')
@@ -95,6 +104,8 @@ class NewsStore:
                 conn.execute('INSERT OR IGNORE INTO hl_news_fills VALUES(?,?,?,?)',
                              (address, fill_key(fill), int(fill['time']), encode(fill)))
             for event in candidates:
+                if self.event_blocked(asdict(event), conn=conn):
+                    continue
                 conn.execute('INSERT OR IGNORE INTO hl_news_candidates VALUES(?,?,?,?)',
                              (event.key, event.observed_ms, event.coin, encode(asdict(event))))
             conn.execute('''INSERT INTO hl_news_state VALUES(?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET
@@ -113,14 +124,17 @@ class NewsStore:
 
     def save_global(self, key: str, value: Any, candidates: list[Candidate]) -> None:
         with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
             for event in candidates:
+                if self.event_blocked(asdict(event), conn=conn):
+                    continue
                 conn.execute('INSERT OR IGNORE INTO hl_news_candidates VALUES(?,?,?,?)',
                              (event.key, event.observed_ms, event.coin, encode(asdict(event))))
             conn.execute('INSERT INTO hl_news_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload', (key, encode(value)))
 
     def recent_states(self, since_ms: int) -> dict[str, dict[str, Any]]:
         with connect_sqlite(self.path) as conn:
-            rows = conn.execute('SELECT * FROM hl_news_state WHERE observed_ms>=?', (since_ms,)).fetchall()
+            rows = conn.execute(f'SELECT * FROM hl_news_state WHERE {BLOCK_FILTER} AND observed_ms>=?', (since_ms,)).fetchall()
         return {row['address']: {'state': json.loads(row['state']), 'history': json.loads(row['history'])}
                 for row in rows}
 
@@ -131,6 +145,9 @@ class NewsStore:
     def schedule_account(self, address: str, *, now_ms: int, leaderboard_qualified: bool = False) -> None:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if self.blocked(address, conn=conn):
+                return
             conn.execute("""INSERT INTO hl_news_account_pool(address,next_poll_ms,qualified) VALUES(?,?,?)
                 ON CONFLICT(address) DO UPDATE SET next_poll_ms=MIN(next_poll_ms,excluded.next_poll_ms)""",
                 (address, now_ms, int(leaderboard_qualified)))
@@ -139,13 +156,13 @@ class NewsStore:
         # Reserve one probe for new/inactive candidates; qualified addresses get
         # the remaining budget. Ordered due times prevent hot addresses starving cold ones.
         with connect_sqlite(self.path) as conn:
-            probe = conn.execute("""SELECT * FROM hl_news_account_pool
-                WHERE qualified=0 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT 1""", (now_ms,)).fetchall()
-            active = conn.execute("""SELECT * FROM hl_news_account_pool
-                WHERE qualified=1 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT ?""",
+            probe = conn.execute(f"""SELECT * FROM hl_news_account_pool
+                WHERE {BLOCK_FILTER} AND qualified=0 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT 1""", (now_ms,)).fetchall()
+            active = conn.execute(f"""SELECT * FROM hl_news_account_pool
+                WHERE {BLOCK_FILTER} AND qualified=1 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT ?""",
                 (now_ms, limit-len(probe))).fetchall()
             remaining = limit-len(probe)-len(active)
-            extra = conn.execute("""SELECT * FROM hl_news_account_pool WHERE qualified=0 AND next_poll_ms<=?
+            extra = conn.execute(f"""SELECT * FROM hl_news_account_pool WHERE {BLOCK_FILTER} AND qualified=0 AND next_poll_ms<=?
                 ORDER BY next_poll_ms,address LIMIT ? OFFSET ?""", (now_ms, remaining, len(probe))).fetchall()
         return [dict(r) for r in [*active, *probe, *extra]]
 
@@ -182,3 +199,57 @@ class NewsStore:
         notes = {a: self.metadata('address_note:' + address_key(a), {}).get('note', '')
                  for a in event.get('addresses', [])}
         return {**event, 'evidence': {**event['evidence'], 'address_notes': notes}}
+
+    def blocked(self, address: str, *, conn=None) -> bool:
+        if conn is None:
+            with connect_sqlite(self.path) as connection:
+                return self.blocked(address, conn=connection)
+        row = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?',
+                           ('address_block:' + address_key(address),)).fetchone()
+        return bool(row and json.loads(row[0]).get('blocked'))
+
+    def event_blocked(self, event: dict[str, Any], *, conn=None) -> bool:
+        if conn is None:
+            with connect_sqlite(self.path) as connection:
+                return self.event_blocked(event, conn=connection)
+        for address in event.get('addresses', []):
+            row = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?',
+                               ('address_block:' + address_key(address),)).fetchone()
+            if row:
+                rule = json.loads(row[0])
+                if rule.get('blocked') or int(event.get('observed_ms', 0)) <= rule.get('last_blocked_ms', -1):
+                    return True
+        return False
+
+    def save_address_block(self, address: str, blocked: bool, *, updated_by: str) -> dict[str, Any]:
+        from datetime import UTC, datetime
+        address = address_key(address)
+        if not isinstance(blocked, bool):
+            raise ValueError('blocked must be a boolean')
+        value = {'address': address, 'blocked': blocked, 'updated_by': updated_by,
+                 'updated_at': datetime.now(UTC).isoformat()}
+        with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if not conn.execute('SELECT 1 FROM hl_news_addresses WHERE address=?',(address,)).fetchone():
+                raise ValueError('Unknown monitored address')
+            previously_blocked = self.blocked(address, conn=conn)
+            previous = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?',('address_block:'+address,)).fetchone()
+            value['last_blocked_ms'] = int(datetime.now(UTC).timestamp()*1000) if blocked or previously_blocked else (json.loads(previous[0]).get('last_blocked_ms', -1) if previous else -1)
+            conn.execute('INSERT INTO hl_news_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
+                         ('address_block:' + address, encode(value)))
+            if blocked:
+                conn.execute('DELETE FROM hl_news_account_pool WHERE address=?', (address,))
+                conn.execute("""INSERT OR IGNORE INTO hl_news_dispatch
+                    SELECT event_key,'blocked:' || event_key,NULL,'address_blocked',NULL,?,?
+                    FROM hl_news_candidates c WHERE EXISTS
+                    (SELECT 1 FROM json_each(c.payload,'$.addresses') WHERE lower(value)=?)""",
+                    (value['updated_at'],value['updated_at'],address))
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if 'tasks' in tables:
+                    conn.execute("""UPDATE tasks SET status='discarded',updated_at=? WHERE source='hyperliquid_news'
+                        AND status NOT IN ('ready_review','auto_published','published','discarded','duplicate','expired','legacy_skipped')
+                        AND EXISTS (SELECT 1 FROM json_each(tasks.raw_payload,'$.addresses') WHERE lower(value)=?)""",
+                        (value['updated_at'],address))
+            elif previously_blocked:
+                conn.execute('DELETE FROM hl_news_state WHERE address=?',(address,))
+        return value

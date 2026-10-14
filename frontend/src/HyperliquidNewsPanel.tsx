@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, ChevronRight, Database, FileText, Layers, RefreshCw, ShieldCheck } from 'lucide-react';
-import { getHyperliquidNewsDashboard, saveHyperliquidAddressNote, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
+import { getHyperliquidNewsDashboard, saveHyperliquidAddressNote, saveHyperliquidAddressBlock, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
 
 function money(value: unknown): string {
   if (value === null || value === undefined) return '未取得';
@@ -112,16 +112,21 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
   </article>;
 }
 
-function AddressRow({ address: a }: { address: Record<string, any> }) {
+function AddressRow({ address: a, onChanged }: { address: Record<string, any>; onChanged: () => void }) {
   const [note, setNote] = useState(a.note || ''), [saved, setSaved] = useState(a.note || '');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  async function block() {
+    setBusy(true); setError('');
+    try { await saveHyperliquidAddressBlock(a.address, !a.blocked); onChanged(); }
+    catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true); setError('');
     try { const result = await saveHyperliquidAddressNote(a.address, note); setSaved(result.note); setNote(result.note); }
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   return <article className="hlAddress">
-    <div className="hlAddressTop"><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><small>最近检查 {time(a.last_polled_ms)}</small></div>
+    <div className="hlAddressTop"><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><small>{a.blocked ? '已拉黑 · 停止监测与出稿' : `最近检查 ${time(a.last_polled_ms)}`}</small><button className="hlButton" disabled={busy} onClick={block}>{a.blocked ? '解除拉黑' : '拉黑'}</button></div>
     <div className="hlAddressNote"><input aria-label={`${a.address} 地址备注`} placeholder="地址备注，例如 Wintermute做市地址" maxLength={80} value={note} onChange={e => setNote(e.target.value)} /><button className="hlButton" disabled={busy || note === saved} onClick={save}>{busy ? '保存中' : '保存备注'}</button></div>
     {(error || a.error) && <p className="notice error">{error || a.error}</p>}
     <details><summary>发现来源与监测证据</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details>
@@ -129,6 +134,8 @@ function AddressRow({ address: a }: { address: Record<string, any> }) {
 }
 
 export function HyperliquidNewsPanel() {
+  const [addressInput, setAddressInput] = useState(''), [addressQuery, setAddressQuery] = useState(''), [addressStatus, setAddressStatus] = useState('all');
+  useEffect(() => { const timer = setTimeout(() => setAddressQuery(addressInput.trim()), 300); return () => clearTimeout(timer); }, [addressInput]);
   const [dataset, setDataset] = useState<'live' | 'test'>('live');
   const [tab, setTab] = useState<'scenarios' | 'addresses' | 'rules'>('scenarios'), [page, setPage] = useState(0);
   const [scenarioKey, setScenarioKey] = useState('account_profit'), [selected, setSelected] = useState<string | null>(null);
@@ -137,12 +144,12 @@ export function HyperliquidNewsPanel() {
   useEffect(() => {
     let live = true;
     setLoading(true); setError('');
-    getHyperliquidNewsDashboard(page, scenarioKey, dataset, tab).then(d => {
+    getHyperliquidNewsDashboard(page, scenarioKey, dataset, tab, addressQuery, addressStatus).then(d => {
       if (!live) return;
       setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : (dataset === 'test' ? d.events.find(e => e.editorial_preview)?.key : null) || d.events.find(e => e.key === new URLSearchParams(window.location.search).get('event_key'))?.key || d.events[0]?.key || null);
     }).catch(e => { if (live) setError(String(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [page, scenarioKey, refresh, dataset, tab]);
+  }, [page, scenarioKey, refresh, dataset, tab, addressQuery, addressStatus]);
   const scenario = data?.scenarios.find(s => s.key === scenarioKey);
   const current = data?.events.find(e => e.key === selected);
   const ready = data?.view === tab && data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
@@ -170,7 +177,7 @@ export function HyperliquidNewsPanel() {
         </>}
       </div>
     </div>}
-    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最近轮询的 100 个地址</span></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无地址</h4><p>地址发现后展示来源、持仓与单资产属性。</p></div>}{data.addresses.map(a => <AddressRow key={a.address + ':' + (a.note || '')} address={a} />)}</div>}
+    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最多 100 条匹配结果</span></div><div className="hlAddressNote"><input aria-label="搜索监测地址或备注" placeholder="搜索地址或备注" value={addressInput} onChange={e => setAddressInput(e.target.value)} /><select aria-label="地址状态筛选" value={addressStatus} onChange={e => setAddressStatus(e.target.value)}><option value="all">全部地址</option><option value="active">未拉黑</option><option value="blocked">已拉黑</option></select></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无匹配地址</h4><p>可调整搜索词或地址状态筛选。</p></div>}{data.addresses.map(a => <AddressRow key={a.address + ':' + (a.note || '')} address={a} onChanged={() => setRefresh(n => n + 1)} />)}</div>}
     {data && tab === 'rules' && <div className="hlSecondary"><h3>规则与运行</h3><p className="hlMuted">硬规则命中后进入查重与写作，不经过新闻价值筛选。</p><div className="hlFlow">{(data.flow || []).map((step, i) => <span key={step}>{i > 0 && <ChevronRight size={14} />}{step}</span>)}</div><dl className="hlFacts">{Object.entries(data.rules).map(([key, value]) => <div key={key}><dt>{ruleNames[key] || key}</dt><dd>{ruleValue(key, value)}</dd></div>)}</dl><details><summary>最近采集结果与覆盖</summary><pre>{JSON.stringify({ production: data.production, account_pool: data.account_pool, last_pass: data.last_pass }, null, 2)}</pre></details></div>}
   </section>;
 }
