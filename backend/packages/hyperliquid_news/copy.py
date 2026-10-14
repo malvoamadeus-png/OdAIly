@@ -1,6 +1,8 @@
 """Deterministic attribution and factual footer, after shared writer2."""
 from __future__ import annotations
 
+import re
+
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -48,7 +50,31 @@ def footer(event: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
+def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
+    """Enforce account-direction wording independently of model compliance."""
+    labels = event.get('evidence', {}).get('highlights', [])
+    if ('highlighted_address_action' not in event.get('kinds', []) or
+            not set(labels) & {'official_account_high_profit', 'account_high_profit'}):
+        return draft
+    title = draft.title.strip()
+    evidence = event['evidence']
+    all_time = evidence.get('history', {}).get('official_account_performance', {}).get('windows', {}).get('allTime')
+    threshold = number(evidence.get('threshold_rules', {}).get('account_profit', '20000000'))
+    prefix = r'^(?:(?:合约)?账户累计(?:收益|盈利)|累计账户(?:收益|盈利)|累计(?:收益|盈利))'
+    if re.match(prefix, title):
+        if not all_time or number(all_time['pnl']) < threshold:
+            raise ValueError('Cumulative account title requires qualifying official allTime evidence')
+        title = re.sub(prefix, '总盈利', title, count=1)
+    if title.startswith('总盈利') and (not all_time or number(all_time['pnl']) < threshold):
+        raise ValueError('Total profit title requires qualifying official allTime evidence')
+    title = title.replace('的地址', '地址')
+    content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?该地址',
+                     lambda match: (match.group(1) or '') + '某地址', draft.content.strip(), count=1)
+    return DraftBrief(title=title, content=content)
+
+
 def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
+    draft = normalize_account_copy(draft, event)
     content = draft.content.strip()
     for prefix in (ODAILY_PREFIX, 'Odaily星球日报讯', PREFIX, '据 Odaily 监测，'):
         if content.startswith(prefix):

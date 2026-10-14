@@ -1116,6 +1116,12 @@ class XProcessingWorker:
             known_subjects=known_subjects,
             feature_mode_enabled=prompt.feature_mode_enabled,
         )
+        if task.source == HYPERLIQUID_SOURCE:
+            from packages.hyperliquid_news.copy import normalize_account_copy
+            corrected = normalize_account_copy(structured.draft, task.raw_payload)
+            if corrected != structured.draft:
+                structured = replace(structured, draft=corrected, trace={**structured.trace,
+                    'account_copy_normalization': {'title': corrected.title, 'content': corrected.content}})
         if task.source == EVENT_TRACKING_SOURCE:
             validate_event_tracking_attribution(structured.draft.content)
         if self._event_tracking_cancelled(task.id):

@@ -429,3 +429,22 @@ def test_hyperliquid_http_compresses_large_responses_and_caches_preflight():
     other = Handler('gzip');other.path='/console/other'
     EditorPluginApiHandler._send_json(other, HTTPStatus.OK, payload)
     assert 'Content-Encoding' not in other.sent
+
+
+def test_account_copy_corrects_model_wording_with_alltime_evidence():
+    e, _ = event()
+    e['kinds'] = ['highlighted_address_action']
+    e['evidence']['highlights'] = ['official_account_high_profit']
+    e['evidence']['history'] = {'official_account_performance': {'windows': {
+        'allTime': {'pnl': '173488802.47'}}}}
+    draft = DraftBrief(title='合约账户累计收益超1.73亿美元的地址加仓约459万美元BTC空单',
+        content='该地址合约账户累计收益超过1.73亿美元。该地址随后加仓BTC空单。')
+    result = format_news(draft, e)
+    assert result.title == '总盈利超1.73亿美元地址加仓约459万美元BTC空单'
+    assert result.content.startswith('据Odaily监测，某地址合约账户')
+    assert '。该地址随后' in result.content
+    assert format_news(result, e).title == result.title
+    e['evidence']['history']['official_account_performance']['windows'] = {'month': {'pnl': '21000000'}}
+    finite = format_news(DraftBrief(title='近30天盈利超2000万美元地址加仓BTC空单', content='该地址近30天收益超过2000万美元。'), e)
+    assert finite.title.startswith('近30天盈利')
+    assert finite.content.startswith('据Odaily监测，某地址')
