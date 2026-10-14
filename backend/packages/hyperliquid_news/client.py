@@ -21,8 +21,12 @@ class NewsClient(HyperliquidClient):
     600 weights/minute reserved to this client, below public 1200 IP limit.
     Other processes on the same IP still require operational coordination.
     """
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, *, request_weight_per_minute: int = 600, **kwargs: Any) -> None:
+        if not 1 <= request_weight_per_minute <= 600:
+            raise ValueError('Request budget must be 1..600 weights/minute')
         super().__init__(**kwargs)
+        self.request_weight_per_minute = request_weight_per_minute
+        self.request_weight = 0
         self._next_request = 0.0
 
     def _post_info(self, payload: dict[str, Any]) -> Any:
@@ -33,7 +37,8 @@ class NewsClient(HyperliquidClient):
             delay = self._next_request - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            self._next_request = time.monotonic() + weight / 10
+            self._next_request = time.monotonic() + weight * 60 / self.request_weight_per_minute
+            self.request_weight += weight
             try:
                 response = self.session.post(f'{self.base_url}/info', json=payload, timeout=self.timeout_seconds)
                 response.raise_for_status()
@@ -89,6 +94,9 @@ class NewsClient(HyperliquidClient):
         if not isinstance(rows, list):
             raise ValueError('Unexpected leaderboard payload')
         return rows
+
+    def portfolio(self, address: str) -> list:
+        return self._post_info({'type': 'portfolio', 'user': address_key(address)})
 
     def history(self, address: str, start_ms: int, end_ms: int, *, max_pages: int = 6) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         from .history import fill_key

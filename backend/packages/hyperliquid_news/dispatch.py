@@ -13,6 +13,7 @@ from .copy import source_url
 from .search import search_material
 from .eligibility import news_eligibility
 from .store import NewsStore, encode
+from .production import production_allowed
 
 
 def fingerprint(event: dict[str, Any]) -> str:
@@ -22,6 +23,11 @@ def fingerprint(event: dict[str, Any]) -> str:
               'fills': sorted(evidence.get('actions', {}).get('fill_keys', [])),
               'sides': evidence.get('sides'), 'reversal': evidence.get('reversal_basis'),
               'net_change': evidence.get('net_position_change')}
+    if 'highlighted_address_action' in event['kinds']:
+        # Equal-sized successive reductions are distinct actions, even when
+        # price and episode are unchanged. Replayed identical snapshots still dedup.
+        stable['position_sizes'] = [(evidence.get(k) or {}).get('size', '0')
+                                    for k in ('previous_position', 'position')]
     if set(event['kinds']) & {'large_profit','large_loss','profit_giveback','profit_to_loss'}:
         stable['pnl_change'] = {
             'anchor': evidence.get('previous_reported_floating_pnl'),
@@ -46,11 +52,19 @@ class EventDispatcher:
         if not 1 <= limit <= 100:
             raise ValueError('Dispatch limit must be 1..100')
         results = []
+        policy = self.store.metadata('production_account_profit', None)
+        if policy is not None and not policy.get('enabled'):
+            return []
+        scope = ''
+        params = ()
+        if policy is not None:
+            scope = " AND c.observed_ms>=? AND json_extract(c.payload,'$.evidence.production_direction')='account_profit'"
+            params = (int(policy['started_ms']),)
         with connect_sqlite(self.store.path) as conn:
-            rows = conn.execute('''SELECT c.event_key,c.payload FROM hl_news_candidates c
+            rows = conn.execute(f'''SELECT c.event_key,c.payload FROM hl_news_candidates c
                 LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
-                WHERE d.event_key IS NULL OR d.status IN ('created','enqueue_failed')
-                ORDER BY c.observed_ms DESC,c.event_key LIMIT 500''').fetchall()
+                WHERE (d.event_key IS NULL OR d.status IN ('created','enqueue_failed')) {scope}
+                ORDER BY c.observed_ms,c.event_key LIMIT 500''', params).fetchall()
         for row in rows:
             if event_keys and row['event_key'] not in event_keys:
                 continue
@@ -58,8 +72,10 @@ class EventDispatcher:
                 break
             import json
             event = json.loads(row['payload'])
+            if not production_allowed(event, policy):
+                continue
             result = self._create_task(event)
-            if result['status'] in ('duplicate', 'no_change_evidence'):
+            if result['status'] in ('duplicate', 'no_change_evidence', 'direction_disabled'):
                 results.append(result)
                 continue
             try:
@@ -83,6 +99,10 @@ class EventDispatcher:
         signature = fingerprint(event)
         with connect_sqlite(self.store.path) as conn:
             conn.execute('BEGIN IMMEDIATE')
+            policy_row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key='production_account_profit'").fetchone()
+            import json
+            if not production_allowed(event, json.loads(policy_row[0]) if policy_row else None):
+                return {'event_key': event['key'], 'task_id': None, 'status': 'direction_disabled'}
             existing = conn.execute('SELECT * FROM hl_news_dispatch WHERE event_key=?', (event['key'],)).fetchone()
             if existing and news_eligibility(event)['eligible']:
                 return {'event_key': event['key'], 'task_id': existing['task_id'], 'status': existing['status']}
@@ -101,7 +121,8 @@ class EventDispatcher:
                              (event['key'], signature, duplicate['task_id'], 'duplicate', None, now, now))
                 return {'event_key': event['key'], 'task_id': duplicate['task_id'], 'status': 'duplicate'}
             metadata = {'writer_template_key': 'hyperliquid_writer', 'force_backend_only': True,
-                        'hyperliquid_event_key': event['key'], 'rule_kinds': event['kinds']}
+                        'hyperliquid_event_key': event['key'], 'rule_kinds': event['kinds'],
+                        'production_direction': event['evidence'].get('production_direction')}
             url = source_url(event)
             search_title, search_content = search_material(event)
             conn.execute('''INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,

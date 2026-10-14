@@ -40,15 +40,20 @@ class NewsStore:
                     event_key TEXT PRIMARY KEY, signature TEXT NOT NULL, task_id INTEGER,
                     status TEXT NOT NULL,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS hl_news_dispatch_signature ON hl_news_dispatch(signature);
+                CREATE TABLE IF NOT EXISTS hl_news_account_pool (
+                    address TEXT PRIMARY KEY REFERENCES hl_news_addresses(address),
+                    tier TEXT NOT NULL DEFAULT 'pending', qualified INTEGER NOT NULL DEFAULT 0,
+                    next_poll_ms INTEGER NOT NULL DEFAULT 0, last_action_ms INTEGER NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS hl_news_account_due ON hl_news_account_pool(qualified,next_poll_ms);
                 CREATE TABLE IF NOT EXISTS hl_news_metadata (
                     key TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
 
-    def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int = 500) -> bool:
+    def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int | None = 500) -> bool:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:
             row = conn.execute('SELECT sources FROM hl_news_addresses WHERE address=?', (address,)).fetchone()
-            if row is None and conn.execute('SELECT count(*) FROM hl_news_addresses').fetchone()[0] >= limit:
+            if row is None and limit is not None and conn.execute('SELECT count(*) FROM hl_news_addresses').fetchone()[0] >= limit:
                 return False
             sources = json.loads(row['sources']) if row else []
             if source.get('kind') == 'leaderboard':
@@ -122,3 +127,40 @@ class NewsStore:
     def candidates(self) -> list[dict[str, Any]]:
         with connect_sqlite(self.path) as conn:
             return [json.loads(row[0]) for row in conn.execute('SELECT payload FROM hl_news_candidates ORDER BY observed_ms,event_key')]
+
+    def schedule_account(self, address: str, *, now_ms: int, leaderboard_qualified: bool = False) -> None:
+        address = address_key(address)
+        with connect_sqlite(self.path) as conn:
+            conn.execute("""INSERT INTO hl_news_account_pool(address,next_poll_ms,qualified) VALUES(?,?,?)
+                ON CONFLICT(address) DO UPDATE SET next_poll_ms=MIN(next_poll_ms,excluded.next_poll_ms)""",
+                (address, now_ms, int(leaderboard_qualified)))
+
+    def account_due(self, now_ms: int, limit: int) -> list[dict[str, Any]]:
+        # Reserve one probe for new/inactive candidates; qualified addresses get
+        # the remaining budget. Ordered due times prevent hot addresses starving cold ones.
+        with connect_sqlite(self.path) as conn:
+            probe = conn.execute("""SELECT * FROM hl_news_account_pool
+                WHERE qualified=0 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT 1""", (now_ms,)).fetchall()
+            active = conn.execute("""SELECT * FROM hl_news_account_pool
+                WHERE qualified=1 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT ?""",
+                (now_ms, limit-len(probe))).fetchall()
+            remaining = limit-len(probe)-len(active)
+            extra = conn.execute("""SELECT * FROM hl_news_account_pool WHERE qualified=0 AND next_poll_ms<=?
+                ORDER BY next_poll_ms,address LIMIT ? OFFSET ?""", (now_ms, remaining, len(probe))).fetchall()
+        return [dict(r) for r in [*active, *probe, *extra]]
+
+    def update_account_schedule(self, address: str, *, now_ms: int, tier: str,
+                                interval_ms: int, qualified: bool, last_action_ms: int = 0) -> None:
+        with connect_sqlite(self.path) as conn:
+            conn.execute("""UPDATE hl_news_account_pool SET tier=?,qualified=?,next_poll_ms=?,
+                last_action_ms=MAX(last_action_ms,?) WHERE address=?""",
+                (tier, int(qualified), now_ms+interval_ms, last_action_ms, address))
+
+    def account_pool_stats(self, now_ms: int) -> dict[str, Any]:
+        with connect_sqlite(self.path) as conn:
+            tiers = {r['tier']: r['n'] for r in conn.execute(
+                'SELECT tier,count(*) AS n FROM hl_news_account_pool GROUP BY tier')}
+            due = conn.execute("""SELECT count(*) AS n,MIN(next_poll_ms) AS oldest
+                FROM hl_news_account_pool WHERE qualified=1 AND next_poll_ms<=?""", (now_ms,)).fetchone()
+        return {'tiers': tiers, 'qualified_due': due['n'],
+                'max_qualified_delay_ms': max(0, now_ms-due['oldest']) if due['oldest'] is not None else 0}

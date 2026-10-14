@@ -1,0 +1,239 @@
+"""Production account-profit cohort; other editorial directions remain disabled."""
+from __future__ import annotations
+
+import time
+from dataclasses import replace
+from typing import Any
+
+from .client import NewsClient
+from .detector import evaluate_address
+from .discovery import LEADERBOARD_WINDOWS, trade_candidates
+from .history import fill_key
+from .models import Rules, Position, number
+from .store import NewsStore
+
+HOUR = 3600000
+DAY = 24 * HOUR
+
+
+def qualifying_leaderboard(rows: list[dict[str, Any]], rules: Rules, now_ms: int):
+    """All returned qualifying rows, without the test seed top-N truncation."""
+    for row in rows:
+        windows = dict(row.get('windowPerformances', []))
+        for window in LEADERBOARD_WINDOWS:
+            data = windows.get(window)
+            if isinstance(data, dict) and number(data.get('pnl', '0')) >= rules.account_profit:
+                yield row['ethAddress'], {'kind': 'leaderboard', 'window': window,
+                    'side': 'profit', 'rank': None, 'pnl': str(number(data['pnl'])),
+                    'observed_ms': now_ms, 'pnl_scope': 'official_leaderboard_not_assumed_realized'}
+
+
+def portfolio_performance(payload: Any, now_ms: int) -> dict[str, Any]:
+    if not isinstance(payload, list):
+        raise ValueError('Unexpected portfolio payload')
+    names = {'perpDay': 'day', 'perpWeek': 'week', 'perpMonth': 'month', 'perpAllTime': 'allTime'}
+    windows = {}
+    for name, data in payload:
+        if name not in names:
+            continue
+        points = data.get('pnlHistory', [])
+        if not points:
+            continue
+        stamp, pnl = max(points, key=lambda p: int(p[0]))
+        stamp = int(stamp)
+        if stamp > now_ms or now_ms - stamp > DAY:
+            continue
+        windows[names[name]] = {'pnl': str(number(pnl)), 'observed_ms': stamp,
+            'history_sample_ms': stamp, 'rank': None, 'scope': 'official_portfolio_window_change'}
+    if not windows:
+        raise ValueError('No fresh perpetual portfolio performance')
+    return {'source': 'hyperliquid_portfolio', 'fetched_ms': now_ms, 'windows': windows,
+            'pnl_scope': 'official_portfolio_including_unrealized'}
+
+
+def qualified(performance: dict[str, Any], rules: Rules) -> bool:
+    return any(number(w['pnl']) >= rules.account_profit for w in performance.get('windows', {}).values())
+
+
+def account_event(event):
+    """Do not expose other directions' rules or historical labels to writers."""
+    if ('highlighted_address_action' not in event.kinds or
+            'official_account_high_profit' not in event.evidence.get('highlights', [])):
+        return None
+    evidence = {k: v for k, v in event.evidence.items() if k not in (
+        'previous_reported_floating_pnl', 'previous_reported_floating_pnl_ms',
+        'episode_peak_unrealized_pnl', 'episode_peak_ms', 'completed_round_results')}
+    evidence.update(highlights=['official_account_high_profit'], production_direction='account_profit')
+    return replace(event, kinds=('highlighted_address_action',), evidence=evidence)
+
+
+class AccountProfitMonitor:
+    def __init__(self, store: NewsStore, client: NewsClient, *, addresses_per_pass: int = 10,
+                 rules: Rules | None = None) -> None:
+        if not 1 <= addresses_per_pass <= 100:
+            raise ValueError('Address batch must be 1..100')
+        self.store, self.client = store, client
+        self.rules = rules or Rules()
+        self.addresses_per_pass = addresses_per_pass
+
+    def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
+        fixed_now = now_ms
+        def clock_ms():
+            return fixed_now if fixed_now is not None else int(time.time() * 1000)
+        now_ms = clock_ms()
+        self.store.initialize()
+        deployment = self.store.metadata('production_account_profit', {})
+        if not deployment.get('enabled') or not deployment.get('started_ms'):
+            raise ValueError('Enable account-profit production before running the worker')
+        started = int(deployment['started_ms'])
+        found = set()
+        report = {'observed_ms': now_ms, 'direction': 'account_profit', 'processed': 0,
+                  'candidates': 0, 'failed': {}, 'discovered': 0, 'attribute_queries': 0,
+                  'coverage': 'qualifying_public_leaderboard_and_sampled_trades'}
+        # Hourly discovery refresh; preserve prior cache and retry on failures.
+        if now_ms - self.store.metadata('account_leaderboard_checked_ms', 0) >= HOUR:
+            try:
+                rows = self.client.leaderboard()
+                for address, source in qualifying_leaderboard(rows, self.rules, now_ms):
+                    self.store.discover(address, source=source, now_ms=now_ms, limit=None)
+                    self.store.schedule_account(address, now_ms=now_ms, leaderboard_qualified=True)
+                    found.add(address.lower())
+                self.store.save_global('account_leaderboard_checked_ms', now_ms, [])
+            except Exception as exc:
+                report['failed']['discovery:leaderboard'] = str(exc)
+        # One sampled market per five minutes. Discovery is distinct from qualification.
+        universe = self.store.metadata('account_market_universe', {})
+        if not universe or now_ms - universe.get('observed_ms', 0) >= HOUR:
+            dexs = self.client.dex_names()
+            markets = {}
+            for dex in dexs:
+                markets.update(self.client.markets(dex))
+            universe = {'observed_ms': now_ms, 'dexs': dexs, 'markets': markets}
+            self.store.save_global('account_market_universe', universe, [])
+        dexs, markets = universe['dexs'], universe['markets']
+        if now_ms - self.store.metadata('account_trade_discovery_ms', 0) >= 300000 and markets:
+            coins = sorted(markets)
+            cursor = self.store.metadata('account_trade_cursor', 0) % len(coins)
+            coin = coins[cursor]
+            try:
+                for address, source in trade_candidates(self.client.recent_trades(coin), coin, self.rules, now_ms):
+                    self.store.discover(address, source=source, now_ms=now_ms, limit=None)
+                    self.store.schedule_account(address, now_ms=now_ms)
+                    found.add(address.lower())
+                self.store.save_global('account_trade_discovery_ms', now_ms, [])
+                self.store.save_global('account_trade_cursor', (cursor + 1) % len(coins), [])
+            except Exception as exc:
+                report['failed']['discovery:' + coin] = str(exc)
+        for row in self.store.account_due(now_ms, self.addresses_per_pass):
+            address = row['address']
+            # Wall time is required in production; fixed time is for offline tests.
+            observed = clock_ms()
+            try:
+                old = self.store.load(address)
+                performance = self.store.metadata('account_performance:' + address, {})
+                if not performance or observed - performance.get('fetched_ms', 0) >= HOUR:
+                    performance = portfolio_performance(self.client.portfolio(address), clock_ms())
+                    self.store.save_global('account_performance:' + address, performance, [])
+                if not qualified(performance, self.rules):
+                    self.store.update_account_schedule(address, now_ms=observed, tier='unqualified',
+                                                       interval_ms=DAY, qualified=False)
+                    report['processed'] += 1
+                    continue
+                positions = {}
+                snapshot_times = {}
+                for dex in dexs:
+                    payload = self.client.positions(address, dex)
+                    snapshot_times[dex] = payload.get('time')
+                    for item in payload['assetPositions']:
+                        raw = dict(item['position'])
+                        if number(raw['szi']) == 0:
+                            continue
+                        if dex and not str(raw['coin']).startswith(dex + ':'):
+                            raw['coin'] = dex + ':' + str(raw['coin'])
+                        p = Position.from_payload(raw)
+                        if p.coin in positions:
+                            raise ValueError('Duplicate market position')
+                        positions[p.coin] = p
+                # No historical statistical backfill: only actions since this deployment.
+                # Requalification starts a fresh baseline after an unqualified period.
+                baseline = old if row['qualified'] and old and old['state'].get('account_production_started_ms') == started else None
+                pending = self.store.metadata('account_pending_fills:' + address, {}) if baseline else {}
+                coverage = pending.get('coverage') or (baseline or {}).get('coverage', {})
+                history_checked = (baseline or {}).get('state', {}).get('account_history_checked_ms', observed)
+                since = max(started, observed - DAY,
+                    int(coverage.get('next_start_ms', started)) if not coverage.get('pagination_complete', True)
+                    else int(history_checked) - 60000)
+                observed = clock_ms()
+                previous_positions = (baseline or {}).get('state', {}).get('positions', {})
+                size_changed = ({c: str(p.size) for c, p in positions.items()} !=
+                    {c: p['size'] for c, p in previous_positions.items()})
+                query_history = bool(baseline and (size_changed or pending or observed-history_checked >= 900000))
+                if query_history:
+                    fetched, coverage = self.client.history(address, since, observed, max_pages=2)
+                else:
+                    fetched = []
+                    coverage = coverage if baseline else {'pagination_complete': True, 'next_start_ms': observed,
+                        'coverage': 'production_action_monitoring_no_historical_backfill'}
+                fetched = list({fill_key(f): f for f in pending.get('fills', []) + fetched}.values())
+                if not coverage.get('pagination_complete', True):
+                    # Never publish a partial action and then publish its remaining
+                    # pages as another action. Keep the successful baseline intact.
+                    self.store.save_global('account_pending_fills:' + address,
+                        {'coverage': coverage, 'fills': fetched}, [])
+                    self.store.update_account_schedule(address, now_ms=observed, tier='backfill',
+                        interval_ms=30000, qualified=True)
+                    report.setdefault('incomplete_history', []).append(address)
+                    continue
+                known = {fill_key(f) for f in self.store.fills(address,
+                    min([since] + [int(f['time']) for f in fetched]), observed)}
+                new_fills = [f for f in fetched if baseline and fill_key(f) not in known
+                    and int(f['time']) >= baseline['state'].get('account_monitoring_since_ms', started)]
+                history = {'official_account_performance': performance, 'api_coverage': coverage}
+                events, state = evaluate_address(address=address, observed_ms=observed,
+                    first_seen_ms=observed, positions=positions,
+                    previous=baseline['state'] if baseline else None, markets=markets,
+                    history=history, new_fills=new_fills, rules=self.rules)
+                selected = [e for e in (account_event(e) for e in events) if e]
+                if selected:
+                    # Verify official profitability again immediately before creating a reportable event.
+                    performance = portfolio_performance(self.client.portfolio(address), clock_ms())
+                    self.store.save_global('account_performance:' + address, performance, [])
+                    if not qualified(performance, self.rules):
+                        selected = []
+                    else:
+                        history['official_account_performance'] = performance
+                        observed = clock_ms()
+                        events, state = evaluate_address(address=address, observed_ms=observed,
+                            first_seen_ms=observed, positions=positions,
+                            previous=baseline['state'], markets=markets, history=history,
+                            new_fills=new_fills, rules=self.rules)
+                        selected = [e for e in (account_event(e) for e in events) if e]
+                state['account_history_checked_ms'] = observed if query_history or not baseline else history_checked
+                state['snapshot_times'] = snapshot_times
+                for e in selected:
+                    e.evidence['snapshot_times'] = snapshot_times
+                state['account_production_started_ms'] = started
+                state['account_monitoring_since_ms'] = baseline['state']['account_monitoring_since_ms'] if baseline else observed
+                self.store.commit_observation(address=address, now_ms=observed, state=state,
+                    history=history, coverage=coverage, fills=fetched, candidates=selected)
+                self.store.save_global('account_pending_fills:' + address, {}, [])
+                last_action = max([int(f['time']) for f in new_fills] + [row['last_action_ms']])
+                active = any(p.notional >= self.rules.action for p in positions.values()) or observed - last_action <= HOUR
+                tier = ('active' if active else 'idle') if qualified(performance, self.rules) else 'unqualified'
+                self.store.update_account_schedule(address, now_ms=observed, tier=tier,
+                    interval_ms=(180000 if active else 1800000) if qualified(performance, self.rules) else DAY, qualified=qualified(performance, self.rules),
+                    last_action_ms=last_action)
+                report['attribute_queries'] += int(query_history)
+                report['processed'] += 1
+                report['candidates'] += len(selected)
+            except Exception as exc:
+                self.store.record_error(address, observed, str(exc))
+                self.store.update_account_schedule(address, now_ms=observed, tier='retry',
+                    interval_ms=300000, qualified=bool(row['qualified']))
+                report['failed'][address] = str(exc)
+        report['discovered'] = len(found)
+        report['completed_ms'] = clock_ms()
+        report['pool'] = self.store.account_pool_stats(clock_ms())
+        report['request_weight_total'] = getattr(self.client, 'request_weight', 0)
+        self.store.save_global('last_pass', report, [])
+        return report

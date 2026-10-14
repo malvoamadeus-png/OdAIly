@@ -19,6 +19,46 @@ def run_command(args: Any) -> int:
         repo.seed_prompt_templates(root_dir=get_paths().root_dir)
         store.initialize()
         print(encode({'initialized': True}))
+    elif action == 'enable-account-profit':
+        import time
+        store.initialize()
+        existing = store.metadata('production_account_profit', None)
+        if existing is not None:
+            if not existing.get('enabled'):
+                raise ValueError('Disabled rollout requires an explicit new rollout decision')
+            print(encode(existing))
+        else:
+            policy = {'enabled': True, 'started_ms': int(time.time() * 1000),
+                      'enabled_scenarios': ['account_profit'], 'publication_mode': 'backend_only'}
+            store.save_global('production_account_profit', policy, [])
+            # Preserve test seed provenance, but require live qualification and a new baseline.
+            for row in store.addresses(100000):
+                store.schedule_account(row['address'], now_ms=policy['started_ms'])
+            print(encode(policy))
+    elif action == 'run-account-profit':
+        import time
+        from .account_monitor import AccountProfitMonitor
+        from .client import NewsClient
+        from .dispatch import EventDispatcher
+        client = NewsClient(request_weight_per_minute=300)
+        monitor = AccountProfitMonitor(store, client, addresses_per_pass=args.addresses_per_pass)
+        dispatcher = EventDispatcher(store)
+        while True:
+            try:
+                report = monitor.run_once()
+                report['dispatch'] = dispatcher.dispatch(limit=10)
+                store.save_global('last_pass', report, [])
+                print(encode(report), flush=True)
+            except Exception as exc:
+                report = {'observed_ms': int(time.time()*1000), 'direction': 'account_profit',
+                          'failed': {'pass': str(exc)}}
+                store.save_global('last_pass', report, [])
+                print(encode(report), flush=True)
+                if args.once:
+                    raise
+            if args.once:
+                break
+            time.sleep(30)
     elif action == 'activate-prompt':
         print(encode(activate_writer_prompt(path, get_paths().root_dir)))
     elif action == 'preview':

@@ -115,7 +115,7 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
 export function HyperliquidNewsPanel() {
   const [dataset, setDataset] = useState<'live' | 'test'>('live');
   const [tab, setTab] = useState('scenarios'), [page, setPage] = useState(0);
-  const [scenarioKey, setScenarioKey] = useState('large_position'), [selected, setSelected] = useState<string | null>(null);
+  const [scenarioKey, setScenarioKey] = useState('account_profit'), [selected, setSelected] = useState<string | null>(null);
   const [data, setData] = useState<HyperliquidNewsDashboard | null>(null), [error, setError] = useState('');
   const [loading, setLoading] = useState(true), [refresh, setRefresh] = useState(0);
   useEffect(() => {
@@ -132,6 +132,7 @@ export function HyperliquidNewsPanel() {
   const ready = data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
+    {data?.production?.enabled && <p className="notice" role="note">当前正式上线：{data.scenarios.filter(s => data.production?.enabled_scenarios.includes(s.key)).map(s => s.name).join('、')}。其余方向保留测试和历史记录，尚未启用正式投递。</p>}
     <div className="autoNewsflashSummary">
       {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, dataset === 'test' ? '测试案例' : '监测记录', (dataset === 'test' ? data?.counts.test_cases : data?.counts.events) ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, dataset === 'test' ? '已有案例方向' : '已投递任务', dataset === 'test' ? data?.scenarios.filter(s => s.count > 0).length ?? '—' : data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
@@ -140,7 +141,7 @@ export function HyperliquidNewsPanel() {
     {error && <p className="notice error" role="alert">{error}</p>}
     {loading && <p className="hlMuted" role="status">正在读取监测记录…</p>}
     {data && tab === 'scenarios' && <div className="hlWorkspace" aria-busy={loading}>
-      <nav className="hlScenarioNav" aria-label="监测场景"><div className="hlNavHeading">监测方向<span>记录数</span></div>{data.scenarios.map((s, index) => <button key={s.key} className={`hlScenarioRow ${scenarioKey === s.key ? 'active' : ''}`} aria-pressed={scenarioKey === s.key} onClick={() => { setScenarioKey(s.key); setPage(0); setSelected(null); }}><span className="hlScenarioNumber">{String(index + 1).padStart(2, '0')}</span><strong>{s.name}</strong><span className={`hlCount ${s.count ? 'hasRecords' : ''}`}>{s.count}</span><ChevronRight size={14} /></button>)}<p className="hlNavNote">所有方向固定保留。记录数包含监测基线；同一事件可命中多个方向，任务不会重复创建。</p></nav>
+      <nav className="hlScenarioNav" aria-label="监测场景"><div className="hlNavHeading">监测方向<span>记录数</span></div>{data.scenarios.map((s, index) => <button key={s.key} className={`hlScenarioRow ${scenarioKey === s.key ? 'active' : ''}`} aria-pressed={scenarioKey === s.key} onClick={() => { setScenarioKey(s.key); setPage(0); setSelected(null); }}><span className="hlScenarioNumber">{String(index + 1).padStart(2, '0')}</span><strong>{s.name}</strong><span className={`hlCount ${s.count ? 'hasRecords' : ''}`}>{s.count}</span><ChevronRight size={14} /></button>)}<p className="hlNavNote">所有方向固定保留，保留方向不代表已上线。记录数包含历史测试采集与监测基线。</p></nav>
       <div className="hlScenarioContent">
         <header className="hlScenarioHeader"><div className="hlEyebrow">监测场景 · {String(data.scenarios.findIndex(s => s.key === scenarioKey) + 1).padStart(2, '0')}</div><h3>{scenario?.name}</h3><p>{scenario?.description}</p><div className="hlRuleChips">{scenario?.rule_keys.map(key => <span key={key}>{ruleNames[key] || key}<strong>{ruleValue(key, data.rules[key])}</strong></span>)}</div><p className="hlMuted">以上为当前工程默认门槛；实际触发值以记录保存的证据为准。</p></header>
         {ready && !loading && !error && <>
@@ -154,6 +155,6 @@ export function HyperliquidNewsPanel() {
       </div>
     </div>}
     {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最近轮询的 100 个地址</span></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无地址</h4><p>地址发现后展示来源、持仓与单资产属性。</p></div>}{data.addresses.map(a => <article className="hlAddress" key={a.address}><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><p className="hlMuted">首次观察：{time(a.first_seen_ms)} · 最近轮询：{time(a.last_polled_ms)}</p><p className="hlMuted">属性查询依据：{a.history?.enrichment_reasons?.map((r: string) => ({ important_position: '重要持仓', large_unrealized_pnl: '大额浮盈亏', leaderboard: '榜单发现', important_action: '重要操作' }[r] || r)).join(' / ') || '未取得'}</p>{a.error && <p className="notice error" role="alert">{a.error}</p>}<details><summary>发现来源、仓位与单资产属性</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details></article>)}</div>}
-    {data && tab === 'rules' && <div className="hlSecondary"><h3>规则与运行</h3><p className="hlMuted">硬规则命中后进入查重与写作，不经过新闻价值筛选。</p><div className="hlFlow">{(data.flow || []).map((step, i) => <span key={step}>{i > 0 && <ChevronRight size={14} />}{step}</span>)}</div><dl className="hlFacts">{Object.entries(data.rules).map(([key, value]) => <div key={key}><dt>{ruleNames[key] || key}</dt><dd>{ruleValue(key, value)}</dd></div>)}</dl><details><summary>最近采集结果与覆盖</summary><pre>{JSON.stringify(data.last_pass, null, 2)}</pre></details></div>}
+    {data && tab === 'rules' && <div className="hlSecondary"><h3>规则与运行</h3><p className="hlMuted">硬规则命中后进入查重与写作，不经过新闻价值筛选。</p><div className="hlFlow">{(data.flow || []).map((step, i) => <span key={step}>{i > 0 && <ChevronRight size={14} />}{step}</span>)}</div><dl className="hlFacts">{Object.entries(data.rules).map(([key, value]) => <div key={key}><dt>{ruleNames[key] || key}</dt><dd>{ruleValue(key, value)}</dd></div>)}</dl><details><summary>最近采集结果与覆盖</summary><pre>{JSON.stringify({ production: data.production, account_pool: data.account_pool, last_pass: data.last_pass }, null, 2)}</pre></details></div>}
   </section>;
 }

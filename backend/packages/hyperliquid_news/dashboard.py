@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -79,4 +80,6 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
     return {'initialized': True, 'events': events, 'addresses': addresses, 'rules': asdict(Rules()), 'labels': KIND_LABELS,
             'last_pass': store.metadata('last_pass', {}), 'has_next': len(rows) > page_size, 'page': page,
             'counts': counts, 'scenarios': scenarios, 'scenario': scenario, 'dataset': dataset, 'publication_mode': 'backend_only',
+            'production': store.metadata('production_account_profit', None),
+            'account_pool': store.account_pool_stats(int(time.time()*1000)) if 'hl_news_account_pool' in tables else {},
             'flow': ['硬规则命中', '内部行为防重', '搜索者（跨来源查重）', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}

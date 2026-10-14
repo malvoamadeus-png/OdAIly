@@ -1,0 +1,17 @@
+[Unit]
+Description=OdAIly Hyperliquid account-profit news monitor (single direction)
+After=network-online.target odaily-local-pipeline.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py hyperliquid-news run-account-profit
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
