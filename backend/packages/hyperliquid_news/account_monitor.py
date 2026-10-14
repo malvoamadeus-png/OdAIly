@@ -168,6 +168,7 @@ class AccountProfitMonitor:
                 size_changed = ({c: str(p.size) for c, p in positions.items()} !=
                     {c: p['size'] for c, p in previous_positions.items()})
                 query_history = bool(baseline and (size_changed or pending or observed-history_checked >= 900000))
+                history_end_ms = observed
                 if query_history:
                     fetched, coverage = self.client.history(address, since, observed, max_pages=2)
                 else:
@@ -208,7 +209,7 @@ class AccountProfitMonitor:
                             previous=baseline['state'], markets=markets, history=history,
                             new_fills=new_fills, rules=self.rules)
                         selected = [e for e in (account_event(e) for e in events) if e]
-                state['account_history_checked_ms'] = observed if query_history or not baseline else history_checked
+                state['account_history_checked_ms'] = history_end_ms if query_history or not baseline else history_checked
                 state['snapshot_times'] = snapshot_times
                 for e in selected:
                     e.evidence['snapshot_times'] = snapshot_times
