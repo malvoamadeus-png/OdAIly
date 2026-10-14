@@ -1095,7 +1095,7 @@ class XProcessingWorker:
             template_key = PROMPT_KEY_BY_NEWS_TYPE[pipeline.news_type]
         if template_key is None:
             raise ValueError("missing news_type")
-        prompt = self._get_prompt(template_key)
+        prompt = effective_writer_prompt(task, self._get_prompt(template_key))
         known_subjects = match_known_title_subjects(
             task,
             subject_names=load_known_title_subject_names(),
@@ -1752,6 +1752,12 @@ def utc_since_hours(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
 
 
+def effective_writer_prompt(task: TaskRecord, prompt: PromptTemplateVersion) -> PromptTemplateVersion:
+    if task.source == HYPERLIQUID_SOURCE and prompt.feature_mode_enabled:
+        return replace(prompt, feature_mode_enabled=False, feature_mode_text="")
+    return prompt
+
+
 def build_structured_writer_prompt(
     *,
     task: TaskRecord,
@@ -1780,6 +1786,7 @@ def build_writer_prompt(
     prompt: PromptTemplateVersion,
     structured_output: bool = False,
 ) -> str:
+    prompt = effective_writer_prompt(task, prompt)
     if task.source == HYPERLIQUID_SOURCE:
         from packages.hyperliquid_news.store import encode
         from packages.hyperliquid_news.copy import writer_material

@@ -105,7 +105,7 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
 <section className="hlDetailSection"><h4><FileText size={16} />快讯文本<span className="hlMuted">{event.evidence.test_replay ? '管理页预览 · 未投递' : '仅挂后台'}</span></h4>
       {preview && <p className="hlMuted">{event.evidence.test_replay ? '测试稿预览' : event.news_eligibility?.eligible === false ? '历史文本试稿' : '修订预览'} · 沿用原观察时点事实 · 未重新挂后台</p>}
       <div className="hlNewsCopy"><h3>{preview?.title || p.final_title || p.draft_title || '暂未生成快讯'}</h3><p className="hlCopy">{preview?.content || p.final_content || p.draft_content || '后续文本将在这里展示。'}</p></div>
-      <p className="hlMuted">模型：{preview?.writer_model || p.writer_model || '—'} · Prompt 版本：{preview?.prompt_version_number || p.prompt_version_number || '—'}</p>
+      <p className="hlMuted">模型：{preview?.writer_model || p.writer_model || '—'} · Prompt：{preview?.prompt_source === 'repository_template' ? '仓库模板（未激活）' : preview?.prompt_version_number || p.prompt_version_number || '—'}</p>
       <a className="hlSourceLink" href={event.source_url} target="_blank" rel="noreferrer">查看 Hyperbot 地址 <ArrowRight size={14} /></a>
       <details><summary>原稿与时间记录</summary><h3>{p.final_title || p.draft_title || '暂未生成'}</h3><p className="hlCopy">{p.final_content || p.draft_content || '暂未生成'}</p><p className="hlMuted">编写：{time(p.write_completed_at)} · 定稿：{time(p.format_completed_at)} · 挂后台：{time(p.publish_completed_at)}</p>{preview && <p className="hlMuted">预览生成：{time(preview.generated_at)} · 原稿 Prompt 版本：{p.prompt_version_number || '—'}</p>}{p.push_result && <pre>{JSON.stringify(p.push_result, null, 2)}</pre>}</details>
     </section>

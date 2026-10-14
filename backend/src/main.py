@@ -303,6 +303,7 @@ def parse_args() -> argparse.Namespace:
     hl_actions.add_parser("replay-cached-test-cases", help="Replay cached test history without querying or publishing.")
     hl_test_preview = hl_actions.add_parser("preview-test-cases", help="Generate representative isolated test copy without publishing.")
     hl_test_preview.add_argument("--limit", type=int, default=15)
+    hl_test_preview.add_argument("--repository-template", action="store_true", help="Preview with the checked-out Hyperliquid template without activating it.")
     hl_mine = hl_actions.add_parser("mine-test-cases", help="Mine historical real-address cases for pre-launch review only.")
     hl_mine.add_argument("--address-limit", type=int, default=40)
     hl_mine.add_argument("--per-side", type=int, default=12)

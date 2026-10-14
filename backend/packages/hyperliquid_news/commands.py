@@ -51,7 +51,7 @@ def run_command(args: Any) -> int:
         print(encode(replay_cached_cases(store)))
     elif action == 'preview-test-cases':
         from .test_cases import preview_cases
-        print(encode(preview_cases(store, limit=args.limit)))
+        print(encode(preview_cases(store, limit=args.limit, repository_template=args.repository_template)))
     elif action == 'mine-test-cases':
         from .test_cases import mine_cases
         print(encode(mine_cases(store, address_limit=args.address_limit, per_side=args.per_side, addresses=args.addresses)))

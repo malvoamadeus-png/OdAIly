@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 from typing import Any
 
@@ -252,9 +252,10 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
     return report
 
 
-def preview_cases(store: NewsStore, *, limit: int = 15) -> dict[str, Any]:
+def preview_cases(store: NewsStore, *, limit: int = 15, repository_template: bool = False) -> dict[str, Any]:
     """Choose representative real cases and write review copy without tasks/push."""
     from packages.common.config import load_x_processing_settings
+    from packages.common.paths import get_paths
     from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
     from packages.x_processing.worker import XProcessingWorker
     from packages.x_processing.models import TaskRecord, HYPERLIQUID_SOURCE
@@ -269,6 +270,11 @@ def preview_cases(store: NewsStore, *, limit: int = 15) -> dict[str, Any]:
     settings=load_x_processing_settings()
     worker=XProcessingWorker(stage='write',repository=SQLiteXProcessingRepository(store.path),settings=settings)
     prompt=worker.repository.get_active_prompt('hyperliquid_writer')
+    prompt_source='active_prompt'
+    if repository_template:
+        template_path=get_paths().root_dir/'docs/OdAIly代码与整体设计/Hyperliquid快讯模板.txt'
+        prompt=replace(prompt,content=template_path.read_text(encoding='utf-8'))
+        prompt_source='repository_template'
     selected=[]; covered=set()
     for scenario in SCENARIOS:
         if scenario[0] in covered:continue
@@ -281,7 +287,8 @@ def preview_cases(store: NewsStore, *, limit: int = 15) -> dict[str, Any]:
         try:
             task=TaskRecord(id=0,source=HYPERLIQUID_SOURCE,source_item_id=event['key'],source_url=source_url(event),
                             title=None,content='',raw_payload=event)
-            result=generate_preview(task=task,prompt=prompt,settings=settings,ai_client=worker._get_ai_client())
+            result=generate_preview(task=task,prompt=prompt,settings=settings,ai_client=worker._get_ai_client(),
+                                    prompt_source=prompt_source)
             store.save_global('editorial_preview:'+event['key'],result,[])
             report['generated']+=1
             print(encode({'event_key':event['key'],'scenarios':case_scenarios(event),'title':result['title']}),flush=True)
