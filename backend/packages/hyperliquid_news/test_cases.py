@@ -286,7 +286,7 @@ def preview_cases(store: NewsStore, *, limit: int = 15, repository_template: boo
     for event in selected:
         try:
             task=TaskRecord(id=0,source=HYPERLIQUID_SOURCE,source_item_id=event['key'],source_url=source_url(event),
-                            title=None,content='',raw_payload=event)
+                            title=None,content='',raw_payload=store.with_address_notes(event))
             result=generate_preview(task=task,prompt=prompt,settings=settings,ai_client=worker._get_ai_client(),
                                     prompt_source=prompt_source)
             store.save_global('editorial_preview:'+event['key'],result,[])

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, ChevronRight, Database, FileText, Layers, RefreshCw, ShieldCheck } from 'lucide-react';
-import { getHyperliquidNewsDashboard, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
+import { getHyperliquidNewsDashboard, saveHyperliquidAddressNote, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
 
 function money(value: unknown): string {
   if (value === null || value === undefined) return '未取得';
@@ -112,6 +112,22 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
   </article>;
 }
 
+function AddressRow({ address: a }: { address: Record<string, any> }) {
+  const [note, setNote] = useState(a.note || ''), [saved, setSaved] = useState(a.note || '');
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  async function save() {
+    setBusy(true); setError('');
+    try { const result = await saveHyperliquidAddressNote(a.address, note); setSaved(result.note); setNote(result.note); }
+    catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
+  return <article className="hlAddress">
+    <div className="hlAddressTop"><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><small>最近检查 {time(a.last_polled_ms)}</small></div>
+    <div className="hlAddressNote"><input aria-label={`${a.address} 地址备注`} placeholder="地址备注，例如 Wintermute做市地址" maxLength={80} value={note} onChange={e => setNote(e.target.value)} /><button className="hlButton" disabled={busy || note === saved} onClick={save}>{busy ? '保存中' : '保存备注'}</button></div>
+    {(error || a.error) && <p className="notice error">{error || a.error}</p>}
+    <details><summary>发现来源与监测证据</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details>
+  </article>;
+}
+
 export function HyperliquidNewsPanel() {
   const [dataset, setDataset] = useState<'live' | 'test'>('live');
   const [tab, setTab] = useState<'scenarios' | 'addresses' | 'rules'>('scenarios'), [page, setPage] = useState(0);
@@ -123,7 +139,7 @@ export function HyperliquidNewsPanel() {
     setLoading(true); setError('');
     getHyperliquidNewsDashboard(page, scenarioKey, dataset, tab).then(d => {
       if (!live) return;
-      setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : (dataset === 'test' ? d.events.find(e => e.editorial_preview)?.key : null) || d.events[0]?.key || null);
+      setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : (dataset === 'test' ? d.events.find(e => e.editorial_preview)?.key : null) || d.events.find(e => e.key === new URLSearchParams(window.location.search).get('event_key'))?.key || d.events[0]?.key || null);
     }).catch(e => { if (live) setError(String(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [page, scenarioKey, refresh, dataset, tab]);
@@ -154,7 +170,7 @@ export function HyperliquidNewsPanel() {
         </>}
       </div>
     </div>}
-    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最近轮询的 100 个地址</span></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无地址</h4><p>地址发现后展示来源、持仓与单资产属性。</p></div>}{data.addresses.map(a => <article className="hlAddress" key={a.address}><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><p className="hlMuted">首次观察：{time(a.first_seen_ms)} · 最近轮询：{time(a.last_polled_ms)}</p><p className="hlMuted">属性查询依据：{a.history?.enrichment_reasons?.map((r: string) => ({ important_position: '重要持仓', large_unrealized_pnl: '大额浮盈亏', leaderboard: '榜单发现', important_action: '重要操作' }[r] || r)).join(' / ') || '未取得'}</p>{a.error && <p className="notice error" role="alert">{a.error}</p>}<details><summary>发现来源、仓位与单资产属性</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details></article>)}</div>}
+    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最近轮询的 100 个地址</span></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无地址</h4><p>地址发现后展示来源、持仓与单资产属性。</p></div>}{data.addresses.map(a => <AddressRow key={a.address + ':' + (a.note || '')} address={a} />)}</div>}
     {data && tab === 'rules' && <div className="hlSecondary"><h3>规则与运行</h3><p className="hlMuted">硬规则命中后进入查重与写作，不经过新闻价值筛选。</p><div className="hlFlow">{(data.flow || []).map((step, i) => <span key={step}>{i > 0 && <ChevronRight size={14} />}{step}</span>)}</div><dl className="hlFacts">{Object.entries(data.rules).map(([key, value]) => <div key={key}><dt>{ruleNames[key] || key}</dt><dd>{ruleValue(key, value)}</dd></div>)}</dl><details><summary>最近采集结果与覆盖</summary><pre>{JSON.stringify({ production: data.production, account_pool: data.account_pool, last_pass: data.last_pass }, null, 2)}</pre></details></div>}
   </section>;
 }

@@ -68,11 +68,14 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             item['source_url'] = 'https://hyperbot.network/trader/' + item['addresses'][0]
             events.append(item)
         addresses = []
-        for row in conn.execute('''SELECT a.*,s.state,s.history FROM hl_news_addresses a
-            LEFT JOIN hl_news_state s ON s.address=a.address ORDER BY a.last_polled_ms DESC LIMIT ?''', (100 if view == 'addresses' else 0,)):
+        for row in conn.execute('''SELECT a.*,s.state,s.history,m.payload AS note_payload FROM hl_news_addresses a
+            LEFT JOIN hl_news_state s ON s.address=a.address
+            LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
+            ORDER BY a.last_polled_ms DESC LIMIT ?''', (100 if view == 'addresses' else 0,)):
             item = dict(row)
             for field in ('sources', 'state', 'history'):
                 item[field] = json.loads(item[field]) if item.get(field) else ([] if field == 'sources' else {})
+            item['note'] = json.loads(item.pop('note_payload') or '{}').get('note', '')
             addresses.append(item)
         counts = {name: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
                   for name, table in [('addresses', 'hl_news_addresses'), ('events', 'hl_news_candidates')]}

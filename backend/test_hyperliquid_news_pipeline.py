@@ -448,3 +448,23 @@ def test_account_copy_corrects_model_wording_with_alltime_evidence():
     finite = format_news(DraftBrief(title='近30天盈利超2000万美元地址加仓BTC空单', content='该地址近30天收益超过2000万美元。'), e)
     assert finite.title.startswith('近30天盈利')
     assert finite.content.startswith('据Odaily监测，某地址')
+
+
+def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
+    path = tmp_path/'offline.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path);store.initialize()
+    store.discover(A, source={'kind': 'manual'}, now_ms=1000)
+    store.save_address_note(A, 'Wintermute做市地址', updated_by='editor@example.test')
+    e, _ = event();e['kinds']=['highlighted_address_action'];e['evidence']['highlights']=['official_account_high_profit']
+    e['evidence']['history']={'official_account_performance':{'windows':{'allTime':{'pnl':'173000000'}}}}
+    e=store.with_address_notes(e)
+    result=format_news(DraftBrief(title='总盈利超1亿美元地址加仓BTC空单', content='某地址合约账户累计收益超过1亿美元。其加仓BTC空单。'),e)
+    assert result.content.startswith('据Odaily监测，某地址合约账户（Wintermute做市地址）累计收益')
+    assert format_news(result,e).content.count('Wintermute做市地址')==1
+    assert dashboard(store,view='addresses')['addresses'][0]['note']=='Wintermute做市地址'
+    for invalid in ('a\nb','名字（嵌套）','x'*81):
+        with pytest.raises(ValueError):store.save_address_note(A,invalid,updated_by='editor')
+    store.save_address_note(A,'',updated_by='editor')
+    assert store.with_address_notes(e)['evidence']['address_notes'][A]==''
+    assert 'Wintermute' not in format_news(result,store.with_address_notes(e)).content

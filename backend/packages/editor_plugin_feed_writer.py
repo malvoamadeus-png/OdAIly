@@ -24,6 +24,7 @@ def _source_label(source: str) -> str:
         "panews": "PANews",
         "jinse": "金色财经",
         "jin10": "金十",
+        "hyperliquid_news": "Hyperliquid监测",
     }.get(source, source)
 
 
@@ -136,6 +137,13 @@ class LocalEditorPluginFeedWriter:
             {"label": "领域", "value": _news_type_label(news_type), "tone": "neutral"} if news_type else None,
             {"label": "模式", "value": "特色", "tone": "accent"} if feature_mode_enabled else None,
         ]
+        detail_url = source_url
+        if source == 'hyperliquid_news':
+            base = (os.getenv('EDITOR_PLUGIN_CONSOLE_URL') or '').strip()
+            parsed = urlsplit(base)
+            if parsed.scheme in {'http', 'https'} and parsed.netloc:
+                detail_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path or '/',
+                    urlencode({'view': 'hyperliquid_news', 'event_key': source_item_id or ''}), ''))
         self.store.upsert_feed_items(
             [
                 {
@@ -150,7 +158,7 @@ class LocalEditorPluginFeedWriter:
                     "status_tone": "manual" if status == "ready_review" else "success",
                     "occurred_at": occurred_at or _now(),
                     "source_url": source_url,
-                    "detail_url": source_url,
+                    "detail_url": detail_url,
                     "action_schema": {"type": "read"},
                     "meta_json": {
                         "task_id": task_id,

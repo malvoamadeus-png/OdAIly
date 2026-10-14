@@ -70,6 +70,14 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
     title = title.replace('的地址', '地址')
     content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?该地址',
                      lambda match: (match.group(1) or '') + '某地址', draft.content.strip(), count=1)
+    notes = evidence.get('address_notes', {})
+    address = event.get('addresses', [''])[0]
+    note = notes.get(address, '')
+    if address in notes:
+        # Remarks are inserted as literal data after generation, never model instructions.
+        note = str(note).strip()
+        content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?某地址(合约账户)?(?:（[^）]*）)?',
+            lambda m: (m.group(1) or '') + '某地址' + (m.group(2) or '') + ('（' + note + '）' if note else ''), content, count=1)
     return DraftBrief(title=title, content=content)
 
 
@@ -81,6 +89,7 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
             content = content.removeprefix(prefix).lstrip()
     normalized = format_brief(DraftBrief(title=draft.title, content=content))
     body = normalized.content.removeprefix(ODAILY_PREFIX).lstrip()
+    body = normalize_account_copy(DraftBrief(title=normalized.title, content=body), event).content
     return DraftBrief(title=normalized.title, content=PREFIX + body + '\n' + footer(event))
 
 

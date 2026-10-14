@@ -80,6 +80,8 @@ def run_command(args: Any) -> int:
         worker = XProcessingWorker(stage='write', repository=repo, settings=settings)
         prompt = repo.get_active_prompt('hyperliquid_writer')
         for task in tasks:
+            from dataclasses import replace
+            task = replace(task, raw_payload=store.with_address_notes(task.raw_payload))
             result = generate_preview(task=task, prompt=prompt, settings=settings, ai_client=worker._get_ai_client())
             store.save_global('editorial_preview:' + task.raw_payload['key'], result, [])
             print(encode({'task_id': task.id, **result}))

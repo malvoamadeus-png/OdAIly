@@ -74,3 +74,17 @@ def test_auto_newsflash_event_feed_item_is_idempotent_and_links_to_console(
     assert rows[0]["action_schema"]["url"] == (
         "https://console.example.test/?view=x_agent&x_agent_tab=auto_newsflash&event_id=tracking-event%3Agiwa"
     )
+
+
+def test_hyperliquid_completed_draft_uses_existing_plugin_alert_and_console_link(tmp_path, monkeypatch):
+    monkeypatch.setenv('EDITOR_PLUGIN_CONSOLE_URL','https://console.example.test/#tasks')
+    store=LocalEditorPluginStore(tmp_path/'feed.sqlite');writer=LocalEditorPluginFeedWriter(store)
+    for _ in range(2):
+        writer.upsert_newsflash(task_id=123,source='hyperliquid_news',source_item_id='event123',
+            source_url='https://hyperbot.network/trader/0x123',title='总盈利地址加仓',content='正文',status='ready_review')
+    rows=store.list_feed_items(limit=10,max_age_hours=2)
+    assert len(rows)==1
+    row=rows[0]
+    assert row['feed_kind']=='newsflash' and row['status_label']=='挂后台'
+    assert row['detail_url']=='https://console.example.test/?view=hyperliquid_news&event_key=event123'
+    assert any(b['value']=='Hyperliquid监测' for b in row['badges'])

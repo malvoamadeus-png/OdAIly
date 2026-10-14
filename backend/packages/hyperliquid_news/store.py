@@ -164,3 +164,21 @@ class NewsStore:
                 FROM hl_news_account_pool WHERE qualified=1 AND next_poll_ms<=?""", (now_ms,)).fetchone()
         return {'tiers': tiers, 'qualified_due': due['n'],
                 'max_qualified_delay_ms': max(0, now_ms-due['oldest']) if due['oldest'] is not None else 0}
+
+    def save_address_note(self, address: str, note: str, *, updated_by: str) -> dict[str, Any]:
+        address = address_key(address)
+        if not isinstance(note, str) or len(note.strip()) > 80 or any(c in note for c in '\n\r（）()'):
+            raise ValueError('Note must be at most 80 characters without newlines or parentheses')
+        with connect_sqlite(self.path) as conn:
+            if not conn.execute('SELECT 1 FROM hl_news_addresses WHERE address=?', (address,)).fetchone():
+                raise ValueError('Unknown monitored address')
+        from datetime import UTC, datetime
+        value = {'address': address, 'note': note.strip(), 'updated_by': updated_by,
+                 'updated_at': datetime.now(UTC).isoformat()}
+        self.save_global('address_note:' + address, value, [])
+        return value
+
+    def with_address_notes(self, event: dict[str, Any]) -> dict[str, Any]:
+        notes = {a: self.metadata('address_note:' + address_key(a), {}).get('note', '')
+                 for a in event.get('addresses', [])}
+        return {**event, 'evidence': {**event['evidence'], 'address_notes': notes}}

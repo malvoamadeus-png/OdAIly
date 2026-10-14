@@ -5663,3 +5663,9 @@ textarea:focus {
 .hlSides > section > div { display:grid; gap:6px; padding:10px 0; border-top:1px solid #e3e8eb; }
 .hlSides a { color:#28735d; overflow-wrap:anywhere; text-decoration:none; font-size:11px; line-height:1.6; }
 .hlSides strong { color:#35444d; font-size:13px; font-weight:600; }
+
+.hlAddress { gap:5px; padding:10px 0; }
+.hlAddressTop,.hlAddressNote { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.hlAddressTop a { color:#28735d; font-size:12px; text-decoration:none; }
+.hlAddressTop small { color:#728078; }
+.hlAddressNote input { flex:1; min-width:180px; max-width:420px; padding:7px 10px; border:1px solid #dce4df; border-radius:6px; }

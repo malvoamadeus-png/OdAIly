@@ -1084,6 +1084,10 @@ class XProcessingWorker:
         }
 
     def _run_write(self, task: TaskRecord) -> None:
+        if task.source == HYPERLIQUID_SOURCE:
+            from packages.hyperliquid_news.store import NewsStore
+            if getattr(self.repository, 'path', None):
+                task = replace(task, raw_payload=NewsStore(self.repository.path).with_address_notes(task.raw_payload))
         pipeline = self.repository.get_pipeline(task.id)
         template_key = None
         metadata_template_key = task.metadata.get("writer_template_key")
@@ -1146,7 +1150,9 @@ class XProcessingWorker:
             draft = parse_draft_output(f"{pipeline.draft_title}\n\n{pipeline.draft_content}")
             if task.source == HYPERLIQUID_SOURCE:
                 from packages.hyperliquid_news.copy import format_news
-                final = format_news(draft, task.raw_payload)
+                from packages.hyperliquid_news.store import NewsStore
+                event = NewsStore(self.repository.path).with_address_notes(task.raw_payload) if getattr(self.repository, 'path', None) else task.raw_payload
+                final = format_news(draft, event)
             else:
                 final = format_brief(
                     draft,

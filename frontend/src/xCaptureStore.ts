@@ -2546,3 +2546,7 @@ export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_
   hyperliquidDashboardRequests.set(key, request);
   return request;
 }
+
+export async function saveHyperliquidAddressNote(address: string, note: string): Promise<{ address: string; note: string }> {
+  return consoleApiPost('/console/hyperliquid-news/address-note/save', { address, note });
+}
