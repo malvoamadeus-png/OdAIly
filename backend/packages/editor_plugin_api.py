@@ -732,7 +732,8 @@ class EditorPluginNewsGenService:
         from packages.hyperliquid_news.dashboard import dashboard
         from packages.hyperliquid_news.store import NewsStore
         return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)),
-                         scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'))
+                         scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
+                         view=payload.get('view', 'scenarios'))
 
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
@@ -1209,6 +1210,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._send_common_headers()
+        if self.path == '/console/hyperliquid-news/get':
+            self.send_header('Access-Control-Max-Age', '600')
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -1477,8 +1480,28 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
+        compressed = False
+        hyperliquid = self.path == '/console/hyperliquid-news/get'
+        if hyperliquid and len(body) > 4096:
+            accepts = self.headers.get('Accept-Encoding', '')
+            for encoding in accepts.split(','):
+                parts = [part.strip() for part in encoding.split(';')]
+                quality = next((part[2:] for part in parts[1:] if part.startswith('q=')), '1')
+                try:
+                    accepted = float(quality) > 0
+                except ValueError:
+                    accepted = False
+                if parts[0].lower() == 'gzip' and accepted:
+                    import gzip
+                    body = gzip.compress(body, compresslevel=5)
+                    compressed = True
+                    break
         self.send_response(status)
         self._send_common_headers()
+        if hyperliquid:
+            self.send_header('Vary', 'Accept-Encoding')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

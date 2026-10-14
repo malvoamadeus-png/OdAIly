@@ -375,3 +375,57 @@ def test_dashboard_scenario_counts_and_pagination_are_not_global(tmp_path):
     assert [e['key'] for e in second['events']] == ['win-old'] and not second['has_next']
     assert dashboard(store, scenario='divergence')['events'] == []
     assert first['counts']['events'] == 6  # One record can belong to several directions.
+
+
+def test_scenario_dashboard_does_not_transfer_hidden_address_history(tmp_path):
+    path = tmp_path/'offline.sqlite'
+    repo = SQLiteXProcessingRepository(path); repo.init_schema()
+    store = NewsStore(path); store.initialize()
+    store.discover(A, source={'kind': 'test'}, now_ms=1000)
+    e, state = event()
+    store.commit_observation(address=A, now_ms=1000, state=state,
+        history={'assets': {'ETH': {'completed_rounds': ['history'*1000]*100}}},
+        coverage={}, fills=[], candidates=[])
+    data = dashboard(store, scenario='account_profit')
+    assert data['addresses'] == []
+    assert len(json.dumps(data, default=str).encode()) < 20000
+    addresses = dashboard(store, view='addresses')
+    assert addresses['addresses'][0]['history']['assets']['ETH']['completed_rounds']
+    assert addresses['events'] == []
+    assert dashboard(store, view='rules')['addresses'] == []
+    with pytest.raises(ValueError): dashboard(store, view='unknown')
+
+
+def test_hyperliquid_http_compresses_large_responses_and_caches_preflight():
+    import gzip
+    from io import BytesIO
+    from http import HTTPStatus
+    from types import SimpleNamespace
+    from packages.editor_plugin_api import EditorPluginApiHandler
+    class Handler:
+        path = '/console/hyperliquid-news/get'
+        def __init__(self, encoding):
+            self.headers = {'Accept-Encoding': encoding}
+            self.wfile = BytesIO(); self.sent = {}
+            self.server = SimpleNamespace(service=SimpleNamespace(api_settings=SimpleNamespace(cors_allow_origin='*')))
+        def send_response(self, status): self.status = status
+        def send_header(self, name, value): self.sent[name] = value
+        def end_headers(self): pass
+        def _json_default(self, value): return str(value)
+        def _send_common_headers(self): EditorPluginApiHandler._send_common_headers(self)
+    payload = {'data': '重复地址证据'*10000}
+    h = Handler('br, gzip')
+    EditorPluginApiHandler._send_json(h, HTTPStatus.OK, payload)
+    assert h.sent['Content-Encoding'] == 'gzip'
+    assert len(h.wfile.getvalue()) < 2000
+    assert json.loads(gzip.decompress(h.wfile.getvalue())) == payload
+    for encoding in ('', 'gzip;q=0', 'gzip;q=invalid'):
+        plain = Handler(encoding)
+        EditorPluginApiHandler._send_json(plain, HTTPStatus.OK, payload)
+        assert 'Content-Encoding' not in plain.sent
+        assert json.loads(plain.wfile.getvalue()) == payload
+    EditorPluginApiHandler.do_OPTIONS(h)
+    assert h.sent['Access-Control-Max-Age'] == '600'
+    other = Handler('gzip');other.path='/console/other'
+    EditorPluginApiHandler._send_json(other, HTTPStatus.OK, payload)
+    assert 'Content-Encoding' not in other.sent

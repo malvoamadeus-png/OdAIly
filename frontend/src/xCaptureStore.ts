@@ -2530,10 +2530,19 @@ export type HyperliquidNewsDashboard = {
   initialized: boolean; events: HyperliquidNewsEvent[]; addresses: Array<Record<string, any>>;
   rules: Record<string, unknown>; labels: Record<string, string>; last_pass: Record<string, any>;
   counts: Record<string, number>; page: number; has_next: boolean; flow?: string[];
+  view?: 'scenarios' | 'addresses' | 'rules';
   production?: { enabled: boolean; started_ms: number; enabled_scenarios: string[]; publication_mode: string } | null;
   account_pool?: { tiers: Record<string, number>; qualified_due: number; max_qualified_delay_ms: number };
   scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number }>; scenario: string | null; dataset: 'live' | 'test';
 };
-export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_profit', dataset: 'live' | 'test' = 'live'): Promise<HyperliquidNewsDashboard> {
-  return consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page, scenario, dataset });
+const hyperliquidDashboardRequests = new Map<string, Promise<HyperliquidNewsDashboard>>();
+export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_profit', dataset: 'live' | 'test' = 'live', view: 'scenarios' | 'addresses' | 'rules' = 'scenarios'): Promise<HyperliquidNewsDashboard> {
+  const session = await getCurrentSession();
+  const key = JSON.stringify([session?.access_token, page, scenario, dataset, view]);
+  const pending = hyperliquidDashboardRequests.get(key);
+  if (pending) return pending;
+  const request = consoleApiPost<HyperliquidNewsDashboard>('/console/hyperliquid-news/get', { page, scenario, dataset, view })
+    .finally(() => hyperliquidDashboardRequests.delete(key));
+  hyperliquidDashboardRequests.set(key, request);
+  return request;
 }

@@ -114,29 +114,29 @@ function EventDetail({ event, labels }: { event: HyperliquidNewsEvent; labels: R
 
 export function HyperliquidNewsPanel() {
   const [dataset, setDataset] = useState<'live' | 'test'>('live');
-  const [tab, setTab] = useState('scenarios'), [page, setPage] = useState(0);
+  const [tab, setTab] = useState<'scenarios' | 'addresses' | 'rules'>('scenarios'), [page, setPage] = useState(0);
   const [scenarioKey, setScenarioKey] = useState('account_profit'), [selected, setSelected] = useState<string | null>(null);
   const [data, setData] = useState<HyperliquidNewsDashboard | null>(null), [error, setError] = useState('');
   const [loading, setLoading] = useState(true), [refresh, setRefresh] = useState(0);
   useEffect(() => {
     let live = true;
     setLoading(true); setError('');
-    getHyperliquidNewsDashboard(page, scenarioKey, dataset).then(d => {
+    getHyperliquidNewsDashboard(page, scenarioKey, dataset, tab).then(d => {
       if (!live) return;
       setData(d); setSelected(current => d.events.some(e => e.key === current) ? current : (dataset === 'test' ? d.events.find(e => e.editorial_preview)?.key : null) || d.events[0]?.key || null);
     }).catch(e => { if (live) setError(String(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [page, scenarioKey, refresh, dataset]);
+  }, [page, scenarioKey, refresh, dataset, tab]);
   const scenario = data?.scenarios.find(s => s.key === scenarioKey);
   const current = data?.events.find(e => e.key === selected);
-  const ready = data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
+  const ready = data?.view === tab && data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
     {data?.production?.enabled && <p className="notice" role="note">当前正式上线：{data.scenarios.filter(s => data.production?.enabled_scenarios.includes(s.key)).map(s => s.name).join('、')}。其余方向保留测试和历史记录，尚未启用正式投递。</p>}
     <div className="autoNewsflashSummary">
       {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, dataset === 'test' ? '测试案例' : '监测记录', (dataset === 'test' ? data?.counts.test_cases : data?.counts.events) ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, dataset === 'test' ? '已有案例方向' : '已投递任务', dataset === 'test' ? data?.scenarios.filter(s => s.count > 0).length ?? '—' : data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
-    <div className="hlToolbar"><div className="segmentedControl">{[['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']].map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
+    <div className="hlToolbar"><div className="segmentedControl">{([['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
     {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
     {error && <p className="notice error" role="alert">{error}</p>}
     {loading && <p className="hlMuted" role="status">正在读取监测记录…</p>}
