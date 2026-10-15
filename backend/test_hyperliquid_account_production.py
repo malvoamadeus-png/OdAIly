@@ -247,3 +247,106 @@ def test_unchanged_position_uses_cheap_checks_but_periodic_fills_catch_roundtrip
     assert client.history_calls == 1
     assert len(store.candidates()) == 1
     assert store.candidates()[0]['evidence']['actions']['close_notional'] == '4000000'
+
+
+def enable_loss(store):
+    policy = store.metadata('production_account_profit', {})
+    policy.update(enabled_scenarios=['account_profit','historical_loss'], loss_started_ms=T)
+    store.save_global('production_account_profit',policy,[])
+    return policy
+
+
+def test_shared_monitor_discovers_total_loss_and_preserves_profit(tmp_path):
+    store,client,monitor=setup(tmp_path)
+    policy=enable_loss(store)
+    client.pnl='-25000000'
+    client.leaderboard=lambda:[board(pnl='-25000000')]
+    run(monitor,client,T)
+    assert not store.candidates()
+    close(client,T+180000)
+    run(monitor,client,T+180000)
+    event=store.candidates()[0]
+    assert event['evidence']['production_direction']=='historical_loss'
+    assert event['evidence']['highlights']==['historical_loss']
+    assert production_allowed(event,policy)
+    assert writer_material(event)['facts']['historical_highlights']['account_period_loss']==[
+        {'period':'累计','loss_usd':'25000000'}]
+    assert not production_allowed(event,{**policy,'enabled_scenarios':['account_profit']})
+    assert not production_allowed(event,{**policy,'loss_started_ms':T+180001})
+    assert not production_allowed({**event,'evidence':{**event['evidence'],'net_action_notional_usd':'2999999'}},policy)
+
+
+def test_total_loss_excludes_finite_period_only_and_curve_declines(tmp_path):
+    from packages.hyperliquid_news.account_monitor import qualified
+    from packages.hyperliquid_news.account_loss import loss_qualified
+    assert not loss_qualified({'windows':{'month':{'pnl':'-99999999'}}},Rules())
+    assert not qualified({'windows':{'allTime':{'pnl':'-19999999'}}},Rules(),include_loss=True)
+    assert not loss_qualified({'continuous_decline':{'loss_usd':'999999999'}},Rules())
+    rows=[{'ethAddress':A,'windowPerformances':[['month',{'pnl':'-99999999'}],['allTime',{'pnl':'-20000000'}]]}]
+    found=list(qualifying_leaderboard(rows,Rules(),T,include_loss=True))
+    assert len(found)==1 and found[0][1]['window']=='allTime' and found[0][1]['side']=='loss'
+
+
+def test_loss_recheck_and_net_offset_prevent_reporting(tmp_path):
+    store,client,monitor=setup(tmp_path);enable_loss(store)
+    client.pnl='-25000000';client.leaderboard=lambda:[board(pnl=client.pnl)]
+    run(monitor,client,T)
+    client.size='105'
+    client.fills=[
+        {'coin':'ETH','tid':1,'time':T+180000,'startPosition':'100','sz':'40','px':'100000','side':'A','closedPnl':'0'},
+        {'coin':'ETH','tid':2,'time':T+180001,'startPosition':'60','sz':'45','px':'100000','side':'B','closedPnl':'0'}]
+    run(monitor,client,T+180001)
+    assert not store.candidates()  # $4m / $4.5m turnover, only $500k net.
+    close(client,T+360001);client.pnl='-19000000'
+    run(monitor,client,T+360001)
+    assert not store.candidates()
+
+
+def test_loss_dispatch_uses_shared_queue_and_launch_boundary(tmp_path):
+    from test_hyperliquid_news_pipeline import Pipeline
+    store,client,monitor=setup(tmp_path);enable_loss(store)
+    client.pnl='-25000000';client.leaderboard=lambda:[board(pnl=client.pnl)]
+    run(monitor,client,T);close(client,T+180000);run(monitor,client,T+180000)
+    result=EventDispatcher(store,pipeline_client=Pipeline()).dispatch(limit=10)
+    assert len(result)==1 and result[0]['status']=='queued'
+    task=SQLiteXProcessingRepository(store.path).get_task(result[0]['task_id'])
+    assert task.metadata['force_backend_only'] and task.metadata['production_direction']=='historical_loss'
+
+
+def test_loss_rollout_does_not_reuse_prelaunch_profit_baseline(tmp_path):
+    store, client, monitor = setup(tmp_path)
+    run(monitor, client, T)
+    policy = enable_loss(store)
+    policy['loss_started_ms'] = T + 100000
+    store.save_global('production_account_profit', policy, [])
+    client.pnl = '-25000000'
+    store.save_global('account_performance:' + A, {}, [])
+    close(client, T + 180000)
+    run(monitor, client, T + 180000)
+    assert not store.candidates()
+    assert store.load(A)['state']['account_monitoring_since_ms'] == T + 180000
+
+
+def test_loss_threshold_is_rechecked_before_candidate(tmp_path):
+    store, client, monitor = setup(tmp_path)
+    enable_loss(store)
+    client.pnl = '-25000000'
+    run(monitor, client, T)
+    close(client, T + 180000)
+    client.pnl = '-19000000'
+    run(monitor, client, T + 180000)
+    assert not store.candidates()
+
+
+def test_enable_loss_is_idempotent_and_preserves_profit_cutoff(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from packages.hyperliquid_news import commands
+    store, client, monitor = setup(tmp_path)
+    monkeypatch.setattr(commands, 'load_storage_settings', lambda: SimpleNamespace(sqlite_path=store.path))
+    args = SimpleNamespace(hyperliquid_action='enable-account-loss')
+    commands.run_command(args)
+    first = store.metadata('production_account_profit', {})
+    commands.run_command(args)
+    assert store.metadata('production_account_profit', {}) == first
+    assert first['started_ms'] == T
+    assert first['enabled_scenarios'] == ['account_profit', 'historical_loss']

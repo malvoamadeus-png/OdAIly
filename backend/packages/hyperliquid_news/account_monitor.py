@@ -1,4 +1,4 @@
-"""Production account-profit cohort; other editorial directions remain disabled."""
+"""Shared account profit / total-loss cohort; one scheduler and request budget."""
 from __future__ import annotations
 
 import time
@@ -16,15 +16,16 @@ HOUR = 3600000
 DAY = 24 * HOUR
 
 
-def qualifying_leaderboard(rows: list[dict[str, Any]], rules: Rules, now_ms: int):
+def qualifying_leaderboard(rows: list[dict[str, Any]], rules: Rules, now_ms: int, *, include_loss: bool = False):
     """All returned qualifying rows, without the test seed top-N truncation."""
     for row in rows:
         windows = dict(row.get('windowPerformances', []))
         for window in LEADERBOARD_WINDOWS:
             data = windows.get(window)
-            if isinstance(data, dict) and number(data.get('pnl', '0')) >= rules.account_profit:
+            if isinstance(data, dict) and (number(data.get('pnl', '0')) >= rules.account_profit or
+                    (include_loss and window == 'allTime' and number(data.get('pnl', '0')) <= -rules.historical_loss)):
                 yield row['ethAddress'], {'kind': 'leaderboard', 'window': window,
-                    'side': 'profit', 'rank': None, 'pnl': str(number(data['pnl'])),
+                    'side': 'loss' if number(data['pnl']) < 0 else 'profit', 'rank': None, 'pnl': str(number(data['pnl'])),
                     'observed_ms': now_ms, 'pnl_scope': 'official_leaderboard_not_assumed_realized'}
 
 
@@ -51,19 +52,33 @@ def portfolio_performance(payload: Any, now_ms: int) -> dict[str, Any]:
             'pnl_scope': 'official_portfolio_including_unrealized'}
 
 
-def qualified(performance: dict[str, Any], rules: Rules) -> bool:
-    return any(number(w['pnl']) >= rules.account_profit for w in performance.get('windows', {}).values())
+def qualified(performance: dict[str, Any], rules: Rules, *, include_loss: bool = False) -> bool:
+    from .account_loss import loss_qualified
+    return (include_loss and loss_qualified(performance, rules)) or any(number(w['pnl']) >= rules.account_profit for w in performance.get('windows', {}).values())
 
 
-def account_event(event):
+def account_event(event, rules: Rules | None = None, *, include_loss: bool = False):
     """Do not expose other directions' rules or historical labels to writers."""
-    if ('highlighted_address_action' not in event.kinds or
-            'official_account_high_profit' not in event.evidence.get('highlights', [])):
+    rules = rules or Rules()
+    labels = event.evidence.get('highlights', [])
+    loss = include_loss and 'historical_loss' in labels
+    profit = 'official_account_high_profit' in labels
+    if 'highlighted_address_action' not in event.kinds or not (loss or profit):
         return None
+    if loss:
+        old, current = event.evidence.get('previous_position'), event.evidence.get('position')
+        before = number(old['size']) if old else number(0)
+        after = number(current['size']) if current else number(0)
+        reference = current or old
+        if not reference or abs(after-before)*number(reference['mark']) < rules.action:
+            return None
     evidence = {k: v for k, v in event.evidence.items() if k not in (
         'previous_reported_floating_pnl', 'previous_reported_floating_pnl_ms',
         'episode_peak_unrealized_pnl', 'episode_peak_ms', 'completed_round_results')}
-    evidence.update(highlights=['official_account_high_profit'], production_direction='account_profit')
+    evidence.update(highlights=['historical_loss' if loss else 'official_account_high_profit'],
+                    production_direction='historical_loss' if loss else 'account_profit')
+    if loss:
+        evidence['net_action_notional_usd'] = str(abs(after-before)*number(reference['mark']))
     return replace(event, kinds=('highlighted_address_action',), evidence=evidence)
 
 
@@ -86,15 +101,21 @@ class AccountProfitMonitor:
         if not deployment.get('enabled') or not deployment.get('started_ms'):
             raise ValueError('Enable account-profit production before running the worker')
         started = int(deployment['started_ms'])
+        include_loss = 'historical_loss' in deployment.get('enabled_scenarios', [])
+        def is_qualified(performance):
+            return qualified(performance, self.rules, include_loss=include_loss)
+        def event_history(performance, coverage):
+            return {'official_account_performance': performance, 'api_coverage': coverage,
+                    **({'official_account_loss': performance} if include_loss else {})}
         found = set()
-        report = {'observed_ms': now_ms, 'direction': 'account_profit', 'processed': 0,
+        report = {'observed_ms': now_ms, 'direction': 'account_profit_and_loss' if include_loss else 'account_profit', 'processed': 0,
                   'candidates': 0, 'failed': {}, 'discovered': 0, 'attribute_queries': 0,
                   'coverage': 'qualifying_public_leaderboard_and_sampled_trades'}
         # Hourly discovery refresh; preserve prior cache and retry on failures.
         if now_ms - self.store.metadata('account_leaderboard_checked_ms', 0) >= HOUR:
             try:
                 rows = self.client.leaderboard()
-                for address, source in qualifying_leaderboard(rows, self.rules, now_ms):
+                for address, source in qualifying_leaderboard(rows, self.rules, now_ms, include_loss=include_loss):
                     if not self.store.discover(address, source=source, now_ms=now_ms, limit=None):
                         continue
                     self.store.schedule_account(address, now_ms=now_ms, leaderboard_qualified=True)
@@ -138,7 +159,7 @@ class AccountProfitMonitor:
                 if not performance or observed - performance.get('fetched_ms', 0) >= HOUR:
                     performance = portfolio_performance(self.client.portfolio(address), clock_ms())
                     self.store.save_global('account_performance:' + address, performance, [])
-                if not qualified(performance, self.rules):
+                if not is_qualified(performance):
                     self.store.update_account_schedule(address, now_ms=observed, tier='unqualified',
                                                        interval_ms=DAY, qualified=False)
                     report['processed'] += 1
@@ -160,7 +181,10 @@ class AccountProfitMonitor:
                         positions[p.coin] = p
                 # No historical statistical backfill: only actions since this deployment.
                 # Requalification starts a fresh baseline after an unqualified period.
-                baseline = old if row['qualified'] and old and old['state'].get('account_production_started_ms') == started else None
+                from .account_loss import loss_qualified
+                loss_only = include_loss and loss_qualified(performance, self.rules)
+                direction_started = int(deployment.get('loss_started_ms', started)) if loss_only else started
+                baseline = old if (not loss_only or old and old['state'].get('account_monitoring_since_ms', 0) >= direction_started) and row['qualified'] and old and old['state'].get('account_production_started_ms') == started else None
                 pending = self.store.metadata('account_pending_fills:' + address, {}) if baseline else {}
                 coverage = pending.get('coverage') or (baseline or {}).get('coverage', {})
                 history_checked = (baseline or {}).get('state', {}).get('account_history_checked_ms', observed)
@@ -193,26 +217,26 @@ class AccountProfitMonitor:
                     min([since] + [int(f['time']) for f in fetched]), observed)}
                 new_fills = [f for f in fetched if baseline and fill_key(f) not in known
                     and int(f['time']) >= baseline['state'].get('account_monitoring_since_ms', started)]
-                history = {'official_account_performance': performance, 'api_coverage': coverage}
+                history = event_history(performance, coverage)
                 events, state = evaluate_address(address=address, observed_ms=observed,
                     first_seen_ms=observed, positions=positions,
                     previous=baseline['state'] if baseline else None, markets=markets,
                     history=history, new_fills=new_fills, rules=self.rules)
-                selected = [e for e in (account_event(e) for e in events) if e]
+                selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
                 if selected:
                     # Verify official profitability again immediately before creating a reportable event.
                     performance = portfolio_performance(self.client.portfolio(address), clock_ms())
                     self.store.save_global('account_performance:' + address, performance, [])
-                    if not qualified(performance, self.rules):
+                    if not is_qualified(performance):
                         selected = []
                     else:
-                        history['official_account_performance'] = performance
+                        history = event_history(performance, coverage)
                         observed = clock_ms()
                         events, state = evaluate_address(address=address, observed_ms=observed,
                             first_seen_ms=observed, positions=positions,
                             previous=baseline['state'], markets=markets, history=history,
                             new_fills=new_fills, rules=self.rules)
-                        selected = [e for e in (account_event(e) for e in events) if e]
+                        selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
                 state['account_history_checked_ms'] = history_end_ms if query_history or not baseline else history_checked
                 state['snapshot_times'] = snapshot_times
                 for e in selected:
@@ -224,9 +248,9 @@ class AccountProfitMonitor:
                 self.store.save_global('account_pending_fills:' + address, {}, [])
                 last_action = max([int(f['time']) for f in new_fills] + [row['last_action_ms']])
                 active = any(p.notional >= self.rules.action for p in positions.values()) or observed - last_action <= HOUR
-                tier = ('active' if active else 'idle') if qualified(performance, self.rules) else 'unqualified'
+                tier = ('active' if active else 'idle') if is_qualified(performance) else 'unqualified'
                 self.store.update_account_schedule(address, now_ms=observed, tier=tier,
-                    interval_ms=(180000 if active else 1800000) if qualified(performance, self.rules) else DAY, qualified=qualified(performance, self.rules),
+                    interval_ms=(180000 if active else 1800000) if is_qualified(performance) else DAY, qualified=is_qualified(performance),
                     last_action_ms=last_action)
                 report['attribute_queries'] += int(query_history)
                 report['processed'] += 1

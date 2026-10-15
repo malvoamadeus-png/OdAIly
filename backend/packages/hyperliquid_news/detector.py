@@ -19,8 +19,9 @@ def highlights(history: dict[str, Any], coin: str, rules: Rules) -> list[str]:
         pnl = number(asset.get('closed_pnl_less_fees', '0'))
         if pnl >= rules.asset_profit:
             labels.append('asset_high_profit')
-        if pnl <= -rules.historical_loss or asset.get('consecutive_losing_rounds', 0) >= rules.losing_rounds:
-            labels.append('historical_loss')
+    from .account_loss import loss_qualified
+    if loss_qualified(history.get('official_account_loss', {}), rules):
+        labels.append('historical_loss')
     if (history.get('fee_currency_complete', False) and history.get('account_closed_pnl_less_fees') is not None
             and number(history['account_closed_pnl_less_fees']) >= rules.account_profit):
         labels.append('account_high_profit')

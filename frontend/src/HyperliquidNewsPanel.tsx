@@ -11,7 +11,7 @@ function time(value: unknown): string {
   if (!value) return '—';
   return new Date(typeof value === 'number' ? value : String(value)).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
-const highlightNames: Record<string, string> = { asset_high_win_rate: '单资产高胜率', asset_high_profit: '单资产历史高盈利', account_high_profit: '账户历史高盈利', official_account_high_profit: '账户官方周期高收益', historical_loss: '单资产历史巨亏 / 连亏' };
+const highlightNames: Record<string, string> = { asset_high_win_rate: '单资产高胜率', asset_high_profit: '单资产历史高盈利', account_high_profit: '账户历史高盈利', official_account_high_profit: '账户官方周期高收益', historical_loss: '账户总亏损高' };
 const statuses: Record<string, string> = { judged: '待搜索者查重', deduping: '搜索者查重中', deduped: '待撰写', search_failed: '搜索者查重失败', writing: '编写者1处理中', written: '草稿完成',
   formatting: '编写者2处理中', publisher_pending: '待挂后台', publishing: '挂后台中', ready_review: '已挂后台',
   write_failed: '撰写失败', format_failed: '定稿失败', publisher_failed: '挂后台失败', duplicate: '重复内容或行为',
@@ -37,8 +37,8 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
         <div><dt>回吐金额 / 比例</dt><dd>{money(Number(peak) - Number(p?.unrealized_pnl))} / {Number(peak) > 0 ? `${((Number(peak) - Number(p?.unrealized_pnl)) / Number(peak) * 100).toFixed(2)}%` : '—'}</dd></div></>}
       {asset && <><div><dt>单资产统计</dt><dd>{asset.rounds} 个完整交易轮 · 胜率 {asset.win_rate != null ? `${(Number(asset.win_rate) * 100).toFixed(2)}%` : '未取得'}</dd></div>
         <div><dt>单资产已实现盈亏</dt><dd>{money(asset.closed_pnl_less_fees)}（不含资金费）</dd></div>
-        <div><dt>连续亏损轮数</dt><dd>{asset.consecutive_losing_rounds ?? '未取得'}</dd></div>
         <div><dt>实际成交样本范围</dt><dd>{time(history.first_observed_fill_ms)} 至 {time(history.last_observed_fill_ms)}</dd></div></>}
+      {history.official_account_loss?.windows?.allTime && <div><dt>合约账户总亏损（含浮盈亏）</dt><dd>{money(-Number(history.official_account_loss.windows.allTime.pnl))} · {time(history.official_account_loss.windows.allTime.observed_ms)}</dd></div>}
       {history.account_closed_pnl_less_fees != null && <div><dt>账户历史已实现盈亏</dt><dd>{money(history.account_closed_pnl_less_fees)}</dd></div>}
       {history.official_account_performance && Object.entries(history.official_account_performance.windows).map(([window, data]) => <div key={window}><dt>官方周期 PnL · {{ day: '近1天', week: '近7天', month: '近30天', allTime: '全部时间' }[window] || window}</dt><dd>{money((data as any).pnl)}{(data as any).rank != null ? ` · 排名 ${(data as any).rank}` : ''} · {time((data as any).observed_ms)}</dd></div>)}
       {e.actions?.liquidated_notional && Number(e.actions.liquidated_notional) > 0 && <div><dt>实际清算成交</dt><dd>{money(e.actions.liquidated_notional)}</dd></div>}
@@ -54,13 +54,13 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
 const ruleNames: Record<string, string> = {
   large_position: '大仓金额', action: '重要操作金额', win_rate_action: '高胜率地址操作金额', market_cap_share: '相当于市值占比', oi_share: '未平仓量占比',
   major_pnl: 'BTC / ETH 盈亏', other_pnl: '其他资产盈亏', win_rate: '单资产胜率', min_rounds: '最低完整交易轮',
-  asset_profit: '单资产历史盈利', account_profit: '账户盈利', historical_loss: '单资产历史亏损', losing_rounds: '连续亏损轮',
+  asset_profit: '单资产历史盈利', account_profit: '账户盈利', historical_loss: '账户总亏损门槛',
   liquidation_distance: '距清算价', giveback_fraction: '浮盈回吐比例', escalation: '再触发档位倍数', new_address_window_ms: '新地址建仓窗口',
 };
 function ruleValue(key: string, value: unknown) {
   if (['oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'].includes(key)) return `${Number(value) * 100}%`;
   if (key === 'new_address_window_ms') return `${Number(value) / 60000} 分钟`;
-  if (['min_rounds', 'losing_rounds'].includes(key)) return `${value} 轮`;
+  if (['min_rounds'].includes(key)) return `${value} 轮`;
   if (key === 'escalation') return `${value} 倍`;
   return money(value);
 }

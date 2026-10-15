@@ -51,25 +51,36 @@ def footer(event: dict[str, Any]) -> str:
 
 
 def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
-    """Enforce account-direction wording independently of model compliance."""
+    """Enforce account profit/loss wording independently of model compliance."""
     labels = event.get('evidence', {}).get('highlights', [])
     if ('highlighted_address_action' not in event.get('kinds', []) or
-            not set(labels) & {'official_account_high_profit', 'account_high_profit'}):
+            not set(labels) & {'official_account_high_profit', 'account_high_profit', 'historical_loss'}):
         return draft
     title = draft.title.strip()
     evidence = event['evidence']
     all_time = evidence.get('history', {}).get('official_account_performance', {}).get('windows', {}).get('allTime')
     threshold = number(evidence.get('threshold_rules', {}).get('account_profit', '20000000'))
     prefix = r'^(?:(?:合约)?账户累计(?:收益|盈利)|累计账户(?:收益|盈利)|累计(?:收益|盈利))'
-    if re.match(prefix, title):
+    account = bool(set(labels) & {'official_account_high_profit', 'account_high_profit'})
+    if account and re.match(prefix, title):
         if not all_time or number(all_time['pnl']) < threshold:
             raise ValueError('Cumulative account title requires qualifying official allTime evidence')
         title = re.sub(prefix, '总盈利', title, count=1)
-    if title.startswith('总盈利') and (not all_time or number(all_time['pnl']) < threshold):
+    if account and title.startswith('总盈利') and (not all_time or number(all_time['pnl']) < threshold):
         raise ValueError('Total profit title requires qualifying official allTime evidence')
+    if 'historical_loss' in labels and re.match(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', title):
+        loss = evidence.get('history', {}).get('official_account_loss', {})
+        if number(loss.get('windows', {}).get('allTime', {}).get('pnl', '0')) > -number(evidence.get('threshold_rules', {}).get('historical_loss', '20000000')):
+            raise ValueError('Total loss title requires qualifying perpetual allTime evidence')
+        title = re.sub(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', '总亏损', title, count=1)
     title = title.replace('的地址', '地址')
     content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?该地址',
                      lambda match: (match.group(1) or '') + '某地址', draft.content.strip(), count=1)
+    if 'historical_loss' in labels:
+        content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?某地址(?:在累计统计中|在统计期内累计|累计统计)',
+                         lambda m: (m.group(1) or '') + '某地址合约账户累计', content, count=1)
+        content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?某地址(?=累计亏损|近\s*\d+\s*[天日周月])',
+                         lambda m: (m.group(1) or '') + '某地址合约账户', content, count=1)
     notes = evidence.get('address_notes', {})
     address = event.get('addresses', [''])[0]
     note = notes.get(address, '')
@@ -82,6 +93,8 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
 
 
 def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
+    draft = DraftBrief(title=draft.title.replace('降至清仓', '降至空仓'),
+                       content=draft.content.replace('降至清仓', '降至空仓'))
     draft = normalize_account_copy(draft, event)
     content = draft.content.strip()
     for prefix in (ODAILY_PREFIX, 'Odaily星球日报讯', PREFIX, '据 Odaily 监测，'):
@@ -111,10 +124,16 @@ def _highlight_material(evidence: dict[str, Any], coin: str) -> dict[str, Any]:
     if 'asset_high_win_rate' in labels and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
         facts['asset_win_rate'] = asset['win_rate']
         facts['asset_trade_rounds'] = asset['rounds']
-    if any(label in labels for label in ('asset_high_profit', 'historical_loss')) and asset.get('closed_pnl_less_fees') is not None:
+    if 'asset_high_profit' in labels and asset.get('closed_pnl_less_fees') is not None:
         facts['asset_trading_pnl_usd'] = asset['closed_pnl_less_fees']
-        if asset.get('consecutive_losing_rounds', 0):
-            facts['asset_consecutive_losing_rounds'] = asset['consecutive_losing_rounds']
+    if 'historical_loss' in labels:
+        loss = history.get('official_account_loss', {})
+        threshold = number(evidence.get('threshold_rules', {}).get('historical_loss', '20000000'))
+        facts['account_period_loss'] = [
+            {'period': {'day': '近1天', 'week': '近7天', 'month': '近30天', 'allTime': '累计'}[window],
+             'loss_usd': str(-number(data['pnl']))}
+            for window, data in loss.get('windows', {}).items()
+            if window == 'allTime' and number(data['pnl']) <= -threshold]
     if 'account_high_profit' in labels and history.get('fills', 0) > 0 and history.get('account_closed_pnl_less_fees') is not None:
         facts['account_trading_pnl_usd'] = history['account_closed_pnl_less_fees']
     if 'official_account_high_profit' in labels:
@@ -196,7 +215,7 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
         from .models import Rules
         defaults = Rules()
         rules = Rules(**{k: number(v) if isinstance(getattr(defaults, k), Decimal) else int(v)
-                         for k, v in e.get('threshold_rules', {}).items()})
+                         for k, v in e.get('threshold_rules', {}).items() if hasattr(defaults, k)})
         facts['address_highlights'] = {a: _highlight_material({'history': h,
             'highlights': highlights(h, event['coin'], rules),
             'threshold_rules': e.get('threshold_rules', {})}, event['coin'])

@@ -1,5 +1,5 @@
 [Unit]
-Description=OdAIly Hyperliquid account-profit news monitor (single direction)
+Description=OdAIly Hyperliquid account profit and total-loss news monitor
 After=network-online.target odaily-local-pipeline.service
 Wants=network-online.target
 

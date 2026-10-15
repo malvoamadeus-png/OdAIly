@@ -55,8 +55,8 @@ def search_material(event: dict[str, Any]) -> tuple[str, str]:
                 lines.append(f'{label} {money(h[key])}。')
         for period in h.get('account_period_performance',[]):
             lines.append(f'账户{period["period"]}收益 {money(period["profit_usd"])}。')
-        if h.get('asset_consecutive_losing_rounds'):
-            lines.append(f'{coin}连续亏损 {h["asset_consecutive_losing_rounds"]}个交易轮。')
+        for period in h.get('account_period_loss', []):
+            lines.append(f'合约账户{period["period"]}亏损 {money(period["loss_usd"])}。')
     if 'address_divergence' in kinds:
         for side,addresses in e['sides'].items():
             for address in addresses:

@@ -20,7 +20,7 @@ SCENARIOS = [
     'large_position', 'oi_share', 'market_cap_share', 'large_profit', 'large_loss',
     'win_open', 'win_add', 'win_reduce', 'win_close', 'win_reverse',
     'asset_profit_action', 'account_profit_action', 'official_profit_action',
-    'historical_loss_action', 'losing_streak_action', 'large_reversal',
+    'historical_loss_action', 'large_reversal',
     'profit_giveback', 'profit_to_loss', 'loss_addition', 'realize_profit', 'realize_loss',
     'near_liquidation', 'actual_liquidation', 'address_divergence', 'new_address_position',
 ]
@@ -53,8 +53,8 @@ def scenario(name):
         if name=='asset_profit_action':history=stats(win='0.3',account='0')
         elif name=='account_profit_action':history=stats(win='0.3',profit='0')
         elif name=='official_profit_action':history={'official_account_performance':{'windows':{'week':{'pnl':'21000000','rank':1}}}}
-        elif name=='historical_loss_action':history=stats(win='0.3',profit='-3000000',account='0')
-        else:history=stats(win='0.3',profit='-1000',account='0',loss_streak=3)
+        elif name=='historical_loss_action':history={'official_account_loss':{'windows':{'allTime':{'pnl':'-30000000'}}}}
+
     elif name=='large_reversal':
         new=position(size='-100');fills=[fill(before='100',size='200',side='A',stamp=200)]
     elif name in ('profit_giveback','profit_to_loss'):

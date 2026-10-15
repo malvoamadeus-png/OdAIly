@@ -30,8 +30,7 @@ class Rules:
     win_rate: Decimal = Decimal('0.70')
     asset_profit: Decimal = Decimal('8000000')
     account_profit: Decimal = Decimal('20000000')
-    historical_loss: Decimal = Decimal('2000000')
-    losing_rounds: int = 3
+    historical_loss: Decimal = Decimal('20000000')
     min_rounds: int = 5
     liquidation_distance: Decimal = Decimal('0.05')
     giveback_fraction: Decimal = Decimal('0.50')
@@ -46,7 +45,7 @@ class Rules:
         for key in ('oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'):
             if not ZERO < number(getattr(self, key)) <= 1:
                 raise ValueError(f'{key} must be in (0, 1]')
-        if self.escalation <= 1 or min(self.min_rounds, self.losing_rounds, self.new_address_window_ms) < 1:
+        if self.escalation <= 1 or min(self.min_rounds, self.new_address_window_ms) < 1:
             raise ValueError('Invalid escalation or sample/window rule')
 
     def pnl_line(self, coin: str) -> Decimal:

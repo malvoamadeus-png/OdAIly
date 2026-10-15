@@ -58,7 +58,7 @@ class EventDispatcher:
         scope = ''
         params = ()
         if policy is not None:
-            scope = " AND c.observed_ms>=? AND json_extract(c.payload,'$.evidence.production_direction')='account_profit'"
+            scope = " AND c.observed_ms>=? AND json_extract(c.payload,'$.evidence.production_direction') IN ('account_profit','historical_loss')"
             params = (int(policy['started_ms']),)
         with connect_sqlite(self.store.path) as conn:
             rows = conn.execute(f'''SELECT c.event_key,c.payload FROM hl_news_candidates c

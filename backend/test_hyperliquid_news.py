@@ -96,8 +96,8 @@ def test_missing_position_path_excludes_unreliable_round():
 
 @pytest.mark.parametrize('history,label', [(stats(), 'asset_high_win_rate'),
     (stats(win='0.3'), 'asset_high_profit'), (stats(profit='0'), 'account_high_profit'),
-    (stats(profit='-2000000', account='0'), 'historical_loss'),
-    (stats(profit='-1000', loss_streak=3, account='0'), 'historical_loss')])
+    ({'official_account_loss': {'windows': {'allTime': {'pnl': '-20000000'}}}}, 'historical_loss'),
+    ({'official_account_loss': {'windows': {'allTime': {'pnl': '-21000000'}}}}, 'historical_loss')])
 def test_highlighted_address_actions(history, label):
     _, old = evaluate(None)
     events, _ = evaluate(position(size='30', notional='3000000'), previous=old,

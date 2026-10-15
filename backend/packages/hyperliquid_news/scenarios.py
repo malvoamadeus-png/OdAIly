@@ -7,7 +7,7 @@ SCENARIOS = [
     ('asset_win_rate', '单资产高胜率地址操作', '该资产胜率达到门槛，且发生至少100万美元的开仓、加仓、减仓、清仓或反手。', ['highlighted_address_action'], ['asset_high_win_rate'], ['win_rate', 'min_rounds', 'win_rate_action']),
     ('asset_profit', '单资产高盈利地址操作', '该资产历史已实现盈利达到门槛，且发生重要操作。', ['highlighted_address_action'], ['asset_high_profit'], ['asset_profit', 'action']),
     ('account_profit', '账户高盈利地址操作', '账户历史盈利或官方周期收益达到门槛，且发生重要操作；两种收益口径分开展示。', ['highlighted_address_action'], ['account_high_profit', 'official_account_high_profit'], ['account_profit', 'action']),
-    ('historical_loss', '历史巨亏 / 连亏地址操作', '单资产历史亏损或连续亏损轮数达到门槛，且发生重要操作。', ['highlighted_address_action'], ['historical_loss'], ['historical_loss', 'losing_rounds', 'action']),
+    ('historical_loss', '账户总亏损高地址操作', '官方全时段合约账户总亏损至少2000万美元，并发生至少300万美元的重要净操作。', ['highlighted_address_action'], ['historical_loss'], ['historical_loss', 'action']),
     ('reversal', '大仓反手', '前后持仓方向相反，且反手前后仓位均达到重要金额门槛。', ['large_reversal'], [], ['action']),
     ('giveback', '浮盈回吐 / 由盈转亏', '同一仓位的浮盈从峰值显著回撤，或从盈利变为亏损。', ['profit_giveback', 'profit_to_loss'], [], ['giveback_fraction', 'major_pnl', 'other_pnl']),
     ('loss_addition', '巨亏后加仓', '原有仓位浮亏达到门槛后，继续同方向重要加仓。', ['loss_addition'], [], ['major_pnl', 'other_pnl', 'action']),

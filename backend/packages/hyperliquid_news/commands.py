@@ -35,6 +35,23 @@ def run_command(args: Any) -> int:
             for row in store.addresses(100000):
                 store.schedule_account(row['address'], now_ms=policy['started_ms'])
             print(encode(policy))
+    elif action == 'enable-account-loss':
+        import time
+        store.initialize()
+        policy = store.metadata('production_account_profit', None)
+        if not policy or not policy.get('enabled'):
+            raise ValueError('Enable the shared account-profit monitor first')
+        if 'historical_loss' not in policy.get('enabled_scenarios', []):
+            policy['enabled_scenarios'] = ['account_profit', 'historical_loss']
+            policy['loss_started_ms'] = int(time.time()*1000)
+            store.save_global('production_account_profit', policy, [])
+            store.save_global('account_leaderboard_checked_ms', 0, [])
+            # Wake existing unqualified addresses; qualified profit baselines survive.
+            from packages.common.storage import connect_sqlite
+            with connect_sqlite(path) as conn:
+                conn.execute("UPDATE hl_news_account_pool SET next_poll_ms=MIN(next_poll_ms,?) WHERE qualified=0",
+                             (policy['loss_started_ms'],))
+        print(encode(policy))
     elif action == 'run-account-profit':
         import time
         from .account_monitor import AccountProfitMonitor
