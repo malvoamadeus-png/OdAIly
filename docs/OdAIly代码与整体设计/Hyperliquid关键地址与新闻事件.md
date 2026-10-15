@@ -301,7 +301,7 @@ production_account_profit 扩展 enabled_scenarios=['account_profit','historical
 
 亏损重要操作门槛按同品种两个成功快照的有符号数量净差 × 当前参考价（清空时用上一成功快照价）至少300万美元，反向成交互相抵消，毛成交额或价格上涨不能让不变数量过线。候选证据保留 net_action_notional_usd。成交分页不完整不提交部分动作，先留 pending；只有完整批次再更新基线。候选形成后再次核验账户仍达标，失败不推断清仓。
 
-事件只保留 highlighted_address_action，亏损标签 historical_loss、production_direction=historical_loss，history.official_account_loss 保存官方曲线资格，包含 fetched_ms 和样本时间。投递查询同时读盈利及亏损，事务内和发布前 production_allowed 再验证方向开关、各自上线时间、样本新鲜度、门槛和净动作金额。测试/历史回放不得穿过生产限制。两类均复用搜索查重→专用写作→编写者2→强制挂后台，isPublish=false / isPush=false，不自动公开发布。
+事件只保留 highlighted_address_action，亏损标签 historical_loss、production_direction=historical_loss，history.official_account_loss 保存官方曲线资格，包含 fetched_ms 和样本时间。投递查询同时读盈利及亏损，创建任务的事务内 production_allowed 再验证方向开关、各自上线时间、样本新鲜度、门槛和净动作金额。测试/历史回放不得穿过生产限制。两类均复用搜索查重→专用写作→编写者2→强制挂后台，isPublish=false / isPush=false，不自动公开发布。
 
 writer_material 的 account_period_loss 仅累计 allTime，标题“总亏损XX地址＋动作”，正文“某地址合约账户累计亏损XX”。不写连亏或胜率。不说“降至清仓”，使用“已清仓”或“降至空仓”。官方收益包括浮盈亏，本次平仓盈亏独立陈述。控制台规则卡与生产 enabled_scenarios 同步显示，原测试第6条撤回，保留已确认5条账户巨亏案例。
 
