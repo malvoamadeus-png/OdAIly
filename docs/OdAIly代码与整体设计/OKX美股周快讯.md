@@ -2,7 +2,7 @@
 
 ## 目标
 
-`okx-stock-brief` 是一个只读、可重复执行的周快讯数据命令。它直接从 OKX 公开 API 读取产品清单和历史日线，输出固定三段式中文快讯，不调用 AI，也不依赖 Supabase、主 SQLite 或发布接口。
+`okx-stock-brief` 是一个可重复执行的周快讯数据命令。只读 CLI 直接从 OKX 公开 API 读取产品清单和历史日线；固定发布任务复用同一计算逻辑，每周五北京时间 12:00 通过 Push Data API 直接发布，不调用 AI，也不依赖 Supabase、主 SQLite 或发布流水线。
 
 ## 命令
 
@@ -10,9 +10,12 @@
 tools/dev python backend/src/main.py okx-stock-brief
 tools/dev python backend/src/main.py okx-stock-brief --as-of-date 2026-09-09
 tools/dev python backend/src/main.py okx-stock-brief --as-of-date 2026-09-09 --json
+tools/dev python backend/src/main.py run-once --task okx-stock-brief --kind weekly --dry-run
 ```
 
 `--as-of-date` 是正文展示的北京时间日期，也是统计的排他上界：统计使用该日期前已经完成的 30 个北京时间日。例如传入 `2026-09-09`，统计区间是 8 月 10 日至 9 月 8 日。省略时使用当前北京时间前一天，避免把未完成日线纳入结果。
+
+生产 `run-worker` 注册 `okx-stock-brief` 的固定调度为每周五 12:00 `Asia/Shanghai`。定时任务标题固定为 `OKX美股产品过去30日成交额超XXX亿美元`，其中 `XXX` 是近 30 日 USDT 成交额除以 1 亿后向下取整；推送参数固定为 `isPublish=true`、`isPush=false`，不受通用 `ODAILY_DRY_RUN` 默认值影响。每个统计截止日使用 `okx-stock-brief:<as_of_date>` 作为幂等键。
 
 ## 产品范围
 

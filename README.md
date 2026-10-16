@@ -79,6 +79,8 @@ The helper prefers:
 - `us-market open`: 09:31 America/New_York.
 - `gate-tradfi morning`: 09:00 Asia/Shanghai.
 - `gate-tradfi open`: 09:31 America/New_York.
+- `okx-stock-brief weekly`: Friday 12:00 Asia/Shanghai; directly publishes the
+  30-day OKX US stock turnover brief.
 
 Calendar rules:
 
@@ -102,7 +104,12 @@ The default config uses `dry_run=true`. To send to the API:
 ```bash
 python backend/src/main.py run-once --task us-market --kind open --send
 python backend/src/main.py run-once --task gate-tradfi --kind open --send
+python backend/src/main.py run-once --task okx-stock-brief --kind weekly
+python backend/src/main.py run-once --task okx-stock-brief --kind weekly --dry-run
 ```
+
+The OKX weekly task publishes directly by default, even when the common
+`ODAILY_DRY_RUN=true` setting is present. Use `--dry-run` for a local rehearsal.
 
 Every real request sends:
 

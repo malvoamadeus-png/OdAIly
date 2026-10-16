@@ -16,9 +16,10 @@ from packages.common.config import (
 from packages.common.paths import AppPaths
 from packages.common.time_utils import EASTERN_TZ, SHANGHAI_TZ
 from packages.gate.service import GateRunResult, run_gate_once
+from packages.okx_stock_brief_service import OKXStockBriefRunResult, run_okx_stock_brief_once
 
 
-TaskId = Literal["us-market", "gate-tradfi"]
+TaskId = Literal["us-market", "gate-tradfi", "okx-stock-brief"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +35,10 @@ class TaskDefinition:
     task_id: TaskId
     display_name: str
     kinds: tuple[str, ...]
-    config_help: str
+    config_help: str | None
     schedules: tuple[ScheduledKind, ...]
     load_config: Callable[[str | None], object]
-    run_once: Callable[..., BriefRunResult | GateRunResult]
+    run_once: Callable[..., BriefRunResult | GateRunResult | OKXStockBriefRunResult]
 
 
 def _run_us_market(
@@ -68,6 +69,23 @@ def _run_gate_tradfi(
     return run_gate_once(
         kind=kind,  # type: ignore[arg-type]
         settings=load_gate_settings(config_path),
+        paths=paths,
+        dry_run_override=dry_run_override,
+        force=force,
+    )
+
+
+def _run_okx_stock_brief(
+    *,
+    kind: str,
+    config_path: str | None,
+    paths: AppPaths,
+    dry_run_override: bool | None,
+    force: bool,
+) -> OKXStockBriefRunResult:
+    return run_okx_stock_brief_once(
+        kind=kind,
+        config_path=config_path,
         paths=paths,
         dry_run_override=dry_run_override,
         force=force,
@@ -119,6 +137,22 @@ TASKS: dict[str, TaskDefinition] = {
             ),
         ),
     ),
+    "okx-stock-brief": TaskDefinition(
+        task_id="okx-stock-brief",
+        display_name="OKX US stock weekly brief",
+        kinds=("weekly",),
+        config_help="ODAILY_PUSH_ENDPOINT and OKX_STOCK_BRIEF_PUSH_* environment variables",
+        load_config=lambda _config_path: None,
+        run_once=_run_okx_stock_brief,
+        schedules=(
+            ScheduledKind(
+                kind="weekly",
+                trigger=CronTrigger(day_of_week="fri", hour=12, minute=0, timezone=SHANGHAI_TZ),
+                job_id="okx-stock-brief-friday-1200-cst",
+                description="weekly=Friday 12:00 Asia/Shanghai",
+            ),
+        ),
+    ),
 }
 
 
@@ -137,7 +171,7 @@ def run_task_once(
     paths: AppPaths,
     dry_run_override: bool | None,
     force: bool,
-) -> BriefRunResult | GateRunResult:
+) -> BriefRunResult | GateRunResult | OKXStockBriefRunResult:
     task = get_task(task_id)
     if kind not in task.kinds:
         raise ValueError(f"Invalid kind for {task_id}: {kind}. Valid kinds: {', '.join(task.kinds)}")

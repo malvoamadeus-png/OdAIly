@@ -33,7 +33,7 @@ from packages.common.time_utils import SHANGHAI_TZ  # noqa: E402
 from packages.x_processing.publisher_config import load_publisher_rule_config, save_publisher_rule_config  # noqa: E402
 
 
-SCHEDULED_TASK_IDS = ("gate-tradfi", "us-market")
+SCHEDULED_TASK_IDS = ("gate-tradfi", "us-market", "okx-stock-brief")
 
 
 def parse_args() -> argparse.Namespace:

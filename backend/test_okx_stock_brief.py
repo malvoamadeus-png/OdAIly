@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from packages.okx_stock_brief import generate_brief
+from packages.okx_stock_brief_service import build_publish_title
 
 
 def _timestamp_for_bjt_day(day: date) -> int:
@@ -106,3 +107,8 @@ def test_growth_is_diagnostic_only_and_incomplete_candle_is_ignored() -> None:
 
     assert all(candidate.quality == "complete" for candidate in result.candidates[:2])
     assert "环比增长" not in result.render()
+
+
+def test_publish_title_uses_floor_whole_hundred_million_units() -> None:
+    assert build_publish_title(Decimal("50260000000")) == "OKX美股产品过去30日成交额超502亿美元"
+    assert build_publish_title(Decimal("99999999")) == "OKX美股产品过去30日成交额超0亿美元"
