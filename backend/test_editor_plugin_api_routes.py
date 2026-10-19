@@ -175,6 +175,23 @@ class _XAgentHistoryService:
         return {"instrument_key": payload.get("instrument_key"), "items": []}
 
 
+class _StockMarketReadOnlyService:
+    api_settings = SimpleNamespace(cors_allow_origin="*")
+
+    def __init__(self, *, allowed: bool) -> None:
+        self.allowed = allowed
+        self.calls = 0
+
+    def authenticate_console_admin(self, _authorization_header: str | None) -> AuthenticatedEditor:
+        if not self.allowed:
+            raise EditorPluginForbiddenError("当前账号不是控制台管理员")
+        return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+    def get_stock_market(self, _actor: AuthenticatedEditor) -> dict[str, object]:
+        self.calls += 1
+        return {"contract_count": 1, "contracts": [{"symbol": "AAPLUSDT"}], "recent_events": []}
+
+
 def test_x_agent_market_sentiment_history_route_is_exposed() -> None:
     service = _XAgentHistoryService()
     server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
@@ -203,6 +220,49 @@ def _post_json(server: EditorPluginApiServer, path: str, payload: dict[str, obje
         return response.status, json.loads(response.read())
     finally:
         connection.close()
+
+
+def _get_json(server: EditorPluginApiServer, path: str) -> tuple[int, dict[str, object]]:
+    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+    try:
+        connection.request("GET", path, headers={"Authorization": "Bearer test-session"})
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+    finally:
+        connection.close()
+
+
+def test_stock_market_get_route_requires_admin_and_returns_dashboard_snapshot() -> None:
+    allowed = _StockMarketReadOnlyService(allowed=True)
+    server = EditorPluginApiServer(("127.0.0.1", 0), allowed)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _get_json(server, "/console/stock-market/get")
+        assert status == HTTPStatus.OK
+        assert body == {
+            "ok": True,
+            "data": {"contract_count": 1, "contracts": [{"symbol": "AAPLUSDT"}], "recent_events": []},
+        }
+        assert allowed.calls == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+    denied = _StockMarketReadOnlyService(allowed=False)
+    server = EditorPluginApiServer(("127.0.0.1", 0), denied)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _get_json(server, "/console/stock-market/get")
+        assert status == HTTPStatus.FORBIDDEN
+        assert body == {"ok": False, "message": "当前账号不是控制台管理员"}
+        assert denied.calls == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
 
 
 def test_legacy_hottopic_account_routes_are_not_exposed() -> None:

@@ -44,6 +44,7 @@ import {
   getCurrentConsoleAdmin,
   getCurrentSession,
   getGateMarketDashboard,
+  getStockMarketDashboard,
   getMemeDashboard,
   getMemeNarrativeDetail,
   getBlockbeatsKeyConfig,
@@ -126,6 +127,7 @@ import {
   type SourceExclusionScope,
   type ConsoleAdmin,
   type GateMarketDashboard,
+  type StockMarketDashboard,
   type MemeDashboard,
   type MemeDashboardItem,
   type MemeNarrativeDetail,
@@ -134,6 +136,7 @@ import {
 } from './xCaptureStore';
 import { HyperliquidNewsPanel } from './HyperliquidNewsPanel';
 import { GateMarketPanel } from './GateMarketPanel';
+import { StockMarketPanel } from './StockMarketPanel';
 import {
   workflowFilters,
   workflowGroups,
@@ -152,6 +155,7 @@ type ConsoleView =
   | 'dedupe'
   | 'timing'
   | 'gate_market'
+  | 'stock_market'
   | 'meme'
   | 'publisher'
   | 'workflow'
@@ -890,6 +894,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [publisherLoadWarning, setPublisherLoadWarning] = useState('');
   const [pipelineTiming, setPipelineTiming] = useState<PipelineTimingDashboard>(emptyPipelineTimingDashboard);
   const [gateMarket, setGateMarket] = useState<GateMarketDashboard | null>(null);
+  const [stockMarket, setStockMarket] = useState<StockMarketDashboard | null>(null);
   const [memeDashboard, setMemeDashboard] = useState<MemeDashboard | null>(null);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -904,7 +909,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  const initialView: ConsoleView = requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : 'x';
+  const initialView: ConsoleView = requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
   const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
@@ -913,6 +918,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
   const [loadingPipelineTiming, setLoadingPipelineTiming] = useState(true);
   const [loadingGateMarket, setLoadingGateMarket] = useState(true);
+  const [loadingStockMarket, setLoadingStockMarket] = useState(true);
   const [loadingMeme, setLoadingMeme] = useState(true);
   const [loadingNonMainstream, setLoadingNonMainstream] = useState(true);
   const [loadingPublisher, setLoadingPublisher] = useState(true);
@@ -967,6 +973,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [taskOverviewFilter, setTaskOverviewFilter] = useState<TaskOverviewFilter>('all');
   const [taskOverviewQuery, setTaskOverviewQuery] = useState('');
   const loadedViewsRef = useRef<Set<string>>(new Set());
+  const stockMarketRequestRef = useRef(false);
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
   const enabledBinanceSquareCount = useMemo(
@@ -1122,6 +1129,19 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
+  async function loadStockMarket() {
+    if (stockMarketRequestRef.current) return;
+    stockMarketRequestRef.current = true;
+    setError('');
+    setLoadingStockMarket(true);
+    try {
+      setStockMarket(await getStockMarketDashboard());
+    } finally {
+      stockMarketRequestRef.current = false;
+      setLoadingStockMarket(false);
+    }
+  }
+
   async function loadMemeDashboard() {
     setError('');
     setLoadingMeme(true);
@@ -1251,6 +1271,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         case 'gate_market':
           await loadGateMarket();
           return;
+        case 'stock_market':
+          await loadStockMarket();
+          return;
         case 'meme':
           await loadMemeDashboard();
           return;
@@ -1290,12 +1313,22 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       setLoadingProcessingTasks(false);
       setLoadingPipelineTiming(false);
       setLoadingGateMarket(false);
+      setLoadingStockMarket(false);
       setLoadingMeme(false);
       setLoadingNonMainstream(false);
       setLoadingPublisher(false);
       setLoadingJin10(false);
       setLoadingWhaleWatch(false);
     });
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== 'stock_market') return;
+    void loadStockMarket().catch((err: Error) => setError(err.message));
+    const timer = window.setInterval(() => {
+      void loadStockMarket().catch((err: Error) => setError(err.message));
+    }, 30_000);
+    return () => window.clearInterval(timer);
   }, [view]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
@@ -1748,6 +1781,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Hyperliquid Monitor'
       : view === 'gate_market'
         ? 'Gate Market'
+      : view === 'stock_market'
+        ? 'Stock Market'
       : view === 'meme'
         ? 'Meme Express'
       : view === 'x_agent'
@@ -1778,6 +1813,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Hyperliquid监测'
       : view === 'gate_market'
         ? 'Gate行情播报'
+      : view === 'stock_market'
+        ? '股票行情播报'
       : view === 'meme'
         ? 'Meme速递'
       : view === 'x_agent'
@@ -1808,6 +1845,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '硬规则事件、地址属性与写作流程 · 强制挂后台'
       : view === 'gate_market'
         ? `${gateMarket?.symbols.length || 0} 个标的 · ${gateMarket?.mode === 'live' ? '正式发布' : '后台生成'} · 只读`
+      : view === 'stock_market'
+        ? `${stockMarket?.contract_count || 0} 个合约 · 每${stockMarket?.poll_interval_seconds || 30}秒轮询 · 只读`
       : view === 'meme'
         ? `${memeDashboard?.items.length || 0} 条记录 · 普通新币 50 万起 · 社群热议 5 次且 30 万起 · 只读`
       : view === 'x_agent'
@@ -1838,6 +1877,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadPipelineTiming()
       : view === 'gate_market'
         ? loadGateMarket()
+      : view === 'stock_market'
+        ? loadStockMarket()
       : view === 'meme'
         ? loadMemeDashboard()
       : view === 'x_agent'
@@ -1890,6 +1931,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'gate_market' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('gate_market')}>
             <Activity size={18} /> Gate行情播报
+          </button>
+          <button className={view === 'stock_market' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('stock_market')}>
+            <Activity size={18} /> 股票行情播报
           </button>
           <button className={view === 'meme' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('meme')}>
             <Megaphone size={18} /> Meme速递
@@ -2193,6 +2237,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <HyperliquidNewsPanel />
         ) : view === 'gate_market' ? (
           <GateMarketPanel dashboard={gateMarket} loading={loadingGateMarket} />
+        ) : view === 'stock_market' ? (
+          <StockMarketPanel dashboard={stockMarket} loading={loadingStockMarket} />
         ) : view === 'meme' ? (
           <MemeDashboardPanel dashboard={memeDashboard} loading={loadingMeme} />
         ) : view === 'non_mainstream' ? (

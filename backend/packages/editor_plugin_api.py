@@ -35,6 +35,8 @@ from packages.editor_plugin_local_store import LocalEditorPluginStore
 from packages.failure_diagnostics import FailureDiagnosticsStore
 from packages.gate_market_broadcast.settings import load_gate_market_settings
 from packages.gate_market_broadcast.store import GateMarketStore
+from packages.stock_market_broadcast.settings import load_stock_market_settings
+from packages.stock_market_broadcast.store import StockMarketStore
 from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
@@ -385,6 +387,8 @@ class EditorPluginNewsGenService:
         self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
         self.gate_market_store = GateMarketStore(load_gate_market_settings().database_path)
         self.gate_market_store.initialize()
+        self.stock_market_store = StockMarketStore(load_stock_market_settings().database_path)
+        self.stock_market_store.initialize()
         self.meme_dashboard_store = MemeDashboardStore()
         self.auth_repository = create_editor_plugin_auth_repository(database_url)
         self.x_capture_repository = create_x_capture_repository(database_url)
@@ -751,6 +755,10 @@ class EditorPluginNewsGenService:
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.gate_market_store.dashboard()
+
+    def get_stock_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.stock_market_store.dashboard()
 
     def get_meme_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
@@ -1194,6 +1202,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/publisher-rules/save",
         "/console/pipeline-timing/get",
         "/console/gate-market/get",
+        "/console/stock-market/get",
         "/console/hyperliquid-news/get",
         "/console/hyperliquid-news/address-note/save",
         "/console/hyperliquid-news/address-block/save",
@@ -1251,6 +1260,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {"ok": True, "data": self.server.service.get_gate_market(actor)},
+                )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if self.path == "/console/stock-market/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.get_stock_market(actor)},
                 )
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
@@ -1404,6 +1425,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/gate-market/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_gate_market(actor)})
+                    return
+                if self.path == "/console/stock-market/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_stock_market(actor)})
                     return
                 if self.path == "/console/meme/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_meme_dashboard(actor)})

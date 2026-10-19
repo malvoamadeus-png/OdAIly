@@ -1457,6 +1457,62 @@ export async function getGateMarketDashboard(): Promise<GateMarketDashboard> {
   return consoleApiGet<GateMarketDashboard>('/console/gate-market/get');
 }
 
+export type StockMarketState = {
+  initialized: boolean;
+  armed_5_up: boolean;
+  armed_5_down: boolean;
+  armed_10_up: boolean;
+  armed_10_down: boolean;
+  last_change_pct: string | null;
+};
+
+export type StockMarketContract = {
+  symbol: string;
+  market: 'us' | 'cn' | 'hk' | 'kr' | 'jp';
+  price_precision: number;
+  last_price: string | null;
+  observed_at: string | null;
+  change_1h: string | null;
+  change_24h: string | null;
+  trigger_state: Record<'1h' | '24h', StockMarketState | undefined>;
+  last_error: string | null;
+};
+
+export type StockMarketEvent = {
+  id: number;
+  symbol: string;
+  market: StockMarketContract['market'];
+  window: '1h' | '24h';
+  tier: 'backend' | 'live';
+  direction: 'up' | 'down';
+  change_percent: string;
+  current_price: string;
+  title: string;
+  content: string;
+  status: string;
+  error: string | null;
+  observed_at: string;
+  created_at: string;
+};
+
+export type StockMarketDashboard = {
+  poll_interval_seconds: number;
+  instrument_refresh_seconds: number;
+  contract_count: number;
+  contracts: StockMarketContract[];
+  recent_events: StockMarketEvent[];
+  last_cycle_at: string | null;
+  last_cycle_status: string;
+  last_cycle_error: string | null;
+  last_discovery_at: string | null;
+  last_discovery_error: string | null;
+  generated_at: string;
+};
+
+export async function getStockMarketDashboard(): Promise<StockMarketDashboard> {
+  return consoleApiGet<StockMarketDashboard>('/console/stock-market/get');
+}
+
 export type MemeDashboardItem = {
   id: number;
   address: string;

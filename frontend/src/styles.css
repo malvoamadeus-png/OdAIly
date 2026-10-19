@@ -2636,6 +2636,152 @@ h2 {
   align-items: center;
 }
 
+.stockMarketLayout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.stockMarketStatus {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.stockMarketNotice {
+  padding: 10px 12px;
+  border-left: 3px solid #c77a13;
+  background: #fff8e8;
+  color: #704b14;
+  overflow-wrap: anywhere;
+}
+
+.stockMarketToolbar {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.stockMarketToolbar h2 {
+  margin-right: auto;
+}
+
+.stockMarketToolbar > span {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.stockMarketSearch {
+  display: flex;
+  min-width: 180px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid #d7dde2;
+  border-radius: 6px;
+  color: #68737d;
+}
+
+.stockMarketSearch input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #1f2933;
+}
+
+.stockMarketToolbar select {
+  min-height: 36px;
+  padding: 6px 28px 6px 9px;
+  border: 1px solid #d7dde2;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2933;
+}
+
+.stockMarketTableWrap {
+  overflow-x: auto;
+}
+
+.stockMarketTable {
+  width: 100%;
+  min-width: 950px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.stockMarketTable th,
+.stockMarketTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e9ed;
+  white-space: nowrap;
+}
+
+.stockMarketTable th {
+  color: #66717b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stockMarketTable td {
+  color: #27313a;
+  font-size: 13px;
+}
+
+.stockMarketTable td:first-child {
+  white-space: normal;
+}
+
+.stockMarketTable td:first-child strong,
+.stockMarketRowError {
+  display: block;
+}
+
+.stockMarketRowError {
+  margin-top: 4px;
+  color: #b42318;
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.stockMarketUp {
+  color: #13805c !important;
+  font-weight: 650;
+}
+
+.stockMarketDown {
+  color: #c0392b !important;
+  font-weight: 650;
+}
+
+.stockMarketEvents {
+  display: grid;
+}
+
+.stockMarketEvents article {
+  display: grid;
+  gap: 7px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e5e9ed;
+}
+
+.stockMarketEventMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+}
+
+.stockMarketEventMeta span {
+  color: #68737d;
+  font-size: 12px;
+}
+
+.stockMarketEvents p {
+  margin: 0;
+  color: #38434d;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .memeLayout {
   display: grid;
   gap: 14px;

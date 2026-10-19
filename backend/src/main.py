@@ -500,6 +500,16 @@ def parse_args() -> argparse.Namespace:
     )
     gate_market_backtest.add_argument("--days", type=int, default=90)
 
+    stock_market = subparsers.add_parser(
+        "stock-market",
+        help="Manage or run the standalone Binance stock market broadcast module.",
+    )
+    stock_market_subparsers = stock_market.add_subparsers(dest="stock_market_action", required=True)
+    stock_market_subparsers.add_parser("init-db", help="Initialize the local stock market SQLite database.")
+    stock_market_subparsers.add_parser("status", help="Print stock market worker and quote state.")
+    stock_market_run = stock_market_subparsers.add_parser("run", help="Run the Binance stock market worker.")
+    stock_market_run.add_argument("--once", action="store_true", help="Run one polling cycle and exit.")
+
     meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
     meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
     meme_scan = meme_subparsers.add_parser("scan", help="Scan OKX BSC and Robinhood migrated tokens and generate Meme drafts.")
@@ -1853,6 +1863,32 @@ def gate_market_command(args: argparse.Namespace) -> int:
     raise ValueError(f"Unknown gate-market action: {action}")
 
 
+def stock_market_command(args: argparse.Namespace) -> int:
+    from packages.stock_market_broadcast import (
+        StockMarketBroadcastService,
+        StockMarketStore,
+        load_stock_market_settings,
+    )
+
+    settings = load_stock_market_settings()
+    store = StockMarketStore(settings.database_path)
+    store.initialize()
+    action = args.stock_market_action
+    if action == "init-db":
+        print(f"[stock-market] initialized db={settings.database_path}")
+        return 0
+    if action == "status":
+        print(json.dumps(store.dashboard(), ensure_ascii=False, indent=2))
+        return 0
+
+    service = StockMarketBroadcastService(settings=settings, store=store)
+    if args.once:
+        print(json.dumps(service.run_once(), ensure_ascii=False, indent=2))
+        return 0
+    service.run_forever()
+    return 0
+
+
 def meme_command(args: argparse.Namespace) -> int:
     if args.meme_action == "scan":
         from packages.meme_scanner import scanner
@@ -2073,6 +2109,8 @@ def main() -> int:
             return storage_import_legacy_command(args)
         if args.command == "gate-market":
             return gate_market_command(args)
+        if args.command == "stock-market":
+            return stock_market_command(args)
         if args.command == "meme":
             return meme_command(args)
         if args.command == "okx-stock-brief":
