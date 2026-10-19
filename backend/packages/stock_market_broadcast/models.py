@@ -43,6 +43,8 @@ class AssetState:
     observed_at: int
     changes: dict[Window, Decimal]
     locks: dict[Direction, PriceLock]
+    resume_price: Decimal | None = None
+    resumed_at: int | None = None
 
 
 @dataclass(slots=True)

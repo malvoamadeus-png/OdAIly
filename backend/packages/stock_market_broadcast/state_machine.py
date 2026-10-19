@@ -29,7 +29,8 @@ def tier_for(changes: dict[Window, Decimal], direction: Direction) -> Tier | Non
 
 
 def baseline_lock(price: Decimal, changes: dict[Window, Decimal], direction: Direction, now: int) -> PriceLock:
-    return PriceLock(price, price, now, tier_for(changes, direction))
+    # Observing a historical rolling move is not a publication in this session.
+    return PriceLock(price, price, now, None)
 
 
 def can_repeat(lock: PriceLock, *, price: Decimal, tier: Tier, direction: Direction) -> bool:
@@ -47,16 +48,18 @@ def price_step_reached(anchor: Decimal, price: Decimal, direction: Direction) ->
 
 def candidate_allowed(
     lock: PriceLock, *, previous: dict[Window, Decimal], current: dict[Window, Decimal],
-    price: Decimal, direction: Direction,
+    price: Decimal, direction: Direction, tier_limit: Tier | None = None,
 ) -> bool:
     # A newly available window first establishes its own silent baseline.
     comparable = {window: change for window, change in current.items() if window in previous}
     tier = tier_for(comparable, direction)
     if tier is None:
         return False
+    if tier_limit == "backend":
+        tier = "backend"
     if lock.tier is not None:
         return can_repeat(lock, price=price, tier=tier, direction=direction)
-    return any(
+    return price_step_reached(lock.anchor_price, price, direction) or any(
         directional(previous[window], direction) < threshold <= directional(change, direction)
         for window, change in comparable.items() for threshold in (5, 10)
     )
@@ -70,6 +73,8 @@ def state_from_dict(data: dict[str, Any]) -> BroadcastState:
     return BroadcastState(
         assets={symbol: AssetState(
             observed_at=int(asset["observed_at"]),
+            resume_price=Decimal(asset["resume_price"]) if asset.get("resume_price") is not None else None,
+            resumed_at=asset.get("resumed_at"),
             changes={window: Decimal(value) for window, value in asset["changes"].items()},
             locks={direction: PriceLock(
                 anchor_price=Decimal(lock["anchor_price"]),

@@ -39,7 +39,7 @@ function cycleStatusLabel(value: string | undefined): string {
 function priceLockLabel(contract: StockMarketDashboard['contracts'][number], direction: 'up' | 'down') {
   const lock = contract.price_locks?.[direction];
   if (!lock) return '等待基线';
-  if (!lock.tier) return '等待达标';
+  if (!lock.tier) return `基线 ${contract.resume_price ?? lock.anchor_price} · 等待达标`;
   const target = Number(lock.anchor_price) * (direction === 'up' ? 1.05 : 0.95);
   return `已记录 ${lock.anchor_price} · 下一价${direction === 'up' ? '≥' : '≤'}${target.toFixed(contract.price_precision)}`;
 }
@@ -82,6 +82,7 @@ export function StockMarketPanel({
       <div className="stockMarketNotice">
         首批候选等待3分钟，按市场和涨跌方向合并；后续每30分钟汇总。
         5%挂后台、10%直发，同一资产合并1H/24H信号。
+        恢复后还需相对恢复基准价同向变化5%才能挂后台、10%才能直发；恢复前的涨跌不计入这道门槛。
         价格记录保留6小时，实际价格再走出5%才再次播报；后台升直发须创出本轮新高或新低。
       </div>
 

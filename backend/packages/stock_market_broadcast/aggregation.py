@@ -7,12 +7,25 @@ from typing import Any
 from .copy import render_digest
 from .models import (
     AggregationGroup, AlertMember, AssetState, BroadcastState, Direction, Market,
-    PendingCandidate, PriceLock, StockAlert, StockInstrument, StockQuote, Window,
+    PendingCandidate, PriceLock, StockAlert, StockInstrument, StockQuote, Tier, Window,
 )
 from .state_machine import (
     AGGREGATION_SECONDS, FOLLOWUP_SECONDS, PRICE_LOCK_SECONDS,
     baseline_lock, candidate_allowed, directional, price_step_reached, qualifying_changes, tier_for,
 )
+
+
+def eligible_tier(
+    asset: AssetState, changes: dict[Window, Decimal], price: Decimal, direction: Direction,
+) -> Tier | None:
+    """Both rolling change and movement since recovery must reach the tier."""
+    rolling = tier_for(changes, direction)
+    if rolling is None or asset.resume_price is None:
+        return None
+    movement = directional(price - asset.resume_price, direction) * 100
+    if movement < asset.resume_price * 5:
+        return None
+    return "live" if rolling == "live" and movement >= asset.resume_price * 10 else "backend"
 
 
 def _breadth(
@@ -67,6 +80,8 @@ def advance_broadcast(
             state.assets[symbol] = asset
         if silent:
             baselined += 1
+            asset.resume_price = quote.price
+            asset.resumed_at = now
         for direction in ("up", "down"):
             key = f"{by_symbol[symbol].market}:{direction}"
             group = state.groups.setdefault(key, AggregationGroup(by_symbol[symbol].market, direction))
@@ -83,13 +98,11 @@ def advance_broadcast(
                 if silent:
                     if lock.tier is None or directional(quote.price - lock.anchor_price, direction) > 0:
                         lock.anchor_price = quote.price
-                    observed_tier = tier_for(current, direction)
-                    if observed_tier == "live" or lock.tier is None:
-                        lock.tier = observed_tier
-            elif tier_for(current, direction) is None:
+            elif eligible_tier(asset, current, quote.price, direction) is None:
                 group.pending.pop(symbol, None)
             elif symbol not in group.pending and candidate_allowed(
                 lock, previous=asset.changes, current=current, price=quote.price, direction=direction,
+                tier_limit=eligible_tier(asset, current, quote.price, direction),
             ):
                 group.pending[symbol] = PendingCandidate(
                     now, lock.extreme_price if lock.tier == "backend" else None,
@@ -112,7 +125,8 @@ def advance_broadcast(
             if quote is None:
                 continue
             member_changes = qualifying_changes(changes[symbol], group.direction)
-            tier = tier_for(member_changes, group.direction)
+            asset = state.assets[symbol]
+            tier = eligible_tier(asset, member_changes, quote.price, group.direction)
             if tier is None:
                 continue
             lock = state.assets[symbol].locks[group.direction]

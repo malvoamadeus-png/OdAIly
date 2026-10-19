@@ -358,6 +358,10 @@ class StockMarketStore:
                 "observed_at": _iso(int(row["observed_at"])) if row["observed_at"] is not None else None,
                 "change_1h": row["change_1h"],
                 "change_24h": row["change_24h"],
+                "resume_price": str(state.assets[str(row["symbol"])].resume_price)
+                if str(row["symbol"]) in state.assets and state.assets[str(row["symbol"])].resume_price is not None else None,
+                "resumed_at": _iso(state.assets[str(row["symbol"])].resumed_at)
+                if str(row["symbol"]) in state.assets else None,
                 "trigger_state": {},  # Older console tabs can safely render during rollout.
                 "price_locks": {
                     direction: {

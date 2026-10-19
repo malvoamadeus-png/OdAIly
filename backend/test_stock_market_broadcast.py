@@ -198,13 +198,13 @@ def test_service_calculates_one_hour_change_and_dispatches_tiers(tmp_path: Path)
             now=timestamp + offset, started=time.monotonic(),
         )
     assert result["alert_count"] == 1
-    assert {call["is_publish"] for call in push.calls} == {True}
+    assert {call["is_publish"] for call in push.calls} == {False}
     assert all(call["is_push"] is False for call in push.calls)
     assert any("1小时上涨6.0%" in str(call["content"]) for call in push.calls)
     assert any("24小时上涨11.0%" in str(call["content"]) for call in push.calls)
     dashboard = store.dashboard()
     assert Decimal(dashboard["contracts"][0]["change_1h"]) == Decimal("6")
-    assert {event["status"] for event in dashboard["recent_events"]} == {"published"}
+    assert {event["status"] for event in dashboard["recent_events"]} == {"backend_created"}
 
 
 def test_stale_quote_is_skipped_and_recorded(tmp_path: Path) -> None:
@@ -391,11 +391,11 @@ def test_backend_promotion_requires_new_extreme_and_waits_for_followup_slot():
     assert replay.hold(180, {"AAAUSDT": ("106", "6")})[0].tier == "backend"
     assert replay.hold(180, {"AAAUSDT": ("106", "11")}) == []
     assert not any(group.pending for group in replay.state.groups.values())
-    replay.tick({"AAAUSDT": ("107", "11")})
-    assert replay.hold(1500, {"AAAUSDT": ("107", "11")}) == []
-    promoted = replay.hold(150, {"AAAUSDT": ("107", "11")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    assert replay.hold(1500, {"AAAUSDT": ("110", "11")}) == []
+    promoted = replay.hold(150, {"AAAUSDT": ("110", "11")})
     assert len(promoted) == 1 and promoted[0].tier == "live"
-    assert replay.hold(1800, {"AAAUSDT": ("107", "11")}) == []
+    assert replay.hold(1800, {"AAAUSDT": ("110", "11")}) == []
 
 
 def test_falling_prices_repeat_only_at_five_percent_lower_price():
@@ -424,8 +424,8 @@ def test_expired_lock_rebases_silently_instead_of_resending_current_move():
 def test_new_one_hour_window_is_silent_and_both_windows_share_price_lock():
     replay = _Replay()
     replay.tick({"AAAUSDT": ("100", "0")})
-    assert replay.tick({"AAAUSDT": ("110", "0", "11")}) == []
-    assert replay.hold(180, {"AAAUSDT": ("110", "0", "11")}) == []
+    assert replay.tick({"AAAUSDT": ("100", "0", "11")}) == []
+    assert replay.hold(180, {"AAAUSDT": ("100", "0", "11")}) == []
     replay.tick({"AAAUSDT": ("111", "11", "12")})
     alerts = replay.hold(180, {"AAAUSDT": ("111", "11", "12")})
     assert len(alerts) == 1
@@ -588,3 +588,75 @@ def test_restart_pullback_keeps_the_prior_price_barrier():
     replay.tick({"AAAUSDT": ("100", "5")}, restart=True)
     assert replay.hold(1800, {"AAAUSDT": ("110", "11")}) == []
     assert replay.state.assets["AAAUSDT"].locks["up"].anchor_price == Decimal("110")
+
+
+
+def test_resume_gate_blocks_historical_24h_move_until_real_five_then_ten_percent():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "20")}, restart=True)
+    assert replay.hold(180, {"AAAUSDT": ("100.1", "25")}) == []
+    assert replay.hold(180, {"AAAUSDT": ("104.99", "25")}) == []
+    assert replay.tick({"AAAUSDT": ("105", "25")}) == []
+    backend = replay.hold(180, {"AAAUSDT": ("105", "25")})
+    assert len(backend) == 1 and backend[0].tier == "backend"
+    assert replay.hold(1800, {"AAAUSDT": ("109.99", "25")}) == []
+    replay.tick({"AAAUSDT": ("110", "25")})
+    live = replay.hold(180, {"AAAUSDT": ("110", "25")})
+    assert len(live) == 1 and live[0].tier == "live"
+
+
+def test_resume_gate_is_symmetric_and_still_requires_rolling_window_threshold():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "-20")})
+    assert replay.hold(180, {"AAAUSDT": ("95.01", "-30")}) == []
+    replay.tick({"AAAUSDT": ("95", "-30")})
+    backend = replay.hold(180, {"AAAUSDT": ("95", "-30")})
+    assert len(backend) == 1 and backend[0].tier == "backend"
+    assert replay.hold(1800, {"AAAUSDT": ("90.26", "-30")}) == []
+    replay.tick({"AAAUSDT": ("90", "-30")})
+    live = replay.hold(180, {"AAAUSDT": ("90", "-30")})
+    assert len(live) == 1 and live[0].tier == "live"
+
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    assert replay.hold(180, {"AAAUSDT": ("110", "4.9")}) == []
+    replay.tick({"AAAUSDT": ("110", "4.9", "11")})
+    # First observation of 1H is silent, the next observed move can qualify.
+    replay.tick({"AAAUSDT": ("111", "4.9", "12")})
+    live = replay.hold(180, {"AAAUSDT": ("111", "4.9", "12")})
+    assert len(live) == 1 and live[0].tier == "live"
+    assert live[0].members[0].primary_window == "1h"
+
+
+def test_resume_gate_is_rechecked_before_dispatch_and_survives_six_hour_rebase():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "20")})
+    replay.tick({"AAAUSDT": ("110", "25")})
+    alerts = replay.hold(180, {"AAAUSDT": ("107", "25")})
+    assert len(alerts) == 1 and alerts[0].tier == "backend"
+
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "20")})
+    replay.tick({"AAAUSDT": ("110", "25")})
+    assert replay.hold(180, {"AAAUSDT": ("104", "25")}) == []
+    replay.hold(PRICE_LOCK_SECONDS, {"AAAUSDT": ("100", "20")})
+    # Expiring the six-hour repeat lock never expires the recovery-price gate.
+    assert replay.hold(180, {"AAAUSDT": ("101", "25")}) == []
+    assert replay.state.assets["AAAUSDT"].resume_price == Decimal("100")
+
+
+def test_restart_replaces_recovery_reference_and_persists_it_in_sqlite(tmp_path: Path):
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "20")})
+    replay.tick({"AAAUSDT": ("110", "25")}, restart=True)
+    assert replay.hold(180, {"AAAUSDT": ("115.49", "30")}) == []
+    replay.tick({"AAAUSDT": ("115.5", "30")})
+    backend = replay.hold(180, {"AAAUSDT": ("115.5", "30")})
+    assert len(backend) == 1 and backend[0].tier == "backend"
+    store = StockMarketStore(tmp_path / "resume.sqlite")
+    store.initialize()
+    store.record_cycle(quotes={}, changes_1h={}, state=replay.state, alerts=backend,
+                       errors={}, now=replay.now, startup_baseline=False)
+    restored = store.broadcast_state().assets["AAAUSDT"]
+    assert restored.resume_price == Decimal("110")
+    assert restored.resumed_at == 1_700_000_030

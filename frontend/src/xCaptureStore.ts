@@ -1473,6 +1473,8 @@ export type StockMarketContract = {
   change_1h: string | null;
   change_24h: string | null;
   asset_name?: string;
+  resume_price?: string | null;
+  resumed_at?: string | null;
   price_locks?: Partial<Record<'up' | 'down', StockMarketPriceLock>>;
   last_error: string | null;
 };
