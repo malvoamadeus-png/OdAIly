@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -8,7 +9,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
-from .models import StockAlert, StockInstrument, StockQuote, TriggerState, Window
+from .models import BroadcastState, StockAlert, StockInstrument, StockQuote
+from .state_machine import (
+    AGGREGATION_SECONDS, FOLLOWUP_SECONDS, PRICE_LOCK_SECONDS, PRICE_STEP_PERCENT,
+    state_from_dict, state_to_dict,
+)
 
 
 def _iso(timestamp: int | None) -> str | None:
@@ -65,18 +70,6 @@ class StockMarketStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_stock_market_samples_time
                     ON price_samples(symbol, observed_at);
-                CREATE TABLE IF NOT EXISTS trigger_state (
-                    symbol TEXT NOT NULL,
-                    window TEXT NOT NULL,
-                    initialized INTEGER NOT NULL,
-                    armed_5_up INTEGER NOT NULL,
-                    armed_5_down INTEGER NOT NULL,
-                    armed_10_up INTEGER NOT NULL,
-                    armed_10_down INTEGER NOT NULL,
-                    last_change_pct TEXT,
-                    updated_at INTEGER NOT NULL,
-                    PRIMARY KEY(symbol, window)
-                );
                 CREATE TABLE IF NOT EXISTS trigger_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_key TEXT NOT NULL UNIQUE,
@@ -99,6 +92,10 @@ class StockMarketStore:
                     ON trigger_events(created_at DESC);
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(trigger_events)")}
+            if "details_json" not in columns:
+                conn.execute("ALTER TABLE trigger_events ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'")
+            conn.execute("CREATE TABLE IF NOT EXISTS broadcast_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)")
             defaults = {
                 "poll_interval_seconds": "30",
                 "instrument_refresh_seconds": "3600",
@@ -223,63 +220,25 @@ class StockMarketStore:
                     references[symbol] = price
         return references
 
-    def last_changes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
-        if not symbols:
-            return {}
-        placeholders = ",".join("?" for _ in symbols)
+    def broadcast_state(self) -> BroadcastState:
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT symbol,observed_at,change_1h,change_24h FROM instruments WHERE symbol IN ({placeholders})",
-                symbols,
-            ).fetchall()
-        return {
-            str(row["symbol"]): {
-                "observed_at": int(row["observed_at"]) if row["observed_at"] is not None else None,
-                "change_1h": Decimal(str(row["change_1h"])) if row["change_1h"] is not None else None,
-                "change_24h": Decimal(str(row["change_24h"])) if row["change_24h"] is not None else None,
-            }
-            for row in rows
-        }
-
-    def get_trigger_states(self, symbols: list[str]) -> dict[tuple[str, Window], TriggerState]:
-        if not symbols:
-            return {}
-        placeholders = ",".join("?" for _ in symbols)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM trigger_state WHERE symbol IN ({placeholders})",
-                symbols,
-            ).fetchall()
-        result: dict[tuple[str, Window], TriggerState] = {}
-        for row in rows:
-            symbol = str(row["symbol"])
-            window = str(row["window"])
-            if window not in {"1h", "24h"}:
-                continue
-            result[(symbol, window)] = TriggerState(
-                symbol=symbol,
-                window=window,  # type: ignore[arg-type]
-                initialized=bool(row["initialized"]),
-                armed_5_up=bool(row["armed_5_up"]),
-                armed_5_down=bool(row["armed_5_down"]),
-                armed_10_up=bool(row["armed_10_up"]),
-                armed_10_down=bool(row["armed_10_down"]),
-                last_change_pct=Decimal(str(row["last_change_pct"])) if row["last_change_pct"] is not None else None,
-            )
-        return result
+            row = conn.execute("SELECT payload FROM broadcast_state WHERE id=1").fetchone()
+        return state_from_dict(json.loads(row["payload"])) if row else BroadcastState()
 
     def record_cycle(
         self,
         *,
         quotes: dict[str, StockQuote],
         changes_1h: dict[str, Decimal],
-        states: list[TriggerState],
+        state: BroadcastState,
         alerts: list[StockAlert],
         errors: dict[str, str],
         now: int,
         startup_baseline: bool,
-    ) -> None:
+    ) -> list[StockAlert]:
+        claimed: list[StockAlert] = []
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             for symbol, quote in quotes.items():
                 conn.execute(
                     "INSERT OR REPLACE INTO price_samples(symbol,observed_at,price) VALUES(?,?,?)",
@@ -309,58 +268,35 @@ class StockMarketStore:
                     "UPDATE instruments SET last_error=?,updated_at=? WHERE symbol=? AND active=1",
                     (error[:1000], now, symbol),
                 )
-            for state in states:
-                conn.execute(
-                    """
-                    INSERT INTO trigger_state(
-                        symbol,window,initialized,armed_5_up,armed_5_down,
-                        armed_10_up,armed_10_down,last_change_pct,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(symbol,window) DO UPDATE SET
-                        initialized=excluded.initialized,
-                        armed_5_up=excluded.armed_5_up,
-                        armed_5_down=excluded.armed_5_down,
-                        armed_10_up=excluded.armed_10_up,
-                        armed_10_down=excluded.armed_10_down,
-                        last_change_pct=excluded.last_change_pct,
-                        updated_at=excluded.updated_at
-                    """,
-                    (
-                        state.symbol,
-                        state.window,
-                        int(state.initialized),
-                        int(state.armed_5_up),
-                        int(state.armed_5_down),
-                        int(state.armed_10_up),
-                        int(state.armed_10_down),
-                        str(state.last_change_pct) if state.last_change_pct is not None else None,
-                        now,
-                    ),
-                )
+            conn.execute(
+                "INSERT INTO broadcast_state(id,payload) VALUES(1,?) "
+                "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                (json.dumps(state_to_dict(state), default=str),),
+            )
             for alert in alerts:
-                conn.execute(
+                primary = alert.members[0]
+                details = {"members": [{
+                    "symbol": member.instrument.symbol, "asset_name": member.instrument.asset_name,
+                    "changes": {window: str(change) for window, change in member.changes.items()},
+                    "current_price": str(member.current_price), "observed_at": _iso(member.observed_at),
+                } for member in alert.members]}
+                cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO trigger_events(
                         event_key,symbol,market,window,tier,direction,change_percent,current_price,
-                        title,content,status,observed_at,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,'publishing',?,?,?)
+                        title,content,status,observed_at,created_at,updated_at,details_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,'publishing',?,?,?,?)
                     """,
                     (
-                        alert.event_key,
-                        alert.instrument.symbol,
-                        alert.instrument.market,
-                        alert.window,
-                        alert.tier,
-                        alert.direction,
-                        str(alert.change_pct),
-                        str(alert.current_price),
-                        alert.title,
-                        alert.content,
-                        alert.observed_at,
-                        now,
-                        now,
+                        alert.event_key, primary.instrument.symbol, alert.market,
+                        primary.primary_window, alert.tier, alert.direction,
+                        str(primary.change_pct), str(primary.current_price),
+                        alert.title, alert.content, max(member.observed_at for member in alert.members),
+                        now, now, json.dumps(details, ensure_ascii=False),
                     ),
                 )
+                if cursor.rowcount:
+                    claimed.append(alert)
             conn.execute(
                 """
                 INSERT INTO settings(key,value,updated_at) VALUES('last_cycle_at',?,?)
@@ -369,7 +305,7 @@ class StockMarketStore:
                 (str(now), now),
             )
             status = "partial_error" if errors else "ok"
-            if startup_baseline:
+            if startup_baseline and not errors:
                 status = "baseline"
             conn.execute(
                 """
@@ -391,6 +327,8 @@ class StockMarketStore:
                 "(SELECT id FROM trigger_events ORDER BY created_at DESC,id DESC LIMIT 500)"
             )
 
+        return claimed
+
     def mark_event(self, event_key: str, *, status: str, error: str | None, now: int) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -403,38 +341,37 @@ class StockMarketStore:
             instruments = conn.execute(
                 "SELECT * FROM instruments WHERE active=1 ORDER BY symbol"
             ).fetchall()
-            state_rows = conn.execute("SELECT * FROM trigger_state").fetchall()
+            snapshot = conn.execute("SELECT payload FROM broadcast_state WHERE id=1").fetchone()
             events = conn.execute(
                 "SELECT * FROM trigger_events ORDER BY created_at DESC,id DESC LIMIT 100"
             ).fetchall()
             settings = {str(row["key"]): str(row["value"]) for row in conn.execute("SELECT key,value FROM settings")}
-        states: dict[str, dict[str, dict[str, Any]]] = {}
-        for row in state_rows:
-            states.setdefault(str(row["symbol"]), {})[str(row["window"])] = {
-                "initialized": bool(row["initialized"]),
-                "armed_5_up": bool(row["armed_5_up"]),
-                "armed_5_down": bool(row["armed_5_down"]),
-                "armed_10_up": bool(row["armed_10_up"]),
-                "armed_10_down": bool(row["armed_10_down"]),
-                "last_change_pct": row["last_change_pct"],
-            }
+        state = state_from_dict(json.loads(snapshot["payload"])) if snapshot else BroadcastState()
         generated_at = int(time.time())
         contracts = [
             {
                 "symbol": str(row["symbol"]),
+                "asset_name": str(row["symbol"]).removesuffix("USDT"),
                 "market": str(row["market"]),
                 "price_precision": int(row["price_precision"]),
                 "last_price": row["last_price"],
                 "observed_at": _iso(int(row["observed_at"])) if row["observed_at"] is not None else None,
                 "change_1h": row["change_1h"],
                 "change_24h": row["change_24h"],
-                "trigger_state": states.get(str(row["symbol"]), {}),
+                "trigger_state": {},  # Older console tabs can safely render during rollout.
+                "price_locks": {
+                    direction: {
+                        "anchor_price": str(lock.anchor_price), "extreme_price": str(lock.extreme_price),
+                        "tier": lock.tier, "locked_until": _iso(lock.locked_at + PRICE_LOCK_SECONDS),
+                    } for direction, lock in state.assets[str(row["symbol"])].locks.items()
+                } if str(row["symbol"]) in state.assets else {},
                 "last_error": row["last_error"],
             }
             for row in instruments
         ]
         recent_events = [
             {
+                "members": json.loads(row["details_json"]).get("members", []),
                 "id": int(row["id"]),
                 "symbol": str(row["symbol"]),
                 "market": str(row["market"]),
@@ -457,6 +394,15 @@ class StockMarketStore:
         return {
             "poll_interval_seconds": int(settings.get("poll_interval_seconds", "30")),
             "instrument_refresh_seconds": int(settings.get("instrument_refresh_seconds", "3600")),
+            "aggregation_seconds": AGGREGATION_SECONDS,
+            "followup_seconds": FOLLOWUP_SECONDS,
+            "price_lock_seconds": PRICE_LOCK_SECONDS,
+            "price_step_percent": str(PRICE_STEP_PERCENT),
+            "pending_groups": [{
+                "market": group.market, "direction": group.direction,
+                "due_at": _iso(group.due_at), "next_at": _iso(group.next_at),
+                "assets": [symbol.removesuffix("USDT") for symbol in sorted(group.pending)],
+            } for group in state.groups.values() if group.pending],
             "contract_count": len(contracts),
             "contracts": contracts,
             "recent_events": recent_events,

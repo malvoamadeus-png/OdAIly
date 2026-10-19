@@ -8,10 +8,11 @@ from pathlib import Path
 from packages.publisher import PushResult
 from packages.stock_market_broadcast.client import BinanceStockMarketClient, discover_stock_instruments
 from packages.stock_market_broadcast.copy import render_alert
-from packages.stock_market_broadcast.models import StockInstrument, StockQuote
+from packages.stock_market_broadcast.aggregation import advance_broadcast
+from packages.stock_market_broadcast.models import BroadcastState, StockInstrument, StockQuote
 from packages.stock_market_broadcast.service import StockMarketBroadcastService
 from packages.stock_market_broadcast.settings import StockMarketSettings
-from packages.stock_market_broadcast.state_machine import advance_trigger_state
+from packages.stock_market_broadcast.state_machine import PRICE_LOCK_SECONDS
 from packages.stock_market_broadcast.store import StockMarketStore
 
 
@@ -108,44 +109,7 @@ def test_binance_24_hour_tickers_are_read_in_one_batch(monkeypatch) -> None:
     assert "OLDUSDT" not in quotes
 
 
-def test_trigger_state_handles_threshold_jump_direction_and_rearming() -> None:
-    baseline = advance_trigger_state(None, symbol="AAPLUSDT", window="24h", change_pct=Decimal("0"))
-    jump = advance_trigger_state(baseline.state, symbol="AAPLUSDT", window="24h", change_pct=Decimal("11"))
-    assert jump.tier == "live"
-    assert jump.direction == "up"
-    assert not jump.state.armed_5_up and not jump.state.armed_10_up
-
-    still_above_five = advance_trigger_state(
-        jump.state, symbol="AAPLUSDT", window="24h", change_pct=Decimal("8")
-    )
-    assert still_above_five.tier is None
-    assert still_above_five.state.armed_10_up
-    recross_ten = advance_trigger_state(
-        still_above_five.state, symbol="AAPLUSDT", window="24h", change_pct=Decimal("10.1")
-    )
-    assert recross_ten.tier == "live"
-
-    below_five = advance_trigger_state(
-        recross_ten.state, symbol="AAPLUSDT", window="24h", change_pct=Decimal("4.9")
-    )
-    recross_five = advance_trigger_state(
-        below_five.state, symbol="AAPLUSDT", window="24h", change_pct=Decimal("5.2")
-    )
-    assert recross_five.tier == "backend"
-    assert recross_five.direction == "up"
-
-    downside_baseline = advance_trigger_state(None, symbol="AAPLUSDT", window="1h", change_pct=Decimal("0"))
-    downside = advance_trigger_state(
-        downside_baseline.state,
-        symbol="AAPLUSDT",
-        window="1h",
-        change_pct=Decimal("-5.01"),
-    )
-    assert downside.tier == "backend"
-    assert downside.direction == "down"
-
-
-def test_copy_uses_market_attribution_and_contract_code() -> None:
+def test_copy_uses_market_attribution_and_asset_name() -> None:
     instrument = StockInstrument("005930USDT", "kr", 0)
     _title, content = render_alert(
         instrument=instrument,
@@ -155,7 +119,7 @@ def test_copy_uses_market_attribution_and_contract_code() -> None:
         change_pct=Decimal("-10.24"),
         current_price=Decimal("67800"),
     )
-    assert content == "据Gate数据，005930USDT 24小时下跌10.2%，现报67800 USDT。"
+    assert content == "据Gate数据，00593024小时下跌10.2%，现报67800 USDT。"
 
     instrument = StockInstrument("600000USDT", "cn", 2)
     _title, content = render_alert(
@@ -166,7 +130,7 @@ def test_copy_uses_market_attribution_and_contract_code() -> None:
         change_pct=Decimal("5.04"),
         current_price=Decimal("12.34"),
     )
-    assert content.startswith("据行情数据，600000USDT")
+    assert content.startswith("据行情数据，6000001小时上涨")
 
 
 class _FakePushClient:
@@ -222,14 +186,25 @@ def test_service_calculates_one_hour_change_and_dispatches_tiers(tmp_path: Path)
         started=time.monotonic(),
     )
 
-    assert result["alert_count"] == 2
-    assert {call["is_publish"] for call in push.calls} == {False, True}
+    assert result["alert_count"] == 0
+    assert result["pending_count"] == 1
+    for offset in range(3660, 3811, 30):
+        # Maintain a valid 1H reference while waiting for the merge window.
+        with sqlite3.connect(database) as conn:
+            conn.execute("INSERT OR REPLACE INTO price_samples VALUES(?,?,?)", (instrument.symbol, timestamp + offset - 3600, "100"))
+        result = service._process_quotes(
+            [instrument],
+            {instrument.symbol: StockQuote(instrument.symbol, Decimal("106"), Decimal("11"), timestamp + offset)},
+            now=timestamp + offset, started=time.monotonic(),
+        )
+    assert result["alert_count"] == 1
+    assert {call["is_publish"] for call in push.calls} == {True}
     assert all(call["is_push"] is False for call in push.calls)
     assert any("1小时上涨6.0%" in str(call["content"]) for call in push.calls)
     assert any("24小时上涨11.0%" in str(call["content"]) for call in push.calls)
     dashboard = store.dashboard()
     assert Decimal(dashboard["contracts"][0]["change_1h"]) == Decimal("6")
-    assert {event["status"] for event in dashboard["recent_events"]} == {"backend_created", "published"}
+    assert {event["status"] for event in dashboard["recent_events"]} == {"published"}
 
 
 def test_stale_quote_is_skipped_and_recorded(tmp_path: Path) -> None:
@@ -325,3 +300,291 @@ def test_binance_failure_is_saved_in_worker_status(tmp_path: Path) -> None:
     dashboard = store.dashboard()
     assert dashboard["last_cycle_status"] == "error"
     assert dashboard["last_cycle_error"] == "Binance unavailable"
+
+
+class _Replay:
+    def __init__(self, instruments: list[StockInstrument] | None = None) -> None:
+        self.instruments = instruments or [StockInstrument("AAAUSDT", "us", 2)]
+        self.state = BroadcastState()
+        self.now = 1_700_000_000
+
+    def tick(self, values: dict[str, tuple[str, ...]], *, restart: bool = False):
+        quotes = {symbol: StockQuote(symbol, Decimal(values[0]), Decimal(values[1]), self.now)
+                  for symbol, values in values.items()}
+        changes = {symbol: {"24h": quote.change_24h} for symbol, quote in quotes.items()}
+        for symbol, item in values.items():
+            if len(item) == 3:
+                changes[symbol]["1h"] = Decimal(item[2])
+        alerts, _ = advance_broadcast(
+            self.state, instruments=self.instruments, quotes=quotes, changes=changes,
+            now=self.now, restart=restart, max_gap_seconds=90,
+        )
+        self.now += 30
+        return alerts
+
+    def hold(self, seconds: int, values: dict[str, tuple[str, ...]]):
+        alerts = []
+        for _ in range(seconds // 30):
+            alerts.extend(self.tick(values))
+        return alerts
+
+
+def test_many_contracts_merge_by_market_direction_and_tier_with_five_representatives():
+    instruments = [StockInstrument(f"A{i}USDT", "us", 2) for i in range(40)]
+    replay = _Replay(instruments)
+    baseline = {item.symbol: ("100", "0") for item in instruments}
+    values = {item.symbol: ("110", "11" if i < 30 else "6") for i, item in enumerate(instruments)}
+    assert replay.tick(baseline) == []
+    assert replay.tick(values) == []
+    alerts = replay.hold(180, values)
+    assert len(alerts) == 2
+    assert {alert.tier: len(alert.members) for alert in alerts} == {"live": 30, "backend": 10}
+    assert all("普涨" in alert.content for alert in alerts)
+    assert all(alert.content.count("现报") == 5 for alert in alerts)
+    assert "A0USDT" not in alerts[1].content
+    assert replay.hold(3600, values) == []
+
+
+def test_groups_do_not_mix_markets_or_directions_and_cannot_claim_broad_rally():
+    instruments = [StockInstrument("AAAUSDT", "us", 2), StockInstrument("BBBUSDT", "us", 2),
+                   StockInstrument("CCCUSDT", "hk", 2), StockInstrument("DDDUSDT", "hk", 2)]
+    replay = _Replay(instruments)
+    replay.tick({item.symbol: ("100", "0") for item in instruments})
+    values = {"AAAUSDT": ("111", "11"), "BBBUSDT": ("89", "-11"),
+              "CCCUSDT": ("111", "11"), "DDDUSDT": ("112", "12")}
+    replay.tick(values)
+    alerts = replay.hold(180, values)
+    assert len(alerts) == 3
+    assert {(alert.market, alert.direction) for alert in alerts} == {("us", "up"), ("us", "down"), ("hk", "up")}
+    assert all("据行情数据" in alert.content for alert in alerts if alert.market == "hk")
+    assert all("普涨" not in alert.content for alert in alerts if alert.market == "us")
+
+
+def test_candidate_upgrade_and_retreat_are_rechecked_before_dispatch():
+    replay = _Replay([StockInstrument("AAAUSDT", "us", 2), StockInstrument("BBBUSDT", "us", 2)])
+    replay.tick({"AAAUSDT": ("100", "0"), "BBBUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("106", "6"), "BBBUSDT": ("106", "6")})
+    values = {"AAAUSDT": ("111", "11"), "BBBUSDT": ("104", "4")}
+    alerts = replay.hold(180, values)
+    assert len(alerts) == 1 and alerts[0].tier == "live"
+    assert [member.instrument.asset_name for member in alerts[0].members] == ["AAA"]
+
+
+def test_repeated_crossings_and_rolling_reference_changes_do_not_repeat_prices():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    assert len(replay.hold(180, {"AAAUSDT": ("110", "11")})) == 1
+    for _ in range(50):
+        assert replay.tick({"AAAUSDT": ("109", "9.9")}) == []
+        assert replay.tick({"AAAUSDT": ("110", "10.1")}) == []
+    assert replay.hold(180, {"AAAUSDT": ("110", "20")}) == []
+    # Exactly 5% beyond 110 is 115.50; crossing a percentage threshold is not needed.
+    replay.tick({"AAAUSDT": ("115.50", "20")})
+    assert len(replay.hold(180, {"AAAUSDT": ("115.50", "20")})) == 1
+
+
+def test_backend_promotion_requires_new_extreme_and_waits_for_followup_slot():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("106", "6")})
+    assert replay.hold(180, {"AAAUSDT": ("106", "6")})[0].tier == "backend"
+    assert replay.hold(180, {"AAAUSDT": ("106", "11")}) == []
+    assert not any(group.pending for group in replay.state.groups.values())
+    replay.tick({"AAAUSDT": ("107", "11")})
+    assert replay.hold(1500, {"AAAUSDT": ("107", "11")}) == []
+    promoted = replay.hold(150, {"AAAUSDT": ("107", "11")})
+    assert len(promoted) == 1 and promoted[0].tier == "live"
+    assert replay.hold(1800, {"AAAUSDT": ("107", "11")}) == []
+
+
+def test_falling_prices_repeat_only_at_five_percent_lower_price():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("90", "-11")})
+    assert len(replay.hold(180, {"AAAUSDT": ("90", "-11")})) == 1
+    assert replay.hold(1800, {"AAAUSDT": ("89", "-15")}) == []
+    replay.tick({"AAAUSDT": ("85.5", "-15")})
+    alerts = replay.hold(180, {"AAAUSDT": ("85.5", "-15")})
+    assert len(alerts) == 1 and "下跌15.0%" in alerts[0].content
+
+
+def test_expired_lock_rebases_silently_instead_of_resending_current_move():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    replay.hold(180, {"AAAUSDT": ("110", "11")})
+    replay.now += PRICE_LOCK_SECONDS
+    assert replay.tick({"AAAUSDT": ("120", "20")}) == []
+    assert replay.hold(180, {"AAAUSDT": ("120", "20")}) == []
+    replay.tick({"AAAUSDT": ("126", "25")})
+    assert len(replay.hold(180, {"AAAUSDT": ("126", "25")})) == 1
+
+
+def test_new_one_hour_window_is_silent_and_both_windows_share_price_lock():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    assert replay.tick({"AAAUSDT": ("110", "0", "11")}) == []
+    assert replay.hold(180, {"AAAUSDT": ("110", "0", "11")}) == []
+    replay.tick({"AAAUSDT": ("111", "11", "12")})
+    alerts = replay.hold(180, {"AAAUSDT": ("111", "11", "12")})
+    assert len(alerts) == 1
+    assert len(alerts[0].members) == 1
+    assert set(alerts[0].members[0].changes) == {"1h", "24h"}
+    assert replay.hold(1800, {"AAAUSDT": ("111", "12", "13")}) == []
+
+
+def test_missing_quote_at_dispatch_drops_candidate():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    assert replay.hold(180, {}) == []
+    assert not any(group.pending for group in replay.state.groups.values())
+    assert replay.tick({"AAAUSDT": ("110", "11")}) == []
+
+
+def test_restart_clears_pending_but_preserves_price_lock_and_market_schedule(tmp_path: Path):
+    database = tmp_path / "stock-market.sqlite"
+    push = _FakePushClient()
+    service, store = _service(database, push)
+    instrument = StockInstrument("AAAUSDT", "us", 2)
+    start = 1_700_000_000
+    store.sync_instruments([instrument], now=start)
+
+    def tick(worker, offset, price, change):
+        return worker._process_quotes([instrument], {
+            instrument.symbol: StockQuote(instrument.symbol, Decimal(price), Decimal(change), start + offset),
+        }, now=start + offset, started=time.monotonic())
+
+    tick(service, 0, "100", "0")
+    tick(service, 30, "110", "11")
+    reloaded, _ = _service(database, push)
+    assert tick(reloaded, 60, "110", "11")["alert_count"] == 0
+    assert reloaded.store.dashboard()["pending_groups"] == []
+    # The restart consumed the old move; a further real 5% creates a new candidate.
+    tick(reloaded, 90, "104", "4")
+    tick(reloaded, 120, "115.5", "16")
+    for offset in range(150, 301, 30):
+        tick(reloaded, offset, "115.5", "16")
+    assert len(push.calls) == 1
+    restarted, _ = _service(database, push)
+    tick(restarted, 330, "114", "9.9")
+    for offset in range(360, 2401, 30):
+        tick(restarted, offset, "115.5", "10.1")
+    assert len(push.calls) == 1
+    assert restarted.store.dashboard()["contracts"][0]["price_locks"]["up"]["anchor_price"] == "115.5"
+
+
+def test_failed_push_is_consumed_and_not_retried(tmp_path: Path):
+    class _FailingPush(_FakePushClient):
+        def push(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("request outcome unknown")
+
+    push = _FailingPush()
+    service, store = _service(tmp_path / "stock-market.sqlite", push)
+    instrument = StockInstrument("AAAUSDT", "us", 2)
+    start = 1_700_000_000
+    store.sync_instruments([instrument], now=start)
+    for offset in range(0, 601, 30):
+        price, change = ("100", "0") if offset == 0 else ("110", "11")
+        service._process_quotes([instrument], {
+            instrument.symbol: StockQuote(instrument.symbol, Decimal(price), Decimal(change), start + offset),
+        }, now=start + offset, started=time.monotonic())
+    assert len(push.calls) == 1
+    assert store.dashboard()["recent_events"][0]["status"] == "push_failed"
+
+
+def test_one_large_outlier_or_missing_quotes_cannot_claim_broad_market_move():
+    instruments = [StockInstrument(f"A{i}USDT", "us", 2) for i in range(10)]
+    replay = _Replay(instruments)
+    replay.tick({item.symbol: ("100", "0") for item in instruments})
+    # All quotes are fresh, but only two of ten have moved: the median is zero.
+    values = {item.symbol: ("200", "100") if i < 2 else ("100", "0") for i, item in enumerate(instruments)}
+    replay.tick(values)
+    alert = replay.hold(180, values)[0]
+    assert "多只" in alert.content and "普涨" not in alert.content
+
+    replay = _Replay(instruments)
+    replay.tick({item.symbol: ("100", "0") for item in instruments})
+    values = {instruments[i].symbol: ("111", "11") for i in range(2)}
+    replay.tick(values)
+    alert = replay.hold(180, values)[0]
+    assert "普涨" not in alert.content  # 100% up among only 20% coverage.
+
+
+def test_new_assets_wait_for_existing_market_followup_instead_of_individual_dispatch():
+    replay = _Replay([StockInstrument("AAAUSDT", "us", 2), StockInstrument("BBBUSDT", "us", 2)])
+    baseline = {"AAAUSDT": ("100", "0"), "BBBUSDT": ("100", "0")}
+    first = {"AAAUSDT": ("111", "11"), "BBBUSDT": ("100", "0")}
+    replay.tick(baseline)
+    replay.tick(first)
+    assert len(replay.hold(180, first)) == 1
+    both = {"AAAUSDT": ("111", "11"), "BBBUSDT": ("111", "11")}
+    replay.tick(both)
+    assert replay.hold(1740, both) == []
+    alerts = replay.hold(60, both)
+    assert len(alerts) == 1
+    assert [member.instrument.asset_name for member in alerts[0].members] == ["BBB"]
+
+
+def test_legacy_events_survive_schema_upgrade_without_becoming_pending(tmp_path: Path):
+    database = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.executescript('''
+            CREATE TABLE trigger_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
+                symbol TEXT NOT NULL, market TEXT NOT NULL, window TEXT NOT NULL,
+                tier TEXT NOT NULL, direction TEXT NOT NULL, change_percent TEXT NOT NULL,
+                current_price TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+                status TEXT NOT NULL, error TEXT, observed_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            );
+            INSERT INTO trigger_events VALUES(
+                1,'old','AAAUSDT','us','24h','live','up','11','111',
+                'legacy title','legacy content','published',NULL,1700000000,1700000000,1700000000
+            );
+        ''')
+    store = StockMarketStore(database)
+    store.initialize()
+    store.initialize()
+    dashboard = store.dashboard()
+    assert dashboard["recent_events"][0]["content"] == "legacy content"
+    assert dashboard["recent_events"][0]["members"] == []
+    assert dashboard["pending_groups"] == []
+    assert store.broadcast_state().assets == {}
+
+
+def test_same_event_key_is_claimed_only_once_before_push(tmp_path: Path):
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    alerts = replay.hold(180, {"AAAUSDT": ("110", "11")})
+    store = StockMarketStore(tmp_path / "claim.sqlite")
+    store.initialize()
+    arguments = dict(quotes={}, changes_1h={}, state=replay.state, alerts=alerts,
+                     errors={}, now=replay.now, startup_baseline=False)
+    assert len(store.record_cycle(**arguments)) == 1
+    assert store.record_cycle(**arguments) == []
+    assert len(store.dashboard()["recent_events"]) == 1
+
+
+def test_restart_does_not_replay_a_price_jump_one_poll_after_silent_baseline():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    replay.hold(180, {"AAAUSDT": ("110", "11")})
+    assert replay.tick({"AAAUSDT": ("130", "30")}, restart=True) == []
+    assert replay.hold(1800, {"AAAUSDT": ("130", "30")}) == []
+    replay.tick({"AAAUSDT": ("136.5", "35")})
+    assert len(replay.hold(180, {"AAAUSDT": ("136.5", "35")})) == 1
+
+
+def test_restart_pullback_keeps_the_prior_price_barrier():
+    replay = _Replay()
+    replay.tick({"AAAUSDT": ("100", "0")})
+    replay.tick({"AAAUSDT": ("110", "11")})
+    replay.hold(180, {"AAAUSDT": ("110", "11")})
+    replay.tick({"AAAUSDT": ("100", "5")}, restart=True)
+    assert replay.hold(1800, {"AAAUSDT": ("110", "11")}) == []
+    assert replay.state.assets["AAAUSDT"].locks["up"].anchor_price == Decimal("110")

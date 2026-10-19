@@ -5,13 +5,12 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from packages.publisher import PushClient
+from packages.publisher import PushClient, PushResult
 
+from .aggregation import advance_broadcast
 from .client import BinanceStockMarketClient
-from .copy import render_alert
-from .models import StockAlert, StockInstrument, StockQuote, TriggerState, Window
+from .models import StockInstrument, StockQuote, Window
 from .settings import StockMarketSettings
-from .state_machine import advance_trigger_state
 from .store import StockMarketStore
 
 
@@ -38,7 +37,7 @@ class StockMarketBroadcastService:
             backoff_seconds=0,
         )
         self._startup_baseline_pending = True
-        self._startup_baseline_symbols_pending: set[str] = set()
+        self._baseline_symbols_pending: set[str] = set()
 
     def _refresh_instruments(self, now: int) -> None:
         last_refresh = self.store.last_discovery_at()
@@ -74,7 +73,6 @@ class StockMarketBroadcastService:
         now: int,
         started: float,
     ) -> dict[str, Any]:
-        by_symbol = {item.symbol: item for item in instruments}
         valid_quotes: dict[str, StockQuote] = {}
         errors: dict[str, str] = {}
         for instrument in instruments:
@@ -88,93 +86,51 @@ class StockMarketBroadcastService:
                 continue
             valid_quotes[instrument.symbol] = quote
 
-        symbols = list(valid_quotes)
         references = self.store.one_hour_references(valid_quotes)
-        prior_changes = self.store.last_changes(symbols)
-        states = self.store.get_trigger_states(symbols)
-        next_states: list[TriggerState] = []
         changes_1h: dict[str, Decimal] = {}
-        alerts: list[StockAlert] = []
-        self._startup_baseline_symbols_pending.intersection_update(by_symbol)
-        startup_baseline = self._startup_baseline_pending
-        if startup_baseline:
-            self._startup_baseline_symbols_pending.update(by_symbol)
-            self._startup_baseline_pending = False
-        baseline_cycle = startup_baseline or bool(self._startup_baseline_symbols_pending)
-
+        changes: dict[str, dict[Window, Decimal]] = {}
         for symbol, quote in valid_quotes.items():
-            instrument = by_symbol[symbol]
-            prior = prior_changes.get(symbol, {})
-            prior_observed_at = prior.get("observed_at")
-            symbol_baseline = (
-                symbol in self._startup_baseline_symbols_pending
-                or prior_observed_at is None
-                or now - int(prior_observed_at) > self.settings.quote_max_age_seconds
-            )
-            current_values: dict[Window, Decimal] = {"24h": quote.change_24h}
+            changes[symbol] = {"24h": quote.change_24h}
             reference = references.get(symbol)
             if reference is not None:
-                current_values["1h"] = ((quote.price - reference) / reference) * Decimal(100)
-                changes_1h[symbol] = current_values["1h"]
-
-            for window, change in current_values.items():
-                decision = advance_trigger_state(
-                    states.get((symbol, window)),
-                    symbol=symbol,
-                    window=window,
-                    change_pct=change,
-                    silent_baseline=symbol_baseline,
-                )
-                next_states.append(decision.state)
-                if decision.tier is None or decision.direction is None:
-                    continue
-                title, content = render_alert(
-                    instrument=instrument,
-                    window=window,
-                    tier=decision.tier,
-                    direction=decision.direction,
-                    change_pct=change,
-                    current_price=quote.price,
-                )
-                event_key = (
-                    f"{symbol}:{window}:{decision.direction}:{decision.tier}:{quote.observed_at}"
-                )
-                alerts.append(
-                    StockAlert(
-                        event_key=event_key,
-                        instrument=instrument,
-                        window=window,
-                        tier=decision.tier,
-                        direction=decision.direction,
-                        change_pct=change,
-                        current_price=quote.price,
-                        observed_at=quote.observed_at,
-                        title=title,
-                        content=content,
-                    )
-                )
-            self._startup_baseline_symbols_pending.discard(symbol)
-
-        self.store.record_cycle(
+                change = ((quote.price - reference) / reference) * Decimal(100)
+                changes_1h[symbol] = change
+                changes[symbol]["1h"] = change
+        state = self.store.broadcast_state()
+        active_symbols = {instrument.symbol for instrument in instruments}
+        self._baseline_symbols_pending.intersection_update(active_symbols)
+        if self._startup_baseline_pending:
+            self._baseline_symbols_pending.update(active_symbols)
+        alerts, baseline_count = advance_broadcast(
+            state, instruments=instruments, quotes=valid_quotes, changes=changes, now=now,
+            restart=self._startup_baseline_pending, max_gap_seconds=self.settings.quote_max_age_seconds,
+            baseline_symbols=self._baseline_symbols_pending,
+        )
+        baseline_cycle = bool(valid_quotes) and baseline_count == len(valid_quotes)
+        claimed = self.store.record_cycle(
             quotes=valid_quotes,
             changes_1h=changes_1h,
-            states=next_states,
+            state=state,
             alerts=alerts,
             errors=errors,
             now=now,
             startup_baseline=baseline_cycle,
         )
 
+        self._startup_baseline_pending = False
+        self._baseline_symbols_pending.difference_update(valid_quotes)
         results: list[dict[str, Any]] = []
-        for alert in alerts:
-            result = self.push_client.push(
-                title=alert.title,
-                content=alert.content,
-                dry_run=False,
-                is_publish=alert.tier == "live",
-                is_push=False,
-                idempotency_key=f"stock-market:{alert.event_key}",
-            )
+        for alert in claimed:
+            try:
+                result = self.push_client.push(
+                    title=alert.title, content=alert.content, dry_run=False,
+                    is_publish=alert.tier == "live", is_push=False,
+                    idempotency_key=f"stock-market:{alert.event_key}",
+                )
+            except Exception as exc:
+                # The endpoint has no reliable idempotency contract. Consume a
+                # failed/uncertain request rather than automatically retry it.
+                result = PushResult(ok=False, error=str(exc))
             status = "published" if result.ok and alert.tier == "live" else (
                 "backend_created" if result.ok else "push_failed"
             )
@@ -185,8 +141,8 @@ class StockMarketBroadcastService:
                 now=int(time.time()),
             )
             results.append({
-                "symbol": alert.instrument.symbol,
-                "window": alert.window,
+                "assets": [member.instrument.asset_name for member in alert.members],
+                "market": alert.market,
                 "tier": alert.tier,
                 "status": status,
                 "title": alert.title,
@@ -198,7 +154,9 @@ class StockMarketBroadcastService:
             "contract_count": len(instruments),
             "quoted_count": len(valid_quotes),
             "error_count": len(errors),
-            "alert_count": len(alerts),
+            "alert_count": len(claimed),
+            "pending_count": sum(len(group.pending) for group in state.groups.values()),
+            "baseline_count": baseline_count,
             "alerts": results,
             "startup_baseline": baseline_cycle,
             "duration_seconds": round(time.monotonic() - started, 3),

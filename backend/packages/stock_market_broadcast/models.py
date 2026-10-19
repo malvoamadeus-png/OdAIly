@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
@@ -17,6 +17,10 @@ class StockInstrument:
     market: Market
     price_precision: int
 
+    @property
+    def asset_name(self) -> str:
+        return self.symbol.removesuffix("USDT")
+
 
 @dataclass(frozen=True, slots=True)
 class StockQuote:
@@ -26,34 +30,64 @@ class StockQuote:
     observed_at: int
 
 
-@dataclass(frozen=True, slots=True)
-class TriggerState:
-    symbol: str
-    window: Window
-    initialized: bool
-    armed_5_up: bool
-    armed_5_down: bool
-    armed_10_up: bool
-    armed_10_down: bool
-    last_change_pct: Decimal | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TriggerDecision:
-    state: TriggerState
+@dataclass(slots=True)
+class PriceLock:
+    anchor_price: Decimal
+    extreme_price: Decimal
+    locked_at: int
     tier: Tier | None
-    direction: Direction | None
+
+
+@dataclass(slots=True)
+class AssetState:
+    observed_at: int
+    changes: dict[Window, Decimal]
+    locks: dict[Direction, PriceLock]
+
+
+@dataclass(slots=True)
+class PendingCandidate:
+    first_at: int
+    upgrade_floor: Decimal | None = None
+
+
+@dataclass(slots=True)
+class AggregationGroup:
+    market: Market
+    direction: Direction
+    due_at: int | None = None
+    next_at: int = 0
+    pending: dict[str, PendingCandidate] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BroadcastState:
+    assets: dict[str, AssetState] = field(default_factory=dict)
+    groups: dict[str, AggregationGroup] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AlertMember:
+    instrument: StockInstrument
+    changes: dict[Window, Decimal]
+    current_price: Decimal
+    observed_at: int
+
+    @property
+    def primary_window(self) -> Window:
+        return max(self.changes, key=lambda window: (abs(self.changes[window]), window))
+
+    @property
+    def change_pct(self) -> Decimal:
+        return self.changes[self.primary_window]
 
 
 @dataclass(frozen=True, slots=True)
 class StockAlert:
     event_key: str
-    instrument: StockInstrument
-    window: Window
+    market: Market
     tier: Tier
     direction: Direction
-    change_pct: Decimal
-    current_price: Decimal
-    observed_at: int
+    members: tuple[AlertMember, ...]
     title: str
     content: str

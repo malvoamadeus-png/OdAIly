@@ -1457,13 +1457,11 @@ export async function getGateMarketDashboard(): Promise<GateMarketDashboard> {
   return consoleApiGet<GateMarketDashboard>('/console/gate-market/get');
 }
 
-export type StockMarketState = {
-  initialized: boolean;
-  armed_5_up: boolean;
-  armed_5_down: boolean;
-  armed_10_up: boolean;
-  armed_10_down: boolean;
-  last_change_pct: string | null;
+export type StockMarketPriceLock = {
+  anchor_price: string;
+  extreme_price: string;
+  tier: 'backend' | 'live' | null;
+  locked_until: string;
 };
 
 export type StockMarketContract = {
@@ -1474,11 +1472,19 @@ export type StockMarketContract = {
   observed_at: string | null;
   change_1h: string | null;
   change_24h: string | null;
-  trigger_state: Record<'1h' | '24h', StockMarketState | undefined>;
+  asset_name?: string;
+  price_locks?: Partial<Record<'up' | 'down', StockMarketPriceLock>>;
   last_error: string | null;
 };
 
 export type StockMarketEvent = {
+  members?: {
+    symbol: string;
+    asset_name: string;
+    changes: Partial<Record<'1h' | '24h', string>>;
+    current_price: string;
+    observed_at: string;
+  }[];
   id: number;
   symbol: string;
   market: StockMarketContract['market'];
@@ -1498,6 +1504,17 @@ export type StockMarketEvent = {
 export type StockMarketDashboard = {
   poll_interval_seconds: number;
   instrument_refresh_seconds: number;
+  aggregation_seconds?: number;
+  followup_seconds?: number;
+  price_lock_seconds?: number;
+  price_step_percent?: string;
+  pending_groups?: {
+    market: StockMarketContract['market'];
+    direction: 'up' | 'down';
+    due_at: string | null;
+    next_at: string | null;
+    assets: string[];
+  }[];
   contract_count: number;
   contracts: StockMarketContract[];
   recent_events: StockMarketEvent[];
