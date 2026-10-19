@@ -407,6 +407,14 @@ def parse_args() -> argparse.Namespace:
     auditor_worker = subparsers.add_parser("auditor-worker", help="Run Odaily published-news auditor worker.")
     auditor_worker.add_argument("--once", action="store_true", help="Process one auditor task and exit.")
 
+    fact_worker = subparsers.add_parser("fact-auditor-worker", help="Review published news facts asynchronously.")
+    fact_worker.add_argument("--once", action="store_true")
+    fact_case = subparsers.add_parser("fact-auditor-case", help="Review an offline JSON case without reading/writing product state.")
+    fact_case.add_argument("--input", required=True, help="JSON file containing title, content, original_text, original_url.")
+    fact_case.add_argument("--output", help="Write complete review evidence to this JSON file.")
+    fact_retry = subparsers.add_parser("fact-auditor-retry", help="Explicitly retry a current fact review after restoring dependencies.")
+    fact_retry.add_argument("--check-id", required=True, type=int)
+
     writing_review_report = subparsers.add_parser(
         "writing-review-report",
         help="Review AI-written titles and bodies from a recent local SQLite window and write a Markdown report.",
@@ -1639,6 +1647,42 @@ def writer3_reset_task_command(args: argparse.Namespace) -> int:
     return 0 if changed else 1
 
 
+def fact_auditor_command(args: argparse.Namespace) -> int:
+    from packages.fact_auditor.settings import load_settings as load_fact_settings
+    if args.command == "fact-auditor-retry":
+        from packages.common.storage import load_storage_settings
+        from packages.fact_auditor.repository import FactReviewRepository
+        result = FactReviewRepository(load_storage_settings().sqlite_path).retry(args.check_id)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    settings = load_fact_settings()
+    if args.command == "fact-auditor-case":
+        from packages.fact_auditor.ai import FactReviewAI
+        from packages.fact_auditor.engine import FactReviewEngine
+        case = json.loads(Path(args.input).read_text(encoding="utf-8"))
+        original = str(case.get("original_text") or "")
+        result = FactReviewEngine(FactReviewAI(settings), max_questions=settings.max_search_questions).review(
+            title=str(case.get("title") or ""), content=str(case["content"]),
+            original_loader=lambda: {"status": "available" if original else "unavailable", "text": original,
+                "url": str(case.get("original_url") or ""), "origin": "offline_case", "reason": "测试未提供原文" if not original else ""},
+        )
+        output = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(output + "\n", encoding="utf-8")
+        print(output)
+        return 1 if result["status"] == "failed" else 0
+    from packages.common.storage import load_storage_settings
+    from packages.fact_auditor.repository import FactReviewRepository
+    from packages.fact_auditor.worker import FactAuditorWorker
+    worker = FactAuditorWorker(FactReviewRepository(load_storage_settings().sqlite_path), settings)
+    if args.once:
+        result = worker.run_once()
+        print(json.dumps(result or {"status": "idle"}, ensure_ascii=False))
+        return 1 if result and result["status"] == "failed" else 0
+    worker.run_forever()
+    return 0
+
+
 def auditor_init_db_command(args: argparse.Namespace) -> int:
     from packages.auditor import create_auditor_repository
 
@@ -2100,6 +2144,8 @@ def main() -> int:
             return auditor_init_db_command(args)
         if args.command == "auditor-worker":
             return auditor_worker_command(args)
+        if args.command in {"fact-auditor-worker", "fact-auditor-case", "fact-auditor-retry"}:
+            return fact_auditor_command(args)
         if args.command == "writing-review-report":
             return writing_review_report_command(args)
         if args.command == "maintenance-cleanup":

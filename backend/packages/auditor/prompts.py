@@ -84,7 +84,7 @@ AUDITOR_SCHEMA = {
 
 
 def build_auditor_prompt(task: AuditorTask) -> str:
-    return f"""你是 Odaily 已发布快讯的中文质量审核者。请只检查明确的中文文本质量问题，并输出结构化 JSON。
+    return f"""你是 Odaily 已发布快讯的中文质量文本审查者。请只检查明确的中文文本质量问题，并输出结构化 JSON。
 
 只检查：
 - 语法错误：主谓宾残缺、语序明显不通、重复粘贴、断句异常。

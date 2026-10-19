@@ -909,7 +909,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  const initialView: ConsoleView = requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
+  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
   const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
@@ -2805,7 +2805,7 @@ function WorkflowPanel() {
           <span className="workflowEyebrow">OdAIly workflow atlas</span>
           <h2>一条信息从来源到发布，再到发布后复核，会经过哪些闸门？</h2>
           <p>
-            这里把当前自动化主链路拆成可读的节点：谁负责收集、怎么按管理标签分流、搜索者如何查重、哪里用模型判断和写作定稿，以及发布后怎样进入审核者异步质检。
+            这里把当前自动化主链路拆成可读的节点：谁负责收集、怎么按管理标签分流、搜索者如何查重、哪里用模型判断和写作定稿，以及发布后怎样进入文本审查者异步质检。
           </p>
         </div>
         <div className="workflowHeroStats">

@@ -17,7 +17,7 @@ const textLensHotkeyInput = document.getElementById("textLensHotkey");
 const SOUND_PROFILE_META = [
   { key: "newsflash_backstage", label: "挂后台新快讯" },
   { key: "newsflash_direct", label: "直发新快讯" },
-  { key: "auditor_alert", label: "审核者" },
+  { key: "auditor_alert", label: "文本审查者" },
   { key: "writer3_context", label: "此前消息" },
   { key: "whale", label: "巨鲸" },
   { key: "gate_market", label: "Gate行情" },

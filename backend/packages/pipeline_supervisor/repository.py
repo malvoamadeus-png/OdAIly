@@ -35,6 +35,7 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "whale_watch",
     "whale_watch_hyperliquid",
     "local_pipeline",
+    "fact_auditor",
 ]
 
 MONITORED_TASK_SOURCES = [

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import FactReviewDetailPanel, { factReviewLabels, factReviewUrl } from './FactReviewDetailPanel';
 import {
   ChevronDown,
   ChevronLeft,
@@ -163,6 +164,11 @@ export default function NewsflashOperationsPanel({ refreshToken = 0 }: { refresh
     newsflashOperations<{ people: Person[] }>('roster').then((result) => setPeople(result.people)).catch((reason) => setError(String(reason)));
   }, [refreshToken]);
 
+  const query = new URLSearchParams(window.location.search);
+  const factReviewId = query.get('fact_review');
+  const checkIdValue = Number(query.get('check_id'));
+  if (factReviewId) return <FactReviewDetailPanel sourceId={factReviewId} checkId={Number.isSafeInteger(checkIdValue) && checkIdValue > 0 ? checkIdValue : undefined} refreshToken={refreshToken} />;
+
   return (
     <div className="newsflashWorkspace">
       <div className="newsflashTabs" role="tablist" aria-label="快讯及数据总览子页">
@@ -200,6 +206,7 @@ function Overview({
   const [filters, setFilters] = useState({
     search: '', date_from: '', date_to: '', publisher_kind: '', publisher_person_key: '',
     is_pushed: '', contributor_person_key: '', contribution_type: '', first_status: '', first_source: '',
+    fact_status: '',
   });
 
   async function load(nextPage = page) {
@@ -247,16 +254,19 @@ function Overview({
         <label><span>首发状态</span><select value={filters.first_status} onChange={(event) => setFilters({ ...filters, first_status: event.target.value })}><option value="">全部</option><option value="ready">已计算</option><option value="unmatched">未匹配事件</option><option value="insufficient">数据不足</option><option value="excluded">事件已排除</option></select></label>
         <label><span>首发单位</span><select value={filters.first_source} onChange={(event) => setFilters({ ...filters, first_source: event.target.value })}><option value="">全部</option><option value="odaily">Odaily</option><option value="blockbeats">BlockBeats</option><option value="panews">PANews</option><option value="jinse">金色财经</option></select></label>
         <button className="primaryButton filterButton" type="submit"><ListFilter size={16} /> 筛选</button>
+        <label><span>事实审查</span><select value={filters.fact_status} onChange={(event) => setFilters({ ...filters, fact_status: event.target.value })}><option value="">全部</option>{Object.entries(factReviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       </form>
       <div className="tableMeta"><span>{loading ? '加载中…' : `${data.total} 条快讯`}</span><span>每页 50 条</span></div>
+      <div className="factReviewCounts" aria-label="当前筛选范围事实审查统计">{Object.entries(data.fact_review_counts || {}).map(([status, count]) => <span key={status} className={`factReview-${status}`}>{factReviewLabels[status as keyof typeof factReviewLabels]} {count}</span>)}</div>
       <div className="newsflashTableWrap">
         <table className="newsflashTable">
-          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>优质快讯</th><th>首发单位</th></tr></thead>
+          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>事实审查</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>优质快讯</th><th>首发单位</th></tr></thead>
           <tbody>
             {data.items.map((row) => (
               <tr key={row.source_item_id}>
                 <td className="monoCell">{row.source_item_id}</td>
                 <td className="titleColumn">{row.source_url ? <a href={row.source_url} target="_blank" rel="noreferrer">{row.title || '无标题'}</a> : row.title || '无标题'}</td>
+                <td><a className={`factReviewStatus factReview-${row.fact_review?.status || 'pending'}`} href={factReviewUrl(row.source_item_id, row.fact_review?.id)} title={row.fact_review?.summary || row.fact_review?.reason || '尚未完成当前稿件的审查'}>{row.fact_review?.status === 'skipped' ? '—' : row.fact_review?.label || '待查'}{row.fact_review?.id ? ' ↗' : ''}</a></td>
                 <td>{localDate(row.published_at)}</td>
                 <td>{row.is_pushed == null ? <Unavailable /> : row.is_pushed ? '是' : '否'}</td>
                 <td>
@@ -278,7 +288,7 @@ function Overview({
                 <td><span className={`statusText ${row.first_publication.status}`}>{row.first_publication.label}</span></td>
               </tr>
             ))}
-            {!loading && data.items.length === 0 && <tr><td colSpan={10} className="emptyCell">没有符合条件的快讯</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={11} className="emptyCell">没有符合条件的快讯</td></tr>}
           </tbody>
         </table>
       </div>

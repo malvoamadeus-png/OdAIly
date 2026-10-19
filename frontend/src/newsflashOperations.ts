@@ -39,6 +39,42 @@ export type NewsflashRow = {
   quality_override: QualityOverride;
   source_snapshot_at: string | null;
   first_publication: FirstPublication;
+  fact_review: FactReviewSummary;
+};
+
+export type FactReviewStatus = 'unreviewed' | 'pending' | 'processing' | 'skipped' | 'exempt' | 'passed' | 'flagged' | 'unverifiable' | 'failed';
+export type FactReviewSummary = {
+  id: number | null;
+  status: FactReviewStatus;
+  label: string;
+  reason: string;
+  summary: string;
+  updated_at: string | null;
+};
+
+export type FactReviewDetail = {
+  published: { source_item_id: string; title: string | null; content: string; published_at: string | null };
+  is_current: boolean;
+  history: Array<{ id: number; status: FactReviewStatus; summary: string; updated_at: string }>;
+  runs: Array<{ id: number; status: FactReviewStatus; summary: string; completed_at: string }>;
+  check: null | {
+    id: number; title: string | null; content: string; status: FactReviewStatus; label: string;
+    reason: string; summary: string; original_text: string; original_url: string;
+    model: string; policy_version: string; updated_at: string; attempts: number; last_error: string | null;
+    result: {
+      incomplete?: boolean;
+      exclusion_rules?: Array<{ rule_key: string; name: string; terms: string[]; match_target: string }>;
+      stages?: Record<string, {
+        model?: string;
+        duration_ms?: number;
+        result?: {
+          status?: string; summary?: string; reason?: string;
+          issues?: Array<{ original: string; evidence: string; reason: string }>;
+          findings?: Array<{ claim: string; question: string; verdict: string; reason: string; evidence: Array<{ url: string; quote: string }> }>;
+        };
+      }>;
+    };
+  };
 };
 
 export type QualityOverride = 'none' | 'include' | 'exclude';
@@ -49,6 +85,7 @@ export type NewsflashPage = {
   page_size: number;
   total: number;
   pages: number;
+  fact_review_counts?: Partial<Record<FactReviewStatus, number>>;
 };
 
 export type SchedulePayload = {

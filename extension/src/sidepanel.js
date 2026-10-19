@@ -48,7 +48,7 @@ const NEWS_GEN_ROUTE_LABELS = {
 };
 const DEFAULT_FEED_LANE_RATIOS = { high: 75, ai: 25 };
 const FEED_LANES = [
-  { key: "high", title: "高频区", subtitle: "新快讯 / 审核者 / 巨鲸", empty: "暂无高频消息" },
+  { key: "high", title: "高频区", subtitle: "新快讯 / 文本审查者 / 巨鲸", empty: "暂无高频消息" },
   { key: "ai", title: "AI区", subtitle: "AI信源", empty: "暂无 AI 信源消息" }
 ];
 
@@ -369,7 +369,7 @@ function renderPreservingLaneScroll(laneList) {
 
 function feedbackKindLabel(item) {
   if (item.feed_kind === "auditor_alert") {
-    return "审核者";
+    return "文本审查者";
   }
   if (item.feed_kind === "writer3_context") {
     return "此前消息";

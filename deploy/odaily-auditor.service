@@ -1,5 +1,5 @@
 [Unit]
-Description=OdAIly published news auditor worker
+Description=OdAIly published news text reviewer
 After=network-online.target
 Wants=network-online.target
 

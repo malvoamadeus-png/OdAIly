@@ -193,7 +193,7 @@ class AuditorWorker:
 
 def build_telegram_text(task: AuditorTask, audit: AuditorResult) -> str:
     lines = [
-        f"审核者发现疑似问题（{audit.severity}）",
+        f"文本审查者发现疑似问题（{audit.severity}）",
         f"标题：{task.title or '(无标题)'}",
     ]
     if task.published_at:

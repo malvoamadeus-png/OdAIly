@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from packages.common.storage import connect_sqlite
+from packages.fact_auditor.repository import (
+    SCHEMA_SQL as FACT_REVIEW_SCHEMA_SQL, LABELS as FACT_REVIEW_LABELS,
+    FactReviewRepository, current_join as fact_review_join, summary_from_row as fact_review_summary,
+)
 
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -270,7 +274,7 @@ class NewsflashOperationsRepository:
 
     def init_schema(self) -> None:
         with connect_sqlite(self.path) as conn:
-            conn.executescript(SCHEMA_SQL)
+            conn.executescript(SCHEMA_SQL + FACT_REVIEW_SCHEMA_SQL)
             if self._table_exists(conn, "newsflash_events"):
                 event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
                 if "first_sources" not in event_columns:
@@ -320,6 +324,10 @@ class NewsflashOperationsRepository:
             "contributions": self.list_contributions,
             "contributions_month": self.list_contributions_monthly,
             "events": self.list_events,
+            "fact_review": lambda data: FactReviewRepository(self.path).detail(
+                _as_source_item_id(data.get("source_item_id")),
+                int(data["check_id"]) if data.get("check_id") is not None else None,
+            ),
         }
         handler = handlers.get(action)
         if handler is None:
@@ -743,6 +751,13 @@ class NewsflashOperationsRepository:
         with connect_sqlite(self.path) as conn:
             local_clauses = list(clauses)
             local_params = list(params)
+            fact_join = fact_review_join()
+            fact_status = str(payload.get("fact_status") or "").strip()
+            if fact_status:
+                if fact_status not in FACT_REVIEW_LABELS:
+                    raise ValueError("invalid fact review status")
+                local_clauses.append("COALESCE(fc.status,'unreviewed')=?")
+                local_params.append(fact_status)
             first_status = str(payload.get("first_status") or "").strip()
             has_exclusions = self._table_exists(conn, "newsflash_event_exclusions")
             has_events = self._table_exists(conn, "newsflash_events")
@@ -775,7 +790,7 @@ class NewsflashOperationsRepository:
                 local_params.extend([first_source, first_source, f'%"{first_source}"%'])
             where = " AND ".join(local_clauses)
             total = int(conn.execute(
-                f"SELECT count(*) FROM odaily_reference_items r LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id WHERE {where}",
+                f"SELECT count(*) FROM odaily_reference_items r LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id {fact_join} WHERE {where}",
                 local_params,
             ).fetchone()[0])
             rows = conn.execute(
@@ -785,11 +800,14 @@ class NewsflashOperationsRepository:
                        f.is_pushed,f.pushed_at,f.is_contribution,f.contributor_person_key,f.contribution_type,
                        f.first_source_override,f.quality_override,
                        f.source_snapshot_at,f.updated_at AS operation_updated_at,
-                       operator.display_name AS publisher_person_name,contributor.display_name AS contributor_name
+                       operator.display_name AS publisher_person_name,contributor.display_name AS contributor_name,
+                       fc.id AS fact_check_id,fc.status AS fact_status,fc.reason AS fact_reason,
+                       fc.summary AS fact_summary,fc.updated_at AS fact_updated_at
                 FROM odaily_reference_items r
                 LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
                 LEFT JOIN newsflash_roster operator ON operator.person_key=f.publisher_person_key
                 LEFT JOIN newsflash_roster contributor ON contributor.person_key=f.contributor_person_key
+                {fact_join}
                 WHERE {where}
                 ORDER BY datetime(r.published_at) DESC,r.source_item_id DESC
                 LIMIT ? OFFSET ?
@@ -812,8 +830,17 @@ class NewsflashOperationsRepository:
                 item["is_pushed"] = None if item.get("is_pushed") is None else bool(item["is_pushed"])
                 item["quality_override"] = str(item.get("quality_override") or "none")
                 item["first_publication"] = self._event_info(conn, str(item["source_item_id"]))
+                item["fact_review"] = fact_review_summary(item)
+                for key in ("fact_check_id", "fact_status", "fact_reason", "fact_summary", "fact_updated_at"):
+                    item.pop(key, None)
                 data.append(item)
-        return {"items": data, "page": page, "page_size": page_size, "total": total, "pages": max(1, (total + page_size - 1) // page_size)}
+            counts = {row["status"]: row["count"] for row in conn.execute(
+                f"SELECT COALESCE(fc.status,'unreviewed') AS status,count(*) AS count FROM odaily_reference_items r "
+                f"LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id {fact_join} WHERE {where} GROUP BY COALESCE(fc.status,'unreviewed')",
+                local_params,
+            )}
+        return {"items": data, "page": page, "page_size": page_size, "total": total,
+                "pages": max(1, (total + page_size - 1) // page_size), "fact_review_counts": counts}
 
     def update_newsflash(self, payload: dict[str, Any], *, actor_email: str) -> dict[str, Any]:
         source_item_id = _as_source_item_id(payload.get("source_item_id"))

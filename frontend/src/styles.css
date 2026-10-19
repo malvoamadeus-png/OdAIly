@@ -5815,3 +5815,21 @@ textarea:focus {
 .hlAddressTop a { color:#28735d; font-size:12px; text-decoration:none; }
 .hlAddressTop small { color:#728078; }
 .hlAddressNote input { flex:1; min-width:180px; max-width:420px; padding:7px 10px; border:1px solid #dce4df; border-radius:6px; }
+/* Published-news fact review */
+.factReviewCounts { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0 0 12px; font-size: 12px; }
+.factReviewStatus { white-space: nowrap; font-size: 12px; }
+.factReview-flagged, .factReview-failed { color: #b91c1c; }
+.factReview-unverifiable { color: #92400e; }
+.factReview-passed { color: #047857; }
+.factReview-skipped, .factReview-exempt, .factReview-pending { color: #64748b; }
+.factReviewDetail { max-width: 1400px; margin: 0 auto; }
+.factReviewConclusion { border: 1px solid currentColor; border-radius: 8px; padding: 16px; margin-top: 20px; }
+.factReviewConclusion p { margin-bottom: 0; }
+.factReviewMeta { font-size: 12px; color: #64748b; }
+.factReviewColumns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.factReviewBlock { border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 16px 0; min-width: 0; }
+.factReviewBlock h3 { margin-top: 0; }
+.factReviewCopy { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.8; max-height: 560px; overflow-y: auto; }
+.factReviewIssue { padding: 14px 0; border-top: 1px solid #e2e8f0; overflow-wrap: anywhere; }
+.factReviewIssue blockquote { margin: 10px 0; padding: 8px 14px; background: #f8fafc; border-left: 3px solid #cbd5e1; white-space: pre-wrap; }
+@media (max-width: 900px) { .factReviewColumns { grid-template-columns: 1fr; gap: 0; } }
