@@ -144,10 +144,15 @@ def summarize(fills: list[dict[str, Any]], *, start_ms: int, end_ms: int,
             'completed_rounds': round_details, 'completed_round_pnl': [str(p) for p in rounds], 'consecutive_losing_rounds': streak,
             'ambiguous_order_fills': ambiguous_fills, 'position_discontinuities': gaps, 'unsupported_fee_currency': unsupported_fees,
         }
+    account_rounds = sum(len(asset['completed_round_pnl']) for asset in assets.values())
+    account_wins = sum(sum(number(pnl) > 0 for pnl in asset['completed_round_pnl'])
+                       for asset in assets.values())
     return {
         'start_ms': start_ms, 'end_ms': end_ms, 'coverage': coverage,
         'fills': len(unique), 'first_observed_fill_ms': min((int(f['time']) for f in unique.values()), default=None),
         'last_observed_fill_ms': max((int(f['time']) for f in unique.values()), default=None), 'assets': assets,
+        'account_rounds': account_rounds, 'account_wins': account_wins,
+        'account_win_rate': str(Decimal(account_wins) / account_rounds) if account_rounds else None,
         'account_closed_pnl_less_fees': str(sum((number(a['closed_pnl_less_fees']) for a in assets.values()), ZERO)) if assets else None,
         'pnl_scope': 'observed_perp_fills_excluding_funding',
         'fee_currency_complete': not any(a['unsupported_fee_currency'] for a in assets.values()),

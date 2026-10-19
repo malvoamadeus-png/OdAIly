@@ -28,7 +28,9 @@ class Rules:
     action: Decimal = Decimal('3000000')
     win_rate_action: Decimal = Decimal('1000000')
     win_rate: Decimal = Decimal('0.70')
-    asset_profit: Decimal = Decimal('8000000')
+    asset_profit: Decimal = Decimal('5000000')
+    other_asset_profit: Decimal = Decimal('3000000')
+    asset_profit_action: Decimal = Decimal('2000000')
     account_profit: Decimal = Decimal('20000000')
     historical_loss: Decimal = Decimal('20000000')
     min_rounds: int = 5
@@ -39,7 +41,8 @@ class Rules:
 
     def __post_init__(self) -> None:
         for key in ('large_position', 'major_pnl', 'other_pnl', 'action', 'asset_profit',
-                    'account_profit', 'historical_loss', 'win_rate_action'):
+                    'other_asset_profit', 'asset_profit_action', 'account_profit',
+                    'historical_loss', 'win_rate_action'):
             if number(getattr(self, key)) <= 0:
                 raise ValueError(f'{key} must be positive')
         for key in ('oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'):
@@ -51,6 +54,10 @@ class Rules:
     def pnl_line(self, coin: str) -> Decimal:
         # Namespaced assets retain their identity, even if their ticker is BTC.
         return self.major_pnl if coin in ('BTC', 'ETH') else self.other_pnl
+
+    def asset_profit_line(self, coin: str) -> Decimal:
+        # Namespaced assets retain their identity, even if their ticker is BTC.
+        return self.asset_profit if coin in ('BTC', 'ETH') else self.other_asset_profit
 
 
 @dataclass(frozen=True)

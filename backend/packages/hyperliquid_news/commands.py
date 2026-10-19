@@ -52,6 +52,27 @@ def run_command(args: Any) -> int:
                 conn.execute("UPDATE hl_news_account_pool SET next_poll_ms=MIN(next_poll_ms,?) WHERE qualified=0",
                              (policy['loss_started_ms'],))
         print(encode(policy))
+    elif action == 'enable-seven-scenarios':
+        import time
+        from .scenarios import PRODUCTION_SCENARIOS
+        store.initialize()
+        policy = store.metadata('production_account_profit', None)
+        if not policy or not policy.get('enabled'):
+            raise ValueError('Enable the shared account monitor before the seven production scenarios')
+        now = int(time.time() * 1000)
+        existing = set(policy.get('enabled_scenarios', []))
+        policy['enabled_scenarios'] = list(PRODUCTION_SCENARIOS)
+        policy.setdefault('loss_started_ms', now)
+        policy.setdefault('scenario_started_ms', now)
+        store.save_global('production_account_profit', policy, [])
+        if not {'large_pnl','asset_win_rate','reversal','loss_addition','realized'}.issubset(existing):
+            from packages.common.storage import connect_sqlite
+            with connect_sqlite(path) as conn:
+                conn.execute('DELETE FROM hl_news_normal_state')
+        print(encode(policy))
+    elif action == 'prune-tested-cases':
+        from .test_cases import prune_tested_cases
+        print(encode(prune_tested_cases(store)))
     elif action == 'run-account-profit':
         import time
         from .account_monitor import AccountProfitMonitor
@@ -59,16 +80,26 @@ def run_command(args: Any) -> int:
         from .dispatch import EventDispatcher
         client = NewsClient(request_weight_per_minute=300)
         monitor = AccountProfitMonitor(store, client, addresses_per_pass=args.addresses_per_pass)
+        from .service import NewsMonitor
+        normal_monitor = NewsMonitor(store=store, client=client, addresses_per_pass=2,
+                                     leaderboard_seeds=0, markets_per_discovery=1)
         dispatcher = EventDispatcher(store)
         while True:
+            report = {'observed_ms': int(time.time()*1000), 'direction': 'seven_scenarios'}
             try:
-                report = monitor.run_once()
+                report['account_monitor'] = monitor.run_once()
+            except Exception as exc:
+                report.setdefault('failed', {})['account_monitor'] = str(exc)
+            try:
+                report['normal_monitor'] = normal_monitor.run_once()
+            except Exception as exc:
+                report.setdefault('failed', {})['normal_monitor'] = str(exc)
+            try:
                 report['dispatch'] = dispatcher.dispatch(limit=10)
                 store.save_global('last_pass', report, [])
                 print(encode(report), flush=True)
             except Exception as exc:
-                report = {'observed_ms': int(time.time()*1000), 'direction': 'account_profit',
-                          'failed': {'pass': str(exc)}}
+                report.setdefault('failed', {})['dispatch'] = str(exc)
                 store.save_global('last_pass', report, [])
                 print(encode(report), flush=True)
                 if args.once:
@@ -107,7 +138,7 @@ def run_command(args: Any) -> int:
         print(encode(enrich_account_cases(store, limit=args.limit)))
     elif action == 'replay-cached-test-cases':
         from .test_cases import replay_cached_cases
-        print(encode(replay_cached_cases(store)))
+        print(encode(replay_cached_cases(store, reset=args.reset)))
     elif action == 'preview-test-cases':
         from .test_cases import preview_cases
         print(encode(preview_cases(store, limit=args.limit, repository_template=args.repository_template)))

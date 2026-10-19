@@ -13,14 +13,128 @@ from .client import NewsClient
 from .detector import evaluate_address
 from .history import _ordered_by_position, fill_key, perp_fill, summarize
 from .models import Candidate, Position, Rules, ZERO, number
-from .scenarios import SCENARIOS
+from .scenarios import PRODUCTION_SCENARIOS, SCENARIOS, UNRESEARCHED_SCENARIOS
 from .store import NewsStore, encode
+
+PREVIEW_SCENARIOS = UNRESEARCHED_SCENARIOS
+PREVIEWS_PER_SCENARIO = 5
 
 
 def case_scenarios(event: dict[str, Any]) -> list[str]:
     kinds = set(event['kinds'])
+    kinds = {kind for kind in kinds if kind not in {'large_profit', 'large_loss'}
+             or _valid_large_pnl_movement(event, kind)}
     labels = set(event['evidence'].get('highlights', []))
     return [s[0] for s in SCENARIOS if kinds.intersection(s[3]) and (not s[4] or labels.intersection(s[4]))]
+
+
+def _valid_large_pnl_movement(event: dict[str, Any], kind: str) -> bool:
+    evidence = event.get('evidence', {})
+    position = evidence.get('position') or {}
+    current = position.get('unrealized_pnl')
+    previous = evidence.get('previous_reported_floating_pnl')
+    if previous is None:
+        previous = evidence.get('previous_reported_floating_pnl_usd')
+    if previous is None:
+        previous = evidence.get('news_change', {}).get('previous_floating_pnl')
+    if previous is None:
+        previous = (evidence.get('previous_position') or {}).get('unrealized_pnl')
+    if current is None or previous is None:
+        return False
+    coin = event.get('coin', '')
+    key = 'major_pnl' if coin in ('BTC', 'ETH') else 'other_pnl'
+    default = '5000000' if key == 'major_pnl' else '2000000'
+    threshold = number(evidence.get('threshold_rules', {}).get(key, default))
+    before, after = number(previous), number(current)
+    if kind == 'large_profit':
+        return before >= 0 and after >= threshold and after - before >= threshold
+    return before <= 0 and after <= -threshold and before - after >= threshold
+
+
+def select_preview_cases(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select up to five strong, distinct text samples for each requested direction."""
+    representatives = representative_cases(events)
+    counts = {scenario: 0 for scenario in PREVIEW_SCENARIOS}
+    used_addresses = {scenario: set() for scenario in PREVIEW_SCENARIOS}
+    selected: dict[str, dict[str, Any]] = {}
+
+    def score(event: dict[str, Any], scenario: str) -> tuple[float, ...]:
+        evidence = event.get('evidence', {})
+        actions = evidence.get('actions', {})
+        history = evidence.get('history', {})
+        asset = history.get('assets', {}).get(event.get('coin'), {})
+        current = evidence.get('position') or {}
+        previous = evidence.get('previous_position') or {}
+        amount = number(actions.get('open_notional', 0)) + number(actions.get('close_notional', 0))
+        if scenario == 'large_pnl':
+            return (float(amount), abs(float(number(current.get('unrealized_pnl') or 0))))
+        if scenario == 'asset_win_rate':
+            return (float(number(asset.get('win_rate') or 0)), float(asset.get('rounds') or 0), float(amount))
+        if scenario == 'asset_profit':
+            return (float(number(asset.get('last_30d_closed_pnl_less_fees') or 0)), float(amount))
+        if scenario == 'reversal':
+            old_notional = number(previous.get('notional') or 0)
+            new_notional = number(current.get('notional') or 0)
+            return (float(min(old_notional, new_notional)), float(amount))
+        if scenario == 'giveback':
+            peak = number(evidence.get('episode_peak_unrealized_pnl') or 0)
+            pnl = number(current.get('unrealized_pnl') or 0)
+            return (float(abs(peak - pnl)), float(amount))
+        if scenario == 'loss_addition':
+            return (abs(float(number(previous.get('unrealized_pnl') or 0))), float(amount))
+        return (abs(float(number(actions.get('ordinary_closed_pnl', actions.get('closed_pnl', 0))))),
+                float(number(actions.get('ordinary_close_notional', actions.get('close_notional', 0)))))
+
+    for scenario in PREVIEW_SCENARIOS:
+        candidates = sorted(
+            (event for event in representatives if scenario in case_scenarios(event)),
+            key=lambda event: score(event, scenario), reverse=True)
+        for event in candidates:
+            if counts[scenario] >= PREVIEWS_PER_SCENARIO:
+                break
+            if event['key'] in selected:
+                continue
+            address_asset = (tuple(sorted(str(a).lower() for a in event.get('addresses', []))),
+                             str(event.get('coin', '')))
+            covered = set(case_scenarios(event)).intersection(PREVIEW_SCENARIOS)
+            if any(address_asset in used_addresses[key] for key in covered):
+                continue
+            if any(counts[key] >= PREVIEWS_PER_SCENARIO for key in covered):
+                continue
+            selected[event['key']] = event
+            for key in covered:
+                counts[key] += 1
+                used_addresses[key].add(address_asset)
+    return sorted(selected.values(), key=lambda event: (event.get('observed_ms', 0), event['key']))
+
+
+def representative_cases(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one evidence-rich sample per address, asset and scenario."""
+    selected: dict[tuple[tuple[str, ...], str, str], tuple[tuple[float, ...], dict[str, Any]]] = {}
+    for event in events:
+        evidence = event.get('evidence', {})
+        actions = evidence.get('actions', {})
+        history = evidence.get('history', {})
+        asset = history.get('assets', {}).get(event.get('coin'), {})
+        previous = evidence.get('previous_position') or {}
+        action_size = number(actions.get('open_notional', 0)) + number(actions.get('close_notional', 0))
+        for scenario in case_scenarios(event):
+            if scenario == 'loss_addition':
+                score = (abs(float(number(previous.get('unrealized_pnl') or 0))), float(action_size))
+            elif scenario == 'asset_win_rate':
+                score = (float(number(asset.get('win_rate') or 0)), float(asset.get('rounds') or 0), float(action_size))
+            elif scenario == 'asset_profit':
+                score = (float(number(asset.get('last_30d_closed_pnl_less_fees') or 0)), float(action_size))
+            elif scenario == 'realized':
+                score = (abs(float(number(actions.get('closed_pnl', 0)))), float(number(actions.get('close_notional', 0))))
+            else:
+                current = evidence.get('position') or {}
+                score = (abs(float(number(current.get('unrealized_pnl') or 0))), float(action_size), float(event.get('observed_ms', 0)))
+            key = (tuple(sorted(event.get('addresses', []))), str(event.get('coin', '')), scenario)
+            if key not in selected or score > selected[key][0]:
+                selected[key] = (score, event)
+    unique = {event['key']: event for _, event in selected.values()}
+    return sorted(unique.values(), key=lambda event: (event.get('observed_ms', 0), event['key']))
 
 
 def initialize_cases(store: NewsStore) -> None:
@@ -30,11 +144,28 @@ def initialize_cases(store: NewsStore) -> None:
             preview TEXT, created_ms INTEGER NOT NULL)''')
 
 
+def clear_test_cases(store: NewsStore) -> dict[str, int]:
+    """Clear test records and their previews, preserving live previews and source caches."""
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        event_keys={row['event_key'] for row in conn.execute('SELECT event_key FROM hl_news_test_cases')}
+        previews=[row['key'] for row in conn.execute(
+            "SELECT key FROM hl_news_metadata WHERE key LIKE 'editorial_preview:%'")
+            if row['key'].removeprefix('editorial_preview:') in event_keys or
+            row['key'].startswith(('editorial_preview:test:', 'editorial_preview:test-price:',
+                                   'editorial_preview:test-startup:'))]
+        conn.execute('DELETE FROM hl_news_test_cases')
+        for key in previews:
+            conn.execute('DELETE FROM hl_news_metadata WHERE key=?',(key,))
+    return {'cases_removed': len(event_keys), 'previews_removed': len(previews)}
+
+
 def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
     initialize_cases(store)
     now = int(time.time()*1000)
     with connect_sqlite(store.path) as conn:
         for event in events:
+            event['test_scenarios'] = case_scenarios(event)
             previous = conn.execute('SELECT payload FROM hl_news_test_cases WHERE event_key=?', (event['key'],)).fetchone()
             if previous:
                 old = json.loads(previous['payload'])
@@ -60,21 +191,126 @@ def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
                 (event['key'], event['observed_ms'], encode(event), now))
 
 
+def prune_replayed_cases(store: NewsStore, address: str, events: list[dict[str, Any]]) -> int:
+    """Remove stale per-fill replays after replacing an address with representatives."""
+    keep = {event['key'] for event in events}
+    removed = 0
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+        for row in rows:
+            event = json.loads(row['payload'])
+            replay = event.get('evidence', {}).get('test_replay', {})
+            addresses = event.get('addresses', [])
+            if (address.lower() not in {str(item).lower() for item in addresses}
+                    or not replay.get('real_address') or row['event_key'] in keep):
+                continue
+            conn.execute('DELETE FROM hl_news_test_cases WHERE event_key=?', (row['event_key'],))
+            conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+row['event_key'],))
+            removed += 1
+    return removed
+
+
+def prune_tested_cases(store: NewsStore) -> dict[str, int]:
+    """Remove reviewed directions and retain evidence for unresolved test directions."""
+    store.initialize()
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        rows=conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+        removed=0
+        retained=0
+        previews_removed=0
+        for row in rows:
+            event=json.loads(row['payload'])
+            unresolved=[key for key in case_scenarios(event) if key not in PRODUCTION_SCENARIOS]
+            if not unresolved:
+                conn.execute('DELETE FROM hl_news_test_cases WHERE event_key=?',(row['event_key'],))
+                previews_removed += conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
+                    ('editorial_preview:'+row['event_key'],)).rowcount
+                removed+=1
+                continue
+            event['test_scenarios']=unresolved
+            conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?',
+                         (encode(event),row['event_key']))
+            if conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
+                            ('editorial_preview:'+row['event_key'],)).rowcount:
+                previews_removed+=1
+            retained+=1
+    return {'retained':retained,'removed':removed,'previews_removed':previews_removed}
+
+
+def enrich_cached_case_records(store: NewsStore) -> int:
+    """Attach address trading stats from cached fills available before each event."""
+    initialize_cases(store)
+    with connect_sqlite(store.path) as conn:
+        rows=conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+    enriched=0
+    for row in rows:
+        event=json.loads(row['payload'])
+        evidence=event.get('evidence',{})
+        history=evidence.get('history') or {}
+        if history.get('fills',0):
+            continue
+        addresses=event.get('addresses',[])
+        if not addresses:
+            continue
+        cached=store.metadata('test_fills:'+str(addresses[0]),{})
+        fills=cached.get('fills',[])
+        if not fills:
+            continue
+        actions=evidence.get('actions') or {}
+        if actions.get('first_fill_ms') is not None:
+            cutoff=int(actions['first_fill_ms'])-1
+        else:
+            cutoff=int(event.get('observed_ms',0))
+            if evidence.get('test_replay',{}).get('phase') == 'before_fill_price':
+                cutoff-=1
+        eligible=[fill for fill in fills if valid_test_fill(fill) and int(fill['time']) <= cutoff]
+        if not eligible:
+            continue
+        evidence['history']=summarize(eligible,start_ms=0,end_ms=cutoff,
+                                      coverage='cached_test_fills_before_event')
+        save_cases(store,[event])
+        enriched+=1
+    return enriched
+
+
 def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
     """Apply the current minimum sample to saved test cases; leave live evidence intact."""
     initialize_cases(store)
     updated = 0
+    rules = Rules()
     with connect_sqlite(store.path) as conn:
         rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
         for row in rows:
             event = json.loads(row['payload'])
             e = event['evidence']
-            labels = e.get('highlights', [])
-            rounds = e.get('history', {}).get('assets', {}).get(event['coin'], {}).get('rounds', 0)
-            if 'asset_high_win_rate' not in labels or rounds >= Rules().min_rounds:
+            labels = list(e.get('highlights', []))
+            kinds = list(event.get('kinds', []))
+            asset = e.get('history', {}).get('assets', {}).get(event['coin'], {})
+            rounds = asset.get('rounds', 0)
+            invalid_win_rate = 'asset_high_win_rate' in labels and rounds < rules.min_rounds
+            monthly_pnl = asset.get('last_30d_closed_pnl_less_fees')
+            threshold = rules.asset_profit_line(event['coin'])
+            actions = e.get('actions', {})
+            action_amount = max(number(actions.get('open_notional', 0)), number(actions.get('close_notional', 0)))
+            invalid_asset_profit = ('asset_high_profit' in labels and
+                                    (monthly_pnl is None or number(monthly_pnl) < threshold or
+                                     action_amount < rules.asset_profit_action))
+            invalid_pnl_kinds = {kind for kind in ('large_profit', 'large_loss')
+                                 if kind in kinds and not _valid_large_pnl_movement(event, kind)}
+            if not invalid_win_rate and not invalid_asset_profit and not invalid_pnl_kinds:
                 continue
-            e['highlights'] = [label for label in labels if label != 'asset_high_win_rate']
-            e.setdefault('threshold_rules', {})['min_rounds'] = Rules().min_rounds
+            e['highlights'] = [label for label in labels if label not in (
+                {'asset_high_win_rate'} if invalid_win_rate else set()) | (
+                {'asset_high_profit'} if invalid_asset_profit else set())]
+            event['kinds'] = [kind for kind in kinds if kind not in invalid_pnl_kinds]
+            e.setdefault('threshold_rules', {}).update({
+                'min_rounds': rules.min_rounds,
+                'asset_profit': str(rules.asset_profit),
+                'other_asset_profit': str(rules.other_asset_profit),
+                'asset_profit_action': str(rules.asset_profit_action),
+            })
             if not e['highlights']:
                 event['kinds'] = [kind for kind in event['kinds'] if kind != 'highlighted_address_action']
             event['test_scenarios'] = case_scenarios(event)
@@ -135,6 +371,18 @@ def replay_fills(address: str, fills: list[dict[str, Any]], *, rules: Rules | No
         start = event['evidence']['actions']['first_fill_ms']
         history = summarize([f for f in all_ordered if int(f['time']) < start],
                             start_ms=0, end_ms=start-1)
+        month_start = max(0, start - 30 * 86400000)
+        month = summarize([f for f in all_ordered if month_start <= int(f['time']) < start],
+                          start_ms=month_start, end_ms=start-1, coverage='pre_action_30d')
+        month_asset = month.get('assets', {}).get(event['coin'], {})
+        history_asset = history.setdefault('assets', {}).setdefault(event['coin'], {})
+        history_asset.update(
+            last_30d_closed_pnl_less_fees=month_asset.get('closed_pnl_less_fees', '0'),
+            last_30d_first_observed_fill_ms=month_asset.get('first_observed_fill_ms'),
+            last_30d_last_observed_fill_ms=month_asset.get('last_observed_fill_ms'),
+            last_30d_start_ms=month_start,
+            last_30d_end_ms=start-1,
+        )
         event['evidence']['history'] = history
         from .detector import highlights, action_highlights
         labels = action_highlights(highlights(history, event['coin'], rules),
@@ -237,8 +485,9 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
                 fills,coverage=client.history(address,now-90*86400000,now)
                 store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,
                     'source':'userFillsByTime_paginated','coverage':coverage},[])
-            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills)
+            cases=representative_cases(replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills))
             save_cases(store,cases)
+            prune_replayed_cases(store,address,cases)
             report['processed']+=1
             report['case_count']+=len(cases)
             store.save_global('test_mining_progress',report,[])
@@ -247,42 +496,54 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
             report['failed'][address]=str(exc)
     with connect_sqlite(store.path) as conn:
         all_cases=[json.loads(r[0]) for r in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    eligible_coverage={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
+    capped=prune_tested_cases(store)
+    report['statistics_enriched']=enrich_cached_case_records(store)
+    with connect_sqlite(store.path) as conn:
+        all_cases=[json.loads(r[0]) for r in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    report['eligible_coverage']=eligible_coverage
     report['coverage']={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
+    report['cases_retained']=capped['retained']
+    report['reviewed_cases_removed']=capped['removed']
     store.save_global('test_mining_progress',report,[])
     return report
 
 
-def preview_cases(store: NewsStore, *, limit: int = 15, repository_template: bool = False) -> dict[str, Any]:
+def preview_cases(store: NewsStore, *, limit: int = 30, repository_template: bool = False) -> dict[str, Any]:
     """Choose representative real cases and write review copy without tasks/push."""
     from packages.common.config import load_x_processing_settings
     from packages.common.paths import get_paths
     from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
     from packages.x_processing.worker import XProcessingWorker
-    from packages.x_processing.models import TaskRecord, HYPERLIQUID_SOURCE
+    from packages.x_processing.models import TaskRecord, HYPERLIQUID_SOURCE, PromptTemplateVersion
     from .copy import source_url
     from .preview import generate_preview
-    if not 1 <= limit <= 30:
-        raise ValueError('Preview limit must be 1..30')
+    if not 1 <= limit <= PREVIEWS_PER_SCENARIO * len(PREVIEW_SCENARIOS):
+        raise ValueError(f'Preview limit must be 1..{PREVIEWS_PER_SCENARIO * len(PREVIEW_SCENARIOS)}')
     initialize_cases(store)
+    capped=prune_tested_cases(store)
+    statistics_enriched=enrich_cached_case_records(store)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
     events=[json.loads(r[0]) for r in rows]
     settings=load_x_processing_settings()
     worker=XProcessingWorker(stage='write',repository=SQLiteXProcessingRepository(store.path),settings=settings)
-    prompt=worker.repository.get_active_prompt('hyperliquid_writer')
-    prompt_source='active_prompt'
     if repository_template:
         template_path=get_paths().root_dir/'docs/OdAIly代码与整体设计/Hyperliquid快讯模板.txt'
-        prompt=replace(prompt,content=template_path.read_text(encoding='utf-8'))
+        prompt=PromptTemplateVersion(id=0,template_key='hyperliquid_writer',version_number=0,
+                                     content=template_path.read_text(encoding='utf-8'))
         prompt_source='repository_template'
-    selected=[]; covered=set()
-    for scenario in SCENARIOS:
-        if scenario[0] in covered:continue
-        match=next((e for e in events if scenario[0] in case_scenarios(e)),None)
-        if match and match['key'] not in {e['key'] for e in selected}:
-            selected.append(match);covered.update(case_scenarios(match))
-    selected=selected[:limit]
-    report={'selected':len(selected),'generated':0,'failed':{},'coverage':sorted(covered)}
+    else:
+        prompt=worker.repository.get_active_prompt('hyperliquid_writer')
+        prompt_source='active_prompt'
+    selected=select_preview_cases(events)[:limit]
+    selected_scenarios={e['key']:set(case_scenarios(e)).intersection(PREVIEW_SCENARIOS) for e in selected}
+    counts={scenario:sum(scenario in covered for covered in selected_scenarios.values())
+            for scenario in PREVIEW_SCENARIOS}
+    report={'selected':len(selected),'generated':0,'failed':{},'cases_retained':capped['retained'],
+            'statistics_enriched':statistics_enriched,
+            'coverage':sorted(key for key,value in counts.items() if value), 'scenario_counts':counts,
+            'missing_scenarios':[key for key,value in counts.items() if not value]}
     for event in selected:
         try:
             task=TaskRecord(id=0,source=HYPERLIQUID_SOURCE,source_item_id=event['key'],source_url=source_url(event),
@@ -386,7 +647,7 @@ def _price_cases(events: list[Candidate], address: str, fills: list[dict], cost:
     result=[]
     for candidate in events:
         event=asdict(candidate)
-        event['kinds']=[k for k in event['kinds'] if k in {'large_profit','large_loss','profit_giveback','profit_to_loss','loss_addition'}]
+        event['kinds']=[k for k in event['kinds'] if k in {'large_profit','large_loss','profit_giveback','profit_to_loss','pnl_sign_flip','loss_addition'}]
         if not event['kinds']:continue
         event['evidence']['test_replay']={'mode':'execution_price_cost_reconstruction',
             'valuation_basis':'actual_execution_price_with_reconstructed_entry_cost',
@@ -399,21 +660,36 @@ def _price_cases(events: list[Candidate], address: str, fills: list[dict], cost:
     return result
 
 
-def replay_cached_cases(store: NewsStore) -> dict[str, Any]:
+def replay_cached_cases(store: NewsStore, *, reset: bool = False) -> dict[str, Any]:
     initialize_cases(store)
-    revalidate_test_cases(store)
+    reset_result = clear_test_cases(store) if reset else None
+    if not reset:
+        revalidate_test_cases(store)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'").fetchall()
-    copy_observed_case_examples(store)
-    report={'addresses':len(rows),'cases':0,'failed':{}}
+    report={'addresses':len(rows),'cases':0,'failed':{},'reset':reset_result}
     for row in rows:
         address=row['key'].split(':',1)[1]
         try:
             fills=json.loads(row['payload'])['fills']
-            cases=replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills)
+            cases=representative_cases(replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills))
             save_cases(store,cases);report['cases']+=len(cases)
+            prune_replayed_cases(store,address,cases)
             print(encode({'address':address,'cases':len(cases),'mode':'cached_test_replay'}),flush=True)
         except Exception as exc:report['failed'][address]=str(exc)
+    with connect_sqlite(store.path) as conn:
+        all_cases=[json.loads(row[0]) for row in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    report['eligible_scenario_counts']={key:sum(key in case_scenarios(event) for event in all_cases)
+                                        for key in PREVIEW_SCENARIOS}
+    capped=prune_tested_cases(store)
+    report['statistics_enriched']=enrich_cached_case_records(store)
+    with connect_sqlite(store.path) as conn:
+        all_cases=[json.loads(row[0]) for row in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    report['scenario_counts']={key:sum(key in case_scenarios(event) for event in all_cases)
+                               for key in PREVIEW_SCENARIOS}
+    report['cases_retained']=capped['retained']
+    report['reviewed_cases_removed']=capped['removed']
+    report['missing_scenarios']=[key for key,count in report['scenario_counts'].items() if not count]
     return report
 
 
@@ -458,20 +734,6 @@ def replay_test_startup(address: str, fills: list[dict], *, rules: Rules | None 
                 event['key']='test-startup:'+hashlib.sha256(encode({'address':address,'coin':coin,'fills':[fill_key(f) for f in ordered]}).encode()).hexdigest()
                 results.append(event)
     return results
-
-
-def copy_observed_case_examples(store: NewsStore) -> None:
-    from .eligibility import news_eligibility
-    cases=[]
-    for original in store.candidates():
-        if not news_eligibility(original)['eligible']:continue
-        event=json.loads(encode(original))
-        event['key']='test-observed:'+original['key']
-        event['evidence']['test_replay']={'mode':'existing_observed_evidence',
-            'original_event_key':original['key'],'start_ms':original['observed_ms'],
-            'end_ms':original['observed_ms'],'real_address':True,'purpose':'prelaunch_case_review_only'}
-        cases.append(event)
-    save_cases(store,cases)
 
 
 def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]:

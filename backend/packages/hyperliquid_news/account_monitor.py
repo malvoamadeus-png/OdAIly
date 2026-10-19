@@ -52,6 +52,21 @@ def portfolio_performance(payload: Any, now_ms: int) -> dict[str, Any]:
             'pnl_scope': 'official_portfolio_including_unrealized'}
 
 
+def portfolio_all_time_at(payload: Any, cutoff_ms: int) -> dict[str, Any] | None:
+    if not isinstance(payload, list):
+        raise ValueError('Unexpected portfolio payload')
+    for name, data in payload:
+        if name != 'perpAllTime':
+            continue
+        points = [point for point in data.get('pnlHistory', []) if int(point[0]) <= cutoff_ms]
+        if not points:
+            return None
+        stamp, pnl = max(points, key=lambda point: int(point[0]))
+        return {'source': 'hyperliquid_portfolio', 'pnl': str(number(pnl)),
+                'observed_ms': int(stamp), 'scope': 'perpAllTime_including_unrealized'}
+    return None
+
+
 def qualified(performance: dict[str, Any], rules: Rules, *, include_loss: bool = False) -> bool:
     from .account_loss import loss_qualified
     return (include_loss and loss_qualified(performance, rules)) or any(number(w['pnl']) >= rules.account_profit for w in performance.get('windows', {}).values())

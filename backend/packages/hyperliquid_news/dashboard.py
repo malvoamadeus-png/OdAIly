@@ -15,7 +15,8 @@ KIND_LABELS = {
     'large_position': '巨大持仓', 'oi_share': '未平仓量占比突出', 'market_cap_share': '相当于市值占比突出',
     'large_profit': '巨额浮盈', 'large_loss': '巨额浮亏', 'highlighted_address_action': '有历史亮点地址的重要操作',
     'large_position_action': '大仓重要加减仓', 'large_reversal': '大仓反手', 'profit_giveback': '浮盈回吐',
-    'profit_to_loss': '由盈转亏', 'loss_addition': '亏损后继续加仓', 'large_realized_result': '大额平仓结果',
+    'profit_to_loss': '由盈转亏', 'pnl_sign_flip': '浮盈浮亏转换',
+    'loss_addition': '亏损后继续加仓', 'large_realized_result': '大额主动平仓盈亏',
     'near_liquidation': '接近清算价', 'actual_liquidation': '实际清算', 'address_divergence': '多空分歧',
     'newly_observed_address_position': '新观察地址快速建仓',
 }
@@ -30,15 +31,15 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
         raise ValueError('Invalid view')
     if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
         raise ValueError('Invalid address search')
-    condition = scenario_condition(scenario) if scenario else '1=1'
+    condition = scenario_condition(scenario, dataset=dataset) if scenario else '1=1'
     if not store.path.exists():
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
-                'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(), 'scenario': scenario, 'dataset': dataset, 'view': view}
+                'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
     with connect_sqlite(store.path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'hl_news_candidates' not in tables:
             return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
-                    'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(), 'scenario': scenario, 'dataset': dataset, 'view': view}
+                    'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
         dispatch = dataset == 'live' and 'hl_news_dispatch' in tables
         candidate_source = 'hl_news_candidates' if dataset == 'live' else ('hl_news_test_cases' if 'hl_news_test_cases' in tables else '(SELECT NULL AS payload, NULL AS observed_ms, NULL AS event_key WHERE 0)')
         joined = '''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
@@ -50,9 +51,11 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
                      p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
         rows = conn.execute(f'''SELECT c.payload,{columns} FROM {candidate_source} c {joined} WHERE {condition}
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1 if view == 'scenarios' else 0, page*page_size)).fetchall()
-        count_columns = ','.join(f'SUM(CASE WHEN {scenario_condition(s[0])} THEN 1 ELSE 0 END) AS "{s[0]}"' for s in SCENARIOS)
+        visible = {scenario['key'] for scenario in scenario_cards(dataset=dataset)}
+        selected_scenarios = [s for s in SCENARIOS if s[0] in visible]
+        count_columns = ','.join(f'SUM(CASE WHEN {scenario_condition(s[0], dataset=dataset)} THEN 1 ELSE 0 END) AS "{s[0]}"' for s in selected_scenarios)
         scenario_counts = dict(conn.execute(f'SELECT {count_columns} FROM {candidate_source} c').fetchone())
-        scenarios = scenario_cards({k: v or 0 for k, v in scenario_counts.items()})
+        scenarios = scenario_cards({k: v or 0 for k, v in scenario_counts.items()}, dataset=dataset)
         events = []
         for row in rows[:page_size]:
             item = json.loads(row['payload'])
@@ -70,8 +73,13 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             item['source_url'] = 'https://hyperbot.network/trader/' + item['addresses'][0]
             events.append(item)
         addresses = []
-        for row in conn.execute('''SELECT a.*,s.state,s.history,m.payload AS note_payload,b.payload AS block_payload FROM hl_news_addresses a
-            LEFT JOIN hl_news_state s ON s.address=a.address
+        normal_join = ('LEFT JOIN hl_news_normal_state n ON n.address=a.address'
+                       if 'hl_news_normal_state' in tables else '')
+        state_expr = 'COALESCE(n.state,s.state)' if 'hl_news_normal_state' in tables else 's.state'
+        history_expr = 'COALESCE(n.history,s.history)' if 'hl_news_normal_state' in tables else 's.history'
+        for row in conn.execute(f'''SELECT a.*,{state_expr} AS state,{history_expr} AS history,
+            m.payload AS note_payload,b.payload AS block_payload FROM hl_news_addresses a
+            {normal_join} LEFT JOIN hl_news_state s ON s.address=a.address
             LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
             LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
             WHERE (instr(lower(a.address),lower(?))>0 OR instr(lower(COALESCE(json_extract(m.payload,'$.note'),'')),lower(?))>0)

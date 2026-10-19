@@ -97,7 +97,11 @@ def test_every_direction_reaches_searchable_task_and_reader_material(tmp_path,na
     assert 'threshold_rules' not in task.content and 'first_observation' not in task.content
     assert repo.claim_task_by_id('search',task_id=task.id,worker_id='test') is not None
     facts=writer_material(event)['facts']
-    assert facts.get('change_period') or name=='address_divergence'
+    if name=='loss_addition':
+        assert 'change_period' not in facts
+        assert facts['floating_loss_before_addition_usd']=='3000000'
+    else:
+        assert facts.get('change_period') or name=='address_divergence'
     if name.startswith('win_'):
         assert facts['historical_highlights']['asset_win_rate']=='0.7'
         assert any(D(facts['actions'].get(k,'0'))>0 for k in ('open_long_notional','open_short_notional','close_long_notional','close_short_notional'))

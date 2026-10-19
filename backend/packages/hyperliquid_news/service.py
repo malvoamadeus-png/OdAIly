@@ -10,6 +10,7 @@ from .detector import evaluate_address, evaluate_divergence
 from .history import fill_key, summarize
 from .market_cap import CoinGeckoMarketCaps
 from .models import Position, Rules, number
+from .scenarios import PRODUCTION_SCENARIOS, event_scenarios
 from .store import NewsStore
 
 
@@ -41,11 +42,15 @@ class NewsMonitor:
         result: dict[str, Any] = {'observed_ms': now_ms, 'processed': 0, 'candidates': 0, 'failed': {},
                                   'discovery_sources': [], 'discovery_rejected': 0, 'address_limit': self.address_limit,
                                   'coverage': 'bounded_discovery_and_address_polling', 'attribute_queries': 0}
-        dexs = self.client.dex_names()
-        markets = {}
-        # A failed universe fetch aborts this pass; no partial market deletion.
-        for dex in dexs:
-            markets.update(self.client.markets(dex))
+        universe = self.store.metadata('account_market_universe', {})
+        if not universe or now_ms - int(universe.get('observed_ms', 0)) >= 3600000:
+            dexs = self.client.dex_names()
+            markets = {}
+            for dex in dexs:
+                markets.update(self.client.markets(dex))
+            universe = {'observed_ms': now_ms, 'dexs': dexs, 'markets': markets}
+            self.store.save_global('account_market_universe', universe, [])
+        dexs, markets = universe['dexs'], universe['markets']
         caps = dict(market_caps or {})
         if self.market_cap_client and self.market_cap_mapping:
             try:
@@ -73,7 +78,7 @@ class NewsMonitor:
             if self.store.blocked(address):
                 continue
             try:
-                old = self.store.load(address)
+                old = self.store.load(address, state_table='hl_news_normal_state')
                 positions = {}
                 snapshot_times = {}
                 for dex in dexs:
@@ -124,17 +129,38 @@ class NewsMonitor:
                     history['official_account_performance'] = {
                         'source': 'hyperliquid_public_leaderboard', 'windows': official_windows,
                         'pnl_scope': 'official_leaderboard_not_assumed_realized'}
+                history_before_actions = self._history_before_actions(
+                    all_fills, new_fills, history)
                 events, state = evaluate_address(
                     address=address, observed_ms=now_ms, first_seen_ms=row['first_seen_ms'], positions=positions,
                     previous=old['state'] if old else None, markets=markets, history=history,
-                    new_fills=new_fills, rules=self.rules)
+                    new_fills=new_fills, rules=self.rules, history_before_actions=history_before_actions)
+                normal_scenarios = set(PRODUCTION_SCENARIOS) - {'account_profit', 'historical_loss'}
+                if events and any(set(event_scenarios({'kinds': event.kinds, 'evidence': event.evidence}))
+                                  .intersection(normal_scenarios)
+                                  for event in events):
+                    try:
+                        from .account_monitor import portfolio_all_time_at
+                        portfolio = self.client.portfolio(address)
+                        for event in events:
+                            if not set(event_scenarios({'kinds': event.kinds, 'evidence': event.evidence})).intersection(normal_scenarios):
+                                continue
+                            action = event.evidence.get('actions') or {}
+                            cutoff = int(action.get('first_fill_ms') or
+                                         event.evidence.get('news_change', {}).get('observed_ms') or now_ms)
+                            total = portfolio_all_time_at(portfolio, cutoff)
+                            if total:
+                                event.evidence.setdefault('history', {})['official_account_total_pnl'] = total
+                    except Exception as exc:
+                        result.setdefault('supplemental_failures', {})[f'portfolio:{address}'] = str(exc)
                 state['snapshot_times'] = snapshot_times
                 state['monitoring_since_ms'] = old['state'].get('monitoring_since_ms', old['state']['observed_ms']) if old else now_ms
                 for event in events:
                     event.evidence['address_sources'] = json.loads(row['sources'])
                     event.evidence['snapshot_times'] = snapshot_times
                 self.store.commit_observation(address=address, now_ms=now_ms, state=state, history=history,
-                                              coverage=coverage, fills=fetched, candidates=events)
+                                              coverage=coverage, fills=fetched, candidates=events,
+                                              state_table='hl_news_normal_state')
                 result['processed'] += 1
                 result['candidates'] += len(events)
             except Exception as exc:
@@ -142,7 +168,8 @@ class NewsMonitor:
                 result['failed'][address] = str(exc)
         # Compare successful snapshots within the freshness window. Failed or
         # expired participants cannot reset an existing divergence baseline.
-        recent = self.store.recent_states(now_ms - self.divergence_freshness_ms)
+        recent = self.store.recent_states(now_ms - self.divergence_freshness_ms,
+                                          state_table='hl_news_normal_state')
         successful_states = {a: r['state'] for a, r in recent.items() if a not in result['failed']}
         histories = {a: r['history'] for a, r in recent.items() if a not in result['failed']}
         previous_divergence = self.store.metadata('divergence', {})
@@ -154,6 +181,38 @@ class NewsMonitor:
         self.store.save_global('divergence', active, events)
         result['candidates'] += len(events)
         self.store.save_global('last_pass', result, [])
+        return result
+
+    def _history_before_actions(self, fills: list[dict[str, Any]], new_fills: list[dict[str, Any]],
+                                current_history: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        cutoffs: dict[str, int] = {}
+        for fill in new_fills:
+            coin = str(fill['coin'])
+            cutoffs[coin] = min(cutoffs.get(coin, int(fill['time'])), int(fill['time']))
+        result = {}
+        for coin, cutoff in cutoffs.items():
+            start = max(0, cutoff - self.history_window_ms)
+            prior_fills = [fill for fill in fills if start <= int(fill['time']) < cutoff]
+            prior = summarize(prior_fills, start_ms=start, end_ms=max(start, cutoff - 1),
+                              coverage='pre_action_history')
+            month_start = max(0, cutoff - 30 * 86400000)
+            month_fills = [fill for fill in fills if month_start <= int(fill['time']) < cutoff]
+            month = summarize(month_fills, start_ms=month_start, end_ms=max(month_start, cutoff - 1),
+                              coverage='pre_action_30d')
+            for asset_coin, asset in prior.get('assets', {}).items():
+                month_asset = month.get('assets', {}).get(asset_coin, {})
+                asset.update(
+                    last_30d_closed_pnl_less_fees=month_asset.get('closed_pnl_less_fees', '0'),
+                    last_30d_first_observed_fill_ms=month_asset.get('first_observed_fill_ms'),
+                    last_30d_last_observed_fill_ms=month_asset.get('last_observed_fill_ms'),
+                )
+            windows = current_history.get('official_account_performance', {}).get('windows', {})
+            eligible = {name: data for name, data in windows.items()
+                        if data.get('observed_ms') is not None and int(data['observed_ms']) < cutoff}
+            if eligible:
+                prior['official_account_performance'] = {
+                    **current_history['official_account_performance'], 'windows': eligible}
+            result[coin] = prior
         return result
 
     def _discover(self, now_ms: int, markets: dict[str, Any], result: dict[str, Any]) -> None:

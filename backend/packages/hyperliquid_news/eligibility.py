@@ -19,7 +19,7 @@ def news_eligibility(event: dict[str, Any]) -> dict[str, Any]:
         amount = number(e.get('threshold_rules', {}).get('action', '3000000'))
         if kinds & {'large_position', 'oi_share', 'market_cap_share'} and abs(abs(size_now)-abs(size_before))*number(current['mark']) >= amount:
             return {'eligible': True, 'reason': 'legacy_important_position_change'}
-        if kinds & {'large_profit', 'large_loss', 'profit_giveback', 'profit_to_loss'} and number(previous['unrealized_pnl']) != number(current['unrealized_pnl']):
+        if kinds & {'large_profit', 'large_loss', 'profit_giveback', 'profit_to_loss', 'pnl_sign_flip'} and number(previous['unrealized_pnl']) != number(current['unrealized_pnl']):
             return {'eligible': True, 'reason': 'legacy_floating_pnl_change'}
         if 'large_reversal' in kinds and size_before*size_now < 0:
             return {'eligible': True, 'reason': 'legacy_reversal'}

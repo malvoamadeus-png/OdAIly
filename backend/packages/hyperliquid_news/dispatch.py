@@ -28,7 +28,7 @@ def fingerprint(event: dict[str, Any]) -> str:
         # price and episode are unchanged. Replayed identical snapshots still dedup.
         stable['position_sizes'] = [(evidence.get(k) or {}).get('size', '0')
                                     for k in ('previous_position', 'position')]
-    if set(event['kinds']) & {'large_profit','large_loss','profit_giveback','profit_to_loss'}:
+    if set(event['kinds']) & {'large_profit','large_loss','profit_giveback','profit_to_loss','pnl_sign_flip'}:
         stable['pnl_change'] = {
             'anchor': evidence.get('previous_reported_floating_pnl'),
             'previous': evidence.get('news_change', {}).get('previous_floating_pnl'),
@@ -58,8 +58,10 @@ class EventDispatcher:
         scope = ''
         params = ()
         if policy is not None:
-            scope = " AND c.observed_ms>=? AND json_extract(c.payload,'$.evidence.production_direction') IN ('account_profit','historical_loss')"
-            params = (int(policy['started_ms']),)
+            scope = " AND ((c.observed_ms>=? AND json_extract(c.payload,'$.evidence.production_direction') IN ('account_profit','historical_loss')) OR c.observed_ms>=?)"
+            params = (min(int(policy['started_ms']),
+                          int(policy.get('loss_started_ms', policy['started_ms']))),
+                      int(policy.get('scenario_started_ms', policy['started_ms'])))
         with connect_sqlite(self.store.path) as conn:
             rows = conn.execute(f'''SELECT c.event_key,c.payload FROM hl_news_candidates c
                 LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key

@@ -146,7 +146,7 @@ def test_dispatch_enqueue_failure_reuses_task_on_retry(tmp_path):
     assert first['task_id']==second['task_id']
 
 
-def test_footer_omits_unrelated_liquidation_and_unknown_empty_account_pnl():
+def test_footer_omits_unrelated_liquidation_and_unknown_account_pnl():
     from packages.hyperliquid_news.copy import footer, money
     e,_=event()
     e['evidence']['liquidation_distance']='0.5'
@@ -156,7 +156,7 @@ def test_footer_omits_unrelated_liquidation_and_unknown_empty_account_pnl():
     assert money('-0.01')=='0.00 万美元'
 
 
-def test_reader_material_keeps_trigger_not_discovery_and_footer_only_address():
+def test_reader_material_keeps_trigger_not_discovery_and_footer_omits_interval_pnl():
     from packages.hyperliquid_news.copy import footer, writer_material
     e,_=event()
     e['kinds']=['large_position']
@@ -269,7 +269,7 @@ def test_change_material_includes_before_after_not_only_current_state():
     e,_=event()
     facts=writer_material(e)['facts']
     assert facts['previous_position']['position_value_usd']=='5000000'
-    assert facts['previous_floating_pnl_usd']=='0'
+    assert 'previous_floating_pnl_usd' not in facts
     assert len(facts['change_period'])==2
 
 
@@ -333,11 +333,12 @@ def test_same_hyperbot_profile_or_generic_heading_is_not_exact_duplicate():
 
 
 def test_dashboard_fixed_scenarios_without_data(tmp_path):
-    from packages.hyperliquid_news.scenarios import SCENARIOS
+    from packages.hyperliquid_news.scenarios import PRODUCTION_SCENARIOS, scenario_cards
     store = NewsStore(tmp_path / 'empty.sqlite')
     data = dashboard(store, scenario='giveback')
-    assert not data['initialized'] and len(data['scenarios']) == 13
-    assert [s['key'] for s in data['scenarios']] == [s[0] for s in SCENARIOS]
+    assert not data['initialized'] and len(data['scenarios']) == 7
+    assert {s['key'] for s in data['scenarios']} == set(PRODUCTION_SCENARIOS)
+    assert [s['key'] for s in data['scenarios']] == [s['key'] for s in scenario_cards(dataset='live')]
     assert all(s['count'] == 0 for s in data['scenarios'])
     assert not store.path.exists()  # Reading an empty dashboard must not create state.
     with pytest.raises(ValueError, match='Unknown Hyperliquid scenario'):
@@ -368,9 +369,8 @@ def test_dashboard_scenario_counts_and_pagination_are_not_global(tmp_path):
     first = dashboard(store, scenario='asset_win_rate', page_size=1)
     assert [e['key'] for e in first['events']] == ['win-new'] and first['has_next']
     counts = {s['key']: s['count'] for s in first['scenarios']}
-    assert counts == dict(large_position=1, large_pnl=0, asset_win_rate=2, asset_profit=1,
-                         account_profit=1, historical_loss=1, reversal=0, giveback=1,
-                         loss_addition=0, realized=0, liquidation=0, divergence=0, new_address=0)
+    assert counts == dict(large_pnl=0, asset_win_rate=2, account_profit=1,
+                         historical_loss=1, reversal=0, loss_addition=0, realized=0)
     second = dashboard(store, scenario='asset_win_rate', page_size=1, page=1)
     assert [e['key'] for e in second['events']] == ['win-old'] and not second['has_next']
     assert dashboard(store, scenario='divergence')['events'] == []
@@ -442,7 +442,7 @@ def test_account_copy_corrects_model_wording_with_alltime_evidence():
     result = format_news(draft, e)
     assert result.title == '总盈利超1.73亿美元地址加仓约459万美元BTC空单'
     assert result.content.startswith('据Odaily监测，某地址合约账户')
-    assert '。该地址随后' in result.content
+    assert '。其随后' in result.content
     assert format_news(result, e).title == result.title
     e['evidence']['history']['official_account_performance']['windows'] = {'month': {'pnl': '21000000'}}
     finite = format_news(DraftBrief(title='近30天盈利超2000万美元地址加仓BTC空单', content='该地址近30天收益超过2000万美元。'), e)

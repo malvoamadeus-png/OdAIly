@@ -36,6 +36,9 @@ class NewsStore:
                 CREATE TABLE IF NOT EXISTS hl_news_state (
                     address TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     state TEXT NOT NULL, history TEXT NOT NULL, coverage TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS hl_news_normal_state (
+                    address TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
+                    state TEXT NOT NULL, history TEXT NOT NULL, coverage TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS hl_news_candidates (
                     event_key TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     coin TEXT NOT NULL, payload TEXT NOT NULL);
@@ -77,9 +80,16 @@ class NewsStore:
         with connect_sqlite(self.path) as conn:
             return [dict(r) for r in conn.execute(f'SELECT * FROM hl_news_addresses WHERE {BLOCK_FILTER} ORDER BY last_polled_ms,address LIMIT ?', (limit,))]
 
-    def load(self, address: str) -> dict[str, Any] | None:
+    @staticmethod
+    def _state_table(table: str) -> str:
+        if table not in ('hl_news_state', 'hl_news_normal_state'):
+            raise ValueError('Unknown Hyperliquid state table')
+        return table
+
+    def load(self, address: str, *, state_table: str = 'hl_news_state') -> dict[str, Any] | None:
+        state_table = self._state_table(state_table)
         with connect_sqlite(self.path) as conn:
-            row = conn.execute('SELECT * FROM hl_news_state WHERE address=?', (address,)).fetchone()
+            row = conn.execute(f'SELECT * FROM {state_table} WHERE address=?', (address,)).fetchone()
         if row is None:
             return None
         return {key: json.loads(row[key]) for key in ('state', 'history', 'coverage')}
@@ -91,13 +101,15 @@ class NewsStore:
                 (address, start_ms, end_ms))]
 
     def commit_observation(self, *, address: str, now_ms: int, state: dict[str, Any], history: dict[str, Any],
-                           coverage: dict[str, Any], fills: list[dict[str, Any]], candidates: list[Candidate]) -> None:
+                           coverage: dict[str, Any], fills: list[dict[str, Any]], candidates: list[Candidate],
+                           state_table: str = 'hl_news_state') -> None:
+        state_table = self._state_table(state_table)
         # The evidence, event deduplication and next baseline advance atomically.
         with connect_sqlite(self.path) as conn:
             conn.execute('BEGIN IMMEDIATE')
             if self.event_blocked({'addresses': [address], 'observed_ms': now_ms}, conn=conn):
                 return
-            old = conn.execute('SELECT observed_ms FROM hl_news_state WHERE address=?', (address,)).fetchone()
+            old = conn.execute(f'SELECT observed_ms FROM {state_table} WHERE address=?', (address,)).fetchone()
             if old and old['observed_ms'] >= now_ms:
                 raise ValueError('Observation must advance monotonically')
             for fill in fills:
@@ -108,7 +120,7 @@ class NewsStore:
                     continue
                 conn.execute('INSERT OR IGNORE INTO hl_news_candidates VALUES(?,?,?,?)',
                              (event.key, event.observed_ms, event.coin, encode(asdict(event))))
-            conn.execute('''INSERT INTO hl_news_state VALUES(?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET
+            conn.execute(f'''INSERT INTO {state_table} VALUES(?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET
                 observed_ms=excluded.observed_ms,state=excluded.state,history=excluded.history,coverage=excluded.coverage''',
                          (address, now_ms, encode(state), encode(history), encode(coverage)))
             conn.execute('UPDATE hl_news_addresses SET last_polled_ms=?,error=NULL WHERE address=?', (now_ms, address))
@@ -132,9 +144,10 @@ class NewsStore:
                              (event.key, event.observed_ms, event.coin, encode(asdict(event))))
             conn.execute('INSERT INTO hl_news_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload', (key, encode(value)))
 
-    def recent_states(self, since_ms: int) -> dict[str, dict[str, Any]]:
+    def recent_states(self, since_ms: int, *, state_table: str = 'hl_news_state') -> dict[str, dict[str, Any]]:
+        state_table = self._state_table(state_table)
         with connect_sqlite(self.path) as conn:
-            rows = conn.execute(f'SELECT * FROM hl_news_state WHERE {BLOCK_FILTER} AND observed_ms>=?', (since_ms,)).fetchall()
+            rows = conn.execute(f'SELECT * FROM {state_table} WHERE {BLOCK_FILTER} AND observed_ms>=?', (since_ms,)).fetchall()
         return {row['address']: {'state': json.loads(row['state']), 'history': json.loads(row['history'])}
                 for row in rows}
 
@@ -252,4 +265,5 @@ class NewsStore:
                         (value['updated_at'],address))
             elif previously_blocked:
                 conn.execute('DELETE FROM hl_news_state WHERE address=?',(address,))
+                conn.execute('DELETE FROM hl_news_normal_state WHERE address=?',(address,))
         return value

@@ -21,7 +21,7 @@ def search_material(event: dict[str, Any]) -> tuple[str, str]:
         if p:
             side = '多单' if number(p['size'])>0 else '空单'
             lines.append(f'{label}持有 {abs(number(p["size"]))} 枚 {coin} {side}，价值 {money(p["notional"])}。')
-            if any(k in kinds for k in ('large_profit','large_loss','profit_giveback','profit_to_loss','loss_addition','near_liquidation')):
+            if any(k in kinds for k in ('large_profit','large_loss','profit_giveback','profit_to_loss','pnl_sign_flip','loss_addition','near_liquidation')):
                 pnl=number(p['unrealized_pnl'])
                 lines.append(f'{label}{"浮盈" if pnl>=0 else "浮亏"} {money(abs(pnl))}。')
         elif key=='position' and e.get('previous_position'):
@@ -37,9 +37,14 @@ def search_material(event: dict[str, Any]) -> tuple[str, str]:
             for r in e['completed_round_results']:
                 lines.append(f'完整交易轮平仓盈亏 {money(r["pnl"])}。')
         elif action:
-            lines.append(f'本次平仓盈亏 {money(action["closed_pnl"])}。')
+            pnl = action.get('ordinary_closed_pnl', action['closed_pnl'])
+            lines.append(f'本次主动平仓盈亏 {money(pnl)}。')
     if any(k in kinds for k in ('profit_giveback','profit_to_loss')):
         lines.append(f'此前浮盈一度达到 {money(e["episode_peak_unrealized_pnl"])}。')
+    elif 'pnl_sign_flip' in kinds:
+        previous_pnl = e.get('news_change', {}).get('previous_floating_pnl')
+        if previous_pnl is not None:
+            lines.append(f'盈亏由浮{"亏" if number(previous_pnl)<0 else "盈"}{money(abs(number(previous_pnl)))}转为当前浮{"亏" if number((e.get("position") or {}).get("unrealized_pnl", "0"))<0 else "盈"}{money(abs(number((e.get("position") or {}).get("unrealized_pnl", "0"))))}。')
     facts=writer_material(event)['facts']
     for key,label in (('oi_share_percent','占合约未平仓量'),('market_cap_share_percent','持仓价值相当于代币市值')):
         if key in facts:
@@ -50,7 +55,7 @@ def search_material(event: dict[str, Any]) -> tuple[str, str]:
         h=facts['historical_highlights']
         if 'asset_win_rate' in h:
             lines.append(f'{coin} 胜率 {number(h["asset_win_rate"])*100:.2f}%，{h["asset_trade_rounds"]}个完整交易轮。')
-        for key,label in (('asset_trading_pnl_usd',coin+'交易盈亏'),('account_trading_pnl_usd','账户交易盈亏')):
+        for key,label in (('asset_trading_pnl_usd',coin+'近30天交易盈亏' if h.get('asset_trading_window') else coin+'交易盈亏'),('account_trading_pnl_usd','账户交易盈亏')):
             if key in h:
                 lines.append(f'{label} {money(h[key])}。')
         for period in h.get('account_period_performance',[]):

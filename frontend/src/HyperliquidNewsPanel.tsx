@@ -54,7 +54,7 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
 const ruleNames: Record<string, string> = {
   large_position: '大仓金额', action: '重要操作金额', win_rate_action: '高胜率地址操作金额', market_cap_share: '相当于市值占比', oi_share: '未平仓量占比',
   major_pnl: 'BTC / ETH 盈亏', other_pnl: '其他资产盈亏', win_rate: '单资产胜率', min_rounds: '最低完整交易轮',
-  asset_profit: '单资产历史盈利', account_profit: '账户盈利', historical_loss: '账户总亏损门槛',
+  asset_profit: 'BTC / ETH 单资产盈利', other_asset_profit: '其他资产单资产盈利', asset_profit_action: '单资产高盈利地址操作金额', account_profit: '账户盈利', historical_loss: '账户总亏损门槛',
   liquidation_distance: '距清算价', giveback_fraction: '浮盈回吐比例', escalation: '再触发档位倍数', new_address_window_ms: '新地址建仓窗口',
 };
 function ruleValue(key: string, value: unknown) {
@@ -151,20 +151,27 @@ export function HyperliquidNewsPanel() {
     return () => { live = false; };
   }, [page, scenarioKey, refresh, dataset, tab, addressQuery, addressStatus]);
   const scenario = data?.scenarios.find(s => s.key === scenarioKey);
+  useEffect(() => {
+    if (data?.scenarios.length && !data.scenarios.some(s => s.key === scenarioKey)) {
+      setScenarioKey(data.scenarios[0].key);
+      setPage(0);
+      setSelected(null);
+    }
+  }, [data?.scenarios, scenarioKey]);
   const current = data?.events.find(e => e.key === selected);
   const ready = data?.view === tab && data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
-    {data?.production?.enabled && <p className="notice" role="note">当前正式上线：{data.scenarios.filter(s => data.production?.enabled_scenarios.includes(s.key)).map(s => s.name).join('、')}。其余方向保留测试和历史记录，尚未启用正式投递。</p>}
+    {dataset === 'live' && data?.production?.enabled && <p className="notice" role="note">当前正式上线：{data.scenarios.filter(s => data.production?.enabled_scenarios.includes(s.key)).map(s => s.name).join('、')}。</p>}
     <div className="autoNewsflashSummary">
       {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, dataset === 'test' ? '测试案例' : '监测记录', (dataset === 'test' ? data?.counts.test_cases : data?.counts.events) ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, dataset === 'test' ? '已有案例方向' : '已投递任务', dataset === 'test' ? data?.scenarios.filter(s => s.count > 0).length ?? '—' : data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
     <div className="hlToolbar"><div className="segmentedControl">{([['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
-    {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
+    {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setScenarioKey(key === 'live' ? 'large_pnl' : 'large_position'); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
     {error && <p className="notice error" role="alert">{error}</p>}
     {loading && <p className="hlMuted" role="status">正在读取监测记录…</p>}
     {data && tab === 'scenarios' && <div className="hlWorkspace" aria-busy={loading}>
-      <nav className="hlScenarioNav" aria-label="监测场景"><div className="hlNavHeading">监测方向<span>记录数</span></div>{data.scenarios.map((s, index) => <button key={s.key} className={`hlScenarioRow ${scenarioKey === s.key ? 'active' : ''}`} aria-pressed={scenarioKey === s.key} onClick={() => { setScenarioKey(s.key); setPage(0); setSelected(null); }}><span className="hlScenarioNumber">{String(index + 1).padStart(2, '0')}</span><strong>{s.name}</strong><span className={`hlCount ${s.count ? 'hasRecords' : ''}`}>{s.count}</span><ChevronRight size={14} /></button>)}<p className="hlNavNote">所有方向固定保留，保留方向不代表已上线。记录数包含历史测试采集与监测基线。</p></nav>
+      <nav className="hlScenarioNav" aria-label="监测场景"><div className="hlNavHeading">监测方向<span>记录数</span></div>{data.scenarios.map((s, index) => <button key={s.key} className={`hlScenarioRow ${scenarioKey === s.key ? 'active' : ''}`} aria-pressed={scenarioKey === s.key} onClick={() => { setScenarioKey(s.key); setPage(0); setSelected(null); }}><span className="hlScenarioNumber">{String(index + 1).padStart(2, '0')}</span><strong>{s.name}</strong><span className={`hlCount ${s.count ? 'hasRecords' : ''}`}>{s.count}</span><ChevronRight size={14} /></button>)}<p className="hlNavNote">{dataset === 'live' ? '仅列出当前正式启用的七个方向。' : '仅保留尚未完成研究验收的方向和案例。'}</p></nav>
       <div className="hlScenarioContent">
         <header className="hlScenarioHeader"><div className="hlEyebrow">监测场景 · {String(data.scenarios.findIndex(s => s.key === scenarioKey) + 1).padStart(2, '0')}</div><h3>{scenario?.name}</h3><p>{scenario?.description}</p><div className="hlRuleChips">{scenario?.rule_keys.map(key => <span key={key}>{ruleNames[key] || key}<strong>{ruleValue(key, data.rules[key])}</strong></span>)}</div><p className="hlMuted">以上为当前工程默认门槛；实际触发值以记录保存的证据为准。</p></header>
         {ready && !loading && !error && <>

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import Rules, number
+from .scenarios import PRODUCTION_SCENARIOS, event_scenarios
 
 
 def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> bool:
@@ -15,11 +16,18 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
     observed = int(event['observed_ms'])
     direction = evidence.get('production_direction')
     loss = direction == 'historical_loss'
-    if direction not in policy.get('enabled_scenarios', ['account_profit']):
+    enabled = set(policy.get('enabled_scenarios', ['account_profit']))
+    if direction not in enabled and direction is not None:
         return False
+    if event.get('key', '').startswith('test:') or evidence.get('test_replay'):
+        return False
+    if direction not in ('account_profit', 'historical_loss'):
+        normal_enabled = enabled.intersection(PRODUCTION_SCENARIOS) - {'account_profit', 'historical_loss'}
+        if not normal_enabled or not normal_enabled.intersection(event_scenarios(event)):
+            return False
+        return observed >= int(policy.get('scenario_started_ms', policy['started_ms']))
     started = int(policy.get('loss_started_ms', policy['started_ms'])) if loss else int(policy['started_ms'])
-    if (event.get('key', '').startswith('test:') or evidence.get('test_replay') or
-            observed < started or
+    if (observed < started or
             direction not in ('account_profit', 'historical_loss') or
             set(event.get('kinds', [])) != {'highlighted_address_action'} or
             set(evidence.get('highlights', [])) != ({'historical_loss'} if loss else {'official_account_high_profit'})):
