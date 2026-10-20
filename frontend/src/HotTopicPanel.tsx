@@ -55,6 +55,8 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
 
   const health = dashboard?.health.accounts;
   const visibleTopics = useMemo(() => dashboard?.topics ?? [], [dashboard]);
+  const dailyRun = dashboard?.yesterdayHotDiscussion;
+  const dailyStatus = dailyRun ? describeDailyStatus(dailyRun.status) : null;
 
   return (
     <section className="hottopicLayout">
@@ -65,6 +67,23 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
         <Metric label="抓取异常" value={health?.errors ?? 0} warning={(health?.errors ?? 0) > 0} />
         <button className="iconButton" type="button" title="刷新热点话题" onClick={() => void refresh()} disabled={loading}><RefreshCcw size={18} /></button>
       </div>
+
+      {dailyRun && dailyStatus && <section className={`yesterdayHotDiscussion ${dailyStatus.tone}`} aria-live="polite">
+        <div className="yesterdayHotDiscussionHeader">
+          <div><h2>昨夜热议</h2><span>{dailyRun.localDate} · 每日 08:30（北京时间）</span></div>
+          <strong>{dailyStatus.label}</strong>
+        </div>
+        {dailyRun.title && <p className="yesterdayHotDiscussionTitle">{dailyRun.title}</p>}
+        <div className="yesterdayHotDiscussionMeta">
+          <span>检查热点 {dailyRun.candidateCount}</span>
+          <span>排除分析类 {dailyRun.excludedAnalysisCount}</span>
+          <span>排除非事件类 {dailyRun.excludedNoActionCount}</span>
+          {dailyRun.attemptedAt && <span>执行 {formatTime(dailyRun.attemptedAt)}</span>}
+        </div>
+        {dailyRun.error && <p className="yesterdayHotDiscussionError">{dailyRun.error}</p>}
+        {dailyRun.status === 'waiting' && <p className="yesterdayHotDiscussionHint">到达执行时间后仍处于此状态，请检查 odaily-hottopic.service 是否运行。</p>}
+        {dailyRun.status === 'no_candidate' && <p className="yesterdayHotDiscussionHint">已检查当天首次出现的可见热点，没有符合事件型标准的话题。</p>}
+      </section>}
 
       {error && <div className="notice error"><CircleAlert size={17} /> {error}</div>}
 
@@ -82,6 +101,19 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
       </div>
     </section>
   );
+}
+
+function describeDailyStatus(status: string): { label: string; tone: string } {
+  switch (status) {
+    case 'scheduled': return { label: '待执行', tone: 'pending' };
+    case 'waiting': return { label: '等待 worker', tone: 'warning' };
+    case 'processing': return { label: '执行中', tone: 'pending' };
+    case 'no_candidate': return { label: '无合格候选', tone: 'neutral' };
+    case 'backstage_created': return { label: '已挂后台', tone: 'success' };
+    case 'push_failed': return { label: '推送失败', tone: 'error' };
+    case 'format_failed': return { label: '格式化失败', tone: 'error' };
+    default: return { label: status, tone: 'neutral' };
+  }
 }
 
 function Metric({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) {

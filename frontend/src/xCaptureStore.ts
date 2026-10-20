@@ -156,6 +156,18 @@ export type HotTopicDashboard = {
     topics: Record<string, number>;
   };
   topics: HotTopicCard[];
+  yesterdayHotDiscussion?: {
+    localDate: string;
+    topicId?: string | null;
+    status: 'scheduled' | 'waiting' | 'processing' | 'no_candidate' | 'backstage_created' | 'push_failed' | 'format_failed' | string;
+    title?: string | null;
+    error?: string | null;
+    candidateCount: number;
+    excludedAnalysisCount: number;
+    excludedNoActionCount: number;
+    attemptedAt?: string | null;
+    completedAt?: string | null;
+  };
 };
 
 export type HotTopicDetail = {

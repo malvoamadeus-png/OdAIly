@@ -828,6 +828,21 @@ body {
 .hottopicMetric span { color: #66717d; font-size: 12px; }
 .hottopicMetric strong { color: #1c2d34; font-size: 22px; }
 .hottopicMetric.warning strong { color: #b45309; }
+.yesterdayHotDiscussion { display: grid; gap: 8px; padding: 13px 15px; border: 1px solid #d8e0e4; border-left: 3px solid #82919a; border-radius: 6px; background: #fff; }
+.yesterdayHotDiscussion.success { border-left-color: #16845e; }
+.yesterdayHotDiscussion.warning { border-left-color: #b45309; }
+.yesterdayHotDiscussion.error { border-left-color: #b42318; }
+.yesterdayHotDiscussionHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.yesterdayHotDiscussionHeader > div { display: grid; gap: 3px; }
+.yesterdayHotDiscussionHeader h2 { margin: 0; color: #263640; font-size: 15px; }
+.yesterdayHotDiscussionHeader span, .yesterdayHotDiscussionMeta, .yesterdayHotDiscussionHint { color: #68757e; font-size: 12px; }
+.yesterdayHotDiscussionHeader > strong { color: #42525b; font-size: 13px; }
+.yesterdayHotDiscussion.success .yesterdayHotDiscussionHeader > strong { color: #08775a; }
+.yesterdayHotDiscussion.error .yesterdayHotDiscussionHeader > strong { color: #b42318; }
+.yesterdayHotDiscussionTitle { margin: 0; color: #34434c; font-size: 13px; overflow-wrap: anywhere; }
+.yesterdayHotDiscussionMeta { display: flex; flex-wrap: wrap; gap: 5px 16px; }
+.yesterdayHotDiscussionHint, .yesterdayHotDiscussionError { margin: 0; line-height: 1.5; }
+.yesterdayHotDiscussionError { color: #b42318; font-size: 12px; overflow-wrap: anywhere; }
 .hottopicWorkspace { display: grid; grid-template-columns: minmax(320px, .9fr) minmax(0, 1.3fr); min-height: 430px; border: 1px solid #d8e0e4; border-radius: 7px; overflow: hidden; background: #fff; }
 .hottopicTopics { display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid #e3e8eb; min-width: 0; }
 .hottopicTopics .sectionHeader, .hottopicDetail { padding: 16px; }

@@ -18,6 +18,16 @@ AI 首次将热点判定为 `track` 并创建事件后，后端会向 Chrome 信
 
 实际快讯发布成功后，发布者还会将最终标题和正文写入插件高频流的普通 `newsflash` 条目，标为“已直发”，与首次建立追踪事件的提醒独立。官方进展的写作归属和共享模板边界见 `编写者1.md`。
 
+## 昨夜热议
+
+“昨夜热议”是热点话题下的每日快讯子功能，由 `odaily-hottopic.service` 在北京时间每天 08:30 后执行。它只检查当天北京时间 00:00 起首次出现的可见、已生成总结的热点，按现有参与账号热度分数和 24 小时参与数排序，不调用站外搜索。
+
+候选必须是有具体人物、机构或项目动作，或已在热议总结中带来明确影响的事件；总结还必须出现事件动作词，并排除行业趋势、分析观点、积分机制和社区讨论等总结形态。该判断依据 HotTopic 已生成的话题标题、正文和参与热度，不保证发现所有未被热点话题识别的新闻。每日只提交一条，标题为 `昨夜精彩事件：{热点标题}`，正文来源为热点原正文，并仅复用编写者2的 `format_brief` 字符格式整理；不经过搜索者、判断者、编写者1或发布者自动发布判断。Push Data 请求固定 `isPublish=false`、`isPush=false`，仅挂后台。
+
+每个北京时间日期在 HotTopic SQLite 中持久化一次选择/投递状态，使用日期和 topic ID 作为幂等键。没有合格候选时记录 `no_candidate`；推送失败或响应不确定时也不自动重试，以免重复创建后台稿件。Push Data endpoint 沿用 `ODAILY_PUSH_ENDPOINT`。
+
+热点话题 dashboard 同步返回当日执行状态。页面显示待执行/等待 worker/执行中/无合格候选/已挂后台/格式化失败/推送失败、检查数量、排除数量、选中标题及错误信息。`waiting` 表示已过 08:30 但当天没有运行记录，可据此检查 `odaily-hottopic.service`。
+
 控制台展示当前/已结束事件、官方账号与身份证据、官方原帖、进展判断、快讯结果、GPT 搜索引用、Prompt 版本和自动失败。只有被判定为 `material_progress` 的帖子才会显示在快讯投递区；该区同时展示任务状态、生成阶段、可用草稿或终稿标题/正文、发布决定、时间和官方原帖链接。`relevant_no_progress` 与 `irrelevant` 仍只保留审计记录。
 
 管理员可以在事件详情中删除热点自动快讯。删除是软删除：通过 `POST /console/auto-newsflash/dismiss` 写入人工忽略记录，停止后续追踪、结束活动 cycle、释放账号绑定、取消尚未发布的 outbox 和主 SQLite 任务，并从默认事件列表隐藏；事件、官方帖子、判断、已发布内容和审计记录都保留。已经 `auto_published` 的任务不回滚、不删除。重复删除返回幂等结果，不提供网页恢复入口。任务 1 仍只有 `track` / `do_not_track`，账号发现与运行失败由系统自动重试、拒绝或结束。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
@@ -52,7 +62,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 ## 模型配置
 
-热点话题正文、市场情绪和项目推介统一使用 `gpt-5.6-luna`，正文/情绪/推介请求固定 `reasoning_effort=none`，失败时按原等级重试。确定性热点候选的 claim 级语义复核也使用 `gpt-5.6-luna`、`reasoning_effort=high`，失败时按 `high` 重试。部署配置仅暴露这一 GPT 路由；这些内部模块不复用快讯编写模型。
+热点话题正文、市场情绪和项目推介统一使用 `gpt-5.6-luna`，正文/情绪/推介请求固定 `reasoning_effort=none`，失败时按原等级重试。首次候选归属只对弱关联/歧义新帖批量调用 Luna，固定 `reasoning_effort=none`；候选数和批次大小有界，强确定性路径不调用模型。attach 后的 claim 级语义复核仍使用 `gpt-5.6-luna`、`reasoning_effort=high`，失败时按 `high` 重试。部署配置仅暴露这一 GPT 路由；这些内部模块不复用快讯编写模型。
 
 - `X_AGENT_OPENAI_BASE_URL`：可选的兼容 API base URL；为空时依次使用 `ODAILY_LLM_BASE_URL`、`OPENAI_BASE_URL`。
 - `X_AGENT_OPENAI_API_KEY`：可选的专用凭据；本机 LiteLLM 路由优先使用 `LITELLM_MASTER_KEY`，然后使用 `ODAILY_LLM_API_KEY` 或 `OPENAI_API_KEY`。
@@ -68,6 +78,8 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `HOTTOPIC_CLAIM_REVIEW_ENABLED`：是否启用 claim 级语义复核，默认 `true`；路由或凭据不可用时自动退回机械结果。
 - `HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE`：单次语义复核最多发送的 claim-topic case 数，默认 `40`。
 - `HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT`：每轮维护补审旧 membership 的上限，默认 `120`。
+- `HOTTOPIC_CANDIDATE_RESOLVER_ENABLED`：是否为弱硬关联、临界分数和相近候选启用 attach 前的批量 Luna 判断，默认 `true`；路由不可用时回退确定性匹配。
+- `HOTTOPIC_CANDIDATE_RESOLVER_TIMEOUT_SECONDS`：候选归属单次请求超时，默认 `30` 秒。
 
 ### 事件自动追踪模型
 

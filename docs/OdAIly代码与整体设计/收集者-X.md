@@ -154,6 +154,8 @@ X Article 与引用/回复前序链处理规则：
 
 ## 运行命令
 
+HotTopic worker 同时承载 X Agent 的“昨夜热议”每日任务。北京时间 08:30 后，它从当天 00:00 起首次出现且已有可见总结的热点中，按 `hotness_score`、24 小时参与账号数降序检查候选；要求标题/正文包含事件动作词，并排除分析、行业趋势、积分机制和社区讨论类总结。命中后使用编写者2的格式化函数规范标题和正文，再以 `isPublish=false`、`isPush=false` 调用 Push Data API 挂后台。每个本地日期只选取/请求一次；无候选或请求失败不会在当天自动重试。具体边界见 `控制台-X Agent.md` 与 `编写者2.md`。
+
 ```powershell
 python backend\src\main.py x-init-db
 python backend\src\main.py x-capture-worker

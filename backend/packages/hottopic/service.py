@@ -24,7 +24,8 @@ from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
 from .capture import AccountRow, ContentItem, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
-from .topic_aggregator import ModelBriefWriter, TopicClaimReviewer, TopicVisibleMergeReviewer, TopicAggregator
+from .topic_aggregator import ModelBriefWriter, TopicCandidateResolver, TopicClaimReviewer, TopicVisibleMergeReviewer, TopicAggregator
+from .yesterday_hot_discussion import YesterdayHotDiscussion
 
 
 POLL_INTERVAL_SECONDS = 600
@@ -305,6 +306,18 @@ class HotTopicService:
                 # is enabled automatically on the next worker restart.
                 semantic_reviewer = None
                 self.semantic_reviewer_error = f"{type(exc).__name__}: {exc}"
+        candidate_resolver = None
+        self.candidate_resolver_error: str | None = None
+        if configured_bool("HOTTOPIC_CANDIDATE_RESOLVER_ENABLED", True):
+            try:
+                candidate_resolver = TopicCandidateResolver(
+                    "gpt-5.6-luna",
+                    fallback_model="gpt-5.6-luna",
+                    reasoning_effort="none",
+                    timeout=float(os.getenv("HOTTOPIC_CANDIDATE_RESOLVER_TIMEOUT_SECONDS") or "30"),
+                )
+            except (RuntimeError, ValueError) as exc:
+                self.candidate_resolver_error = f"{type(exc).__name__}: {exc}"
         visible_merge_reviewer = None
         self.topic_merge_reviewer_error: str | None = None
         if configured_bool("HOTTOPIC_TOPIC_MERGE_REVIEW_ENABLED", True):
@@ -331,6 +344,7 @@ class HotTopicService:
         self.aggregator = TopicAggregator(
             self.path,
             brief_writer=writer,
+            resolver=candidate_resolver,
             semantic_reviewer=semantic_reviewer,
             visible_merge_reviewer=visible_merge_reviewer,
             semantic_review_batch_size=configured_integer(
@@ -365,6 +379,7 @@ class HotTopicService:
             feed_writer=LocalEditorPluginFeedWriter(),
             owns_connection=True,
         )
+        self.yesterday_hot_discussion = YesterdayHotDiscussion(self.db)
         self.rate_limit_cooldown_seconds = configured_seconds(
             "HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS",
             DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
@@ -953,7 +968,7 @@ class HotTopicService:
         lifecycle = self.event_tracker.maintain()
         return {"discovery": discovery, "polling": polling, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
 
-    def poll_once(self) -> dict[str, int]:
+    def poll_once(self) -> dict[str, Any]:
         # Existing events first: their 1-minute schedule has priority over the
         # broad baseline account pool while sharing the same FXTwitter pacer.
         self.event_tracker.reconcile_topic_merges()
@@ -963,6 +978,7 @@ class HotTopicService:
         accounts = self._due_accounts()
         if not accounts:
             self.aggregate()
+            yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
             event_after = self._advance_event_tracking(poll_accounts=True)
             analyzed = self.process_x_agent_jobs()
             self.process_account_cleanup_jobs()
@@ -972,6 +988,7 @@ class HotTopicService:
                 "accepted": 0,
                 "analyzed": analyzed,
                 "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
+                "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
             }
         cutoff = datetime.fromisoformat(self.deployment_started_at())
         accepted = 0
@@ -1000,6 +1017,7 @@ class HotTopicService:
                 added = self._store_poll(account, items, error, now)
                 accepted += added
         self.aggregate()
+        yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
         event_after = self._advance_event_tracking(poll_accounts=True)
         analyzed = self.process_x_agent_jobs()
         self.process_account_cleanup_jobs()
@@ -1009,6 +1027,7 @@ class HotTopicService:
             "accepted": accepted,
             "analyzed": analyzed,
             "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
+            "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
         }
 
     @_serialized
@@ -1765,6 +1784,8 @@ class HotTopicService:
         return {"deploymentStartedAt": self.deployment_started_at(), "accounts": dict(counts),
                 "inboxPending": self.db.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE processed_at IS NULL").fetchone()[0],
                 "topics": dict(topic_counts), "databasePath": str(self.path),
+                "candidateResolverEnabled": bool(self.aggregator.resolver),
+                "candidateResolverError": self.candidate_resolver_error,
                 "semanticReviewEnabled": bool(self.aggregator.semantic_reviewer),
                 "semanticReviewError": self.semantic_reviewer_error,
                 "semanticReviewPending": self.aggregator._count_pending_claim_reviews(),
@@ -1789,7 +1810,12 @@ class HotTopicService:
                    "lastParticipationAt": row["last_participation_at"], "hotness": row["hotness_score"],
                    "briefGeneratedAt": row["generated_at"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"], "velocity": row["participant_velocity"]}}
                   for row in rows]
-        return {"generatedAt": iso(utc_now()), "health": self.health(), "topics": topics}
+        return {
+            "generatedAt": iso(utc_now()),
+            "health": self.health(),
+            "topics": topics,
+            "yesterdayHotDiscussion": self.yesterday_hot_discussion.dashboard_status(),
+        }
 
     @staticmethod
     def _display_brief(value: str | None) -> str:

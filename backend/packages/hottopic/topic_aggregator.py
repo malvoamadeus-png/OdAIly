@@ -343,9 +343,12 @@ class EventIdentity:
 
 
 Extractor = Callable[[ContentItem], Sequence[Claim]]
-Resolver = Callable[[Claim, Sequence[Candidate], sqlite3.Connection], dict[str, Any] | None]
+Resolver = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
 SemanticReviewer = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
 TopicMergeReviewer = Callable[[Sequence[dict[str, Any]]], Sequence[dict[str, Any]]]
+
+CANDIDATE_RESOLVER_BATCH_SIZE = 8
+CANDIDATE_RESOLVER_TOPIC_LIMIT = 5
 
 
 SCHEMA = """
@@ -930,18 +933,208 @@ class TopicAggregator:
             "brief_refresh_requests": [],
             "topic_merges": [],
             "semantic_review": {"enabled": bool(self.semantic_reviewer), "requested": 0, "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0},
+            "candidate_resolver": {"enabled": bool(self.resolver), "requested_posts": 0, "resolved_claims": 0, "fallback_posts": 0, "model_calls": 0},
             "errors": [],
             "token_usage": {"input": 0, "output": 0, "cached": 0, "total": 0},
         }
+        prepared_claims_by_tweet: dict[str, list[Claim]] = {}
+        prepared_candidate_resolutions: dict[str, dict[str, Any]] = {}
+        if self.resolver:
+            preparation_cases: list[dict[str, Any]] = []
+            for item in normalized:
+                if self.connection.execute(
+                    "SELECT 1 FROM content_items WHERE tweet_id=?", (item.tweet_id,)
+                ).fetchone():
+                    continue
+                claims = list(self.extractor(item))
+                prepared_claims_by_tweet[item.tweet_id] = claims
+                pending_claims = [
+                    (claim, candidates)
+                    for claim in claims
+                    if self._needs_candidate_resolution(
+                        candidates := self._retrieve_candidates(claim, item, batch_iso)
+                    )
+                ]
+                if pending_claims:
+                    preparation_cases.append(
+                        self._candidate_resolution_case(item, claims, pending_claims, batch_iso)
+                    )
+
+            for start in range(0, len(preparation_cases), CANDIDATE_RESOLVER_BATCH_SIZE):
+                cases = preparation_cases[start:start + CANDIDATE_RESOLVER_BATCH_SIZE]
+                metrics["candidate_resolver"]["requested_posts"] += len(cases)
+                metrics["candidate_resolver"]["model_calls"] += 1
+                try:
+                    responses = self._validate_candidate_resolution_responses(
+                        cases, self.resolver(cases)
+                    )
+                except Exception as exc:
+                    metrics["errors"].append({
+                        "error_code": "candidate_resolver_failed",
+                        "error_message": f"{type(exc).__name__}: {str(exc).strip() or 'candidate resolver failed'}",
+                        "retryable": True,
+                    })
+                    continue
+                for case_id, response in responses.items():
+                    prepared_candidate_resolutions[case_id] = {
+                        "payload": next(case for case in cases if case["case_id"] == case_id),
+                        "response": response,
+                    }
+
         metrics["state_before"] = {
             status: self.connection.execute("SELECT COUNT(*) FROM topics WHERE matching_status=?", (status,)).fetchone()[0]
             for status in ("seed", "active", "archived")
         }
         decisions: list[dict[str, Any]] = []
         affected: set[str] = set()
+        pending_resolution_cases: list[dict[str, Any]] = []
         phase_started = time.perf_counter()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
+            def apply_decision(
+                item: ContentItem,
+                claim: Claim,
+                candidates: Sequence[Candidate],
+                action: str,
+                topic_ids: set[str],
+                reason: str,
+                source: str,
+                item_topics: set[str],
+                new_topic_groups: dict[str, str] | None = None,
+                new_topic_group: str | None = None,
+            ) -> None:
+                if action == "attach":
+                    metrics["attach_count"] += 1
+                    for topic_id in topic_ids:
+                        self._attach_claim(
+                            claim, topic_id, candidates, reason, source, item, batch_iso,
+                            defer_participation=False,
+                        )
+                        affected.add(topic_id)
+                        item_topics.add(topic_id)
+                elif action == "create_seed":
+                    group_key = compact(new_topic_group) if new_topic_group else ""
+                    topic_id = (new_topic_groups or {}).get(group_key) if group_key else None
+                    if topic_id:
+                        metrics["attach_count"] += 1
+                        action = "attach"
+                        self._attach_claim(
+                            claim, topic_id, candidates, reason, source, item, batch_iso,
+                            defer_participation=False,
+                        )
+                    else:
+                        metrics["create_seed_count"] += 1
+                        topic_id = self._create_seed(claim, item, batch_iso)
+                        self._attach_claim(
+                            claim, topic_id, [], reason, source, item, batch_iso,
+                            defer_participation=False,
+                        )
+                        if self.semantic_reviewer:
+                            self._store_topic_claim_review(
+                                claim.claim_id, topic_id, "support", "seed claim is the topic's initial evidence",
+                                confidence=1.0, model="hard_rule", reasoning_effort="", input_hash=stable_id("review-input", claim.claim_id, topic_id),
+                                reviewed_at=batch_iso,
+                            )
+                        if group_key and new_topic_groups is not None:
+                            new_topic_groups[group_key] = topic_id
+                    topic_ids = {topic_id}
+                    affected.add(topic_id)
+                    item_topics.add(topic_id)
+                elif action == "defer":
+                    metrics["defer_count"] += 1
+                else:
+                    metrics["ignore_count"] += 1
+                decisions.append({
+                    "tweet_id": item.tweet_id,
+                    "content_item_id": item.content_item_id,
+                    "claim_id": claim.claim_id,
+                    "action": action,
+                    "topic_ids": sorted(topic_ids),
+                    "candidates": [candidate.as_dict() for candidate in candidates],
+                    "reason": reason,
+                    "decision_source": source,
+                })
+
+            def flush_candidate_resolutions() -> None:
+                if not pending_resolution_cases or not self.resolver:
+                    return
+                cases = [
+                    self._candidate_resolution_case(
+                        case["item"], case["all_claims"], case["pending_claims"], batch_iso
+                    )
+                    for case in pending_resolution_cases
+                ]
+                for case, payload in zip(pending_resolution_cases, cases):
+                    item: ContentItem = case["item"]
+                    item_topics: set[str] = case["item_topics"]
+                    pending_claims = [
+                        (claim, payload["refreshed_candidates"].get(claim.claim_id, list(candidates)))
+                        for claim, candidates in case["pending_claims"]
+                    ]
+                    prepared = prepared_candidate_resolutions.get(str(payload["case_id"]))
+                    response = prepared.get("response") if prepared else None
+                    prepared_payload = prepared.get("payload") if prepared else None
+                    snapshot_matches = bool(
+                        prepared_payload
+                        and prepared_payload["candidate_topic_ids_by_claim"]
+                        == payload["candidate_topic_ids_by_claim"]
+                        and prepared_payload["topics"] == payload["topics"]
+                    )
+                    assignments = response.get("assignments", []) if isinstance(response, dict) else []
+                    assignment_by_claim = {
+                        str(row.get("claim_id")): row
+                        for row in assignments
+                        if isinstance(row, dict) and row.get("claim_id")
+                    } if isinstance(assignments, list) else {}
+                    expected_ids = {claim.claim_id for claim, _ in pending_claims}
+                    valid = (
+                        snapshot_matches
+                        and isinstance(assignments, list)
+                        and len(assignments) == len(expected_ids)
+                        and set(assignment_by_claim) == expected_ids
+                    )
+                    topic_ids_by_claim = payload["candidate_topic_ids_by_claim"]
+                    for claim, candidates in pending_claims:
+                        assignment = assignment_by_claim.get(claim.claim_id, {})
+                        action = str(assignment.get("action") or "")
+                        topic_id = str(assignment.get("topic_id") or "")
+                        if action == "attach" and topic_id in topic_ids_by_claim.get(claim.claim_id, []):
+                            continue
+                        if action == "new_topic" and compact(assignment.get("new_topic_group")):
+                            continue
+                        valid = False
+                    new_topic_groups: dict[str, str] = {}
+                    if valid:
+                        for claim, candidates in pending_claims:
+                            assignment = assignment_by_claim[claim.claim_id]
+                            action = str(assignment["action"])
+                            topic_id = str(assignment.get("topic_id") or "")
+                            group = compact(assignment.get("new_topic_group"))[:64] or None
+                            if action == "attach":
+                                action_topic_ids = {topic_id}
+                            else:
+                                action_topic_ids = set()
+                                action = "create_seed"
+                            apply_decision(
+                                item, claim, candidates, action, action_topic_ids,
+                                compact(assignment.get("reason")) or "Luna 候选话题判断",
+                                "candidate_resolver", item_topics, new_topic_groups, group,
+                            )
+                            metrics["candidate_resolver"]["resolved_claims"] += 1
+                            metrics["model_candidate_count"] += 1
+                    else:
+                        metrics["candidate_resolver"]["fallback_posts"] += 1
+                        for claim, candidates in pending_claims:
+                            action, topic_ids, reason, source = self._decide(claim, candidates)
+                            apply_decision(
+                                item, claim, candidates, action, topic_ids,
+                                f"候选模型不可用或候选快照已变化，沿用确定性结果：{reason}", source,
+                                item_topics,
+                            )
+                    if item_topics:
+                        metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
+                pending_resolution_cases.clear()
+
             for item in normalized:
                 row = self.connection.execute(
                     "SELECT content_item_id FROM content_items WHERE tweet_id=?", (item.tweet_id,)
@@ -960,59 +1153,42 @@ class TopicAggregator:
                         json_dumps(item.raw_payload), fingerprint,
                     ),
                 )
-                claims = list(self.extractor(item))
+                claims = prepared_claims_by_tweet.get(item.tweet_id)
+                if claims is None:
+                    claims = list(self.extractor(item))
                 metrics["claim_count"] += len(claims)
                 if not claims:
                     metrics["ignore_count"] += 1
                     decisions.append({"tweet_id": item.tweet_id, "action": "ignore", "topic_ids": [], "reason": "no_claim"})
                     continue
                 item_topics: set[str] = set()
+                all_claims: list[Claim] = []
+                pending_claims: list[tuple[Claim, list[Candidate]]] = []
                 for claim in claims:
                     self._insert_claim(claim, item.created_at)
+                    all_claims.append(claim)
                     candidates = self._retrieve_candidates(claim, item, batch_iso)
                     metrics["candidate_count"] += len(candidates)
+                    if self.resolver and self._needs_candidate_resolution(candidates):
+                        pending_claims.append((claim, candidates))
+                        continue
                     action, topic_ids, reason, source = self._decide(claim, candidates)
-                    if action == "attach":
-                        metrics["attach_count"] += 1
-                        for topic_id in topic_ids:
-                            self._attach_claim(
-                                claim, topic_id, candidates, reason, source, item, batch_iso,
-                                defer_participation=False,
-                            )
-                            affected.add(topic_id)
-                            item_topics.add(topic_id)
-                    elif action == "create_seed":
-                        metrics["create_seed_count"] += 1
-                        topic_id = self._create_seed(claim, item, batch_iso)
-                        self._attach_claim(
-                            claim, topic_id, [], reason, source, item, batch_iso,
-                            defer_participation=False,
-                        )
-                        if self.semantic_reviewer:
-                            self._store_topic_claim_review(
-                                claim.claim_id, topic_id, "support", "seed claim is the topic's initial evidence",
-                                confidence=1.0, model="hard_rule", reasoning_effort="", input_hash=stable_id("review-input", claim.claim_id, topic_id),
-                                reviewed_at=batch_iso,
-                            )
-                        affected.add(topic_id)
-                        item_topics.add(topic_id)
-                    elif action == "defer":
-                        metrics["defer_count"] += 1
-                    else:
-                        metrics["ignore_count"] += 1
-                    decisions.append({
-                        "tweet_id": item.tweet_id,
-                        "content_item_id": item.content_item_id,
-                        "claim_id": claim.claim_id,
-                        "action": action,
-                        "topic_ids": sorted(topic_ids),
-                        "candidates": [candidate.as_dict() for candidate in candidates],
-                        "reason": reason,
-                        "decision_source": source,
+                    apply_decision(item, claim, candidates, action, topic_ids, reason, source, item_topics)
+
+                if pending_claims:
+                    pending_resolution_cases.append({
+                        "item": item,
+                        "all_claims": all_claims,
+                        "pending_claims": pending_claims,
+                        "item_topics": item_topics,
                     })
+                    if len(pending_resolution_cases) >= CANDIDATE_RESOLVER_BATCH_SIZE:
+                        flush_candidate_resolutions()
 
                 if item_topics:
                     metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
+
+            flush_candidate_resolutions()
 
             merge_requests = self._consolidate_dirty_topics(affected, batch_iso) if not (self.topic_merge_reviewer or self.visible_merge_reviewer) else []
             if self.topic_merge_reviewer and not self.visible_merge_reviewer:
@@ -1558,12 +1734,6 @@ class TopicAggregator:
         best = candidates[0]
         second = candidates[1] if len(candidates) > 1 else None
         margin = best.score - second.score if second else best.score
-        if self.resolver and (second and margin < 0.12 or best.score < 0.55):
-            resolved = self.resolver(claim, candidates[:10], self.connection)
-            if resolved:
-                action = compact(resolved.get("action")) or "defer"
-                topics = {str(value) for value in resolved.get("topic_ids", [])}
-                return action, topics, compact(resolved.get("reason")) or "resolver", "model"
         if best.hard_relation or best.score >= 0.55 or (best.score >= 0.42 and second is None):
             if second and margin < 0.10 and not best.hard_relation:
                 return "defer", set(), "ambiguous local candidates", "local_score"
@@ -1571,6 +1741,151 @@ class TopicAggregator:
         if best.score < 0.28:
             return "create_seed", set(), f"candidate below seed threshold: {best.score:.3f}", "hard_rule"
         return "defer", set(), f"candidate uncertain: {best.score:.3f}", "local_score"
+
+    @staticmethod
+    def _needs_candidate_resolution(candidates: Sequence[Candidate]) -> bool:
+        if not candidates:
+            return False
+        best = candidates[0]
+        second = candidates[1] if len(candidates) > 1 else None
+        margin = best.score - second.score if second else best.score
+        weak_hard_relation = (
+            best.hard_relation > 0
+            and best.semantic_similarity < 0.08
+            and best.entity_overlap < 0.05
+        )
+        close_candidates = second is not None and best.score >= 0.42 and margin < 0.12
+        borderline_candidate = 0.42 <= best.score < 0.55
+        return weak_hard_relation or close_candidates or borderline_candidate
+
+    def _candidate_resolution_case(
+        self,
+        item: ContentItem,
+        all_claims: Sequence[Claim],
+        pending_claims: Sequence[tuple[Claim, Sequence[Candidate]]],
+        at: str,
+    ) -> dict[str, Any]:
+        claims: list[dict[str, Any]] = []
+        candidate_topic_ids_by_claim: dict[str, list[str]] = {}
+        topic_scores: dict[str, float] = {}
+        refreshed_candidates: dict[str, list[Candidate]] = {}
+        for claim, _ in pending_claims:
+            candidates = self._retrieve_candidates(claim, item, at)[:CANDIDATE_RESOLVER_TOPIC_LIMIT]
+            refreshed_candidates[claim.claim_id] = candidates
+            topic_ids = [candidate.topic_id for candidate in candidates]
+            candidate_topic_ids_by_claim[claim.claim_id] = topic_ids
+            for candidate in candidates:
+                topic_scores[candidate.topic_id] = max(topic_scores.get(candidate.topic_id, 0.0), candidate.score)
+            claims.append({
+                "claim_id": claim.claim_id,
+                "text": claim.claim_text[:500],
+                "kind": claim.claim_kind,
+                "entities": list(claim.entities)[:12],
+                "action_or_issue": claim.action_or_issue[:160],
+                "candidate_topic_ids": topic_ids,
+            })
+
+        selected_topic_ids = sorted(topic_scores, key=lambda topic_id: (-topic_scores[topic_id], topic_id))[:CANDIDATE_RESOLVER_TOPIC_LIMIT]
+        candidate_topic_ids_by_claim = {
+            claim_id: [topic_id for topic_id in topic_ids if topic_id in selected_topic_ids]
+            for claim_id, topic_ids in candidate_topic_ids_by_claim.items()
+        }
+        topic_profiles: list[dict[str, Any]] = []
+        for topic_id in selected_topic_ids:
+            topic = self.connection.execute(
+                "SELECT topic_id,working_title,canonical_subject,core_entities_json,event_or_issue "
+                "FROM topics WHERE topic_id=?",
+                (topic_id,),
+            ).fetchone()
+            if topic is None:
+                continue
+            evidence = self.connection.execute(
+                "SELECT ci.activity_account,cl.claim_text FROM memberships m "
+                "JOIN claims cl ON cl.claim_id=m.claim_id "
+                "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
+                "JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
+                "WHERE m.topic_id=? AND m.superseded_by IS NULL AND r.decision='support' "
+                "ORDER BY ci.created_at DESC LIMIT 3",
+                (topic_id,),
+            ).fetchall()
+            topic_profiles.append({
+                "topic_id": topic_id,
+                "title": topic["working_title"][:180],
+                "canonical_subject": topic["canonical_subject"][:180],
+                "core_entities": json_loads(topic["core_entities_json"], [])[:12],
+                "event_or_issue": topic["event_or_issue"][:180],
+                "evidence": [
+                    {"account": row["activity_account"], "text": row["claim_text"][:240]}
+                    for row in evidence
+                ],
+            })
+
+        available_topic_ids = {topic["topic_id"] for topic in topic_profiles}
+        candidate_topic_ids_by_claim = {
+            claim_id: [topic_id for topic_id in topic_ids if topic_id in available_topic_ids]
+            for claim_id, topic_ids in candidate_topic_ids_by_claim.items()
+        }
+        for claim in claims:
+            claim["candidate_topic_ids"] = candidate_topic_ids_by_claim[claim["claim_id"]]
+
+        pending_ids = set(candidate_topic_ids_by_claim)
+        sibling_claims = [
+            {"claim_id": claim.claim_id, "text": claim.claim_text[:280]}
+            for claim in all_claims if claim.claim_id not in pending_ids
+        ][:12]
+        return {
+            "case_id": stable_id("candidate-resolver", item.tweet_id, *sorted(pending_ids)),
+            "post": {
+                "tweet_id": item.tweet_id,
+                "account": item.activity_account,
+                "created_at": item.created_at,
+                "text": item.expanded_text[:1800],
+                "other_claims": sibling_claims,
+            },
+            "claims": claims,
+            "topics": topic_profiles,
+            "candidate_topic_ids_by_claim": candidate_topic_ids_by_claim,
+            "refreshed_candidates": refreshed_candidates,
+        }
+
+    @staticmethod
+    def _validate_candidate_resolution_responses(
+        cases: Sequence[dict[str, Any]], responses: Sequence[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        rows = list(responses)
+        expected_case_ids = {str(case["case_id"]) for case in cases}
+        if len(rows) != len(expected_case_ids) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("candidate resolver returned an invalid cases array")
+        response_by_id = {str(row.get("case_id") or ""): row for row in rows}
+        if set(response_by_id) != expected_case_ids:
+            raise ValueError("candidate resolver returned incomplete or duplicate cases")
+
+        for case in cases:
+            case_id = str(case["case_id"])
+            response = response_by_id[case_id]
+            assignments = response.get("assignments")
+            expected_claims = set(case["candidate_topic_ids_by_claim"])
+            if not isinstance(assignments, list) or len(assignments) != len(expected_claims):
+                raise ValueError("candidate resolver returned an invalid assignments array")
+            if any(not isinstance(row, dict) for row in assignments):
+                raise ValueError("candidate resolver returned a non-object assignment")
+            assignment_by_claim = {
+                str(row.get("claim_id") or ""): row for row in assignments
+            }
+            if set(assignment_by_claim) != expected_claims:
+                raise ValueError("candidate resolver returned incomplete or duplicate claim assignments")
+            for claim_id, assignment in assignment_by_claim.items():
+                action = str(assignment.get("action") or "")
+                if action == "attach":
+                    if str(assignment.get("topic_id") or "") not in case["candidate_topic_ids_by_claim"][claim_id]:
+                        raise ValueError("candidate resolver selected a topic outside the candidate whitelist")
+                elif action == "new_topic":
+                    group = compact(assignment.get("new_topic_group"))
+                    if not group or len(group) > 64:
+                        raise ValueError("candidate resolver returned an invalid new-topic group")
+                else:
+                    raise ValueError("candidate resolver returned an invalid action")
+        return response_by_id
 
     def _create_seed(self, claim: Claim, item: ContentItem, at: str) -> str:
         topic_id = stable_id("topic", claim.claim_id)
@@ -3350,6 +3665,13 @@ class TopicClaimReviewer:
 """.strip()
 
     def _call_model(self, model: str, prompt: str) -> list[dict[str, Any]]:
+        parsed = self._call_response_json(model, prompt)
+        reviews = parsed.get("reviews")
+        if not isinstance(reviews, list):
+            raise ValueError("semantic review returned no reviews array")
+        return [dict(row) for row in reviews if isinstance(row, dict)]
+
+    def _call_response_json(self, model: str, prompt: str) -> dict[str, Any]:
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(
@@ -3379,10 +3701,9 @@ class TopicClaimReviewer:
         if not match:
             raise ValueError("semantic review returned no JSON object")
         parsed = json.loads(match.group(0))
-        reviews = parsed.get("reviews") if isinstance(parsed, dict) else parsed
-        if not isinstance(reviews, list):
-            raise ValueError("semantic review returned no reviews array")
-        return [dict(row) for row in reviews if isinstance(row, dict)]
+        if not isinstance(parsed, dict):
+            raise ValueError("semantic review returned a non-object JSON response")
+        return parsed
 
     def _post_json(self, request: urllib.request.Request) -> dict[str, Any]:
         last_error: Exception | None = None
@@ -3411,6 +3732,91 @@ class TopicClaimReviewer:
         if isinstance(error, urllib.error.HTTPError):
             return error.code in {408, 409, 425, 429} or 500 <= error.code < 600
         return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+class TopicCandidateResolver(TopicClaimReviewer):
+    """Choose among the small local candidate set for an ambiguous post."""
+
+    def __call__(self, cases: Sequence[dict[str, Any]]) -> Sequence[dict[str, Any]]:
+        if not cases:
+            return []
+        prompt = self._candidate_prompt(cases)
+        cases_by_id = {str(case["case_id"]): case for case in cases}
+        expected = {
+            str(case["case_id"]): set(case["candidate_topic_ids_by_claim"])
+            for case in cases
+        }
+        primary_error: Exception | None = None
+        for model in dict.fromkeys((self.model, self.fallback_model)):
+            if not model:
+                continue
+            try:
+                parsed = self._call_response_json(model, prompt)
+                results = parsed.get("cases")
+                if not isinstance(results, list) or any(not isinstance(row, dict) for row in results):
+                    raise ValueError("candidate resolver returned no cases array")
+                returned = [str(row.get("case_id")) for row in results]
+                if set(returned) != set(expected) or len(returned) != len(expected):
+                    raise ValueError("candidate resolver returned incomplete or duplicate cases")
+                for result in results:
+                    case_id = str(result["case_id"])
+                    assignments = result.get("assignments")
+                    if not isinstance(assignments, list) or any(not isinstance(row, dict) for row in assignments):
+                        raise ValueError("candidate resolver returned no assignments array")
+                    expected_claims = expected[case_id]
+                    assigned_claims = [str(row.get("claim_id")) for row in assignments]
+                    if set(assigned_claims) != expected_claims or len(assigned_claims) != len(expected_claims):
+                        raise ValueError("candidate resolver returned incomplete or duplicate claim assignments")
+                    candidate_ids = cases_by_id[case_id]["candidate_topic_ids_by_claim"]
+                    for assignment in assignments:
+                        claim_id = str(assignment["claim_id"])
+                        action = str(assignment.get("action") or "")
+                        if action == "attach":
+                            if str(assignment.get("topic_id") or "") not in candidate_ids[claim_id]:
+                                raise ValueError("candidate resolver selected a topic outside the candidate whitelist")
+                        elif action == "new_topic":
+                            group = compact(assignment.get("new_topic_group"))
+                            if not group or len(group) > 64:
+                                raise ValueError("candidate resolver returned an invalid new-topic group")
+                        else:
+                            raise ValueError("candidate resolver returned an invalid action")
+                return [dict(result) | {"model": model, "reasoning_effort": self.reasoning_effort} for result in results]
+            except Exception as exc:
+                if primary_error is None:
+                    primary_error = exc
+        assert primary_error is not None
+        raise RuntimeError(
+            f"HotTopic candidate resolver models failed: {type(primary_error).__name__}: {primary_error}"
+        ) from primary_error
+
+    @staticmethod
+    def _candidate_prompt(cases: Sequence[dict[str, Any]]) -> str:
+        payload = [
+            {
+                "case_id": case["case_id"],
+                "post": case["post"],
+                "claims": case["claims"],
+                "candidate_topics": case["topics"],
+            }
+            for case in cases
+        ]
+        return f"""
+你是 X Agent 热点话题的轻量候选归属判断器。代码已经用本地索引找出少量候选话题；请把每个待判 claim 分配给最合适的候选话题，或归入这条新帖产生的新话题组。
+
+规则：
+1. 必须逐条判断 claim。整条推文和其他 claim 只能提供上下文，不能替单条 claim 自动背书。
+2. 共享 ticker、合约、平台、引用关系或市场环境不足以判为同一话题。比较具体事件、主体、动作和时间。
+3. 同一事件的不同表述可以分配到已有话题，即使措辞不同；不同事件即使讨论同一资产也要分开。
+4. 只能选择该 claim 的 candidate_topic_ids 中列出的 topic_id。没有合适候选时选 new_topic。
+5. 多条待判 claim 若属于同一个新事件，使用相同的 new_topic_group；不同新事件使用不同组。组名简短且在本条 post 内唯一。
+6. 不确定时选 new_topic，避免把内容塞进错误的现有话题。
+
+严格输出 JSON，不要 Markdown，格式为：
+{{"cases":[{{"case_id":"原样返回","assignments":[{{"claim_id":"原样返回","action":"attach|new_topic","topic_id":"仅 attach 时填写","new_topic_group":"仅 new_topic 时填写","reason":"简短中文理由"}}]}}]}}
+
+候选材料：
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
 
 
 class TopicEventMergeReviewer(TopicClaimReviewer):
@@ -3781,4 +4187,7 @@ class ModelBriefWriter:
             raise ValueError("model writer returned an incomplete brief")
         return parsed
 
-__all__ = ["Claim", "ContentItem", "Candidate", "ModelBriefWriter", "TopicClaimReviewer", "TopicAggregator"]
+__all__ = [
+    "Claim", "ContentItem", "Candidate", "ModelBriefWriter", "TopicCandidateResolver",
+    "TopicClaimReviewer", "TopicAggregator",
+]
