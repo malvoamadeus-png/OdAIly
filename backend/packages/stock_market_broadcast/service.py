@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
@@ -9,9 +10,11 @@ from packages.publisher import PushClient, PushResult
 
 from .aggregation import advance_broadcast
 from .client import BinanceStockMarketClient
+from .copy import render_digest
 from .models import StockInstrument, StockQuote, Window
 from .settings import StockMarketSettings
 from .store import StockMarketStore
+from .theme_classifier import StockThemeClassifier
 
 
 class StockMarketBroadcastService:
@@ -22,6 +25,7 @@ class StockMarketBroadcastService:
         store: StockMarketStore | None = None,
         client: BinanceStockMarketClient | None = None,
         push_client: PushClient | None = None,
+        theme_classifier: StockThemeClassifier | None = None,
     ) -> None:
         self.settings = settings
         self.store = store or StockMarketStore(settings.database_path)
@@ -36,6 +40,9 @@ class StockMarketBroadcastService:
             max_attempts=1,
             backoff_seconds=0,
         )
+        self.theme_classifier = theme_classifier
+        if self.theme_classifier is None and settings.theme_classification_enabled:
+            self.theme_classifier = StockThemeClassifier.from_environment()
         self._startup_baseline_pending = True
         self._baseline_symbols_pending: set[str] = set()
 
@@ -106,6 +113,26 @@ class StockMarketBroadcastService:
             restart=self._startup_baseline_pending, max_gap_seconds=self.settings.quote_max_age_seconds,
             baseline_symbols=self._baseline_symbols_pending,
         )
+        classified_alerts = []
+        for alert in alerts:
+            if self.theme_classifier is None or alert.market != "us" or len(alert.members) < 2:
+                classified_alerts.append(alert)
+                continue
+            theme = self.theme_classifier.classify(
+                tuple(member.instrument.asset_name for member in alert.members)
+            )
+            if theme is None:
+                classified_alerts.append(alert)
+                continue
+            title, content = render_digest(
+                market=alert.market,
+                direction=alert.direction,
+                members=alert.members,
+                breadth={},
+                theme=theme,
+            )
+            classified_alerts.append(replace(alert, title=title, content=content))
+        alerts = classified_alerts
         baseline_cycle = bool(valid_quotes) and baseline_count == len(valid_quotes)
         claimed = self.store.record_cycle(
             quotes=valid_quotes,
