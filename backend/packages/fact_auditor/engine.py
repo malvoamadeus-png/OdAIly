@@ -11,16 +11,20 @@ def _contains(text: str, snippet: str) -> bool:
     return bool(snippet.strip()) and re.sub(r"\s+", "", snippet) in re.sub(r"\s+", "", text)
 
 
-def _questions(items: Any, published: str) -> list[dict[str, str]]:
+def _questions(items: Any, published: str, original: str) -> list[dict[str, str]]:
     if not isinstance(items, list):
         raise ValueError("questions must be an array")
     result = []
     for item in items:
         if (not isinstance(item, dict) or not isinstance(item.get("claim"), str)
                 or not _contains(published, item["claim"]) or not isinstance(item.get("question"), str)
-                or not item["question"].strip() or item.get("kind") not in {"name_mapping", "added_fact", "missing_scope"}):
+                or not item["question"].strip() or item.get("kind") not in {"name_mapping", "added_fact", "missing_scope"}
+                or not isinstance(item.get("reason"), str) or not item["reason"].strip()
+                or not isinstance(item.get("source_evidence"), str)
+                or (item["source_evidence"] and not _contains(original, item["source_evidence"]))
+                or (item["kind"] in {"name_mapping", "missing_scope"} and not item["source_evidence"].strip())):
             raise ValueError("Invalid or ungrounded fact review question")
-        result.append({key: item[key] for key in ("claim", "question", "kind")})
+        result.append({key: item[key] for key in ("claim", "question", "kind", "reason", "source_evidence")})
     return result
 
 
@@ -48,7 +52,9 @@ class FactReviewEngine:
             result["reason"] = gate["reason"]
             if not gate["needs_review"]:
                 return {**result, "status": "skipped", "summary": gate["reason"]}
-            questions = _questions(gate.get("questions"), published)
+            # Screening decides eligibility only. It has not seen the source and
+            # cannot establish an editorial discrepancy or a search question.
+            questions: list[dict[str, str]] = []
             original = original_loader()
             result["original_text"] = original.get("text", "")
             result["original_url"] = original.get("url", "")
@@ -75,7 +81,8 @@ class FactReviewEngine:
                     raise ValueError("Flagged original review requires an anchored issue")
                 result["stages"]["comparison"] = comparison
                 source_flagged = compared["status"] != "passed"
-                questions.extend(_questions(compared.get("questions"), published))
+                if compared["status"] != "source_mismatch":
+                    questions = _questions(compared.get("questions"), published, original["text"])
             else:
                 result["stages"]["comparison"] = {"result": {"status": "unavailable", "summary": original.get("reason") or "原文不可用", "issues": []}}
 

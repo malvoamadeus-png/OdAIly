@@ -36,7 +36,8 @@ class FakeAI:
 
 CONTENT = "Vlad 卖出90%股票"
 ORIGINAL = "Vlad sold 90% of Class A shares, retaining his Class B shares."
-QUESTION = {"claim": CONTENT, "question": "90%的分母及股票类别是什么？", "kind": "missing_scope"}
+QUESTION = {"claim": CONTENT, "question": "90%的分母及股票类别是什么？", "kind": "missing_scope",
+            "source_evidence": "90%", "reason": "重大减持未明确分母，可能把某类股写成全部权益"}
 
 
 def review(ai, *, original=ORIGINAL, content=CONTENT):
@@ -71,17 +72,17 @@ def test_unrelated_original_is_not_treated_as_proof_news_is_false():
 def test_external_requires_tool_provenance_for_evidence():
     gate = {"needs_review": True, "reason": "减持口径不清", "questions": [QUESTION]}
     finding = {**QUESTION, "verdict": "supported", "reason": "证实", "evidence": [{"url": "https://invented.example/report", "quote": "90%"}]}
-    ai = FakeAI(gate=gate, external={"result": {"summary": "已查", "findings": [finding]}, "sources": ["https://actual.example/report"]})
+    ai = FakeAI(gate=gate, comparison={"status": "passed", "summary": "待确认减持分母", "issues": [], "questions": [QUESTION]}, external={"result": {"summary": "已查", "findings": [finding]}, "sources": ["https://actual.example/report"]})
     result = review(ai)
     assert result["status"] == "unverifiable"
     assert result["stages"]["external"]["result"]["findings"][0]["verdict"] == "unverified"
 
 
-def test_missing_scope_can_trigger_external_even_when_copy_matches_original():
+def test_comparison_can_identify_material_scope_even_when_copy_matches_original():
     gate = {"needs_review": True, "reason": "重大减持口径缺失", "questions": [QUESTION]}
     finding = {**QUESTION, "verdict": "contradicted", "reason": "90%仅为A类股，并非全部权益",
                "evidence": [{"url": "https://issuer.example/filing", "quote": "retained Class B shares"}]}
-    ai = FakeAI(gate=gate, external={"result": {"summary": "减持范围有误", "findings": [finding]}, "sources": ["https://issuer.example/filing"]})
+    ai = FakeAI(gate=gate, comparison={"status": "passed", "summary": "待确认减持分母", "issues": [], "questions": [QUESTION]}, external={"result": {"summary": "减持范围有误", "findings": [finding]}, "sources": ["https://issuer.example/filing"]})
     result = review(ai, original=CONTENT)
     assert result["status"] == "flagged"
     assert ai.search_calls == 1
@@ -92,7 +93,7 @@ def test_missing_original_is_not_a_pass():
 
 
 def test_search_failure_is_failure_not_pass():
-    result = review(FakeAI(gate={"needs_review": True, "reason": "需要核查", "questions": [QUESTION]}, external=TimeoutError("search timeout")))
+    result = review(FakeAI(comparison={"status": "passed", "summary": "待确认减持分母", "issues": [], "questions": [QUESTION]}, external=TimeoutError("search timeout")))
     assert result["status"] == "failed"
     assert result["stages"]["comparison"]["result"]["status"] == "passed"
 
@@ -107,6 +108,52 @@ def test_known_source_issue_survives_search_failure():
 def test_fabricated_comparison_quote_does_not_become_a_reported_error():
     compared = {"status": "flagged", "summary": "错误", "issues": [{"original": CONTENT, "evidence": "not in source", "reason": "错误"}], "questions": []}
     assert review(FakeAI(comparison=compared))["status"] == "failed"
+
+
+def test_screening_questions_do_not_survive_a_clean_comparison():
+    ai = FakeAI(gate={"needs_review": True, "reason": "值得比对", "questions": [QUESTION]})
+    result = review(ai)
+    assert result["status"] == "passed"
+    assert result["questions"] == []
+    assert ai.search_calls == 0
+
+
+def test_missing_original_does_not_launch_speculative_search():
+    ai = FakeAI(gate={"needs_review": True, "reason": "值得比对", "questions": [QUESTION]})
+    result = review(ai, original="")
+    assert result["status"] == "unverifiable"
+    assert result["questions"] == []
+    assert ai.search_calls == 0
+
+
+def test_unrelated_original_cannot_spawn_external_questions():
+    ai = FakeAI(comparison={"status": "source_mismatch", "summary": "材料不对应",
+        "issues": [{"original": CONTENT, "evidence": "Other story", "reason": "材料不对应"}],
+        "questions": [QUESTION]})
+    assert review(ai, original="Other story")["status"] == "flagged"
+    assert ai.search_calls == 0
+
+
+@pytest.mark.parametrize("overrides", [{"source_evidence": "fabricated quote"}, {"source_evidence": ""}, {"reason": ""}])
+def test_search_question_requires_source_anchor_and_material_reason(overrides):
+    ai = FakeAI(comparison={"status": "passed", "summary": "待核实", "issues": [],
+        "questions": [{**QUESTION, **overrides}]})
+    assert review(ai)["status"] == "failed"
+    assert ai.search_calls == 0
+
+
+def test_unverified_negative_entity_translation_is_still_searched():
+    content = "鸣石投资关联基金亏损43%"
+    question = {"claim": "鸣石投资", "question": "Shanghai Minghong Investment Co.对应鸣石投资吗？",
+        "kind": "name_mapping", "source_evidence": "Shanghai Minghong Investment Co.",
+        "reason": "中文名为编辑补充，负面事件可能认错机构"}
+    ai = FakeAI(comparison={"status": "passed", "summary": "名称转换待核实", "issues": [], "questions": [question]},
+        external={"result": {"summary": "认错机构", "findings": [{**question, "verdict": "contradicted",
+            "reason": "名称对应错误", "evidence": [{"url": "https://issuer.example/about", "quote": "Shanghai Minghong"}]}]},
+            "sources": ["https://issuer.example/about"]})
+    result = review(ai, content=content, original="Shanghai Minghong Investment Co. linked fund lost 43%")
+    assert result["status"] == "flagged"
+    assert ai.search_calls == 1
 
 
 @pytest.fixture
@@ -148,6 +195,20 @@ def test_claim_lease_dedup_and_content_change_invalidate_old_result(repository):
     old = repository.detail("123", first["id"])
     assert old["is_current"] is False
     assert old["check"]["content"] == CONTENT
+
+
+def test_policy_change_creates_new_review_and_retains_old_history(repository, monkeypatch):
+    from packages.fact_auditor import repository as module
+    add_reference(repository)
+    old = claim(repository)
+    repository.save(old, {"status": "flagged", "summary": "旧策略"}, worker_id="one")
+    monkeypatch.setattr(module, "POLICY_VERSION", "test-narrower-policy")
+    assert repository.detail("123")["check"] is None
+    assert repository.detail("123", old["id"])["is_current"] is False
+    new = claim(repository)
+    assert new["id"] != old["id"]
+    assert new["policy_version"] == "test-narrower-policy"
+    assert len(repository.detail("123")["history"]) == 2
 
 
 def test_source_link_change_invalidates_old_review(repository):

@@ -1,0 +1,42 @@
+[
+  {
+    "name": "papertrade_source_wording",
+    "title": "Papertrade前25名亏损者中21名累计交易量达1115亿美元",
+    "content": "Lookonchain 在 X 平台发文表示，Papertrade 平台多数交易者处于亏损状态。在亏损金额最高的 25 名交易者中，21 名在计入 USDC 奖励后仍处于亏损，仅 4 名总体盈利。上述交易者累计交易量达 1115 亿美元，获得 20.6 亿枚 PAPER，占总供应量的 23.4%；领取 USDC 奖励 1161 万美元，占奖励总额的 20.6%。",
+    "original_text": "Most traders on @papertrade_xyz are losing money.\nOf the top 25 biggest losers, 21 are still in the red after USDC rewards, while only 4 are profitable overall.\nTogether, they generated $111.5B in trading volume and earned 2.06B $PAPER (23.4% of supply).\nThey also claimed $11.61M in USDC rewards (20.6% of total rewards).",
+    "expected": "passed",
+    "fixture_origin": "public_source"
+  },
+  {
+    "name": "aztec_quoted_estimate",
+    "title": "Aztec攻击者向Tornado Cash存入1255.8枚ETH，价值约300万美元",
+    "content": "Aztec Rollup 攻击者向 Tornado Cash 存入 1255.8 枚 ETH，价值约 300 万美元。",
+    "original_text": "We have detected https://Tornado.Cash deposit of 1255.8 ETH (~$3M) from Aztec rollup exploiter in June.",
+    "expected": "passed",
+    "fixture_origin": "user_supplied_source"
+  },
+  {
+    "name": "attributed_forecast",
+    "title": "摩根大通资产管理预计比特币未来10年收益率高于美股和黄金",
+    "content": "据 Matt Hougan 分享的摩根大通资产管理《2027 年长期资本市场假设》报告，比特币未来10年年化复合收益率预计为10%，高于美股大盘股的7.5%和黄金的5.5%。",
+    "original_text": "Matt Hougan shared JPMorgan Asset Management’s 2027 Long-Term Capital Market Assumptions. The report forecasts Bitcoin’s compound annual return over the next 10 years at 10%, compared with 7.5% for US large-cap equities and 5.5% for gold.",
+    "expected": "passed_or_skipped",
+    "fixture_origin": "synthetic_source_fidelity_control_not_verified_report"
+  },
+  {
+    "name": "material_share_class_omission",
+    "title": "Robinhood联创Vlad卖出90%股票",
+    "content": "Robinhood 联合创始人 Vlad 卖出了90%的股票。",
+    "original_text": "Robinhood co-founder Vlad sold 90% of his Class A shares, retaining his Class B shares and the associated voting control.",
+    "expected": "flagged",
+    "fixture_origin": "synthetic_share_class_control"
+  },
+  {
+    "name": "negative_entity_translation",
+    "title": "鸣石投资关联基金亏损43%",
+    "content": "与中国量化机构鸣石投资相关的 Jupiter Research Capital 旗下基金7月以来亏损约43%。",
+    "original_text": "A fund managed by Jupiter Research Capital (Asia) Ltd. lost around 43% by July 24. Jupiter has links to Shanghai Minghong Investment Co., a Chinese quant firm.",
+    "expected": "name_mapping_question",
+    "fixture_origin": "adapted_from_user_supplied_source"
+  }
+]
