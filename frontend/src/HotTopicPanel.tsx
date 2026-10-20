@@ -56,7 +56,9 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
   const health = dashboard?.health.accounts;
   const visibleTopics = useMemo(() => dashboard?.topics ?? [], [dashboard]);
   const dailyRun = dashboard?.yesterdayHotDiscussion;
-  const dailyStatus = dailyRun ? describeDailyStatus(dailyRun.status) : null;
+  const dailyStatus = dailyRun
+    ? describeDailyStatus(dailyRun.status)
+    : dashboard ? { label: '状态接口未部署', tone: 'warning' } : null;
 
   return (
     <section className="hottopicLayout">
@@ -68,21 +70,22 @@ export function HotTopicPanel({ hotTopicAccountCount }: { hotTopicAccountCount?:
         <button className="iconButton" type="button" title="刷新热点话题" onClick={() => void refresh()} disabled={loading}><RefreshCcw size={18} /></button>
       </div>
 
-      {dailyRun && dailyStatus && <section className={`yesterdayHotDiscussion ${dailyStatus.tone}`} aria-live="polite">
+      {dailyStatus && <section className={`yesterdayHotDiscussion ${dailyStatus.tone}`} aria-live="polite">
         <div className="yesterdayHotDiscussionHeader">
-          <div><h2>昨夜热议</h2><span>{dailyRun.localDate} · 每日 08:30（北京时间）</span></div>
+          <div><h2>昨夜热议</h2><span>{dailyRun ? `${dailyRun.localDate} · 每日 08:30（北京时间）` : '每日 08:30（北京时间）'}</span></div>
           <strong>{dailyStatus.label}</strong>
         </div>
-        {dailyRun.title && <p className="yesterdayHotDiscussionTitle">{dailyRun.title}</p>}
-        <div className="yesterdayHotDiscussionMeta">
+        {!dailyRun && <p className="yesterdayHotDiscussionHint">当前后台接口未提供昨夜热议状态。需先同步后端并重启 odaily-hottopic.service。</p>}
+        {dailyRun?.title && <p className="yesterdayHotDiscussionTitle">{dailyRun.title}</p>}
+        {dailyRun && <div className="yesterdayHotDiscussionMeta">
           <span>检查热点 {dailyRun.candidateCount}</span>
           <span>排除分析类 {dailyRun.excludedAnalysisCount}</span>
           <span>排除非事件类 {dailyRun.excludedNoActionCount}</span>
           {dailyRun.attemptedAt && <span>执行 {formatTime(dailyRun.attemptedAt)}</span>}
-        </div>
-        {dailyRun.error && <p className="yesterdayHotDiscussionError">{dailyRun.error}</p>}
-        {dailyRun.status === 'waiting' && <p className="yesterdayHotDiscussionHint">到达执行时间后仍处于此状态，请检查 odaily-hottopic.service 是否运行。</p>}
-        {dailyRun.status === 'no_candidate' && <p className="yesterdayHotDiscussionHint">已检查当天首次出现的可见热点，没有符合事件型标准的话题。</p>}
+        </div>}
+        {dailyRun?.error && <p className="yesterdayHotDiscussionError">{dailyRun.error}</p>}
+        {dailyRun?.status === 'waiting' && <p className="yesterdayHotDiscussionHint">到达执行时间后仍处于此状态，请检查 odaily-hottopic.service 是否运行。</p>}
+        {dailyRun?.status === 'no_candidate' && <p className="yesterdayHotDiscussionHint">已检查当天首次出现的可见热点，没有符合事件型标准的话题。</p>}
       </section>}
 
       {error && <div className="notice error"><CircleAlert size={17} /> {error}</div>}
