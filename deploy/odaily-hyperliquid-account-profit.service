@@ -1,5 +1,5 @@
 [Unit]
-Description=OdAIly Hyperliquid seven-scenario news monitor
+Description=OdAIly Hyperliquid approved-scenario news monitor
 After=network-online.target odaily-local-pipeline.service
 Wants=network-online.target
 

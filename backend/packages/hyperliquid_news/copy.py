@@ -270,9 +270,9 @@ def scenario_title(event: dict[str, Any]) -> str | None:
         peak = evidence.get('episode_peak_unrealized_pnl')
         current = position.get('unrealized_pnl')
         if peak is not None and current is not None:
-            pnl_label = '浮盈' if number(current) >= 0 else '浮亏'
             value = f'{address}当前持有价值{money(position.get("notional", "0"))}{coin}{side}'
-            return f'浮盈{money(peak)}回吐至{pnl_label}{money(abs(number(current)))}，{value}'
+            change = '回落至' if number(current) >= 0 else '转为浮亏'
+            return f'浮盈{money(peak)}{change}{money(abs(number(current)))}，{value}'
     if 'loss_addition' in kinds and not kinds.intersection(
             {'large_profit','large_loss','profit_giveback','profit_to_loss','pnl_sign_flip'}):
         previous=evidence.get('previous_position') or {}

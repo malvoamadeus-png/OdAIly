@@ -23,9 +23,16 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
         return False
     if direction not in ('account_profit', 'historical_loss'):
         normal_enabled = enabled.intersection(PRODUCTION_SCENARIOS) - {'account_profit', 'historical_loss'}
-        if not normal_enabled or not normal_enabled.intersection(event_scenarios(event)):
-            return False
-        return observed >= int(policy.get('scenario_started_ms', policy['started_ms']))
+        starts = policy.get('scenario_started_ms_by_direction', {})
+        for scenario in normal_enabled.intersection(event_scenarios(event)):
+            started = int(starts.get(scenario, policy.get('scenario_started_ms', policy['started_ms'])))
+            if observed < started:
+                continue
+            # Newly approved directions require a successful live baseline after activation.
+            if scenario in starts and int(evidence.get('previous_snapshot_ms', 0)) < started:
+                continue
+            return True
+        return False
     started = int(policy.get('loss_started_ms', policy['started_ms'])) if loss else int(policy['started_ms'])
     if (observed < started or
             direction not in ('account_profit', 'historical_loss') or

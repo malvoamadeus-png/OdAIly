@@ -2,7 +2,7 @@
 
 ## 已确认的产品范围（2026-10-13）
 
-目标是发现真实、突出、容易理解的新闻亮点，自动发现地址、持续监测行为与结果，最终形成快讯。地址标签是新闻事实，不是交易能力认证。2026-10-19 起正式启用五个操作方向及原有账户高盈利、账户总亏损方向，共七类，均强制挂后台。
+目标是发现真实、突出、容易理解的新闻亮点，自动发现地址、持续监测行为与结果，最终形成快讯。地址标签是新闻事实，不是交易能力认证。2026-10-19 启用七类，2026-10-20 增加单资产高盈利、回吐/转换和清算方向，共十类，均强制挂后台。
 
 只讨论 Hyperliquid 合约，覆盖加密货币、美股、贵金属、原油等资产，包含 builder-deployed perp DEX。保留完整 `dex:coin` 标识，不能把同名不同市场合并。不分析现货控制力、市场冲击、成交量/流动性占比，不考虑亏损占账户权益比例。
 
@@ -22,7 +22,7 @@
 12. 重要地址在同一资产上的多空分歧。
 13. 首次被系统观察到的地址迅速建立大仓。
 
-重要地址新仓初始金额为 300 万美元。其他门槛尚未最终确认，底层提供可配置参数；工程试验默认值必须注明不是产品决定。底层与控制台保留全部方向，正式上线按方向单独启用；当前启用账户高盈利和账户总亏损高两个方向。
+重要地址新仓初始金额为 300 万美元。门槛以本文件当前规则表为准；未验收方向的工程试验值明确标记。底层与控制台保留全部方向，正式上线按方向单独启用；当前正式启用下文列明的十个方向。
 
 ### 新闻触发与背景
 
@@ -46,8 +46,8 @@
 - `client.py`：`perpDexs`、按 DEX 的 `metaAndAssetCtxs` / `clearinghouseState`、`recentTrades`、排行榜、`userFillsByTime`。命名空间完整保留。
 - `history.py`：排除现货成交，按同一资产从零仓位到清仓或反手统计完整轮；缺失开仓、数量路径断裂、同毫秒顺序无法唯一还原的轮不进入胜率。`tid` 是哈希，不是执行序号；成交去重键为 `time + coin + tid`。
 - `detector.py`：单地址同资产事件合并；持仓/占比在至少重要动作金额的数量变化下跨线或扩大档位触发，盈亏以可比较快照的变化跨线、扩大档位或相对上次新闻基准的显著绝对变化触发，保留轮次浮盈峰值；地址亮点、成交动作、清算事实、多空分歧作为结构化证据。
-- `store.py`：`hl_news_addresses / hl_news_fills / hl_news_state / hl_news_normal_state / hl_news_candidates / hl_news_metadata`。账户监测与普通五方向使用独立基线，事务内原子提交候选与状态。
-- `service.py`：`NewsMonitor.run_once()` 采集普通五方向，正式 worker 与 `AccountProfitMonitor` 同进程运行。命中普通方向后按需读取 `portfolio.perpAllTime.pnlHistory`，选取操作时间前最近样本供稿件尾部使用；不以成交区间重算替代账户总盈亏。
+- `store.py`：`hl_news_addresses / hl_news_fills / hl_news_state / hl_news_normal_state / hl_news_candidates / hl_news_metadata`。账户监测与普通八方向使用独立基线，事务内原子提交候选与状态。
+- `service.py`：`NewsMonitor.run_once()` 采集普通八方向，正式 worker 与 `AccountProfitMonitor` 同进程运行。命中普通方向后按需读取 `portfolio.perpAllTime.pnlHistory`，选取操作时间前最近样本供稿件尾部使用；不以成交区间重算替代账户总盈亏。
 - `__main__.py`：仅提供临时测试库离线回放。不会读取生产数据库配置，退出后临时库销毁。
 
 ### 候选证据
@@ -72,11 +72,11 @@
 | 巨大持仓金额 | 1,000 万美元 | 工程试验值 |
 | OI / 市值占比 | 10% | 工程试验值 |
 | 高胜率 | 70%，至少 5 个完整轮 | 已确认样本门槛；始终列出样本数 |
-| 单资产高盈利 | BTC / ETH 500 万，其他资产 300 万美元 | 动作发生前近 30 天该资产净已实现盈亏；重要操作至少 200 万美元 |
+| 单资产高盈利 | BTC / ETH 300 万，其他资产 100 万美元 | 动作发生前近 30 天该资产净已实现盈亏；重要操作至少 200 万美元 |
 | 账户高盈利 | 2,000 万美元 | 账户使用官方收益周期或累计范围 |
 | 账户巨亏 | 2,000 万美元 | 2026-10-15 按高盈利反向设置的待验收试验值 |
-| 浮盈回吐 | 峰值已超过对应盈亏线，回吐 50% | 工程试验值 |
-| 接近清算 | 距离 5%，仓位至少 300 万美元 | 工程试验值 |
+| 浮盈回吐 | 峰值至少 BTC/ETH 30 万、其他 10 万美元，回吐 15% | 已验收独立回吐线，不降低其他场景盈亏门槛 |
+| 接近清算 | 距离 20%，仓位至少 300 万美元 | 本轮审查采用的低门槛 |
 | 状态显著扩大档位 | 前一触发规模的 2 倍 | 工程试验值 |
 | 巨额单资产浮盈 / 浮亏变化 | BTC/ETH 500 万，其余 200 万美元 | 同一持仓下的扩大额达到门槛才触发；不含收窄或仓位增减导致的盈亏变化 |
 | 新观察地址快速建仓 | 首次观察后 1 小时内 | 工程试验值 |
@@ -85,13 +85,13 @@
 
 ### 采集预算与失败处理
 
-普通五方向每轮轮询 2 个已发现地址，账户方向沿用独立到期调度；市场目录每小时缓存，最近成交按市场轮转补充地址。该采样不是全市场实时订阅，覆盖受地址池、DEX 数量和请求预算限制。账户两方向资格复核仍使用官方榜单与 portfolio。
+普通八方向每轮轮询 2 个已发现地址，账户方向沿用独立到期调度；市场目录每小时缓存，最近成交按市场轮转补充地址。该采样不是全市场实时订阅，覆盖受地址池、DEX 数量和请求预算限制。账户两方向资格复核仍使用官方榜单与 portfolio。
 
 HTTP 采集以保守估算将本客户端限制到 600 request-weight/分钟，重试也计入节奏；Hyperliquid 官方 IP 总额度为 1,200/分钟，与同 IP 其他服务仍须协调。每请求默认超时 20 秒，最多尝试 3 次；请求参数可在构造 client 时指定。所有网络请求在 SQLite 事务之外。
 
 历史每页最多 2,000 条、默认最多 6 页，分页保留最后毫秒的包含边界，避免漏掉同一毫秒的成交。页预算不足可在下一轮续取；同一毫秒塞满 2,000 条且无法向前推进，标记 `timestamp_saturated`，不宣称历史完整。API 最近 10,000 条保留限制即使分页结束也仍然存在。
 
-任一 DEX 仓位请求失败，当前地址本轮整体失败，上次成功基线不变，不推断清仓。普通五方向和账户方向共用常驻进程，使用分开的状态表与调度；普通方向启动时先建立独立基线。portfolio 尾部样本查询失败不阻断事件，但不生成缺失的盈亏数值。
+任一 DEX 仓位请求失败，当前地址本轮整体失败，上次成功基线不变，不推断清仓。普通八方向和账户方向共用常驻进程，使用分开的状态表与调度；普通方向启动时先建立独立基线。portfolio 尾部样本查询失败不阻断事件，但不生成缺失的盈亏数值。
 
 ## 能力核验结果（2026-10-13）
 
@@ -174,7 +174,7 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 
 `hyperliquid_news` 以 `judged` 状态进入共享 `search / write / format_publish / publish`；该状态表示硬规则已准入，不执行判断者。搜索者通过后为 `deduped`，重复为 `duplicate`，失败为 `search_failed`。发布阶段强制挂后台，与常规/AI信源发布开关无关，`isPublish=false / isPush=false`，使用稳定 task Idempotency-Key。正文、Prompt 版本、模型、流程时间及提交结果都复用共享流水线留存。
 
-控制台独立一级标签细节见 `控制台-Hyperliquid监测.md`。正式常驻 worker 同时运行普通五方向和账户高盈利/总亏损方向；七方向投递限制对手工 dispatch 同样生效。
+控制台独立一级标签细节见 `控制台-Hyperliquid监测.md`。正式常驻 worker 同时运行普通八方向和账户高盈利/总亏损方向；十方向投递限制对手工 dispatch 同样生效。
 
 服务器命令（本地禁止在线采集与产品服务，只允许临时库测试/回放）：
 
@@ -228,7 +228,7 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 
 历史成交重建只用于本次上线前补足案例和调整规则，不接入 `NewsMonitor.run_once`，不改变常规监测路线。命令 `hyperliquid-news mine-test-cases --address-limit 40 --per-side 12` 单独保存真实地址的历史操作到 `hl_news_test_cases`；完整行为证据、属性截止时间与执行价折算口径均保留。单资产高盈利必须有动作发生前近 30 天已实现净盈亏字段并达到门槛；缺少该字段时不以全历史盈利回退。测试集每个地址、资产、方向保留证据最完整/强度最高的代表案例，重放后清除该地址旧的逐笔测试案例和预览，避免同一连续仓位刷满列表。正常采集状态不被回放覆盖，测试回放不调用发布接口。控制台按 dataset 展示，不能把历史试稿当作当前新闻。
 
-测试稿命令 `hyperliquid-news preview-test-cases --limit 30` 为测试方向生成独立 Prompt 编辑预览，仅保存管理后台预览。每方向最多选择 5 条，同一地址资产不重复。`prune-tested-cases` 从 `hl_news_test_cases` 删除七个已验收正式方向独有的案例及预览，同时保留命中未研究方向的混合案例并移除其已验收方向标签；带实验标识的单资产高盈利案例也保留在测试集，但不会进入正式方向。`replay-cached-test-cases --reset` 仍只重建独立测试数据，不改正式候选、tasks 或地址基线。
+测试稿命令 `hyperliquid-news preview-test-cases --limit 30` 为测试方向生成独立 Prompt 编辑预览，仅保存管理后台预览。每方向最多选择 5 条，同一地址资产不重复。`prune-tested-cases` 从 `hl_news_test_cases` 删除十个已验收正式方向独有的案例及预览，同时保留命中未研究方向的混合案例并移除其已验收方向标签。`replay-cached-test-cases --reset` 仍只重建独立测试数据，不改正式候选、tasks 或地址基线。
 
 价格变化类测试可使用真实成交的 `startPosition / side / sz / px / closedPnl` 连续路径重建持仓成本：平仓成交盈亏反推当时成本，再逆向扣除此前加仓；从零建仓可直接累计成本。与后续平仓结果不一致超过 0.10 美元、仓位数量断裂或同时间排序不确定的路径不用于价格案例。只在实际成交时点按成交价重估同一仓位浮盈亏，不声称取得历史标记价或完整盘中峰值；不产生历史接近清算信号。测试事件 `test_replay` 保留成本和价格口径。`replay-cached-test-cases` 仅重放已缓存测试成交，不发网络请求、不推进正式状态。
 
@@ -242,20 +242,20 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 独立写作模板要求所有 Hyperliquid 标题绕过特色模式，直接写明最重要的成绩/结果和本次操作；正文必须再次体现这些核心信息。单资产高胜率操作需同时写明该资产胜率与此次动作，统计周期依据实际数据字段，不够 5 轮的地址不能使用该方向标题。
 
 
-单资产高胜率方向使用独立 `win_rate_action=1000000` 美元操作门槛，完整轮至少 5、胜率至少 70% 不变；单资产高盈利方向使用 `asset_profit_action=2000000`，BTC / ETH 盈利线 500 万美元、其他资产 300 万美元。其余方向仍使用 `action=3000000`。不同亮点按各自门槛独立核验，不因一个方向达标就降低其他方向准入。
+单资产高胜率方向使用独立 `win_rate_action=1000000` 美元操作门槛，完整轮至少 5、胜率至少 70% 不变；单资产高盈利方向使用 `asset_profit_action=2000000`，BTC / ETH 盈利线 300 万美元、其他资产 100 万美元。其余方向仍使用 `action=3000000`。不同亮点按各自门槛独立核验，不因一个方向达标就降低其他方向准入。
 
 ## 场景 Prompt 与低门槛测试（2026-10-20）
 
 场景卡片和事件详情都展示实际 Prompt 名称，并提供直达控制台 Prompt 编辑器的入口。投递和测试预览共用 `prompt_key_for_event`，一个事件命中多个场景时使用固定优先级；CLI 对已保存任务生成的修订预览同样按任务记录的 Prompt key 读取活动版本。初始化时为新增场景 Prompt 建立独立模板；只改某个 Prompt 不影响其他类型。
 
-测试专用 `--threshold-profile low-10|low-20` 仅用于挖掘与回放：近30天单资产净盈利门槛 BTC/ETH 300 万美元、其他资产 100 万美元；浮盈亏变化门槛 BTC/ETH 30 万美元、其他资产 10 万美元；回吐比例 15%；距清算 10% 或 20%。重要操作金额仍沿用正式默认值。测试页额外展示低门槛单资产高盈利方向；实验案例有独立 `test_replay` 标记、可以生成预览，但不会进入正式候选、任务或发布。
+测试专用 `--threshold-profile low-10|low-20` 仅用于挖掘与回放：近30天单资产净盈利门槛 BTC/ETH 300 万美元、其他资产 100 万美元；浮盈亏变化门槛 BTC/ETH 30 万美元、其他资产 10 万美元；回吐比例 15%；距清算 10% 或 20%。重要操作金额仍沿用正式默认值。低门槛回放工具继续仅写独立测试存储；三类已验收方向不再展示在测试页。
 
 2026-10-20 官方只读快照找到两条 ZEC 空单回吐案例：监测期间浮盈峰值约 1,771.73 万美元、当前约 1,434.50 万美元、持仓价值约 4,720.27 万美元；另一条峰值约 1,393.47 万美元、当前约 1,003.34 万美元、持仓价值约 5,512.11 万美元。另找到 `xyz:SKHY` 多单，持仓价值约 2,056.02 万美元、浮亏约 401.69 万美元、距清算价约 17.66%，因此只命中 `low-20`，不命中 `low-10`。官方 `perpAllTime` 样本可用于在这些方向的文案尾部补充账户总盈亏。脱敏标题和正文预览见[低门槛上线前案例预览](../讨论与修改日志/调研与测试/2026-10-20-Hyperliquid低门槛上线前案例预览.md)。
 
 
 ## 账户高盈利单方向正式上线（2026-10-14）
 
-当前正式启用七个方向：`large_pnl`、`asset_win_rate`、`reversal`、`loss_addition`、`realized`、`account_profit`、`historical_loss`。普通五方向与账户方向分开存储基线；启用普通五方向时重建其独立基线，禁止回放部署前行为。仍强制挂后台 `isPublish=false / isPush=false`。
+当前正式启用十个方向：`large_pnl`、`asset_win_rate`、`reversal`、`loss_addition`、`realized`、`account_profit`、`historical_loss`、`asset_profit`、`giveback`、`liquidation`。普通八方向与账户方向分开存储基线；启用普通八方向时重建其独立基线，禁止回放部署前行为。仍强制挂后台 `isPublish=false / isPush=false`。
 
 ### 地址发现、资格与调度
 
@@ -270,15 +270,15 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 
 ### 正式投递边界与运行
 
-`production_account_profit` 元数据记录七个 `enabled_scenarios` 及 `scenario_started_ms`。账户高盈利/总亏损保留各自上线起点、资格和新鲜度校验；普通五方向只接收新普通基线生成的事件，测试回放不得投递。投递查询和创建 task 的事务内均按方向、起点及证据检查。共享流水线行为防重、跨来源查重和后台提交保持有效。
+`production_account_profit` 元数据记录十个 `enabled_scenarios` 及 `scenario_started_ms`。账户高盈利/总亏损保留各自上线起点、资格和新鲜度校验；普通八方向只接收新普通基线生成的事件，测试回放不得投递。投递查询和创建 task 的事务内均按方向、起点及证据检查。共享流水线行为防重、跨来源查重和后台提交保持有效。
 
-服务 `deploy/odaily-hyperliquid-account-profit.service` 使用 `hyperliquid-news run-account-profit`，每轮采集普通五方向和账户两方向，并投递最多 10 条；循环间隔 30 秒，异常写入 `last_pass` 并重试。旧手工 `odaily-whale-watch-hyperliquid.service` 不受此方向开关控制。
+服务 `deploy/odaily-hyperliquid-account-profit.service` 使用 `hyperliquid-news run-account-profit`，每轮采集普通八方向和账户两方向，并投递最多 10 条；循环间隔 30 秒，异常写入 `last_pass` 并重试。旧手工 `odaily-whale-watch-hyperliquid.service` 不受此方向开关控制。
 
 服务器同步已提交代码并激活模板后执行：
 
 ```bash
-.venv/bin/python backend/src/main.py hyperliquid-news enable-seven-scenarios
-# 普通五方向以独立基线启动，只投递上线后的新事件
+.venv/bin/python backend/src/main.py hyperliquid-news enable-approved-scenarios
+# 普通八方向以独立基线启动，只投递上线后的新事件
 .venv/bin/python backend/src/main.py hyperliquid-news run-account-profit --once
 .venv/bin/python backend/src/main.py hyperliquid-news prune-tested-cases
 install -m 644 deploy/odaily-hyperliquid-account-profit.service /etc/systemd/system/
@@ -290,7 +290,7 @@ systemctl enable --now odaily-hyperliquid-account-profit.service
 
 ### 未研究方向的案例保留
 
-其余未研究方向只出现在“上线前测试案例”数据集，不进入七方向正式投递。普通五方向使用一般地址池与 `hl_news_normal_state`；账户两方向使用独立资格池及状态。
+其余未研究方向只出现在“上线前测试案例”数据集，不进入十方向正式投递。普通八方向使用一般地址池与 `hl_news_normal_state`；账户两方向使用独立资格池及状态。
 
 上线核查记录：2026-10-14 官方服务器已激活 Hyperliquid Prompt 第 8 版，启用仅 account_profit 的持久化开关与常驻服务。首轮发现 163 个榜单达标地址（须继续 portfolio 核验），首次验证处理 3 个地址、随后常驻首轮处理 10 个地址，均无错误，仅建立基线、未补发旧操作。实际有 11 个 DEX，逐步核验与覆盖延迟可在 account_pool 查看，发现数不能当成全部已完成实时监测。第 8 版账户方向测试预览已生成，无公开发布。成交补查截止时间单独保存，不因随后的收益复核耗时推进成交游标。
 
@@ -307,7 +307,7 @@ systemctl enable --now odaily-hyperliquid-account-profit.service
 
 AccountProfitMonitor 共用现有地址池 hl_news_account_pool、perp目录缓存、官方收益缓存、成交去重、采集节奏和单一请求预算。负向发现仅采用官方全时段亏损榜中达标地址，榜单只用于发现，实际资格仍须 portfolio 核验。正向发现及周期门槛沿用既有规则。无需第二个并发采集服务。CLI实现名与service保留 account-profit，代表共享调度，不为名称重命名。
 
-`production_account_profit.enabled_scenarios` 包含账户高盈利、账户总亏损和普通五方向。`scenario_started_ms` 限定普通五方向新事件起点；首次启用时清空独立普通状态表，使下轮采集只建立新基线。账户亏损保留独立 `loss_started_ms`，不重置既有盈利基线。
+`production_account_profit.enabled_scenarios` 包含账户高盈利、账户总亏损和普通八方向。`scenario_started_ms` 限定普通八方向新事件起点；首次启用时清空独立普通状态表，使下轮采集只建立新基线。账户亏损保留独立 `loss_started_ms`，不重置既有盈利基线。
 
 亏损重要操作门槛按同品种两个成功快照的有符号数量净差 × 当前参考价（清空时用上一成功快照价）至少300万美元，反向成交互相抵消，毛成交额或价格上涨不能让不变数量过线。候选证据保留 net_action_notional_usd。成交分页不完整不提交部分动作，先留 pending；只有完整批次再更新基线。候选形成后再次核验账户仍达标，失败不推断清仓。
 
@@ -330,3 +330,10 @@ systemctl restart odaily-hyperliquid-account-profit.service odaily-local-pipelin
 所有场景统一由程序在正文末尾追加“地址：0x…；总盈亏：XXX 万美元（样本截至…）”；多地址逐行列出，不交给模型拼接。总盈亏使用事件时点前最近的官方 `perpAllTime.pnlHistory`，负数表示亏损；缺失时明确显示“未取得”。测试预览生成前同样补取 Portfolio 总盈亏，不只在案例挖掘时补取。旧编辑预览需要重新生成，部署格式化代码不会自动改写已保存的文本，也不重发外部稿件。
 
 合约动作规范化与盈利统计资格独立：将“买入…BTC多单”按前后仓位和成交动作改为开仓/加仓；只有当前快照则写持有。此用词修正不要求重新核实原例的单资产盈利属性。
+
+
+2026-10-20 三类验收上线：单资产高盈利、浮盈回吐/双向盈亏转换、接近清算/实际清算加入正常监测，共十类；上线前测试仅保留巨大持仓、同资产多空对决、新观察地址快速建仓。执行 `prune-tested-cases` 清除三类独有测试案例和预览，混合案例仅保留未验收标签，不把历史测试转为正式事件。
+
+采用本轮审查的 low-20 参数：近30天单资产净盈利 BTC/ETH 300 万美元、其他资产 100 万美元，动作至少 200 万美元；回吐/转换使用独立 `giveback_major_pnl=300000` / `giveback_other_pnl=100000`，回吐比例 15%；接近清算距离 20%，重要仓位/实际清算成交金额仍至少 300 万美元。原七类金额线不变。回吐标题用“浮盈XXX万美元回落至XXX万美元”或“浮盈XXX万美元后回吐XXX万美元”；盈转亏单独明确浮亏。
+
+新增方向在 `production_account_profit.scenario_started_ms_by_direction` 保存各自启用时刻；新增方向事件须在该时刻后有成功前序快照（`evidence.previous_snapshot_ms`），并且本次观察也在启用后。原有方向保留旧时间边界和基线。重复启用不重置时刻。`enable-approved-scenarios` 为正式命令，旧命令保留兼容别名。激活回吐模板使用 `hyperliquid-news activate-prompt --template-key hyperliquid_giveback_writer`，保留旧版本。

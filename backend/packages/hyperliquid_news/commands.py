@@ -52,15 +52,18 @@ def run_command(args: Any) -> int:
                 conn.execute("UPDATE hl_news_account_pool SET next_poll_ms=MIN(next_poll_ms,?) WHERE qualified=0",
                              (policy['loss_started_ms'],))
         print(encode(policy))
-    elif action == 'enable-seven-scenarios':
+    elif action in ('enable-seven-scenarios', 'enable-approved-scenarios'):
         import time
         from .scenarios import PRODUCTION_SCENARIOS
         store.initialize()
         policy = store.metadata('production_account_profit', None)
         if not policy or not policy.get('enabled'):
-            raise ValueError('Enable the shared account monitor before the seven production scenarios')
+            raise ValueError('Enable the shared account monitor before approved production scenarios')
         now = int(time.time() * 1000)
         existing = set(policy.get('enabled_scenarios', []))
+        starts = policy.setdefault('scenario_started_ms_by_direction', {})
+        for scenario in set(PRODUCTION_SCENARIOS) - existing:
+            starts.setdefault(scenario, now)
         policy['enabled_scenarios'] = list(PRODUCTION_SCENARIOS)
         policy.setdefault('loss_started_ms', now)
         policy.setdefault('scenario_started_ms', now)
@@ -85,7 +88,7 @@ def run_command(args: Any) -> int:
                                      leaderboard_seeds=0, markets_per_discovery=1)
         dispatcher = EventDispatcher(store)
         while True:
-            report = {'observed_ms': int(time.time()*1000), 'direction': 'seven_scenarios'}
+            report = {'observed_ms': int(time.time()*1000), 'direction': 'approved_scenarios'}
             try:
                 report['account_monitor'] = monitor.run_once()
             except Exception as exc:
@@ -108,7 +111,7 @@ def run_command(args: Any) -> int:
                 break
             time.sleep(30)
     elif action == 'activate-prompt':
-        print(encode(activate_writer_prompt(path, get_paths().root_dir)))
+        print(encode(activate_writer_prompt(path, get_paths().root_dir, template_key=args.template_key)))
     elif action == 'preview':
         from packages.common.config import load_x_processing_settings
         from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
@@ -170,21 +173,23 @@ def run_command(args: Any) -> int:
     return 0
 
 
-def activate_writer_prompt(path: Path, root: Path) -> dict[str, Any]:
+def activate_writer_prompt(path: Path, root: Path, *, template_key: str = 'hyperliquid_writer') -> dict[str, Any]:
     """Publish the dedicated file as a new full version without rewriting history."""
     from packages.common.storage import connect_sqlite
-    content = (root / 'docs/OdAIly代码与整体设计/Hyperliquid快讯模板.txt').read_text(encoding='utf-8')
+    files = {'hyperliquid_writer': 'Hyperliquid快讯模板.txt',
+             'hyperliquid_giveback_writer': 'Hyperliquid浮盈回吐Prompt.txt'}
+    content = (root / 'docs/OdAIly代码与整体设计' / files[template_key]).read_text(encoding='utf-8')
     with connect_sqlite(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
-        active = conn.execute("SELECT v.* FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id WHERE t.template_key='hyperliquid_writer' AND v.deleted_at IS NULL").fetchone()
+        active = conn.execute("SELECT v.* FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id WHERE t.template_key=? AND v.deleted_at IS NULL", (template_key,)).fetchone()
         if active is None:
             raise ValueError('Initialize Hyperliquid writer prompt before activation')
         if active['content'] == content:
             conn.commit()
             return {'version_number': active['version_number'], 'changed': False}
-        version = conn.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM prompt_template_versions WHERE template_key='hyperliquid_writer'").fetchone()[0]
-        cursor = conn.execute("INSERT INTO prompt_template_versions(template_key,version_number,content,note,published_at) VALUES ('hyperliquid_writer',?,?,?,CURRENT_TIMESTAMP)",
-                              (version, content, 'news language, trigger-only facts and supplemental footer'))
-        conn.execute("UPDATE prompt_templates SET active_version_id=?,updated_at=CURRENT_TIMESTAMP WHERE template_key='hyperliquid_writer'", (cursor.lastrowid,))
+        version = conn.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM prompt_template_versions WHERE template_key=?", (template_key,)).fetchone()[0]
+        cursor = conn.execute("INSERT INTO prompt_template_versions(template_key,version_number,content,note,published_at) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",
+                              (template_key, version, content, 'approved scenario wording and factual footer'))
+        conn.execute("UPDATE prompt_templates SET active_version_id=?,updated_at=CURRENT_TIMESTAMP WHERE template_key=?", (cursor.lastrowid, template_key))
         conn.commit()
         return {'version_number': version, 'changed': True}

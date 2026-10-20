@@ -182,7 +182,7 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if 'large_profit' in kinds or 'large_loss' in kinds:
                 facts['previous_reported_floating_pnl'] = str(anchor)
                 facts['previous_reported_floating_pnl_ms'] = pnl_anchor_times[coin]
-            if comparable_pnl and peak >= rules.pnl_line(coin):
+            if comparable_pnl and peak >= rules.giveback_pnl_line(coin):
                 giveback = peak - p.unrealized_pnl
                 facts['episode_peak_unrealized_pnl'] = str(peak)
                 facts['episode_peak_ms'] = peak_time
@@ -192,7 +192,7 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                     if current[kind] > (old_signals.get(coin, {}).get(kind, 0) if same_episode else 0):
                         kinds.append(kind)
             if (comparable_pnl and old.unrealized_pnl * p.unrealized_pnl < 0 and
-                    min(abs(old.unrealized_pnl), abs(p.unrealized_pnl)) >= rules.pnl_line(coin)):
+                    min(abs(old.unrealized_pnl), abs(p.unrealized_pnl)) >= rules.giveback_pnl_line(coin)):
                 kinds.append('pnl_sign_flip')
             if previous is not None and old is not None and p.size * old.size < 0 and min(old.notional, p.notional) >= rules.action:
                 kinds.append('large_reversal')

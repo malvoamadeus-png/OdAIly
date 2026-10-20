@@ -150,6 +150,7 @@ class NewsMonitor:
                 state['snapshot_times'] = snapshot_times
                 state['monitoring_since_ms'] = old['state'].get('monitoring_since_ms', old['state']['observed_ms']) if old else now_ms
                 for event in events:
+                    event.evidence['previous_snapshot_ms'] = old['state']['observed_ms'] if old else now_ms
                     event.evidence['address_sources'] = json.loads(row['sources'])
                     event.evidence['snapshot_times'] = snapshot_times
                 self.store.commit_observation(address=address, now_ms=now_ms, state=state, history=history,

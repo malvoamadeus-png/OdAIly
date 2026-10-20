@@ -19,7 +19,7 @@ def number(value: Any) -> Decimal:
 
 @dataclass(frozen=True)
 class Rules:
-    # Except the confirmed PnL/action lines, these are experiment defaults.
+    # Approved scene thresholds; unapproved directions retain experiment defaults.
     large_position: Decimal = Decimal('10000000')
     oi_share: Decimal = Decimal('0.10')
     market_cap_share: Decimal = Decimal('0.10')
@@ -28,21 +28,23 @@ class Rules:
     action: Decimal = Decimal('3000000')
     win_rate_action: Decimal = Decimal('1000000')
     win_rate: Decimal = Decimal('0.70')
-    asset_profit: Decimal = Decimal('5000000')
-    other_asset_profit: Decimal = Decimal('3000000')
+    asset_profit: Decimal = Decimal('3000000')
+    other_asset_profit: Decimal = Decimal('1000000')
     asset_profit_action: Decimal = Decimal('2000000')
     account_profit: Decimal = Decimal('20000000')
     historical_loss: Decimal = Decimal('20000000')
     min_rounds: int = 5
-    liquidation_distance: Decimal = Decimal('0.05')
-    giveback_fraction: Decimal = Decimal('0.50')
+    liquidation_distance: Decimal = Decimal('0.20')
+    giveback_fraction: Decimal = Decimal('0.15')
+    giveback_major_pnl: Decimal = Decimal('300000')
+    giveback_other_pnl: Decimal = Decimal('100000')
     escalation: Decimal = Decimal('2')
     new_address_window_ms: int = 3600000
 
     def __post_init__(self) -> None:
         for key in ('large_position', 'major_pnl', 'other_pnl', 'action', 'asset_profit',
                     'other_asset_profit', 'asset_profit_action', 'account_profit',
-                    'historical_loss', 'win_rate_action'):
+                    'historical_loss', 'win_rate_action', 'giveback_major_pnl', 'giveback_other_pnl'):
             if number(getattr(self, key)) <= 0:
                 raise ValueError(f'{key} must be positive')
         for key in ('oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'):
@@ -54,6 +56,9 @@ class Rules:
     def pnl_line(self, coin: str) -> Decimal:
         # Namespaced assets retain their identity, even if their ticker is BTC.
         return self.major_pnl if coin in ('BTC', 'ETH') else self.other_pnl
+
+    def giveback_pnl_line(self, coin: str) -> Decimal:
+        return self.giveback_major_pnl if coin in ('BTC', 'ETH') else self.giveback_other_pnl
 
     def asset_profit_line(self, coin: str) -> Decimal:
         # Namespaced assets retain their identity, even if their ticker is BTC.

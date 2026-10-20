@@ -55,6 +55,7 @@ const ruleNames: Record<string, string> = {
   large_position: '大仓金额', action: '重要操作金额', win_rate_action: '高胜率地址操作金额', market_cap_share: '相当于市值占比', oi_share: '未平仓量占比',
   major_pnl: 'BTC / ETH 盈亏', other_pnl: '其他资产盈亏', win_rate: '单资产胜率', min_rounds: '最低完整交易轮',
   asset_profit: 'BTC / ETH 单资产盈利', other_asset_profit: '其他资产单资产盈利', asset_profit_action: '单资产高盈利地址操作金额', account_profit: '账户盈利', historical_loss: '账户总亏损门槛',
+  giveback_major_pnl: '回吐 / 转换 BTC / ETH 盈亏', giveback_other_pnl: '回吐 / 转换其他资产盈亏',
   liquidation_distance: '距清算价', giveback_fraction: '浮盈回吐比例', escalation: '再触发档位倍数', new_address_window_ms: '新地址建仓窗口',
 };
 function ruleValue(key: string, value: unknown) {

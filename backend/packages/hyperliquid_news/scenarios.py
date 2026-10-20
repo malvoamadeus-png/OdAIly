@@ -5,11 +5,11 @@ SCENARIOS = [
     ('large_position', '巨大持仓', '持仓达到金额、市值占比或未平仓量占比门槛，并有重要建仓、加减仓变化。', ['large_position', 'large_position_action', 'oi_share', 'market_cap_share'], [], ['large_position', 'action', 'market_cap_share', 'oi_share']),
     ('large_pnl', '巨额单资产浮盈 / 浮亏', '同一仓位的浮盈或浮亏扩大达到变化额门槛；收窄和仓位增减导致的盈亏变化不计入。', ['large_profit', 'large_loss'], [], ['major_pnl', 'other_pnl']),
     ('asset_win_rate', '单资产高胜率地址操作', '该资产胜率达到门槛，且发生至少100万美元的开仓、加仓、减仓、清仓或反手。', ['highlighted_address_action'], ['asset_high_win_rate'], ['win_rate', 'min_rounds', 'win_rate_action']),
-    ('asset_profit', '单资产高盈利地址操作', 'BTC / ETH 近30天交易净盈利至少500万美元，其他资产至少300万美元，且发生至少200万美元的重要操作。', ['highlighted_address_action'], ['asset_high_profit'], ['asset_profit', 'other_asset_profit', 'asset_profit_action']),
+    ('asset_profit', '单资产高盈利地址操作', 'BTC / ETH 近30天交易净盈利至少300万美元，其他资产至少100万美元，且发生至少200万美元的重要操作。', ['highlighted_address_action'], ['asset_high_profit'], ['asset_profit', 'other_asset_profit', 'asset_profit_action']),
     ('account_profit', '账户高盈利地址操作', '账户历史盈利或官方周期收益达到门槛，且发生重要操作；两种收益口径分开展示。', ['highlighted_address_action'], ['account_high_profit', 'official_account_high_profit'], ['account_profit', 'action']),
     ('historical_loss', '账户总亏损高地址操作', '官方全时段合约账户总亏损至少2000万美元，并发生至少300万美元的重要净操作。', ['highlighted_address_action'], ['historical_loss'], ['historical_loss', 'action']),
     ('reversal', '大仓反手', '前后持仓方向相反，且反手前后仓位均达到重要金额门槛。', ['large_reversal'], [], ['action']),
-    ('giveback', '浮盈回吐 / 双向盈亏转换', '同一仓位的浮盈从峰值显著回撤，或浮盈与浮亏之间发生转换。', ['profit_giveback', 'profit_to_loss', 'pnl_sign_flip'], [], ['giveback_fraction', 'major_pnl', 'other_pnl']),
+    ('giveback', '浮盈回吐 / 双向盈亏转换', '同一仓位的浮盈从峰值显著回撤，或浮盈与浮亏之间发生转换。', ['profit_giveback', 'profit_to_loss', 'pnl_sign_flip'], [], ['giveback_fraction', 'giveback_major_pnl', 'giveback_other_pnl']),
     ('loss_addition', '巨亏后加仓', '原有仓位浮亏达到门槛后，继续同方向重要加仓。', ['loss_addition'], [], ['major_pnl', 'other_pnl', 'action']),
     ('realized', '大额主动平仓盈亏兑现', '非清算平仓成交带来达到门槛的已实现盈利或亏损。', ['large_realized_result'], [], ['action', 'major_pnl', 'other_pnl']),
     ('liquidation', '接近清算 / 实际清算', '重要仓位新进入清算价附近，或取得目标地址的实际大额清算成交。', ['near_liquidation', 'actual_liquidation'], [], ['action', 'liquidation_distance']),
@@ -19,10 +19,10 @@ SCENARIOS = [
 
 PRODUCTION_SCENARIOS = (
     'large_pnl', 'asset_win_rate', 'reversal', 'loss_addition', 'realized',
-    'account_profit', 'historical_loss',
+    'account_profit', 'historical_loss', 'asset_profit', 'giveback', 'liquidation',
 )
 UNRESEARCHED_SCENARIOS = tuple(s[0] for s in SCENARIOS if s[0] not in PRODUCTION_SCENARIOS)
-EXPERIMENTAL_SCENARIOS = ('asset_profit',)
+EXPERIMENTAL_SCENARIOS = ()
 TEST_SCENARIOS = tuple(dict.fromkeys((*UNRESEARCHED_SCENARIOS, *EXPERIMENTAL_SCENARIOS)))
 
 PROMPT_GROUPS = {
