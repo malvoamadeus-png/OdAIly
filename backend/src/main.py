@@ -316,6 +316,9 @@ def parse_args() -> argparse.Namespace:
     hl_mine.add_argument("--address-limit", type=int, default=40)
     hl_mine.add_argument("--per-side", type=int, default=12)
     hl_mine.add_argument("--addresses", nargs="+", help="Optional exact real-address test seeds.")
+    hl_mine.add_argument("--coins", nargs="+", help="Optional exact markets whose recent trades add address seeds.")
+    hl_mine.add_argument("--threshold-profile", choices=("standard", "low-10", "low-20"), default="standard",
+                         help="Experimental test-only thresholds for floating PnL and liquidation distance.")
     hl_collect = hl_actions.add_parser("collect", help="One bounded public-data collection pass; no writing/pushing.")
     hl_collect.add_argument("--addresses-per-pass", type=int, default=6)
     hl_collect.add_argument("--leaderboard-seeds", type=int, default=2)

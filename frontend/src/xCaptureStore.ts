@@ -2606,11 +2606,11 @@ export type HyperliquidNewsEvent = {
   evidence: Record<string, any>; source_url: string;
   news_eligibility?: { eligible: boolean; reason: string };
   editorial_preview?: { title: string; content: string; writer_model: string; prompt_version_number: number | null;
-    prompt_source?: 'active_prompt' | 'repository_template'; generated_at: string };
+    prompt_template_key?: string; prompt_source?: 'active_prompt' | 'repository_template'; preview_mode?: 'manual_evidence_example'; generated_at: string };
   pipeline: { task_id?: number; task_status?: string; dispatch_status?: string; dispatch_error?: string;
     draft_title?: string; draft_content?: string; final_title?: string; final_content?: string;
     search_result?: Record<string, any>; search_completed_at?: string;
-    writer_model?: string; prompt_version_id?: number; prompt_version_number?: number; write_completed_at?: string; format_completed_at?: string;
+    writer_model?: string; prompt_template_key?: string; prompt_version_id?: number; prompt_version_number?: number; write_completed_at?: string; format_completed_at?: string;
     publish_completed_at?: string; last_error?: string; push_result?: Record<string, unknown> };
 };
 export type HyperliquidNewsDashboard = {
@@ -2620,7 +2620,7 @@ export type HyperliquidNewsDashboard = {
   view?: 'scenarios' | 'addresses' | 'rules';
   production?: { enabled: boolean; started_ms: number; enabled_scenarios: string[]; publication_mode: string } | null;
   account_pool?: { tiers: Record<string, number>; qualified_due: number; max_qualified_delay_ms: number };
-  scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number }>; scenario: string | null; dataset: 'live' | 'test';
+  scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number; prompt_key: string; prompt_name: string }>; scenario: string | null; dataset: 'live' | 'test';
 };
 const hyperliquidDashboardRequests = new Map<string, Promise<HyperliquidNewsDashboard>>();
 export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_profit', dataset: 'live' | 'test' = 'live', view: 'scenarios' | 'addresses' | 'rules' = 'scenarios', addressQuery = '', addressStatus = 'all'): Promise<HyperliquidNewsDashboard> {

@@ -22,6 +22,45 @@ PRODUCTION_SCENARIOS = (
     'account_profit', 'historical_loss',
 )
 UNRESEARCHED_SCENARIOS = tuple(s[0] for s in SCENARIOS if s[0] not in PRODUCTION_SCENARIOS)
+EXPERIMENTAL_SCENARIOS = ('asset_profit',)
+TEST_SCENARIOS = tuple(dict.fromkeys((*UNRESEARCHED_SCENARIOS, *EXPERIMENTAL_SCENARIOS)))
+
+PROMPT_GROUPS = {
+    'hyperliquid_position_writer': '大仓持仓变化',
+    'hyperliquid_large_pnl_writer': '单资产浮盈亏变化',
+    'hyperliquid_asset_performance_writer': '单资产交易表现',
+    'hyperliquid_account_result_writer': '账户盈亏与操作',
+    'hyperliquid_reversal_writer': '大仓反手',
+    'hyperliquid_giveback_writer': '浮盈回吐与盈亏转换',
+    'hyperliquid_loss_addition_writer': '浮亏中继续加仓',
+    'hyperliquid_realized_writer': '大额平仓盈亏兑现',
+    'hyperliquid_liquidation_writer': '接近清算与实际清算',
+    'hyperliquid_divergence_writer': '同资产多空分歧',
+    'hyperliquid_new_address_writer': '新观察地址建仓',
+    'hyperliquid_writer': '通用兜底',
+}
+
+PROMPT_KEY_BY_SCENARIO = {
+    'large_position': 'hyperliquid_position_writer',
+    'large_pnl': 'hyperliquid_large_pnl_writer',
+    'asset_win_rate': 'hyperliquid_asset_performance_writer',
+    'asset_profit': 'hyperliquid_asset_performance_writer',
+    'account_profit': 'hyperliquid_account_result_writer',
+    'historical_loss': 'hyperliquid_account_result_writer',
+    'reversal': 'hyperliquid_reversal_writer',
+    'giveback': 'hyperliquid_giveback_writer',
+    'loss_addition': 'hyperliquid_loss_addition_writer',
+    'realized': 'hyperliquid_realized_writer',
+    'liquidation': 'hyperliquid_liquidation_writer',
+    'divergence': 'hyperliquid_divergence_writer',
+    'new_address': 'hyperliquid_new_address_writer',
+}
+
+PROMPT_PRIORITY = (
+    'liquidation', 'giveback', 'large_pnl', 'historical_loss', 'account_profit',
+    'asset_win_rate', 'asset_profit', 'reversal', 'loss_addition', 'realized',
+    'large_position', 'divergence', 'new_address',
+)
 
 
 def scenario_condition(key: str, *, dataset: str = 'live') -> str:
@@ -41,8 +80,10 @@ def scenario_condition(key: str, *, dataset: str = 'live') -> str:
 
 
 def scenario_cards(counts: dict[str, int] | None = None, *, dataset: str = 'live') -> list[dict]:
-    visible = PRODUCTION_SCENARIOS if dataset == 'live' else UNRESEARCHED_SCENARIOS
-    return [dict(key=s[0], name=s[1], description=s[2], rule_keys=s[5], count=(counts or {}).get(s[0], 0))
+    visible = PRODUCTION_SCENARIOS if dataset == 'live' else TEST_SCENARIOS
+    return [dict(key=s[0], name=s[1], description=s[2], rule_keys=s[5], count=(counts or {}).get(s[0], 0),
+                 prompt_key=PROMPT_KEY_BY_SCENARIO[s[0]],
+                 prompt_name=PROMPT_GROUPS[PROMPT_KEY_BY_SCENARIO[s[0]]])
             for s in SCENARIOS if s[0] in visible]
 
 
@@ -51,3 +92,11 @@ def event_scenarios(event: dict) -> list[str]:
     labels = set(event.get('evidence', {}).get('highlights', []))
     return [s[0] for s in SCENARIOS if kinds.intersection(s[3]) and
             (not s[4] or labels.intersection(s[4]))]
+
+
+def prompt_key_for_event(event: dict) -> str:
+    matched = set(event_scenarios(event))
+    for scenario in PROMPT_PRIORITY:
+        if scenario in matched:
+            return PROMPT_KEY_BY_SCENARIO[scenario]
+    return 'hyperliquid_writer'

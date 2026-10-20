@@ -14,6 +14,7 @@ from .search import search_material
 from .eligibility import news_eligibility
 from .store import NewsStore, encode
 from .production import production_allowed
+from .scenarios import prompt_key_for_event
 
 
 def fingerprint(event: dict[str, Any]) -> str:
@@ -126,7 +127,7 @@ class EventDispatcher:
                 conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
                              (event['key'], signature, duplicate['task_id'], 'duplicate', None, now, now))
                 return {'event_key': event['key'], 'task_id': duplicate['task_id'], 'status': 'duplicate'}
-            metadata = {'writer_template_key': 'hyperliquid_writer', 'force_backend_only': True,
+            metadata = {'writer_template_key': prompt_key_for_event(event), 'force_backend_only': True,
                         'hyperliquid_event_key': event['key'], 'rule_kinds': event['kinds'],
                         'production_direction': event['evidence'].get('production_direction')}
             url = source_url(event)

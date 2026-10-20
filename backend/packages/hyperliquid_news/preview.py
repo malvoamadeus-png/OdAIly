@@ -18,6 +18,7 @@ def generate_preview(*, task: Any, prompt: Any, settings: Any, ai_client: Any,
     structured = parse_structured_writer_output(raw, known_subjects=[], feature_mode_enabled=prompt.feature_mode_enabled)
     final = format_news(structured.draft, task.raw_payload)
     return {'title': final.title, 'content': final.content, 'writer_model': settings.writer_model,
+            'prompt_template_key': prompt.template_key,
             'prompt_version_id': prompt.id if prompt_source == 'active_prompt' else None,
             'prompt_version_number': prompt.version_number if prompt_source == 'active_prompt' else None,
             'prompt_source': prompt_source,

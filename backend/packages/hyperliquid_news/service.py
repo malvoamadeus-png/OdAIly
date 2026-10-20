@@ -10,7 +10,6 @@ from .detector import evaluate_address, evaluate_divergence
 from .history import fill_key, summarize
 from .market_cap import CoinGeckoMarketCaps
 from .models import Position, Rules, number
-from .scenarios import PRODUCTION_SCENARIOS, event_scenarios
 from .store import NewsStore
 
 
@@ -135,16 +134,11 @@ class NewsMonitor:
                     address=address, observed_ms=now_ms, first_seen_ms=row['first_seen_ms'], positions=positions,
                     previous=old['state'] if old else None, markets=markets, history=history,
                     new_fills=new_fills, rules=self.rules, history_before_actions=history_before_actions)
-                normal_scenarios = set(PRODUCTION_SCENARIOS) - {'account_profit', 'historical_loss'}
-                if events and any(set(event_scenarios({'kinds': event.kinds, 'evidence': event.evidence}))
-                                  .intersection(normal_scenarios)
-                                  for event in events):
+                if events:
                     try:
                         from .account_monitor import portfolio_all_time_at
                         portfolio = self.client.portfolio(address)
                         for event in events:
-                            if not set(event_scenarios({'kinds': event.kinds, 'evidence': event.evidence})).intersection(normal_scenarios):
-                                continue
                             action = event.evidence.get('actions') or {}
                             cutoff = int(action.get('first_fill_ms') or
                                          event.evidence.get('news_change', {}).get('observed_ms') or now_ms)
@@ -175,6 +169,17 @@ class NewsMonitor:
         previous_divergence = self.store.metadata('divergence', {})
         events, active = evaluate_divergence(observed_ms=now_ms, states=successful_states,
                                              histories=histories, previous=previous_divergence, rules=self.rules)
+        from .account_monitor import portfolio_all_time_at
+        for event in events:
+            for address in event.addresses:
+                try:
+                    portfolio = self.client.portfolio(address)
+                    total = portfolio_all_time_at(portfolio, event.observed_ms)
+                    if total:
+                        event.evidence.setdefault('histories', {}).setdefault(address, {})[
+                            'official_account_total_pnl'] = total
+                except Exception as exc:
+                    result.setdefault('supplemental_failures', {})[f'portfolio:{address}'] = str(exc)
         for coin, old_group in previous_divergence.items():
             if coin not in active and not set(old_group['addresses']).issubset(successful_states):
                 active[coin] = old_group

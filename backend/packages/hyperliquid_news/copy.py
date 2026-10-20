@@ -69,21 +69,21 @@ def source_url(event: dict[str, Any]) -> str:
 
 def footer(event: dict[str, Any]) -> str:
     """Only supplemental statistics; narrative position facts belong in the body."""
-    lines = ['地址：' + '；'.join(address_key(a) for a in event['addresses'])]
+    lines = []
     history = event['evidence'].get('history', {})
-    total = history.get('official_account_total_pnl')
-    if total is None:
-        total = history.get('official_account_performance', {}).get('windows', {}).get('allTime')
-    if total is None:
-        total = history.get('official_account_loss', {}).get('windows', {}).get('allTime')
-    if total:
-        pnl = total.get('pnl')
-        stamp = total.get('observed_ms', total.get('history_sample_ms'))
-        if pnl is not None:
-            line = '合约账户总盈亏：' + money(pnl)
+    histories = event['evidence'].get('histories', {})
+    for address in event['addresses']:
+        address_history = histories.get(address, histories.get(address.lower(), {})) if len(event['addresses']) > 1 else history
+        total = _account_total_sample(address_history)
+        line = f'地址：{address_key(address)}；总盈亏：'
+        if total is not None:
+            line += money(total['pnl'])
+            stamp = total.get('observed_ms', total.get('history_sample_ms'))
             if stamp is not None:
                 line += f'（样本截至{timestamp(stamp)}）'
-            lines.append(line)
+        else:
+            line += '未取得'
+        lines.append(line)
     if 'highlighted_address_action' in event['kinds']:
         asset = history.get('assets', {}).get(event['coin'], {})
         if 'asset_high_win_rate' in event['evidence'].get('highlights', []) and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
@@ -93,6 +93,27 @@ def footer(event: dict[str, Any]) -> str:
             if start is not None and end is not None:
                 lines.append(f'统计时间：{timestamp(start)[:10]} 至 {timestamp(end)[:10]}')
     return '\n'.join(lines)
+
+
+def _account_total_sample(history: dict[str, Any]) -> dict[str, Any] | None:
+    total = history.get('official_account_total_pnl')
+    if (isinstance(total, dict) and total.get('source') == 'hyperliquid_portfolio' and
+            total.get('scope') == 'perpAllTime_including_unrealized' and total.get('pnl') is not None):
+        return total
+    allowed_sources = {
+        ('hyperliquid_portfolio', 'official_portfolio_including_unrealized'),
+        ('hyperliquid_perpetual_portfolio', 'official_account_including_unrealized'),
+        ('hyperliquid_portfolio_historical', None),
+    }
+    for key in ('official_account_performance', 'official_account_loss'):
+        performance = history.get(key, {})
+        if (not isinstance(performance, dict) or
+                (performance.get('source'), performance.get('pnl_scope')) not in allowed_sources):
+            continue
+        sample = performance.get('windows', {}).get('allTime')
+        if isinstance(sample, dict) and sample.get('pnl') is not None:
+            return sample
+    return None
 
 
 def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
@@ -138,9 +159,15 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
 
 
 def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
+    contract = str(event.get('coin', ''))
+    display_coin = contract.rsplit(':', 1)[-1]
+    if contract and display_coin != contract:
+        draft = DraftBrief(title=draft.title.replace(contract, display_coin),
+                           content=draft.content.replace(contract, display_coin))
     draft = DraftBrief(title=draft.title.replace('降至清仓', '降至空仓'),
                        content=draft.content.replace('降至清仓', '降至空仓'))
     draft = normalize_account_copy(draft, event)
+    draft = normalize_position_words(draft, event)
     content = draft.content.strip()
     for prefix in (ODAILY_PREFIX, 'Odaily星球日报讯', PREFIX, '据 Odaily 监测，'):
         if content.startswith(prefix):
@@ -162,12 +189,59 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     return DraftBrief(title=title, content=PREFIX + body + '\n' + footer(event))
 
 
+def normalize_position_words(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
+    """Describe long positions as positions, with action verbs only when evidenced."""
+    coin = str(event.get('coin', '')).rsplit(':', 1)[-1]
+    if not coin:
+        return draft
+    evidence = event.get('evidence', {})
+    actions = evidence.get('actions') or {}
+    current = evidence.get('position') or {}
+    previous = evidence.get('previous_position') or {}
+    side = 'long' if number((current or previous).get('size', '0')) > 0 else 'short'
+    opening = number(actions.get(f'open_{side}_notional', '0'))
+    change = (evidence.get('net_position_change') or {}).get('direction')
+    if opening > 0:
+        same_side_before = previous and number(previous.get('size', '0')) * number((current or previous).get('size', '0')) > 0
+        verb = '加仓' if same_side_before else '开仓'
+    elif change in ('加仓', '减仓'):
+        verb = change
+    elif 'large_reversal' in event.get('kinds', []):
+        verb = '开仓'
+    else:
+        verb = '持有'
+    pattern = re.compile(
+        rf'买入(?P<rest>(?:约)?(?:[\d,.]+\s*(?:万美元|万美金|美元)?\s*)?(?:的)?\s*{re.escape(coin)}\s*(?:多单|多仓)?)')
+    title = pattern.sub(lambda match: verb + match.group('rest'), draft.title)
+    content = pattern.sub(lambda match: verb + match.group('rest'), draft.content)
+    return DraftBrief(title=title, content=content)
+
+
 def scenario_title(event: dict[str, Any]) -> str | None:
     """Use evidence-bound titles for scenarios with a precise requested form."""
     evidence, kinds, coin = event['evidence'], set(event['kinds']), event['coin']
+    contract = coin
+    coin = str(coin).rsplit(':', 1)[-1]
     address = '某地址'
     position = evidence.get('position') or evidence.get('previous_position') or {}
     side = '多单' if number(position.get('size', '0')) > 0 else '空单'
+    actions = evidence.get('actions') or {}
+    if 'actual_liquidation' in kinds:
+        liquidated = number(actions.get('liquidated_notional', '0'))
+        if liquidated > 0:
+            return f'{address}{coin}{side}发生约{money(liquidated)}清算'
+    if 'near_liquidation' in kinds:
+        current = evidence.get('position') or {}
+        distance = evidence.get('liquidation_distance')
+        if current and distance is not None:
+            distance_text = f'{number(distance) * 100:.2f}%'
+            title = (f'距清算价约{distance_text}，{address}持仓价值约'
+                     f'{money(current.get("notional", "0"))}{coin}{side}')
+            pnl = current.get('unrealized_pnl')
+            if pnl is not None:
+                pnl_value = number(pnl)
+                title += f'，{"浮盈" if pnl_value >= 0 else "浮亏"}{money(abs(pnl_value))}'
+            return title
     if 'large_reversal' in kinds:
         previous = evidence.get('previous_position') or {}
         current = evidence.get('position') or {}
@@ -229,6 +303,59 @@ def scenario_title(event: dict[str, Any]) -> str | None:
                          previous_value - current_value >= threshold))
             if expanded:
                 return f'{address}持有的{coin}{side}{pnl_label}扩大至{money(abs(current_value))}'
+    labels = set(evidence.get('highlights', []))
+    if 'highlighted_address_action' in kinds and labels.intersection(
+            {'asset_high_win_rate', 'asset_high_profit'}):
+        description = _highlight_action_description(evidence, coin)
+        if description:
+            asset = evidence.get('history', {}).get('assets', {}).get(contract, {})
+            if 'asset_high_profit' in labels:
+                profit = asset.get('last_30d_closed_pnl_less_fees')
+                if profit is not None:
+                    return (f'近30天{coin}交易净盈利约{money(profit)}，{address}'
+                            f'{description}')
+            if 'asset_high_win_rate' in labels and asset.get('win_rate') is not None:
+                rate = number(asset['win_rate']) * 100
+                return f'{coin}交易胜率达{rate:.2f}%的{address}{description}'
+    if 'large_position_action' in kinds or (evidence.get('net_position_change') and 'large_position' in kinds):
+        description = _highlight_action_description(evidence, coin)
+        if description:
+            return f'{address}{description}'
+    return None
+
+
+def _highlight_action_description(evidence: dict[str, Any], coin: str) -> str | None:
+    coin = coin.rsplit(':', 1)[-1]
+    actions = evidence.get('actions') or {}
+    previous = evidence.get('previous_position') or {}
+    current = evidence.get('position') or {}
+    side_position = current or previous
+    if not side_position:
+        return None
+    side = '多单' if number(side_position.get('size', '0')) > 0 else '空单'
+    opening = number(actions.get('open_long_notional' if side == '多单' else 'open_short_notional', '0'))
+    closing = number(actions.get('close_long_notional' if side == '多单' else 'close_short_notional', '0'))
+    change = evidence.get('net_position_change') or {}
+    if previous and current and number(previous.get('size', '0')) * number(current.get('size', '0')) < 0:
+        old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
+        old_close = number(actions.get(f'close_{"long" if old_side == "多单" else "short"}_notional', '0'))
+        if opening > 0:
+            prefix = f'平仓约{money(old_close)}{coin}{old_side}并' if old_close > 0 else f'平掉{coin}{old_side}并'
+            return f'{prefix}开仓约{money(opening)}{coin}{side}'
+        return f'反手持有价值约{money(side_position.get("notional", "0"))}{coin}{side}'
+    if opening > 0:
+        same_side_before = previous and number(previous.get('size', '0')) * number(side_position.get('size', '0')) > 0
+        verb = '加仓' if same_side_before else '开仓'
+        return f'{verb}约{money(opening)}{coin}{side}'
+    if closing > 0:
+        verb = '平仓' if not current else '减仓'
+        return f'{verb}约{money(closing)}{coin}{side}'
+    direction = change.get('direction')
+    if direction in ('加仓', '减仓'):
+        return f'{direction}约{money(change.get("estimated_value", "0"))}{coin}{side}'
+    value = number(side_position.get('notional', '0'))
+    if value > 0:
+        return f'当前持有价值约{money(value)}{coin}{side}'
     return None
 
 

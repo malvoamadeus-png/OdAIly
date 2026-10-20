@@ -126,13 +126,16 @@ def run_command(args: Any) -> int:
             raise ValueError('Baseline without change evidence is not eligible for a news preview')
         settings = load_x_processing_settings()
         worker = XProcessingWorker(stage='write', repository=repo, settings=settings)
-        prompt = repo.get_active_prompt('hyperliquid_writer')
+        from .scenarios import prompt_key_for_event
         for task in tasks:
             from dataclasses import replace
             task = replace(task, raw_payload=store.with_address_notes(task.raw_payload))
+            template_key = str(task.metadata.get('writer_template_key') or
+                               prompt_key_for_event(task.raw_payload))
+            prompt = repo.get_active_prompt(template_key)
             result = generate_preview(task=task, prompt=prompt, settings=settings, ai_client=worker._get_ai_client())
             store.save_global('editorial_preview:' + task.raw_payload['key'], result, [])
-            print(encode({'task_id': task.id, **result}))
+            print(encode({'task_id': task.id, 'prompt_template_key': template_key, **result}))
     elif action == 'enrich-account-test-cases':
         from .test_cases import enrich_account_cases
         print(encode(enrich_account_cases(store, limit=args.limit)))
@@ -144,7 +147,9 @@ def run_command(args: Any) -> int:
         print(encode(preview_cases(store, limit=args.limit, repository_template=args.repository_template)))
     elif action == 'mine-test-cases':
         from .test_cases import mine_cases
-        print(encode(mine_cases(store, address_limit=args.address_limit, per_side=args.per_side, addresses=args.addresses)))
+        print(encode(mine_cases(store, address_limit=args.address_limit, per_side=args.per_side,
+                                addresses=args.addresses, coins=args.coins,
+                                threshold_profile=args.threshold_profile)))
     elif action == 'collect':
         from .client import NewsClient
         from .market_cap import CoinGeckoMarketCaps, DEFAULT_MARKET_CAP_MAPPING

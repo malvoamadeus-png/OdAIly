@@ -55,7 +55,7 @@ def test_writer2_fixed_prefix_footer_source_without_model_numbers():
     assert result.content.startswith('据Odaily监测，')
     assert 'Odaily星球日报讯' not in result.content
     assert A in result.content
-    assert result.content.endswith('地址：'+A)
+    assert result.content.endswith('地址：'+A+'；总盈亏：未取得')
     assert '当前持仓：' not in result.content
     assert source_url(e) == f'https://hyperbot.network/trader/{A}'
 
@@ -92,7 +92,7 @@ def test_dispatch_durable_task_dedup_enqueue_failure_and_dashboard(tmp_path):
     task_id=result[0]['task_id']
     assert result[0]['status']=='queued'
     task=repo.get_task(task_id)
-    assert task.status=='judged' and task.metadata['writer_template_key']=='hyperliquid_writer'
+    assert task.status=='judged' and task.metadata['writer_template_key']=='hyperliquid_position_writer'
     assert dispatcher.dispatch(limit=1)==[]
     # Replaying the same state evidence at another observation time is still the same fact.
     another=replace(candidate,key='repeat',observed_ms=2000)
@@ -169,7 +169,7 @@ def test_reader_material_keeps_trigger_not_discovery_and_footer_omits_interval_p
     assert 'official_account_performance' not in text and '-11854548' not in text
     assert '-2263209' not in text and 'first_observation' not in text
     assert 'floating_pnl_usd' not in text
-    assert footer(e)=='地址：'+A
+    assert footer(e)=='地址：'+A+'；总盈亏：未取得'
 
 
 def test_empty_trade_history_is_unknown_not_zero():
@@ -215,7 +215,7 @@ def test_single_asset_win_rate_supplement_only_for_highlight_action():
     assert 'STRK 交易轮数：10；胜率：70.00%' in footer(e)
     assert writer_material(e)['facts']['historical_highlights']['asset_win_rate']=='0.7'
     e['kinds']=['large_position']
-    assert footer(e)=='地址：'+A
+    assert footer(e)=='地址：'+A+'；总盈亏：未取得'
 
 
 def test_editorial_preview_uses_real_writer_format_and_preserves_original(tmp_path):
@@ -236,7 +236,7 @@ def test_editorial_preview_uses_real_writer_format_and_preserves_original(tmp_pa
     result=generate_preview(task=task,prompt=repo.get_active_prompt('hyperliquid_writer'),
                             settings=XProcessingSettings(),ai_client=AI())
     assert result['mode']=='preview_only' and result['prompt_version_number']==1
-    assert result['content'].startswith('据Odaily监测，') and result['content'].endswith('地址：'+A)
+    assert result['content'].startswith('据Odaily监测，') and result['content'].endswith('地址：'+A+'；总盈亏：未取得')
     assert task.status=='ready_review'
     with connect_sqlite(repo.path) as conn:
         assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0]==0

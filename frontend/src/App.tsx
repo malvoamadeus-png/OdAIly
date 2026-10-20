@@ -1215,7 +1215,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setRuntimeRules(rules);
     setPromptTemplates(templates);
     setKnownTitleSubjectsDraft((knownSubjects.names || []).join('、'));
-    const requestedKey = nextSelectedKey || selectedPromptKey;
+    const requestedKey = nextSelectedKey || new URLSearchParams(window.location.search).get('prompt_key') || selectedPromptKey;
     const key = templates.some((template) => template.template_key === requestedKey)
       ? requestedKey || ''
       : templates[0]?.template_key || '';
@@ -1415,6 +1415,15 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   function switchView(nextView: typeof view) {
     setView(nextView);
+  }
+
+  function openHyperliquidPrompt(templateKey: string) {
+    const params = new URLSearchParams(window.location.search);
+    params.set('view', 'prompts');
+    params.set('prompt_key', templateKey);
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}${window.location.hash}`);
+    setSelectedPromptKey(templateKey);
+    switchView('prompts');
   }
 
   async function addAccount(event: FormEvent<HTMLFormElement>) {
@@ -2234,7 +2243,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ) : view === 'timing' ? (
           <PipelineTimingPanel dashboard={pipelineTiming} loading={loadingPipelineTiming} />
         ) : view === 'hyperliquid_news' ? (
-          <HyperliquidNewsPanel />
+          <HyperliquidNewsPanel onOpenPrompt={openHyperliquidPrompt} />
         ) : view === 'gate_market' ? (
           <GateMarketPanel dashboard={gateMarket} loading={loadingGateMarket} />
         ) : view === 'stock_market' ? (

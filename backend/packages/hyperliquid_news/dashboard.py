@@ -48,7 +48,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
         columns = '''d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,
                      p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
                      p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
-                     p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
+                     v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
         rows = conn.execute(f'''SELECT c.payload,{columns} FROM {candidate_source} c {joined} WHERE {condition}
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1 if view == 'scenarios' else 0, page*page_size)).fetchall()
         visible = {scenario['key'] for scenario in scenario_cards(dataset=dataset)}

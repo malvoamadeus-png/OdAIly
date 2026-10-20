@@ -89,6 +89,17 @@ PROMPT_DOCS_DIR = "docs/OdAIly代码与整体设计"
 
 PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
     "hyperliquid_writer": ("Hyperliquid监测快讯", f"{PROMPT_DOCS_DIR}/Hyperliquid快讯模板.txt", "dedicated structured Hyperliquid writer"),
+    "hyperliquid_position_writer": ("Hyperliquid · 大仓持仓变化", f"{PROMPT_DOCS_DIR}/Hyperliquid大仓变化Prompt.txt", "Hyperliquid position size and action"),
+    "hyperliquid_large_pnl_writer": ("Hyperliquid · 单资产浮盈亏变化", f"{PROMPT_DOCS_DIR}/Hyperliquid单资产盈亏Prompt.txt", "Hyperliquid large floating PnL change"),
+    "hyperliquid_asset_performance_writer": ("Hyperliquid · 单资产交易表现", f"{PROMPT_DOCS_DIR}/Hyperliquid资产表现Prompt.txt", "Hyperliquid asset win rate and net trading profit"),
+    "hyperliquid_account_result_writer": ("Hyperliquid · 账户盈亏与操作", f"{PROMPT_DOCS_DIR}/Hyperliquid账户盈亏Prompt.txt", "Hyperliquid account profit/loss and action"),
+    "hyperliquid_reversal_writer": ("Hyperliquid · 大仓反手", f"{PROMPT_DOCS_DIR}/Hyperliquid大仓反手Prompt.txt", "Hyperliquid position reversal"),
+    "hyperliquid_giveback_writer": ("Hyperliquid · 浮盈回吐与盈亏转换", f"{PROMPT_DOCS_DIR}/Hyperliquid浮盈回吐Prompt.txt", "Hyperliquid floating profit giveback and sign change"),
+    "hyperliquid_loss_addition_writer": ("Hyperliquid · 浮亏中继续加仓", f"{PROMPT_DOCS_DIR}/Hyperliquid亏损加仓Prompt.txt", "Hyperliquid adding to a losing position"),
+    "hyperliquid_realized_writer": ("Hyperliquid · 大额平仓盈亏兑现", f"{PROMPT_DOCS_DIR}/Hyperliquid平仓兑现Prompt.txt", "Hyperliquid realized PnL"),
+    "hyperliquid_liquidation_writer": ("Hyperliquid · 清算距离与实际清算", f"{PROMPT_DOCS_DIR}/Hyperliquid清算Prompt.txt", "Hyperliquid liquidation distance and execution"),
+    "hyperliquid_divergence_writer": ("Hyperliquid · 同资产多空分歧", f"{PROMPT_DOCS_DIR}/Hyperliquid多空分歧Prompt.txt", "Hyperliquid address position divergence"),
+    "hyperliquid_new_address_writer": ("Hyperliquid · 新观察地址建仓", f"{PROMPT_DOCS_DIR}/Hyperliquid新观察地址Prompt.txt", "Hyperliquid newly observed address position"),
     "x_regular_writer": ("X 常规快讯", f"{PROMPT_DOCS_DIR}/常规快讯模板.txt", "initial regular writer template"),
     "x_onchain_writer": ("X 链上快讯", f"{PROMPT_DOCS_DIR}/链上快讯模板.txt", "initial onchain writer template"),
     "x_funding_writer": ("X 融资快讯", f"{PROMPT_DOCS_DIR}/融资快讯模板.txt", "initial funding writer template"),

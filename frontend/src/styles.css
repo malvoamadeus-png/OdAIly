@@ -5751,6 +5751,10 @@ textarea:focus {
 .hlEyebrow { color:#28735d; font-size:11px; font-weight:650; letter-spacing:.5px; }
 .hlScenarioHeader h3 { font-size:20px; }
 .hlScenarioHeader > p { max-width:720px; color:#65727b; font-size:13px; line-height:1.8; }
+.hlScenarioPrompt { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; padding-top:4px; }
+.hlScenarioPrompt > span { display:flex; flex-wrap:wrap; align-items:center; gap:8px; color:#74808a; font-size:12px; }
+.hlScenarioPrompt strong { color:#35444d; font-weight:600; }
+.hlScenarioPrompt code { color:#28735d; font-size:11px; overflow-wrap:anywhere; }
 .hlRuleChips { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
 .hlRuleChips > span { display:inline-flex; flex-wrap:wrap; gap:8px; padding:6px 9px; border:1px solid #dce4e6; border-radius:5px; background:#fff; color:#74808a; font-size:11px; }
 .hlRuleChips strong { color:#35444d; font-weight:600; }

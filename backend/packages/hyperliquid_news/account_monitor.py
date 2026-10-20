@@ -240,7 +240,8 @@ class AccountProfitMonitor:
                 selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
                 if selected:
                     # Verify official profitability again immediately before creating a reportable event.
-                    performance = portfolio_performance(self.client.portfolio(address), clock_ms())
+                    portfolio = self.client.portfolio(address)
+                    performance = portfolio_performance(portfolio, clock_ms())
                     self.store.save_global('account_performance:' + address, performance, [])
                     if not is_qualified(performance):
                         selected = []
@@ -251,6 +252,12 @@ class AccountProfitMonitor:
                             first_seen_ms=observed, positions=positions,
                             previous=baseline['state'], markets=markets, history=history,
                             new_fills=new_fills, rules=self.rules)
+                        for event in events:
+                            action = event.evidence.get('actions') or {}
+                            cutoff = int(action.get('first_fill_ms') or observed)
+                            total = portfolio_all_time_at(portfolio, cutoff)
+                            if total:
+                                event.evidence.setdefault('history', {})['official_account_total_pnl'] = total
                         selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
                 state['account_history_checked_ms'] = history_end_ms if query_history or not baseline else history_checked
                 state['snapshot_times'] = snapshot_times

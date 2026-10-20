@@ -10,13 +10,15 @@ from typing import Any
 
 from packages.common.storage import connect_sqlite
 from .client import NewsClient
+from .discovery import trade_candidates
 from .detector import evaluate_address
 from .history import _ordered_by_position, fill_key, perp_fill, summarize
 from .models import Candidate, Position, Rules, ZERO, number
-from .scenarios import PRODUCTION_SCENARIOS, SCENARIOS, UNRESEARCHED_SCENARIOS
+from .scenarios import (EXPERIMENTAL_SCENARIOS, PRODUCTION_SCENARIOS, SCENARIOS,
+                        TEST_SCENARIOS, prompt_key_for_event)
 from .store import NewsStore, encode
 
-PREVIEW_SCENARIOS = UNRESEARCHED_SCENARIOS
+PREVIEW_SCENARIOS = TEST_SCENARIOS
 PREVIEWS_PER_SCENARIO = 5
 
 
@@ -183,6 +185,9 @@ def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
                         max(number(action.get('open_notional',0)), number(action.get('close_notional',0))), Rules())
                     if 'official_account_high_profit' in event['evidence']['highlights'] and 'highlighted_address_action' not in event['kinds']:
                         event['kinds'].append('highlighted_address_action')
+                total_pnl = old['evidence'].get('history', {}).get('official_account_total_pnl')
+                if total_pnl:
+                    event['evidence'].setdefault('history', {})['official_account_total_pnl'] = total_pnl
                 if previous['payload'] == encode(event):
                     continue
                 conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+event['key'],))
@@ -222,7 +227,10 @@ def prune_tested_cases(store: NewsStore) -> dict[str, int]:
         previews_removed=0
         for row in rows:
             event=json.loads(row['payload'])
-            unresolved=[key for key in case_scenarios(event) if key not in PRODUCTION_SCENARIOS]
+            experimental = event.get('evidence', {}).get('test_replay', {}).get('thresholds_are_experimental')
+            unresolved=[key for key in case_scenarios(event)
+                        if key not in PRODUCTION_SCENARIOS or
+                        experimental and key in EXPERIMENTAL_SCENARIOS]
             if not unresolved:
                 conn.execute('DELETE FROM hl_news_test_cases WHERE event_key=?',(row['event_key'],))
                 previews_removed += conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
@@ -448,12 +456,86 @@ def _action_case(address: str, coin: str, batch: list[dict], preceding: list[dic
     return result
 
 
-def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12, addresses: list[str] | None = None) -> dict[str, Any]:
+def _test_rules(profile: str) -> Rules:
+    base = Rules()
+    if profile == 'standard':
+        return base
+    distance = {'low-10': '0.10', 'low-20': '0.20'}.get(profile)
+    if distance is None:
+        raise ValueError('Unknown prelaunch threshold profile')
+    return replace(base, major_pnl=number('300000'), other_pnl=number('100000'),
+                   asset_profit=number('3000000'), other_asset_profit=number('1000000'),
+                   giveback_fraction=number('0.15'), liquidation_distance=number(distance))
+
+
+def low_threshold_snapshot_cases(store: NewsStore, *, rules: Rules, profile: str,
+                                 coins: list[str] | None = None) -> list[dict[str, Any]]:
+    """Create explicitly labeled editorial samples from saved position snapshots."""
+    if profile == 'standard':
+        return []
+    initialize_cases(store)
+    snapshots: dict[tuple[str, str], dict[str, Any]] = {}
+    with connect_sqlite(store.path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ('hl_news_normal_state', 'hl_news_state'):
+            if table not in tables:
+                continue
+            for row in conn.execute(f'SELECT address,observed_ms,state,history FROM {table}'):
+                state = json.loads(row['state'])
+                history = json.loads(row['history'])
+                for coin, position in state.get('positions', {}).items():
+                    if coins and not any(coin.upper() == item.upper() or coin.upper().endswith(':' + item.upper()) for item in coins):
+                        continue
+                    key = (row['address'].lower(), coin)
+                    item = {'address': row['address'].lower(), 'observed_ms': int(row['observed_ms']),
+                            'state': state, 'history': history, 'coin': coin, 'position': position}
+                    if key not in snapshots or item['observed_ms'] > snapshots[key]['observed_ms']:
+                        snapshots[key] = item
+    cases = []
+    for item in snapshots.values():
+        address, coin, observed = item['address'], item['coin'], item['observed_ms']
+        state, position, history = item['state'], item['position'], item['history']
+        pnl = number(position.get('unrealized_pnl', '0'))
+        peak = number(state.get('peaks', {}).get(coin, '0'))
+        kinds = []
+        evidence: dict[str, Any] = {'position': position, 'previous_position': None,
+                                     'history': history, 'highlights': [],
+                                     'threshold_rules': {**asdict(rules), 'profile': profile},
+                                     'test_replay': {'mode': 'low_threshold_position_snapshot',
+                                         'threshold_profile': profile, 'thresholds_are_experimental': True,
+                                         'source_observed_ms': observed}}
+        if peak >= rules.pnl_line(coin) and peak > pnl and peak - pnl >= peak * rules.giveback_fraction:
+            kinds.append('profit_giveback')
+            evidence['episode_peak_unrealized_pnl'] = str(peak)
+            evidence['episode_peak_ms'] = state.get('peak_times', {}).get(coin)
+        liquidation = position.get('liquidation')
+        mark = number(position.get('mark', '0'))
+        if liquidation is not None and mark > 0:
+            distance = abs(mark - number(liquidation)) / mark
+            evidence['liquidation_distance'] = str(distance)
+            if number(position.get('notional', '0')) >= rules.action and distance <= rules.liquidation_distance:
+                kinds.append('near_liquidation')
+        for kind in kinds:
+            digest = hashlib.sha256(encode({'address': address, 'coin': coin,
+                'observed_ms': observed, 'kind': kind, 'profile': profile}).encode()).hexdigest()
+            event = {'key': f'test-threshold:{profile}:{digest}', 'observed_ms': observed,
+                     'addresses': [address], 'coin': coin, 'kinds': [kind], 'evidence': dict(evidence)}
+            event['test_scenarios'] = case_scenarios(event)
+            cases.append(event)
+    return representative_cases(cases)
+
+
+def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
+               addresses: list[str] | None = None, coins: list[str] | None = None,
+               threshold_profile: str = 'standard') -> dict[str, Any]:
     """Bounded sequential test scan; resumable cache separate from live history."""
     if not 1 <= address_limit <= 200 or not 1 <= per_side <= 50:
         raise ValueError('Invalid test mining budget')
     initialize_cases(store)
     revalidate_test_cases(store)
+    rules = _test_rules(threshold_profile)
+    if coins and (len(coins) > 10 or any(not coin.strip() or len(coin) > 40 for coin in coins)):
+        raise ValueError('Target at most 10 valid market names')
     client=NewsClient()
     now=int(time.time()*1000)
     from .discovery import leaderboard_candidates
@@ -467,6 +549,10 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
         neg=[a for a,s in discoveries if s['window']==window and s['side']=='loss']
         for pair in zip(pos,neg):
             mixed.extend(pair)
+    asset_seeds=[]
+    for coin in dict.fromkeys(coins or []):
+        trades = client.recent_trades(coin)
+        asset_seeds.extend(address for address, _ in trade_candidates(trades, coin, rules, now))
     # Existing reporting is only an address discovery seed, never proof of a rule.
     import re
     reported=[]
@@ -474,8 +560,11 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
         for row in conn.execute("SELECT title,content FROM tasks WHERE source!='hyperliquid_news' AND (lower(content) LIKE '%hyperliquid%' OR lower(title) LIKE '%hyperliquid%') ORDER BY id DESC LIMIT 1500"):
             reported.extend(re.findall(r'0x[0-9a-fA-F]{40}', (row['title'] or '')+' '+row['content']))
     from .client import address_key
-    selected=list(dict.fromkeys([address_key(a) for a in addresses] if addresses else [a.lower() for a in reported]+mixed+selected))[:address_limit]
-    report={'mode':'prelaunch_case_mining','addresses':len(selected),'processed':0,'failed':{},'case_count':0,'coverage':{}}
+    seeds = [address_key(a) for a in addresses] if addresses else [a.lower() for a in reported]+mixed+selected
+    selected=list(dict.fromkeys(asset_seeds + seeds))[:address_limit]
+    report={'mode':'prelaunch_case_mining','addresses':len(selected),'target_coins':list(dict.fromkeys(coins or [])),
+            'asset_trade_seeds':len(set(asset_seeds)),'threshold_profile':threshold_profile,
+            'processed':0,'failed':{},'case_count':0,'coverage':{}}
     for address in selected:
         cache=store.metadata('test_fills:'+address,{})
         try:
@@ -485,7 +574,12 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
                 fills,coverage=client.history(address,now-90*86400000,now)
                 store.save_global('test_fills:'+address,{'fills':fills,'fetched_ms':now,
                     'source':'userFillsByTime_paginated','coverage':coverage},[])
-            cases=representative_cases(replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills))
+            cases=representative_cases(replay_fills(address,fills,rules=rules)+
+                replay_execution_prices(address,fills,rules=rules)+replay_test_startup(address,fills,rules=rules))
+            if threshold_profile != 'standard':
+                for event in cases:
+                    event.setdefault('evidence', {}).setdefault('test_replay', {}).update(
+                        threshold_profile=threshold_profile, thresholds_are_experimental=True)
             save_cases(store,cases)
             prune_replayed_cases(store,address,cases)
             report['processed']+=1
@@ -494,6 +588,12 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
             print(encode({'address':address,'fills':len(fills),'cases':len(cases),'processed':report['processed']}),flush=True)
         except Exception as exc:
             report['failed'][address]=str(exc)
+    snapshot_cases = low_threshold_snapshot_cases(store, rules=rules,
+        profile=threshold_profile, coins=coins)
+    if snapshot_cases:
+        save_cases(store, snapshot_cases)
+        report['snapshot_cases_added'] = len(snapshot_cases)
+    report['official_account_totals'] = enrich_test_account_totals(store)
     with connect_sqlite(store.path) as conn:
         all_cases=[json.loads(r[0]) for r in conn.execute('SELECT payload FROM hl_news_test_cases')]
     eligible_coverage={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
@@ -523,36 +623,40 @@ def preview_cases(store: NewsStore, *, limit: int = 30, repository_template: boo
     initialize_cases(store)
     capped=prune_tested_cases(store)
     statistics_enriched=enrich_cached_case_records(store)
+    account_totals=enrich_test_account_totals(store)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
     events=[json.loads(r[0]) for r in rows]
     settings=load_x_processing_settings()
     worker=XProcessingWorker(stage='write',repository=SQLiteXProcessingRepository(store.path),settings=settings)
-    if repository_template:
-        template_path=get_paths().root_dir/'docs/OdAIly代码与整体设计/Hyperliquid快讯模板.txt'
-        prompt=PromptTemplateVersion(id=0,template_key='hyperliquid_writer',version_number=0,
-                                     content=template_path.read_text(encoding='utf-8'))
-        prompt_source='repository_template'
-    else:
-        prompt=worker.repository.get_active_prompt('hyperliquid_writer')
-        prompt_source='active_prompt'
     selected=select_preview_cases(events)[:limit]
     selected_scenarios={e['key']:set(case_scenarios(e)).intersection(PREVIEW_SCENARIOS) for e in selected}
     counts={scenario:sum(scenario in covered for covered in selected_scenarios.values())
             for scenario in PREVIEW_SCENARIOS}
     report={'selected':len(selected),'generated':0,'failed':{},'cases_retained':capped['retained'],
-            'statistics_enriched':statistics_enriched,
+            'statistics_enriched':statistics_enriched, 'official_account_totals':account_totals,
             'coverage':sorted(key for key,value in counts.items() if value), 'scenario_counts':counts,
             'missing_scenarios':[key for key,value in counts.items() if not value]}
     for event in selected:
         try:
+            template_key = prompt_key_for_event(event)
+            if repository_template:
+                from packages.x_processing.repository import PROMPT_SEEDS
+                template_path = get_paths().root_dir / PROMPT_SEEDS[template_key][1]
+                prompt=PromptTemplateVersion(id=0,template_key=template_key,version_number=0,
+                    content=template_path.read_text(encoding='utf-8'))
+                prompt_source='repository_template'
+            else:
+                prompt=worker.repository.get_active_prompt(template_key)
+                prompt_source='active_prompt'
             task=TaskRecord(id=0,source=HYPERLIQUID_SOURCE,source_item_id=event['key'],source_url=source_url(event),
                             title=None,content='',raw_payload=store.with_address_notes(event))
             result=generate_preview(task=task,prompt=prompt,settings=settings,ai_client=worker._get_ai_client(),
                                     prompt_source=prompt_source)
             store.save_global('editorial_preview:'+event['key'],result,[])
             report['generated']+=1
-            print(encode({'event_key':event['key'],'scenarios':case_scenarios(event),'title':result['title']}),flush=True)
+            print(encode({'event_key':event['key'],'scenarios':case_scenarios(event),
+                          'prompt_template_key':template_key,'title':result['title']}),flush=True)
         except Exception as exc:report['failed'][event['key']]=str(exc)
     store.save_global('test_preview_progress',report,[])
     return report
@@ -782,4 +886,50 @@ def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]
             report['processed']+=1
             print(encode({'address':address,**report}),flush=True)
         except Exception as exc:report['failed'][address]=str(exc)
+    return report
+
+
+def enrich_test_account_totals(store: NewsStore, *, limit: int = 200) -> dict[str, Any]:
+    """Attach official all-time account PnL snapshots available before each case."""
+    from .account_monitor import portfolio_all_time_at
+    client = NewsClient()
+    now = int(time.time() * 1000)
+    with connect_sqlite(store.path) as conn:
+        rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
+    groups: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for row in rows:
+        event = json.loads(row['payload'])
+        for address in event.get('addresses', []):
+            groups.setdefault(address.lower(), []).append((row['event_key'], event))
+    report: dict[str, Any] = {'addresses': min(len(groups), limit), 'enriched': 0, 'failed': {}}
+    for address, events in list(groups.items())[:limit]:
+        try:
+            cached = store.metadata('test_portfolio:' + address, {})
+            payload = cached.get('data')
+            if not payload:
+                payload = client.portfolio(address)
+                store.save_global('test_portfolio:' + address, {'data': payload, 'fetched_ms': now}, [])
+            for event_key, event in events:
+                action = event.get('evidence', {}).get('actions') or {}
+                cutoff = int(action.get('first_fill_ms') or event.get('observed_ms', now))
+                sample = portfolio_all_time_at(payload, cutoff)
+                if not sample:
+                    continue
+                if len(event.get('addresses', [])) > 1:
+                    history = event.setdefault('evidence', {}).setdefault('histories', {}).setdefault(address, {})
+                else:
+                    history = event.setdefault('evidence', {}).setdefault('history', {})
+                if history.get('official_account_total_pnl') == sample:
+                    continue
+                history['official_account_total_pnl'] = sample
+                event.setdefault('evidence', {}).setdefault('test_replay', {})['official_total_pnl_cutoff_ms'] = cutoff
+                with connect_sqlite(store.path) as conn:
+                    conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?',
+                                 (encode(event), event_key))
+                    conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
+                                 ('editorial_preview:' + event_key,))
+                report['enriched'] += 1
+            print(encode({'address': address, **report}), flush=True)
+        except Exception as exc:
+            report['failed'][address] = str(exc)
     return report
