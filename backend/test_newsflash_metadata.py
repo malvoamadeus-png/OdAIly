@@ -37,6 +37,7 @@ def test_metadata_schema_is_repeatable_and_push_id_wins(tmp_path) -> None:
         priority_status="evaluated",
         priority_level="high",
         priority_reason="政策取得实质进展。",
+        duplicate_result={"is_duplicate": False, "reason": "no_match"},
     )
     with connect_sqlite(path) as conn:
         result = metadata_for_reference(
@@ -51,6 +52,7 @@ def test_metadata_schema_is_repeatable_and_push_id_wins(tmp_path) -> None:
     assert result["origin_label"] == "X"
     assert result["priority_status"] == "evaluated"
     assert result["priority_level"] == "high"
+    assert result["duplicate_status"] == "clear"
 
 
 def test_title_and_time_link_requires_one_candidate(tmp_path) -> None:
@@ -119,6 +121,41 @@ def test_title_and_time_link_requires_one_reference(tmp_path) -> None:
 
     assert result["origin_label"] == "来源待匹配"
     assert linked == 0
+
+
+def test_duplicate_snapshot_is_persisted_and_returned_by_id(tmp_path) -> None:
+    path = tmp_path / "main.sqlite"
+    _make_reference_db(path)
+    record_newsflash_delivery(
+        path,
+        delivery_key="task-duplicate",
+        origin_key="x",
+        title="重复快讯",
+        response_text='{"id":"9010"}',
+        pushed_at="2026-10-20T03:00:00+00:00",
+        duplicate_result={
+            "is_duplicate": True,
+            "duplicate_target_type": "odaily_published",
+            "duplicate_target_id": "9009",
+            "duplicate_target": {"target_type": "odaily_published", "target_id": "9009", "title": "原快讯"},
+            "reason": "same_event",
+        },
+    )
+
+    with connect_sqlite(path) as conn:
+        result = metadata_for_reference(
+            conn,
+            source_item_id="9010",
+            title="重复快讯",
+            published_at="2026-10-20T03:00:00+00:00",
+            publisher_kind="other_ai",
+            operation_created_at=None,
+        )
+
+    assert result["duplicate_status"] == "duplicate"
+    assert result["duplicate_target_id"] == "9009"
+    assert result["duplicate_target_title"] == "原快讯"
+    assert result["duplicate_reason"] == "same_event"
 
 
 def test_multiple_push_ids_do_not_fall_back_to_title_match(tmp_path) -> None:

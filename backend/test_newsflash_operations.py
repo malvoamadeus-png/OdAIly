@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -79,6 +80,36 @@ class NewsflashOperationsTest(unittest.TestCase):
         self.assertEqual(meme["priority_status"], "not_applicable")
         self.assertEqual(old["origin_label"], "历史未记录")
         self.assertEqual(old["priority_status"], "historical")
+        self.assertEqual(old["duplicate_status"], "historical")
+
+    def test_newsflash_list_reads_text_review_for_current_content_only(self) -> None:
+        self.add_reference("text-review-current", "文本审查标题", "2026-10-20T03:00:00+00:00")
+        title = "文本审查标题"
+        content = "文本审查标题"
+        current_hash = hashlib.md5(f"{title}\n{content}".encode("utf-8"), usedforsecurity=False).hexdigest()
+        with connect_sqlite(self.path) as conn:
+            conn.execute(
+                """CREATE TABLE auditor_checks (
+                    id integer PRIMARY KEY AUTOINCREMENT, source_item_id text NOT NULL,
+                    content_hash text NOT NULL, status text NOT NULL, audit_result text NOT NULL DEFAULT '{}',
+                    updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            conn.execute(
+                "INSERT INTO auditor_checks(source_item_id,content_hash,status,audit_result) VALUES (?,?,?,?)",
+                ("text-review-current", current_hash, "flagged", json.dumps({"summary": "正文有重复词。"})),
+            )
+            conn.execute(
+                "INSERT INTO auditor_checks(source_item_id,content_hash,status) VALUES (?,?,?)",
+                ("text-review-current", "older-content-hash", "passed"),
+            )
+            conn.commit()
+
+        row = self.repository.list_newsflashes({"search": "text-review-current"})["items"][0]
+
+        self.assertEqual(row["text_review"]["status"], "flagged")
+        self.assertEqual(row["text_review"]["summary"], "正文有重复词。")
+        self.assertEqual(row["read_status"], "not_synced")
 
     def test_source_facts_map_aliases_and_reconcile_ai(self) -> None:
         self.add_reference("1", "Human", "2026-07-20T09:00:00+08:00")

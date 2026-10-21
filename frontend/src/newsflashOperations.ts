@@ -44,9 +44,19 @@ export type NewsflashRow = {
   priority_status: 'evaluated' | 'not_applicable' | 'pending' | 'failed' | 'historical';
   priority_level: 'high' | 'medium' | 'low' | null;
   priority_reason: string | null;
+  duplicate_status: 'clear' | 'duplicate' | 'not_checked' | 'pending' | 'historical';
+  duplicate_target_type: string | null;
+  duplicate_target_id: string | null;
+  duplicate_target_title: string | null;
+  duplicate_reason: string | null;
+  text_review: TextReviewSummary;
+  read_status: 'read' | 'unread' | 'not_synced';
   first_publication: FirstPublication;
   fact_review: FactReviewSummary;
 };
+
+export type TextReviewStatus = 'unreviewed' | 'pending' | 'processing' | 'passed' | 'flagged' | 'failed' | 'skipped';
+export type TextReviewSummary = { status: TextReviewStatus; label: string; summary: string; updated_at: string | null };
 
 export type FactReviewStatus = 'unreviewed' | 'pending' | 'processing' | 'skipped' | 'exempt' | 'passed' | 'flagged' | 'unverifiable' | 'failed';
 export type FactReviewSummary = {

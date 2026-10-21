@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from html import escape
+from typing import Any
 
 import requests
 from pydantic import BaseModel
@@ -55,6 +56,7 @@ class PushClient:
         priority_status: str = "pending",
         priority_level: str | None = None,
         priority_reason: str | None = None,
+        duplicate_result: dict[str, Any] | None = None,
     ) -> PushResult:
         payload = {
             "title": title,
@@ -97,6 +99,7 @@ class PushClient:
                             priority_status=priority_status,
                             priority_level=priority_level,
                             priority_reason=priority_reason,
+                            duplicate_result=duplicate_result,
                         )
                     except Exception:
                         logging.getLogger(__name__).exception(

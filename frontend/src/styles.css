@@ -1276,6 +1276,39 @@ body {
   line-height: 1.4;
 }
 
+.newsflashAuditStatus {
+  display: inline-block;
+  max-width: 150px;
+  color: #52606c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.textReview-pending,
+.textReview-processing,
+.duplicate-pending {
+  color: #8a641b;
+}
+
+.textReview-passed {
+  color: #08775a;
+}
+
+.textReview-flagged,
+.textReview-failed,
+.duplicate-duplicate {
+  color: #a23e48;
+  font-weight: 700;
+}
+
+.textReview-unreviewed,
+.textReview-skipped,
+.duplicate-not_checked,
+.duplicate-historical,
+.read-not-synced {
+  color: #7b8793;
+}
+
 .emptyCell,
 .emptyInline {
   padding: 22px !important;

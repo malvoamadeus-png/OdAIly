@@ -1409,6 +1409,7 @@ class XProcessingWorker:
             priority_status=publisher_decision_result.priority_status,
             priority_level=publisher_decision_result.priority_level,
             priority_reason=publisher_decision_result.priority_reason,
+            duplicate_result=pipeline.search_result,
         )
         push_payload = push_result.model_dump(mode="json")
         publisher_output = {
@@ -1509,6 +1510,7 @@ class XProcessingWorker:
             priority_status=str(event_priority.get("status") or "failed"),
             priority_level=event_priority.get("level"),
             priority_reason=event_priority.get("reason"),
+            duplicate_result=pipeline.search_result,
         )
         context_output["newsflash_priority"] = event_priority
         if not push_result.ok:
@@ -1579,6 +1581,7 @@ class XProcessingWorker:
             idempotency_key=f"odaily-task-{task.id}",
             origin_key=newsflash_origin_key_for_task(task),
             priority_status="not_applicable" if task.source == HYPERLIQUID_SOURCE else "pending",
+            duplicate_result=pipeline.search_result,
         )
         if not push_result.ok:
             error = push_result.error or "push failed"

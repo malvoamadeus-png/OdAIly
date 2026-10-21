@@ -26,6 +26,7 @@ ORIGIN_LABELS = {
 
 PRIORITY_LEVELS = {"high", "medium", "low"}
 PRIORITY_STATUSES = {"evaluated", "not_applicable", "pending", "failed", "historical"}
+DUPLICATE_STATUSES = {"clear", "duplicate", "not_checked", "pending", "historical"}
 NEWSFLASH_METADATA_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS newsflash_production_metadata (
     delivery_key text PRIMARY KEY,
@@ -37,11 +38,17 @@ CREATE TABLE IF NOT EXISTS newsflash_production_metadata (
     priority_status text NOT NULL DEFAULT 'pending',
     priority_level text,
     priority_reason text,
+    duplicate_status text NOT NULL DEFAULT 'historical',
+    duplicate_target_type text,
+    duplicate_target_id text,
+    duplicate_target_title text,
+    duplicate_reason text,
     created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (priority_status IN ('evaluated','not_applicable','pending','failed','historical')),
     CHECK (id_match_status IN ('matched','missing','ambiguous')),
-    CHECK (priority_level IS NULL OR priority_level IN ('high','medium','low'))
+    CHECK (priority_level IS NULL OR priority_level IN ('high','medium','low')),
+    CHECK (duplicate_status IN ('clear','duplicate','not_checked','pending','historical'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsflash_production_metadata_odaily_id
 ON newsflash_production_metadata(odaily_id) WHERE odaily_id IS NOT NULL;
@@ -110,6 +117,14 @@ def ensure_newsflash_metadata_tables(conn) -> None:
             "ADD COLUMN id_match_status text NOT NULL DEFAULT 'missing' "
             "CHECK (id_match_status IN ('matched','missing','ambiguous'))"
         )
+    if "duplicate_status" not in columns:
+        conn.execute(
+            "ALTER TABLE newsflash_production_metadata ADD COLUMN duplicate_status text NOT NULL "
+            "DEFAULT 'historical' CHECK (duplicate_status IN ('clear','duplicate','not_checked','pending','historical'))"
+        )
+    for column in ("duplicate_target_type", "duplicate_target_id", "duplicate_target_title", "duplicate_reason"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE newsflash_production_metadata ADD COLUMN {column} text")
 
 
 def _matching_metadata_rows(conn, *, title: str | None, published_at: Any) -> list[Any]:
@@ -185,8 +200,9 @@ def record_newsflash_delivery(
     priority_status: str = "pending",
     priority_level: str | None = None,
     priority_reason: str | None = None,
+    duplicate_result: dict[str, Any] | None = None,
 ) -> str:
-    """Persist origin and independent review-priority metadata after a successful push."""
+    """Persist origin, priority and duplicate-check metadata after a successful push."""
     ensure_newsflash_metadata_schema(path)
     key = str(delivery_key or uuid.uuid4().hex)
     stamp = pushed_at or datetime.now(UTC).isoformat()
@@ -200,13 +216,26 @@ def record_newsflash_delivery(
     if priority_status != "evaluated":
         priority_level = None
         priority_reason = None
+    duplicate_status = "not_checked"
+    duplicate_target_type = duplicate_target_id = duplicate_target_title = duplicate_reason = None
+    if isinstance(duplicate_result, dict) and isinstance(duplicate_result.get("is_duplicate"), bool):
+        duplicate_status = "duplicate" if duplicate_result["is_duplicate"] else "clear"
+        target = duplicate_result.get("duplicate_target")
+        target = target if isinstance(target, dict) else {}
+        duplicate_target_type = str(duplicate_result.get("duplicate_target_type") or target.get("target_type") or "") or None
+        duplicate_target_id = str(duplicate_result.get("duplicate_target_id") or target.get("target_id") or "") or None
+        duplicate_target_title = str(target.get("title") or "") or None
+        duplicate_reason = str(duplicate_result.get("reason") or "") or None
+        duplicate_target_title = duplicate_target_title[:500] if duplicate_target_title else None
+        duplicate_reason = duplicate_reason[:500] if duplicate_reason else None
 
     with connect_sqlite(path) as conn:
         conn.execute(
             """INSERT INTO newsflash_production_metadata(
                 delivery_key,origin_key,odaily_id,id_match_status,title,pushed_at,
-                priority_status,priority_level,priority_reason
-            ) VALUES (?,?,?,?,?,?,?,?,?)
+                priority_status,priority_level,priority_reason,duplicate_status,
+                duplicate_target_type,duplicate_target_id,duplicate_target_title,duplicate_reason
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(delivery_key) DO UPDATE SET
                 origin_key=excluded.origin_key,
                 odaily_id=COALESCE(excluded.odaily_id,newsflash_production_metadata.odaily_id),
@@ -219,8 +248,15 @@ def record_newsflash_delivery(
                 priority_status=excluded.priority_status,
                 priority_level=excluded.priority_level,
                 priority_reason=excluded.priority_reason,
+                duplicate_status=excluded.duplicate_status,
+                duplicate_target_type=excluded.duplicate_target_type,
+                duplicate_target_id=excluded.duplicate_target_id,
+                duplicate_target_title=excluded.duplicate_target_title,
+                duplicate_reason=excluded.duplicate_reason,
                 updated_at=CURRENT_TIMESTAMP""",
-            (key, origin_key, odaily_id, id_match_status, title, stamp, priority_status, priority_level, priority_reason),
+            (key, origin_key, odaily_id, id_match_status, title, stamp, priority_status, priority_level,
+             priority_reason, duplicate_status, duplicate_target_type, duplicate_target_id,
+             duplicate_target_title, duplicate_reason),
         )
         if id_match_status == "missing":
             matches = _matching_metadata_rows(conn, title=title, published_at=stamp)
@@ -293,6 +329,11 @@ def metadata_for_reference(
                     "priority_status": "pending",
                     "priority_level": None,
                     "priority_reason": None,
+                    "duplicate_status": "pending",
+                    "duplicate_target_type": None,
+                    "duplicate_target_id": None,
+                    "duplicate_target_title": None,
+                    "duplicate_reason": None,
                 }
         elif candidates:
             return {
@@ -302,6 +343,11 @@ def metadata_for_reference(
                 "priority_status": "pending",
                 "priority_level": None,
                 "priority_reason": None,
+                "duplicate_status": "pending",
+                "duplicate_target_type": None,
+                "duplicate_target_id": None,
+                "duplicate_target_title": None,
+                "duplicate_reason": None,
             }
         else:
             if _has_unresolved_metadata_for_title(conn, title):
@@ -312,6 +358,11 @@ def metadata_for_reference(
                     "priority_status": "pending",
                     "priority_level": None,
                     "priority_reason": None,
+                    "duplicate_status": "pending",
+                    "duplicate_target_type": None,
+                    "duplicate_target_id": None,
+                    "duplicate_target_title": None,
+                    "duplicate_reason": None,
                 }
             created = _parse_datetime(operation_created_at)
             published = _parse_datetime(published_at)
@@ -323,6 +374,11 @@ def metadata_for_reference(
                     "priority_status": "not_applicable",
                     "priority_level": None,
                     "priority_reason": None,
+                    "duplicate_status": "not_checked",
+                    "duplicate_target_type": None,
+                    "duplicate_target_id": None,
+                    "duplicate_target_title": None,
+                    "duplicate_reason": None,
                 }
             return {
                 "origin_key": None,
@@ -331,6 +387,11 @@ def metadata_for_reference(
                 "priority_status": "historical",
                 "priority_level": None,
                 "priority_reason": None,
+                "duplicate_status": "historical",
+                "duplicate_target_type": None,
+                "duplicate_target_id": None,
+                "duplicate_target_title": None,
+                "duplicate_reason": None,
             }
     status = str(row["priority_status"] or "pending")
     return {
@@ -340,4 +401,9 @@ def metadata_for_reference(
         "priority_status": status,
         "priority_level": row["priority_level"] if status == "evaluated" else None,
         "priority_reason": row["priority_reason"] if status == "evaluated" else None,
+        "duplicate_status": row["duplicate_status"] if row["duplicate_status"] in DUPLICATE_STATUSES else "historical",
+        "duplicate_target_type": row["duplicate_target_type"],
+        "duplicate_target_id": row["duplicate_target_id"],
+        "duplicate_target_title": row["duplicate_target_title"],
+        "duplicate_reason": row["duplicate_reason"],
     }

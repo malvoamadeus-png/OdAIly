@@ -22,6 +22,15 @@ from packages.fact_auditor.repository import (
 
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+TEXT_REVIEW_LABELS = {
+    "unreviewed": "未审查",
+    "pending": "待审查",
+    "processing": "审查中",
+    "passed": "未发现问题",
+    "flagged": "发现问题",
+    "failed": "执行失败",
+    "skipped": "无需审查",
+}
 CONTRIBUTION_TYPES = {"regular", "night", "ppp"}
 CONTRIBUTION_SCORE_CAP = 5.0
 CONTRIBUTION_HIGH_VIEW_BONUS = 0.5
@@ -199,6 +208,29 @@ def _decode(value: Any, default: Any = None) -> Any:
         return json.loads(str(value))
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def _text_review_for_reference(conn, *, source_item_id: str, title: str | None, content: str) -> dict[str, Any]:
+    if not NewsflashOperationsRepository._table_exists(conn, "auditor_checks"):
+        return {"status": "unreviewed", "label": TEXT_REVIEW_LABELS["unreviewed"], "summary": "", "updated_at": None}
+    digest = hashlib.md5(f"{title or ''}\n{content}".encode("utf-8"), usedforsecurity=False).hexdigest()
+    row = conn.execute(
+        "SELECT status,audit_result,updated_at FROM auditor_checks "
+        "WHERE source_item_id=? AND content_hash=? ORDER BY id DESC LIMIT 1",
+        (source_item_id, digest),
+    ).fetchone()
+    if row is None:
+        status = "unreviewed"
+        summary = ""
+        updated_at = None
+    else:
+        status = str(row["status"] or "unreviewed")
+        result = _decode(row["audit_result"], {})
+        summary = str(result.get("summary") or "") if isinstance(result, dict) else ""
+        updated_at = row["updated_at"]
+    if status not in TEXT_REVIEW_LABELS:
+        status = "failed"
+    return {"status": status, "label": TEXT_REVIEW_LABELS[status], "summary": summary, "updated_at": updated_at}
 
 
 def _normalize_alias(value: str | None) -> str:
@@ -804,7 +836,7 @@ class NewsflashOperationsRepository:
             ).fetchone()[0])
             rows = conn.execute(
                 f"""
-                SELECT r.source_item_id,r.source_url,r.title,r.published_at,r.updated_at AS reference_updated_at,
+                SELECT r.source_item_id,r.source_url,r.title,r.content,r.published_at,r.updated_at AS reference_updated_at,
                        f.operator_raw,f.publisher_kind,f.publisher_person_key,f.publisher_locked,f.view_count,
                        f.is_pushed,f.pushed_at,f.is_contribution,f.contributor_person_key,f.contribution_type,
                        f.created_at AS operation_created_at,
@@ -850,8 +882,15 @@ class NewsflashOperationsRepository:
                         operation_created_at=item.get("operation_created_at"),
                     )
                 )
+                item["text_review"] = _text_review_for_reference(
+                    conn,
+                    source_item_id=str(item["source_item_id"]),
+                    title=item.get("title"),
+                    content=str(item.get("content") or ""),
+                )
+                item["read_status"] = "not_synced"
                 item["fact_review"] = fact_review_summary(item)
-                for key in ("fact_check_id", "fact_status", "fact_reason", "fact_summary", "fact_updated_at", "operation_created_at"):
+                for key in ("content", "fact_check_id", "fact_status", "fact_reason", "fact_summary", "fact_updated_at", "operation_created_at"):
                     item.pop(key, None)
                 data.append(item)
             counts = {row["status"]: row["count"] for row in conn.execute(
