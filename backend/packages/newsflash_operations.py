@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from packages.common.storage import connect_sqlite
+from packages.newsflash_metadata import (
+    ensure_newsflash_metadata_tables,
+    metadata_for_reference,
+)
 from packages.fact_auditor.repository import (
     SCHEMA_SQL as FACT_REVIEW_SCHEMA_SQL, LABELS as FACT_REVIEW_LABELS,
     FactReviewRepository, current_join as fact_review_join, summary_from_row as fact_review_summary,
@@ -275,6 +279,11 @@ class NewsflashOperationsRepository:
     def init_schema(self) -> None:
         with connect_sqlite(self.path) as conn:
             conn.executescript(SCHEMA_SQL + FACT_REVIEW_SCHEMA_SQL)
+            ensure_newsflash_metadata_tables(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO newsflash_metadata_state(singleton_key,enabled_at) VALUES ('global',?)",
+                (_iso(),),
+            )
             if self._table_exists(conn, "newsflash_events"):
                 event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_events)").fetchall()}
                 if "first_sources" not in event_columns:
@@ -798,6 +807,7 @@ class NewsflashOperationsRepository:
                 SELECT r.source_item_id,r.source_url,r.title,r.published_at,r.updated_at AS reference_updated_at,
                        f.operator_raw,f.publisher_kind,f.publisher_person_key,f.publisher_locked,f.view_count,
                        f.is_pushed,f.pushed_at,f.is_contribution,f.contributor_person_key,f.contribution_type,
+                       f.created_at AS operation_created_at,
                        f.first_source_override,f.quality_override,
                        f.source_snapshot_at,f.updated_at AS operation_updated_at,
                        operator.display_name AS publisher_person_name,contributor.display_name AS contributor_name,
@@ -830,8 +840,18 @@ class NewsflashOperationsRepository:
                 item["is_pushed"] = None if item.get("is_pushed") is None else bool(item["is_pushed"])
                 item["quality_override"] = str(item.get("quality_override") or "none")
                 item["first_publication"] = self._event_info(conn, str(item["source_item_id"]))
+                item.update(
+                    metadata_for_reference(
+                        conn,
+                        source_item_id=str(item["source_item_id"]),
+                        title=item.get("title"),
+                        published_at=item.get("published_at"),
+                        publisher_kind=item.get("publisher_kind"),
+                        operation_created_at=item.get("operation_created_at"),
+                    )
+                )
                 item["fact_review"] = fact_review_summary(item)
-                for key in ("fact_check_id", "fact_status", "fact_reason", "fact_summary", "fact_updated_at"):
+                for key in ("fact_check_id", "fact_status", "fact_reason", "fact_summary", "fact_updated_at", "operation_created_at"):
                     item.pop(key, None)
                 data.append(item)
             counts = {row["status"]: row["count"] for row in conn.execute(

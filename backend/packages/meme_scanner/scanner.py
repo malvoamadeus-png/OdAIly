@@ -20,7 +20,9 @@ import requests
 from dotenv import load_dotenv
 
 from packages.common.paths import get_paths
+from packages.common.storage import load_storage_settings
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
+from packages.newsflash_metadata import record_newsflash_delivery
 from packages.publisher import content_to_paragraph_html
 from packages.x_processing.telegram import TelegramClient
 
@@ -1525,6 +1527,18 @@ def push_pending(
         try:
             response = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
             response.raise_for_status()
+            try:
+                record_newsflash_delivery(
+                    load_storage_settings().sqlite_path,
+                    delivery_key=idempotency_key,
+                    origin_key="meme",
+                    title=title,
+                    response_text=response.text,
+                    pushed_at=datetime.now(UTC).isoformat(),
+                    priority_status="not_applicable",
+                )
+            except Exception as exc:
+                print(f"[meme-scan] newsflash metadata persistence failed: {type(exc).__name__}", file=sys.stderr)
             return {"ok": True, "status_code": response.status_code, "response_text": response.text[:1000], "payload": payload}
         except requests.RequestException as exc:
             last_error = exc

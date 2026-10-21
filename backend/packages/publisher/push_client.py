@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import time
+from datetime import UTC, datetime
 from html import escape
 
 import requests
 from pydantic import BaseModel
+
+from packages.common.storage import load_storage_settings
+from packages.newsflash_metadata import record_newsflash_delivery
 
 
 class PushResult(BaseModel):
@@ -46,6 +51,10 @@ class PushClient:
         is_publish: bool = False,
         is_push: bool = False,
         idempotency_key: str | None = None,
+        origin_key: str | None = None,
+        priority_status: str = "pending",
+        priority_level: str | None = None,
+        priority_reason: str | None = None,
     ) -> PushResult:
         payload = {
             "title": title,
@@ -71,11 +80,29 @@ class PushClient:
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
-                return PushResult(
+                result = PushResult(
                     ok=True,
                     status_code=response.status_code,
                     response_text=response.text[:1000],
                 )
+                if origin_key:
+                    try:
+                        record_newsflash_delivery(
+                            load_storage_settings().sqlite_path,
+                            delivery_key=idempotency_key,
+                            origin_key=origin_key,
+                            title=title,
+                            response_text=response.text,
+                            pushed_at=datetime.now(UTC).isoformat(),
+                            priority_status=priority_status,
+                            priority_level=priority_level,
+                            priority_reason=priority_reason,
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "failed to persist newsflash origin metadata"
+                        )
+                return result
             except Exception as exc:
                 last_error = exc
                 if attempt < self.max_attempts and self.backoff_seconds > 0:

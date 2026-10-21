@@ -38,6 +38,12 @@ export type NewsflashRow = {
   first_source_override: string | null;
   quality_override: QualityOverride;
   source_snapshot_at: string | null;
+  origin_key: string | null;
+  origin_label: string;
+  origin_status: 'matched' | 'pending' | 'historical';
+  priority_status: 'evaluated' | 'not_applicable' | 'pending' | 'failed' | 'historical';
+  priority_level: 'high' | 'medium' | 'low' | null;
+  priority_reason: string | null;
   first_publication: FirstPublication;
   fact_review: FactReviewSummary;
 };

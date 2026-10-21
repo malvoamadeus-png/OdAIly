@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
+from packages.newsflash_priority import PRIORITY_RUBRIC, parse_newsflash_priority
 from .models import AI_SOURCE, PipelineRecord, TaskRecord
 
 
@@ -21,6 +22,10 @@ CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 6
 class PublisherDecisionResult(BaseModel):
     decision: PublisherDecision
     reason: str
+    priority_level: str | None = None
+    priority_reason: str | None = None
+    priority_status: str = "failed"
+    priority_error: str | None = None
 
     @field_validator("reason")
     @classmethod
@@ -102,10 +107,17 @@ PUBLISHER_DECISION_SCHEMA = {
             "reason": {
                 "type": "string",
             },
+            "priority": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+            },
+            "priority_reason": {
+                "type": "string",
+            },
         },
         "required": ["decision", "reason"],
     },
-    "strict": True,
+    "strict": False,
 }
 
 
@@ -660,6 +672,10 @@ def build_publisher_rule_prompt(
             "【已定稿快讯】",
             f"标题：{pipeline.final_title or ''}",
             f"正文：{pipeline.final_content or ''}",
+            "",
+            "【与发布决定完全独立的审阅优先级】",
+            "请另行依据以下标准输出 priority 和 priority_reason。无论你给出什么等级，都不得改变上面的 decision；decision 只能按发布规则判断。优先级只使用上方已定稿标题与正文，不参考信源规则、排除理由、审查疑点或发布决定。",
+            PRIORITY_RUBRIC,
         ]
     )
 
@@ -690,7 +706,13 @@ def parse_publisher_decision(value: str) -> PublisherDecisionResult:
     decision = str(payload.get("decision") or "").strip()
     if decision not in {"pass", "reject"}:
         raise ValueError(f"invalid publisher decision: {decision}")
-    return PublisherDecisionResult(decision=decision, reason=str(payload.get("reason") or ""))
+    result = PublisherDecisionResult(decision=decision, reason=str(payload.get("reason") or ""))
+    try:
+        result.priority_level, result.priority_reason = parse_newsflash_priority(payload)
+        result.priority_status = "evaluated"
+    except Exception as exc:
+        result.priority_error = str(exc)
+    return result
 
 
 def publisher_config_to_prompt_text(config: PublisherRuleConfig) -> str:

@@ -254,6 +254,9 @@ class GateMarketBroadcastService:
             dry_run=False,
             is_publish=active_mode == "live",
             is_push=False,
+            idempotency_key=f"gate-market:{event_id}",
+            origin_key="gate_market",
+            priority_status="not_applicable",
         )
         if not result.ok:
             error = result.error or "push failed"

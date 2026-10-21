@@ -1249,6 +1249,33 @@ body {
   color: #7d6535;
 }
 
+.newsflashOrigin,
+.newsflashPriority {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.newsflashOrigin.origin-pending,
+.newsflashOrigin.origin-historical,
+.newsflashPriority.priority-pending,
+.newsflashPriority.priority-failed,
+.newsflashPriority.priority-historical {
+  color: #7d6535;
+}
+
+.newsflashPriority.priority-evaluated {
+  color: #245a69;
+  font-weight: 700;
+}
+
+.newsflashPriorityReason {
+  max-width: 220px;
+  color: #68747c !important;
+  white-space: normal;
+  line-height: 1.4;
+}
+
 .emptyCell,
 .emptyInline {
   padding: 22px !important;

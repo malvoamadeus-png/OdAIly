@@ -68,6 +68,15 @@ const qualityOverrideLabels: Record<QualityOverride, string> = {
   include: '直接入选',
   exclude: '直接排除',
 };
+const priorityLabels: Record<string, string> = { high: '高', medium: '中', low: '低' };
+
+function priorityStatusLabel(row: NewsflashRow): string {
+  if (row.priority_status === 'not_applicable') return '—';
+  if (row.priority_status === 'historical') return '历史未记录';
+  if (row.priority_status === 'pending') return '待评估';
+  if (row.priority_status === 'failed') return '评估失败';
+  return priorityLabels[row.priority_level || ''] || '评估失败';
+}
 
 const personPalette = [
   '#2563eb', '#ea580c', '#059669', '#9333ea', '#ca8a04',
@@ -260,13 +269,15 @@ function Overview({
       <div className="factReviewCounts" aria-label="当前筛选范围事实审查统计">{Object.entries(data.fact_review_counts || {}).map(([status, count]) => <span key={status} className={`factReview-${status}`}>{factReviewLabels[status as keyof typeof factReviewLabels]} {count}</span>)}</div>
       <div className="newsflashTableWrap">
         <table className="newsflashTable">
-          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>事实审查</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>优质快讯</th><th>首发单位</th></tr></thead>
+          <thead><tr><th>ID</th><th className="titleColumn">快讯标题</th><th>事实审查</th><th>产出来源</th><th>审阅优先级</th><th>发布时间</th><th>推送</th><th>操作人</th><th>浏览量</th><th>贡献者</th><th>类型</th><th>优质快讯</th><th>首发单位</th></tr></thead>
           <tbody>
             {data.items.map((row) => (
               <tr key={row.source_item_id}>
                 <td className="monoCell">{row.source_item_id}</td>
                 <td className="titleColumn">{row.source_url ? <a href={row.source_url} target="_blank" rel="noreferrer">{row.title || '无标题'}</a> : row.title || '无标题'}</td>
                 <td><a className={`factReviewStatus factReview-${row.fact_review?.status || 'pending'}`} href={factReviewUrl(row.source_item_id, row.fact_review?.id)} title={row.fact_review?.summary || row.fact_review?.reason || '尚未完成当前稿件的审查'}>{row.fact_review?.status === 'skipped' ? '—' : row.fact_review?.label || '待查'}{row.fact_review?.id ? ' ↗' : ''}</a></td>
+                <td><span className={`newsflashOrigin origin-${row.origin_status}`}>{row.origin_label}</span></td>
+                <td><span className={`newsflashPriority priority-${row.priority_status}`} title={row.priority_reason || undefined}>{priorityStatusLabel(row)}</span>{row.priority_status === 'evaluated' && row.priority_reason && <small className="newsflashPriorityReason">{row.priority_reason}</small>}</td>
                 <td>{localDate(row.published_at)}</td>
                 <td>{row.is_pushed == null ? <Unavailable /> : row.is_pushed ? '是' : '否'}</td>
                 <td>
@@ -288,7 +299,7 @@ function Overview({
                 <td><span className={`statusText ${row.first_publication.status}`}>{row.first_publication.label}</span></td>
               </tr>
             ))}
-            {!loading && data.items.length === 0 && <tr><td colSpan={11} className="emptyCell">没有符合条件的快讯</td></tr>}
+            {!loading && data.items.length === 0 && <tr><td colSpan={13} className="emptyCell">没有符合条件的快讯</td></tr>}
           </tbody>
         </table>
       </div>

@@ -14,6 +14,7 @@ from packages.competitor_monitor.fetchers import NewsflashItem
 from packages.competitor_monitor.sqlite_repository import SQLiteCompetitorMonitorRepository
 from packages.competitor_monitor.worker import CompetitorMonitorWorker
 from packages.newsflash_operations import NewsflashOperationsRepository
+from packages.newsflash_metadata import record_newsflash_delivery
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL
 
 from openpyxl import Workbook
@@ -41,6 +42,43 @@ class NewsflashOperationsTest(unittest.TestCase):
                 (source_item_id, title, title, published_at),
             )
             conn.commit()
+
+    def test_newsflash_list_exposes_source_priority_and_historical_state(self) -> None:
+        self.add_reference("metadata-current", "新产品上线", "2026-10-20T03:00:00+00:00")
+        self.add_reference("metadata-meme", "Meme市值里程碑", "2026-10-20T03:05:00+00:00")
+        self.add_reference("metadata-old", "历史快讯", "2026-07-20T03:00:00+00:00")
+        record_newsflash_delivery(
+            self.path,
+            delivery_key="source-task-1",
+            origin_key="x",
+            title="新产品上线",
+            response_text='{"data":{"id":"metadata-current"}}',
+            pushed_at="2026-10-20T03:00:00+00:00",
+            priority_status="evaluated",
+            priority_level="high",
+            priority_reason="产品上线可能影响读者决策。",
+        )
+        record_newsflash_delivery(
+            self.path,
+            delivery_key="source-task-meme",
+            origin_key="meme",
+            title="Meme市值里程碑",
+            response_text='{"id":"metadata-meme"}',
+            pushed_at="2026-10-20T03:05:00+00:00",
+            priority_status="not_applicable",
+        )
+
+        current = self.repository.list_newsflashes({"search": "metadata-current"})["items"][0]
+        meme = self.repository.list_newsflashes({"search": "metadata-meme"})["items"][0]
+        old = self.repository.list_newsflashes({"search": "metadata-old"})["items"][0]
+
+        self.assertEqual(current["origin_label"], "X")
+        self.assertEqual(current["priority_level"], "high")
+        self.assertEqual(current["priority_reason"], "产品上线可能影响读者决策。")
+        self.assertEqual(meme["origin_label"], "Meme 速递")
+        self.assertEqual(meme["priority_status"], "not_applicable")
+        self.assertEqual(old["origin_label"], "历史未记录")
+        self.assertEqual(old["priority_status"], "historical")
 
     def test_source_facts_map_aliases_and_reconcile_ai(self) -> None:
         self.add_reference("1", "Human", "2026-07-20T09:00:00+08:00")

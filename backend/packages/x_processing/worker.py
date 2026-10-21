@@ -19,8 +19,16 @@ from packages.common.freshness import evaluate_source_freshness, freshness_error
 from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.paths import get_paths
 from packages.common.source_exclusions import normalize_exclusion_text
+from packages.common.storage import load_storage_settings
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import PushClient
+from packages.newsflash_metadata import update_newsflash_priority
+from packages.newsflash_priority import (
+    NEWSFLASH_PRIORITY_SCHEMA,
+    PRIORITY_RUBRIC,
+    build_newsflash_priority_prompt,
+    parse_newsflash_priority,
+)
 from packages.x_capture.naming import choose_effective_author_name
 from packages.x_capture.repository import XCaptureRepository
 
@@ -86,6 +94,7 @@ from .searcher import (
 )
 from .telegram import TelegramClient, skipped_telegram_result
 from .title_trace import (
+    EVENT_TRACKING_WRITER_JSON_SCHEMA,
     WRITER_JSON_SCHEMA,
     build_known_subject_prompt,
     match_known_title_subjects,
@@ -368,6 +377,28 @@ PUBLISHER_CHANNEL_BY_SOURCE = {
     JIN10_SOURCE: "jin10",
 }
 PUBLISHER_HARD_BLOCK_TERMS = ("MAGNE.AI",)
+
+
+def newsflash_origin_key_for_task(task: TaskRecord) -> str:
+    if task.source == EVENT_TRACKING_SOURCE:
+        return "hot_topic_auto"
+    if task.source == HYPERLIQUID_SOURCE:
+        return "hyperliquid_monitor"
+    if task.source in COMPETITOR_SOURCES:
+        return "competitor"
+    if task.source == "x":
+        return "x"
+    if task.source == BINANCE_SQUARE_SOURCE:
+        return "binance_square"
+    if task.source in {
+        AI_SOURCE,
+        JIN10_SOURCE,
+        MAINSTREAM_MEDIA_SOURCE,
+        MSX_SOURCE,
+        NON_MAINSTREAM_MEDIA_SOURCE,
+    }:
+        return "external_media"
+    return "external_media"
 
 
 AI_JUDGE_JSON_SCHEMA = {
@@ -1121,21 +1152,24 @@ class XProcessingWorker:
             task,
             subject_names=load_known_title_subject_names(),
         )
+        include_priority = task.source == EVENT_TRACKING_SOURCE
         input_prompt = build_structured_writer_prompt(
             task=task,
             prompt=prompt,
             known_subjects=known_subjects,
+            include_newsflash_priority=include_priority,
         )
         raw_output = self._get_ai_client().generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
-            text_format=WRITER_JSON_SCHEMA,
+            text_format=EVENT_TRACKING_WRITER_JSON_SCHEMA if include_priority else WRITER_JSON_SCHEMA,
             reasoning_effort=self.settings.writer_reasoning_effort,
         )
         structured = parse_structured_writer_output(
             raw_output,
             known_subjects=known_subjects,
             feature_mode_enabled=prompt.feature_mode_enabled,
+            include_newsflash_priority=include_priority,
         )
         if task.source == HYPERLIQUID_SOURCE:
             from packages.hyperliquid_news.copy import normalize_account_copy
@@ -1353,8 +1387,16 @@ class XProcessingWorker:
             publisher_decision = "reject"
             context_output["hard_blocked_term"] = hard_blocked_term
         should_publish = publisher_decision == "pass"
+        priority_payload = {
+            "status": publisher_decision_result.priority_status,
+            "level": publisher_decision_result.priority_level,
+            "reason": publisher_decision_result.priority_reason,
+            "error": publisher_decision_result.priority_error,
+        }
+        context_output["newsflash_priority"] = priority_payload
         if self._hyperliquid_blocked(task):
             return
+        delivery_key = f"odaily-task-{task.id}"
         push_result = self.push_client.push(
             title=pipeline.final_title,
             content=pipeline.final_content,
@@ -1362,7 +1404,11 @@ class XProcessingWorker:
             source_url=None if should_omit_publish_source_url(task) else task.source_url,
             is_publish=should_publish,
             is_push=False,
-            idempotency_key=f"odaily-task-{task.id}",
+            idempotency_key=delivery_key,
+            origin_key=newsflash_origin_key_for_task(task),
+            priority_status=publisher_decision_result.priority_status,
+            priority_level=publisher_decision_result.priority_level,
+            priority_reason=publisher_decision_result.priority_reason,
         )
         push_payload = push_result.model_dump(mode="json")
         publisher_output = {
@@ -1450,6 +1496,7 @@ class XProcessingWorker:
             return
         if self._hyperliquid_blocked(task):
             return
+        event_priority = self._event_tracking_priority(pipeline)
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
@@ -1458,7 +1505,12 @@ class XProcessingWorker:
             is_publish=True,
             is_push=False,
             idempotency_key=f"event-tracking:{task.source_item_id}",
+            origin_key="hot_topic_auto",
+            priority_status=str(event_priority.get("status") or "failed"),
+            priority_level=event_priority.get("level"),
+            priority_reason=event_priority.get("reason"),
         )
+        context_output["newsflash_priority"] = event_priority
         if not push_result.ok:
             error = push_result.error or "push failed"
             self.repository.complete_publish(
@@ -1525,6 +1577,8 @@ class XProcessingWorker:
             is_publish=False,
             is_push=False,
             idempotency_key=f"odaily-task-{task.id}",
+            origin_key=newsflash_origin_key_for_task(task),
+            priority_status="not_applicable" if task.source == HYPERLIQUID_SOURCE else "pending",
         )
         if not push_result.ok:
             error = push_result.error or "push failed"
@@ -1544,6 +1598,12 @@ class XProcessingWorker:
             )
             self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
             raise HandledStageError(error)
+        if task.source != HYPERLIQUID_SOURCE and not push_result.dry_run:
+            publisher_output["newsflash_priority"] = self._evaluate_and_store_newsflash_priority(
+                task=task,
+                pipeline=pipeline,
+                delivery_key=f"odaily-task-{task.id}",
+            )
         telegram_result = self._send_publish_notice(task=task, pipeline=pipeline)
         self.repository.complete_publish(
             task.id,
@@ -1567,6 +1627,59 @@ class XProcessingWorker:
             decided_at=decided_at,
         )
         self._release_local_candidate_for_task(task.id, release_reason="ready_review")
+
+    @staticmethod
+    def _event_tracking_priority(pipeline: PipelineRecord) -> dict[str, Any]:
+        output = pipeline.writer_output if isinstance(pipeline.writer_output, dict) else {}
+        trace = output.get("trace") if isinstance(output.get("trace"), dict) else {}
+        priority = trace.get("newsflash_priority") if isinstance(trace, dict) else None
+        if not isinstance(priority, dict):
+            return {"status": "failed", "level": None, "reason": None, "error": "priority missing"}
+        status = str(priority.get("status") or "failed")
+        level = priority.get("level")
+        reason = priority.get("reason")
+        if status != "evaluated" or level not in {"high", "medium", "low"} or not reason:
+            return {
+                "status": "failed",
+                "level": None,
+                "reason": None,
+                "error": priority.get("error") or "priority missing or invalid",
+            }
+        return {"status": "evaluated", "level": level, "reason": reason}
+
+    def _evaluate_and_store_newsflash_priority(
+        self,
+        *,
+        task: TaskRecord,
+        pipeline: PipelineRecord,
+        delivery_key: str,
+    ) -> dict[str, Any]:
+        title = pipeline.final_title or task.title or ""
+        content = pipeline.final_content or task.content
+        try:
+            raw = self._get_ai_client().generate_text(
+                model=self.settings.publisher_model,
+                prompt=build_newsflash_priority_prompt(title=title, content=content),
+                text_format=NEWSFLASH_PRIORITY_SCHEMA,
+                reasoning_effort=self.settings.publisher_reasoning_effort,
+            )
+            level, reason = parse_newsflash_priority(raw)
+            result = {"status": "evaluated", "level": level, "reason": reason}
+        except Exception as exc:
+            result = {"status": "failed", "level": None, "reason": None, "error": str(exc)[:500]}
+        try:
+            updated = update_newsflash_priority(
+                load_storage_settings().sqlite_path,
+                delivery_key=delivery_key,
+                status=result["status"],
+                level=result.get("level"),
+                reason=result.get("reason"),
+            )
+            if not updated:
+                print(f"[odaily] review priority row missing task_id={task.id}")
+        except Exception:
+            print(f"[odaily] failed to persist review priority task_id={task.id}")
+        return result
 
     def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
         return skipped_telegram_result("business publish notice disabled; use editor plugin feed")
@@ -1808,10 +1921,11 @@ def build_structured_writer_prompt(
     task: TaskRecord,
     prompt: PromptTemplateVersion,
     known_subjects: list[dict[str, str]],
+    include_newsflash_priority: bool = False,
 ) -> str:
     subject_prompt = build_known_subject_prompt(known_subjects)
     subject_block = f"\n\n{subject_prompt}" if subject_prompt else ""
-    return (
+    base_prompt = (
         f"{build_writer_prompt(task=task, prompt=prompt, structured_output=True)}"
         f"{subject_block}\n\n"
         "【本次系统输出契约】\n"
@@ -1822,6 +1936,14 @@ def build_structured_writer_prompt(
         "matched_title_rules 只能使用 known_speaker_anchor、entity_front、action_first、result_change_front、amount_front、time_window_front、plain_direct、feature_subject_amplification。\n"
         "title_strategy_reason 只解释标题组织方式；不要输出事实抽取或风险分析。\n"
         "feature_mode_applied 表示是否实际采用特色写法，不等同于特色模式配置是否开启。"
+    )
+    if not include_newsflash_priority:
+        return base_prompt
+    return (
+        f"{base_prompt}\n\n"
+        "【独立审阅优先级】\n"
+        "在同一次写稿调用中，额外输出 priority 和 priority_reason。此字段只对最终 title/content 所表达的事件评定阅读顺序，不得影响标题、正文或发布资格。只依据你最终输出的标题和正文，不使用来源、事件背景、核查疑点、阅读状态或写作质量。\n"
+        f"{PRIORITY_RUBRIC}"
     )
 
 

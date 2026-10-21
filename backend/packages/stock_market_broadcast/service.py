@@ -153,6 +153,8 @@ class StockMarketBroadcastService:
                     title=alert.title, content=alert.content, dry_run=False,
                     is_publish=alert.tier == "live", is_push=False,
                     idempotency_key=f"stock-market:{alert.event_key}",
+                    origin_key="stock_market",
+                    priority_status="not_applicable",
                 )
             except Exception as exc:
                 # The endpoint has no reliable idempotency contract. Consume a

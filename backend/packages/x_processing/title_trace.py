@@ -7,6 +7,7 @@ from typing import Any
 
 from .formatter import parse_draft_output
 from .models import DraftBrief, TaskRecord
+from packages.newsflash_priority import parse_newsflash_priority
 
 
 TITLE_STRATEGIES = (
@@ -66,11 +67,29 @@ WRITER_JSON_SCHEMA = {
     "strict": True,
 }
 
+EVENT_TRACKING_WRITER_JSON_SCHEMA = {
+    **WRITER_JSON_SCHEMA,
+    "name": "odaily_event_tracking_writer_with_priority",
+    "schema": {
+        **WRITER_JSON_SCHEMA["schema"],
+        "properties": {
+            **WRITER_JSON_SCHEMA["schema"]["properties"],
+            "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+            "priority_reason": {"type": "string"},
+        },
+    },
+    "strict": False,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class StructuredWriterResult:
     draft: DraftBrief
     trace: dict[str, Any]
+    priority_level: str | None = None
+    priority_reason: str | None = None
+    priority_status: str = "not_applicable"
+    priority_error: str | None = None
 
 
 def normalize_known_title_subject_names(value: str | list[Any] | tuple[Any, ...] | None) -> list[str]:
@@ -144,6 +163,7 @@ def parse_structured_writer_output(
     *,
     known_subjects: list[dict[str, str]],
     feature_mode_enabled: bool,
+    include_newsflash_priority: bool = False,
 ) -> StructuredWriterResult:
     try:
         payload = json.loads(_strip_json_fence(raw_output))
@@ -181,7 +201,31 @@ def parse_structured_writer_output(
         "feature_mode_applied": applied,
         "feature_mode_reason": feature_reason.strip() if applied else "",
     }
-    return StructuredWriterResult(draft=draft, trace=trace)
+    priority_level = None
+    priority_reason = None
+    priority_status = "not_applicable"
+    priority_error = None
+    if include_newsflash_priority:
+        priority_status = "failed"
+        try:
+            priority_level, priority_reason = parse_newsflash_priority(payload)
+            priority_status = "evaluated"
+        except Exception as exc:
+            priority_error = str(exc)
+        trace["newsflash_priority"] = {
+            "status": priority_status,
+            "level": priority_level,
+            "reason": priority_reason,
+            "error": priority_error,
+        }
+    return StructuredWriterResult(
+        draft=draft,
+        trace=trace,
+        priority_level=priority_level,
+        priority_reason=priority_reason,
+        priority_status=priority_status,
+        priority_error=priority_error,
+    )
 
 
 def _strip_json_fence(value: str) -> str:

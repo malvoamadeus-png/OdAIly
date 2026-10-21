@@ -76,6 +76,8 @@ def run_okx_stock_brief_once(
             is_publish=True,
             is_push=False,
             idempotency_key=f"okx-stock-brief:{result.as_of_date.isoformat()}",
+            origin_key="scheduled_brief",
+            priority_status="not_applicable",
         )
     except Exception as exc:
         message = f"error: {exc}"
