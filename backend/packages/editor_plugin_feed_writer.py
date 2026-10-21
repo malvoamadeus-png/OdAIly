@@ -256,6 +256,42 @@ class LocalEditorPluginFeedWriter:
             ]
         )
 
+    def upsert_fact_auditor_alert(
+        self,
+        *,
+        check_id: int,
+        source_item_id: str,
+        source_url: str | None,
+        title: str | None,
+        summary: str,
+        audit_result: dict[str, Any],
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": f"fact_auditor:{check_id}",
+                    "feed_kind": "auditor_alert",
+                    "lane": "high",
+                    "priority": 100,
+                    "title": title or "事实审查者提醒",
+                    "summary": summary or "事实审查者发现疑点",
+                    "badges": [],
+                    "status_label": "事实审查者",
+                    "status_tone": "warning",
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": source_url,
+                    "detail_url": _odaily_newsflash_url(source_item_id, source_url),
+                    "action_schema": {"type": "feedback", "actions": ["accept", "reject"]},
+                    "meta_json": {
+                        "source_item_id": source_item_id,
+                        "check_id": check_id,
+                        "fact_status": audit_result.get("status"),
+                    },
+                }
+            ]
+        )
+
     def upsert_writer3_context(
         self,
         *,

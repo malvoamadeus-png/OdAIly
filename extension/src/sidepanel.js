@@ -369,7 +369,7 @@ function renderPreservingLaneScroll(laneList) {
 
 function feedbackKindLabel(item) {
   if (item.feed_kind === "auditor_alert") {
-    return "文本审查者";
+    return item.status_label || "文本审查者";
   }
   if (item.feed_kind === "writer3_context") {
     return "此前消息";
