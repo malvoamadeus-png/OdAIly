@@ -35,9 +35,9 @@ class Rules:
     historical_loss: Decimal = Decimal('20000000')
     min_rounds: int = 5
     liquidation_distance: Decimal = Decimal('0.20')
-    giveback_fraction: Decimal = Decimal('0.15')
-    giveback_major_pnl: Decimal = Decimal('300000')
-    giveback_other_pnl: Decimal = Decimal('100000')
+    giveback_fraction: Decimal = Decimal('0.40')
+    giveback_major_pnl: Decimal = Decimal('3000000')
+    giveback_other_pnl: Decimal = Decimal('1000000')
     escalation: Decimal = Decimal('2')
     new_address_window_ms: int = 3600000
 

@@ -103,6 +103,6 @@ Hyperliquid 成稿复用插件 `newsflash` 提醒项与“挂后台新快讯”�
 
 2026-10-20 三类验收上线：单资产高盈利、浮盈回吐/双向盈亏转换、接近清算/实际清算加入正常监测，共十类；上线前测试仅保留巨大持仓、同资产多空对决、新观察地址快速建仓。执行 `prune-tested-cases` 清除三类独有测试案例和预览，混合案例仅保留未验收标签，不把历史测试转为正式事件。
 
-采用本轮审查的 low-20 参数：近30天单资产净盈利 BTC/ETH 300 万美元、其他资产 100 万美元，动作至少 200 万美元；回吐/转换使用独立 `giveback_major_pnl=300000` / `giveback_other_pnl=100000`，回吐比例 15%；接近清算距离 20%，重要仓位/实际清算成交金额仍至少 300 万美元。原七类金额线不变。回吐标题用“浮盈XXX万美元回落至XXX万美元”或“浮盈XXX万美元后回吐XXX万美元”；盈转亏单独明确浮亏。
+采用本轮审查的 low-20 参数：近30天单资产净盈利 BTC/ETH 300 万美元、其他资产 100 万美元，动作至少 200 万美元；回吐/转换使用独立 `giveback_major_pnl=3000000` / `giveback_other_pnl=1000000`，回吐比例至少 40%；接近清算距离 20%，重要仓位/实际清算成交金额仍至少 300 万美元。原七类金额线不变。回吐标题用“浮盈XXX万美元回落至XXX万美元”或“浮盈XXX万美元后回吐XXX万美元”；盈转亏单独明确浮亏。
 
 新增方向在 `production_account_profit.scenario_started_ms_by_direction` 保存各自启用时刻；新增方向事件须在该时刻后有成功前序快照（`evidence.previous_snapshot_ms`），并且本次观察也在启用后。原有方向保留旧时间边界和基线。重复启用不重置时刻。`enable-approved-scenarios` 为正式命令，旧命令保留兼容别名。激活回吐模板使用 `hyperliquid-news activate-prompt --template-key hyperliquid_giveback_writer`，保留旧版本。
