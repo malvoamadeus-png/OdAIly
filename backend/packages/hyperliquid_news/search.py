@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .copy import money, timestamp, writer_material
+from .copy import money, rounded_percent, timestamp, writer_material
 from .dashboard import KIND_LABELS
 from .models import number
 
@@ -48,13 +48,16 @@ def search_material(event: dict[str, Any]) -> tuple[str, str]:
     facts=writer_material(event)['facts']
     for key,label in (('oi_share_percent','占合约未平仓量'),('market_cap_share_percent','持仓价值相当于代币市值')):
         if key in facts:
-            lines.append(f'{label} {number(facts[key]):.2f}%。')
+            value, approximate = rounded_percent(facts[key])
+            lines.append(f'{label} {"约" if approximate else ""}{value}%。')
     if 'liquidation_price_usd' in facts:
-        lines.append(f'清算价 {facts["liquidation_price_usd"]} 美元，距离 {number(facts["price_move_to_liquidation_percent"]):.2f}%。')
+        value, approximate = rounded_percent(facts['price_move_to_liquidation_percent'])
+        lines.append(f'清算价 {facts["liquidation_price_usd"]} 美元，距离 {"约" if approximate else ""}{value}%。')
     if 'historical_highlights' in facts:
         h=facts['historical_highlights']
         if 'asset_win_rate' in h:
-            lines.append(f'{coin} 胜率 {number(h["asset_win_rate"])*100:.2f}%，{h["asset_trade_rounds"]}个完整交易轮。')
+            value, approximate = rounded_percent(h['asset_win_rate'], fraction=True)
+            lines.append(f'{coin} 胜率 {"约" if approximate else ""}{value}%，{h["asset_trade_rounds"]}个完整交易轮。')
         for key,label in (('asset_trading_pnl_usd',coin+'近30天交易盈亏' if h.get('asset_trading_window') else coin+'交易盈亏'),('account_trading_pnl_usd','账户交易盈亏')):
             if key in h:
                 lines.append(f'{label} {money(h[key])}。')

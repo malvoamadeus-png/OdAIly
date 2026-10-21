@@ -66,8 +66,8 @@ def test_actions_and_account_copy(before,size,side,field):
     e['evidence']['address_notes']={A:'模拟地址'}
     draft=DraftBrief(title='总亏损2500万美元的地址操作ETH', content='该地址合约账户累计亏损2500万美元。')
     result=format_news(draft,e)
-    assert result.title=='总亏损2500万美元地址操作ETH'
-    assert result.content.startswith('据Odaily监测，某地址合约账户（模拟地址）')
+    assert result.title=='总亏损2,500万美元地址操作ETH'
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户（模拟地址）')
     assert format_news(result,e).content.count('模拟地址')==1
 
 def test_finite_period_loss_cannot_qualify_total_loss_direction():

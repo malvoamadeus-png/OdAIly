@@ -9,14 +9,26 @@ from urllib.parse import parse_qs, urlparse
 
 OKX_MEME_PAGE_URL = "https://web3.okx.com/zh-hans/meme-pump"
 OKX_MEME_RANKING_PATH = "/priapi/v1/dx/market/v2/memefun/meme-ranking/content"
-OKX_MEME_CHAIN_IDS = {"bsc": "56", "robinhood": "4663"}
-OKX_MEME_CHAIN_LABELS = {"bsc": "BNB Chain", "robinhood": "Robinhood"}
+OKX_MEME_CHAIN_IDS = {"bsc": "56", "robinhood": "4663", "solana": "501"}
+OKX_MEME_CHAIN_LABELS = {"bsc": "BNB Chain", "robinhood": "Robinhood", "solana": "Solana"}
 DEFAULT_PAGE_SETTLE_MS = 5_000
 DEFAULT_ACTION_TIMEOUT_SECONDS = 45
 
 
 class OKXMemeWebError(RuntimeError):
     """A browser or business error from the public OKX MemePump page."""
+
+
+def is_pumpfun_item(item: dict[str, Any]) -> bool:
+    """Keep Pump.fun rows by OKX protocol identity, with the CA suffix as fallback."""
+    protocol_id = str(item.get("protocolId") or "").strip().lower()
+    platform = str(item.get("platform") or item.get("protocolName") or "").strip().lower()
+    if protocol_id:
+        return protocol_id == "120596"
+    if platform:
+        return "pump.fun" in platform or "pumpfun" in platform
+    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or item.get("ca") or "")
+    return address.strip().endswith("pump")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -199,10 +211,15 @@ class OKXMemeWebClient:
                 self._refresh_current_chain(chain)
                 requested = min(max(int(limit), 1), 30)
                 rows: list[dict[str, Any]] = []
-                for item in self._latest[chain][:requested]:
+                source_rows = self._latest[chain]
+                if chain == "solana":
+                    source_rows = [item for item in source_rows if is_pumpfun_item(item)]
+                for item in source_rows[:requested]:
                     row = dict(item)
                     row["_okx_discovery_source"] = "web_meme_ranking"
                     row["_okx_web_chain_id"] = OKX_MEME_CHAIN_IDS[chain]
+                    if chain == "solana":
+                        row["_okx_platform_filter"] = "pumpfun"
                     rows.append(row)
                 return rows
             except OKXMemeWebError:

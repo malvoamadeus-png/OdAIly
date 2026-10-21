@@ -37,14 +37,15 @@ from .okx_web import OKXMemeWebClient
 CHAIN = "bsc"
 SUPPORTED_CHAINS = {"bsc", "robinhood", "solana", "base", "eth"}
 MARKET_CAP_GATE = 500_000.0
-MARKET_CAP_GATES = {"bsc": 500_000.0, "robinhood": 1_000_000.0, "solana": 500_000.0}
+MARKET_CAP_GATES = {"bsc": 500_000.0, "robinhood": 1_000_000.0, "solana": 1_000_000.0}
+COMMON_MARKET_CAP_LEVELS = (1_000_000.0, 3_000_000.0, 5_000_000.0, *tuple(float(value) for value in range(10_000_000, 100_000_001, 10_000_000)))
 MARKET_CAP_LEVELS_BY_CHAIN = {
-    "bsc": (500_000.0, 1_000_000.0, 3_000_000.0),
-    "robinhood": (1_000_000.0, 3_000_000.0),
-    "solana": (500_000.0, 1_000_000.0, 3_000_000.0),
+    "bsc": (500_000.0, *COMMON_MARKET_CAP_LEVELS),
+    "robinhood": COMMON_MARKET_CAP_LEVELS,
+    "solana": COMMON_MARKET_CAP_LEVELS,
 }
 MARKET_CAP_LEVELS = MARKET_CAP_LEVELS_BY_CHAIN[CHAIN]
-OKX_DISCOVERY_CHAINS = ("bsc", "robinhood")
+OKX_DISCOVERY_CHAINS = ("bsc", "robinhood", "solana")
 OKX_DISCOVERY_LIMIT = 30
 OKX_WEB_DISCOVERY_SOURCES = {"web", "web_meme", "priapi_meme_ranking"}
 DEFAULT_GMGN_REQUEST_INTERVAL_SECONDS = 0.15
@@ -300,7 +301,7 @@ def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
         {
             "address": address,
             "chain": chain,
-            "launchpad_platform": f"okx:{item.get('protocolId') or 'unknown'}",
+            "launchpad_platform": "pumpfun" if chain == "solana" else f"okx:{item.get('protocolId') or 'unknown'}",
             "name": web_name or item.get("name") or "",
             "symbol": web_symbol,
             "usd_market_cap": market.get("marketCapUsd") or item.get("mcap") or item.get("marketCap"),
@@ -590,10 +591,11 @@ class Store:
               last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
               last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
               tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked',
-              tracking_started_at TEXT, tracking_expires_at TEXT,
+              tracking_started_at TEXT, tracking_anchor_at TEXT, tracking_expires_at TEXT,
               last_completed_seen_at TEXT, last_token_info_at TEXT,
               next_token_info_at TEXT, tracking_interval_seconds INTEGER,
               tracking_source TEXT, last_volume_24h REAL NOT NULL DEFAULT 0,
+              volume_qualified INTEGER NOT NULL DEFAULT 0,
               token_info_failures INTEGER NOT NULL DEFAULT 0,
               last_token_info_error TEXT,
               PRIMARY KEY(address, chain)
@@ -654,6 +656,7 @@ class Store:
         observation_migrations = {
             "tracking_status": "TEXT NOT NULL DEFAULT 'legacy_untracked'",
             "tracking_started_at": "TEXT",
+            "tracking_anchor_at": "TEXT",
             "tracking_expires_at": "TEXT",
             "last_completed_seen_at": "TEXT",
             "last_token_info_at": "TEXT",
@@ -661,12 +664,14 @@ class Store:
             "tracking_interval_seconds": "INTEGER",
             "tracking_source": "TEXT",
             "last_volume_24h": "REAL NOT NULL DEFAULT 0",
+            "volume_qualified": "INTEGER NOT NULL DEFAULT 0",
             "token_info_failures": "INTEGER NOT NULL DEFAULT 0",
             "last_token_info_error": "TEXT",
         }
         for column, definition in observation_migrations.items():
             if column not in observation_columns:
                 self.conn.execute(f"ALTER TABLE observations ADD COLUMN {column} {definition}")
+        self.conn.execute("UPDATE observations SET tracking_anchor_at=tracking_started_at WHERE tracking_anchor_at IS NULL")
         self._migrate_chain_scoped_tables()
         self.conn.execute(
             "UPDATE observations SET tracking_status='legacy_untracked', tracking_source=COALESCE(tracking_source, 'legacy') "
@@ -749,10 +754,11 @@ class Store:
                   last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
                   last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
                   tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked',
-                  tracking_started_at TEXT, tracking_expires_at TEXT,
+                  tracking_started_at TEXT, tracking_anchor_at TEXT, tracking_expires_at TEXT,
                   last_completed_seen_at TEXT, last_token_info_at TEXT,
                   next_token_info_at TEXT, tracking_interval_seconds INTEGER,
                   tracking_source TEXT, last_volume_24h REAL NOT NULL DEFAULT 0,
+                  volume_qualified INTEGER NOT NULL DEFAULT 0,
                   token_info_failures INTEGER NOT NULL DEFAULT 0,
                   last_token_info_error TEXT,
                   PRIMARY KEY(address, chain)
@@ -762,15 +768,15 @@ class Store:
                 """INSERT INTO observations(
                   address, chain, platform, symbol, last_market_cap, highest_market_cap,
                   last_seen_at, triggered_at, published_at, tracking_status,
-                  tracking_started_at, tracking_expires_at, last_completed_seen_at,
+                  tracking_started_at, tracking_anchor_at, tracking_expires_at, last_completed_seen_at,
                   last_token_info_at, next_token_info_at, tracking_interval_seconds,
-                  tracking_source, last_volume_24h, token_info_failures, last_token_info_error
+                  tracking_source, last_volume_24h, volume_qualified, token_info_failures, last_token_info_error
                 ) SELECT address, COALESCE(chain, 'bsc'), platform, symbol, last_market_cap,
                   COALESCE(highest_market_cap, last_market_cap), last_seen_at, triggered_at,
                   published_at, COALESCE(tracking_status, 'legacy_untracked'), tracking_started_at,
-                  tracking_expires_at, last_completed_seen_at, last_token_info_at,
+                  tracking_started_at, tracking_expires_at, last_completed_seen_at, last_token_info_at,
                   next_token_info_at, tracking_interval_seconds, tracking_source,
-                  COALESCE(last_volume_24h, 0), COALESCE(token_info_failures, 0), last_token_info_error
+                  COALESCE(last_volume_24h, 0), 0, COALESCE(token_info_failures, 0), last_token_info_error
                 FROM observations_legacy_chain"""
             )
             self.conn.execute("DROP TABLE observations_legacy_chain")
@@ -841,7 +847,15 @@ class Store:
         self.conn.commit()
         return int(cursor.lastrowid)
 
-    def record_milestone(self, token: Token, *, level: float, observed_at: str, snapshot_id: int) -> bool:
+    def record_milestone(
+        self,
+        token: Token,
+        *,
+        level: float,
+        observed_at: str,
+        snapshot_id: int,
+        qualify_volume: bool = False,
+    ) -> bool:
         trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO market_cap_milestones(
@@ -851,8 +865,29 @@ class Store:
             (token.address, token.chain, token.platform, token.symbol, level, observed_at,
              snapshot_id, trigger_key),
         )
+        if cursor.rowcount > 0 and qualify_volume:
+            self.conn.execute(
+                "UPDATE observations SET volume_qualified=1 WHERE address=? AND chain=?",
+                (token.address, normalize_chain(token.chain)),
+            )
         self.conn.commit()
         return cursor.rowcount > 0
+
+    def volume_qualified(self, address: str, chain: str) -> bool:
+        row = self.observation(address, chain)
+        return bool(row and row["volume_qualified"])
+
+    def refresh_tracking_window(
+        self, address: str, chain: str, *, observed_at: str, tracking_window_seconds: int
+    ) -> None:
+        observed_time = parse_iso(observed_at) or datetime.now(UTC)
+        expires = (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat()
+        self.conn.execute(
+            """UPDATE observations SET tracking_anchor_at=?, tracking_expires_at=?
+              WHERE address=? AND chain=? AND tracking_status='active'""",
+            (observed_time.isoformat(), expires, address, normalize_chain(chain)),
+        )
+        self.conn.commit()
 
     def upsert_observation(
         self,
@@ -927,11 +962,11 @@ class Store:
                 """UPDATE observations SET platform=?, symbol=?, last_market_cap=?,
                   chain=?,
                   highest_market_cap=MAX(highest_market_cap, ?), last_seen_at=?,
-                  tracking_status='active', tracking_started_at=?, tracking_expires_at=?,
+                  tracking_status='active', tracking_started_at=?, tracking_anchor_at=COALESCE(tracking_anchor_at, ?), tracking_expires_at=?,
                   last_completed_seen_at=?, next_token_info_at=?, tracking_interval_seconds=?,
                   tracking_source='completed', last_volume_24h=? WHERE address=? AND chain=?""",
                 (token.platform, token.symbol, token.market_cap, token.chain, token.market_cap, observed_at,
-                 started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address, token.chain),
+                 started_at, started_at, expires, observed_at, next_at, interval, token.volume_24h, token.address, token.chain),
             )
             self.conn.commit()
             return previous_high, False, TRACKING_STATUS_ACTIVE
@@ -966,10 +1001,10 @@ class Store:
             self.conn.execute(
                 """INSERT INTO observations(
                   address, chain, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
-                  tracking_status, tracking_started_at, tracking_expires_at, last_completed_seen_at,
+                  tracking_status, tracking_started_at, tracking_anchor_at, tracking_expires_at, last_completed_seen_at,
                   next_token_info_at, tracking_interval_seconds, tracking_source, last_volume_24h
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'completed', ?)""",
-                (token.address, token.chain, token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, started_at, expires, observed_at, next_at, interval, token.volume_24h),
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 'completed', ?)""",
+                (token.address, token.chain, token.platform, token.symbol, token.market_cap, token.market_cap, observed_at, started_at, started_at, expires, observed_at, next_at, interval, token.volume_24h),
             )
         self.conn.commit()
         return previous_high, old is None, TRACKING_STATUS_ACTIVE
@@ -1032,7 +1067,7 @@ class Store:
         observed_time = parse_iso(now) or datetime.now(UTC)
         window_seconds = max(int(tracking_window_seconds), 1)
         rows = self.conn.execute(
-            """SELECT address, chain, tracking_started_at, tracking_expires_at,
+            """SELECT address, chain, tracking_started_at, tracking_anchor_at, tracking_expires_at,
               last_market_cap, next_token_info_at, tracking_interval_seconds
             FROM observations WHERE tracking_status='active'"""
         ).fetchall()
@@ -1040,10 +1075,10 @@ class Store:
         for row in rows:
             address = str(row["address"])
             chain = str(row["chain"] or CHAIN)
-            started_at = parse_iso(row["tracking_started_at"])
+            anchor_at = parse_iso(row["tracking_anchor_at"] or row["tracking_started_at"])
             expires_at = parse_iso(row["tracking_expires_at"])
-            if started_at:
-                policy_expires_at = started_at + timedelta(seconds=window_seconds)
+            if anchor_at:
+                policy_expires_at = anchor_at + timedelta(seconds=window_seconds)
                 if expires_at is None or policy_expires_at < expires_at:
                     expires_at = policy_expires_at
             if expires_at and expires_at <= observed_time:
@@ -1067,7 +1102,7 @@ class Store:
                 or int(row["tracking_interval_seconds"] or 0) != interval
             ):
                 self.conn.execute(
-                    """UPDATE observations SET tracking_expires_at=?, next_token_info_at=?,
+                    """UPDATE observations SET tracking_anchor_at=COALESCE(tracking_anchor_at, tracking_started_at), tracking_expires_at=?, next_token_info_at=?,
                       tracking_interval_seconds=? WHERE address=? AND chain=?
                       AND tracking_status='active'""",
                     (new_expires_at, next_at, interval, address, chain),
@@ -1648,6 +1683,7 @@ def evaluate_market_token(
     persist_observation: bool = True,
     snapshot_id: int | None = None,
     snapshot_source: str = "completed",
+    tracking_window_seconds: int = TRACKING_WINDOW_SECONDS,
 ) -> tuple[int, int]:
     observed = store.observation(token.address, token.chain)
     if previous_high is None:
@@ -1676,16 +1712,31 @@ def evaluate_market_token(
             store.upsert_observation(token)
         return (0, 0)
     level = milestone_level(previous_high, token.market_cap, token.chain)
+    if level is not None:
+        store.refresh_tracking_window(
+            token.address,
+            token.chain,
+            observed_at=now_iso(),
+            tracking_window_seconds=tracking_window_seconds,
+        )
     if persist_observation:
         store.upsert_observation(token, triggered_at=now_iso() if level else None)
     elif level:
         store.mark_tracking_triggered(token.address, token.chain)
     if level is None:
         return (0, 0)
-    if not store.record_milestone(token, level=level, observed_at=now_iso(), snapshot_id=snapshot_id):
+    qualified = store.volume_qualified(token.address, token.chain)
+    volume_passes = qualified or token.volume_ratio >= volume_ratio_gate(token.market_cap)
+    if not store.record_milestone(
+        token,
+        level=level,
+        observed_at=now_iso(),
+        snapshot_id=snapshot_id,
+        qualify_volume=volume_passes and not qualified,
+    ):
         return (0, 0)
     trigger_key = f"market_cap:{token.chain}:{token.address}:{int(level)}"
-    if token.volume_ratio < volume_ratio_gate(token.market_cap):
+    if not volume_passes:
         inserted = store.add_job(
             token,
             "market_cap_milestone",
@@ -1771,6 +1822,7 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
         persist_observation=False,
         snapshot_id=snapshot_id,
         snapshot_source="token_info",
+        tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
     )
     return {
         "status": "observed",
@@ -1877,6 +1929,7 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
                         bootstrap=False,
                         previous_high=previous_high,
                         persist_observation=False,
+                        tracking_window_seconds=int(getattr(args, "tracking_window", TRACKING_WINDOW_SECONDS)),
                     )
                     queued += added_queued
                     discarded += added_discarded

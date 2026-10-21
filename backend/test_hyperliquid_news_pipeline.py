@@ -52,10 +52,9 @@ def test_writer2_fixed_prefix_footer_source_without_model_numbers():
     e, _ = event()
     result = format_news(DraftBrief(title='STRK大额多仓当前浮盈200万美元',
         content='某地址当前在 Hyperliquid 持有 STRK 多仓，名义价值为 1000 万美元，目前浮盈为 200 万美元。'), e)
-    assert result.content.startswith('据Odaily监测，')
-    assert 'Odaily星球日报讯' not in result.content
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，')
     assert A in result.content
-    assert result.content.endswith('地址：'+A+'；总盈亏：未取得')
+    assert result.content.endswith('地址：'+A)
     assert '当前持仓：' not in result.content
     assert source_url(e) == f'https://hyperbot.network/trader/{A}'
 
@@ -153,7 +152,7 @@ def test_footer_omits_unrelated_liquidation_and_unknown_account_pnl():
     e['evidence']['history']={'fills':0,'fee_currency_complete':True,'account_closed_pnl_less_fees':'0'}
     text=footer(e)
     assert '距清算价' not in text and '账户已观察' not in text
-    assert money('-0.01')=='0.00 万美元'
+    assert money('-0.01')=='约0 万美元'
 
 
 def test_reader_material_keeps_trigger_not_discovery_and_footer_omits_interval_pnl():
@@ -169,7 +168,7 @@ def test_reader_material_keeps_trigger_not_discovery_and_footer_omits_interval_p
     assert 'official_account_performance' not in text and '-11854548' not in text
     assert '-2263209' not in text and 'first_observation' not in text
     assert 'floating_pnl_usd' not in text
-    assert footer(e)=='地址：'+A+'；总盈亏：未取得'
+    assert footer(e)=='地址：'+A
 
 
 def test_empty_trade_history_is_unknown_not_zero():
@@ -212,10 +211,10 @@ def test_single_asset_win_rate_supplement_only_for_highlight_action():
     e['evidence']['highlights']=['asset_high_win_rate']
     e['evidence']['history']={'assets':{'STRK':{'rounds':10,'win_rate':'0.7'}},
                             'first_observed_fill_ms':1000,'last_observed_fill_ms':2000}
-    assert 'STRK 交易轮数：10；胜率：70.00%' in footer(e)
+    assert '交易轮数' not in footer(e) and '统计时间' not in footer(e)
     assert writer_material(e)['facts']['historical_highlights']['asset_win_rate']=='0.7'
     e['kinds']=['large_position']
-    assert footer(e)=='地址：'+A+'；总盈亏：未取得'
+    assert footer(e)=='地址：'+A
 
 
 def test_editorial_preview_uses_real_writer_format_and_preserves_original(tmp_path):
@@ -236,7 +235,7 @@ def test_editorial_preview_uses_real_writer_format_and_preserves_original(tmp_pa
     result=generate_preview(task=task,prompt=repo.get_active_prompt('hyperliquid_writer'),
                             settings=XProcessingSettings(),ai_client=AI())
     assert result['mode']=='preview_only' and result['prompt_version_number']==1
-    assert result['content'].startswith('据Odaily监测，') and result['content'].endswith('地址：'+A+'；总盈亏：未取得')
+    assert result['content'].startswith('Odaily星球日报讯 据Odaily监测，') and result['content'].endswith('地址：'+A)
     assert task.status=='ready_review'
     with connect_sqlite(repo.path) as conn:
         assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0]==0
@@ -336,7 +335,7 @@ def test_dashboard_fixed_scenarios_without_data(tmp_path):
     from packages.hyperliquid_news.scenarios import PRODUCTION_SCENARIOS, scenario_cards
     store = NewsStore(tmp_path / 'empty.sqlite')
     data = dashboard(store, scenario='giveback')
-    assert not data['initialized'] and len(data['scenarios']) == 7
+    assert not data['initialized'] and len(data['scenarios']) == 10
     assert {s['key'] for s in data['scenarios']} == set(PRODUCTION_SCENARIOS)
     assert [s['key'] for s in data['scenarios']] == [s['key'] for s in scenario_cards(dataset='live')]
     assert all(s['count'] == 0 for s in data['scenarios'])
@@ -370,7 +369,8 @@ def test_dashboard_scenario_counts_and_pagination_are_not_global(tmp_path):
     assert [e['key'] for e in first['events']] == ['win-new'] and first['has_next']
     counts = {s['key']: s['count'] for s in first['scenarios']}
     assert counts == dict(large_pnl=0, asset_win_rate=2, account_profit=1,
-                         historical_loss=1, reversal=0, loss_addition=0, realized=0)
+                         historical_loss=1, reversal=0, loss_addition=0, realized=0,
+                         asset_profit=1, giveback=1, liquidation=0)
     second = dashboard(store, scenario='asset_win_rate', page_size=1, page=1)
     assert [e['key'] for e in second['events']] == ['win-old'] and not second['has_next']
     assert dashboard(store, scenario='divergence')['events'] == []
@@ -441,13 +441,13 @@ def test_account_copy_corrects_model_wording_with_alltime_evidence():
         content='该地址合约账户累计收益超过1.73亿美元。该地址随后加仓BTC空单。')
     result = format_news(draft, e)
     assert result.title == '总盈利超1.73亿美元地址加仓约459万美元BTC空单'
-    assert result.content.startswith('据Odaily监测，某地址合约账户')
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户')
     assert '。其随后' in result.content
     assert format_news(result, e).title == result.title
     e['evidence']['history']['official_account_performance']['windows'] = {'month': {'pnl': '21000000'}}
     finite = format_news(DraftBrief(title='近30天盈利超2000万美元地址加仓BTC空单', content='该地址近30天收益超过2000万美元。'), e)
     assert finite.title.startswith('近30天盈利')
-    assert finite.content.startswith('据Odaily监测，某地址')
+    assert finite.content.startswith('Odaily星球日报讯 据Odaily监测，某地址')
 
 
 def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
@@ -460,7 +460,7 @@ def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
     e['evidence']['history']={'official_account_performance':{'windows':{'allTime':{'pnl':'173000000'}}}}
     e=store.with_address_notes(e)
     result=format_news(DraftBrief(title='总盈利超1亿美元地址加仓BTC空单', content='某地址合约账户累计收益超过1亿美元。其加仓BTC空单。'),e)
-    assert result.content.startswith('据Odaily监测，某地址合约账户（Wintermute做市地址）累计收益')
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户（Wintermute做市地址）累计收益')
     assert format_news(result,e).content.count('Wintermute做市地址')==1
     assert dashboard(store,view='addresses')['addresses'][0]['note']=='Wintermute做市地址'
     for invalid in ('a\nb','名字（嵌套）','x'*81):

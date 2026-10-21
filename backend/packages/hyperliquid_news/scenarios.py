@@ -79,6 +79,13 @@ def scenario_condition(key: str, *, dataset: str = 'live') -> str:
     return '(' + clause + ')'
 
 
+def indexed_scenario_condition(key: str) -> str:
+    if key not in {scenario[0] for scenario in SCENARIOS}:
+        raise ValueError('Unknown Hyperliquid scenario')
+    return ("c.event_key IN (SELECT event_key FROM hl_news_candidate_scenarios "
+            f"WHERE scenario_key='{key}')")
+
+
 def scenario_cards(counts: dict[str, int] | None = None, *, dataset: str = 'live') -> list[dict]:
     visible = PRODUCTION_SCENARIOS if dataset == 'live' else TEST_SCENARIOS
     return [dict(key=s[0], name=s[1], description=s[2], rule_keys=s[5], count=(counts or {}).get(s[0], 0),

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Any
 
 from packages.x_processing.formatter import ODAILY_PREFIX, format_brief
@@ -13,14 +13,91 @@ from .client import address_key
 from .models import number
 
 PREFIX = '据Odaily监测，'
+ACCOUNT_PNL_MAX_AGE_MS = 60 * 60 * 1000
 
 
 def money(value: Any) -> str:
     amount = number(value)
-    scaled = (amount / Decimal(10000)).quantize(Decimal('0.01'))
+    if abs(amount) >= Decimal(100_000_000):
+        scaled = (amount / Decimal(100_000_000)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        unit = '亿美元'
+        rendered = f'{scaled:,.2f}'.rstrip('0').rstrip('.')
+        approximate = scaled * Decimal(100_000_000) != amount
+    else:
+        scaled = (amount / Decimal(10_000)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+        unit = '万美元'
+        rendered = f'{scaled:,.0f}'
+        approximate = scaled * Decimal(10_000) != amount
     if scaled == 0:
-        scaled = abs(scaled)
-    return f'{scaled:,.2f} 万美元'
+        rendered = '0'
+    return f'{"约" if approximate else ""}{rendered} {unit}'
+
+
+def rounded_percent(value: Any, *, fraction: bool = False) -> tuple[str, bool]:
+    percent = number(value) * (100 if fraction else 1)
+    rounded = percent.quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+    return f'{rounded:.0f}', rounded != percent
+
+
+def normalize_display_numbers(text: str) -> str:
+    qualifier = r'(?P<qualifier>约(?:为)?|超过|超|逾|至少|不低于|高于|大于|达到|达|不超过|至多|不足|低于|不到|少于)?'
+    amount_pattern = re.compile(
+        qualifier + r'\s*(?P<sign>[-−]?)(?P<amount>[\d,]+(?:\.\d+)?)\s*(?P<unit>万美元|万美金|亿美元|亿美金)')
+    floor_words = {'超过', '超', '逾', '至少', '不低于', '高于', '大于', '达到'}
+    ceiling_words = {'不超过', '至多', '不足', '低于', '不到', '少于'}
+
+    def normalize_amount(match: re.Match[str]) -> str:
+        amount = number(match.group('sign') + match.group('amount').replace(',', ''))
+        unit = match.group('unit')
+        is_yi = unit.startswith('亿')
+        dollars = amount * (Decimal(100_000_000) if is_yi else Decimal(10_000))
+        prefix = match.group('qualifier') or ''
+        rounding = (ROUND_FLOOR if prefix in floor_words else
+                    ROUND_CEILING if prefix in ceiling_words else ROUND_HALF_UP)
+        if abs(dollars) < Decimal(100_000_000):
+            scaled = (dollars / Decimal(10_000)).quantize(Decimal('1'), rounding=rounding)
+            rendered = f'{scaled:,.0f}'
+            output_unit = '万美金' if unit.endswith('美金') else '万美元'
+            changed = scaled * Decimal(10_000) != dollars
+        else:
+            scaled = (dollars / Decimal(100_000_000)).quantize(Decimal('0.01'), rounding=rounding)
+            rendered = f'{scaled:,.2f}'.rstrip('0').rstrip('.')
+            output_unit = '亿美金' if unit.endswith('美金') else '亿美元'
+            changed = scaled * Decimal(100_000_000) != dollars
+        if changed and prefix in ('达', '达到'):
+            prefix = '约'
+        elif changed and not prefix:
+            prefix = '约'
+        return f'{prefix}{rendered}{output_unit}'
+
+    text = amount_pattern.sub(normalize_amount, text)
+    quantity_pattern = re.compile(
+        r'(?P<amount>[\d,]+(?:\.\d{3,})?)(?P<space>\s*)(?P<coin>BTC|ETH)\b')
+
+    def normalize_quantity(match: re.Match[str]) -> str:
+        quantity = number(match.group('amount').replace(',', ''))
+        if abs(quantity) < Decimal('0.01'):
+            return match.group(0)
+        rounded = quantity.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        rendered = f'{rounded:,.2f}'.rstrip('0').rstrip('.')
+        return f'{rendered}{match.group("space")}{match.group("coin")}'
+
+    text = quantity_pattern.sub(normalize_quantity, text)
+    percent_pattern = re.compile(qualifier + r'\s*(?P<sign>[-−]?)(?P<percent>[\d,]+(?:\.\d+)?)\s*[%％]')
+
+    def normalize_percent(match: re.Match[str]) -> str:
+        prefix = match.group('qualifier') or ''
+        value = number(match.group('sign') + match.group('percent').replace(',', ''))
+        rounding = (ROUND_FLOOR if prefix in floor_words else
+                    ROUND_CEILING if prefix in ceiling_words else ROUND_HALF_UP)
+        rounded = value.quantize(Decimal('1'), rounding=rounding)
+        if rounded != value and prefix in ('达', '达到'):
+            prefix = '约'
+        elif rounded != value and not prefix:
+            prefix = '约'
+        return f'{prefix}{rounded:.0f}%'
+
+    return percent_pattern.sub(normalize_percent, text)
 
 
 def timestamp(value: Any) -> str:
@@ -30,6 +107,8 @@ def timestamp(value: Any) -> str:
 
 def _execution_price(value: Any) -> str:
     amount=number(value)
+    if abs(amount) >= 100:
+        return f'{amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP):,.0f}'
     precision=2 if abs(amount) >= 1 else 12
     rendered=f'{amount:,.{precision}f}'.rstrip('0').rstrip('.')
     if '.' not in rendered:
@@ -47,7 +126,13 @@ def _high_win_execution_prices(event: dict[str, Any]) -> str | None:
     previous=evidence.get('previous_position') or {}
     current=evidence.get('position') or {}
     close_side='long' if number(previous.get('size',0)) > 0 else 'short'
-    open_side='long' if number(current.get('size',0)) > 0 else 'short'
+    if current:
+        open_side='long' if number(current.get('size',0)) > 0 else 'short'
+    else:
+        opened = [side for side in ('long', 'short') if number(actions.get(f'open_{side}_notional', 0)) > 0]
+        if len(opened) != 1:
+            return None
+        open_side = opened[0]
     close_amount=number(actions.get(f'close_{close_side}_notional',0))
     open_amount=number(actions.get(f'open_{open_side}_notional',0))
     close_price=actions.get(f'close_{close_side}_average_execution_price_usd')
@@ -68,30 +153,26 @@ def source_url(event: dict[str, Any]) -> str:
 
 
 def footer(event: dict[str, Any]) -> str:
-    """Only supplemental statistics; narrative position facts belong in the body."""
+    """Append an address and only account performance current enough to read as news."""
     lines = []
+    observed_ms = event.get('observed_ms')
+    if observed_ms is None:
+        actions = event.get('evidence', {}).get('actions') or {}
+        observed_ms = actions.get('last_fill_ms', actions.get('first_fill_ms'))
     history = event['evidence'].get('history', {})
     histories = event['evidence'].get('histories', {})
     for address in event['addresses']:
         address_history = histories.get(address, histories.get(address.lower(), {})) if len(event['addresses']) > 1 else history
         total = _account_total_sample(address_history)
-        line = f'地址：{address_key(address)}；总盈亏：'
-        if total is not None:
-            line += money(total['pnl'])
-            stamp = total.get('observed_ms', total.get('history_sample_ms'))
-            if stamp is not None:
-                line += f'（样本截至{timestamp(stamp)}）'
-        else:
-            line += '未取得'
+        line = f'地址：{address_key(address)}'
+        stamp = total.get('observed_ms', total.get('history_sample_ms')) if total else None
+        if (total is not None and observed_ms is not None and stamp is not None and
+                0 <= int(observed_ms) - int(stamp) <= ACCOUNT_PNL_MAX_AGE_MS):
+            pnl = number(total['pnl'])
+            pnl_copy = ('盈亏平衡' if pnl == 0 else
+                        ('盈利' if pnl > 0 else '亏损') + money(abs(pnl)).replace(' ', ''))
+            line += f'；总盈亏：{pnl_copy}'
         lines.append(line)
-    if 'highlighted_address_action' in event['kinds']:
-        asset = history.get('assets', {}).get(event['coin'], {})
-        if 'asset_high_win_rate' in event['evidence'].get('highlights', []) and asset.get('rounds', 0) > 0 and asset.get('win_rate') is not None:
-            lines.append(f'{event["coin"]} 交易轮数：{asset["rounds"]}；胜率：{number(asset["win_rate"]) * 100:.2f}%')
-            start = asset.get('first_observed_fill_ms', history.get('first_observed_fill_ms'))
-            end = asset.get('last_observed_fill_ms', history.get('last_observed_fill_ms'))
-            if start is not None and end is not None:
-                lines.append(f'统计时间：{timestamp(start)[:10]} 至 {timestamp(end)[:10]}')
     return '\n'.join(lines)
 
 
@@ -186,7 +267,9 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
             body+='。'
         body+=price_sentence
     title = scenario_title(event) or normalized.title
-    return DraftBrief(title=title, content=PREFIX + body + '\n' + footer(event))
+    title = normalize_display_numbers(title)
+    body = normalize_display_numbers(body)
+    return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))
 
 
 def normalize_position_words(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
@@ -229,13 +312,14 @@ def scenario_title(event: dict[str, Any]) -> str | None:
     if 'actual_liquidation' in kinds:
         liquidated = number(actions.get('liquidated_notional', '0'))
         if liquidated > 0:
-            return f'{address}{coin}{side}发生约{money(liquidated)}清算'
+            return f'{address}{coin}{side}发生{money(liquidated)}清算'
     if 'near_liquidation' in kinds:
         current = evidence.get('position') or {}
         distance = evidence.get('liquidation_distance')
         if current and distance is not None:
-            distance_text = f'{number(distance) * 100:.2f}%'
-            title = (f'距清算价约{distance_text}，{address}持仓价值约'
+            distance_value, distance_approximate = rounded_percent(distance, fraction=True)
+            distance_text = f'{"约" if distance_approximate else ""}{distance_value}%'
+            title = (f'距清算价{distance_text}，{address}持仓价值'
                      f'{money(current.get("notional", "0"))}{coin}{side}')
             pnl = current.get('unrealized_pnl')
             if pnl is not None:
@@ -312,11 +396,12 @@ def scenario_title(event: dict[str, Any]) -> str | None:
             if 'asset_high_profit' in labels:
                 profit = asset.get('last_30d_closed_pnl_less_fees')
                 if profit is not None:
-                    return (f'近30天{coin}交易净盈利约{money(profit)}，{address}'
+                    return (f'近30天{coin}交易净盈利{money(profit)}，{address}'
                             f'{description}')
             if 'asset_high_win_rate' in labels and asset.get('win_rate') is not None:
-                rate = number(asset['win_rate']) * 100
-                return f'{coin}交易胜率达{rate:.2f}%的{address}{description}'
+                rate, approximate = rounded_percent(asset['win_rate'], fraction=True)
+                lead = f'近期{coin}胜率约{rate}%' if approximate else f'近期{coin}胜率达{rate}%'
+                return f'{lead}的{address}{description}'
     if 'large_position_action' in kinds or (evidence.get('net_position_change') and 'large_position' in kinds):
         description = _highlight_action_description(evidence, coin)
         if description:
@@ -340,22 +425,31 @@ def _highlight_action_description(evidence: dict[str, Any], coin: str) -> str | 
         old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
         old_close = number(actions.get(f'close_{"long" if old_side == "多单" else "short"}_notional', '0'))
         if opening > 0:
-            prefix = f'平仓约{money(old_close)}{coin}{old_side}并' if old_close > 0 else f'平掉{coin}{old_side}并'
-            return f'{prefix}开仓约{money(opening)}{coin}{side}'
-        return f'反手持有价值约{money(side_position.get("notional", "0"))}{coin}{side}'
+            prefix = f'平仓{money(old_close)}{coin}{old_side}并' if old_close > 0 else f'平掉{coin}{old_side}并'
+            return f'{prefix}开仓{money(opening)}{coin}{side}'
+        return f'反手持有价值{money(side_position.get("notional", "0"))}{coin}{side}'
+    if previous and not current:
+        old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
+        old_close = number(actions.get(f'close_{"long" if old_side == "多单" else "short"}_notional', '0'))
+        if old_close > 0:
+            return f'平仓{money(old_close)}{coin}{old_side}'
+    direction = change.get('direction')
+    net_change = number(change.get('estimated_value', '0'))
+    if previous and direction in ('加仓', '减仓') and net_change > 0:
+        verb = '平仓' if change.get('closed') else direction
+        return f'{verb}{money(net_change)}{coin}{side}'
     if opening > 0:
         same_side_before = previous and number(previous.get('size', '0')) * number(side_position.get('size', '0')) > 0
         verb = '加仓' if same_side_before else '开仓'
-        return f'{verb}约{money(opening)}{coin}{side}'
+        return f'{verb}{money(opening)}{coin}{side}'
     if closing > 0:
         verb = '平仓' if not current else '减仓'
-        return f'{verb}约{money(closing)}{coin}{side}'
-    direction = change.get('direction')
+        return f'{verb}{money(closing)}{coin}{side}'
     if direction in ('加仓', '减仓'):
-        return f'{direction}约{money(change.get("estimated_value", "0"))}{coin}{side}'
+        return f'{direction}{money(change.get("estimated_value", "0"))}{coin}{side}'
     value = number(side_position.get('notional', '0'))
     if value > 0:
-        return f'当前持有价值约{money(value)}{coin}{side}'
+        return f'当前持有价值{money(value)}{coin}{side}'
     return None
 
 

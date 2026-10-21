@@ -34,7 +34,7 @@ Telegram watcher 负责真人 CA 命中、去重、20 分钟候选触发和任�
 
 FxTwitter、Telegram 与 FOMO Thesis 由 OdAIly 本地快速材料模块并行采集，保持 `2026-09-01` 版本化 `evidence` bundle，不经过 HideOnBush HTTP 接口或内部密钥。Telegram 和 FxTwitter 不启动浏览器。FOMO 只在实际叙事任务中取得共享浏览器锁、使用独立运行时 profile 启动一次 Playwright Chromium，并由页面自有模块取得当次认证；采集完成或异常时始终关闭 context/browser。每次启动前都会检查本地材料总时限；若 Playwright 初始化已耗尽时限，则不再拉起 Chromium。权限 `0700` 的服务器本地 profile 仅由浏览器保存认证状态供下次按需使用；应用不读取、打印、导出或写入 Cookie、JWT、用户身份和上游原始响应。
 
-FOMO profile 缺失、被重定向到登录页或收到明确认证失败时，source diagnostic 记录 `code=login_required`。已有 Telegram/X 材料时，该路只是 `partial`，仍可写作；三路没有正文时，任务每 5 分钟进入一次 `retry_wait`，直至普通 1 小时队列时限到期，并发送冷却后的 Telegram 运维提醒。不会驻留 FOMO 浏览器、daemon、systemd service 或公开远程调试端口；收到提醒后由值班人通过一次性 `meme fomo-login` 维护命令更新服务器运行时 profile。该命令在 `xvfb-run` 中短暂启动浏览器，DevTools 仅绑定 `127.0.0.1`，只能经 SSH 本地转发访问；profile、Cookie 和 JWT 不得复制、打印或提交。
+FOMO profile 缺失、被重定向到登录页或收到明确认证失败时，source diagnostic 记录 `code=login_required`。已有 Telegram/X 材料时，该路只是 `partial`，仍可写作；三路没有正文时，任务每 5 分钟进入一次 `retry_wait`，直至普通 1 小时队列时限到期，并发送冷却后的 Telegram 运维提醒。不会驻留 FOMO 浏览器、daemon、systemd service 或公开远程调试端口；收到提醒后由值班人通过一次性 `meme fomo-login` 维护命令更新服务器运行时 profile。该命令在 `xvfb-run` 中短暂启动浏览器，自动点击唯一可识别的 FOMO 登录、Google 登录及已登录 Google 账号选项；验证码、身份挑战、多个账号或页面结构变化交由值班人通过 loopback DevTools 和 SSH 本地转发接管。DevTools 仅绑定 `127.0.0.1`；profile、Cookie 和 JWT 不得复制、打印或提交。
 
 OdAIly 使用 `gpt-5.6-luna` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN。
 

@@ -9,6 +9,7 @@ from packages.common.storage import connect_sqlite
 from .client import address_key
 from .history import fill_key
 from .models import Candidate
+from .scenarios import SCENARIOS, event_scenarios
 
 
 def encode(value: Any) -> str:
@@ -16,6 +17,31 @@ def encode(value: Any) -> str:
 
 
 BLOCK_FILTER = "NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || address AND json_extract(b.payload,'$.blocked')=1)"
+
+
+def _candidate_scenario_triggers(*, if_not_exists: bool = False) -> str:
+    statements = []
+    for key, _, _, kinds, highlights, _ in SCENARIOS:
+        kind_values = ','.join("'" + value.replace("'", "''") + "'" for value in kinds)
+        condition = ("EXISTS (SELECT 1 FROM json_each(NEW.payload,'$.kinds') "
+                     f"WHERE value IN ({kind_values}))")
+        if highlights:
+            highlight_values = ','.join("'" + value.replace("'", "''") + "'" for value in highlights)
+            condition += (" AND EXISTS (SELECT 1 FROM json_each(NEW.payload,'$.evidence.highlights') "
+                          f"WHERE value IN ({highlight_values}))")
+        statements.append(f"SELECT NEW.event_key,'{key}' WHERE {condition}")
+    clause = 'IF NOT EXISTS ' if if_not_exists else ''
+    return f'''
+        CREATE TRIGGER {clause}hl_news_candidates_scenarios_insert AFTER INSERT ON hl_news_candidates
+        BEGIN
+            INSERT OR IGNORE INTO hl_news_candidate_scenarios(event_key,scenario_key)
+        ''' + '\nUNION ALL\n'.join(statements) + f''';
+        END;
+        CREATE TRIGGER {clause}hl_news_candidates_scenarios_delete AFTER DELETE ON hl_news_candidates
+        BEGIN
+            DELETE FROM hl_news_candidate_scenarios WHERE event_key=OLD.event_key;
+        END;
+    '''
 
 
 class NewsStore:
@@ -42,6 +68,13 @@ class NewsStore:
                 CREATE TABLE IF NOT EXISTS hl_news_candidates (
                     event_key TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     coin TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS hl_news_candidates_observed
+                    ON hl_news_candidates(observed_ms DESC,event_key ASC);
+                CREATE TABLE IF NOT EXISTS hl_news_candidate_scenarios (
+                    event_key TEXT NOT NULL, scenario_key TEXT NOT NULL,
+                    PRIMARY KEY(event_key,scenario_key));
+                CREATE INDEX IF NOT EXISTS hl_news_candidate_scenarios_key
+                    ON hl_news_candidate_scenarios(scenario_key,event_key);
                 CREATE TABLE IF NOT EXISTS hl_news_dispatch (
                     event_key TEXT PRIMARY KEY, signature TEXT NOT NULL, task_id INTEGER,
                     status TEXT NOT NULL,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
@@ -54,7 +87,30 @@ class NewsStore:
                 CREATE TABLE IF NOT EXISTS hl_news_metadata (
                     key TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
-
+            scenario_version = [[s[0], s[3], s[4]] for s in SCENARIOS]
+            row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key='scenario_index_version'").fetchone()
+            indexed_version = json.loads(row['payload']) if row else None
+            if indexed_version != scenario_version:
+                conn.execute('DROP TRIGGER IF EXISTS hl_news_candidates_scenarios_insert')
+                conn.execute('DROP TRIGGER IF EXISTS hl_news_candidates_scenarios_delete')
+                conn.executescript(_candidate_scenario_triggers())
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute('DELETE FROM hl_news_candidate_scenarios')
+                mappings = []
+                for candidate in conn.execute('SELECT event_key,payload FROM hl_news_candidates'):
+                    event = json.loads(candidate['payload'])
+                    mappings.extend((candidate['event_key'], key) for key in event_scenarios(event))
+                conn.executemany('INSERT OR IGNORE INTO hl_news_candidate_scenarios VALUES(?,?)', mappings)
+                conn.execute('''INSERT INTO hl_news_metadata VALUES('scenario_index_version',?)
+                    ON CONFLICT(key) DO UPDATE SET payload=excluded.payload''',
+                    (json.dumps(scenario_version, separators=(',', ':')),))
+                conn.commit()
+            else:
+                triggers = {row['name'] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' "
+                    "AND name IN ('hl_news_candidates_scenarios_insert','hl_news_candidates_scenarios_delete')")}
+                if len(triggers) != 2:
+                    conn.executescript(_candidate_scenario_triggers(if_not_exists=True))
     def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int | None = 500) -> bool:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:

@@ -119,8 +119,8 @@ def test_high_win_preview_adds_available_open_and_close_execution_prices():
         },
     }
     result=format_news(DraftBrief(title='ETH交易胜率达81.8%',content='某地址平仓后加仓ETH多单。'),event)
-    assert 'ETH多单平仓的加权成交价约为2,437.30美元' in result.content
-    assert '开仓的加权成交价约为2,442.58美元' in result.content
+    assert 'ETH多单平仓的加权成交价约为2,437美元' in result.content
+    assert '开仓的加权成交价约为2,443美元' in result.content
 
 
 def test_loss_addition_uses_pre_action_loss_without_reporting_small_pnl_change():
@@ -142,7 +142,7 @@ def test_loss_addition_uses_pre_action_loss_without_reporting_small_pnl_change()
     assert 'floating_pnl_usd' not in facts['position']
     assert facts['previous_position']['floating_pnl_usd']=='-24844732.254914'
     assert 'previous_floating_pnl_usd' not in facts
-    assert scenario_title(event)=='某地址持有的ZEC空单浮亏2,484.47 万美元时加仓836.81 万美元'
+    assert scenario_title(event)=='某地址持有的ZEC空单浮亏约2,484 万美元时加仓约837 万美元'
 
 
 def test_footer_uses_only_official_account_total_and_keeps_asset_win_rate():
@@ -160,7 +160,7 @@ def test_footer_uses_only_official_account_total_and_keeps_asset_win_rate():
     text=footer(event)
     assert '地址统计期合约交易盈亏' not in text
     assert '合约账户总盈亏' not in text
-    assert 'ETH 交易轮数：22；胜率：81.82%' in text
+    assert '交易轮数' not in text and '统计时间' not in text
 
 
 def test_summarize_exposes_account_level_rounds_and_win_rate():
@@ -285,7 +285,7 @@ def test_liquidation_distance_and_actual_fill_not_disappearance():
     p = position(size='100', notional='10000000', liquidation='98000')
     events, state = evaluate(p)
     assert events==[]
-    old=baseline(replace(p,liquidation=D('80000')))
+    old=baseline(replace(p,liquidation=D('75000')))
     assert 'near_liquidation' in kinds(evaluate(p,previous=old,stamp=300)[0])
     events, _ = evaluate(None, previous=state, fills=[fill(before='100', side='A', stamp=200,
                                 pnl='-6000000', liquidation={'liquidatedUser': A, 'method': 'market'})])

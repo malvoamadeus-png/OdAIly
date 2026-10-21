@@ -62,7 +62,7 @@ def test_cached_replay_removes_reviewed_cases_and_keeps_unresearched(tmp_path, m
         store.save_global('test_fills:'+address,{'fills':[]},[])
         events[address]={
             'key':f'test:large-loss-{index}','observed_ms':index,'addresses':[address],
-            'coin':'ETH','kinds':['near_liquidation'],'evidence':{
+            'coin':'ETH','kinds':['newly_observed_address_position'],'evidence':{
                 'position':{'size':'-10','notional':'10000000','unrealized_pnl':'-10000000'},
                 'previous_reported_floating_pnl':'0','actions':{},'highlights':[],
                 'test_replay':{'real_address':True}},
@@ -82,7 +82,7 @@ def test_cached_replay_removes_reviewed_cases_and_keeps_unresearched(tmp_path, m
     assert len(previews)==0
     assert report['cases_retained']==6
     assert report['reviewed_cases_removed']==0
-    assert report['scenario_counts']['liquidation']==6
+    assert report['scenario_counts']['new_address']==6
 
     weaker={
         'key':'test:large-loss-weaker','observed_ms':10,'addresses':['0x'+f'{8:040x}'],
@@ -146,13 +146,13 @@ def test_asset_high_profit_thresholds_and_operation_amount_are_asset_specific():
     from packages.hyperliquid_news.models import Rules
 
     rules = Rules()
-    assert rules.asset_profit_line('BTC') == Decimal('5000000')
-    assert rules.asset_profit_line('ETH') == Decimal('5000000')
-    assert rules.asset_profit_line('SOL') == Decimal('3000000')
+    assert rules.asset_profit_line('BTC') == Decimal('3000000')
+    assert rules.asset_profit_line('ETH') == Decimal('3000000')
+    assert rules.asset_profit_line('SOL') == Decimal('1000000')
     assert 'asset_high_profit' not in highlights(
-        {'assets': {'SOL': {'last_30d_closed_pnl_less_fees': '2999999'}}}, 'SOL', rules)
+        {'assets': {'SOL': {'last_30d_closed_pnl_less_fees': '999999'}}}, 'SOL', rules)
     assert 'asset_high_profit' in highlights(
-        {'assets': {'SOL': {'last_30d_closed_pnl_less_fees': '3000000'}}}, 'SOL', rules)
+        {'assets': {'SOL': {'last_30d_closed_pnl_less_fees': '1000000'}}}, 'SOL', rules)
     assert action_highlights(['asset_high_profit'], Decimal('1999999'), rules) == []
     assert action_highlights(['asset_high_profit'], Decimal('2000000'), rules) == ['asset_high_profit']
 
@@ -165,19 +165,19 @@ def test_requested_asset_pnl_reversal_and_sign_flip_titles():
             'position':{'size':'-100','notional':'17410000','unrealized_pnl':'-4000000'},
             'previous_reported_floating_pnl':'-1000000'}
     }
-    assert scenario_title(loss)=='某地址持有的NEAR空单浮亏扩大至400.00 万美元'
+    assert scenario_title(loss)=='某地址持有的NEAR空单浮亏扩大至400 万美元'
     reversal={
         'coin':'BTC','kinds':['large_reversal'],'evidence':{
             'previous_position':{'size':'1'},'position':{'size':'-1'},
             'actions':{'close_long_notional':'5000000','open_short_notional':'6000000'}}
     }
-    assert scenario_title(reversal)=='某地址平仓500.00 万美元BTC多单并开仓600.00 万美元BTC空单'
+    assert scenario_title(reversal)=='某地址平仓500 万美元BTC多单并开仓600 万美元BTC空单'
     flip={
         'coin':'SOL','kinds':['pnl_sign_flip'],'evidence':{
             'previous_position':{'unrealized_pnl':'-2300000'},
             'position':{'size':'1','notional':'10000000','unrealized_pnl':'3400000'}}
     }
-    assert scenario_title(flip)=='浮亏230.00 万美元转为浮盈340.00 万美元，某地址当前持有价值1,000.00 万美元SOL多单'
+    assert scenario_title(flip)=='浮亏230 万美元转为浮盈340 万美元，某地址当前持有价值1,000 万美元SOL多单'
 
 
 def test_all_news_bodies_start_with_some_address_not_that_address():
@@ -193,7 +193,7 @@ def test_all_news_bodies_start_with_some_address_not_that_address():
     }
     draft = DraftBrief(title='反手', content='该地址平仓500万美元BTC多单并开仓600万美元BTC空单。')
     result = format_news(draft, event)
-    assert result.content.startswith('据Odaily监测，某地址')
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址')
     assert '该地址' not in result.content
 
 
@@ -218,13 +218,13 @@ def test_preview_selection_caps_each_unresearched_scenario_at_five():
     for index in range(9):
         current_pnl = -5000000 - index * 1000000
         events.append({
-            'key':str(index),'observed_ms':index,'addresses':[f'0x{index:040x}'],'coin':'ETH',
-            'kinds':['actual_liquidation'],'evidence':{
+        'key':str(index),'observed_ms':index,'addresses':[f'0x{index:040x}'],'coin':'ETH',
+            'kinds':['newly_observed_address_position'],'evidence':{
                 'position':{'unrealized_pnl':str(current_pnl)},
                 'previous_reported_floating_pnl':'-1000000','actions':{},'highlights':[]}})
     selected=select_preview_cases(events)
     assert len(selected)==5
-    assert all('liquidation' in case_scenarios(event) for event in selected)
+    assert all('new_address' in case_scenarios(event) for event in selected)
     assert all(not set(case_scenarios(event)).intersection({'large_pnl','loss_addition'}) for event in selected)
     assert 'large_pnl' not in PREVIEW_SCENARIOS
 

@@ -8,14 +8,17 @@ and binds DevTools solely to the server loopback interface for an SSH tunnel.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -105,6 +108,89 @@ def _assert_loopback_port_available(cdp_port: int) -> None:
             raise RuntimeError(f"FOMO DevTools port 127.0.0.1:{cdp_port} is already in use") from exc
 
 
+def _unique_locator(locator: Any) -> Any | None:
+    count = locator.count()
+    return locator.first if count == 1 else None
+
+
+def _click_unique(page: Any, selectors: tuple[str, ...]) -> bool:
+    for selector in selectors:
+        target = _unique_locator(page.locator(selector))
+        if target is not None and target.is_visible():
+            target.click(timeout=1500)
+            return True
+    return False
+
+
+def _advance_login(page: Any, completed: set[str] | None = None) -> str | None:
+    """Advance only through unambiguous FOMO and Google login choices."""
+    completed = completed if completed is not None else set()
+    host = urlsplit(page.url).hostname
+    if host == "accounts.google.com":
+        if "account" in completed:
+            return None
+        account = _unique_locator(page.locator("[data-identifier]"))
+        if account is not None and account.is_visible():
+            identifier = str(account.get_attribute("data-identifier") or "")
+            if re.fullmatch(r"[^@\s]+@[^@\s]+", identifier):
+                account.click(timeout=1500)
+                completed.add("account")
+                return "selected the only visible Google account"
+        return None
+
+    if host != "fomo.family":
+        return None
+
+    if "google" not in completed and _click_unique(
+        page,
+        (
+            'button:has-text("Continue with Google")',
+            'button:has-text("Google")',
+            'a:has-text("Continue with Google")',
+            'a:has-text("Google")',
+        ),
+    ):
+        completed.add("google")
+        return "selected Google sign-in"
+    if "login" not in completed and _click_unique(
+        page,
+        (
+            'button:has-text("Log in")',
+            'button:has-text("Login")',
+            'a:has-text("Log in")',
+            'a:has-text("Login")',
+        ),
+    ):
+        completed.add("login")
+        return "opened the FOMO login dialog"
+    return None
+
+
+def _automate_login(cdp_port: int, deadline: float, stop: threading.Event) -> None:
+    """Click obvious login choices; leave challenges and ambiguous pages to an operator."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+            context = browser.contexts[0] if browser.contexts else None
+            if context is None:
+                return
+            completed: set[str] = set()
+            while not stop.is_set() and time.monotonic() < deadline:
+                pages = context.pages
+                for page in pages:
+                    try:
+                        action = _advance_login(page, completed)
+                    except Exception:
+                        action = None
+                    if action:
+                        print(f"[meme-fomo-login] automated: {action}")
+                stop.wait(1)
+    except Exception:
+        print("[meme-fomo-login] automatic sign-in unavailable; use the DevTools window manually")
+
+
 def run(args: Any) -> int:
     load_dotenv()
     if os.name == "posix" and not os.getenv("DISPLAY"):
@@ -119,6 +205,8 @@ def run(args: Any) -> int:
         cdp_port=cdp_port,
     )
     process: subprocess.Popen[Any] | None = None
+    automation: threading.Thread | None = None
+    stop = threading.Event()
     with exclusive_browser(timeout_seconds=_browser_lock_timeout_seconds()):
         try:
             _assert_loopback_port_available(cdp_port)
@@ -133,8 +221,15 @@ def run(args: Any) -> int:
             if not _wait_for_cdp(process, cdp_port, ready_deadline):
                 raise RuntimeError("FOMO Chromium did not expose its local DevTools endpoint")
             print(f"[meme-fomo-login] DevTools is local-only at 127.0.0.1:{cdp_port}")
-            print("[meme-fomo-login] Use an SSH local-port tunnel, finish login, then stop this one-shot command.")
+            print("[meme-fomo-login] Use an SSH local-port tunnel for manual fallback; stop after login completes.")
             deadline = time.monotonic() + timeout_seconds
+            automation = threading.Thread(
+                target=_automate_login,
+                args=(cdp_port, deadline, stop),
+                name="fomo-login-assistant",
+                daemon=True,
+            )
+            automation.start()
             while process.poll() is None and time.monotonic() < deadline:
                 time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             if process.poll() is None:
@@ -146,5 +241,8 @@ def run(args: Any) -> int:
             print("[meme-fomo-login] login window stopped by operator")
             return 0
         finally:
+            stop.set()
             if process is not None:
                 _stop_process(process)
+            if automation is not None:
+                automation.join(timeout=5)

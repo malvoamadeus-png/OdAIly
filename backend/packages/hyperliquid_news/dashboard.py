@@ -9,7 +9,7 @@ from packages.common.storage import connect_sqlite
 from .models import Rules
 from .store import NewsStore
 from .eligibility import news_eligibility
-from .scenarios import SCENARIOS, scenario_cards, scenario_condition
+from .scenarios import SCENARIOS, indexed_scenario_condition, scenario_cards, scenario_condition
 
 KIND_LABELS = {
     'large_position': '巨大持仓', 'oi_share': '未平仓量占比突出', 'market_cap_share': '相当于市值占比突出',
@@ -31,7 +31,8 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
         raise ValueError('Invalid view')
     if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
         raise ValueError('Invalid address search')
-    condition = scenario_condition(scenario, dataset=dataset) if scenario else '1=1'
+    if scenario:
+        scenario_condition(scenario, dataset=dataset)
     if not store.path.exists():
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
                 'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
@@ -41,6 +42,9 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
                     'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
         dispatch = dataset == 'live' and 'hl_news_dispatch' in tables
+        indexed_live = dataset == 'live' and 'hl_news_candidate_scenarios' in tables
+        condition = (indexed_scenario_condition(scenario) if indexed_live else
+                     scenario_condition(scenario, dataset=dataset)) if scenario else '1=1'
         candidate_source = 'hl_news_candidates' if dataset == 'live' else ('hl_news_test_cases' if 'hl_news_test_cases' in tables else '(SELECT NULL AS payload, NULL AS observed_ms, NULL AS event_key WHERE 0)')
         joined = '''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
                     LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id
@@ -53,8 +57,12 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
                     ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1 if view == 'scenarios' else 0, page*page_size)).fetchall()
         visible = {scenario['key'] for scenario in scenario_cards(dataset=dataset)}
         selected_scenarios = [s for s in SCENARIOS if s[0] in visible]
-        count_columns = ','.join(f'SUM(CASE WHEN {scenario_condition(s[0], dataset=dataset)} THEN 1 ELSE 0 END) AS "{s[0]}"' for s in selected_scenarios)
-        scenario_counts = dict(conn.execute(f'SELECT {count_columns} FROM {candidate_source} c').fetchone())
+        if indexed_live:
+            scenario_counts = {row['scenario_key']: row['count'] for row in conn.execute(
+                'SELECT scenario_key,count(*) AS count FROM hl_news_candidate_scenarios GROUP BY scenario_key')}
+        else:
+            count_columns = ','.join(f'SUM(CASE WHEN {scenario_condition(s[0], dataset=dataset)} THEN 1 ELSE 0 END) AS "{s[0]}"' for s in selected_scenarios)
+            scenario_counts = dict(conn.execute(f'SELECT {count_columns} FROM {candidate_source} c').fetchone())
         scenarios = scenario_cards({k: v or 0 for k, v in scenario_counts.items()}, dataset=dataset)
         events = []
         for row in rows[:page_size]:

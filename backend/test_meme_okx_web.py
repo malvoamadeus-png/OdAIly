@@ -3,10 +3,38 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from packages.meme_scanner.okx_web import OKXMemeWebClient, OKXMemeWebError, parse_meme_ranking_response
+from packages.meme_scanner.okx_web import (
+    OKXMemeWebClient,
+    OKXMemeWebError,
+    is_pumpfun_item,
+    parse_meme_ranking_response,
+)
 
 
 class OKXMemeWebAdapterTests(unittest.TestCase):
+    def test_pumpfun_filter_prefers_okx_platform_identity_and_uses_ca_suffix_fallback(self) -> None:
+        self.assertTrue(is_pumpfun_item({"protocolId": "120596", "ca": "solana-address"}))
+        self.assertTrue(is_pumpfun_item({"ca": "solana-address-pump"}))
+        self.assertFalse(is_pumpfun_item({"protocolId": "other", "ca": "solana-address-pump"}))
+        self.assertFalse(is_pumpfun_item({"ca": "solana-address-PUMP"}))
+        self.assertFalse(is_pumpfun_item({"protocolId": "other", "ca": "solana-address"}))
+
+    def test_solana_discovery_filters_rows_to_pumpfun_and_stamps_chain(self) -> None:
+        client = OKXMemeWebClient()
+        client._latest["solana"] = [
+            {"protocolId": "other", "ca": "ordinary-token"},
+            {"protocolId": "120596", "ca": "pumpfun-token"},
+            {"ca": "suffix-token-pump"},
+        ]
+        client._start = lambda: None
+        client._refresh_current_chain = lambda chain: None
+
+        rows = client.list_migrated("solana")
+
+        self.assertEqual([row["ca"] for row in rows], ["pumpfun-token", "suffix-token-pump"])
+        self.assertTrue(all(row["_okx_web_chain_id"] == "501" for row in rows))
+        self.assertTrue(all(row["_okx_platform_filter"] == "pumpfun" for row in rows))
+
     def test_parse_meme_ranking_response_accepts_business_success(self) -> None:
         rows = parse_meme_ranking_response(
             {

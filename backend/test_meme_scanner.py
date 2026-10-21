@@ -70,6 +70,15 @@ class MemeScannerTests(unittest.TestCase):
             with self.subTest(market_cap=market_cap):
                 self.assertAlmostEqual(scanner.volume_ratio_gate(market_cap), expected)
 
+    def test_market_cap_tiers_cover_bsc_robinhood_and_solana_schedule(self) -> None:
+        later_tiers = (1_000_000, 3_000_000, 5_000_000, *range(10_000_000, 100_000_001, 10_000_000))
+        self.assertEqual(scanner.market_cap_levels("bsc"), (500_000, *later_tiers))
+        self.assertEqual(scanner.market_cap_levels("robinhood"), later_tiers)
+        self.assertEqual(scanner.market_cap_levels("solana"), later_tiers)
+        self.assertEqual(scanner.market_cap_gate("solana"), 1_000_000)
+        self.assertEqual(scanner.tracking_interval(999_999, args(Path(".")), "solana"), 14_400)
+        self.assertEqual(scanner.tracking_interval(1_000_000, args(Path(".")), "solana"), 900)
+
     def test_three_million_market_cap_accepts_twenty_percent_volume(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = scanner.Store(Path(temp) / "scanner.sqlite3")
@@ -90,13 +99,13 @@ class MemeScannerTests(unittest.TestCase):
 
     def test_completed_request_has_no_market_cap_filters(self) -> None:
         discovery_client = Mock()
-        discovery_client.list_migrated.side_effect = [[], []]
+        discovery_client.list_migrated.side_effect = [[], [], []]
         market_client = Mock()
         with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
             scanner, "get_dexscreener_client", return_value=market_client
         ):
             scanner.fetch_completed_tokens(80)
-        self.assertEqual([call.args for call in discovery_client.list_migrated.call_args_list], [("bsc",), ("robinhood",)])
+        self.assertEqual([call.args for call in discovery_client.list_migrated.call_args_list], [("bsc",), ("robinhood",), ("solana",)])
         self.assertEqual(market_client.price_info.call_count, 0)
 
     def test_completed_request_keeps_unknown_launchpad_platforms(self) -> None:
@@ -109,7 +118,7 @@ class MemeScannerTests(unittest.TestCase):
             "market": {"marketCapUsd": "20000"},
             "tags": {},
             "social": {},
-        }], []]
+        }], [], []]
         market_client = Mock()
         market_client.price_info.return_value = {}
         with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
@@ -117,6 +126,25 @@ class MemeScannerTests(unittest.TestCase):
         ):
             tokens = scanner.fetch_completed_tokens(80)
         self.assertEqual([(token.platform, token.symbol, token.chain) for token in tokens], [("okx:999", "STOCKS", "bsc")])
+
+    def test_completed_request_includes_solana_pumpfun_market_lookup(self) -> None:
+        discovery_client = Mock()
+        discovery_client.list_migrated.side_effect = [[], [], [{
+            "tokenAddress": "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump",
+            "protocolId": "120596",
+            "symbol": "PUMP",
+            "name": "Pump token",
+        }]]
+        market_client = Mock()
+        market_client.price_info.return_value = {}
+        with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
+            scanner, "get_dexscreener_client", return_value=market_client
+        ):
+            tokens = scanner.fetch_completed_tokens(30)
+        self.assertEqual([(item.chain, item.platform, item.address) for item in tokens], [
+            ("solana", "pumpfun", "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump")
+        ])
+        market_client.price_info.assert_called_once_with("solana", [tokens[0].address])
 
     def test_failed_discovery_waits_for_the_next_five_minute_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -350,6 +378,66 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual((row["trigger_key"], row["trigger_level"]), ("market_cap:bsc:0xjump:1000000", 1_000_000.0))
             store.close()
 
+    def test_failed_volume_tier_is_consumed_and_later_success_locks_qualification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            address = "0xvolume-lock"
+            baseline = token(address, 400_000, 300_000)
+            store.start_or_observe_completed(baseline, observed_at=scanner.now_iso(), tracking_window_seconds=259200, args=args(Path(temp)))
+
+            failed = token(address, 600_000, 100_000)
+            self.assertEqual(scanner.evaluate_market_token(store, failed, bootstrap=False, previous_high=400_000, persist_observation=False), (0, 1))
+            self.assertEqual(scanner.evaluate_market_token(store, failed, bootstrap=False, previous_high=400_000, persist_observation=False), (0, 0))
+            self.assertFalse(store.volume_qualified(address, "bsc"))
+
+            qualified = token(address, 1_000_000, 500_000)
+            self.assertEqual(scanner.evaluate_market_token(store, qualified, bootstrap=False, previous_high=600_000, persist_observation=False), (1, 0))
+            self.assertTrue(store.volume_qualified(address, "bsc"))
+
+            next_tier = token(address, 3_000_000, 0)
+            self.assertEqual(scanner.evaluate_market_token(store, next_tier, bootstrap=False, previous_high=1_000_000, persist_observation=False), (1, 0))
+            self.assertTrue(store.volume_qualified(address, "bsc"))
+            store.close()
+
+    def test_crossing_any_new_tier_refreshes_persisted_tracking_expiry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            address = "0xrefresh-window"
+            old_start = (scanner.datetime.now(scanner.UTC) - scanner.timedelta(days=2)).isoformat()
+            baseline = token(address, 600_000, 400_000)
+            store.start_or_observe_completed(baseline, observed_at=old_start, tracking_window_seconds=259200, args=args(root))
+            old_expiry = scanner.parse_iso(store.observation(address)["tracking_expires_at"])
+            crossed = token(address, 1_000_000, 0)
+
+            scanner.evaluate_market_token(store, crossed, bootstrap=False, previous_high=600_000, persist_observation=False)
+
+            row = store.observation(address)
+            self.assertGreater(scanner.parse_iso(row["tracking_anchor_at"]), scanner.parse_iso(old_start))
+            self.assertGreater(scanner.parse_iso(row["tracking_expires_at"]), old_expiry)
+            store.close()
+
+    def test_tracking_anchor_and_volume_qualification_survive_store_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            store = scanner.Store(path)
+            current = token("0xrestart-state", 1_000_000, 700_000)
+            store.start_or_observe_completed(current, observed_at=scanner.now_iso(), tracking_window_seconds=259200, args=args(Path(temp)))
+            store.conn.execute(
+                "UPDATE observations SET tracking_anchor_at=?, volume_qualified=1 WHERE address=?",
+                ("2026-10-20T12:00:00+00:00", current.address),
+            )
+            expiry_before = store.observation(current.address)["tracking_expires_at"]
+            store.conn.commit()
+            store.close()
+
+            reopened = scanner.Store(path)
+            row = reopened.observation(current.address)
+            self.assertEqual(row["tracking_anchor_at"], "2026-10-20T12:00:00+00:00")
+            self.assertEqual(row["tracking_expires_at"], expiry_before)
+            self.assertTrue(reopened.volume_qualified(current.address, "bsc"))
+            reopened.close()
+
     def test_tg_burst_does_not_consume_market_cap_milestone(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = scanner.Store(Path(temp) / "scanner.sqlite3")
@@ -409,6 +497,47 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual(row["tracking_status"], "legacy_untracked")
             self.assertEqual(row["chain"], "bsc")
             self.assertIsNone(row["tracking_started_at"])
+            self.assertIsNone(row["tracking_anchor_at"])
+            self.assertFalse(row["volume_qualified"])
+            store.close()
+
+    def test_tracking_schema_migration_preserves_existing_expiry_and_milestones(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "scanner.sqlite3"
+            conn = sqlite3.connect(path)
+            conn.executescript(
+                """CREATE TABLE observations (
+                  address TEXT NOT NULL, chain TEXT NOT NULL DEFAULT 'bsc', platform TEXT NOT NULL,
+                  symbol TEXT NOT NULL, last_market_cap REAL NOT NULL, highest_market_cap REAL NOT NULL DEFAULT 0,
+                  last_seen_at TEXT NOT NULL, triggered_at TEXT, published_at TEXT,
+                  tracking_status TEXT NOT NULL DEFAULT 'legacy_untracked', tracking_started_at TEXT,
+                  tracking_expires_at TEXT, last_completed_seen_at TEXT, last_token_info_at TEXT,
+                  next_token_info_at TEXT, tracking_interval_seconds INTEGER, tracking_source TEXT,
+                  last_volume_24h REAL NOT NULL DEFAULT 0, token_info_failures INTEGER NOT NULL DEFAULT 0,
+                  last_token_info_error TEXT, PRIMARY KEY(address, chain));
+                CREATE TABLE market_cap_milestones (
+                  address TEXT NOT NULL, chain TEXT NOT NULL, platform TEXT NOT NULL, symbol TEXT NOT NULL,
+                  level REAL NOT NULL, observed_at TEXT NOT NULL, snapshot_id INTEGER NOT NULL,
+                  trigger_key TEXT NOT NULL UNIQUE, job_id INTEGER, status TEXT NOT NULL,
+                  PRIMARY KEY(address, chain, level));
+                INSERT INTO observations(address, chain, platform, symbol, last_market_cap, highest_market_cap,
+                  last_seen_at, tracking_status, tracking_started_at, tracking_expires_at)
+                VALUES ('0xmigrate', 'bsc', 'fourmeme', 'OLD', 700000, 700000,
+                  '2026-10-19T00:00:00+00:00', 'active', '2026-10-19T00:00:00+00:00', '2026-10-22T00:00:00+00:00');
+                INSERT INTO market_cap_milestones(address, chain, platform, symbol, level, observed_at,
+                  snapshot_id, trigger_key, status)
+                VALUES ('0xmigrate', 'bsc', 'fourmeme', 'OLD', 500000, '2026-10-19T00:00:00+00:00', 0,
+                  'market_cap:bsc:0xmigrate:500000', 'discarded');"""
+            )
+            conn.commit()
+            conn.close()
+
+            store = scanner.Store(path)
+            row = store.observation("0xmigrate", "bsc")
+            self.assertEqual(row["tracking_anchor_at"], "2026-10-19T00:00:00+00:00")
+            self.assertEqual(row["tracking_expires_at"], "2026-10-22T00:00:00+00:00")
+            self.assertEqual(row["volume_qualified"], 0)
+            self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM market_cap_milestones").fetchone()[0], 1)
             store.close()
 
     def test_legacy_observation_chain_is_backfilled_from_latest_snapshot(self) -> None:
@@ -599,6 +728,26 @@ class MemeScannerTests(unittest.TestCase):
             self.assertEqual(status, "expired")
             self.assertEqual(store.observation(current.address)["tracking_status"], "expired")
             token_info.assert_not_called()
+            store.close()
+
+    def test_tracking_expires_three_days_after_last_tier_breakout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = scanner.Store(root / "scanner.sqlite3")
+            current = token("0xquiet-three-days", 600_000, 400_000)
+            anchor = scanner.datetime.now(scanner.UTC) - scanner.timedelta(days=3, seconds=1)
+            expires = anchor + scanner.timedelta(days=3)
+            store.start_or_observe_completed(
+                current, observed_at=anchor.isoformat(), tracking_window_seconds=259200, args=args(root)
+            )
+            store.conn.execute(
+                "UPDATE observations SET tracking_anchor_at=?, tracking_expires_at=? WHERE address=?",
+                (anchor.isoformat(), expires.isoformat(), current.address),
+            )
+            store.conn.commit()
+
+            self.assertEqual(store.expire_tracking(expires.isoformat()), 1)
+            self.assertEqual(store.observation(current.address)["tracking_status"], "expired")
             store.close()
 
     def test_startup_policy_converges_persisted_tracking_window_and_interval(self) -> None:

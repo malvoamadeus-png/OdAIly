@@ -5,7 +5,21 @@ import { getHyperliquidNewsDashboard, saveHyperliquidAddressNote, saveHyperliqui
 function money(value: unknown): string {
   if (value === null || value === undefined) return '未取得';
   const number = Number(value);
-  return Number.isFinite(number) ? `${(number / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 万美元` : '未取得';
+  if (!Number.isFinite(number)) return '未取得';
+  if (Math.abs(number) >= 100_000_000) {
+    const scaled = number / 100_000_000;
+    const rounded = Math.sign(scaled) * Math.round(Math.abs(scaled) * 100) / 100;
+    return `${rounded === scaled ? '' : '约'}${scaled.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 亿美元`;
+  }
+  const scaled = number / 10000;
+  const rounded = Math.sign(scaled) * Math.round(Math.abs(scaled));
+  return `${rounded === scaled ? '' : '约'}${scaled.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 万美元`;
+}
+function percent(value: unknown, fraction = true): string {
+  const numeric = Number(value) * (fraction ? 100 : 1);
+  if (!Number.isFinite(numeric)) return '未取得';
+  const rounded = Math.round(numeric);
+  return `${rounded === numeric ? '' : '约'}${rounded.toLocaleString('zh-CN')}%`;
 }
 function time(value: unknown): string {
   if (!value) return '—';
@@ -30,12 +44,12 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
       {p && <><div><dt>当前持仓</dt><dd>{Number(p.size) > 0 ? '多仓' : '空仓'} · {money(p.notional)}</dd></div>
         <div><dt>当前浮盈亏</dt><dd>{money(p.unrealized_pnl)}</dd></div></>}
       {e.market && <><div><dt>代币市值</dt><dd>{money(e.market.market_cap)} · {e.market.market_cap_source || '尚无来源'}</dd></div>
-        <div><dt>持仓相当于市值</dt><dd>{e.ratios?.market_cap_share ? `${(Number(e.ratios.market_cap_share) * 100).toFixed(2)}%` : '未取得'}</dd></div>
+        <div><dt>持仓相当于市值</dt><dd>{e.ratios?.market_cap_share != null ? percent(e.ratios.market_cap_share) : '未取得'}</dd></div>
         <div><dt>合约未平仓名义金额</dt><dd>{money(e.market.oi_notional)}</dd></div>
-        <div><dt>占未平仓量</dt><dd>{e.ratios?.oi_share ? `${(Number(e.ratios.oi_share) * 100).toFixed(2)}%` : '未取得'}</dd></div></>}
+        <div><dt>占未平仓量</dt><dd>{e.ratios?.oi_share != null ? percent(e.ratios.oi_share) : '未取得'}</dd></div></>}
       {peak !== undefined && <><div><dt>监测期间浮盈峰值</dt><dd>{money(peak)} · {time(e.episode_peak_ms)}</dd></div>
-        <div><dt>回吐金额 / 比例</dt><dd>{money(Number(peak) - Number(p?.unrealized_pnl))} / {Number(peak) > 0 ? `${((Number(peak) - Number(p?.unrealized_pnl)) / Number(peak) * 100).toFixed(2)}%` : '—'}</dd></div></>}
-      {asset && <><div><dt>单资产统计</dt><dd>{asset.rounds} 个完整交易轮 · 胜率 {asset.win_rate != null ? `${(Number(asset.win_rate) * 100).toFixed(2)}%` : '未取得'}</dd></div>
+        <div><dt>回吐金额 / 比例</dt><dd>{money(Number(peak) - Number(p?.unrealized_pnl))} / {Number(peak) > 0 ? percent((Number(peak) - Number(p?.unrealized_pnl)) / Number(peak)) : '—'}</dd></div></>}
+      {asset && <><div><dt>单资产统计</dt><dd>{asset.rounds} 个完整交易轮 · 胜率 {asset.win_rate != null ? percent(asset.win_rate) : '未取得'}</dd></div>
         <div><dt>单资产已实现盈亏</dt><dd>{money(asset.closed_pnl_less_fees)}（不含资金费）</dd></div>
         <div><dt>实际成交样本范围</dt><dd>{time(history.first_observed_fill_ms)} 至 {time(history.last_observed_fill_ms)}</dd></div></>}
       {history.official_account_loss?.windows?.allTime && <div><dt>合约账户总亏损（含浮盈亏）</dt><dd>{money(-Number(history.official_account_loss.windows.allTime.pnl))} · {time(history.official_account_loss.windows.allTime.observed_ms)}</dd></div>}
@@ -44,7 +58,7 @@ function Evidence({ event }: { event: HyperliquidNewsEvent }) {
       {e.actions?.liquidated_notional && Number(e.actions.liquidated_notional) > 0 && <div><dt>实际清算成交</dt><dd>{money(e.actions.liquidated_notional)}</dd></div>}
       {e.actions && <><div><dt>本次取得开 / 平仓成交</dt><dd>{money(e.actions.open_notional)} / {money(e.actions.close_notional)}</dd></div><div><dt>本次成交已实现盈亏</dt><dd>{money(e.actions.closed_pnl)}</dd></div></>}
       {p?.liquidation && <div><dt>当前清算价</dt><dd>{Number(p.liquidation).toLocaleString('zh-CN', { maximumFractionDigits: 4 })} 美元</dd></div>}
-      {e.liquidation_distance !== undefined && <div><dt>距清算价</dt><dd>{(Number(e.liquidation_distance) * 100).toFixed(2)}%</dd></div>}
+      {e.liquidation_distance !== undefined && <div><dt>距清算价</dt><dd>{percent(e.liquidation_distance)}</dd></div>}
     </dl>
     {e.sides && <div className="hlSides">{Object.entries(e.sides).map(([side, addresses]) => <section key={side}><h4>{side === 'long' ? '多方持仓' : '空方持仓'}</h4>{(addresses as string[]).map(a => <div key={a}><a href={`https://hyperbot.network/trader/${a}`} target="_blank" rel="noreferrer">{a}</a><strong>{money(e.positions?.[a]?.notional)}</strong></div>)}</section>)}</div>}
     <details><summary>完整证据与触发门槛</summary><pre>{JSON.stringify(e, null, 2)}</pre></details>
@@ -59,7 +73,7 @@ const ruleNames: Record<string, string> = {
   liquidation_distance: '距清算价', giveback_fraction: '浮盈回吐比例', escalation: '再触发档位倍数', new_address_window_ms: '新地址建仓窗口',
 };
 function ruleValue(key: string, value: unknown) {
-  if (['oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'].includes(key)) return `${Number(value) * 100}%`;
+  if (['oi_share', 'market_cap_share', 'win_rate', 'liquidation_distance', 'giveback_fraction'].includes(key)) return percent(value);
   if (key === 'new_address_window_ms') return `${Number(value) / 60000} 分钟`;
   if (['min_rounds'].includes(key)) return `${value} 轮`;
   if (key === 'escalation') return `${value} 倍`;
@@ -87,7 +101,7 @@ function eventStatus(event: HyperliquidNewsEvent) {
 function eventChange(event: HyperliquidNewsEvent) {
   const e = event.evidence;
   if (event.news_eligibility?.eligible === false) return '监测快照 · 无变化证据';
-  if (event.kinds.includes('near_liquidation')) return `距清算价 ${(Number(e.liquidation_distance) * 100).toFixed(2)}% · 持仓 ${money(e.position?.notional)} · 浮亏 ${money(e.position?.unrealized_pnl)}`;
+  if (event.kinds.includes('near_liquidation')) return `距清算价 ${percent(e.liquidation_distance)} · 持仓 ${money(e.position?.notional)} · 浮亏 ${money(e.position?.unrealized_pnl)}`;
   if (e.sides) return `多方 ${e.sides.long?.length || 0} 个地址 / 空方 ${e.sides.short?.length || 0} 个地址`;
   if (e.net_position_change) return `${e.net_position_change.direction} · ${money(e.net_position_change.estimated_value)}`;
   if (e.episode_peak_unrealized_pnl !== undefined) return `浮盈峰值 ${money(e.episode_peak_unrealized_pnl)} → 当前 ${money(e.position?.unrealized_pnl)}`;
