@@ -75,6 +75,16 @@ class FactReviewEngine:
                             or not issue["reason"].strip() or not isinstance(issue.get("evidence"), str)
                             or (issue["evidence"] and not _contains(original["text"], issue["evidence"]))):
                         raise ValueError("Original review issue lacks a real text anchor")
+                suggestions = compared.get("suggestions", [])
+                if not isinstance(suggestions, list):
+                    raise ValueError("Original review suggestions must be an array")
+                for suggestion in suggestions:
+                    if (not isinstance(suggestion, dict)
+                            or not isinstance(suggestion.get("evidence"), str)
+                            or not _contains(original["text"], suggestion["evidence"])
+                            or not isinstance(suggestion.get("reason"), str)
+                            or not suggestion["reason"].strip()):
+                        raise ValueError("Original review suggestion lacks a real source anchor")
                 if compared["status"] == "passed" and issues:
                     raise ValueError("Passed original review cannot contain issues")
                 if compared["status"] != "passed" and not issues:

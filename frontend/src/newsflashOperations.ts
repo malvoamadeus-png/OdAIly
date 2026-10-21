@@ -70,6 +70,7 @@ export type FactReviewDetail = {
         result?: {
           status?: string; summary?: string; reason?: string;
           issues?: Array<{ original: string; evidence: string; reason: string }>;
+          suggestions?: Array<{ evidence: string; reason: string }>;
           findings?: Array<{ claim: string; question: string; verdict: string; reason: string; evidence: Array<{ url: string; quote: string }> }>;
         };
       }>;

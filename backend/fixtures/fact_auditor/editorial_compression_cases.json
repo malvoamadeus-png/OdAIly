@@ -1,0 +1,50 @@
+[
+  {
+    "title": "上线1小时市值达4000万美元，Solana链上Meme币Kimchi成交额达2370万美元",
+    "content": "Solana 链上 Meme 币 Kimchi 上线 1 小时市值达到 4000 万美元，现报 3871 万美元，成交额达 2370 万美元。Kimchi（@kimchi1x）目前持有该 Meme 币总量的 75.32%。该交易员较少发布交易记录或喊单，主要发布生活、旅行、豪车和手表等相关照片及视频。\nPump.fun 联合创始人 alon 表示，Kimchi 是首个真正跨越加密行业与流行文化之间鸿沟的人，也是首个从交易员成长为公众名人的案例。alon 称，Kimchi 正在帮助 Pump.fun 制定创意方向，推动生态系统扩大。",
+    "original_text": "Solana 链上 Meme 币 Kimchi 上线 1 小时市值速通 4000 万美元，现报 3871 万美元，成交额达 2370 万美元。X 平台用户 Kimchi（@kimchi1x）目前持有该 Meme 币总量 75.32%，该交易员以低调神秘的形象闻名，账号几乎不发交易记录或喊单，主要晒奢华生活、旅行、豪车、手表等高端日常照片/视频，其 X bio 已改为 @pumpfun。Pump.fun 联合创始人 alon 发文表示，Kimchi 是第一个真正跨越加密行业与流行文化之间鸿沟的人，也是首个从交易员成长为公众名人的案例。他代表着行业未来的发展方向：构建一个庞大的社交交易生态系统，吸引更多散户用户入场，使生态规模增长至上一轮周期的 10 倍。下一波用户不会来自 CT（Crypto Twitter，加密推特圈），而是来自更广泛的大众群体。Pump.fun 很高兴 Kimchi 能够帮助制定创意方向，推动生态系统朝着规模扩大 100 倍的目标迈进。 提醒用户，Meme 币多无实际用例，价格波动较大，投资需谨慎。",
+    "name": "kimchi_concrete_bio_suggestion",
+    "expected": "passed",
+    "fixture_origin": "public_news_and_source_snapshot"
+  },
+  {
+    "title": "Bitmine将159,728枚ETH进行质押，价值3.9亿美元",
+    "content": "以太坊财库公司 Bitmine 在 6 小时前把 159,728 枚 ETH (3.9 亿美元) 存入以太坊质押，目前已质押超过 522.7 万枚 ETH (128 亿美元)。\n此外，以太坊质押进入序列有 133 万枚 ETH 在排队，等待时长超过 23 天。退出质押的 ETH 数量则只有 14.9 万枚，等待时间不到 4 天。",
+    "original_text": "以太坊财库公司 @BitMNR 在 6 小时前把 159,728 枚 ETH ($3.9 亿) 存入了以太坊质押。\n他们应该是质押了超过 522.7 万枚 ETH ($128 亿)。\n\n目前以太坊质押进入序列有 133 万枚 ETH 在排队，等待时长超过 23 天。\n退出质押的 ETH 数量则只有 14.9 万枚，等待时间不到 4 天。\n\nhttps://arkm.com/explorer/entity/bitmine\n\n--------------------------------------------------------------------------\n#Bitget 来了就是VIP！Crypto、美股、CFD，全球先机一站布局",
+    "name": "bitmine_colloquial_monitoring",
+    "expected": "passed",
+    "fixture_origin": "public_news_and_source_snapshot"
+  },
+  {
+    "title": "亨特·拜登：超12%的LAPTOP代币已永久销毁",
+    "content": "美国前总统拜登之子亨特·拜登在 X 平台发文表示，LAPTOP 代币已有超过 12% 被永久销毁，另有 30% 的代币与现实世界预测事件挂钩，根据亨特·拜登介绍，若相关预测事件成真，对应代币将被销毁；若预测未实现，代币则将捐赠给慈善机构。",
+    "original_text": "Over 12% of all $LAPTOP is gone for good.\n\n30% of $LAPTOP is tied to real-world predictions. If one comes true, its tokens are destroyed. If not, they go to charity.\n\nThe Nobel Peace Prize triggered this burn, plus all unclaimed airdrop tokens.\n\n$LAPTOP now listed on @blockchain",
+    "name": "laptop_total_supply_not_circulation",
+    "expected": "passed",
+    "fixture_origin": "public_news_and_source_snapshot"
+  },
+  {
+    "name": "currency_unit_error",
+    "title": "JB金融投资Upstage",
+    "content": "三家机构共投资400亿美元（约合3000万美元），获得约2%的股权。",
+    "original_text": "전북은행과 광주은행, JB우리캐피탈이 업스테이지에 총 400억원을 투자한다. 지분 약 2%를 확보하게 됐다.",
+    "expected": "flagged",
+    "fixture_origin": "synthetic_currency_error_control"
+  },
+  {
+    "name": "proposal_becomes_completed",
+    "title": "公司已购买比特币",
+    "content": "公司已购买1亿美元比特币。",
+    "original_text": "The company is discussing a proposal to purchase $100 million in Bitcoin. No decision has been made and no purchase has occurred.",
+    "expected": "flagged",
+    "fixture_origin": "synthetic_status_change_control"
+  },
+  {
+    "name": "specific_risk_removed",
+    "title": "项目方称代币可自由交易",
+    "content": "项目方表示代币可自由交易。",
+    "original_text": "项目方表示代币可自由交易，但当前合约只允许白名单地址卖出，其他持有人暂时无法卖出。",
+    "expected": "flagged",
+    "fixture_origin": "synthetic_concrete_risk_control"
+  }
+]

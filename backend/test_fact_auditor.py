@@ -156,6 +156,22 @@ def test_unverified_negative_entity_translation_is_still_searched():
     assert ai.search_calls == 1
 
 
+def test_optional_source_suggestion_preserves_pass_without_search():
+    ai = FakeAI(comparison={"status": "passed", "summary": "核心事实一致，有一条补充建议", "issues": [], "questions": [],
+        "suggestions": [{"evidence": "Class B shares", "reason": "可补充保留B类股的信息"}]})
+    result = review(ai)
+    assert result["status"] == "passed"
+    assert ai.search_calls == 0
+    assert result["stages"]["comparison"]["result"]["suggestions"][0]["evidence"] == "Class B shares"
+
+
+def test_suggestion_with_invented_source_quote_is_rejected():
+    ai = FakeAI(comparison={"status": "passed", "summary": "建议", "issues": [], "questions": [],
+        "suggestions": [{"evidence": "invented fact", "reason": "补充"}]})
+    assert review(ai)["status"] == "failed"
+    assert ai.search_calls == 0
+
+
 @pytest.fixture
 def repository(tmp_path):
     path = tmp_path / "test.sqlite"

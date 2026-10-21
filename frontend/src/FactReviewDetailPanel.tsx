@@ -55,6 +55,9 @@ export default function FactReviewDetailPanel({ sourceId, checkId, refreshToken 
         <section className="factReviewBlock"><h3>原文审查</h3><p>{comparison?.result?.summary || '本次未进入原文审查。'}</p>
           {comparison?.result?.issues?.map((issue, index) => <article className="factReviewIssue" key={index}><blockquote>{issue.original}</blockquote><p>{issue.reason}</p>{issue.evidence && <p>原文依据：{issue.evidence}</p>}</article>)}
         </section>
+        {!!comparison?.result?.suggestions?.length && <section className="factReviewBlock"><h3>补充建议（不计为事实问题）</h3>
+          {comparison.result.suggestions.map((suggestion, index) => <article key={index}><p>{suggestion.reason}</p><p>原文依据：{suggestion.evidence}</p></article>)}
+        </section>}
         <section className="factReviewBlock"><h3>外部事实审查</h3><p>{external?.result?.summary || '本次未进入外部事实审查。'}</p>
           {external?.result?.findings?.map((finding, index) => <article className="factReviewIssue" key={index}>
             <strong>{({ supported: '有证据支持', contradicted: '有证据冲突', unverified: '无法确认' } as Record<string, string>)[finding.verdict] || finding.verdict}</strong>
