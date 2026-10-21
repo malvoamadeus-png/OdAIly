@@ -119,7 +119,7 @@ def test_copy_uses_market_attribution_and_asset_name() -> None:
         change_pct=Decimal("-10.24"),
         current_price=Decimal("67800"),
     )
-    assert content == "Odaily星球日报讯 据 Gate 数据，00593024 小时下跌10.2%，现报67800 USDT。"
+    assert content == "Odaily星球日报讯 据 Gate 数据，005930 24 小时下跌10.2%，现报67800 USDT。"
 
     instrument = StockInstrument("600000USDT", "cn", 2)
     _title, content = render_alert(
@@ -130,7 +130,19 @@ def test_copy_uses_market_attribution_and_asset_name() -> None:
         change_pct=Decimal("5.04"),
         current_price=Decimal("12.34"),
     )
-    assert content.startswith("Odaily星球日报讯 据行情数据，6000001 小时上涨")
+    assert content.startswith("Odaily星球日报讯 据行情数据，600000 1 小时上涨")
+
+    instrument = StockInstrument("SMCIUSDT", "us", 2)
+    title, content = render_alert(
+        instrument=instrument,
+        window="24h",
+        tier="live",
+        direction="up",
+        change_pct=Decimal("14.0"),
+        current_price=Decimal("36.85"),
+    )
+    assert title == "SMCI 24小时上涨14.0%"
+    assert content == "Odaily星球日报讯 据 MSX.COM 数据，SMCI 24 小时上涨14.0%，现报36.85 USDT。"
 
 
 class _FakePushClient:

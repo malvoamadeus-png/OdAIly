@@ -32,7 +32,7 @@ def _member_text(member: AlertMember, direction: Direction, common_window: Windo
     price_text = f"{price:f}"
     if "." in price_text:
         price_text = price_text.rstrip("0").rstrip(".")
-    return f"{member.instrument.asset_name}{'、'.join(parts)}，现报{price_text} USDT"
+    return f"{member.instrument.asset_name} {'、'.join(parts)}，现报{price_text} USDT"
 
 
 def _format_alert(title: str, content: str) -> tuple[str, str]:
@@ -49,7 +49,7 @@ def render_digest(
     prefix = MARKET_ATTRIBUTION[market]
     if len(members) == 1:
         member = members[0]
-        title = f"{member.instrument.asset_name}{WINDOW_LABELS[member.primary_window]}{verb}{percent_text(member.change_pct)}%"
+        title = f"{member.instrument.asset_name} {WINDOW_LABELS[member.primary_window]}{verb}{percent_text(member.change_pct)}%"
         return _format_alert(title, prefix + _member_text(member, direction, None) + "。")
 
     common: Window | None = next((window for window in ("24h", "1h") if all(window in member.changes for member in members)), None)
