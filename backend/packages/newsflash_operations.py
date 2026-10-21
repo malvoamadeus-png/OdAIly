@@ -74,7 +74,7 @@ QUALITY_KPI_PER_ITEM = 0.2
 QUALITY_REGULAR_SOURCE_ACCOUNTS = (
     "LinChen91162689", "ki_young_ju", "BTC__options", "EricBalchunas", "EleanorTerrett",
     "zhusu", "evilcos", "sunyuchentron", "NateGeraci", "ag_dwf", "intotheblock", "weremeow",
-    "VitalikButerin", "santimentfeed", "0xENAS", "cz_binance", "JSeyff", "elonmusk",
+    "VitalikButerin", "santimentfeed", "0xENAS", "cz_binance", "JSeyff",
     "CryptoHayes", "zachxbt", "Rewkang", "jessepollak", "PrimordialAA", "Matrixport_CN",
     "10x_Research", "im23pds", "brian_armstrong", "ali_charts", "haydenzadams",
 )
@@ -1398,6 +1398,12 @@ class NewsflashOperationsRepository:
                     "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
                     (_json(rules), key),
                 )
+        if rules.get("regular_source_accounts") != seed["regular_source_accounts"]:
+            rules["regular_source_accounts"] = seed["regular_source_accounts"]
+            conn.execute(
+                "UPDATE newsflash_quality_week_rules SET rules_json=? WHERE week_start=?",
+                (_json(rules), key),
+            )
         conn.commit()
         rules["snapshot_at"] = row["created_at"]
         return rules
