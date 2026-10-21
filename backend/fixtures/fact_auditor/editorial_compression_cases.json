@@ -33,17 +33,17 @@
   },
   {
     "name": "proposal_becomes_completed",
-    "title": "公司已购买比特币",
-    "content": "公司已购买1亿美元比特币。",
-    "original_text": "The company is discussing a proposal to purchase $100 million in Bitcoin. No decision has been made and no purchase has occurred.",
+    "title": "Nova Treasury已购买比特币",
+    "content": "上市公司 Nova Treasury 已购买1亿美元比特币。",
+    "original_text": "Listed company Nova Treasury is discussing a proposal to purchase $100 million in Bitcoin. No decision has been made and no purchase has occurred.",
     "expected": "flagged",
     "fixture_origin": "synthetic_status_change_control"
   },
   {
     "name": "specific_risk_removed",
-    "title": "项目方称代币可自由交易",
-    "content": "项目方表示代币可自由交易。",
-    "original_text": "项目方表示代币可自由交易，但当前合约只允许白名单地址卖出，其他持有人暂时无法卖出。",
+    "title": "ORBIT项目方称代币可自由交易",
+    "content": "ORBIT项目方表示ORBIT代币可自由交易。",
+    "original_text": "ORBIT项目方表示ORBIT代币可自由交易，但当前合约只允许白名单地址卖出，其他持有人暂时无法卖出。",
     "expected": "flagged",
     "fixture_origin": "synthetic_concrete_risk_control"
   }

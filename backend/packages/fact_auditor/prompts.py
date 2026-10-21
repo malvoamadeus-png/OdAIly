@@ -29,9 +29,9 @@ def comparison_prompt(title: str, content: str, original: str, original_url: str
 新闻压缩允许省略通用风险尾缀、无执行安排的宣传愿景及口语修饰。这些省略直接忽略；具体风险事实、明确行动/承诺及状态变化仍审查，不按人物身份豁免。
 确定性变化按实际信息状态判断，不机械比对“应该、可能”等词。监测者用口语估计描述具体数字，媒体整理为陈述句，不应仅因此判错；可建议保留来源归属。将讨论写成决定、拟购买写成已持有、申请写成获批，才是实质状态变化；明确尚未证实的猜测也不能写成已确认。
 严格按稿件实际表达判断，不替稿件补出更强断言再批评。原文的信息只支持其明确说出的数量、比例、范围和关系，不能自行推导为“大多数”、流通规模变化、已加入某机构等。
-把建议补充与事实错误分开：原文有值得保留的具体动态或信息，省略但未改变稿件核心事实含义时，仅放suggestions；不放issues、不生成搜索问题、不改变通过状态。建议至多2条，只保留具体且有新闻价值的补充，不逐条找遗漏或润色；没有就为空。
+把建议补充与事实错误分开：原文有值得保留的具体动态或信息，省略但未改变稿件核心事实含义时，仅放suggestions；不放issues、不生成搜索问题、不改变通过状态。建议至多2条，只保留原文直接记载的具体动态、资产来源或归属。通用提醒、宣传目标、愿景数字和口语修饰连建议也不收录；建议不是找齐原文信息的任务。没有就为空。
 结论写法统一：先直说哪里不同、应补什么，再用一句话说明具体影响。遗漏直接写“原文还说明……，建议补充”；错误直接写“稿件写成A，原文是B”。范围和影响均不得超出证据。summary简短区分已证实问题与可选建议，不用抽象的“可能影响读者对……的判断”代替事实说明。
-输出 {"status":"passed|flagged|source_mismatch", "summary":"简短结论", "issues":[{"original":"稿件中逐字存在的片段，不额外加引号", "evidence":"原文中的依据片段，原文完全无此信息可为空", "reason":"已证实的编辑变化及其实质影响"}], "suggestions":[{"evidence":"原文逐字片段", "reason":"直接说明建议补充的具体信息，不宣称稿件错误"}], "questions":[{"claim":"稿件中逐字存在的片段，不额外加引号", "question":"外部证据要解决的具体编辑疑点", "kind":"name_mapping|added_fact|missing_scope", "source_evidence":"相关原文逐字片段，仅added_fact可为空", "reason":"具体编辑变化或重大范围歧义，以及交易或名誉影响"}]}。
+输出 {"status":"passed|flagged|source_mismatch", "summary":"简短结论", "issues":[{"original":"稿件中逐字存在的片段，不额外加引号", "evidence":"原文中的依据片段，原文完全无此信息可为空", "reason":"已证实的编辑变化及其实质影响"}], "suggestions":[{"evidence":"单段连续原文，逐字引用，不拼接句子", "reason":"直接说明建议补充的具体事实，不宣称稿件错误，不收录愿景目标"}], "questions":[{"claim":"稿件中逐字存在的片段，不额外加引号", "question":"外部证据要解决的具体编辑疑点", "kind":"name_mapping|added_fact|missing_scope", "source_evidence":"相关原文逐字片段，仅added_fact可为空", "reason":"具体编辑变化或重大范围歧义，以及交易或名誉影响"}]}。
 最多5条issues和3个questions。已证实的问题放issues，尚待核实的疑点仅放questions；无已证实问题时status=passed且issues为空，questions可有具体疑点。原文支持且没有具体编辑疑点时，issues和questions均为空；suggestions不参与status判定。source_mismatch时suggestions为空。
 材料：""" + json.dumps({"published": {"title": title, "content": content}, "original": original, "original_url": original_url}, ensure_ascii=False)
 

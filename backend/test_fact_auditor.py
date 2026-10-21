@@ -165,10 +165,12 @@ def test_optional_source_suggestion_preserves_pass_without_search():
     assert result["stages"]["comparison"]["result"]["suggestions"][0]["evidence"] == "Class B shares"
 
 
-def test_suggestion_with_invented_source_quote_is_rejected():
+def test_unanchored_optional_advice_does_not_invalidate_factual_comparison():
     ai = FakeAI(comparison={"status": "passed", "summary": "建议", "issues": [], "questions": [],
         "suggestions": [{"evidence": "invented fact", "reason": "补充"}]})
-    assert review(ai)["status"] == "failed"
+    result = review(ai)
+    assert result["status"] == "passed"
+    assert result["stages"]["comparison"]["result"]["suggestions"] == []
     assert ai.search_calls == 0
 
 

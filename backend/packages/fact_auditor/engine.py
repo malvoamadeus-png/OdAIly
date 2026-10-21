@@ -78,13 +78,18 @@ class FactReviewEngine:
                 suggestions = compared.get("suggestions", [])
                 if not isinstance(suggestions, list):
                     raise ValueError("Original review suggestions must be an array")
+                anchored_suggestions = []
                 for suggestion in suggestions:
                     if (not isinstance(suggestion, dict)
                             or not isinstance(suggestion.get("evidence"), str)
                             or not _contains(original["text"], suggestion["evidence"])
                             or not isinstance(suggestion.get("reason"), str)
                             or not suggestion["reason"].strip()):
-                        raise ValueError("Original review suggestion lacks a real source anchor")
+                        # Optional editorial advice must not invalidate a completed
+                        # factual comparison. Keep only verifiable source quotes.
+                        continue
+                    anchored_suggestions.append(suggestion)
+                compared["suggestions"] = anchored_suggestions
                 if compared["status"] == "passed" and issues:
                     raise ValueError("Passed original review cannot contain issues")
                 if compared["status"] != "passed" and not issues:
