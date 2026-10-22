@@ -14,6 +14,12 @@ from .models import number
 
 PREFIX = '据Odaily监测，'
 ACCOUNT_PNL_MAX_AGE_MS = 60 * 60 * 1000
+_SAMPLE_TIMESTAMP_PATTERN = re.compile(
+    r'(?:[，,；;]\s*)?[（(]?\s*(?:(?:官方|账户|总盈亏)\s*)*'
+    r'样本(?:截至|时间|日期)\s*[:：]?\s*'
+    r'20\d{2}(?:[-/.年]\s*\d{1,2}(?:[-/.月]\s*\d{1,2}(?:日)?)?)?'
+    r'(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*[）)]?'
+)
 
 
 def money(value: Any) -> str:
@@ -98,6 +104,10 @@ def normalize_display_numbers(text: str) -> str:
         return f'{prefix}{rounded:.0f}%'
 
     return percent_pattern.sub(normalize_percent, text)
+
+
+def _remove_sample_timestamps(text: str) -> str:
+    return _SAMPLE_TIMESTAMP_PATTERN.sub('', text)
 
 
 def timestamp(value: Any) -> str:
@@ -267,6 +277,8 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
             body+='。'
         body+=price_sentence
     title = scenario_title(event) or normalized.title
+    title = _remove_sample_timestamps(title)
+    body = _remove_sample_timestamps(body)
     title = normalize_display_numbers(title)
     body = normalize_display_numbers(body)
     return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))

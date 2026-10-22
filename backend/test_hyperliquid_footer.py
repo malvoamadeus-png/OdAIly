@@ -41,6 +41,26 @@ def test_stale_account_pnl_is_omitted_instead_of_misleading_readers():
     assert footer(event) == f'地址：{A}'
 
 
+def test_final_copy_removes_sample_time_and_normalizes_model_amounts():
+    event = {'addresses': [A], 'coin': 'ZEC', 'kinds': [], 'observed_ms': 2 * 3600000,
+             'evidence': {'history': {'official_account_total_pnl': total('122139000')}}}
+    draft = DraftBrief(
+        title='总盈利约12,213.90万美元，某地址减仓ZEC空单',
+        content=('某地址合约账户累计收益约1.219亿美元。其平掉价值约1,140.33万美元的ZEC空单；'
+                 '账户总盈亏约12,213.90 万美元（样本截至2026-10-21 19:27）。'),
+    )
+
+    result = format_news(draft, event)
+
+    assert result.title == '总盈利约1.22亿美元，某地址减仓ZEC空单'
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，')
+    assert '约1.22亿美元' in result.content
+    assert '约1,140万美元' in result.content
+    assert '12,213.90' not in result.content
+    assert '样本截至' not in result.content
+    assert result.content.endswith(f'地址：{A}')
+
+
 @pytest.mark.parametrize('source,scope', [
     ('hyperliquid_portfolio', 'official_portfolio_including_unrealized'),
     ('hyperliquid_perpetual_portfolio', 'official_account_including_unrealized'),
