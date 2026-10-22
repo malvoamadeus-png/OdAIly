@@ -58,6 +58,7 @@ export function StockMarketPanel({
   dashboard: StockMarketDashboard | null;
   loading: boolean;
 }) {
+  const [tab, setTab] = useState<'overview' | 'contracts'>('overview');
   const [query, setQuery] = useState('');
   const [market, setMarket] = useState('all');
   const heartbeatFresh = Boolean(dashboard?.last_cycle_at && Date.now() - new Date(dashboard.last_cycle_at).getTime() <= 90000);
@@ -78,6 +79,13 @@ export function StockMarketPanel({
         <div><span>最近轮询</span><strong>{timeLabel(dashboard?.last_cycle_at)}</strong></div>
         <div><span>运行状态</span><strong>{heartbeatFresh ? cycleStatusLabel(dashboard?.last_cycle_status) : '未检测到近期轮询'}</strong></div>
       </section>
+
+      <div className="newsflashTabs" role="tablist" aria-label="股票行情播报子页">
+        <button type="button" role="tab" aria-selected={tab === 'overview'} className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>播报概览</button>
+        <button type="button" role="tab" aria-selected={tab === 'contracts'} className={tab === 'contracts' ? 'active' : ''} onClick={() => setTab('contracts')}>合约行情</button>
+      </div>
+
+      {tab === 'overview' && <>
 
       <div className="stockMarketNotice">
         首批候选等待3分钟，按市场和涨跌方向合并；后续每30分钟汇总。
@@ -107,6 +115,30 @@ export function StockMarketPanel({
         </div>
       )}
 
+      <section className="section">
+        <div className="sectionHeader"><h2>最近事件</h2><span>最多展示100条</span></div>
+        {!dashboard?.recent_events.length ? (
+          <div className="emptyState compact">尚无触发记录。</div>
+        ) : (
+          <div className="stockMarketEvents">
+            {dashboard.recent_events.map((event) => (
+              <article key={event.id}>
+                <div className="stockMarketEventMeta">
+                  <strong>{event.title}</strong>
+                  <span>{MARKET_LABELS[event.market] ?? event.market} · {event.members?.length ? `${event.members.length}只资产` : event.window === '1h' ? '1小时' : '24小时'} · {event.direction === 'up' ? '上涨' : '下跌'} · {event.tier === 'live' ? '直发' : '挂后台'} · {eventStatusLabel(event.status)}</span>
+                  <span>{timeLabel(event.created_at)}</span>
+                  <b className={changeClass(event.change_percent)}>{percentLabel(event.change_percent)}</b>
+                </div>
+                <p>{event.content}</p>
+                {event.error && <small className="stockMarketRowError">{event.error}</small>}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      </>}
+
+      {tab === 'contracts' && <>
       <section className="section">
         <div className="sectionHeader stockMarketToolbar">
           <h2>合约行情</h2>
@@ -152,28 +184,7 @@ export function StockMarketPanel({
           </div>
         )}
       </section>
-
-      <section className="section">
-        <div className="sectionHeader"><h2>最近事件</h2><span>最多展示100条</span></div>
-        {!dashboard?.recent_events.length ? (
-          <div className="emptyState compact">尚无触发记录。</div>
-        ) : (
-          <div className="stockMarketEvents">
-            {dashboard.recent_events.map((event) => (
-              <article key={event.id}>
-                <div className="stockMarketEventMeta">
-                  <strong>{event.title}</strong>
-                  <span>{MARKET_LABELS[event.market] ?? event.market} · {event.members?.length ? `${event.members.length}只资产` : event.window === '1h' ? '1小时' : '24小时'} · {event.direction === 'up' ? '上涨' : '下跌'} · {event.tier === 'live' ? '直发' : '挂后台'} · {eventStatusLabel(event.status)}</span>
-                  <span>{timeLabel(event.created_at)}</span>
-                  <b className={changeClass(event.change_percent)}>{percentLabel(event.change_percent)}</b>
-                </div>
-                <p>{event.content}</p>
-                {event.error && <small className="stockMarketRowError">{event.error}</small>}
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+      </>}
     </div>
   );
 }

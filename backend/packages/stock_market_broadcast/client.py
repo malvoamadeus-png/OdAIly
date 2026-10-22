@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -16,6 +17,19 @@ EQUITY_TYPES: dict[str, Market] = {
     "KR_EQUITY": "kr",
     "JP_EQUITY": "jp",
 }
+
+LEVERAGED_ETF_SYMBOLS = {
+    "INTW", "KORU", "MSTU", "MUU", "MVLL", "NVDL", "RAM",
+    "SKDD", "SKUU", "SNXX", "SQQQ", "SOXL", "SOXS", "STXX",
+    "TBT", "TMF", "TQQQ", "TSLL", "TZA", "UVXY",
+}
+
+
+def _is_leveraged_etf(symbol: str) -> bool:
+    asset = symbol.removesuffix("USDT")
+    if asset in LEVERAGED_ETF_SYMBOLS or re.search(r"(?:2|3)[LS]$", asset):
+        return True
+    return False
 
 
 def _decimal(value: Any) -> Decimal:
@@ -59,6 +73,8 @@ def discover_stock_instruments(payload: dict[str, Any]) -> list[StockInstrument]
             continue
         symbol = str(item.get("symbol") or "").strip().upper()
         if not symbol or not symbol.endswith("USDT"):
+            continue
+        if _is_leveraged_etf(symbol):
             continue
         try:
             precision = max(0, min(12, int(item.get("pricePrecision", 8))))

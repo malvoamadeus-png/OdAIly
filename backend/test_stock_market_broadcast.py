@@ -34,11 +34,23 @@ def _exchange_symbol(
     }
 
 
-def test_discovery_includes_stock_markets_and_etf_but_filters_other_symbols() -> None:
+def test_discovery_includes_stock_markets_but_filters_leveraged_etfs() -> None:
     payload = {
         "symbols": [
             _exchange_symbol("AAPLUSDT", "EQUITY"),
             _exchange_symbol("600000USDT", "CN_EQUITY", subtype=["ETF"]),
+            _exchange_symbol("CSOPSAMSUNG2LUSDT", "EQUITY"),
+            _exchange_symbol("SKDDUSDT", "EQUITY"),
+            _exchange_symbol("SOXLUSDT", "EQUITY"),
+            _exchange_symbol("SOXSUSDT", "EQUITY"),
+            *[
+                _exchange_symbol(f"{symbol}USDT", "EQUITY")
+                for symbol in (
+                    "INTW", "KORU", "MSTU", "MUU", "MVLL", "NVDL", "RAM",
+                    "SKDD", "SKUU", "SNXX", "SQQQ", "SOXL", "SOXS", "STXX",
+                    "TBT", "TMF", "TQQQ", "TSLL", "TZA", "UVXY",
+                )
+            ],
             _exchange_symbol("0700USDT", "HK_EQUITY"),
             _exchange_symbol("005930USDT", "KR_EQUITY"),
             _exchange_symbol("6758USDT", "JP_EQUITY"),
