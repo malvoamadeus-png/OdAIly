@@ -70,6 +70,47 @@ def test_reader_copy_replaces_exchange_terminology():
     assert normalize_reader_terms('按83美元参考价计亏损') == '按83美元参考价计亏损'
 
 
+def test_account_profit_copy_removes_disclaimer_adds_title_subject_and_uses_fresh_total_pnl():
+    event = {
+        'addresses': [A], 'coin': 'BTC', 'kinds': ['highlighted_address_action'],
+        'observed_ms': 1792673211025,
+        'evidence': {
+            'highlights': ['official_account_high_profit'],
+            'threshold_rules': {'account_profit': '20000000'},
+            'history': {
+                'official_account_total_pnl': {
+                    'source': 'hyperliquid_portfolio',
+                    'scope': 'perpAllTime_including_unrealized',
+                    'observed_ms': 1792419600060,
+                    'pnl': '26931373.1807200015',
+                },
+                'official_account_performance': {
+                    'source': 'hyperliquid_portfolio',
+                    'pnl_scope': 'official_portfolio_including_unrealized',
+                    'windows': {'allTime': {
+                        'scope': 'official_portfolio_window_change',
+                        'observed_ms': 1792673210688,
+                        'history_sample_ms': 1792673210688,
+                        'pnl': '28669569.8838770017',
+                    }},
+                },
+            },
+        },
+    }
+    draft = DraftBrief(
+        title='总盈利约2867万美元，平仓BTC空单后加仓约835万美元',
+        content=('某地址合约账户累计收益约2867万美元（官方口径含浮盈亏）。'
+                 '其在BTC上平仓约16万美元空单，随后加仓约835万美元空单；'
+                 '截至监测时，BTC空单持仓价值约1425万美元。'),
+    )
+
+    result = format_news(draft, event)
+
+    assert result.title == '总盈利约2,867万美元，某地址平仓BTC空单后加仓约835万美元'
+    assert '官方口径含浮盈亏' not in result.content
+    assert result.content.endswith(f'地址：{A}；总盈亏：盈利约2,867万美元')
+
+
 def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_enabled():
     e, _ = event()
     task = TaskRecord(id=77, source=HYPERLIQUID_SOURCE, source_item_id=e['key'], source_url=source_url(e),

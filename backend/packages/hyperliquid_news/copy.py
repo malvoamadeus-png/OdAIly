@@ -20,6 +20,10 @@ _SAMPLE_TIMESTAMP_PATTERN = re.compile(
     r'20\d{2}(?:[-/.年]\s*\d{1,2}(?:[-/.月]\s*\d{1,2}(?:日)?)?)?'
     r'(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*[）)]?'
 )
+_ACCOUNT_PNL_QUALIFIER_PATTERN = re.compile(
+    r'[（(]\s*(?:(?:官方|合约账户|账户)?口径\s*)?(?:含|包含)\s*'
+    r'(?:未实现的?)?(?:浮盈亏|浮动盈亏|未实现盈亏)\s*[）)]'
+)
 
 
 def money(value: Any) -> str:
@@ -197,7 +201,7 @@ def footer(event: dict[str, Any]) -> str:
     histories = event['evidence'].get('histories', {})
     for address in event['addresses']:
         address_history = histories.get(address, histories.get(address.lower(), {})) if len(event['addresses']) > 1 else history
-        total = _account_total_sample(address_history)
+        total = _account_total_sample(address_history, as_of_ms=observed_ms)
         line = f'地址：{address_key(address)}'
         stamp = total.get('observed_ms', total.get('history_sample_ms')) if total else None
         if (total is not None and observed_ms is not None and stamp is not None and
@@ -210,11 +214,12 @@ def footer(event: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
-def _account_total_sample(history: dict[str, Any]) -> dict[str, Any] | None:
+def _account_total_sample(history: dict[str, Any], *, as_of_ms: Any = None) -> dict[str, Any] | None:
+    candidates = []
     total = history.get('official_account_total_pnl')
     if (isinstance(total, dict) and total.get('source') == 'hyperliquid_portfolio' and
             total.get('scope') == 'perpAllTime_including_unrealized' and total.get('pnl') is not None):
-        return total
+        candidates.append(total)
     allowed_sources = {
         ('hyperliquid_portfolio', 'official_portfolio_including_unrealized'),
         ('hyperliquid_perpetual_portfolio', 'official_account_including_unrealized'),
@@ -227,8 +232,29 @@ def _account_total_sample(history: dict[str, Any]) -> dict[str, Any] | None:
             continue
         sample = performance.get('windows', {}).get('allTime')
         if isinstance(sample, dict) and sample.get('pnl') is not None:
-            return sample
-    return None
+            candidates.append(sample)
+    dated = []
+    for sample in candidates:
+        stamp = sample.get('observed_ms', sample.get('history_sample_ms'))
+        if stamp is None:
+            continue
+        stamp = int(stamp)
+        if as_of_ms is not None and stamp > int(as_of_ms):
+            continue
+        dated.append((stamp, sample))
+    if dated:
+        return max(dated, key=lambda item: item[0])[1]
+    return candidates[0] if candidates and as_of_ms is None else None
+
+
+def _ensure_account_title_subject(title: str) -> str:
+    if '地址' in title:
+        return title
+    match = re.match(r'^(总(?:盈利|亏损)(?:约|超|超过)?[\d,.]+(?:万美元|亿美元))(.*)$', title)
+    if not match:
+        return title
+    remainder = re.sub(r'^[，,]\s*', '', match.group(2))
+    return f'{match.group(1)}，某地址{remainder}'
 
 
 def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
@@ -249,11 +275,15 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         title = re.sub(prefix, '总盈利', title, count=1)
     if account and title.startswith('总盈利') and (not all_time or number(all_time['pnl']) < threshold):
         raise ValueError('Total profit title requires qualifying official allTime evidence')
+    if account and title.startswith('总盈利'):
+        title = _ensure_account_title_subject(title)
     if 'historical_loss' in labels and re.match(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', title):
         loss = evidence.get('history', {}).get('official_account_loss', {})
         if number(loss.get('windows', {}).get('allTime', {}).get('pnl', '0')) > -number(evidence.get('threshold_rules', {}).get('historical_loss', '20000000')):
             raise ValueError('Total loss title requires qualifying perpetual allTime evidence')
         title = re.sub(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', '总亏损', title, count=1)
+    if 'historical_loss' in labels and title.startswith('总亏损'):
+        title = _ensure_account_title_subject(title)
     title = title.replace('的地址', '地址')
     content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?该地址',
                      lambda match: (match.group(1) or '') + '某地址', draft.content.strip(), count=1)
@@ -301,8 +331,11 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
             body+='。'
         body+=price_sentence
     title = scenario_title(event) or normalized.title
+    normalized_account_copy = normalize_account_copy(DraftBrief(title=title, content=body), event)
+    title, body = normalized_account_copy.title, normalized_account_copy.content
     title = _remove_sample_timestamps(title)
     body = _remove_sample_timestamps(body)
+    body = _ACCOUNT_PNL_QUALIFIER_PATTERN.sub('', body)
     title = normalize_display_numbers(title)
     body = normalize_display_numbers(body)
     title = normalize_reader_terms(title)
