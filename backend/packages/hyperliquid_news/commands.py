@@ -176,9 +176,11 @@ def run_command(args: Any) -> int:
 def activate_writer_prompt(path: Path, root: Path, *, template_key: str = 'hyperliquid_writer') -> dict[str, Any]:
     """Publish the dedicated file as a new full version without rewriting history."""
     from packages.common.storage import connect_sqlite
-    files = {'hyperliquid_writer': 'Hyperliquid快讯模板.txt',
-             'hyperliquid_giveback_writer': 'Hyperliquid浮盈回吐Prompt.txt'}
-    content = (root / 'docs/OdAIly代码与整体设计' / files[template_key]).read_text(encoding='utf-8')
+    from packages.x_processing.repository import PROMPT_SEEDS
+    seed = PROMPT_SEEDS.get(template_key)
+    if not template_key.startswith('hyperliquid_') or seed is None:
+        raise ValueError('Unknown Hyperliquid writer prompt template')
+    content = (root / seed[1]).read_text(encoding='utf-8')
     with connect_sqlite(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         active = conn.execute("SELECT v.* FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id WHERE t.template_key=? AND v.deleted_at IS NULL", (template_key,)).fetchone()

@@ -59,6 +59,17 @@ def test_writer2_fixed_prefix_footer_source_without_model_numbers():
     assert source_url(e) == f'https://hyperbot.network/trader/{A}'
 
 
+def test_reader_copy_replaces_exchange_terminology():
+    from packages.hyperliquid_news.copy import normalize_reader_terms
+    text = ('开仓名义金额为约243万美元，平均执行价为81.1299美元，'
+            '按78.711美元参考价计仓位估值约236万美元。')
+    assert normalize_reader_terms(text) == (
+        '开仓金额约243万美元，成交均价为81.13美元，持仓价值约236万美元。')
+    assert normalize_reader_terms('按持仓估值参考价格计价值约869.91万美元') == '持仓价值约869.91万美元'
+    assert normalize_reader_terms('按标记价 83.049 美元计算，名义价值约830.53万美元') == '持仓价值约830.53万美元'
+    assert normalize_reader_terms('按83美元参考价计亏损') == '按83美元参考价计亏损'
+
+
 def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_enabled():
     e, _ = event()
     task = TaskRecord(id=77, source=HYPERLIQUID_SOURCE, source_item_id=e['key'], source_url=source_url(e),
@@ -192,6 +203,23 @@ def test_prompt_full_activation_preserves_history_and_is_idempotent(tmp_path):
     with connect_sqlite(repo.path) as conn:
         assert conn.execute('SELECT content FROM prompt_template_versions WHERE id=?',(before.id,)).fetchone()[0]=='old conflicting copy'
     assert activate_writer_prompt(repo.path,get_paths().root_dir)=={'version_number':2,'changed':False}
+
+
+def test_prompt_activation_supports_scene_specific_templates(tmp_path):
+    from packages.common.paths import get_paths
+    from packages.hyperliquid_news.commands import activate_writer_prompt
+    repo=SQLiteXProcessingRepository(tmp_path/'db.sqlite'); repo.init_schema()
+    repo.seed_prompt_templates(root_dir=get_paths().root_dir)
+    before=repo.get_active_prompt('hyperliquid_asset_performance_writer')
+    with connect_sqlite(repo.path) as conn:
+        conn.execute('UPDATE prompt_template_versions SET content=? WHERE id=?', ('outdated scene prompt',before.id))
+        conn.commit()
+    result=activate_writer_prompt(repo.path,get_paths().root_dir,
+                                 template_key='hyperliquid_asset_performance_writer')
+    assert result=={'version_number':2,'changed':True}
+    active=repo.get_active_prompt('hyperliquid_asset_performance_writer')
+    expected=(get_paths().root_dir/'docs/OdAIly代码与整体设计/Hyperliquid资产表现Prompt.txt').read_text(encoding='utf-8')
+    assert active.content==expected
 
 
 def test_liquidation_reader_fact_uses_actual_price_and_adverse_direction():

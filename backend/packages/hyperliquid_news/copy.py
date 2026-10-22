@@ -106,6 +106,30 @@ def normalize_display_numbers(text: str) -> str:
     return percent_pattern.sub(normalize_percent, text)
 
 
+def normalize_reader_terms(text: str) -> str:
+    """Replace exchange terminology that adds no useful meaning for readers."""
+    text = re.sub(r'(?P<action>开仓|加仓|平仓|减仓)?名义金额(?:为|是)?',
+                  lambda match: (match.group('action') or '') + '金额', text)
+    text = text.replace('名义价值', '持仓价值')
+    text = re.sub(r'按持仓估值参考价格计价值', '持仓价值', text)
+    text = re.sub(r'按\s*[\d,.]+\s*美元参考价(?:格)?计(?:持仓价值|仓位估值|价值)',
+                  '持仓价值', text)
+    text = re.sub(r'按标记价\s*[\d,.]+\s*美元(?:计算|折算)?[，,]?\s*', '', text)
+    text = text.replace('仓位估值', '持仓价值')
+    price_pattern = re.compile(
+        r'(?P<label>加权成交价|成交均价|平均执行价|执行均价|执行价)'
+        r'(?P<separator>\s*(?:约?为|[:：])?\s*)'
+        r'(?P<price>[\d,]+(?:\.\d+)?)\s*美元')
+
+    def normalize_price(match: re.Match[str]) -> str:
+        label = '成交均价' if match.group('label') in {'平均执行价', '执行均价', '执行价'} else match.group('label')
+        price = match.group('price').replace(',', '')
+        return f'{label}{match.group("separator")}{_execution_price(price)}美元'
+
+    text = price_pattern.sub(normalize_price, text)
+    return text
+
+
 def _remove_sample_timestamps(text: str) -> str:
     return _SAMPLE_TIMESTAMP_PATTERN.sub('', text)
 
@@ -281,6 +305,8 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     body = _remove_sample_timestamps(body)
     title = normalize_display_numbers(title)
     body = normalize_display_numbers(body)
+    title = normalize_reader_terms(title)
+    body = normalize_reader_terms(body)
     return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))
 
 

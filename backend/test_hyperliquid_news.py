@@ -104,7 +104,7 @@ def test_writer_material_has_execution_prices_but_omits_small_close_pnl():
 
 
 def test_high_win_preview_adds_available_open_and_close_execution_prices():
-    from packages.hyperliquid_news.copy import format_news
+    from packages.hyperliquid_news.copy import format_news, scenario_title
     from packages.x_processing.models import DraftBrief
 
     event={
@@ -119,6 +119,7 @@ def test_high_win_preview_adds_available_open_and_close_execution_prices():
         },
     }
     result=format_news(DraftBrief(title='ETH交易胜率达81.8%',content='某地址平仓后加仓ETH多单。'),event)
+    assert scenario_title(event).startswith('近期ETH胜率约82%')
     assert 'ETH多单平仓的加权成交价约为2,437美元' in result.content
     assert '开仓的加权成交价约为2,443美元' in result.content
 

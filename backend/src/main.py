@@ -304,7 +304,8 @@ def parse_args() -> argparse.Namespace:
     hl_run.add_argument("--once", action="store_true")
     hl_run.add_argument("--addresses-per-pass", type=int, default=10)
     hl_prompt = hl_actions.add_parser("activate-prompt", help="Activate dedicated writer file as a new version; preserve previous versions.")
-    hl_prompt.add_argument("--template-key", choices=["hyperliquid_writer", "hyperliquid_giveback_writer"], default="hyperliquid_writer")
+    hl_prompt.add_argument("--template-key", default="hyperliquid_writer",
+                           help="Hyperliquid writer prompt key; defaults to hyperliquid_writer.")
     hl_preview = hl_actions.add_parser("preview", help="Rewrite saved evidence for console review without publishing.")
     hl_preview.add_argument("--task-ids", type=int, nargs="+", required=True)
     hl_account_test = hl_actions.add_parser("enrich-account-test-cases", help="Enrich test actions using historical official portfolio PnL before the action.")

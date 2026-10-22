@@ -187,7 +187,9 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 # preview --task-ids 使用具有变化证据的实际任务 ID；首轮三个静态样稿不能再生成新闻预览
 ```
 
-`init` 初始化主 SQLite 独立表及专用 Prompt；不覆盖已经发布的 Prompt 版本。`collect` 只取得公开事实、不投递；可传 `--market-cap-mapping` 指向服务器本地运行配置。`dispatch` 最多按 limit 投递，可以用 `--event-keys` 精确指定样稿事件；超出 1..100 拒绝执行。`status` 查看候选与共享流水线结果。`activate-prompt` 读取已提交的专用模板全文，事务内创建并激活新版本；内容相同不新增版本，旧版本不覆盖。`preview` 接受 1..10 个有变化证据的已有 Hyperliquid task，缺少变化证据会拒绝，调用相同编写者1/编写者2路径，将修订结果保存到事件关联元数据；不修改原任务状态、不入队、不调用挂稿或发布接口。写作失败不覆盖已成功预览。采集、生成、投递分开，可单独复盘和重试。
+`init` 初始化主 SQLite 独立表及专用 Prompt；不覆盖已经发布的 Prompt 版本。`collect` 只取得公开事实、不投递；可传 `--market-cap-mapping` 指向服务器本地运行配置。`dispatch` 最多按 limit 投递，可以用 `--event-keys` 精确指定样稿事件；超出 1..100 拒绝执行。`status` 查看候选与共享流水线结果。`activate-prompt` 可用 `--template-key` 指定任一 `hyperliquid_*_writer` 场景模板，读取已提交的专用模板全文，事务内创建并激活新版本；内容相同不新增版本，旧版本不覆盖。定稿还会确定性压缩金额、百分比和数量，并将“名义金额 / 名义价值 / 参考价 / 执行价”等术语转换为读者表达。`preview` 接受 1..10 个有变化证据的已有 Hyperliquid task，缺少变化证据会拒绝，调用相同编写者1/编写者2路径，将修订结果保存到事件关联元数据；不修改原任务状态、不入队、不调用挂稿或发布接口。写作失败不覆盖已成功预览。采集、生成、投递分开，可单独复盘和重试。
+
+更新场景模板时，在官方服务器逐个执行 `hyperliquid-news activate-prompt --template-key hyperliquid_asset_performance_writer` 等命令；模板版本按场景独立激活，服务重启后写作 worker 使用新版本。
 
 
 ### 官方服务器首轮试稿结果
