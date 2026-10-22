@@ -17,6 +17,7 @@ SOURCE_EXCLUSION_SCOPES = (
     "ai_source",
     "mixed_source",
     "jin10",
+    "fact_auditor",
 )
 
 SOURCE_EXCLUSION_MATCH_TARGETS = ("title", "all")
@@ -115,6 +116,28 @@ class SQLiteSourceExclusionRepository:
                 )
                 """
             )
+            # Seed a separate fact-auditor rule set once from the existing
+            # competitor groups. Later edits to either scope stay independent.
+            has_fact_rules = conn.execute(
+                "SELECT 1 FROM source_exclusion_rule_groups WHERE scopes LIKE '%fact_auditor%' LIMIT 1"
+            ).fetchone()
+            if not has_fact_rules:
+                rows = conn.execute(
+                    "SELECT rule_key, name, description, terms, match_target, enabled FROM source_exclusion_rule_groups WHERE scopes LIKE '%competitor%' ORDER BY name, rule_key"
+                ).fetchall()
+                for row in rows:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            f"fact-auditor-copy-{row['rule_key']}",
+                            f"事实审核者 · {row['name']}",
+                            f"从竞品规则复制的初始词表。{row['description'] or ''}".strip(),
+                            json.dumps(["fact_auditor"], ensure_ascii=False),
+                            row["terms"],
+                            row["match_target"],
+                            row["enabled"],
+                        ),
+                    )
             conn.commit()
 
     def list_enabled_rule_groups(self) -> list[SourceExclusionRuleGroup]:

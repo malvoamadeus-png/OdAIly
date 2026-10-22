@@ -280,12 +280,12 @@ def test_manual_retry_preserves_execution_records_and_rejects_obsolete_copy(repo
         repository.retry(first["id"])
 
 
-def test_worker_reuses_exclusion_scope_and_match_target(repository):
+def test_worker_uses_independent_exclusion_scope_and_match_target(repository):
     add_reference(repository, title="Bitget活动", content="商务稿")
     worker = FactAuditorWorker(repository, FactAuditorSettings(), ai=Mock())
     with connect_sqlite(repository.path) as conn:
         conn.execute("INSERT INTO source_exclusion_rule_groups(rule_key,name,scopes,terms,match_target) VALUES(?,?,?,?,?)",
-            ("brand", "商务品牌", '["competitor"]', '["Bitget"]', "title"))
+            ("brand", "商务品牌", '["fact_auditor"]', '["Bitget"]', "title"))
         conn.commit()
     result = worker.run_once()
     assert result["status"] == "exempt"

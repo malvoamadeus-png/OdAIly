@@ -697,7 +697,7 @@ export type KnownTitleSubjectsPayload = {
   names: string[];
 };
 
-export type SourceExclusionScope = 'x' | 'competitor' | 'crypto_source' | 'ai_source' | 'mixed_source' | 'jin10';
+export type SourceExclusionScope = 'x' | 'competitor' | 'crypto_source' | 'ai_source' | 'mixed_source' | 'jin10' | 'fact_auditor';
 export type SourceExclusionMatchTarget = 'title' | 'all';
 
 export type SourceExclusionRuleGroup = {

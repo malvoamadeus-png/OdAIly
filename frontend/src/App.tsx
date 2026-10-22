@@ -4730,6 +4730,7 @@ const exclusionScopeOptions: { key: SourceExclusionScope; label: string }[] = [
   { key: 'ai_source', label: 'AI信源' },
   { key: 'mixed_source', label: '混合信源' },
   { key: 'jin10', label: '金十' },
+  { key: 'fact_auditor', label: '事实审核者' },
 ];
 
 const exclusionMatchTargetOptions: { key: SourceExclusionMatchTarget; label: string }[] = [
@@ -4749,6 +4750,11 @@ const emptyExclusionDraft: ExclusionGroupDraft = {
   enabled: true,
 };
 
+const emptyFactAuditorExclusionDraft: ExclusionGroupDraft = {
+  ...emptyExclusionDraft,
+  scopes: ['fact_auditor'],
+};
+
 function CompetitorPanel({
   groups,
   saving,
@@ -4760,22 +4766,30 @@ function CompetitorPanel({
   onSave: (id: number | null, input: SourceExclusionRuleGroupInput) => Promise<number>;
   onDelete: (group: SourceExclusionRuleGroup) => Promise<void>;
 }) {
-  const [selectedId, setSelectedId] = useState<number | null>(groups[0]?.id ?? null);
+  const [area, setArea] = useState<'sources' | 'fact_auditor'>('sources');
+  const areaGroups = groups.filter((group) => area === 'fact_auditor'
+    ? group.scopes.includes('fact_auditor')
+    : !group.scopes.includes('fact_auditor'));
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ExclusionGroupDraft>(emptyExclusionDraft);
   const [query, setQuery] = useState('');
   const [scopeFilter, setScopeFilter] = useState<'all' | SourceExclusionScope>('all');
   const [testTitleText, setTestTitleText] = useState('');
   const [testBodyText, setTestBodyText] = useState('');
+  const availableScopes = area === 'fact_auditor'
+    ? exclusionScopeOptions.filter((scope) => scope.key === 'fact_auditor')
+    : exclusionScopeOptions.filter((scope) => scope.key !== 'fact_auditor');
+  const emptyDraft = area === 'fact_auditor' ? emptyFactAuditorExclusionDraft : emptyExclusionDraft;
 
   useEffect(() => {
-    const selected = groups.find((group) => group.id === selectedId);
+    const selected = areaGroups.find((group) => group.id === selectedId);
     if (!selected) {
-      if (!creating && groups.length > 0) {
-        setSelectedId(groups[0].id);
+      if (!creating && areaGroups.length > 0) {
+        setSelectedId(areaGroups[0].id);
         return;
       }
-      setDraft(emptyExclusionDraft);
+      setDraft(emptyDraft);
       return;
     }
     setDraft({
@@ -4787,9 +4801,9 @@ function CompetitorPanel({
       match_target: selected.match_target || 'title',
       enabled: selected.enabled,
     });
-  }, [creating, groups, selectedId]);
+  }, [area, creating, groups, selectedId]);
 
-  const visibleGroups = groups.filter((group) => {
+  const visibleGroups = areaGroups.filter((group) => {
     const matchesScope = scopeFilter === 'all' || group.scopes.includes(scopeFilter);
     const normalized = query.trim().toLocaleLowerCase();
     const matchesQuery = !normalized || `${group.name}\n${group.description}\n${group.terms.join('\n')}`.toLocaleLowerCase().includes(normalized);
@@ -4799,7 +4813,7 @@ function CompetitorPanel({
   const normalizedTestBody = testBodyText.normalize('NFKC').toLocaleLowerCase();
   const hasTestText = Boolean(normalizedTestTitle || normalizedTestBody);
   const testMatches = hasTestText
-    ? groups.filter((group) => {
+    ? areaGroups.filter((group) => {
       if (!group.enabled) return false;
       const haystack = group.match_target === 'all'
         ? `${normalizedTestTitle}\n${normalizedTestBody}`
@@ -4818,11 +4832,12 @@ function CompetitorPanel({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const terms = draft.termsText.split(/\r?\n/).map((term) => term.trim()).filter(Boolean);
-    if (!draft.name.trim() || draft.scopes.length === 0 || terms.length === 0) return;
+    const scopes = area === 'fact_auditor' ? ['fact_auditor'] as SourceExclusionScope[] : draft.scopes;
+    if (!draft.name.trim() || scopes.length === 0 || terms.length === 0) return;
     const savedId = await onSave(selectedId, {
       name: draft.name.trim(),
       description: draft.description.trim(),
-      scopes: [...draft.scopes],
+      scopes: [...scopes],
       terms,
       match_target: draft.match_target,
       enabled: draft.enabled,
@@ -4834,18 +4849,27 @@ function CompetitorPanel({
   }
 
   return (
+    <>
+    <div className="segmentedControl exclusionAreaTabs" role="tablist" aria-label="排除词类别">
+      <button type="button" role="tab" aria-selected={area === 'sources'} className={area === 'sources' ? 'active' : ''} onClick={() => { setArea('sources'); setCreating(false); setSelectedId(null); setDraft(emptyExclusionDraft); setScopeFilter('all'); }}>
+        信源与竞品
+      </button>
+      <button type="button" role="tab" aria-selected={area === 'fact_auditor'} className={area === 'fact_auditor' ? 'active' : ''} onClick={() => { setArea('fact_auditor'); setCreating(false); setSelectedId(null); setDraft(emptyFactAuditorExclusionDraft); setScopeFilter('all'); }}>
+        事实审核者
+      </button>
+    </div>
     <section className="exclusionLayout">
       <aside className="exclusionGroupList">
         <div className="sectionHeader">
-          <h2>规则组</h2>
-          <button className="iconButton" type="button" title="新建规则组" onClick={() => { setCreating(true); setSelectedId(null); setDraft(emptyExclusionDraft); }}>
+          <h2>{area === 'fact_auditor' ? '事实审核者规则' : '信源与竞品规则'}</h2>
+          <button className="iconButton" type="button" title="新建规则组" onClick={() => { setCreating(true); setSelectedId(null); setDraft(emptyDraft); }}>
             <Plus size={17} />
           </button>
         </div>
         <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索规则组或词" />
         <select value={scopeFilter} onChange={(event) => setScopeFilter(event.target.value as 'all' | SourceExclusionScope)}>
           <option value="all">全部路径</option>
-          {exclusionScopeOptions.map((scope) => <option value={scope.key} key={scope.key}>{scope.label}</option>)}
+          {availableScopes.map((scope) => <option value={scope.key} key={scope.key}>{scope.label}</option>)}
         </select>
         <div className="exclusionGroupRows">
           {visibleGroups.map((group) => (
@@ -4881,7 +4905,7 @@ function CompetitorPanel({
         <div className="exclusionScopeField">
           <span>适用路径</span>
           <div className="scopeChecks">
-            {exclusionScopeOptions.map((scope) => (
+            {availableScopes.map((scope) => (
               <label key={scope.key}><input type="checkbox" checked={draft.scopes.includes(scope.key)} onChange={() => toggleScope(scope.key)} /><span>{scope.label}</span></label>
             ))}
           </div>
@@ -4916,6 +4940,7 @@ function CompetitorPanel({
         </div>
       </aside>
     </section>
+    </>
   );
 }
 

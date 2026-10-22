@@ -42,10 +42,10 @@ class FactAuditorWorker:
             matched = []
             if not reason:
                 for group in self.exclusions.list_enabled_rule_groups():
-                    if is_source_excluded([group], scopes=["competitor"], title_texts=[task["title"]], body_texts=[task["content"]]):
+                    if is_source_excluded([group], scopes=["fact_auditor"], title_texts=[task["title"]], body_texts=[task["content"]]):
                         matched.append({"rule_key": group.rule_key, "name": group.name, "terms": list(group.terms), "match_target": group.match_target})
                 if matched:
-                    reason = "命中竞品排除规则：" + "、".join(x["name"] for x in matched)
+                    reason = "命中事实审核者排除规则：" + "、".join(x["name"] for x in matched)
             if reason:
                 result = {"status": "exempt", "reason": reason, "summary": reason, "exclusion_rules": matched, "stages": {}}
             else:

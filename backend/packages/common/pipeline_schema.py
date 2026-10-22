@@ -811,7 +811,7 @@ CREATE TABLE IF NOT EXISTS source_exclusion_rule_groups (
     updated_at timestamptz NOT NULL DEFAULT now(),
     CHECK (cardinality(scopes) > 0),
     CHECK (cardinality(terms) > 0),
-    CHECK (scopes <@ ARRAY['x', 'competitor', 'crypto_source', 'ai_source', 'mixed_source', 'jin10']::text[]),
+    CHECK (scopes <@ ARRAY['x', 'competitor', 'crypto_source', 'ai_source', 'mixed_source', 'jin10', 'fact_auditor']::text[]),
     CONSTRAINT source_exclusion_rule_groups_match_target_check CHECK (match_target IN ('title', 'all'))
 );
 

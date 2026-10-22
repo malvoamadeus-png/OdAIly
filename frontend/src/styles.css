@@ -4289,6 +4289,11 @@ textarea:focus {
   margin-top: 14px;
 }
 
+.exclusionAreaTabs {
+  width: fit-content;
+  margin-bottom: 12px;
+}
+
 .runtimeRuleList {
   display: grid;
   gap: 8px;
