@@ -178,6 +178,26 @@ def _service(path: Path, push_client: _FakePushClient) -> tuple[StockMarketBroad
     return service, store
 
 
+def test_service_refreshes_instruments_on_startup_even_when_discovery_is_recent(tmp_path: Path) -> None:
+    class _InstrumentClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch_instruments(self) -> list[StockInstrument]:
+            self.calls += 1
+            return [StockInstrument("AAPLUSDT", "us", 2)]
+
+    service, store = _service(tmp_path / "stock-market.sqlite", _FakePushClient())
+    store.sync_instruments([StockInstrument("SOXLUSDT", "us", 4)], now=1_700_000_000)
+    client = _InstrumentClient()
+    service.client = client  # type: ignore[assignment]
+
+    service._refresh_instruments(1_700_000_030)
+
+    assert client.calls == 1
+    assert [item.symbol for item in store.list_instruments()] == ["AAPLUSDT"]
+
+
 def test_service_calculates_one_hour_change_and_dispatches_tiers(tmp_path: Path) -> None:
     database = tmp_path / "stock-market.sqlite"
     instrument = StockInstrument("AAPLUSDT", "us", 2)

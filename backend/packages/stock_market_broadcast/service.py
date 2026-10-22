@@ -45,11 +45,16 @@ class StockMarketBroadcastService:
             self.theme_classifier = StockThemeClassifier.from_environment()
         self._startup_baseline_pending = True
         self._baseline_symbols_pending: set[str] = set()
+        self._startup_discovery_pending = True
 
     def _refresh_instruments(self, now: int) -> None:
         last_refresh = self.store.last_discovery_at()
-        if now - last_refresh < self.settings.instrument_refresh_seconds:
+        if (
+            not self._startup_discovery_pending
+            and now - last_refresh < self.settings.instrument_refresh_seconds
+        ):
             return
+        self._startup_discovery_pending = False
         try:
             instruments = self.client.fetch_instruments()
             self.store.sync_instruments(instruments, now=now)
