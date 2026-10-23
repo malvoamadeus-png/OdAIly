@@ -181,25 +181,34 @@ def parse_structured_writer_output(
     feature_reason = payload.get("feature_mode_reason")
     if not isinstance(title, str) or not isinstance(content, str):
         raise ValueError("writer output title and content must be strings")
-    if strategy not in TITLE_STRATEGIES:
-        raise ValueError("writer output contains unsupported title_strategy")
-    if not isinstance(strategy_reason, str):
-        raise ValueError("writer output title_strategy_reason must be a string")
-    if not isinstance(matched_rules, list) or any(rule not in TITLE_RULES for rule in matched_rules):
-        raise ValueError("writer output contains unsupported matched_title_rules")
+    strategy_valid = isinstance(strategy, str) and strategy in TITLE_STRATEGIES
+    strategy_reason_valid = isinstance(strategy_reason, str)
+    matched_rules_valid = isinstance(matched_rules, list) and all(
+        isinstance(rule, str) and rule in TITLE_RULES for rule in matched_rules
+    )
+    valid_matched_rules = (
+        [rule for rule in matched_rules if isinstance(rule, str) and rule in TITLE_RULES]
+        if isinstance(matched_rules, list)
+        else []
+    )
     feature_trace_complete = isinstance(feature_applied, bool) and isinstance(feature_reason, str)
+    title_trace_complete = strategy_valid and strategy_reason_valid and matched_rules_valid
 
     draft = parse_draft_output(f"{title}\n\n{content}")
     applied = feature_applied if feature_mode_enabled and isinstance(feature_applied, bool) else False
     trace = {
         "schema_version": 1,
-        "title_strategy": strategy,
-        "title_strategy_reason": strategy_reason.strip(),
         "matched_known_subjects": known_subjects,
-        "matched_title_rules": list(dict.fromkeys(str(rule) for rule in matched_rules)),
+        "matched_title_rules": list(dict.fromkeys(valid_matched_rules)),
         "feature_mode_applied": applied,
         "feature_mode_reason": feature_reason.strip() if applied and isinstance(feature_reason, str) else "",
     }
+    if strategy_valid:
+        trace["title_strategy"] = strategy
+    if strategy_reason_valid:
+        trace["title_strategy_reason"] = strategy_reason.strip()
+    if not title_trace_complete:
+        trace["title_trace_status"] = "incomplete"
     if not feature_trace_complete:
         trace["feature_mode_trace_status"] = "incomplete"
     priority_level = None

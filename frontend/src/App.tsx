@@ -500,12 +500,14 @@ function taskPublisherExplanation(task: TaskItem): string {
 
 type TitleTrace = {
   schema_version?: number;
+  title_trace_status?: string;
   title_strategy?: string;
   title_strategy_reason?: string;
   matched_known_subjects?: { name?: string; type?: string; importance?: string; matched_alias?: string }[];
   matched_title_rules?: string[];
   feature_mode_applied?: boolean;
   feature_mode_reason?: string;
+  feature_mode_trace_status?: string;
 };
 
 const titleStrategyLabels: Record<string, string> = {
@@ -2493,8 +2495,8 @@ function TaskTraceDetails({
         loading={diagnosticsLoading}
       />
       <div className="taskTraceGrid">
-        <div><span>标题策略</span><strong>{trace?.title_strategy ? titleStrategyLabels[trace.title_strategy] || trace.title_strategy : '旧任务无标题溯源'}</strong></div>
-        <div><span>特色模式</span><strong>{pipeline?.writer_feature_mode_enabled ? '已启用' : '未启用'} / {trace?.feature_mode_applied ? '实际采用' : '未采用'}</strong></div>
+        <div><span>标题策略</span><strong>{trace?.title_strategy ? titleStrategyLabels[trace.title_strategy] || trace.title_strategy : trace?.title_trace_status === 'incomplete' ? '溯源不完整' : '旧任务无标题溯源'}</strong></div>
+        <div><span>特色模式</span><strong>{pipeline?.writer_feature_mode_enabled ? '已启用' : '未启用'} / {trace?.feature_mode_trace_status === 'incomplete' ? '溯源不完整' : trace?.feature_mode_applied ? '实际采用' : '未采用'}</strong></div>
         <div><span>写作 Prompt</span><strong>{pipeline?.prompt_template_key || '-'}{pipeline?.prompt_version_id ? ` · #${pipeline.prompt_version_id}` : ''}</strong></div>
         <div><span>写作模型</span><strong>{pipeline?.writer_model || '-'}</strong></div>
         <div><span>判断规则</span><strong>{judgeRuleSet} · {judgeRuleVersion}</strong></div>
