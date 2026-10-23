@@ -45,6 +45,9 @@ class YesterdayHotDiscussion:
 
     def __init__(self, connection: sqlite3.Connection, *, push_client: PushClient | None = None) -> None:
         self.connection = connection
+        self.enabled = os.getenv("HOTTOPIC_YESTERDAY_HOT_DISCUSSION_ENABLED", "true").strip().lower() not in {
+            "0", "false", "no", "off"
+        }
         self.push_client = push_client or PushClient(
             endpoint=os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data",
             timeout_seconds=30,
@@ -74,6 +77,8 @@ class YesterdayHotDiscussion:
                     )
 
     def run_if_due(self, now: datetime | None = None) -> YesterdayHotDiscussionResult | None:
+        if not self.enabled:
+            return None
         current = now or datetime.now(UTC)
         if current.tzinfo is None:
             current = current.replace(tzinfo=UTC)
@@ -151,6 +156,16 @@ class YesterdayHotDiscussion:
             (day_key,),
         ).fetchone()
         if row is None:
+            if not self.enabled:
+                return {
+                    "localDate": day_key,
+                    "status": "disabled",
+                    "candidateCount": 0,
+                    "excludedAnalysisCount": 0,
+                    "excludedNoActionCount": 0,
+                    "attemptedAt": None,
+                    "completedAt": None,
+                }
             status = "scheduled" if (local_now.hour, local_now.minute) < (8, 30) else "waiting"
             return {
                 "localDate": day_key,
