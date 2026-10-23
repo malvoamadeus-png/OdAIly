@@ -25,7 +25,7 @@ class FakeAI:
         self.search_calls = 0
 
     def review(self, prompt):
-        return {"result": self.reviews.pop(0), "model": "gpt-5.6-luna"}
+        return {"result": self.reviews.pop(0), "model": "gpt-6-luna"}
 
     def search(self, prompt):
         self.search_calls += 1

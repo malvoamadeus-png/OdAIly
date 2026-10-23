@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS fact_checks (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  source_item_id TEXT NOT NULL, content_hash TEXT NOT NULL, policy_version TEXT NOT NULL,
  title TEXT, content TEXT NOT NULL, source_url TEXT, source_locator TEXT NOT NULL DEFAULT '', published_at TEXT,
- status TEXT NOT NULL DEFAULT 'pending', model TEXT NOT NULL DEFAULT 'gpt-5.6-luna',
+ status TEXT NOT NULL DEFAULT 'pending', model TEXT NOT NULL DEFAULT 'gpt-6-luna',
  reason TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
  original_text TEXT NOT NULL DEFAULT '', original_url TEXT NOT NULL DEFAULT '',
  result_json TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0,
@@ -116,7 +116,7 @@ class FactReviewRepository:
             updated = conn.execute("""UPDATE fact_checks SET status=?,reason=?,summary=?,original_text=?,original_url=?,result_json=?,
                 model=?,last_error=?,next_attempt_at=?,locked_by=NULL,locked_until=NULL,updated_at=? WHERE id=? AND locked_by=?""",
                 (result["status"], result.get("reason", ""), result.get("summary", ""), result.get("original_text", ""),
-                 result.get("original_url", ""), json.dumps(result, ensure_ascii=False), result.get("model", "gpt-5.6-luna"),
+                 result.get("original_url", ""), json.dumps(result, ensure_ascii=False), result.get("model", "gpt-6-luna"),
                  result.get("error"), retry_at if result["status"] == "failed" else None, now.isoformat(), task["id"], worker_id))
             if updated.rowcount:
                 conn.execute("INSERT INTO fact_check_runs(check_id,status,summary,result_json,completed_at) VALUES(?,?,?,?,?)",

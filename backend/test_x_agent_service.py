@@ -44,13 +44,13 @@ class FakeAnalyzer:
         if module == "market_sentiment":
             return AnalysisResult(
                 module,
-                "gpt-5.6-luna",
+                "gpt-6-luna",
                 None,
                 [{"scope": "Crypto具体标的", "instrument_name": "Bitcoin", "ticker": "BTC", "sentiment": "偏多/乐观", "reason": "作者明确看多 BTC。"}],
             )
         return AnalysisResult(
             module,
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             None,
             [{"project_name": "Example", "ticker": "EX", "chain": "Base", "contract_address": "0xabcdef0123456789", "official_url": "", "logic": "产品即将上线并有空投催化。"}],
         )
@@ -227,7 +227,7 @@ def test_market_sentiment_orders_by_distinct_accounts_and_persists_12_hour_snaps
                 "text": f"{ticker} view",
                 "created_at_iso": iso(now),
             }
-            result = AnalysisResult("market_sentiment", "gpt-5.6-luna", None, [{
+            result = AnalysisResult("market_sentiment", "gpt-6-luna", None, [{
                 "scope": "Crypto具体标的",
                 "instrument_name": instrument,
                 "ticker": ticker,
@@ -286,7 +286,7 @@ def test_project_same_identity_and_logic_updates_instead_of_creating_a_second_ro
     try:
         item = {"project_name": "Example", "ticker": "EX", "chain": "Base", "contract_address": "0xabcdef0123456789", "official_url": "", "logic": "产品即将上线并有空投催化。"}
         source = {"account_screen_name": "alice", "tweet_id": "first", "url": "https://x.com/alice/status/first", "expanded_text": "first", "created_at_iso": iso(utc_now())}
-        result = AnalysisResult("project_promotion", "gpt-5.6-luna", None, [item])
+        result = AnalysisResult("project_promotion", "gpt-6-luna", None, [item])
         with value.db:
             value._save_project_results(source, result, iso(utc_now()))
             source["tweet_id"] = "second"
@@ -308,7 +308,7 @@ def test_project_detail_shows_one_source_once_and_merges_project_logics(tmp_path
             "expanded_text": "Snowmoon zipcoin zc Emerald",
             "created_at_iso": iso(utc_now()),
         }
-        result = AnalysisResult("project_promotion", "gpt-5.6-luna", None, [
+        result = AnalysisResult("project_promotion", "gpt-6-luna", None, [
             {"project_name": "SNOWMOON", "ticker": "SNOWMOON", "chain": "", "contract_address": "", "official_url": "", "logic": "小说书名成为传播叙事。"},
             {"project_name": "ZC", "ticker": "ZC", "chain": "", "contract_address": "", "official_url": "", "logic": "小说中的虚构货币被拿来发币。"},
             {"project_name": "EMERALD", "ticker": "EMERALD", "chain": "", "contract_address": "", "official_url": "", "logic": "小说中的本地 AI 助手被拿来发币。"},
@@ -335,13 +335,13 @@ def test_luna_failure_does_not_switch_model_with_reasoning_disabled() -> None:
     def post(_base: str, _key: str, body: bytes, _timeout: float) -> dict[str, object]:
         request = __import__("json").loads(body)
         calls.append(request)
-        if request["model"] == "gpt-5.6-luna":
+        if request["model"] == "gpt-6-luna":
             raise RuntimeError("luna unavailable")
         return {"choices": [{"message": {"content": '{"items":[{"scope":"Crypto具体标的","instrument_name":"Bitcoin","ticker":"BTC","sentiment":"偏多/乐观","reason":"作者明确看多。"}]}'}}]}
 
     analyzer = XAgentAnalyzer(
-        primary_model="gpt-5.6-luna",
-        fallback_model="gpt-5.6-luna",
+        primary_model="gpt-6-luna",
+        fallback_model="gpt-6-luna",
         base_url="https://example.test/v1",
         api_key="test-key",
         max_attempts=1,
@@ -349,7 +349,7 @@ def test_luna_failure_does_not_switch_model_with_reasoning_disabled() -> None:
     )
     with pytest.raises(Exception, match="luna unavailable"):
         analyzer.analyze("market_sentiment", {"tweet_id": "x", "account_screen_name": "alice", "text": "BTC bullish"})
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
+    assert [call["model"] for call in calls] == ["gpt-6-luna"]
     assert all(call["reasoning_effort"] == "none" for call in calls)
 
 

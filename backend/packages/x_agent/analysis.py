@@ -80,8 +80,8 @@ class XAgentAnalyzer:
         max_attempts: int = 2,
         post_json: Callable[[str, str, bytes, float], dict[str, Any]] | None = None,
     ) -> None:
-        self.primary_model = primary_model or os.getenv("X_AGENT_MODEL") or "gpt-5.6-luna"
-        self.fallback_model = fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-luna"
+        self.primary_model = primary_model or os.getenv("X_AGENT_MODEL") or "gpt-6-luna"
+        self.fallback_model = fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-6-luna"
         self.base_url = (
             base_url
             or os.getenv("X_AGENT_OPENAI_BASE_URL")

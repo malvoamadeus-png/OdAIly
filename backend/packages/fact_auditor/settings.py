@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class FactAuditorSettings:
-    model: str = "gpt-5.6-luna"
+    model: str = "gpt-6-luna"
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     api_style: str = "responses"
@@ -28,9 +28,9 @@ def load_settings() -> FactAuditorSettings:
     load_dotenv()
     key = os.getenv("FACT_AUDITOR_OPENAI_API_KEY") or os.getenv("ODAILY_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
     base = os.getenv("FACT_AUDITOR_OPENAI_BASE_URL") or os.getenv("ODAILY_LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    model = os.getenv("FACT_AUDITOR_MODEL") or "gpt-5.6-luna"
-    if model != "gpt-5.6-luna":
-        raise ValueError("FACT_AUDITOR_MODEL must be gpt-5.6-luna")
+    model = os.getenv("FACT_AUDITOR_MODEL") or "gpt-6-luna"
+    if model != "gpt-6-luna":
+        raise ValueError("FACT_AUDITOR_MODEL must be gpt-6-luna")
     result = FactAuditorSettings(
         model=model, api_key=key, base_url=base,
         api_style=os.getenv("FACT_AUDITOR_OPENAI_API_STYLE") or "responses",

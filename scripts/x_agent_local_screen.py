@@ -518,8 +518,8 @@ def main() -> int:
         default="all_candidates",
         help="Send every rule candidate, or only strong candidates, to the model. Weak candidates stay review in strong_only mode.",
     )
-    parser.add_argument("--model", help="Primary model. Defaults to X_AGENT_MODEL or gpt-5.6-luna.")
-    parser.add_argument("--fallback-model", help="Fallback model. Defaults to X_AGENT_FALLBACK_MODEL or gpt-5.6-luna.")
+    parser.add_argument("--model", help="Primary model. Defaults to X_AGENT_MODEL or gpt-6-luna.")
+    parser.add_argument("--fallback-model", help="Fallback model. Defaults to X_AGENT_FALLBACK_MODEL or gpt-6-luna.")
     parser.add_argument("--max-accounts", type=int, default=0)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=45.0)
@@ -528,8 +528,8 @@ def main() -> int:
     args = parser.parse_args()
 
     load_env(args.env_file.resolve())
-    args.model = args.model or os.getenv("X_AGENT_MODEL") or "gpt-5.6-luna"
-    args.fallback_model = args.fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-5.6-luna"
+    args.model = args.model or os.getenv("X_AGENT_MODEL") or "gpt-6-luna"
+    args.fallback_model = args.fallback_model or os.getenv("X_AGENT_FALLBACK_MODEL") or "gpt-6-luna"
     supplied_posts = [path.resolve() for path in args.posts]
     raw_post_times: list[datetime] = []
     for path in supplied_posts:

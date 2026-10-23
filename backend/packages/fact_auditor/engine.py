@@ -40,7 +40,7 @@ class FactReviewEngine:
         self.max_questions = max_questions
 
     def review(self, *, title: str, content: str, original_loader: Callable[[], dict[str, str]]) -> dict[str, Any]:
-        result: dict[str, Any] = {"model": "gpt-5.6-luna", "stages": {}}
+        result: dict[str, Any] = {"model": "gpt-6-luna", "stages": {}}
         published = title + "\n" + content
         try:
             screening = self.ai.review(screening_prompt(title, content))

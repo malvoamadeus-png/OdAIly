@@ -64,7 +64,7 @@ def test_topic_pair_review_merges_stages_but_separates_other_incident(tmp_path: 
                 "confidence": 0.95, "reason": "同一资金事件的后续处置" if same else "不同事件",
                 "shared_event_fact": "Bitget withdrawal incident" if same else "",
                 "evidence_claim_ids": [case["left"]["evidence"][0]["claim_id"], case["right"]["evidence"][0]["claim_id"]],
-                "model": "gpt-5.6-luna", "reasoning_effort": "high",
+                "model": "gpt-6-luna", "reasoning_effort": "high",
             })
         return rows
 
@@ -170,8 +170,8 @@ def test_topic_merge_reviewer_uses_luna_with_high_reasoning() -> None:
 
     reviewer._post_json = post  # type: ignore[method-assign]
     result = reviewer([{"case_id": "pair:1", "left": {"evidence": []}, "right": {"evidence": []}}])
-    assert result[0]["model"] == "gpt-5.6-luna"
-    assert [request["model"] for request in requests] == ["gpt-5.6-luna"]
+    assert result[0]["model"] == "gpt-6-luna"
+    assert [request["model"] for request in requests] == ["gpt-6-luna"]
     assert all(request["reasoning_effort"] == "high" for request in requests)
 
 
@@ -230,8 +230,8 @@ def test_model_brief_writer_uses_luna_without_reasoning() -> None:
             return Cursor()
 
     writer = ModelBriefWriter(
-        "gpt-5.6-luna",
-        fallback_model="gpt-5.6-luna",
+        "gpt-6-luna",
+        fallback_model="gpt-6-luna",
         base_url="https://example.test/v1",
         api_key="test-key",
         max_attempts=1,
@@ -257,7 +257,7 @@ def test_model_brief_writer_uses_luna_without_reasoning() -> None:
     )
 
     assert result["source_claim_ids"] == ["claim:1"]
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
+    assert [call["model"] for call in calls] == ["gpt-6-luna"]
     assert all(call["reasoning_effort"] == "none" for call in calls)
     prompt = calls[-1]["messages"][0]["content"]
     assert "不要加入编辑者自己的判断、免责声明或结论性提醒" in prompt
@@ -268,7 +268,7 @@ def test_model_brief_writer_uses_luna_without_reasoning() -> None:
 def test_semantic_reviewer_uses_luna_with_high_reasoning() -> None:
     calls: list[dict[str, object]] = []
     reviewer = TopicClaimReviewer(
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         fallback_model="",
         reasoning_effort="high",
         base_url="https://example.test/v1",
@@ -299,7 +299,7 @@ def test_semantic_reviewer_uses_luna_with_high_reasoning() -> None:
     }])
 
     assert result[0]["decision"] == "unrelated"
-    assert calls[0]["model"] == "gpt-5.6-luna"
+    assert calls[0]["model"] == "gpt-6-luna"
     assert calls[0]["reasoning_effort"] == "high"
     assert "共享一个资产名、合约、平台或引用关系不是 support 的充分条件" in calls[0]["messages"][0]["content"]
     assert "HBM、Micron、NVIDIA 或 GPU 供需" in calls[0]["messages"][0]["content"]
@@ -308,8 +308,8 @@ def test_semantic_reviewer_uses_luna_with_high_reasoning() -> None:
 def test_semantic_reviewer_uses_luna_for_the_same_batch() -> None:
     calls: list[dict[str, object]] = []
     reviewer = TopicClaimReviewer(
-        "gpt-5.6-luna",
-        fallback_model="gpt-5.6-luna",
+        "gpt-6-luna",
+        fallback_model="gpt-6-luna",
         reasoning_effort="high",
         base_url="https://example.test/v1",
         api_key="test-key",
@@ -336,9 +336,9 @@ def test_semantic_reviewer_uses_luna_for_the_same_batch() -> None:
         "event_or_issue": "general", "evidence": [],
     }}])
 
-    assert [call["model"] for call in calls] == ["gpt-5.6-luna"]
+    assert [call["model"] for call in calls] == ["gpt-6-luna"]
     assert result[0]["decision"] == "context"
-    assert result[0]["model"] == "gpt-5.6-luna"
+    assert result[0]["model"] == "gpt-6-luna"
     assert result[0]["confidence"] == 0.91
 
 
@@ -346,7 +346,7 @@ def test_semantic_review_excludes_unrelated_claim_from_participants(tmp_path: Pa
     now = datetime(2026, 9, 30, tzinfo=UTC)
 
     class Reviewer:
-        model = "gpt-5.6-luna"
+        model = "gpt-6-luna"
         reasoning_effort = "high"
 
         def __call__(self, cases):
@@ -427,7 +427,7 @@ def test_model_brief_writer_removes_plan_disclaimer_without_dropping_attribution
 
 def test_model_brief_writer_formats_long_single_paragraph_without_rewriting() -> None:
     writer = ModelBriefWriter(
-        "gpt-5.6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
+        "gpt-6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
     )
     first = (
         "项目方公布交易机制，采用Hyperliquid的BBO中间价作为参考，由自身LP作为交易对手方。"
@@ -449,7 +449,7 @@ def test_model_brief_writer_formats_long_single_paragraph_without_rewriting() ->
         }, ensure_ascii=False)}}]}
 
     writer._post_json = post  # type: ignore[method-assign]
-    result = writer._write_with_model("gpt-5.6-luna", "prompt", {"working_title": "PaperTrade"}, [  # type: ignore[arg-type]
+    result = writer._write_with_model("gpt-6-luna", "prompt", {"working_title": "PaperTrade"}, [  # type: ignore[arg-type]
         {"claim_id": "claim:1"},
     ])
 
@@ -459,7 +459,7 @@ def test_model_brief_writer_formats_long_single_paragraph_without_rewriting() ->
 
 def test_model_brief_writer_falls_back_when_formatter_rewrites_text() -> None:
     writer = ModelBriefWriter(
-        "gpt-5.6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
+        "gpt-6-luna", fallback_model="", base_url="https://example.test/v1", api_key="test-key", max_attempts=1,
     )
     brief = "项目方公布交易机制、上线安排和代币规则。" * 8 + "社区用户提出报价套利指称。" * 8
 
@@ -467,7 +467,7 @@ def test_model_brief_writer_falls_back_when_formatter_rewrites_text() -> None:
         return {"choices": [{"message": {"content": json.dumps({"brief": "已改写的内容。"})}}]}
 
     writer._post_json = post  # type: ignore[method-assign]
-    formatted = writer._format_generated_brief("gpt-5.6-luna", brief)
+    formatted = writer._format_generated_brief("gpt-6-luna", brief)
 
     assert len(formatted.splitlines()) >= 2
     assert formatted.replace("\n", "") == brief
@@ -736,7 +736,7 @@ def test_reconcile_reviews_existing_memberships_before_merging(tmp_path: Path) -
     now = datetime(2026, 9, 30, tzinfo=UTC)
 
     class Reviewer:
-        model = "gpt-5.6-luna"
+        model = "gpt-6-luna"
         reasoning_effort = "high"
 
         def __call__(self, cases):

@@ -237,8 +237,8 @@ def test_merged_brief_prompt_carries_distinct_facts(tmp_path: Path) -> None:
     try:
         add_topic(aggregator, "topic:a", "Coinbase and Deribit", "Portfolio margin", 0)
         writer = object.__new__(ModelBriefWriter)
-        writer.model = "gpt-5.6-luna"
-        writer.fallback_model = "gpt-5.6-luna"
+        writer.model = "gpt-6-luna"
+        writer.fallback_model = "gpt-6-luna"
         prompts = []
 
         def capture(_model, prompt, _topic, _evidence):

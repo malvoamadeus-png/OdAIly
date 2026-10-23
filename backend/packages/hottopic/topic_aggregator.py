@@ -3534,9 +3534,9 @@ class TopicClaimReviewer:
 
     def __init__(
         self,
-        model: str = "gpt-5.6-luna",
+        model: str = "gpt-6-luna",
         *,
-        fallback_model: str = "gpt-5.6-luna",
+        fallback_model: str = "gpt-6-luna",
         reasoning_effort: str = "high",
         api_key: str | None = None,
         base_url: str | None = None,
@@ -3901,7 +3901,7 @@ class ModelBriefWriter:
 
     def __init__(
         self,
-        model: str = "gpt-5.6-luna",
+        model: str = "gpt-6-luna",
         *,
         fallback_model: str | None = None,
         api_key: str | None = None,
@@ -3914,7 +3914,7 @@ class ModelBriefWriter:
         self.fallback_model = (
             fallback_model
             if fallback_model is not None
-            else os.environ.get("HOTTOPIC_FALLBACK_MODEL", "gpt-5.6-luna")
+            else os.environ.get("HOTTOPIC_FALLBACK_MODEL", "gpt-6-luna")
         ).strip()
         self.base_url = (
             base_url
