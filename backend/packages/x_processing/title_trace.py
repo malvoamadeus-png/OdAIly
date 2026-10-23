@@ -187,11 +187,10 @@ def parse_structured_writer_output(
         raise ValueError("writer output title_strategy_reason must be a string")
     if not isinstance(matched_rules, list) or any(rule not in TITLE_RULES for rule in matched_rules):
         raise ValueError("writer output contains unsupported matched_title_rules")
-    if not isinstance(feature_applied, bool) or not isinstance(feature_reason, str):
-        raise ValueError("writer output feature mode fields are invalid")
+    feature_trace_complete = isinstance(feature_applied, bool) and isinstance(feature_reason, str)
 
     draft = parse_draft_output(f"{title}\n\n{content}")
-    applied = feature_applied if feature_mode_enabled else False
+    applied = feature_applied if feature_mode_enabled and isinstance(feature_applied, bool) else False
     trace = {
         "schema_version": 1,
         "title_strategy": strategy,
@@ -199,8 +198,10 @@ def parse_structured_writer_output(
         "matched_known_subjects": known_subjects,
         "matched_title_rules": list(dict.fromkeys(str(rule) for rule in matched_rules)),
         "feature_mode_applied": applied,
-        "feature_mode_reason": feature_reason.strip() if applied else "",
+        "feature_mode_reason": feature_reason.strip() if applied and isinstance(feature_reason, str) else "",
     }
+    if not feature_trace_complete:
+        trace["feature_mode_trace_status"] = "incomplete"
     priority_level = None
     priority_reason = None
     priority_status = "not_applicable"
