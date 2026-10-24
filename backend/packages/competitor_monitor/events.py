@@ -144,14 +144,18 @@ class NewsflashEventAggregator:
             exclude_item_ids=new_record_ids,
         )
 
-        source_urls = {record.source_url for record in new_records if record.source_url}
+        source_urls = {
+            record.source_url
+            for record in new_records
+            if record.source_url and canonicalize_event_identity_url(record.source_url)
+        }
         exact_sources = self.repository.list_event_sources_by_urls(
             source_urls={str(source_url) for source_url in source_urls},
             exclude_item_ids=new_record_ids,
         ) if source_urls else []
         exact_by_url: dict[str, EventSourceRecord] = {}
         for source in exact_sources:
-            source_url = canonicalize_source_url(source.item.source_url)
+            source_url = canonicalize_event_identity_url(source.item.source_url)
             if source_url:
                 exact_by_url.setdefault(source_url, source)
 
@@ -171,7 +175,7 @@ class NewsflashEventAggregator:
             f"new_count={len(new_records)} recent_count={len(existing_sources)}"
         )
         for record in new_records:
-            exact = exact_by_url.get(canonicalize_source_url(record.source_url) or "")
+            exact = exact_by_url.get(canonicalize_event_identity_url(record.source_url) or "")
             if exact is not None:
                 assignments[record.id] = EventAssignment(
                     item_id=record.id,
@@ -204,7 +208,7 @@ class NewsflashEventAggregator:
         for record in new_records:
             if record.id in assignments:
                 continue
-            record_url = canonicalize_source_url(record.source_url)
+            record_url = canonicalize_event_identity_url(record.source_url)
             if not record_url:
                 continue
             exact_assigned = next(
@@ -213,7 +217,7 @@ class NewsflashEventAggregator:
                     for other in new_records
                     if other.id != record.id
                     and assignments.get(other.id) is not None
-                    and canonicalize_source_url(other.source_url) == record_url
+                    and canonicalize_event_identity_url(other.source_url) == record_url
                 ),
                 None,
             )
@@ -473,9 +477,19 @@ def canonicalize_source_url(value: str | None) -> str | None:
     )
 
 
+def canonicalize_event_identity_url(value: str | None) -> str | None:
+    """Exclude mutable Hyperbot account pages from exact event identity."""
+    if not value:
+        return None
+    host = (urlsplit(str(value).strip()).hostname or "").casefold()
+    if host == "hyperbot.network" or host.endswith(".hyperbot.network"):
+        return None
+    return canonicalize_source_url(value)
+
+
 def same_source_url(left: str | None, right: str | None) -> bool:
-    left_url = canonicalize_source_url(left)
-    right_url = canonicalize_source_url(right)
+    left_url = canonicalize_event_identity_url(left)
+    right_url = canonicalize_event_identity_url(right)
     return bool(left_url and right_url and left_url == right_url)
 
 

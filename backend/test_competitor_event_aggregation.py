@@ -97,6 +97,31 @@ class CompetitorEventAggregationTest(unittest.TestCase):
         self.assertEqual(event_ids["b1"], event_ids["o1"])
         self.assertEqual(review.prompts, [])
 
+    def test_same_hyperbot_account_url_does_not_assign_directly(self) -> None:
+        first = self.item(
+            "odaily",
+            "o1",
+            "账户快讯一",
+            "2026-08-27T01:00:00+00:00",
+            "https://hyperbot.network/trader/0xabc?utm_source=feed",
+        )
+        second = self.item(
+            "odaily",
+            "o2",
+            "账户快讯二",
+            "2026-08-27T01:05:00+00:00",
+            "https://hyperbot.network/trader/0xabc",
+        )
+        review = FakeReviewClient({}, default=False)
+        aggregator = self.aggregator({"账户快讯一": [1.0, 0.0], "账户快讯二": [0.0, 1.0]}, review)
+
+        aggregator.assign_items([first])
+        aggregator.assign_items([second])
+
+        event_ids = self.event_ids_for_items()
+        self.assertNotEqual(event_ids["o1"], event_ids["o2"])
+        self.assertEqual(review.prompts, [])
+
     def test_ai_review_receives_title_body_and_source_without_similarity_or_reason(self) -> None:
         first = self.item("blockbeats", "b1", "原始报道标题", "2026-08-27T01:00:00+00:00", "https://example.com/one")
         second = self.item("odaily", "o1", "可能不同报道", "2026-08-27T01:05:00+00:00", "https://example.com/two")
