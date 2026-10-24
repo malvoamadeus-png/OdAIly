@@ -1393,14 +1393,12 @@ class HotTopicService:
 
     @staticmethod
     def _project_identity(item: dict[str, Any], tweet_id: str) -> str:
+        name = str(item.get("project_name") or "").strip().lower()
         contract = str(item.get("contract_address") or "").strip().lower()
-        chain = str(item.get("chain") or "").strip().lower()
-        if contract:
-            return f"contract:{chain or 'unknown'}:{contract}"
-        url = str(item.get("official_url") or "").strip().lower().rstrip("/")
-        if url:
-            return f"url:{url}"
-        # No stable identity means no cross-post merge; that is intentional.
+        if name and contract:
+            return f"name:{name}:ca:{contract}"
+        if name:
+            return f"name:{name}"
         return f"tweet:{tweet_id}"
 
     @_serialized
@@ -1586,19 +1584,19 @@ class HotTopicService:
         if query.strip():
             where = " WHERE LOWER(project_name || ' ' || ticker || ' ' || logic) LIKE ?"
             params.append(f"%{query.strip().lower()}%")
-        cte = """
-            WITH filtered AS (
-              SELECT id,identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,account_lower,last_mentioned_at
-              FROM x_agent_project_observations WHERE last_mentioned_at>=?
+        cte = self._project_identity_cte() + """
+            , filtered AS (
+              SELECT id,merged_identity_key AS identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,account_lower,last_mentioned_at
+              FROM identified WHERE last_mentioned_at>=?
             ), grouped AS (
               SELECT identity_key,COUNT(*) AS source_count,COUNT(DISTINCT account_lower) AS account_count,
-                MAX(last_mentioned_at) AS last_mentioned_at
+                MAX(last_mentioned_at) AS last_mentioned_at,MAX(NULLIF(contract_address,'')) AS contract_address
               FROM filtered GROUP BY identity_key
             ), latest AS (
               SELECT *,ROW_NUMBER() OVER (PARTITION BY identity_key ORDER BY last_mentioned_at DESC,id DESC) AS row_number
               FROM filtered
             ), result_rows AS (
-              SELECT l.identity_key,l.project_name,l.ticker,l.chain_name,l.contract_address,l.official_url,l.logic,
+              SELECT l.identity_key,l.project_name,l.ticker,l.chain_name,COALESCE(NULLIF(l.contract_address,''),g.contract_address) AS contract_address,l.official_url,l.logic,
                 g.account_count,g.source_count,g.last_mentioned_at
               FROM grouped g JOIN latest l ON l.identity_key=g.identity_key AND l.row_number=1
             )
@@ -1616,6 +1614,29 @@ class HotTopicService:
             "lastMentionedAt": row["last_mentioned_at"],
         } for row in rows], "total": total}
 
+    @staticmethod
+    def _project_identity_cte() -> str:
+        return """
+            WITH named AS (
+              SELECT p.*,
+                CASE WHEN trim(project_name)='' THEN 'tweet:' || source_tweet_id ELSE lower(trim(project_name)) END AS project_name_key,
+                NULLIF(lower(trim(contract_address)),'') AS normalized_contract_address
+              FROM x_agent_project_observations p
+            ), project_ca_counts AS (
+              SELECT project_name_key,COUNT(DISTINCT normalized_contract_address) AS ca_count,
+                MIN(normalized_contract_address) AS only_contract_address
+              FROM named GROUP BY project_name_key
+            ), identified AS (
+              SELECT n.*,
+                CASE
+                  WHEN c.ca_count=1 THEN 'name:' || n.project_name_key || ':ca:' || c.only_contract_address
+                  WHEN c.ca_count>1 THEN 'name:' || n.project_name_key || ':ca:' || COALESCE(n.normalized_contract_address,'unresolved')
+                  ELSE 'name:' || n.project_name_key
+                END AS merged_identity_key
+              FROM named n JOIN project_ca_counts c ON c.project_name_key=n.project_name_key
+            )
+        """
+
     @_serialized
     def project_promotion_detail(
         self,
@@ -1629,11 +1650,18 @@ class HotTopicService:
             raise ValueError("identity_key 不能为空")
         cutoff = self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)})
         safe_offset, safe_limit = self._page(offset, limit)
-        cte = """
-            WITH filtered AS (
-              SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason
-              FROM x_agent_project_observations
-              WHERE identity_key=? AND last_mentioned_at>=?
+        cte = self._project_identity_cte() + """
+            , selected_groups AS (
+              SELECT merged_identity_key FROM identified WHERE merged_identity_key=?
+              UNION
+              SELECT MIN(merged_identity_key) FROM identified WHERE identity_key=?
+                GROUP BY identity_key HAVING COUNT(DISTINCT merged_identity_key)=1
+              UNION
+              SELECT DISTINCT merged_identity_key FROM identified WHERE 'tweet:' || source_tweet_id=?
+            ), filtered AS (
+              SELECT i.id,i.account_lower,i.source_url,i.source_text,i.source_tweet_id,i.logic,i.last_mentioned_at,i.actual_model,i.fallback_reason
+              FROM identified i JOIN selected_groups g ON g.merged_identity_key=i.merged_identity_key
+              WHERE i.last_mentioned_at>=?
             ), logic_groups AS (
               SELECT source_tweet_id,group_concat(logic,'；') AS logic
               FROM (SELECT DISTINCT source_tweet_id,logic FROM filtered)
@@ -1650,12 +1678,12 @@ class HotTopicService:
         """
         total = int(self.db.execute(
             f"{cte} SELECT COUNT(*) FROM result_rows",
-            (identity_key, cutoff),
+            (identity_key, identity_key, identity_key, cutoff),
         ).fetchone()[0])
         rows = self.db.execute(
             f"{cte} SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason "
             "FROM result_rows ORDER BY last_mentioned_at DESC,id DESC LIMIT ? OFFSET ?",
-            (identity_key, cutoff, safe_limit, safe_offset),
+            (identity_key, identity_key, identity_key, cutoff, safe_limit, safe_offset),
         ).fetchall()
         return {"items": [{
             "id": row["id"], "account": row["account_lower"], "sourceUrl": row["source_url"],
