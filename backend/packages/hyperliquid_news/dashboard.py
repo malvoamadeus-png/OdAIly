@@ -27,7 +27,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
         raise ValueError('Invalid page')
     if dataset not in ('live', 'test'):
         raise ValueError('Invalid dataset')
-    if view not in ('scenarios', 'addresses', 'rules'):
+    if view not in ('scenarios', 'addresses', 'rules', 'timeline'):
         raise ValueError('Invalid view')
     if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
         raise ValueError('Invalid address search')
@@ -53,8 +53,14 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
                      p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
                      p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
                      v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
-        rows = conn.execute(f'''SELECT c.payload,{columns} FROM {candidate_source} c {joined} WHERE {condition}
-                    ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''', (page_size+1 if view == 'scenarios' else 0, page*page_size)).fetchall()
+        event_filter = condition
+        event_params: tuple[Any, ...] = ()
+        if view == 'timeline':
+            event_filter = "EXISTS (SELECT 1 FROM json_each(c.payload,'$.addresses') a WHERE instr(lower(a.value),lower(?))>0)" if address_query.strip() else '0'
+            event_params = (address_query.strip(),) if address_query.strip() else ()
+        rows = conn.execute(f'''SELECT c.payload,{columns} FROM {candidate_source} c {joined} WHERE {event_filter}
+                    ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''',
+                    (*event_params, page_size+1 if view in ('scenarios', 'timeline') else 0, page*page_size)).fetchall()
         visible = {scenario['key'] for scenario in scenario_cards(dataset=dataset)}
         selected_scenarios = [s for s in SCENARIOS if s[0] in visible]
         if indexed_live:
@@ -93,7 +99,7 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             WHERE (instr(lower(a.address),lower(?))>0 OR instr(lower(COALESCE(json_extract(m.payload,'$.note'),'')),lower(?))>0)
             AND (?='all' OR (?='blocked' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=1)
                  OR (?='active' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=0))
-            ORDER BY a.last_polled_ms DESC LIMIT ?''', (address_query.strip(), address_query.strip(), address_status, address_status, address_status, 100 if view == 'addresses' else 0)):
+            ORDER BY (lower(a.address)=lower(?)) DESC,a.last_polled_ms DESC LIMIT ?''', (address_query.strip(), address_query.strip(), address_status, address_status, address_status, address_query.strip(), 100 if view == 'addresses' else 1 if view == 'timeline' else 0)):
 
             item = dict(row)
             for field in ('sources', 'state', 'history'):
@@ -103,6 +109,19 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             addresses.append(item)
         counts = {name: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
                   for name, table in [('addresses', 'hl_news_addresses'), ('events', 'hl_news_candidates')]}
+        timeline_summary = {'total': 0, 'first_backstage_at': None}
+        if view == 'timeline' and address_query.strip():
+            timeline_summary['total'] = conn.execute(
+                "SELECT count(*) FROM hl_news_candidates c WHERE EXISTS (SELECT 1 FROM json_each(c.payload,'$.addresses') a WHERE instr(lower(a.value),lower(?))>0)",
+                (address_query.strip(),)).fetchone()[0]
+            if dispatch:
+                timeline_summary['first_backstage_at'] = conn.execute('''
+                    SELECT min(p.publish_completed_at) FROM hl_news_candidates c
+                    JOIN hl_news_dispatch d ON d.event_key=c.event_key
+                    JOIN x_task_pipeline p ON p.task_id=d.task_id
+                    WHERE EXISTS (SELECT 1 FROM json_each(c.payload,'$.addresses') a WHERE instr(lower(a.value),lower(?))>0)
+                    AND p.publish_completed_at IS NOT NULL''',
+                    (address_query.strip(),)).fetchone()[0]
         counts['test_cases'] = conn.execute('SELECT count(*) FROM hl_news_test_cases').fetchone()[0] if 'hl_news_test_cases' in tables else 0
         if dispatch:
             counts['submitted'] = conn.execute("SELECT count(*) FROM hl_news_dispatch WHERE task_id IS NOT NULL AND status!='duplicate'").fetchone()[0]
@@ -111,4 +130,5 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int = 30, scenario:
             'counts': counts, 'scenarios': scenarios, 'scenario': scenario, 'dataset': dataset, 'view': view, 'publication_mode': 'backend_only',
             'production': store.metadata('production_account_profit', None),
             'account_pool': store.account_pool_stats(int(time.time()*1000)) if 'hl_news_account_pool' in tables else {},
+            'timeline': timeline_summary,
             'flow': ['硬规则命中', '内部行为防重', '搜索者（跨来源查重）', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}

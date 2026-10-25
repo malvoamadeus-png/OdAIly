@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, ArrowRight, ChevronRight, Database, FileText, Layers, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Activity, ArrowRight, ChevronRight, Clock3, Database, FileText, Layers, RefreshCw, Save, Search, ShieldCheck } from 'lucide-react';
 import { getHyperliquidNewsDashboard, saveHyperliquidAddressNote, saveHyperliquidAddressBlock, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
 
 function money(value: unknown): string {
@@ -157,10 +157,13 @@ function AddressRow({ address: a, onChanged }: { address: Record<string, any>; o
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   return <article className="hlAddress">
-    <div className="hlAddressTop"><a href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{a.address}</a><small>{a.blocked ? '已拉黑 · 停止监测与出稿' : `最近检查 ${time(a.last_polled_ms)}`}</small><button className="hlButton" disabled={busy} onClick={block}>{a.blocked ? '解除拉黑' : '拉黑'}</button></div>
-    <div className="hlAddressNote"><input aria-label={`${a.address} 地址备注`} placeholder="地址备注，例如 Wintermute做市地址" maxLength={80} value={note} onChange={e => setNote(e.target.value)} /><button className="hlButton" disabled={busy || note === saved} onClick={save}>{busy ? '保存中' : '保存备注'}</button></div>
+    <a className="hlAddressLink" href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{shortAddress(a.address)}</a>
+    <input className="hlAddressInlineNote" aria-label={`${a.address} 地址备注`} placeholder="备注" maxLength={80} value={note} onChange={e => setNote(e.target.value)} />
+    <span className={`hlAddressState ${a.blocked ? 'blocked' : ''}`}>{a.blocked ? '已拉黑' : '监测中'}</span>
+    <small>{a.blocked ? '已停止监测' : `检查 ${time(a.last_polled_ms)}`}</small>
+    <div className="hlAddressActions"><button className="hlIconButton" title="保存备注" aria-label="保存备注" disabled={busy || note === saved} onClick={save}>{busy ? '…' : <Save size={14} />}</button><button className="hlButton" disabled={busy} onClick={block}>{a.blocked ? '解除拉黑' : '拉黑'}</button></div>
     {(error || a.error) && <p className="notice error">{error || a.error}</p>}
-    <details><summary>发现来源与监测证据</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details>
+    <details><summary>审计证据</summary><pre>{JSON.stringify({ sources: a.sources, positions: a.state?.positions, history: a.history }, null, 2)}</pre></details>
   </article>;
 }
 
@@ -168,8 +171,9 @@ export function HyperliquidNewsPanel({ onOpenPrompt }: { onOpenPrompt: (key: str
   const [addressInput, setAddressInput] = useState(''), [addressQuery, setAddressQuery] = useState(''), [addressStatus, setAddressStatus] = useState('all');
   useEffect(() => { const timer = setTimeout(() => setAddressQuery(addressInput.trim()), 300); return () => clearTimeout(timer); }, [addressInput]);
   const [dataset, setDataset] = useState<'live' | 'test'>('live');
-  const [tab, setTab] = useState<'scenarios' | 'addresses' | 'rules'>('scenarios'), [page, setPage] = useState(0);
+  const [tab, setTab] = useState<'scenarios' | 'timeline' | 'addresses' | 'rules'>('scenarios'), [page, setPage] = useState(0);
   const [scenarioKey, setScenarioKey] = useState('account_profit'), [selected, setSelected] = useState<string | null>(null);
+  const [xPostTime, setXPostTime] = useState('');
   const [data, setData] = useState<HyperliquidNewsDashboard | null>(null), [error, setError] = useState('');
   const [loading, setLoading] = useState(true), [refresh, setRefresh] = useState(0);
   useEffect(() => {
@@ -190,14 +194,17 @@ export function HyperliquidNewsPanel({ onOpenPrompt }: { onOpenPrompt: (key: str
     }
   }, [data?.scenarios, scenarioKey]);
   const current = data?.events.find(e => e.key === selected);
-  const ready = data?.view === tab && data?.scenario === scenarioKey && data.page === page && data.dataset === dataset;
+  const ready = data?.view === tab && (tab === 'timeline' || data?.scenario === scenarioKey) && data.page === page && data.dataset === dataset;
+  const trackedAddress = data?.addresses[0];
+  const firstBackstage = data?.timeline?.first_backstage_at ? new Date(data.timeline.first_backstage_at).getTime() : null;
+  const externalTime = xPostTime ? new Date(xPostTime).getTime() : null;
   return <section className="section hlMonitor">
     <div className="sectionHeader"><div><h2>Hyperliquid监测</h2><p className="hlMuted">按场景查看触发依据、关键数据与快讯处理进度</p></div><button className="hlButton" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={14} />{loading ? '读取中' : '刷新'}</button></div>
     {dataset === 'live' && data?.production?.enabled && <p className="notice" role="note">当前正式上线：{data.scenarios.filter(s => data.production?.enabled_scenarios.includes(s.key)).map(s => s.name).join('、')}。</p>}
     <div className="autoNewsflashSummary">
       {[[Layers, '固定监测场景', data?.scenarios.length ?? '—'], [Activity, dataset === 'test' ? '测试案例' : '监测记录', (dataset === 'test' ? data?.counts.test_cases : data?.counts.events) ?? '—'], [Database, '已发现地址', data?.counts.addresses ?? '—'], [FileText, dataset === 'test' ? '已有案例方向' : '已投递任务', dataset === 'test' ? data?.scenarios.filter(s => s.count > 0).length ?? '—' : data?.counts.submitted ?? '—']].map(([Icon, label, value]) => { const MetricIcon = Icon as typeof Layers; return <div className="autoNewsflashMetric" key={String(label)}><span><MetricIcon size={14} />{String(label)}</span><strong>{String(value)}</strong></div>; })}
     </div>
-    <div className="hlToolbar"><div className="segmentedControl">{([['scenarios', '方向与场景'], ['addresses', '地址监测'], ['rules', '规则与运行']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
+    <div className="hlToolbar"><div className="segmentedControl">{([['scenarios', '方向与场景'], ['timeline', '时间线查重'], ['addresses', '地址监测'], ['rules', '规则与运行']] as const).map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} aria-pressed={tab === key} onClick={() => { setTab(key); setPage(0); }}>{label}</button>)}</div><span className="autoNewsflashStatus active">仅挂后台 · 不公开发布</span></div>
     {tab === 'scenarios' && <div className="hlToolbar"><div className="segmentedControl">{([['live', '正常监测'], ['test', '上线前测试案例']] as const).map(([key, label]) => <button key={key} aria-pressed={dataset === key} className={dataset === key ? 'active' : ''} onClick={() => { setDataset(key); setScenarioKey(key === 'live' ? 'large_pnl' : 'large_position'); setPage(0); setSelected(null); }}>{label}</button>)}</div><span className="hlMuted">{dataset === 'test' ? '真实历史证据回放 · 不进入正式投递 · 不改变监测基线' : '正常监测候选与流程记录'}</span></div>}
     {error && <p className="notice error" role="alert">{error}</p>}
     {loading && <p className="hlMuted" role="status">正在读取监测记录…</p>}
@@ -215,7 +222,16 @@ export function HyperliquidNewsPanel({ onOpenPrompt }: { onOpenPrompt: (key: str
         </>}
       </div>
     </div>}
-    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最多 100 条匹配结果</span></div><div className="hlAddressNote"><input aria-label="搜索监测地址或备注" placeholder="搜索地址或备注" value={addressInput} onChange={e => setAddressInput(e.target.value)} /><select aria-label="地址状态筛选" value={addressStatus} onChange={e => setAddressStatus(e.target.value)}><option value="all">全部地址</option><option value="active">未拉黑</option><option value="blocked">已拉黑</option></select></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无匹配地址</h4><p>可调整搜索词或地址状态筛选。</p></div>}{data.addresses.map(a => <AddressRow key={a.address + ':' + (a.note || '')} address={a} onChanged={() => setRefresh(n => n + 1)} />)}</div>}
+    {tab === 'timeline' && <div className="hlSecondary hlTimeline">
+      <div className="hlTimelineSearch"><label><span>搜索 Hyperliquid 地址</span><div><Search size={16} /><input value={addressInput} onChange={e => { setAddressInput(e.target.value); setPage(0); }} placeholder="粘贴完整地址或输入部分地址" /></div></label><label><span>X 帖子时间（可选）</span><div><Clock3 size={16} /><input type="datetime-local" value={xPostTime} onChange={e => setXPostTime(e.target.value)} /></div></label></div>
+      {!addressQuery && <p className="hlMuted">输入地址后查看地址池命中状态、相关监测记录和本台处理时间。</p>}
+      {addressQuery && ready && <>
+        <div className="hlCoverage"><div><small>地址池</small><strong className={trackedAddress ? trackedAddress.blocked ? 'missing' : 'found' : 'missing'}>{trackedAddress ? trackedAddress.blocked ? '已收录 · 已拉黑' : '已收录 · 监测中' : '未在已发现地址池中'}</strong>{trackedAddress && <a href={`https://hyperbot.network/trader/${trackedAddress.address}`} target="_blank" rel="noreferrer">{shortAddress(trackedAddress.address)}</a>}{trackedAddress?.note && <span>{trackedAddress.note}</span>}</div><div><small>本台事件</small><strong>{data?.timeline?.total || 0} 条</strong><span>{data?.timeline?.total ? `${data.events.length} 条当前页 · 按观察时间倒序` : '没有匹配的正式监测事件'}</span></div><div><small>最早挂后台</small><strong>{firstBackstage ? time(firstBackstage) : '暂无已挂后台稿件'}</strong><span>{!externalTime || !Number.isFinite(externalTime) ? '输入 X 帖子时间进行比较' : !firstBackstage ? '没有可比较的挂后台时间' : firstBackstage < externalTime ? '本台更早挂后台' : firstBackstage > externalTime ? 'X 帖子更早' : '时间相同'}</span></div></div>
+        {!data?.events.length ? <div className="hlEmpty"><Database size={24} /><h4>没有匹配到正式监测事件</h4><p>地址池命中与事件记录分开判断；没有事件不代表地址未被扫描。</p></div> : <div className="hlTimelineList">{data?.events.map(event => <article key={event.key} className="hlTimelineItem"><div className="hlTimelineWhen"><time>{time(event.observed_ms)}</time><span>事件观察</span></div><div className="hlTimelineBody"><div><strong>{event.coin} · {event.kinds.map(k => data.labels[k] || k).join(' / ')}</strong><span className="autoNewsflashStatus">{eventStatus(event)}</span></div><p>{eventChange(event)}</p><div className="hlTimelineStages"><span>写作 {time(event.pipeline.write_completed_at)}</span><span>定稿 {time(event.pipeline.format_completed_at)}</span><span>挂后台 {time(event.pipeline.publish_completed_at)}</span></div><a href={event.source_url} target="_blank" rel="noreferrer">Hyperbot 地址 <ArrowRight size={13} /></a></div></article>)}</div>}
+        {(page > 0 || data?.has_next) && <div className="hlPagination"><button className="hlButton" disabled={page === 0} onClick={() => setPage(n => n - 1)}>上一页</button><span>第 {page + 1} 页</span><button className="hlButton" disabled={!data?.has_next} onClick={() => setPage(n => n + 1)}>下一页</button></div>}
+      </>}
+    </div>}
+    {data && tab === 'addresses' && <div className="hlSecondary"><div className="sectionHeader"><h3>地址监测</h3><span>展示最多 100 条匹配结果</span></div><div className="hlAddressToolbar"><input aria-label="搜索监测地址或备注" placeholder="搜索地址或备注" value={addressInput} onChange={e => setAddressInput(e.target.value)} /><select aria-label="地址状态筛选" value={addressStatus} onChange={e => setAddressStatus(e.target.value)}><option value="all">全部地址</option><option value="active">未拉黑</option><option value="blocked">已拉黑</option></select></div><div className="hlAddressTableHead"><span>地址</span><span>备注</span><span>状态</span><span>最近检查</span><span>操作</span></div>{!data.addresses.length && <div className="hlEmpty"><Database size={28} /><h4>暂无匹配地址</h4><p>可调整搜索词或地址状态筛选。</p></div>}{data.addresses.map(a => <AddressRow key={a.address + ':' + (a.note || '')} address={a} onChanged={() => setRefresh(n => n + 1)} />)}</div>}
     {data && tab === 'rules' && <div className="hlSecondary"><h3>规则与运行</h3><p className="hlMuted">硬规则命中后进入查重与写作，不经过新闻价值筛选。</p><div className="hlFlow">{(data.flow || []).map((step, i) => <span key={step}>{i > 0 && <ChevronRight size={14} />}{step}</span>)}</div><dl className="hlFacts">{Object.entries(data.rules).map(([key, value]) => <div key={key}><dt>{ruleNames[key] || key}</dt><dd>{ruleValue(key, value)}</dd></div>)}</dl><details><summary>最近采集结果与覆盖</summary><pre>{JSON.stringify({ production: data.production, account_pool: data.account_pool, last_pass: data.last_pass }, null, 2)}</pre></details></div>}
   </section>;
 }

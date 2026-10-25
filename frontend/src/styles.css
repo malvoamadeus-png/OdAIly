@@ -5895,10 +5895,54 @@ textarea:focus {
 .hlSides strong { color:#35444d; font-size:13px; font-weight:600; }
 
 .hlAddress { gap:5px; padding:10px 0; }
-.hlAddressTop,.hlAddressNote { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.hlAddressTop a { color:#28735d; font-size:12px; text-decoration:none; }
-.hlAddressTop small { color:#728078; }
-.hlAddressNote input { flex:1; min-width:180px; max-width:420px; padding:7px 10px; border:1px solid #dce4df; border-radius:6px; }
+.hlAddressToolbar { display:flex; gap:8px; }
+.hlAddressToolbar input { flex:1; min-width:180px; max-width:420px; padding:7px 10px; border:1px solid #dce4df; border-radius:5px; }
+.hlAddressTableHead,.hlAddress { display:grid; grid-template-columns:minmax(140px,1.1fr) minmax(130px,1fr) 80px minmax(150px,1fr) 120px; align-items:center; gap:10px; }
+.hlAddressTableHead { padding:7px 0; border-bottom:1px solid #dfe6e8; color:#839098; font-size:10px; }
+.hlAddress { padding:8px 0; border-bottom:1px solid #e8edef; font-size:12px; }
+.hlAddressLink { color:#28735d; font-family:ui-monospace,monospace; text-decoration:none; }
+.hlAddressInlineNote { width:100%; min-width:0; padding:6px 8px; border:1px solid #dce4df; border-radius:4px; }
+.hlAddressState { color:#28735d; font-size:11px; }
+.hlAddressState.blocked { color:#a65353; }
+.hlAddress > small { color:#728078; font-size:10px; }
+.hlAddressActions { display:flex; gap:5px; }
+.hlIconButton { display:inline-grid; place-items:center; width:30px; height:30px; border:1px solid #dce4e6; border-radius:4px; background:#fff; color:#28735d; cursor:pointer; }
+.hlIconButton:disabled { opacity:.45; cursor:default; }
+.hlAddress details,.hlAddress > .notice { grid-column:1/-1; }
+.hlAddress details { padding:3px 0; }
+.hlTimeline { gap:12px; }
+.hlTimelineSearch { display:grid; grid-template-columns:minmax(250px,1.3fr) minmax(220px,.7fr); gap:12px; }
+.hlTimelineSearch label { display:grid; gap:6px; color:#69767e; font-size:11px; }
+.hlTimelineSearch label > div { display:flex; align-items:center; gap:8px; min-height:38px; padding:0 10px; border:1px solid #dce4e6; border-radius:5px; color:#78858d; }
+.hlTimelineSearch input { width:100%; min-width:0; border:0; outline:0; background:transparent; color:#35444d; font:inherit; }
+.hlCoverage { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border:1px solid #dce4e6; border-radius:5px; }
+.hlCoverage > div { display:grid; gap:5px; padding:12px; border-right:1px solid #e5eaec; }
+.hlCoverage > div:last-child { border-right:0; }
+.hlCoverage small,.hlCoverage span { color:#7b878e; font-size:10px; }
+.hlCoverage strong { color:#35444d; font-size:12px; }
+.hlCoverage strong.found { color:#28735d; }
+.hlCoverage strong.missing { color:#a65353; }
+.hlCoverage a { color:#28735d; font-family:ui-monospace,monospace; font-size:10px; text-decoration:none; }
+.hlTimelineList { border-top:1px solid #e2e8ea; }
+.hlTimelineItem { display:grid; grid-template-columns:170px minmax(0,1fr); gap:16px; padding:13px 2px; border-bottom:1px solid #e8edef; }
+.hlTimelineWhen { display:grid; align-content:start; gap:4px; color:#35444d; font-size:11px; font-variant-numeric:tabular-nums; }
+.hlTimelineWhen span { color:#89949b; font-size:10px; }
+.hlTimelineBody { display:grid; gap:7px; min-width:0; }
+.hlTimelineBody > div:first-child { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.hlTimelineBody > div:first-child strong { font-size:12px; }
+.hlTimelineBody p { color:#65727b; font-size:11px; line-height:1.6; }
+.hlTimelineStages { display:flex; flex-wrap:wrap; gap:5px 18px; color:#78858d; font-size:10px; font-variant-numeric:tabular-nums; }
+.hlTimelineBody > a { display:inline-flex; align-items:center; gap:4px; color:#28735d; font-size:10px; text-decoration:none; }
+@media (max-width:760px) {
+  .hlAddressTableHead { display:none; }
+  .hlAddress { grid-template-columns:minmax(0,1fr) auto; gap:6px 10px; }
+  .hlAddressLink,.hlAddressInlineNote,.hlAddressState,.hlAddress > small,.hlAddressActions { grid-column:1/-1; }
+  .hlAddressActions { justify-content:flex-end; }
+  .hlTimelineSearch,.hlCoverage { grid-template-columns:1fr; }
+  .hlCoverage > div { border-right:0; border-bottom:1px solid #e5eaec; }
+  .hlCoverage > div:last-child { border-bottom:0; }
+  .hlTimelineItem { grid-template-columns:1fr; gap:8px; }
+}
 /* Published-news fact review */
 .factReviewCounts { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0 0 12px; font-size: 12px; }
 .factReviewStatus { white-space: nowrap; font-size: 12px; }
