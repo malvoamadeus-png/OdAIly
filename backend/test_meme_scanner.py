@@ -477,6 +477,7 @@ class MemeScannerTests(unittest.TestCase):
             expires = scanner.parse_iso(observation["tracking_expires_at"])
             self.assertEqual((expires - started).total_seconds(), 259_200)
             self.assertIsNotNone(observation["next_token_info_at"])
+            self.assertEqual(scanner.evaluate_market_token(store, token(address, 1_200_000, 800_000), bootstrap=False), (0, 0))
             self.assertEqual(scanner.evaluate_market_token(store, current, bootstrap=False), (1, 0))
             row = store.conn.execute(
                 "SELECT trigger_kind, trigger_key, trigger_level FROM jobs WHERE trigger_kind='market_cap_milestone'"

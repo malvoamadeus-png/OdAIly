@@ -944,8 +944,6 @@ class Store:
         """Register a completed discovery or refresh an already active window."""
         old = self.observation(token.address, token.chain)
         previous_high = float(old["highest_market_cap"] or old["last_market_cap"] or 0) if old else 0.0
-        if old and str(old["tracking_source"] or "") == "tg":
-            previous_high = 0.0
         expires_at = parse_iso(old["tracking_expires_at"]) if old else None
         observed_time = parse_iso(observed_at) or datetime.now(UTC)
         if old and old["tracking_status"] == TRACKING_STATUS_ACTIVE and expires_at and expires_at <= observed_time:
