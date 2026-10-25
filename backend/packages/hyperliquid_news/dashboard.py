@@ -57,9 +57,10 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
                      LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id''' if dispatch else ''
         if timeline:
             columns = '''d.status AS dispatch_status,d.task_id,t.status AS task_status,
-                         p.draft_title,p.final_title,p.write_completed_at,p.format_completed_at,p.publish_completed_at''' if dispatch else '''
+                         p.draft_title,p.draft_content,p.final_title,p.final_content,
+                         p.write_completed_at,p.format_completed_at,p.publish_completed_at''' if dispatch else '''
                          NULL AS dispatch_status,NULL AS task_id,NULL AS task_status,
-                         NULL AS draft_title,NULL AS final_title,NULL AS write_completed_at,
+                         NULL AS draft_title,NULL AS draft_content,NULL AS final_title,NULL AS final_content,NULL AS write_completed_at,
                          NULL AS format_completed_at,NULL AS publish_completed_at'''
             if address_query.strip():
                 query = address_query.strip().lower()
@@ -67,14 +68,18 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
                 address_filter = 'a.address_lower=?' if exact else "a.address_lower LIKE ? ESCAPE '\\'"
                 address_value = query if exact else query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
                 deduplicate = '' if exact else 'GROUP BY e.event_key'
-                rows = conn.execute(f'''SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,{columns}
+                rows = conn.execute(f'''SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,
+                    COALESCE((SELECT json_group_array(cs.scenario_key) FROM hl_news_candidate_scenarios cs
+                              WHERE cs.event_key=e.event_key),'[]') AS scenario_keys,{columns}
                     FROM hl_news_candidate_addresses a
                     JOIN hl_news_candidate_timeline e ON e.event_key=a.event_key {joined}
                     WHERE {address_filter}
                     {deduplicate} ORDER BY a.observed_ms DESC,a.event_key ASC LIMIT ? OFFSET ?''',
                     (address_value, page_size+1, page*page_size)).fetchall()
             else:
-                rows = conn.execute(f'''SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,{columns}
+                rows = conn.execute(f'''SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,
+                    COALESCE((SELECT json_group_array(cs.scenario_key) FROM hl_news_candidate_scenarios cs
+                              WHERE cs.event_key=e.event_key),'[]') AS scenario_keys,{columns}
                     FROM hl_news_candidate_timeline e {joined}
                     ORDER BY e.observed_ms DESC,e.event_key ASC LIMIT ? OFFSET ?''',
                     (page_size+1, page*page_size)).fetchall()
@@ -108,8 +113,9 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
                 events.append({
                     'key': row['event_key'], 'observed_ms': row['observed_ms'], 'addresses': addresses,
                     'coin': row['coin'], 'kinds': json.loads(row['kinds']),
+                    'scenario_keys': json.loads(row['scenario_keys']),
                     'pipeline': {key: row[key] for key in row.keys()
-                                 if key not in ('event_key', 'observed_ms', 'addresses', 'coin', 'kinds')},
+                                 if key not in ('event_key', 'observed_ms', 'addresses', 'coin', 'kinds', 'scenario_keys')},
                     'source_url': 'https://hyperbot.network/trader/' + addresses[0],
                 })
                 continue

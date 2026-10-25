@@ -159,9 +159,13 @@ def test_dispatch_durable_task_dedup_enqueue_failure_and_dashboard(tmp_path):
     repo.ensure_pipeline(task_id)
     with connect_sqlite(path) as conn:
         conn.execute('UPDATE x_task_pipeline SET prompt_version_id=? WHERE task_id=?',(prompt.id,task_id))
+        conn.execute("UPDATE x_task_pipeline SET final_title='账户高盈利地址操作',final_content='某地址本月收益明显增加。' WHERE task_id=?",(task_id,))
         conn.commit()
     row=next(item for item in dashboard(store)['events'] if item['pipeline']['task_id']==task_id)
     assert row['pipeline']['prompt_version_number']==1
+    timeline_row=next(item for item in dashboard(store,view='timeline')['events'] if item['key']==candidate.key)
+    assert timeline_row['pipeline']['final_title']=='账户高盈利地址操作'
+    assert timeline_row['pipeline']['final_content']=='某地址本月收益明显增加。'
 
 
 def test_api_dashboard_route_requires_console_auth():
@@ -568,6 +572,9 @@ def test_hyperliquid_timeline_defaults_to_recent_ten_and_uses_address_index(tmp_
     for stamp in range(1, 13):
         payload, _ = event(stamp * 1000)
         payload['key'] = f'timeline-{stamp:02d}'
+        if stamp == 12:
+            payload['kinds'] = ['highlighted_address_action']
+            payload['evidence']['highlights'] = ['official_account_high_profit']
         store.save_global(f'global-{stamp}', {}, [Candidate(**payload)])
 
     recent = dashboard(store, view='timeline')
@@ -575,6 +582,7 @@ def test_hyperliquid_timeline_defaults_to_recent_ten_and_uses_address_index(tmp_
     assert [item['key'] for item in recent['events']] == [f'timeline-{stamp:02d}' for stamp in range(12, 2, -1)]
     assert recent['has_next'] is True
     assert 'evidence' not in recent['events'][0]
+    assert recent['events'][0]['scenario_keys'] == ['account_profit']
 
     searched = dashboard(store, view='timeline', address_query=A)
     assert len(searched['events']) == 10

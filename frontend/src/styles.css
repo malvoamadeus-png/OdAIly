@@ -5929,15 +5929,14 @@ textarea:focus {
 .hlCoverage strong.missing { color:#a65353; }
 .hlCoverage a { color:#28735d; font-family:ui-monospace,monospace; font-size:10px; text-decoration:none; }
 .hlTimelineList { border-top:1px solid #e2e8ea; }
-.hlTimelineItem { display:grid; grid-template-columns:170px minmax(0,1fr); gap:16px; padding:13px 2px; border-bottom:1px solid #e8edef; }
-.hlTimelineWhen { display:grid; align-content:start; gap:4px; color:#35444d; font-size:11px; font-variant-numeric:tabular-nums; }
-.hlTimelineWhen span { color:#89949b; font-size:10px; }
-.hlTimelineBody { display:grid; gap:7px; min-width:0; }
-.hlTimelineBody > div:first-child { display:flex; justify-content:space-between; align-items:center; gap:10px; }
-.hlTimelineBody > div:first-child strong { font-size:12px; }
-.hlTimelineBody p { color:#65727b; font-size:11px; line-height:1.6; }
-.hlTimelineStages { display:flex; flex-wrap:wrap; gap:5px 18px; color:#78858d; font-size:10px; font-variant-numeric:tabular-nums; }
-.hlTimelineBody > a { display:inline-flex; align-items:center; gap:4px; color:#28735d; font-size:10px; text-decoration:none; }
+.hlTimelineItem { padding:14px 2px; border-bottom:1px solid #e8edef; }
+.hlTimelineBody { display:grid; gap:8px; min-width:0; }
+.hlTimelineHeading { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.hlTimelineHeading strong { font-size:12px; }
+.hlTimelineTitle { margin:0; color:#26353d; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
+.hlTimelineContent { color:#46545c; font-size:12px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.hlTimelineMeta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; color:#78858d; font-size:10px; font-variant-numeric:tabular-nums; }
+.hlTimelineMeta > a { display:inline-flex; align-items:center; gap:3px; color:#28735d; font-family:ui-monospace,monospace; text-decoration:none; }
 @media (max-width:760px) {
   .hlAddressTableHead { display:none; }
   .hlAddress { grid-template-columns:minmax(0,1fr) auto; gap:6px 10px; }
@@ -5946,7 +5945,7 @@ textarea:focus {
   .hlTimelineSearch,.hlCoverage { grid-template-columns:1fr; }
   .hlCoverage > div { border-right:0; border-bottom:1px solid #e5eaec; }
   .hlCoverage > div:last-child { border-bottom:0; }
-  .hlTimelineItem { grid-template-columns:1fr; gap:8px; }
+  .hlTimelineMeta { gap:4px 9px; }
 }
 /* Published-news fact review */
 .factReviewCounts { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0 0 12px; font-size: 12px; }

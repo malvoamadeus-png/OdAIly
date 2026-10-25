@@ -102,6 +102,15 @@ function timelineStatus(event: HyperliquidNewsEvent) {
   const status = event.pipeline.task_status || event.pipeline.dispatch_status;
   return status ? statuses[status] || status : '仅监测记录';
 }
+function compactTime(value: unknown) {
+  if (!value) return '—';
+  const date = new Date(value as string | number);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(date);
+}
 function eventChange(event: HyperliquidNewsEvent) {
   const e = event.evidence;
   if (event.news_eligibility?.eligible === false) return '监测快照 · 无变化证据';
@@ -190,6 +199,7 @@ export function HyperliquidNewsPanel({ onOpenPrompt }: { onOpenPrompt: (key: str
     return () => { live = false; };
   }, [page, scenarioKey, refresh, dataset, tab, addressQuery, addressStatus]);
   const scenario = data?.scenarios.find(s => s.key === scenarioKey);
+  const scenarioNames = new Map(data?.scenarios.map(s => [s.key, s.name]) || []);
   useEffect(() => {
     if (data?.scenarios.length && !data.scenarios.some(s => s.key === scenarioKey)) {
       setScenarioKey(data.scenarios[0].key);
@@ -238,7 +248,15 @@ export function HyperliquidNewsPanel({ onOpenPrompt }: { onOpenPrompt: (key: str
     {tab === 'timeline' && <div className="hlSecondary hlTimeline">
       <div className="hlTimelineSearch"><label><span>搜索 Hyperliquid 地址</span><div><Search size={16} /><input value={addressInput} onChange={e => { setAddressInput(e.target.value); setPage(0); }} placeholder="粘贴完整地址或输入地址前缀" /></div></label><label><span>X 帖子时间（可选）</span><div><Clock3 size={16} /><input type="datetime-local" value={xPostTime} onChange={e => setXPostTime(e.target.value)} /></div></label></div>
       {addressQuery && ready && <div className="hlCoverage"><div><small>地址库</small><strong className={trackedAddress ? trackedAddress.blocked ? 'missing' : 'found' : 'missing'}>{trackedAddress ? trackedAddress.blocked ? '已收录 · 已拉黑' : '已收录 · 监测中' : '未收录'}</strong>{trackedAddress && <a href={`https://hyperbot.network/trader/${trackedAddress.address}`} target="_blank" rel="noreferrer">{shortAddress(trackedAddress.address)}</a>}{trackedAddress?.note && <span>{trackedAddress.note}</span>}</div><div><small>本页匹配</small><strong>{data?.events.length || 0} 条事件</strong><span>{data?.has_next ? '还有更早记录，可继续翻页' : '已到匹配记录末尾'}</span></div><div><small>X 帖子时间比较</small><strong>{!externalTime || !Number.isFinite(externalTime) ? '输入 X 帖子时间' : earlierBackstageOnPage ? '本页有更早挂后台稿件' : data?.has_next ? '本页无更早稿件，继续翻页核对' : '没有更早挂后台稿件'}</strong>{externalTime && <span>X 帖子 {time(externalTime)}</span>}</div></div>}
-      {ready && !data?.events.length ? <div className="hlEmpty"><Database size={24} /><h4>{addressQuery ? '没有匹配到该地址的监测事件' : '暂无监测事件'}</h4><p>{addressQuery ? '地址库命中与事件记录分开判断；没有事件不代表地址未被扫描。' : '新的监测事件会按时间倒序显示在这里。'}</p></div> : ready && <div className="hlTimelineList">{data?.events.map(event => <article key={event.key} className="hlTimelineItem"><div className="hlTimelineWhen"><time>{time(event.observed_ms)}</time><span>观察时间</span></div><div className="hlTimelineBody"><div><strong>{event.coin} · {event.kinds.map(k => data.labels[k] || k).join(' / ')}</strong><span className="autoNewsflashStatus">{timelineStatus(event)}</span></div><p>地址：{event.addresses.map(shortAddress).join('、')}</p><div className="hlTimelineStages"><span>写作 {time(event.pipeline.write_completed_at)}</span><span>定稿 {time(event.pipeline.format_completed_at)}</span><span>挂后台 {time(event.pipeline.publish_completed_at)}</span></div><a href={event.source_url} target="_blank" rel="noreferrer">Hyperbot 地址 <ArrowRight size={13} /></a></div></article>)}
+      {ready && !data?.events.length ? <div className="hlEmpty"><Database size={24} /><h4>{addressQuery ? '没有匹配到该地址的监测事件' : '暂无监测事件'}</h4><p>{addressQuery ? '地址库命中与事件记录分开判断；没有事件不代表地址未被扫描。' : '新的监测事件会按时间倒序显示在这里。'}</p></div> : ready && <div className="hlTimelineList">{data?.events.map(event => {
+        const title = event.pipeline.final_title || event.pipeline.draft_title;
+        const content = event.pipeline.final_content || event.pipeline.draft_content;
+        const directions = (event.scenario_keys || []).map(key => scenarioNames.get(key)).filter(Boolean);
+        return <article key={event.key} className="hlTimelineItem"><div className="hlTimelineBody"><div className="hlTimelineHeading"><strong>{event.coin} · {directions.join(' / ') || '监测事件'}</strong><span className="autoNewsflashStatus">{timelineStatus(event)}</span></div>
+          {title && <h3 className="hlTimelineTitle">{title}</h3>}{content && <p className="hlTimelineContent">{content}</p>}
+          <div className="hlTimelineMeta"><a href={event.source_url} target="_blank" rel="noreferrer">{event.addresses.map(shortAddress).join('、')} <ArrowRight size={13} /></a>
+            <span title={time(event.observed_ms)}>观察 {compactTime(event.observed_ms)}</span><span title={time(event.pipeline.write_completed_at)}>写作 {compactTime(event.pipeline.write_completed_at)}</span><span title={time(event.pipeline.format_completed_at)}>定稿 {compactTime(event.pipeline.format_completed_at)}</span><span title={time(event.pipeline.publish_completed_at)}>挂后台 {compactTime(event.pipeline.publish_completed_at)}</span></div>
+        </div></article>})}
         {(page > 0 || data?.has_next) && <div className="hlPagination"><button className="hlButton" disabled={page === 0} onClick={() => setPage(n => n - 1)}>上一页</button><span>第 {page + 1} 页</span><button className="hlButton" disabled={!data?.has_next} onClick={() => setPage(n => n + 1)}>下一页</button></div>}
       </div>}
     </div>}
