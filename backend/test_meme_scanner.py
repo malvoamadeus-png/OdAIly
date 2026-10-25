@@ -438,7 +438,7 @@ class MemeScannerTests(unittest.TestCase):
             self.assertTrue(reopened.volume_qualified(current.address, "bsc"))
             reopened.close()
 
-    def test_tg_burst_does_not_consume_market_cap_milestone(self) -> None:
+    def test_tg_burst_starts_tracking_without_replaying_current_tier(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = scanner.Store(Path(temp) / "scanner.sqlite3")
             store.mark_initialized()
@@ -446,7 +446,7 @@ class MemeScannerTests(unittest.TestCase):
             address = "0xburst-milestone"
             first = token(address, 400_000, 300_000)
             burst = token(address, 1_100_000, 700_000)
-            current = token(address, 1_200_000, 800_000)
+            current = token(address, 3_200_000, 1_000_000)
             self.assertEqual(scanner.evaluate_market_token(store, first, bootstrap=False), (0, 0))
             stamp = scanner.now_iso()
             store.conn.execute(
@@ -460,19 +460,71 @@ class MemeScannerTests(unittest.TestCase):
             with patch.object(scanner, "fetch_token_info", return_value=burst):
                 self.assertEqual(scanner.process_tg_candidate(store), (1, 0))
             observation = store.conn.execute(
-                "SELECT last_market_cap, highest_market_cap, tracking_status FROM observations WHERE address=?",
+                """SELECT last_market_cap, highest_market_cap, tracking_status, tracking_started_at,
+                  tracking_anchor_at, tracking_expires_at, next_token_info_at, tracking_interval_seconds,
+                  tracking_source
+                FROM observations WHERE address=?""",
                 (address,),
             ).fetchone()
-            self.assertEqual((observation["last_market_cap"], observation["highest_market_cap"]), (1_100_000.0, 400_000.0))
+            self.assertEqual((observation["last_market_cap"], observation["highest_market_cap"]), (1_100_000.0, 1_100_000.0))
+            self.assertEqual(observation["tracking_status"], "active")
+            self.assertEqual(observation["tracking_source"], "tg")
+            self.assertEqual(observation["tracking_interval_seconds"], 900)
+            self.assertTrue(observation["tracking_started_at"])
+            self.assertEqual(observation["tracking_anchor_at"], observation["tracking_started_at"])
+            self.assertIsNotNone(observation["tracking_expires_at"])
+            started = scanner.parse_iso(observation["tracking_started_at"])
+            expires = scanner.parse_iso(observation["tracking_expires_at"])
+            self.assertEqual((expires - started).total_seconds(), 259_200)
+            self.assertIsNotNone(observation["next_token_info_at"])
             self.assertEqual(scanner.evaluate_market_token(store, current, bootstrap=False), (1, 0))
             row = store.conn.execute(
                 "SELECT trigger_kind, trigger_key, trigger_level FROM jobs WHERE trigger_kind='market_cap_milestone'"
             ).fetchone()
             self.assertEqual(
                 (row["trigger_kind"], row["trigger_key"], row["trigger_level"]),
-                ("market_cap_milestone", "market_cap:bsc:0xburst-milestone:1000000", 1_000_000.0),
+                ("market_cap_milestone", "market_cap:bsc:0xburst-milestone:3000000", 3_000_000.0),
             )
-            self.assertEqual(observation["tracking_status"], "legacy_untracked")
+            store.close()
+
+    def test_tg_burst_below_tracking_gate_starts_low_frequency_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            stamp = scanner.now_iso()
+            store.conn.execute(
+                """INSERT INTO tg_candidates(
+                  address, detected_at, window_start, mention_count, chat_count,
+                  sender_count, evidence_json, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                ("0xlow-cap", stamp, stamp, 5, 2, 3, "{}", stamp),
+            )
+            store.conn.commit()
+            low_cap = token("0xlow-cap", 400_000, 250_000)
+            with patch.object(scanner, "fetch_tg_token_info", return_value=low_cap):
+                self.assertEqual(scanner.process_tg_candidate(store), (1, 0))
+            observation = store.observation("0xlow-cap", "bsc")
+            self.assertEqual(observation["tracking_status"], "active")
+            self.assertEqual(observation["tracking_interval_seconds"], 14_400)
+            self.assertIsNone(store.conn.execute(
+                "SELECT 1 FROM jobs WHERE trigger_kind='market_cap_milestone'"
+            ).fetchone())
+            store.close()
+
+    def test_tg_burst_that_fails_volume_gate_does_not_start_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = scanner.Store(Path(temp) / "scanner.sqlite3")
+            stamp = scanner.now_iso()
+            store.conn.execute(
+                """INSERT INTO tg_candidates(
+                  address, detected_at, window_start, mention_count, chat_count,
+                  sender_count, evidence_json, status, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                ("0xlow-volume", stamp, stamp, 5, 2, 3, "{}", stamp),
+            )
+            store.conn.commit()
+            with patch.object(scanner, "fetch_tg_token_info", return_value=token("0xlow-volume", 400_000, 100_000)):
+                self.assertEqual(scanner.process_tg_candidate(store), (0, 1))
+            self.assertIsNone(store.observation("0xlow-volume", "bsc"))
             store.close()
 
     def test_legacy_observations_are_not_backfilled_into_tracking(self) -> None:

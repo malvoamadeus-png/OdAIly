@@ -1009,6 +1009,61 @@ class Store:
         self.conn.commit()
         return previous_high, old is None, TRACKING_STATUS_ACTIVE
 
+    def start_or_observe_tg(
+        self,
+        token: Token,
+        *,
+        observed_at: str,
+        tracking_window_seconds: int,
+        args: argparse.Namespace,
+    ) -> None:
+        """Start tracking a qualifying Telegram burst without replaying its current tier."""
+        old = self.observation(token.address, token.chain)
+        observed_time = parse_iso(observed_at) or datetime.now(UTC)
+        expires_at = parse_iso(old["tracking_expires_at"]) if old else None
+        active = bool(
+            old
+            and old["tracking_status"] == TRACKING_STATUS_ACTIVE
+            and (expires_at is None or expires_at > observed_time)
+        )
+        if active:
+            started_at = str(old["tracking_started_at"] or observed_at)
+            anchor_at = str(old["tracking_anchor_at"] or started_at)
+            expires = str(old["tracking_expires_at"] or (
+                observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))
+            ).isoformat())
+            highest = max(float(old["highest_market_cap"] or 0), token.market_cap)
+        else:
+            started_at = observed_at
+            anchor_at = observed_at
+            expires = (observed_time + timedelta(seconds=max(int(tracking_window_seconds), 1))).isoformat()
+            highest = token.market_cap
+        interval = tracking_interval(token.market_cap, args, token.chain)
+        next_at = next_tracking_time(token.address, observed_time, interval)
+        self.conn.execute(
+            """INSERT INTO observations(
+              address, chain, platform, symbol, last_market_cap, highest_market_cap, last_seen_at,
+              triggered_at, tracking_status, tracking_started_at, tracking_anchor_at,
+              tracking_expires_at, next_token_info_at, tracking_interval_seconds,
+              tracking_source, last_volume_24h, token_info_failures, last_token_info_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'tg', ?, 0, NULL)
+            ON CONFLICT(address, chain) DO UPDATE SET platform=excluded.platform,
+              symbol=excluded.symbol, last_market_cap=excluded.last_market_cap,
+              highest_market_cap=excluded.highest_market_cap, last_seen_at=excluded.last_seen_at,
+              triggered_at=COALESCE(excluded.triggered_at, observations.triggered_at),
+              tracking_status='active', tracking_started_at=excluded.tracking_started_at,
+              tracking_anchor_at=excluded.tracking_anchor_at,
+              tracking_expires_at=excluded.tracking_expires_at,
+              next_token_info_at=excluded.next_token_info_at,
+              tracking_interval_seconds=excluded.tracking_interval_seconds,
+              tracking_source='tg', last_volume_24h=excluded.last_volume_24h,
+              token_info_failures=0, last_token_info_error=NULL""",
+            (token.address, token.chain, token.platform, token.symbol, token.market_cap, highest,
+             observed_at, observed_at, started_at, anchor_at, expires, next_at, interval,
+             token.volume_24h),
+        )
+        self.conn.commit()
+
     def observe_token_info(
         self,
         token: Token,
@@ -1835,7 +1890,9 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
     }
 
 
-def process_tg_candidate(store: Store) -> tuple[int, int]:
+def process_tg_candidate(
+    store: Store, args: argparse.Namespace | None = None
+) -> tuple[int, int]:
     candidate = store.next_tg_candidate()
     if candidate is None:
         return (0, 0)
@@ -1869,7 +1926,8 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         )
         store.update_tg_candidate(candidate["id"], "discarded", reason="volume_gate_failed", market_cap=token.market_cap)
         return (0, int(inserted))
-    store.record_snapshot(token, observed_at=now_iso(), source="tg", scan_id=f"tg_candidate:{candidate['id']}")
+    observed_at = now_iso()
+    store.record_snapshot(token, observed_at=observed_at, source="tg", scan_id=f"tg_candidate:{candidate['id']}")
     inserted = store.add_job(
         token,
         "tg_burst",
@@ -1878,11 +1936,17 @@ def process_tg_candidate(store: Store) -> tuple[int, int]:
         trigger_level=market_cap_gate,
         evidence=evidence,
     )
-    store.upsert_observation(
+    tracking_args = args or argparse.Namespace(
+        token_info_high_interval=TOKEN_INFO_HIGH_INTERVAL_SECONDS,
+        token_info_low_interval=TOKEN_INFO_LOW_INTERVAL_SECONDS,
+    )
+    store.start_or_observe_tg(
         token,
-        triggered_at=now_iso(),
-        advance_market_cap_high_watermark=False,
-        tracking_source="tg",
+        observed_at=observed_at,
+        tracking_window_seconds=int(
+            getattr(tracking_args, "tracking_window", TRACKING_WINDOW_SECONDS)
+        ),
+        args=tracking_args,
     )
     store.update_tg_candidate(candidate["id"], "queued", market_cap=token.market_cap)
     return (int(inserted), 0)
@@ -1951,7 +2015,7 @@ def discover_once(store: Store, args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"forced contract does not meet gates: {forced_address}")
     if first_run:
         store.mark_initialized()
-    tg_queued, tg_discarded = process_tg_candidate(store)
+    tg_queued, tg_discarded = process_tg_candidate(store, args)
     queued += tg_queued
     discarded += tg_discarded
     if forced_token:
