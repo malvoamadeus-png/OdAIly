@@ -44,6 +44,29 @@ def _candidate_scenario_triggers(*, if_not_exists: bool = False) -> str:
     '''
 
 
+def _candidate_address_triggers(*, if_not_exists: bool = False) -> str:
+    clause = 'IF NOT EXISTS ' if if_not_exists else ''
+    return f'''
+        CREATE TRIGGER {clause}hl_news_candidates_address_insert AFTER INSERT ON hl_news_candidates
+        BEGIN
+            INSERT OR IGNORE INTO hl_news_candidate_timeline
+                (event_key,observed_ms,coin,kinds,addresses)
+            VALUES(NEW.event_key,NEW.observed_ms,NEW.coin,
+                   COALESCE(json_extract(NEW.payload,'$.kinds'),'[]'),
+                   COALESCE(json_extract(NEW.payload,'$.addresses'),'[]'));
+            INSERT OR IGNORE INTO hl_news_candidate_addresses
+                (event_key,address_lower,observed_ms)
+            SELECT NEW.event_key,lower(a.value),NEW.observed_ms
+            FROM json_each(NEW.payload,'$.addresses') a WHERE a.type='text';
+        END;
+        CREATE TRIGGER {clause}hl_news_candidates_address_delete AFTER DELETE ON hl_news_candidates
+        BEGIN
+            DELETE FROM hl_news_candidate_addresses WHERE event_key=OLD.event_key;
+            DELETE FROM hl_news_candidate_timeline WHERE event_key=OLD.event_key;
+        END;
+    '''
+
+
 class NewsStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -70,6 +93,16 @@ class NewsStore:
                     coin TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS hl_news_candidates_observed
                     ON hl_news_candidates(observed_ms DESC,event_key ASC);
+                CREATE TABLE IF NOT EXISTS hl_news_candidate_timeline (
+                    event_key TEXT PRIMARY KEY,observed_ms INTEGER NOT NULL,coin TEXT NOT NULL,
+                    kinds TEXT NOT NULL,addresses TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS hl_news_candidate_timeline_observed
+                    ON hl_news_candidate_timeline(observed_ms DESC,event_key ASC);
+                CREATE TABLE IF NOT EXISTS hl_news_candidate_addresses (
+                    event_key TEXT NOT NULL,address_lower TEXT NOT NULL,observed_ms INTEGER NOT NULL,
+                    PRIMARY KEY(event_key,address_lower));
+                CREATE INDEX IF NOT EXISTS hl_news_candidate_addresses_address_time
+                    ON hl_news_candidate_addresses(address_lower,observed_ms DESC,event_key ASC);
                 CREATE TABLE IF NOT EXISTS hl_news_candidate_scenarios (
                     event_key TEXT NOT NULL, scenario_key TEXT NOT NULL,
                     PRIMARY KEY(event_key,scenario_key));
@@ -111,6 +144,35 @@ class NewsStore:
                     "AND name IN ('hl_news_candidates_scenarios_insert','hl_news_candidates_scenarios_delete')")}
                 if len(triggers) != 2:
                     conn.executescript(_candidate_scenario_triggers(if_not_exists=True))
+            row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key='candidate_address_index_version'").fetchone()
+            address_index_version = json.loads(row['payload']) if row else None
+            if address_index_version != 1:
+                conn.execute('DROP TRIGGER IF EXISTS hl_news_candidates_address_insert')
+                conn.execute('DROP TRIGGER IF EXISTS hl_news_candidates_address_delete')
+                conn.executescript(_candidate_address_triggers())
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute('DELETE FROM hl_news_candidate_timeline')
+                conn.execute('DELETE FROM hl_news_candidate_addresses')
+                conn.execute('''INSERT OR IGNORE INTO hl_news_candidate_timeline
+                    (event_key,observed_ms,coin,kinds,addresses)
+                    SELECT c.event_key,c.observed_ms,c.coin,
+                           COALESCE(json_extract(c.payload,'$.kinds'),'[]'),
+                           COALESCE(json_extract(c.payload,'$.addresses'),'[]')
+                    FROM hl_news_candidates c''')
+                conn.execute('''INSERT OR IGNORE INTO hl_news_candidate_addresses
+                    (event_key,address_lower,observed_ms)
+                    SELECT c.event_key,lower(a.value),c.observed_ms
+                    FROM hl_news_candidates c,json_each(c.payload,'$.addresses') a
+                    WHERE a.type='text' ''')
+                conn.execute('''INSERT INTO hl_news_metadata VALUES('candidate_address_index_version','1')
+                    ON CONFLICT(key) DO UPDATE SET payload=excluded.payload''')
+                conn.commit()
+            else:
+                triggers = {row['name'] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' "
+                    "AND name IN ('hl_news_candidates_address_insert','hl_news_candidates_address_delete')")}
+                if len(triggers) != 2:
+                    conn.executescript(_candidate_address_triggers(if_not_exists=True))
     def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int | None = 500) -> bool:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:
@@ -131,6 +193,29 @@ class NewsStore:
                 VALUES(?,?,?,?) ON CONFLICT(address) DO UPDATE SET last_seen_ms=excluded.last_seen_ms,sources=excluded.sources''',
                          (address, now_ms, now_ms, encode(sources)))
         return True
+
+    def add_manual_address(self, address: str, *, now_ms: int, updated_by: str) -> dict[str, Any]:
+        address = address_key(address)
+        from datetime import UTC, datetime
+        source = {'kind': 'manual', 'added_by': updated_by,
+                  'added_at': datetime.fromtimestamp(now_ms / 1000, UTC).isoformat()}
+        with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if self.blocked(address, conn=conn):
+                raise ValueError('Address is blocked; unblock it before adding it')
+            row = conn.execute('SELECT first_seen_ms,last_seen_ms,sources FROM hl_news_addresses WHERE address=?',
+                               (address,)).fetchone()
+            created = row is None
+            sources = json.loads(row['sources']) if row else []
+            has_manual_source = any(item.get('kind') == 'manual' for item in sources)
+            if not has_manual_source:
+                sources.append(source)
+            conn.execute('''INSERT INTO hl_news_addresses(address,first_seen_ms,last_seen_ms,sources)
+                VALUES(?,?,?,?) ON CONFLICT(address) DO UPDATE SET
+                last_seen_ms=max(hl_news_addresses.last_seen_ms,excluded.last_seen_ms),sources=excluded.sources''',
+                         (address, now_ms, now_ms, encode(sources)))
+        self.schedule_account(address, now_ms=now_ms)
+        return {'address': address, 'created': created, 'already_manual': has_manual_source}
 
     def addresses(self, limit: int) -> list[dict[str, Any]]:
         with connect_sqlite(self.path) as conn:

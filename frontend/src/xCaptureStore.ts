@@ -2618,7 +2618,6 @@ export type HyperliquidNewsDashboard = {
   rules: Record<string, unknown>; labels: Record<string, string>; last_pass: Record<string, any>;
   counts: Record<string, number>; page: number; has_next: boolean; flow?: string[];
   view?: 'scenarios' | 'addresses' | 'rules' | 'timeline';
-  timeline?: { total: number; first_backstage_at: string | null };
   production?: { enabled: boolean; started_ms: number; enabled_scenarios: string[]; publication_mode: string } | null;
   account_pool?: { tiers: Record<string, number>; qualified_due: number; max_qualified_delay_ms: number };
   scenarios: Array<{ key: string; name: string; description: string; rule_keys: string[]; count: number; prompt_key: string; prompt_name: string }>; scenario: string | null; dataset: 'live' | 'test';
@@ -2637,6 +2636,10 @@ export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_
 
 export async function saveHyperliquidAddressNote(address: string, note: string): Promise<{ address: string; note: string }> {
   return consoleApiPost('/console/hyperliquid-news/address-note/save', { address, note });
+}
+
+export async function addHyperliquidAddress(address: string): Promise<{ address: string; created: boolean; already_manual: boolean }> {
+  return consoleApiPost('/console/hyperliquid-news/address-add', { address });
 }
 
 export async function saveHyperliquidAddressBlock(address: string, blocked: boolean): Promise<{ address: string; blocked: boolean }> {

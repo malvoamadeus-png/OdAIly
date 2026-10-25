@@ -752,6 +752,12 @@ class EditorPluginNewsGenService:
         return NewsStore(load_storage_settings().sqlite_path).save_address_note(
             payload.get('address'), payload.get('note'), updated_by=actor.email)
 
+    def add_hyperliquid_address(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        from packages.common.storage import load_storage_settings
+        from packages.hyperliquid_news.store import NewsStore
+        return NewsStore(load_storage_settings().sqlite_path).add_manual_address(
+            payload.get('address'), now_ms=int(datetime.now(UTC).timestamp() * 1000), updated_by=actor.email)
+
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
         return self.gate_market_store.dashboard()
@@ -1206,6 +1212,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/hyperliquid-news/get",
         "/console/hyperliquid-news/address-note/save",
         "/console/hyperliquid-news/address-block/save",
+        "/console/hyperliquid-news/address-add",
         "/console/meme/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
@@ -1419,6 +1426,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/hyperliquid-news/address-note/save":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_hyperliquid_address_note(actor, self._read_json())})
+                    return
+                if self.path == "/console/hyperliquid-news/address-add":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.add_hyperliquid_address(actor, self._read_json())})
                     return
                 if self.path == "/console/hyperliquid-news/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hyperliquid_news(actor, self._read_json())})

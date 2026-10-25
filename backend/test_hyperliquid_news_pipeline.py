@@ -167,6 +167,7 @@ def test_dispatch_durable_task_dedup_enqueue_failure_and_dashboard(tmp_path):
 def test_api_dashboard_route_requires_console_auth():
     from packages.editor_plugin_api import EditorPluginApiHandler
     assert '/console/hyperliquid-news/get' in EditorPluginApiHandler.CONSOLE_PATHS
+    assert '/console/hyperliquid-news/address-add' in EditorPluginApiHandler.CONSOLE_PATHS
 
 
 def test_dedicated_prompt_seed_and_writer_input(tmp_path):
@@ -459,7 +460,8 @@ def test_scenario_dashboard_does_not_transfer_hidden_address_history(tmp_path):
     assert data['addresses'] == []
     assert len(json.dumps(data, default=str).encode()) < 20000
     addresses = dashboard(store, view='addresses')
-    assert addresses['addresses'][0]['history']['assets']['ETH']['completed_rounds']
+    assert 'sources' not in addresses['addresses'][0]
+    assert 'state' not in addresses['addresses'][0] and 'history' not in addresses['addresses'][0]
     assert addresses['events'] == []
     assert dashboard(store, view='rules')['addresses'] == []
     with pytest.raises(ValueError): dashboard(store, view='unknown')
@@ -556,6 +558,60 @@ def test_address_search_covers_full_pool_and_notes(tmp_path):
     store.save_address_block(A,True,updated_by='test')
     assert dashboard(store,view='addresses',address_status='blocked')['addresses'][0]['address']==A
     assert not dashboard(store,view='addresses',address_query=A,address_status='active')['addresses']
+
+
+def test_hyperliquid_timeline_defaults_to_recent_ten_and_uses_address_index(tmp_path):
+    from packages.hyperliquid_news.models import Candidate
+    path = tmp_path / 'timeline.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path); store.initialize()
+    for stamp in range(1, 13):
+        payload, _ = event(stamp * 1000)
+        payload['key'] = f'timeline-{stamp:02d}'
+        store.save_global(f'global-{stamp}', {}, [Candidate(**payload)])
+
+    recent = dashboard(store, view='timeline')
+    assert len(recent['events']) == 10
+    assert [item['key'] for item in recent['events']] == [f'timeline-{stamp:02d}' for stamp in range(12, 2, -1)]
+    assert recent['has_next'] is True
+    assert 'evidence' not in recent['events'][0]
+
+    searched = dashboard(store, view='timeline', address_query=A)
+    assert len(searched['events']) == 10
+    prefix = dashboard(store, view='timeline', address_query=A[:8])
+    assert len(prefix['events']) == 10
+    with connect_sqlite(path) as conn:
+        plan = conn.execute('''EXPLAIN QUERY PLAN
+            SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses
+            FROM hl_news_candidate_addresses a
+            JOIN hl_news_candidate_timeline e ON e.event_key=a.event_key
+            WHERE a.address_lower=? ORDER BY a.observed_ms DESC,a.event_key ASC LIMIT 11''', (A,)).fetchall()
+    assert any('hl_news_candidate_addresses_address_time' in row['detail'] for row in plan)
+    assert not any('TEMP B-TREE' in row['detail'] for row in plan)
+
+
+def test_hyperliquid_address_list_omits_raw_monitoring_evidence(tmp_path):
+    path = tmp_path / 'compact-addresses.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path); store.initialize()
+    store.discover(A, source={'kind': 'test'}, now_ms=1000)
+    with connect_sqlite(path) as conn:
+        conn.execute('UPDATE hl_news_addresses SET sources=? WHERE address=?',
+                     (json.dumps([{'kind': 'private-shaped-evidence', 'payload': 'x' * 5000}]), A))
+    address = dashboard(store, view='addresses')['addresses'][0]
+    assert 'sources' not in address and 'state' not in address and 'history' not in address
+
+
+def test_manual_hyperliquid_address_is_added_to_monitored_pool(tmp_path):
+    path = tmp_path / 'manual-address.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path); store.initialize()
+    added = store.add_manual_address(A, now_ms=1234, updated_by='operator@example.test')
+    assert added['created'] is True
+    assert store.addresses(10)[0]['address'] == A
+    assert json.loads(store.addresses(10)[0]['sources'])[0]['kind'] == 'manual'
+    assert store.account_due(1234, 10)[0]['address'] == A
+    assert store.add_manual_address(A, now_ms=2000, updated_by='operator@example.test')['created'] is False
 
 
 def test_blocked_address_cannot_rediscover_monitor_dispatch_or_publish(tmp_path, monkeypatch):
