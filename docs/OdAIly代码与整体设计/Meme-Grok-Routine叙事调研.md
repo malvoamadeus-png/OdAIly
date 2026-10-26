@@ -32,7 +32,7 @@ python backend/src/main.py meme grok-narrative \
 
 ## 认证与配置
 
-- 当前 Cursor 自动化端点使用 Bearer 认证。命令读取 `grok.txt` 的 `key=...` 和 `header=Authorization: Bearer` 两项，并发送 `Authorization: Bearer <key>`；它不要求 `whsec_...` signing secret。
+- 当前 Cursor 自动化端点使用 Bearer 认证。命令读取 `grok.txt` 的 `key=...` 和 `header=Authorization: Bearer` 两项；header 可只写 scheme，也可重复包含同一个 key。两项不匹配时命令拒绝发送，并统一构造 `Authorization: Bearer <key>`；它不要求 `whsec_...` signing secret。
 - Webhook URL 和 Bearer key 从本机 `grok.txt` 读取，也可由命令行或 `.env` 覆盖。URL 和凭证不应提交到 Git。
 - `grok.txt` 是本机凭证文件，保持未跟踪且不要提交到 Git；`GROK_API_KEY`、`GROK_BASE_URL` 是 Grok API 搜索配置，和这个 Webhook 调用不是同一接口。
 

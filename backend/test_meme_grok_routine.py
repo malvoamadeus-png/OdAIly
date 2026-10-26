@@ -24,6 +24,31 @@ def test_load_bearer_headers_reads_grok_txt_format(tmp_path: Path) -> None:
     assert grok_routine.load_webhook_url(credentials) == "https://automation.example/webhook"
 
 
+def test_load_bearer_headers_accepts_key_repeated_in_header(tmp_path: Path) -> None:
+    credentials = tmp_path / "grok.txt"
+    credentials.write_text(
+        "key=test-api-key\nheader=Authorization: Bearer test-api-key\n",
+        encoding="utf-8",
+    )
+
+    assert grok_routine.load_bearer_headers(credentials) == {"Authorization": "Bearer test-api-key"}
+
+
+def test_load_bearer_headers_rejects_conflicting_header_key(tmp_path: Path) -> None:
+    credentials = tmp_path / "grok.txt"
+    credentials.write_text(
+        "key=test-api-key\nheader=Authorization: Bearer another-key\n",
+        encoding="utf-8",
+    )
+
+    try:
+        grok_routine.load_bearer_headers(credentials)
+    except RuntimeError as exc:
+        assert "Authorization: Bearer" in str(exc)
+    else:
+        raise AssertionError("conflicting Bearer credentials should be rejected")
+
+
 def test_build_payload_omits_empty_optional_fields_and_checks_callback() -> None:
     payload = grok_routine.build_payload(
         Namespace(

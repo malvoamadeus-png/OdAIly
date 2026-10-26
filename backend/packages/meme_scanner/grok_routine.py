@@ -67,7 +67,12 @@ def load_bearer_headers(credentials_file: Path) -> dict[str, str]:
         raise RuntimeError("grok.txt must contain key=... and header=Authorization: Bearer.")
     header_name, header_value = header.split(":", 1)
     parts = header_value.strip().split()
-    if header_name.strip().lower() != "authorization" or len(parts) != 1 or parts[0].lower() != "bearer":
+    if (
+        header_name.strip().lower() != "authorization"
+        or len(parts) not in {1, 2}
+        or parts[0].lower() != "bearer"
+        or (len(parts) == 2 and parts[1] != key)
+    ):
         raise RuntimeError("grok.txt must specify an Authorization: Bearer header.")
     return {header_name.strip(): f"{parts[0]} {key}"}
 
