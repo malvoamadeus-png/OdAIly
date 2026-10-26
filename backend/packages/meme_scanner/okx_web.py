@@ -183,14 +183,14 @@ class OKXMemeWebClient:
         deadline = time.monotonic() + max(timeout, 0.1)
         while chain not in self._latest and time.monotonic() < deadline:
             self._page.wait_for_timeout(250)
-        if chain in self._latest and chain != "solana":
+        if chain in self._latest:
             return
         detail = self._errors.get(chain) or self._errors.get("discovery") or "no rankType=4 response"
         raise OKXMemeWebError(f"OKX MemePump web discovery timed out for {chain}: {detail}")
 
     def _refresh_current_chain(self, chain: str) -> None:
         # Reuse the initial page response when it already contains this chain.
-        if chain in self._latest:
+        if chain in self._latest and chain != "solana":
             return
         self._errors.pop(chain, None)
         try:

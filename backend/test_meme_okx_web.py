@@ -88,12 +88,22 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
         client = OKXMemeWebClient()
         client._latest["bsc"] = [{"ca": "0xabc"}]
         client._page = MagicMock()
-        client._selected_chain = MagicMock()
 
         client._refresh_current_chain("bsc")
 
-        client._selected_chain.assert_not_called()
+        client._page.evaluate.assert_not_called()
         client._page.reload.assert_not_called()
+
+    def test_refresh_fetches_platform_scoped_solana_rows_even_if_initial_rows_exist(self) -> None:
+        client = OKXMemeWebClient()
+        client._latest["solana"] = [{"ca": "initial-page-row"}]
+        client._page = MagicMock()
+        client._page.evaluate.return_value = [[{"ca": "pump", "protoId": "120596"}], [{"ca": "stonk", "protoId": "141620"}]]
+
+        client._refresh_current_chain("solana")
+
+        client._page.evaluate.assert_called_once()
+        self.assertEqual([row["ca"] for row in client._latest["solana"]], ["pump", "stonk"])
 
     def test_list_migrated_closes_browser_on_web_error(self) -> None:
         client = OKXMemeWebClient()
