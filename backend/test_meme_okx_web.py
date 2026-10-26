@@ -67,7 +67,7 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
         client._click_chain("bsc")
 
         client._page.get_by_role.assert_called_once_with("button", name="BNB Chain", exact=True)
-        button.first.click.assert_called_once_with(force=True, timeout=3_000)
+        button.first.evaluate.assert_called_once_with("element => element.click()")
 
     def test_click_chain_reports_missing_accessible_button(self) -> None:
         client = OKXMemeWebClient()

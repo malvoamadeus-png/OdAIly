@@ -164,7 +164,7 @@ class OKXMemeWebClient:
             button = self._page.get_by_role("button", name=label, exact=True)
             if button.count() == 0:
                 raise OKXMemeWebError(f"OKX MemePump page has no {label} chain button")
-            button.first.click(force=True, timeout=3_000)
+            button.first.evaluate("element => element.click()")
         except OKXMemeWebError:
             raise
         except Exception as exc:
