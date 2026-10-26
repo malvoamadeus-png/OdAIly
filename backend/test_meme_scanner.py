@@ -129,12 +129,20 @@ class MemeScannerTests(unittest.TestCase):
 
     def test_completed_request_includes_solana_pumpfun_market_lookup(self) -> None:
         discovery_client = Mock()
-        discovery_client.list_migrated.side_effect = [[], [], [{
-            "tokenAddress": "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump",
-            "protocolId": "120596",
-            "symbol": "PUMP",
-            "name": "Pump token",
-        }]]
+        discovery_client.list_migrated.side_effect = [[], [], [
+            {
+                "tokenAddress": "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump",
+                "protocolId": "120596",
+                "symbol": "PUMP",
+                "name": "Pump token",
+            },
+            {
+                "tokenAddress": "stonkfun-mint-address",
+                "protocolId": "141620",
+                "symbol": "STOCK",
+                "name": "Stonk token",
+            },
+        ]]
         market_client = Mock()
         market_client.price_info.return_value = {}
         with patch.object(scanner, "get_okx_meme_web_client", return_value=discovery_client), patch.object(
@@ -142,9 +150,17 @@ class MemeScannerTests(unittest.TestCase):
         ):
             tokens = scanner.fetch_completed_tokens(30)
         self.assertEqual([(item.chain, item.platform, item.address) for item in tokens], [
-            ("solana", "pumpfun", "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump")
+            ("solana", "pumpfun", "4xmegmrmd2tfqexxv39vtmp1r5ffvua7vcasmahlpump"),
+            ("solana", "stonkfun", "stonkfun-mint-address"),
         ])
-        market_client.price_info.assert_called_once_with("solana", [tokens[0].address])
+        market_client.price_info.assert_called_once_with(
+            "solana", [tokens[0].address, tokens[1].address]
+        )
+
+    def test_solana_discovery_rejects_unrecognized_platform_even_if_ca_ends_pump(self) -> None:
+        self.assertIsNone(scanner._okx_token_from_item(
+            {"tokenAddress": "mint-pump", "protocolId": "unknown"}, "solana"
+        ))
 
     def test_failed_discovery_waits_for_the_next_five_minute_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

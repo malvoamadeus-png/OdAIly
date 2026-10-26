@@ -6,24 +6,27 @@ from unittest.mock import MagicMock
 from packages.meme_scanner.okx_web import (
     OKXMemeWebClient,
     OKXMemeWebError,
-    is_pumpfun_item,
     parse_meme_ranking_response,
+    solana_launchpad,
 )
 
 
 class OKXMemeWebAdapterTests(unittest.TestCase):
-    def test_pumpfun_filter_prefers_okx_platform_identity_and_uses_ca_suffix_fallback(self) -> None:
-        self.assertTrue(is_pumpfun_item({"protocolId": "120596", "ca": "solana-address"}))
-        self.assertTrue(is_pumpfun_item({"ca": "solana-address-pump"}))
-        self.assertFalse(is_pumpfun_item({"protocolId": "other", "ca": "solana-address-pump"}))
-        self.assertFalse(is_pumpfun_item({"ca": "solana-address-PUMP"}))
-        self.assertFalse(is_pumpfun_item({"protocolId": "other", "ca": "solana-address"}))
+    def test_solana_launchpad_uses_okx_identity_and_pumpfun_only_ca_fallback(self) -> None:
+        self.assertEqual(solana_launchpad({"protocolId": "120596", "ca": "solana-address"}), "pumpfun")
+        self.assertEqual(solana_launchpad({"protocolId": "141620", "ca": "solana-address"}), "stonkfun")
+        self.assertEqual(solana_launchpad({"protocolName": "Stonkfun", "ca": "solana-address"}), "stonkfun")
+        self.assertEqual(solana_launchpad({"ca": "solana-address-pump"}), "pumpfun")
+        self.assertIsNone(solana_launchpad({"protocolId": "other", "ca": "solana-address-pump"}))
+        self.assertIsNone(solana_launchpad({"ca": "solana-address-PUMP"}))
+        self.assertIsNone(solana_launchpad({"protocolId": "other", "ca": "solana-address"}))
 
-    def test_solana_discovery_filters_rows_to_pumpfun_and_stamps_chain(self) -> None:
+    def test_solana_discovery_filters_rows_to_supported_launchpads_and_stamps_platform(self) -> None:
         client = OKXMemeWebClient()
         client._latest["solana"] = [
             {"protocolId": "other", "ca": "ordinary-token"},
             {"protocolId": "120596", "ca": "pumpfun-token"},
+            {"protocolId": "141620", "ca": "stonk-token"},
             {"ca": "suffix-token-pump"},
         ]
         client._start = lambda: None
@@ -31,9 +34,9 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
 
         rows = client.list_migrated("solana")
 
-        self.assertEqual([row["ca"] for row in rows], ["pumpfun-token", "suffix-token-pump"])
+        self.assertEqual([row["ca"] for row in rows], ["pumpfun-token", "stonk-token", "suffix-token-pump"])
         self.assertTrue(all(row["_okx_web_chain_id"] == "501" for row in rows))
-        self.assertTrue(all(row["_okx_platform_filter"] == "pumpfun" for row in rows))
+        self.assertEqual([row["_okx_platform_filter"] for row in rows], ["pumpfun", "stonkfun", "pumpfun"])
 
     def test_parse_meme_ranking_response_accepts_business_success(self) -> None:
         rows = parse_meme_ranking_response(

@@ -31,7 +31,7 @@ from .browser_lock import BrowserLockTimeout, exclusive_browser
 from .dexscreener import DexScreenerClient
 from .narrative import generate_reader_text
 from .okx import OKXError
-from .okx_web import OKXMemeWebClient
+from .okx_web import OKXMemeWebClient, solana_launchpad
 
 
 CHAIN = "bsc"
@@ -292,6 +292,9 @@ def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
     address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or item.get("ca") or "").strip().lower()
     if not address:
         return None
+    launchpad = (item.get("_okx_platform_filter") or solana_launchpad(item)) if chain == "solana" else None
+    if chain == "solana" and launchpad is None:
+        return None
     market = item.get("market") if isinstance(item.get("market"), dict) else {}
     web_name = str(item.get("name") or item.get("smbl") or "").strip()
     web_symbol = str(item.get("smbl") or item.get("symbol") or web_name or "?").strip()
@@ -301,7 +304,7 @@ def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
         {
             "address": address,
             "chain": chain,
-            "launchpad_platform": "pumpfun" if chain == "solana" else f"okx:{item.get('protocolId') or 'unknown'}",
+            "launchpad_platform": launchpad if chain == "solana" else f"okx:{item.get('protocolId') or 'unknown'}",
             "name": web_name or item.get("name") or "",
             "symbol": web_symbol,
             "usd_market_cap": market.get("marketCapUsd") or item.get("mcap") or item.get("marketCap"),
