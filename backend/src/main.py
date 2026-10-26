@@ -627,6 +627,36 @@ def parse_args() -> argparse.Namespace:
     meme_discovery.add_argument("--timeout", type=int, default=20)
     meme_discovery.add_argument("--connection-retries", type=int, default=3)
 
+    meme_grok_narrative = meme_subparsers.add_parser(
+        "grok-narrative",
+        help="Submit one token narrative research task to the Grok Bot Routine webhook.",
+    )
+    meme_grok_narrative.add_argument("--ca", required=True, help="Token contract address or mint.")
+    meme_grok_narrative.add_argument("--chain", default="solana", help="Chain name; defaults to solana.")
+    meme_grok_narrative.add_argument("--token", help="Optional token name or ticker.")
+    meme_grok_narrative.add_argument("--webhook-url", help="Cursor/Grok Bot automation webhook URL.")
+    meme_grok_narrative.add_argument(
+        "--credentials-file",
+        default=str(BACKEND_DIR.parent / "grok.txt"),
+        help="Local file containing key=... and header=Authorization: Bearer.",
+    )
+    meme_grok_narrative.add_argument("--request-id", help="Optional correlation ID; generated when omitted.")
+    meme_grok_narrative.add_argument(
+        "--callback-url",
+        help="Optional public HTTPS callback endpoint for the result JSON.",
+    )
+    meme_grok_narrative.add_argument(
+        "--wait-for-result",
+        action="store_true",
+        help="Receive the Grok Bot callback on the official server, wait for it, and print the result.",
+    )
+    meme_grok_narrative.add_argument("--callback-base-url", help="Override the official HTTPS callback endpoint.")
+    meme_grok_narrative.add_argument("--result-timeout", type=int, default=900)
+    meme_grok_narrative.add_argument("--poll-interval", type=float, default=5)
+    meme_grok_narrative.add_argument("--output", help="Optional local path for the returned result JSON.")
+    meme_grok_narrative.add_argument("--notes", help="Optional research context or known narrative clues.")
+    meme_grok_narrative.add_argument("--timeout", type=int, default=20)
+
     okx_stock_brief = subparsers.add_parser(
         "okx-stock-brief",
         help="Generate the OKX US stock 30-day market brief from public data.",
@@ -1959,6 +1989,10 @@ def meme_command(args: argparse.Namespace) -> int:
         from packages.meme_scanner import discovery
 
         return asyncio.run(discovery.run(args))
+    if args.meme_action == "grok-narrative":
+        from packages.meme_scanner import grok_routine
+
+        return grok_routine.run(args)
     raise ValueError(f"Unknown meme action: {args.meme_action}")
 
 

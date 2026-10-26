@@ -1246,6 +1246,24 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
+        parsed_path = urlparse(self.path)
+        if parsed_path.path.startswith("/hooks/grok-meme-result/"):
+            parts = parsed_path.path.split("/")
+            if len(parts) != 5 or not parts[3] or not parts[4] or parts[4] == "register":
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
+                return
+            from packages.meme_scanner.grok_callback import load_callback_result
+
+            result = load_callback_result(
+                self.server.service.paths.runtime_dir / "grok_narrative_callbacks",
+                parts[3],
+                parts[4],
+            )
+            if result is None:
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Result not ready or callback token invalid"})
+                return
+            self._send_json(HTTPStatus.OK, result)
+            return
         if self.path == "/health":
             self._send_json(HTTPStatus.OK, self.server.service.local_feed_health())
             return
@@ -1285,7 +1303,6 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
             return
-        parsed_path = urlparse(self.path)
         if parsed_path.path == "/console/failure-diagnostics/get":
             try:
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
@@ -1351,6 +1368,57 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        parsed_path = urlparse(self.path)
+        if parsed_path.path.startswith("/hooks/grok-meme-result/"):
+            parts = parsed_path.path.split("/")
+            if len(parts) != 5 or not parts[3] or not parts[4]:
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length") or "0")
+            except ValueError:
+                content_length = 0
+            from packages.meme_scanner.grok_callback import (
+                MAX_CALLBACK_BYTES,
+                MAX_REGISTRATION_BYTES,
+                create_callback_registration,
+                store_callback_result,
+            )
+
+            if content_length < 1 or content_length > MAX_CALLBACK_BYTES:
+                status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if content_length > MAX_CALLBACK_BYTES else HTTPStatus.BAD_REQUEST
+                self._send_json(status, {"ok": False, "message": "Invalid callback body size"})
+                return
+            raw_body = self.rfile.read(content_length)
+            callback_root = self.server.service.paths.runtime_dir / "grok_narrative_callbacks"
+            if parts[4] == "register":
+                if content_length > MAX_REGISTRATION_BYTES:
+                    self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "message": "Registration too large"})
+                    return
+                try:
+                    registration = json.loads(raw_body)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Invalid registration JSON"})
+                    return
+                if not isinstance(registration, dict) or registration.get("type") != "meme_narrative":
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Invalid registration"})
+                    return
+                if registration.get("request_id") != parts[3] or not isinstance(registration.get("ca"), str):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Registration mismatch"})
+                    return
+                token = create_callback_registration(callback_root, parts[3], registration["ca"].strip())
+                if token is None:
+                    self._send_json(HTTPStatus.CONFLICT, {"ok": False, "message": "Request ID unavailable"})
+                    return
+                self._send_json(HTTPStatus.CREATED, {"ok": True, "token": token})
+                return
+
+            stored = store_callback_result(callback_root, parts[3], parts[4], raw_body)
+            if not stored:
+                self._send_json(HTTPStatus.CONFLICT, {"ok": False, "message": "Invalid, expired, or duplicate result"})
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "received": True})
+            return
         if self.path not in self.AUTH_PATHS | self.FEED_PATHS | self.NEWS_GEN_PATHS | self.CONSOLE_PATHS:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Not found"})
             return
@@ -1515,6 +1583,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
 
     def log_message(self, format: str, *args: Any) -> None:
+        if urlparse(self.path).path.startswith("/hooks/grok-meme-result/"):
+            return
         print("[odaily] editor-plugin-api " + format % args)
 
     def _read_json(self) -> dict[str, Any]:
