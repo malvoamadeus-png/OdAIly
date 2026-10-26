@@ -15,6 +15,7 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
     def test_solana_launchpad_uses_okx_identity_and_pumpfun_only_ca_fallback(self) -> None:
         self.assertEqual(solana_launchpad({"protocolId": "120596", "ca": "solana-address"}), "pumpfun")
         self.assertEqual(solana_launchpad({"protocolId": "141620", "ca": "solana-address"}), "stonkfun")
+        self.assertEqual(solana_launchpad({"protoId": "141620", "ca": "solana-address"}), "stonkfun")
         self.assertEqual(solana_launchpad({"protocolName": "Stonkfun", "ca": "solana-address"}), "stonkfun")
         self.assertEqual(solana_launchpad({"ca": "solana-address-pump"}), "pumpfun")
         self.assertIsNone(solana_launchpad({"protocolId": "other", "ca": "solana-address-pump"}))
@@ -56,77 +57,39 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(OKXMemeWebError, "no token list"):
             parse_meme_ranking_response({"code": 0, "data": {}})
 
-    def test_click_chain_uses_reference_value_box(self) -> None:
+    def test_click_chain_uses_accessible_chain_button(self) -> None:
         client = OKXMemeWebClient()
-        selector = MagicMock()
-        option = MagicMock()
-        selector.count.return_value = 1
-        option.count.return_value = 1
+        button = MagicMock()
+        button.count.return_value = 1
         client._page = MagicMock()
-        client._page.locator.side_effect = [selector, option]
+        client._page.get_by_role.return_value = button
 
         client._click_chain("bsc")
 
-        self.assertEqual(
-            client._page.locator.call_args_list[0].args,
-            ('[data-testid="okd-select-reference-value-box"]:visible',),
-        )
-        self.assertEqual(
-            client._page.locator.call_args_list[1].args,
-            ('[role="option"]:has(img[alt="BNB Chain"]):visible',),
-        )
-        selector.first.click.assert_called_once_with(force=True, timeout=3_000)
-        option.first.click.assert_called_once_with(force=True, timeout=3_000)
+        client._page.get_by_role.assert_called_once_with("button", name="BNB Chain", exact=True)
+        button.first.click.assert_called_once_with(force=True, timeout=3_000)
 
-    def test_click_chain_uses_reference_value_box_for_robinhood(self) -> None:
+    def test_click_chain_reports_missing_accessible_button(self) -> None:
         client = OKXMemeWebClient()
-        selector = MagicMock()
-        option = MagicMock()
-        selector.count.return_value = 1
-        option.count.return_value = 1
         client._page = MagicMock()
-        client._page.locator.side_effect = [selector, option]
+        client._page.get_by_role.return_value.count.return_value = 0
 
-        client._click_chain("robinhood")
-
-        self.assertEqual(
-            client._page.locator.call_args_list[0].args,
-            ('[data-testid="okd-select-reference-value-box"]:visible',),
-        )
-        self.assertEqual(
-            client._page.locator.call_args_list[1].args,
-            ('[role="option"]:has(img[alt="Robinhood"]):visible',),
-        )
-        selector.first.click.assert_called_once_with(force=True, timeout=3_000)
-        option.first.click.assert_called_once_with(force=True, timeout=3_000)
-
-    def test_click_chain_retries_collapsed_selector_with_dom_click(self) -> None:
-        client = OKXMemeWebClient()
-        selector = MagicMock()
-        option = MagicMock()
-        selector.count.return_value = 1
-        option.count.return_value = 1
-        option.wait_for.side_effect = [TimeoutError(), None]
-        client._page = MagicMock()
-        client._page.locator.side_effect = [selector, option]
-
-        client._click_chain("bsc")
-
-        selector.first.evaluate.assert_called_once_with("element => element.click()")
-        self.assertEqual(option.wait_for.call_count, 2)
-        option.first.click.assert_called_once_with(force=True, timeout=3_000)
-
-    def test_click_chain_reports_missing_popup_option(self) -> None:
-        client = OKXMemeWebClient()
-        selector = MagicMock()
-        option = MagicMock()
-        selector.count.return_value = 1
-        option.count.return_value = 0
-        client._page = MagicMock()
-        client._page.locator.side_effect = [selector, option]
-
-        with self.assertRaisesRegex(OKXMemeWebError, "has no BNB Chain option"):
+        with self.assertRaisesRegex(OKXMemeWebError, "has no BNB Chain chain button"):
             client._click_chain("bsc")
+
+    def test_ranking_response_reads_chain_and_rank_type_from_post_body(self) -> None:
+        client = OKXMemeWebClient()
+        response = MagicMock()
+        response.url = "https://web3.okx.com/priapi/v1/dx/market/v2/memefun/meme-ranking/content/batch?t=1"
+        response.request.post_data_json = {
+            "rankType": "4",
+            "chainQueryList": [{"rankType": "4", "chainId": "56"}],
+        }
+        response.json.return_value = {"code": 0, "data": [{"ca": "0xabc"}]}
+
+        client._on_response(response)
+
+        self.assertEqual(client._latest["bsc"], [{"ca": "0xabc"}])
 
     def test_refresh_reuses_initial_page_response_for_requested_chain(self) -> None:
         client = OKXMemeWebClient()

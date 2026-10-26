@@ -22,7 +22,7 @@ class OKXMemeWebError(RuntimeError):
 
 def solana_launchpad(item: dict[str, Any]) -> str | None:
     """Identify supported Solana launchpads from OKX metadata, then Pump.fun CA suffix."""
-    protocol_id = str(item.get("protocolId") or "").strip().lower()
+    protocol_id = str(item.get("protocolId") or item.get("protoId") or "").strip().lower()
     if protocol_id:
         return OKX_SOLANA_LAUNCHPADS.get(protocol_id)
     platform = str(item.get("protocolName") or item.get("platform") or "").strip().lower()
@@ -117,17 +117,27 @@ class OKXMemeWebClient:
     def _on_response(self, response: Any) -> None:
         if OKX_MEME_RANKING_PATH not in response.url:
             return
-        query = parse_qs(urlparse(response.url).query)
-        if query.get("rankType", [""])[-1] != "4":
-            return
-        chain_id = query.get("chainId", [""])[-1]
-        chain = next((name for name, value in OKX_MEME_CHAIN_IDS.items() if value == chain_id), None)
-        if chain is None:
-            return
         try:
+            query = parse_qs(urlparse(response.url).query)
+            request_body = response.request.post_data_json
+            rank_type = query.get("rankType", [""])[-1]
+            chain_id = query.get("chainId", [""])[-1]
+            if isinstance(request_body, dict):
+                rank_type = str(request_body.get("rankType") or rank_type)
+                chain_queries = request_body.get("chainQueryList")
+                if isinstance(chain_queries, list) and chain_queries:
+                    chain_query = chain_queries[0]
+                    if isinstance(chain_query, dict):
+                        rank_type = str(chain_query.get("rankType") or rank_type)
+                        chain_id = str(chain_query.get("chainId") or chain_id)
+            if rank_type != "4":
+                return
+            chain = next((name for name, value in OKX_MEME_CHAIN_IDS.items() if value == chain_id), None)
+            if chain is None:
+                return
             rows = parse_meme_ranking_response(response.json())
         except Exception as exc:
-            self._errors[chain] = str(exc)
+            self._errors["discovery"] = str(exc)
             return
         self._latest[chain] = rows
         self._errors.pop(chain, None)
@@ -151,36 +161,14 @@ class OKXMemeWebClient:
     def _click_chain(self, chain: str) -> None:
         label = OKX_MEME_CHAIN_LABELS[chain]
         try:
-            # The click handler belongs to the reference value box, not its
-            # inner ``okd-select-text`` decoration. The popup test id is only
-            # present after opening, so locate the option by its stable role.
-            # Do not use the visible shortcut buttons: on the Xvfb page they
-            # can redraw the list without issuing the ranking request.
-            selector = self._page.locator('[data-testid="okd-select-reference-value-box"]:visible')
-            if selector.count() == 0:
-                raise OKXMemeWebError("OKX MemePump page has no visible chain selector")
-            selector.first.click(force=True, timeout=3_000)
-            option = self._page.locator(f'[role="option"]:has(img[alt="{label}"]):visible')
-            try:
-                option.wait_for(state="visible", timeout=1_500)
-            except Exception:
-                # A transient OKX mask can absorb the pointer click. Dispatch
-                # the same click from the real reference element before
-                # treating the option as missing.
-                try:
-                    selector.first.evaluate("element => element.click()")
-                    option.wait_for(state="visible", timeout=3_000)
-                except Exception as exc:
-                    if option.count() == 0:
-                        raise OKXMemeWebError(f"OKX MemePump chain selector has no {label} option") from exc
-                    raise
-            if option.count() == 0:
-                raise OKXMemeWebError(f"OKX MemePump chain selector has no {label} option")
-            option.first.click(force=True, timeout=3_000)
+            button = self._page.get_by_role("button", name=label, exact=True)
+            if button.count() == 0:
+                raise OKXMemeWebError(f"OKX MemePump page has no {label} chain button")
+            button.first.click(force=True, timeout=3_000)
         except OKXMemeWebError:
             raise
         except Exception as exc:
-            raise OKXMemeWebError(f"OKX MemePump chain selector failed for {chain}: {exc}") from exc
+            raise OKXMemeWebError(f"OKX MemePump chain button failed for {chain}: {exc}") from exc
 
     def _wait_for_chain(self, chain: str, timeout: float) -> None:
         deadline = time.monotonic() + max(timeout, 0.1)
@@ -188,7 +176,7 @@ class OKXMemeWebClient:
             self._page.wait_for_timeout(250)
         if chain in self._latest:
             return
-        detail = self._errors.get(chain) or "no rankType=4 response"
+        detail = self._errors.get(chain) or self._errors.get("discovery") or "no rankType=4 response"
         raise OKXMemeWebError(f"OKX MemePump web discovery timed out for {chain}: {detail}")
 
     def _refresh_current_chain(self, chain: str) -> None:
