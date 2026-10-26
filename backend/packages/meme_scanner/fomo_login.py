@@ -49,6 +49,7 @@ def chromium_command(*, executable: str, profile_dir: Path, cdp_port: int) -> li
         executable,
         "--remote-debugging-address=127.0.0.1",
         f"--remote-debugging-port={cdp_port}",
+        "--remote-allow-origins=https://chrome-devtools-frontend.appspot.com",
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
