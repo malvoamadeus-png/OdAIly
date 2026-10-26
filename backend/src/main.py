@@ -587,6 +587,28 @@ def parse_args() -> argparse.Namespace:
         help="Loopback-only DevTools port, intended for an SSH tunnel.",
     )
 
+    meme_bloomberg_read = meme_subparsers.add_parser(
+        "bloomberg-read",
+        help="Read visible paragraphs from one Bloomberg article in the existing Meme browser profile.",
+    )
+    meme_bloomberg_read.add_argument("article_url", help="An https://www.bloomberg.com/news/... article URL.")
+    meme_bloomberg_read.add_argument(
+        "--timeout",
+        type=int,
+        default=int(os.getenv("MEME_FOMO_LOGIN_TIMEOUT_SECONDS") or 900),
+        help="Maximum seconds to keep the one-shot browser open.",
+    )
+    meme_bloomberg_read.add_argument(
+        "--cdp-port",
+        type=int,
+        default=int(os.getenv("MEME_FOMO_LOGIN_CDP_PORT") or 9224),
+        help="Loopback-only DevTools port shared with the existing FOMO login maintenance command.",
+    )
+    meme_bloomberg_read.add_argument(
+        "--output",
+        help="Text output path. Defaults to a timestamped file under data/exports/bloomberg/.",
+    )
+
     meme_tg = meme_subparsers.add_parser("tg-watch", help="Listen for repeated CA mentions in Telegram chats.")
     meme_tg.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))
     meme_tg.add_argument("--config", default=str(get_paths().config_dir / "meme_telegram.txt"))
@@ -1981,6 +2003,10 @@ def meme_command(args: argparse.Namespace) -> int:
         from packages.meme_scanner import fomo_login
 
         return fomo_login.run(args)
+    if args.meme_action == "bloomberg-read":
+        from packages.meme_scanner import bloomberg_reader
+
+        return bloomberg_reader.run(args)
     if args.meme_action == "tg-watch":
         from packages.meme_scanner import tg_watcher
 

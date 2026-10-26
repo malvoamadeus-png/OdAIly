@@ -44,7 +44,13 @@ def chromium_executable() -> str:
     return str(executable)
 
 
-def chromium_command(*, executable: str, profile_dir: Path, cdp_port: int) -> list[str]:
+def chromium_command(
+    *,
+    executable: str,
+    profile_dir: Path,
+    cdp_port: int,
+    initial_url: str = FOMO_ENTRY_URL,
+) -> list[str]:
     command = [
         executable,
         "--remote-debugging-address=127.0.0.1",
@@ -54,7 +60,7 @@ def chromium_command(*, executable: str, profile_dir: Path, cdp_port: int) -> li
         "--no-default-browser-check",
         "--disable-dev-shm-usage",
         "--disable-gpu",
-        FOMO_ENTRY_URL,
+        initial_url,
     ]
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         command.insert(1, "--no-sandbox")
