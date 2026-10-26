@@ -10,7 +10,6 @@ from urllib.parse import parse_qs, urlparse
 OKX_MEME_PAGE_URL = "https://web3.okx.com/zh-hans/meme-pump"
 OKX_MEME_RANKING_PATH = "/priapi/v1/dx/market/v2/memefun/meme-ranking/content"
 OKX_MEME_CHAIN_IDS = {"bsc": "56", "robinhood": "4663", "solana": "501"}
-OKX_MEME_CHAIN_LABELS = {"bsc": "BNB Chain", "robinhood": "Robinhood", "solana": "Solana"}
 OKX_SOLANA_LAUNCHPADS = {"120596": "pumpfun", "141620": "stonkfun"}
 DEFAULT_PAGE_SETTLE_MS = 5_000
 DEFAULT_ACTION_TIMEOUT_SECONDS = 45
@@ -142,33 +141,26 @@ class OKXMemeWebClient:
         self._latest[chain] = rows
         self._errors.pop(chain, None)
 
-    def _selected_chain(self) -> str | None:
-        if self._page is None or self._page.is_closed():
-            return None
-        try:
-            chain_id = self._page.evaluate(
-                """() => {
-                    try {
-                        const raw = localStorage.getItem('ok_universe_swap');
-                        return raw ? JSON.parse(raw).MEME_PUMP_SELECTED_CHAIN_STORAGE : null;
-                    } catch (e) { return null; }
-                }"""
-            )
-        except Exception:
-            return None
-        return next((name for name, value in OKX_MEME_CHAIN_IDS.items() if str(chain_id) == value), None)
-
-    def _click_chain(self, chain: str) -> None:
-        label = OKX_MEME_CHAIN_LABELS[chain]
-        try:
-            button = self._page.get_by_role("button", name=label, exact=True)
-            if button.count() == 0:
-                raise OKXMemeWebError(f"OKX MemePump page has no {label} chain button")
-            button.first.evaluate("element => element.click()")
-        except OKXMemeWebError:
-            raise
-        except Exception as exc:
-            raise OKXMemeWebError(f"OKX MemePump chain button failed for {chain}: {exc}") from exc
+    def _fetch_chain_ranking(self, chain: str) -> list[dict[str, Any]]:
+        chain_id = OKX_MEME_CHAIN_IDS[chain]
+        payload = self._page.evaluate(
+            """async ({chainId, rankingPath}) => {
+                const query = {rankType: '4', chainId};
+                if (chainId === '501') {
+                    query.protocolIdList = ['120596', '141620'];
+                    query.tokenTypeList = ['2', '4'];
+                }
+                const response = await fetch(`${location.origin}${rankingPath}/batch?t=${Date.now()}`, {
+                    method: 'POST',
+                    headers: {'content-type': 'application/json'},
+                    body: JSON.stringify({rankType: '4', chainQueryList: [query]}),
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            }""",
+            {"chainId": chain_id, "rankingPath": OKX_MEME_RANKING_PATH},
+        )
+        return parse_meme_ranking_response(payload)
 
     def _wait_for_chain(self, chain: str, timeout: float) -> None:
         deadline = time.monotonic() + max(timeout, 0.1)
@@ -180,19 +172,15 @@ class OKXMemeWebClient:
         raise OKXMemeWebError(f"OKX MemePump web discovery timed out for {chain}: {detail}")
 
     def _refresh_current_chain(self, chain: str) -> None:
-        # A newly opened page has already made one authenticated ranking
-        # request during _start(). Reuse that fresh response instead of
-        # clicking the selector just to fetch the same chain again.
+        # Reuse the initial page response when it already contains this chain.
         if chain in self._latest:
             return
         self._errors.pop(chain, None)
-        current = self._selected_chain()
-        if current == chain:
-            self._page.reload(wait_until="domcontentloaded", timeout=self.timeout * 1000)
-            self._page.wait_for_timeout(min(self.settle_ms, 2_000))
-        else:
-            self._click_chain(chain)
-        self._wait_for_chain(chain, self.timeout)
+        try:
+            self._latest[chain] = self._fetch_chain_ranking(chain)
+        except Exception as exc:
+            self._errors[chain] = str(exc)
+            raise OKXMemeWebError(f"OKX MemePump web discovery failed for {chain}: {exc}") from exc
 
     def list_migrated(self, chain: str, *, limit: int = 30) -> list[dict[str, Any]]:
         chain = str(chain).strip().lower()

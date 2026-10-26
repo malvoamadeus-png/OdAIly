@@ -57,25 +57,17 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(OKXMemeWebError, "no token list"):
             parse_meme_ranking_response({"code": 0, "data": {}})
 
-    def test_click_chain_uses_accessible_chain_button(self) -> None:
-        client = OKXMemeWebClient()
-        button = MagicMock()
-        button.count.return_value = 1
-        client._page = MagicMock()
-        client._page.get_by_role.return_value = button
-
-        client._click_chain("bsc")
-
-        client._page.get_by_role.assert_called_once_with("button", name="BNB Chain", exact=True)
-        button.first.evaluate.assert_called_once_with("element => element.click()")
-
-    def test_click_chain_reports_missing_accessible_button(self) -> None:
+    def test_refresh_fetches_explicit_chain_rank_from_page_context(self) -> None:
         client = OKXMemeWebClient()
         client._page = MagicMock()
-        client._page.get_by_role.return_value.count.return_value = 0
+        client._page.evaluate.return_value = {"code": 0, "data": [{"ca": "0xabc"}]}
 
-        with self.assertRaisesRegex(OKXMemeWebError, "has no BNB Chain chain button"):
-            client._click_chain("bsc")
+        client._refresh_current_chain("bsc")
+
+        self.assertEqual(client._latest["bsc"], [{"ca": "0xabc"}])
+        script, args = client._page.evaluate.call_args.args
+        self.assertIn("fetch(", script)
+        self.assertEqual(args, {"chainId": "56", "rankingPath": "/priapi/v1/dx/market/v2/memefun/meme-ranking/content"})
 
     def test_ranking_response_reads_chain_and_rank_type_from_post_body(self) -> None:
         client = OKXMemeWebClient()
