@@ -608,6 +608,11 @@ def parse_args() -> argparse.Namespace:
         "--output",
         help="Text output path. Defaults to a timestamped file under data/exports/bloomberg/.",
     )
+    meme_bloomberg_read.add_argument(
+        "--confirm-authorized-use",
+        action="store_true",
+        help="Confirm the account terms permit programmatic reading and saving for personal research.",
+    )
 
     meme_tg = meme_subparsers.add_parser("tg-watch", help="Listen for repeated CA mentions in Telegram chats.")
     meme_tg.add_argument("--db", default=str(get_paths().processed_dir / "meme_scanner.sqlite3"))

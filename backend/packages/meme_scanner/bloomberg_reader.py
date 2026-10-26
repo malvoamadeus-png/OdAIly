@@ -153,6 +153,11 @@ def _wait_for_operator(process: subprocess.Popen[Any], timeout_seconds: int) -> 
 
 def run(args: Any) -> int:
     load_dotenv()
+    if not bool(getattr(args, "confirm_authorized_use", False)):
+        raise RuntimeError(
+            "confirm Bloomberg account terms permit programmatic reading and personal research saving "
+            "with --confirm-authorized-use"
+        )
     if os.name == "posix" and not os.getenv("DISPLAY"):
         raise RuntimeError("Bloomberg access needs a local display; run this command under xvfb-run -a")
 
