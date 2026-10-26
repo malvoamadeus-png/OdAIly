@@ -10,10 +10,14 @@ from .detector import evaluate_address
 from .discovery import LEADERBOARD_WINDOWS, trade_candidates
 from .history import fill_key
 from .models import Rules, Position, number
-from .store import NewsStore
+from .store import NewsStore, encode
 
 HOUR = 3600000
 DAY = 24 * HOUR
+
+
+def _log(event: str, **fields: Any) -> None:
+    print(encode({'event': event, **fields}), flush=True)
 
 
 def qualifying_leaderboard(rows: list[dict[str, Any]], rules: Rules, now_ms: int, *, include_loss: bool = False):
@@ -107,6 +111,7 @@ class AccountProfitMonitor:
         self.addresses_per_pass = addresses_per_pass
 
     def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
+        pass_started = time.monotonic()
         fixed_now = now_ms
         def clock_ms():
             return fixed_now if fixed_now is not None else int(time.time() * 1000)
@@ -126,33 +131,58 @@ class AccountProfitMonitor:
         report = {'observed_ms': now_ms, 'direction': 'account_profit_and_loss' if include_loss else 'account_profit', 'processed': 0,
                   'candidates': 0, 'failed': {}, 'discovered': 0, 'attribute_queries': 0,
                   'coverage': 'qualifying_public_leaderboard_and_sampled_trades'}
+        _log('account_monitor.pass_started', observed_ms=now_ms, direction=report['direction'],
+             addresses_per_pass=self.addresses_per_pass)
         # Hourly discovery refresh; preserve prior cache and retry on failures.
         if now_ms - self.store.metadata('account_leaderboard_checked_ms', 0) >= HOUR:
+            stage_started = time.monotonic()
+            _log('account_monitor.stage_started', stage='leaderboard_refresh', observed_ms=clock_ms())
             try:
                 rows = self.client.leaderboard()
+                before = len(found)
                 for address, source in qualifying_leaderboard(rows, self.rules, now_ms, include_loss=include_loss):
                     if not self.store.discover(address, source=source, now_ms=now_ms, limit=None):
                         continue
                     self.store.schedule_account(address, now_ms=now_ms, leaderboard_qualified=True)
                     found.add(address.lower())
                 self.store.save_global('account_leaderboard_checked_ms', now_ms, [])
+                _log('account_monitor.stage_completed', stage='leaderboard_refresh', row_count=len(rows),
+                     discovered_count=len(found) - before, elapsed_ms=int((time.monotonic() - stage_started) * 1000))
             except Exception as exc:
                 report['failed']['discovery:leaderboard'] = str(exc)
+                _log('account_monitor.stage_failed', stage='leaderboard_refresh', error=str(exc),
+                     elapsed_ms=int((time.monotonic() - stage_started) * 1000))
         # One sampled market per five minutes. Discovery is distinct from qualification.
         universe = self.store.metadata('account_market_universe', {})
         if not universe or now_ms - universe.get('observed_ms', 0) >= HOUR:
-            dexs = self.client.dex_names()
-            markets = {}
-            for dex in dexs:
-                markets.update(self.client.markets(dex))
-            universe = {'observed_ms': now_ms, 'dexs': dexs, 'markets': markets}
-            self.store.save_global('account_market_universe', universe, [])
+            stage_started = time.monotonic()
+            _log('account_monitor.stage_started', stage='market_universe_refresh', observed_ms=clock_ms())
+            try:
+                dexs = self.client.dex_names()
+                markets = {}
+                for dex in dexs:
+                    dex_started = time.monotonic()
+                    dex_markets = self.client.markets(dex)
+                    markets.update(dex_markets)
+                    _log('account_monitor.market_catalog_completed', dex=dex, market_count=len(dex_markets),
+                         elapsed_ms=int((time.monotonic() - dex_started) * 1000))
+                universe = {'observed_ms': now_ms, 'dexs': dexs, 'markets': markets}
+                self.store.save_global('account_market_universe', universe, [])
+                _log('account_monitor.stage_completed', stage='market_universe_refresh', dex_count=len(dexs),
+                     market_count=len(markets), elapsed_ms=int((time.monotonic() - stage_started) * 1000))
+            except Exception as exc:
+                _log('account_monitor.stage_failed', stage='market_universe_refresh', error=str(exc),
+                     elapsed_ms=int((time.monotonic() - stage_started) * 1000))
+                raise
         dexs, markets = universe['dexs'], universe['markets']
         if now_ms - self.store.metadata('account_trade_discovery_ms', 0) >= 300000 and markets:
             coins = sorted(markets)
             cursor = self.store.metadata('account_trade_cursor', 0) % len(coins)
             coin = coins[cursor]
+            stage_started = time.monotonic()
+            _log('account_monitor.stage_started', stage='trade_discovery', coin=coin, observed_ms=clock_ms())
             try:
+                before = len(found)
                 for address, source in trade_candidates(self.client.recent_trades(coin), coin, self.rules, now_ms):
                     if not self.store.discover(address, source=source, now_ms=now_ms, limit=None):
                         continue
@@ -160,27 +190,46 @@ class AccountProfitMonitor:
                     found.add(address.lower())
                 self.store.save_global('account_trade_discovery_ms', now_ms, [])
                 self.store.save_global('account_trade_cursor', (cursor + 1) % len(coins), [])
+                _log('account_monitor.stage_completed', stage='trade_discovery', coin=coin,
+                     discovered_count=len(found) - before, elapsed_ms=int((time.monotonic() - stage_started) * 1000))
             except Exception as exc:
                 report['failed']['discovery:' + coin] = str(exc)
+                _log('account_monitor.stage_failed', stage='trade_discovery', coin=coin, error=str(exc),
+                     elapsed_ms=int((time.monotonic() - stage_started) * 1000))
         for row in self.store.account_due(now_ms, self.addresses_per_pass):
             address = row['address']
             if self.store.blocked(address):
+                _log('account_monitor.address_skipped', address=address, reason='blocked', observed_ms=clock_ms())
                 continue
             # Wall time is required in production; fixed time is for offline tests.
             observed = clock_ms()
+            address_started = time.monotonic()
+            stage = 'load_baseline'
+            _log('account_monitor.address_started', address=address, tier=row.get('tier'),
+                 qualified=bool(row.get('qualified')), observed_ms=observed)
             try:
                 old = self.store.load(address)
                 performance = self.store.metadata('account_performance:' + address, {})
                 if not performance or observed - performance.get('fetched_ms', 0) >= HOUR:
+                    stage = 'portfolio_qualification'
+                    stage_started = time.monotonic()
+                    _log('account_monitor.address_stage_started', address=address, stage=stage, observed_ms=clock_ms())
                     performance = portfolio_performance(self.client.portfolio(address), clock_ms())
                     self.store.save_global('account_performance:' + address, performance, [])
+                    _log('account_monitor.address_stage_completed', address=address, stage=stage,
+                         elapsed_ms=int((time.monotonic() - stage_started) * 1000), qualified=is_qualified(performance))
                 if not is_qualified(performance):
                     self.store.update_account_schedule(address, now_ms=observed, tier='unqualified',
                                                        interval_ms=DAY, qualified=False)
                     report['processed'] += 1
+                    _log('account_monitor.address_completed', address=address, outcome='unqualified',
+                         elapsed_ms=int((time.monotonic() - address_started) * 1000))
                     continue
                 positions = {}
                 snapshot_times = {}
+                stage = 'positions'
+                stage_started = time.monotonic()
+                _log('account_monitor.address_stage_started', address=address, stage=stage, dex_count=len(dexs), observed_ms=clock_ms())
                 for dex in dexs:
                     payload = self.client.positions(address, dex)
                     snapshot_times[dex] = payload.get('time')
@@ -194,6 +243,8 @@ class AccountProfitMonitor:
                         if p.coin in positions:
                             raise ValueError('Duplicate market position')
                         positions[p.coin] = p
+                _log('account_monitor.address_stage_completed', address=address, stage=stage,
+                     position_count=len(positions), elapsed_ms=int((time.monotonic() - stage_started) * 1000))
                 # No historical statistical backfill: only actions since this deployment.
                 # Requalification starts a fresh baseline after an unqualified period.
                 from .account_loss import loss_qualified
@@ -213,7 +264,14 @@ class AccountProfitMonitor:
                 query_history = bool(baseline and (size_changed or pending or observed-history_checked >= 900000))
                 history_end_ms = observed
                 if query_history:
+                    stage = 'fill_history'
+                    stage_started = time.monotonic()
+                    _log('account_monitor.address_stage_started', address=address, stage=stage,
+                         since_ms=since, until_ms=observed, observed_ms=clock_ms())
                     fetched, coverage = self.client.history(address, since, observed, max_pages=2)
+                    _log('account_monitor.address_stage_completed', address=address, stage=stage,
+                         fill_count=len(fetched), pagination_complete=coverage.get('pagination_complete', True),
+                         elapsed_ms=int((time.monotonic() - stage_started) * 1000))
                 else:
                     fetched = []
                     coverage = coverage if baseline else {'pagination_complete': True, 'next_start_ms': observed,
@@ -227,6 +285,9 @@ class AccountProfitMonitor:
                     self.store.update_account_schedule(address, now_ms=observed, tier='backfill',
                         interval_ms=30000, qualified=True)
                     report.setdefault('incomplete_history', []).append(address)
+                    _log('account_monitor.address_deferred', address=address, reason='incomplete_history',
+                         fill_count=len(fetched), next_start_ms=coverage.get('next_start_ms'),
+                         elapsed_ms=int((time.monotonic() - address_started) * 1000))
                     continue
                 known = {fill_key(f) for f in self.store.fills(address,
                     min([since] + [int(f['time']) for f in fetched]), observed)}
@@ -240,6 +301,9 @@ class AccountProfitMonitor:
                 selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
                 if selected:
                     # Verify official profitability again immediately before creating a reportable event.
+                    stage = 'candidate_requalification'
+                    stage_started = time.monotonic()
+                    _log('account_monitor.address_stage_started', address=address, stage=stage, observed_ms=clock_ms())
                     portfolio = self.client.portfolio(address)
                     performance = portfolio_performance(portfolio, clock_ms())
                     self.store.save_global('account_performance:' + address, performance, [])
@@ -259,6 +323,8 @@ class AccountProfitMonitor:
                             if total:
                                 event.evidence.setdefault('history', {})['official_account_total_pnl'] = total
                         selected = [e for e in (account_event(e, self.rules, include_loss=include_loss) for e in events) if e]
+                    _log('account_monitor.address_stage_completed', address=address, stage=stage,
+                         candidate_count=len(selected), elapsed_ms=int((time.monotonic() - stage_started) * 1000))
                 state['account_history_checked_ms'] = history_end_ms if query_history or not baseline else history_checked
                 state['snapshot_times'] = snapshot_times
                 for e in selected:
@@ -277,14 +343,22 @@ class AccountProfitMonitor:
                 report['attribute_queries'] += int(query_history)
                 report['processed'] += 1
                 report['candidates'] += len(selected)
+                _log('account_monitor.address_completed', address=address, outcome='checked',
+                     candidate_count=len(selected), elapsed_ms=int((time.monotonic() - address_started) * 1000))
             except Exception as exc:
                 self.store.record_error(address, observed, str(exc))
                 self.store.update_account_schedule(address, now_ms=observed, tier='retry',
                     interval_ms=300000, qualified=bool(row['qualified']))
                 report['failed'][address] = str(exc)
+                _log('account_monitor.address_failed', address=address, stage=stage, error=str(exc),
+                     elapsed_ms=int((time.monotonic() - address_started) * 1000))
         report['discovered'] = len(found)
         report['completed_ms'] = clock_ms()
         report['pool'] = self.store.account_pool_stats(clock_ms())
         report['request_weight_total'] = getattr(self.client, 'request_weight', 0)
         self.store.save_global('last_pass', report, [])
+        _log('account_monitor.pass_completed', observed_ms=report['completed_ms'], processed=report['processed'],
+             candidates=report['candidates'], discovered=report['discovered'], failed_count=len(report['failed']),
+             incomplete_history_count=len(report.get('incomplete_history', [])),
+             request_weight_total=report['request_weight_total'], elapsed_ms=int((time.monotonic() - pass_started) * 1000))
         return report

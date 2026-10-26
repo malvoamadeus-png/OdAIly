@@ -274,7 +274,7 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 
 `production_account_profit` 元数据记录十个 `enabled_scenarios` 及 `scenario_started_ms`。账户高盈利/总亏损保留各自上线起点、资格和新鲜度校验；普通八方向只接收新普通基线生成的事件，测试回放不得投递。投递查询和创建 task 的事务内均按方向、起点及证据检查。共享流水线行为防重、跨来源查重和后台提交保持有效。
 
-服务 `deploy/odaily-hyperliquid-account-profit.service` 使用 `hyperliquid-news run-account-profit`，每轮采集普通八方向和账户两方向，并投递最多 10 条；循环间隔 30 秒，异常写入 `last_pass` 并重试。旧手工 `odaily-whale-watch-hyperliquid.service` 不受此方向开关控制。
+服务 `deploy/odaily-hyperliquid-account-profit.service` 使用 `hyperliquid-news run-account-profit`，每轮采集普通八方向和账户两方向，并投递最多 10 条；循环间隔 30 秒，异常写入 `last_pass` 并重试。日志以 JSON 行写入 stdout/journald：外层 `account_profit_worker.*` 记录轮次及账户监控、普通监控、派发各阶段的开始/结束/异常；`account_monitor.*` 记录榜单刷新、市场目录、轮转成交发现、地址检查、收益资格、仓位、成交历史和候选复核的耗时与结果。地址异常包含失败阶段；分页未完成会记录延后原因；派发结果附 `event_observed_ms` 与 `dispatch_delay_ms`，用于区分监测发现、派发和后续流水线延迟。旧手工 `odaily-whale-watch-hyperliquid.service` 不受此方向开关控制。
 
 服务器同步已提交代码并激活模板后执行：
 

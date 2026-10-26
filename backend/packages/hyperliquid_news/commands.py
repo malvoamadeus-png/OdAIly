@@ -88,25 +88,56 @@ def run_command(args: Any) -> int:
                                      leaderboard_seeds=0, markets_per_discovery=1)
         dispatcher = EventDispatcher(store)
         while True:
-            report = {'observed_ms': int(time.time()*1000), 'direction': 'approved_scenarios'}
+            cycle_started = time.monotonic()
+            cycle_ms = int(time.time() * 1000)
+            report = {'observed_ms': cycle_ms, 'direction': 'approved_scenarios'}
+            print(encode({'event': 'account_profit_worker.pass_started', 'observed_ms': cycle_ms}), flush=True)
+            stage_started = time.monotonic()
+            print(encode({'event': 'account_profit_worker.stage_started', 'stage': 'account_monitor',
+                          'observed_ms': int(time.time() * 1000)}), flush=True)
             try:
                 report['account_monitor'] = monitor.run_once()
+                print(encode({'event': 'account_profit_worker.stage_completed', 'stage': 'account_monitor',
+                              'elapsed_ms': int((time.monotonic() - stage_started) * 1000),
+                              'candidate_count': report['account_monitor'].get('candidates')}), flush=True)
             except Exception as exc:
                 report.setdefault('failed', {})['account_monitor'] = str(exc)
+                print(encode({'event': 'account_profit_worker.stage_failed', 'stage': 'account_monitor',
+                              'error': str(exc), 'elapsed_ms': int((time.monotonic() - stage_started) * 1000)}), flush=True)
+            stage_started = time.monotonic()
+            print(encode({'event': 'account_profit_worker.stage_started', 'stage': 'normal_monitor',
+                          'observed_ms': int(time.time() * 1000)}), flush=True)
             try:
                 report['normal_monitor'] = normal_monitor.run_once()
+                print(encode({'event': 'account_profit_worker.stage_completed', 'stage': 'normal_monitor',
+                              'elapsed_ms': int((time.monotonic() - stage_started) * 1000),
+                              'candidate_count': report['normal_monitor'].get('candidates')}), flush=True)
             except Exception as exc:
                 report.setdefault('failed', {})['normal_monitor'] = str(exc)
+                print(encode({'event': 'account_profit_worker.stage_failed', 'stage': 'normal_monitor',
+                              'error': str(exc), 'elapsed_ms': int((time.monotonic() - stage_started) * 1000)}), flush=True)
+            stage_started = time.monotonic()
+            print(encode({'event': 'account_profit_worker.stage_started', 'stage': 'dispatch',
+                          'observed_ms': int(time.time() * 1000)}), flush=True)
             try:
                 report['dispatch'] = dispatcher.dispatch(limit=10)
                 store.save_global('last_pass', report, [])
+                print(encode({'event': 'account_profit_worker.stage_completed', 'stage': 'dispatch',
+                              'elapsed_ms': int((time.monotonic() - stage_started) * 1000),
+                              'result_count': len(report['dispatch']), 'results': report['dispatch']}), flush=True)
                 print(encode(report), flush=True)
             except Exception as exc:
                 report.setdefault('failed', {})['dispatch'] = str(exc)
                 store.save_global('last_pass', report, [])
+                print(encode({'event': 'account_profit_worker.stage_failed', 'stage': 'dispatch',
+                              'error': str(exc), 'elapsed_ms': int((time.monotonic() - stage_started) * 1000)}), flush=True)
                 print(encode(report), flush=True)
                 if args.once:
                     raise
+            print(encode({'event': 'account_profit_worker.pass_completed',
+                          'observed_ms': int(time.time() * 1000),
+                          'elapsed_ms': int((time.monotonic() - cycle_started) * 1000),
+                          'failed_stages': list(report.get('failed', {}))}), flush=True)
             if args.once:
                 break
             time.sleep(30)

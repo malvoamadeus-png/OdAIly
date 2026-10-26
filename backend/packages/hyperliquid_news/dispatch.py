@@ -78,6 +78,8 @@ class EventDispatcher:
             if not production_allowed(event, policy):
                 continue
             result = self._create_task(event)
+            result['event_observed_ms'] = event.get('observed_ms')
+            result['dispatch_delay_ms'] = max(0, int(datetime.now(UTC).timestamp() * 1000) - int(event.get('observed_ms', 0)))
             if result['status'] in ('duplicate', 'no_change_evidence', 'direction_disabled', 'address_blocked'):
                 results.append(result)
                 continue
