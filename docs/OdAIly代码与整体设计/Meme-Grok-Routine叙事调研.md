@@ -2,7 +2,7 @@
 
 ## 用途
 
-`meme grok-narrative` 是人工触发的一次性调研入口。它把 CA、可选链和代币名、可选线索提交给外部自动化 Webhook，调查市场在用什么角度和理由炒作该代币。当前接入的是用户提供的 Cursor 自动化端点，由它触发 Grok Bot；这不是直接调用 xAI X Search API。该命令不接入 Meme速递自动任务、worker、挂后台或发布流程。
+`meme grok-narrative` 是人工触发的一次性调研入口。它把 CA、可选链和代币名、可选线索提交给外部自动化 Webhook，调查市场在用什么角度和理由炒作该代币。当前接入的是用户提供的 Cursor 自动化端点，由它触发 Grok Bot；这不是直接调用 xAI X Search API。CLI保留人工触发能力；自动Meme速递与今日热门Meme现在通过同一Webhook及回调能力调研，自动调度见《控制台-Meme速递》。自动请求由 `grok_jobs.py` 持久化，等待15分钟后降级，结果进入共用分类写作。服务器私有凭证默认放在 `data/config/grok.txt`（权限600），也可用 `GROK_ROUTINE_CREDENTIALS_FILE`指定；不得提交凭证。
 
 Routine 调查只整理市场叙事与证据，不生成买卖建议或价格预测。请求中的 `notes` 只作为检索线索；调查结果仍由 Routine 独立检索并按其结果契约返回。
 

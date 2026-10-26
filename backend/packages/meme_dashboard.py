@@ -41,6 +41,10 @@ def _chain(value: Any) -> str:
         return "solana"
     if normalized in {"robinhood", "robinhood-chain", "robinhoodchain"}:
         return "robinhood"
+    if normalized in {"eth", "ethereum"}:
+        return "eth"
+    if normalized == "base":
+        return "base"
     return "bsc"
 
 
@@ -145,7 +149,7 @@ def _row_item(
     payload = _json_object(row["payload_json"])
     narrative = _json_object(row["narrative_json"])
     chain = _chain(payload.get("chain"))
-    current_market = (market_observations or {}).get((chain, str(row["address"]).strip().lower()))
+    current_market = None if row["trigger_kind"] == "daily_hot" else (market_observations or {}).get((chain, str(row["address"]).strip().lower()))
     candidate: dict[str, Any] = {}
     if row["trigger_kind"] == "tg_burst":
         try:
@@ -189,7 +193,11 @@ class MemeDashboardStore:
         connection.execute("PRAGMA busy_timeout=10000")
         return connection
 
-    def dashboard(self, *, limit: int = 100) -> dict[str, Any]:
+    def dashboard(self, *, limit: int = 100, column: str = "all") -> dict[str, Any]:
+        if column not in {"all", "digest", "daily_hot"}:
+            raise ValueError("Invalid Meme column")
+        column_clause = {"all": "1=1", "digest": "trigger_kind != 'daily_hot'",
+                         "daily_hot": "trigger_kind = 'daily_hot'"}[column]
         generated_at = datetime.now(UTC).isoformat()
         if not self.path.exists():
             return {
@@ -206,7 +214,7 @@ class MemeDashboardStore:
                     SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,
                            queued_at,status,reason,title,content,updated_at,{_job_columns(connection)}
                     FROM jobs
-                    WHERE COALESCE(reason, '') NOT IN ('volume_gate_failed', 'tg_market_cap_gate_failed', 'unsupported_chain', 'token_not_found')
+                    WHERE ({column_clause}) AND COALESCE(reason, '') NOT IN ('volume_gate_failed', 'tg_market_cap_gate_failed', 'unsupported_chain', 'token_not_found')
                     ORDER BY updated_at DESC,id DESC
                     LIMIT ?
                     """,

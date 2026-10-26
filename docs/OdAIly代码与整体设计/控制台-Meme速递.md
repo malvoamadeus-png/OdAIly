@@ -2,7 +2,7 @@
 
 ## 职责
 
-`Meme速递` 是控制台一级只读页面，用于查看 OdAIly 内置 Meme worker 生成的候选、任务状态和最终文本。
+`Meme速递` 是控制台一级只读页面，用于查看 OdAIly 内置 Meme worker 生成的候选、任务状态和最终文本。页面有“Meme速递 / 今日热门Meme”两个二级标签。
 它不提供阈值编辑、重跑、发布或任务状态修改能力。
 
 ## 上游链路
@@ -18,7 +18,19 @@
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议成功入队时立即写 active 跟踪状态及查询计划；后续 OKX `completed` 扫描复用该观察和里程碑账本，不重新启动窗口。
 - 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。Dexscreener 的所选交易对、流动性、市值和成交量字段写入原始快照；Meme 链路不调用 OKX 签名详情接口，也不执行 OKX 风险字段拦截。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成保留版本化快速材料契约，但 Telegram、FxTwitter 和 FOMO Thesis 都由 `odaily-official` 的本地 collector 并行收集；OdAIly 使用 `gpt-6-luna` 做材料分类与最终写作。Telegram/FxTwitter 不启动浏览器。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存三路材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成保留版本化快速材料契约，但 Telegram、FxTwitter 和 FOMO Thesis 都由 `odaily-official` 的本地 collector 并行收集；两个栏目额外请求Grok Bot Routine，非阻塞等待回调最多15分钟；失败或超时仍用其他材料写稿。OdAIly使用 `gpt-6-luna` 在同一次调用内判断 `pure_meme/celebrity_anchor/app_linked`，再按对应入口写作；Grok材料单独以 `Grok补充资料显示，` 开头，允许重复炒作角度。Telegram/FxTwitter 不启动浏览器。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存三路材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+
+## 今日热门Meme
+
+`daily_hot.py` 从HideOnBush迁移GMGN CLI的榜单查询和 `data.rank` 解析；独立发现线程每小时扫描Solana、BSC、Base、Ethereum、Robinhood，各取1小时涨幅榜、6小时市值榜、24小时市值榜前20名。1小时要求涨幅至少20%，6小时至少30%，24小时无涨幅要求。市值由Dexscreener提供，三类均要求至少100万美元并通过现有 `volume_ratio_gate`。不限制发行平台，不增加控盘/刷量或安全筛选，不截断全链候选数。
+
+每链全部榜单及行情批次首次成功后，原子建立基线而不发稿；部分失败不完成该链初始化。按链＋CA永久记录首次满足全部条件的代币，成交量不足不消耗资格；首次入选后离榜回榜不再触发。Solana地址保留大小写。GMGN负责排名和对应时段涨幅，Dexscreener按完整行情字段和最高USD流动性选择交易对。
+
+`daily_hot_chains`保存初始化，`daily_hot_scans`保存最近7天扫描结果，`daily_hot_seen`永久保存入选身份。`jobs.trigger_kind=daily_hot`复用任务及挂后台链路，不写入Meme速递观察/里程碑账本。两个栏目独立去重。首次达标后没有可用叙事也不重新产生候选，普通暂时错误沿用队列重试。
+
+Grok请求用 `meme_grok_jobs` 按任务trigger_key保存；回调校验与接收复用API服务。等待期间任务为 `retry_wait/reason=grok_pending`，不消耗普通重试次数，不阻塞候选扫描或其他写作。提交前先持久化请求，重启不重复投递不确定的请求。明确失败/超时后以其他材料降级，不补改已写稿。
+
+运行配置：`GROK_ROUTINE_CREDENTIALS_FILE`默认 `data/config/grok.txt`，私有文件权限600；Webhook URL优先 `GROK_ROUTINE_WEBHOOK_URL`，其次凭证文件url；`GROK_CALLBACK_BASE_URL`默认既有公网回调入口；`MEME_HOT_GMGN_REQUEST_INTERVAL`默认35秒。GMGN沿用CLI私有认证。扫描线程与现有scanner同服务运行；`meme scan --once`也执行到期的热门扫描。上游失败记录扫描诊断，下一小时重试。
 
 ## 文本口径
 
@@ -34,16 +46,18 @@ Meme速递：{chain}上{symbol}市值突破{market_cap}万美元
 Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 ```
 
+今日热门Meme：`今日热门Meme：{chain}上{symbol}市值突破{market_cap}万美元`；导语和结尾使用同一栏目名称，详情见共用写作框架。
+
 标题和正文不展示“发射 X 分钟/小时”，也不展示“在社区短时多次出现”等扫描过程语言。
 
 ## 数据接口
 
-- 接口：`GET /console/meme/get`。
+- 接口：`GET /console/meme/get?column=digest|daily_hot|all`。省略column保留旧接口全部记录行为，前端两个标签分别传digest/daily_hot；服务端先筛选栏目再限制条数。
 - 鉴权：复用控制台本地操作者 Bearer session。
 - 数据源：OdAIly 的 `data/processed/meme_scanner.sqlite3`，接口以 SQLite `mode=ro` 打开。
 - 默认生产路径：`/opt/OdAIly/data/processed/meme_scanner.sqlite3`。
 - 覆盖变量：`MEME_SCANNER_DB_PATH`。
-- 返回最近 100 条 `jobs`，并为 `tg_burst` 关联 `tg_candidates` 的命中数、群数和发送者数。
+- 返回所选栏目最近 100 条 `jobs`，并为 `tg_burst` 关联 `tg_candidates` 的命中数、群数和发送者数。
 - 前端列表隐藏明确未通过门槛的任务：`volume_gate_failed`、`tg_market_cap_gate_failed`、`unsupported_chain`、`token_not_found`；这些任务仍保留在 SQLite 中用于审计。
 - 列表响应仅增加叙事摘要：`narrative_available`、`narrative_status`、`failure_stage`、`failure_code`、`primary_type`、`type_hypothesis`；不把 Telegram 上下文塞入列表。
 - 任务详情的 `timing` 还原生命周期耗时：排队（`queued_at -> processing_started_at`）、叙事（`narrative.performance.total_duration_ms`）、发布写入（`publishing_started_at -> completed_at`）和总耗时（`queued_at -> completed_at`）。新库由 `jobs.processing_started_at`、`publishing_started_at`、`completed_at` 记录，旧任务缺字段时返回 `null`。
@@ -80,7 +94,7 @@ python backend/src/main.py meme tg-watch
 - 叙事 Telegram：本地 collector 使用 `MEME_NARRATIVE_TELEGRAM_CONFIG`、`MEME_NARRATIVE_TELEGRAM_SESSION` 和 `MEME_NARRATIVE_TELEGRAM_ALLOWED_CHATS`；它与 watcher 使用不同 session，但使用同一白名单。FxTwitter 请求由 `MEME_NARRATIVE_X_TIMEOUT_SECONDS` 控制。
 - FOMO：`MEME_FOMO_PROFILE_DIR` 是服务器本地、权限 `0700` 的独立运行时 profile，绝不纳入 Git 或审计 JSON；其中浏览器自身保留的认证状态只供后续按需采集使用，应用不读取、导出、打印或写入 Cookie/JWT。`MEME_FOMO_ENABLED`、`MEME_FOMO_NAVIGATION_TIMEOUT_SECONDS`、`MEME_FOMO_REQUEST_TIMEOUT_SECONDS`、`MEME_FOMO_MAX_PAGES` 和 `MEME_FOMO_PAGE_SIZE` 约束单次按需采集。`MEME_FOMO_HEADLESS` 默认 `false`：FOMO 的 Privy runtime 目前只在有头 Chromium 中就绪，生产 scanner 已由 Xvfb 提供虚拟显示；每次采集仍在完成后立即关闭 Chromium。没有 profile、跳转登录页或认证响应时，collector 标记 `login_required`；scanner 使用 `MEME_FOMO_LOGIN_ALERT_CHAT_ID`（回退 `TELEGRAM_CHAT_ID`）、`MEME_FOMO_LOGIN_ALERT_THREAD_ID`（回退全局 topic）、`MEME_FOMO_LOGIN_ALERT_COOLDOWN_SECONDS` 和 `MEME_FOMO_LOGIN_ALERT_TIMEOUT_SECONDS` 向值班人提醒。`MEME_FOMO_LOGIN_RETRY_SECONDS` 默认 300 秒；`MEME_FOMO_LOGIN_TIMEOUT_SECONDS` 和 `MEME_FOMO_LOGIN_CDP_PORT` 只控制一次性 `meme fomo-login` 维护窗口和其 loopback DevTools 端口。登录命令只自动点击可唯一识别的选项，Google 验证挑战由操作者接管；不会启动常驻 FOMO 服务或公开远程调试端口。
 - 快速材料不再使用 `MEME_FAST_EVIDENCE_URL` 或 `MEME_FAST_EVIDENCE_INTERNAL_KEY`，不再请求 HideOnBush。`MEME_LOCAL_EVIDENCE_TIMEOUT` 控制本地采集的总配置上限。
-- 最终写作：使用独立的 `MEME_FAST_WRITER_BASE_URL`、`MEME_FAST_WRITER_API_KEY` 和 `MEME_FAST_WRITER_MODEL`，模型默认固定为 `gpt-6-luna`，请求使用 `reasoning_effort=none`，GPT 客户端默认超时为 `90` 秒。Meme 叙事不调用 Grok、Grok X Search、Grok 实体补充或 GMGN。
+- 最终写作：使用独立的 `MEME_FAST_WRITER_BASE_URL`、`MEME_FAST_WRITER_API_KEY` 和 `MEME_FAST_WRITER_MODEL`，模型默认固定为 `gpt-6-luna`，请求使用 `reasoning_effort=none`，GPT 客户端默认超时为 `90` 秒。Grok补充来自Bot Routine回调；不调用Grok X Search、Grok实体补充或GMGN叙事。
 - 未单独设置快速 writer 地址或密钥时才回退 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`；生产应显式配置支持 Luna 的独立 relay。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
 

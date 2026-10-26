@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,12 +67,20 @@ def build_writer_prompt(*, chain: str, contract: str, symbol: str, materials: li
 
 Only answer what concrete wording, event, identity, relationship, or assertion is being used to hype this token. Use only the supplied materials. Do not research or add background. Do not discuss price, market cap, volume, buying, selling, upside, truth, or investment value. Remove pure CA posts, bot cards, repetition counts, generic excitement, questions without an assertion, and vague slogans.
 
-Keep source attribution because these are third-party claims, not established facts:
+First silently choose primary_type, then write according to that type in the SAME call:
+- pure_meme: begin with the concrete meme, wording, name, or event origin; explain the supplied hype logic. Do not invent a product definition.
+- celebrity_anchor: begin with the named person/official account's concrete action and relevant quote/time, then its supplied community interpretation. A third party's claim is attributed to that source, never invented as an original action.
+- app_linked: directly define what the project does, then explain the concrete platform/function/mechanism and why it is being hyped.
+Only include recent actions when they develop or change the hype logic. Do not fill sections for completeness. No section headings.
+Use clear subjects, precise active verbs and concrete objects/results. Compress chat text to its useful reason: e.g. `群聊 A 表示，多数用户亏钱，却仍被 Pump.fun 大额抽水。` Never narrate when a chat discussed the topic or posted the CA. Avoid `有材料提到`, `核心锚点`, abstract `把A接到B`, empty concluding commentary, and boilerplate uncertainty/disclaimers. Use material-supported causal relationships, do not invent them.
+
+Keep source attribution where it matters:
 - Telegram: one relevant chat is `群聊 A 表示…`; multiple independent chats are `多个群聊表示…`. Never expose chat titles or ordinary usernames.
 - X: one source is `X 上有人表示…`; multiple independent sources are `X 上多名用户表示…`. Do not expose ordinary handles unless the account identity itself is the concrete narrative.
+- grok_routine: use returned research directly as writing input without a second verification requirement or added "尚未核实" disclaimers. Preserve any explicit plan/rumor/speculation status in the returned content. Put its summarized hype reasons in a separate paragraph beginning EXACTLY `Grok补充资料显示，`; repetition of the main narrative is allowed. If usable Grok material is supplied, use it and classify its IDs as supplemental_information. Never fabricate this paragraph if Grok material is absent. Grok can be the sole usable source.
 - fomo_thesis: always attribute every used claim with the exact wording `某信源表示…`. Never write `FOMO`, `Fomo`, `Thesis`, the source product name, author name, or account name in reader_text.
 
-Silently classify each useful material as source, angle, or supplemental information. All three groups may be empty. Do not invent a missing angle or identity. Write concise, direct natural Chinese in one or two paragraphs, without headings, lists, emoji, report language, fixed opening, or disclaimer. The program adds its opening and disclaimer after validation.
+Silently classify each useful material as source, angle, or supplemental information. All three groups may be empty. Do not invent a missing angle or identity. Write concise, direct natural Chinese in as many concise paragraphs as the supplied information needs, without headings, lists, emoji, report language, fixed opening, or disclaimer. The program adds its opening and disclaimer after validation.
 
 Return only JSON:
 {{"primary_type":"pure_meme|celebrity_anchor|app_linked|","source_material_ids":[],"angle_material_ids":[],"supplemental_information_ids":[],"reader_text":"","used_material_ids":[],"discarded_material_ids":[]}}
@@ -137,23 +146,35 @@ def run(
                 chain=args.chain,
                 contract=args.contract,
                 symbol=getattr(args, "symbol", ""),
-                request_id=f"odaily:meme:{args.chain}:{args.contract.lower()}",
+                request_id=f"odaily:meme:{args.chain}:{args.contract if args.chain == 'solana' else args.contract.lower()}",
             )
         )
     except Exception as exc:
-        raise narrative_v2.NarrativeStageError("local_fast_evidence", exc) from exc
+        available = (getattr(args, "grok_routine", {}) or {}).get("result") or {}
+        if available.get("ok") is not True:
+            raise narrative_v2.NarrativeStageError("local_fast_evidence", exc) from exc
+        bundle = {"status": "error", "evidence": [], "diagnostics": {"collection_error": type(exc).__name__}}
+
     collection_metric = {
         "stage": "local_fast_evidence",
         "duration_ms": round((time.perf_counter() - collection_started) * 1000),
         "status": bundle["status"],
     }
-    if bundle["status"] == "error":
+    grok_audit = getattr(args, "grok_routine", {}) or {}
+    grok_result = grok_audit.get("result") or {}
+    grok_materials = []
+    if grok_audit.get("state") == "complete" and grok_result.get("ok") is True:
+        for key in ("primary_narrative", "narratives", "summary"):
+            if grok_result.get(key):
+                grok_materials.append({"id": f"grok:routine:{key}", "source": "grok_routine",
+                    "statement": json.dumps(grok_result[key], ensure_ascii=False), "metadata": {}})
+    if bundle["status"] == "error" and not grok_materials:
         raise narrative_v2.NarrativeStageError(
             "local_fast_evidence",
             RuntimeError(str(bundle.get("decisionReason") or "local Meme evidence collection failed")),
         )
 
-    materials = list(bundle["evidence"])
+    materials = list(bundle["evidence"]) + grok_materials
     material_by_id = {item["id"]: item for item in materials}
     telegram_contexts = bundle.get("telegramContexts") if isinstance(bundle.get("telegramContexts"), list) else []
     telegram_messages = [item for item in materials if item["source"] == "telegram"]
@@ -190,6 +211,14 @@ def run(
             final = narrative_v2.validate_final_result(raw_final, material_by_id)
             used_fomo = {item["id"] for item in fomo_materials}.intersection(final["used_material_ids"])
             reader_text = str(final.get("reader_text") or "")
+            if reader_text and not final.get("primary_type"):
+                raise RuntimeError("Nonempty narrative requires a valid primary_type")
+            if grok_materials and reader_text and (
+                not re.search(r"(?m)^(?:" + re.escape(narrative_v2.READER_OPENING) + r")?Grok补充资料显示，", reader_text)
+                or not any(item["id"] in final["used_material_ids"] for item in grok_materials)
+                or not any(item.get("source") == "grok_routine" for item in final["supplemental_information"])
+            ):
+                raise RuntimeError("Usable Grok research must appear under Grok补充资料显示，")
             if used_fomo and ("某信源表示" not in reader_text or any(word in reader_text for word in ("FOMO", "Fomo", "Thesis"))):
                 raise RuntimeError("FOMO material must use the anonymous `某信源表示` attribution")
         except Exception as exc:
@@ -213,7 +242,8 @@ def run(
         "telegram_messages": telegram_messages,
         "x_posts": x_posts,
         "fomo_materials": fomo_materials,
-        "grok_research": {},
+        "grok_research": grok_result,
+        "grok_routine": grok_audit,
         "grok_diagnostics": [],
         "gmgn_supplement": [],
         "gmgn_diagnostic": {"stage": "gmgn_narrative", "status": "disabled"},

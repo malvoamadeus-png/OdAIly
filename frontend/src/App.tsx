@@ -897,6 +897,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [pipelineTiming, setPipelineTiming] = useState<PipelineTimingDashboard>(emptyPipelineTimingDashboard);
   const [gateMarket, setGateMarket] = useState<GateMarketDashboard | null>(null);
   const [stockMarket, setStockMarket] = useState<StockMarketDashboard | null>(null);
+  const [memeColumn, setMemeColumn] = useState<'digest' | 'daily_hot'>('digest');
   const [memeDashboard, setMemeDashboard] = useState<MemeDashboard | null>(null);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -1144,11 +1145,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function loadMemeDashboard() {
+  async function loadMemeDashboard(column: 'digest' | 'daily_hot' = memeColumn) {
     setError('');
     setLoadingMeme(true);
     try {
-      setMemeDashboard(await getMemeDashboard());
+      setMemeDashboard(await getMemeDashboard(column));
     } finally {
       setLoadingMeme(false);
     }
@@ -1859,7 +1860,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'stock_market'
         ? `${stockMarket?.contract_count || 0} 个合约 · 每${stockMarket?.poll_interval_seconds || 30}秒轮询 · 只读`
       : view === 'meme'
-        ? `${memeDashboard?.items.length || 0} 条记录 · 普通新币 50 万起 · 社群热议 5 次且 30 万起 · 只读`
+        ? `${memeDashboard?.items.length || 0} 条记录 · ${memeColumn === 'daily_hot' ? '每小时扫描 · 首次达标 · 100万美元起' : '市值里程碑与社群热议'} · 只读`
       : view === 'x_agent'
         ? '热点话题、热点自动快讯、市场情绪与项目推介的独立工作区'
       : view === 'publisher'
@@ -2251,7 +2252,18 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ) : view === 'stock_market' ? (
           <StockMarketPanel dashboard={stockMarket} loading={loadingStockMarket} />
         ) : view === 'meme' ? (
-          <MemeDashboardPanel dashboard={memeDashboard} loading={loadingMeme} />
+          <>
+            <div className="memeAuditNestedTabs" role="tablist" aria-label="Meme栏目">
+              {([['digest', 'Meme速递'], ['daily_hot', '今日热门Meme']] as const).map(([key, label]) => (
+                <button key={key} role="tab" aria-selected={memeColumn === key}
+                  className={memeColumn === key ? 'memeAuditNestedTab active' : 'memeAuditNestedTab'}
+                  disabled={loadingMeme} onClick={() => { setMemeColumn(key); setMemeDashboard(null); void loadMemeDashboard(key); }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <MemeDashboardPanel dashboard={memeDashboard} loading={loadingMeme} />
+          </>
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}
@@ -3079,7 +3091,7 @@ function memeStatusLabel(item: MemeDashboardItem): string {
     case 'publishing':
       return '处理中';
     case 'retry_wait':
-      return '等待重试';
+      return item.reason === 'grok_pending' ? '等待Grok调研' : '等待重试';
     case 'discarded':
       return '未播报';
     case 'publish_failed':
@@ -3393,6 +3405,10 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                     <div className="memeAuditSectionBody">
                       <MaterialList title="X 原帖" materials={listValue(narrative?.x_posts)} />
                       <MaterialList title="某信源材料" materials={listValue(narrative?.fomo_materials)} />
+                      <strong>榜单入选条件与首次入选时间</strong>
+                      <pre className="memeAuditPre">{JSON.stringify(narrative?.discovery || {}, null, 2)}</pre>
+                      <strong>Grok Bot 请求与原始结果</strong>
+                      <pre className="memeAuditPre">{JSON.stringify(narrative?.grok_routine || {}, null, 2)}</pre>
                     </div>
                   )}
                 </section>
@@ -3462,16 +3478,16 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
         </div>
       </div>
 
-      {loading && <div className="emptyState">Meme速递数据加载中。</div>}
+      {loading && <div className="emptyState">Meme栏目数据加载中。</div>}
       {!loading && dashboard && !dashboard.available && (
         <div className="emptyState">{dashboard.last_error || 'Meme速递数据暂不可用。'}</div>
       )}
-      {!loading && dashboard?.available && items.length === 0 && <div className="emptyState">暂无 Meme速递记录。</div>}
+      {!loading && dashboard?.available && items.length === 0 && <div className="emptyState">暂无该栏目记录。</div>}
 
       <div className="memeList">
         {items.map((item) => {
           const community = item.trigger_kind === 'tg_burst';
-          const dexscreenerUrl = `https://dexscreener.com/${encodeURIComponent(item.chain)}/${encodeURIComponent(item.address)}`;
+          const dexscreenerUrl = `https://dexscreener.com/${encodeURIComponent(item.chain === 'eth' ? 'ethereum' : item.chain)}/${encodeURIComponent(item.address)}`;
           return (
             <article className="memeItem" key={item.id}>
               <header className="memeItemHeader">
@@ -3480,7 +3496,7 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
                     <strong>{item.symbol || '?'}</strong>
                     {item.name && item.name !== item.symbol && <span>{item.name}</span>}
                     <span className={community ? 'statusPill' : 'statusPill neutral'}>
-                      {community ? '社群热议' : '普通新币'}
+                      {item.trigger_kind === 'daily_hot' ? '今日热门Meme' : community ? '社群热议' : '普通新币'}
                     </span>
                     <span className={item.status === 'discarded' || item.status.endsWith('failed') ? 'statusPill warn' : 'statusPill'}>
                       {memeStatusLabel(item)}
@@ -3498,14 +3514,14 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
                 </div>
                 <div>
                   <span>来源</span>
-                  <strong>{community ? 'Telegram 白名单社群' : item.platform}</strong>
+                  <strong>{item.trigger_kind === 'daily_hot' ? 'GMGN 热门榜单' : community ? 'Telegram 白名单社群' : item.platform}</strong>
                 </div>
                 <div>
                   <span>{community ? '热议数据' : '触发档位'}</span>
                   <strong>
                     {community
                       ? `${item.mention_count ?? '-'} 次 · ${item.sender_count ?? '-'} 人 · ${item.chat_count ?? '-'} 群`
-                      : fmtMemeMarketCap(item.trigger_level)}
+                      : fmtMemeMarketCap(item.trigger_kind === 'daily_hot' ? item.market_cap : item.trigger_level)}
                   </strong>
                 </div>
               </div>

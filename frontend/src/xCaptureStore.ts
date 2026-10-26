@@ -1547,7 +1547,7 @@ export async function getStockMarketDashboard(): Promise<StockMarketDashboard> {
 export type MemeDashboardItem = {
   id: number;
   address: string;
-  chain: 'bsc' | 'robinhood' | 'solana';
+  chain: 'bsc' | 'robinhood' | 'solana' | 'base' | 'eth';
   platform: string;
   name: string;
   symbol: string;
@@ -1590,8 +1590,8 @@ export type MemeDashboard = {
   last_error: string | null;
 };
 
-export async function getMemeDashboard(): Promise<MemeDashboard> {
-  return consoleApiGet<MemeDashboard>('/console/meme/get');
+export async function getMemeDashboard(column: 'digest' | 'daily_hot' = 'digest'): Promise<MemeDashboard> {
+  return consoleApiGet<MemeDashboard>(`/console/meme/get?column=${column}`);
 }
 
 export type MemeNarrativeMaterial = Record<string, unknown>;
@@ -1607,6 +1607,8 @@ export type MemeNarrativeDetail = {
     material_counts?: Record<string, number>;
     decision_code?: string | null;
     decision_reason?: string | null;
+    grok_routine?: Record<string, unknown>;
+    discovery?: Record<string, unknown>;
     telegram_contexts?: MemeNarrativeMaterial[];
     telegram_messages?: MemeNarrativeMaterial[];
     x_posts?: MemeNarrativeMaterial[];

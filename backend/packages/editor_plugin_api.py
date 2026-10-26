@@ -766,9 +766,11 @@ class EditorPluginNewsGenService:
         del actor
         return self.stock_market_store.dashboard()
 
-    def get_meme_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+    def get_meme_dashboard(self, actor: AuthenticatedEditor, column: str = "all") -> dict[str, Any]:
         del actor
-        return self.meme_dashboard_store.dashboard()
+        if column not in {"all", "digest", "daily_hot"}:
+            raise EditorPluginApiError(HTTPStatus.BAD_REQUEST, "Unknown Meme column")
+        return self.meme_dashboard_store.dashboard(column=column)
 
     def get_meme_narrative_detail(self, actor: AuthenticatedEditor, job_id: int) -> dict[str, Any] | None:
         del actor
@@ -1327,7 +1329,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
                 self._send_json(
                     HTTPStatus.OK,
-                    {"ok": True, "data": self.server.service.get_meme_dashboard(actor)},
+                    {"ok": True, "data": self.server.service.get_meme_dashboard(
+                        actor, column=(parse_qs(parsed_path.query).get("column") or ["all"])[0])},
                 )
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})

@@ -269,7 +269,9 @@ def close_okx_meme_web_client() -> None:
 def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False) -> Token | None:
     # Launchpad/platform is metadata only. Keep the keyword for compatibility
     # with older callers, but never reject a token based on its platform value.
-    address = str(row.get("address") or "").strip().lower()
+    address = str(row.get("address") or "").strip()
+    if normalize_chain(row.get("chain")) != "solana":
+        address = address.lower()
     platform = str(row.get("launchpad_platform") or row.get("launchpad") or "").strip().lower()
     chain = normalize_chain(row.get("chain"), default="")
     if not address:
@@ -289,7 +291,9 @@ def token_from_row(row: dict[str, Any], *, allow_unknown_platform: bool = False)
 
 
 def _okx_token_from_item(item: dict[str, Any], chain: str) -> Token | None:
-    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or item.get("ca") or "").strip().lower()
+    address = str(item.get("tokenAddress") or item.get("tokenContractAddress") or item.get("ca") or "").strip()
+    if chain != "solana":
+        address = address.lower()
     if not address:
         return None
     launchpad = (item.get("_okx_platform_filter") or solana_launchpad(item)) if chain == "solana" else None
@@ -348,7 +352,7 @@ def _merge_dexscreener_price_info(token: Token, pair: dict[str, Any] | None) -> 
 
 
 def _fetch_dexscreener_price_info(chain: str, tokens: list[Token]) -> dict[str, dict[str, Any]]:
-    return get_dexscreener_client().price_info(chain, [token.address for token in tokens]) if tokens else {}
+    return get_dexscreener_client().price_info("ethereum" if chain == "eth" else chain, [token.address for token in tokens]) if tokens else {}
 
 
 def okx_browser_lock_timeout_seconds() -> float:
@@ -538,7 +542,7 @@ def fetch_token_info(
     resolve_identity: bool = False,
 ) -> Token | None:
     requested_chain = normalize_chain(chain)
-    if requested_chain in {"bsc", "robinhood", "solana"}:
+    if requested_chain in SUPPORTED_CHAINS:
         return fetch_okx_token_info(address, requested_chain, resolve_identity=resolve_identity)
     del allow_unknown_platform
     return None
@@ -1257,7 +1261,7 @@ class Store:
         return self.conn.execute(
             """SELECT * FROM jobs
             WHERE status='queued' OR (status='retry_wait' AND COALESCE(next_attempt_at, '')<=?)
-            ORDER BY id LIMIT 1""",
+            ORDER BY CASE WHEN reason='grok_pending' THEN 1 ELSE 0 END, updated_at, id LIMIT 1""",
             (now,),
         ).fetchone()
 
@@ -1365,8 +1369,11 @@ def display_market_cap(value: float) -> str:
 def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind: str = "market_cap_milestone") -> tuple[str, str]:
     del sampled_at
     cap = display_market_cap(token.market_cap)
-    chain_label = {"solana": "Solana", "robinhood": "Robinhood"}.get(token.chain, "BSC")
-    if trigger_kind == "tg_burst":
+    chain_label = {"solana": "Solana", "robinhood": "Robinhood", "base": "Base", "eth": "Ethereum"}.get(token.chain, "BSC")
+    if trigger_kind == "daily_hot":
+        title = f"今日热门Meme：{chain_label}上{token.symbol}市值突破{cap}万美元"
+        summary = f"{chain_label}上{token.symbol}市值突破{cap}万美元。"
+    elif trigger_kind == "tg_burst":
         title = f"Meme速递：{chain_label}上{token.symbol}社群热议中，市值{cap}万美元"
         summary = f"{chain_label}上{token.symbol}社群热议中，当前市值为{cap}万美元。"
     else:
@@ -1377,6 +1384,8 @@ def format_text(token: Token, narrative: str, sampled_at: datetime, trigger_kind
         content = f"{READER_OPENING}{summary}\n\n{reader_text[len(READER_OPENING):].lstrip()}"
     else:
         content = f"{READER_OPENING}{summary}\n\n{reader_text}"
+    if trigger_kind == "daily_hot":
+        content = content.replace(READER_OPENING, "据Odaily今日热门Meme监测，", 1).replace("「Meme 速递」", "「今日热门Meme」")
     return normalize_writer2(title), normalize_writer2(content)
 
 
@@ -1436,6 +1445,7 @@ def collect_narrative(
             timeout=timeout,
             audit_output=output,
         )
+        narrative["discovery"] = {k: v for k, v in (evidence or {}).items() if k != "grok_routine"}
         output.write_text(json.dumps(narrative, ensure_ascii=False, indent=2), encoding="utf-8")
         return {
             **narrative,
@@ -1651,6 +1661,15 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     if token is None:
         store.update_job(job["id"], "discarded", reason="invalid_token_payload")
         return "invalid_token_payload"
+    from .grok_jobs import prepare as prepare_grok
+    grok_ready, grok_audit = prepare_grok(store, job, token)
+    if not grok_ready:
+        return "grok_pending"
+    if job["reason"] == "grok_pending":
+        with store.conn:
+            store.conn.execute("UPDATE jobs SET reason=NULL WHERE id=?", (job["id"],))
+    job_evidence = json.loads(job["evidence_json"]) if job["evidence_json"] else {}
+    job_evidence["grok_routine"] = grok_audit
     narrative = collect_narrative(
         token,
         command_template=args.narrative_command,
@@ -1662,9 +1681,11 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
             if getattr(args, "db", None)
             else Path(store.conn.execute("PRAGMA database_list").fetchone()[2])
         ),
-        evidence=json.loads(job["evidence_json"]) if job["evidence_json"] else None,
+        evidence=job_evidence,
         trigger_kind=str(job["trigger_kind"]),
     )
+    narrative["grok_routine"] = grok_audit
+    narrative["discovery"] = {k: v for k, v in job_evidence.items() if k != "grok_routine"}
     log_narrative_result(job, token, narrative)
     alert_fomo_login_required(store, narrative)
     reader_text = str(narrative.get("reader_text") or "").strip()
@@ -1686,11 +1707,11 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     )
     if pushed["ok"]:
         store.update_job(job["id"], "publisher_pending", publish=pushed)
-        store.upsert_observation(
-            token,
-            published_at=now_iso(),
-            advance_market_cap_high_watermark=str(job["trigger_kind"]) != "tg_burst",
-        )
+        if job["trigger_kind"] != "daily_hot":
+            store.upsert_observation(
+                token, published_at=now_iso(),
+                advance_market_cap_high_watermark=str(job["trigger_kind"]) != "tg_burst",
+            )
         if args.send:
             try:
                 LocalEditorPluginFeedWriter().upsert_meme_digest(
@@ -2071,6 +2092,7 @@ def run(args: argparse.Namespace) -> int:
     from .retention import prune as prune_history
 
     load_dotenv()
+    from .daily_hot import worker as hot_worker, scan as hot_scan
     store = Store(Path(args.db))
     last_retention = -3600.0
     recovered = store.recover_inflight()
@@ -2085,18 +2107,23 @@ def run(args: argparse.Namespace) -> int:
         print(f"[meme-scan] tracking_policy_updated={policy_changes}")
     try:
         if args.once:
+            hot_scan(store)
             scan_once(store, args)
             return 0
         stop_event = threading.Event()
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="narrative-worker") as executor, ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="token-info-worker"
-        ) as tracking_executor:
+        ) as tracking_executor, ThreadPoolExecutor(max_workers=1, thread_name_prefix="hot-discovery") as hot_executor:
+            hot_future = hot_executor.submit(hot_worker, args.db, stop_event)
             tracking_future = tracking_executor.submit(token_info_worker, args.db, args, stop_event)
             worker: Future[str | None] | None = None
             try:
                 while True:
                     started = time.monotonic()
                     processed: str | None = None
+                    if hot_future.done():
+                        hot_future.result()
+                        hot_future = hot_executor.submit(hot_worker, args.db, stop_event)
                     if tracking_future.done():
                         try:
                             tracking_future.result()

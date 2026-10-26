@@ -901,7 +901,7 @@ def validate_final_result(
     grok_ids = [item_id for item_id in supplement_ids if item_id.startswith("grok:")]
     if gmgn_ids and not re.search(r"(?m)^GMGN补充：", reader_text):
         raise RuntimeError("Final reader_text must place GMGN supplemental material under its labeled paragraph.")
-    if grok_ids and not re.search(r"(?m)^Grok补充：", reader_text):
+    if grok_ids and not re.search(r"(?m)^(?:" + re.escape(READER_OPENING) + r")?Grok(?:补充：|补充资料显示，)", reader_text):
         raise RuntimeError("Final reader_text must place Grok supplemental material under its labeled paragraph.")
 
     return {

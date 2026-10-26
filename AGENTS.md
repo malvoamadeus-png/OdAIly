@@ -9,6 +9,7 @@
 
 修改代码时必须同步检查文档。
 
+- 写作任务：凡涉及撰写、改写、编辑读者内容，或修改程序写作 Prompt / 模板，先阅读 `docs/OdAIly代码与整体设计/中文写作风格规范.md` 并按其通用表达要求执行；业务专属规范和用户本轮明确要求继续约束对应内容。
 - 如果修改整体流程、任务状态、worker 边界、跨模块契约或来源链路，更新 `docs/OdAIly代码与整体设计/完整程序架构.md`。
 - 如果修改单个模块的输入、输出、Prompt、状态、环境变量、命令或失败处理，更新对应细节文档。
 - 如果问题、改动或排障涉及 Supabase 连接池、session、连接槽、`EMAXCONNSESSION`、`ECHECKOUTTIMEOUT`、`max clients reached`、`pool_size`、`idle in transaction` 或数据库长连接，必须先阅读并遵守本机私有文档 `docs/工具与运维私有/Supabase连接槽与Session排障.md`。

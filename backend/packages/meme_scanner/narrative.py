@@ -43,11 +43,12 @@ def generate_reader_text(
     timeout: int,
     audit_output: Path | None = None,
 ) -> dict[str, Any]:
-    del database_path, evidence
+    del database_path
     args = _settings(audit_output, timeout, chain)
     args.contract = address
     args.symbol = symbol
     args.trigger_kind = trigger_kind
+    args.grok_routine = (evidence or {}).get("grok_routine", {})
     provider = fast_evidence.LocalFastEvidenceAdapter(
         timeout_seconds=int(os.getenv("MEME_LOCAL_EVIDENCE_TIMEOUT") or min(timeout, 45)),
     )
@@ -92,7 +93,7 @@ def generate_reader_text(
 
     return {
         **result,
-        "grok_text": "",
+        "grok_text": str((getattr(args, "grok_routine", {}).get("result") or {}).get("summary") or ""),
         "grok_error": None,
     }
 

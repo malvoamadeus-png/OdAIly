@@ -41,7 +41,8 @@ class DexScreenerClient:
         self.session = session or requests.Session()
 
     def price_info(self, chain: str, addresses: list[str]) -> dict[str, dict[str, Any]]:
-        normalized = list(dict.fromkeys(str(address).strip().lower() for address in addresses if str(address).strip()))
+        normalize = lambda address: str(address).strip() if chain == "solana" else str(address).strip().lower()
+        normalized = list(dict.fromkeys(normalize(address) for address in addresses if str(address).strip()))
         if len(normalized) > MAX_TOKEN_ADDRESSES:
             raise DexScreenerError(f"Dexscreener accepts at most {MAX_TOKEN_ADDRESSES} addresses per request")
         if not normalized:
@@ -65,7 +66,7 @@ class DexScreenerClient:
             if not isinstance(pair, dict) or str(pair.get("chainId") or "").lower() != chain.lower():
                 continue
             base_token = pair.get("baseToken") if isinstance(pair.get("baseToken"), dict) else {}
-            address = str(base_token.get("address") or "").strip().lower()
+            address = normalize(base_token.get("address") or "")
             if address in candidates:
                 candidates[address].append(pair)
 

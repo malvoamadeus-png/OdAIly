@@ -60,3 +60,6 @@ data/database/**
 .DS_Store
 .idea/
 .vscode/
+
+# Grok Bot webhook credentials (local and server runtime)
+grok.txt

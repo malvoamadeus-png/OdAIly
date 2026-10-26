@@ -2,6 +2,8 @@
 
 本文件定义 Meme速递的读者正文契约：最终输出必须是具体炒作角度，不是 Telegram 监控摘要。
 
+两个栏目共用的类型入口、文风、Grok固定段落与文本外壳见 [Meme栏目共用写作框架](Meme栏目共用写作框架草案.md)。写作者在同一次调用中先判断纯Meme、名人币或应用币，再选择对应正文；“做什么”不作为所有代币的固定段落。
+
 没有可用角度时，正文必须为空，任务进入 no_usable_narrative；外部 API、模型、JSON 和最终校验异常不归入该原因，而是持久化阶段诊断并进入重试。
 
 ## 最终输出
@@ -36,7 +38,9 @@ FxTwitter、Telegram 与 FOMO Thesis 由 OdAIly 本地快速材料模块并行�
 
 FOMO profile 缺失、被重定向到登录页或收到明确认证失败时，source diagnostic 记录 `code=login_required`。已有 Telegram/X 材料时，该路只是 `partial`，仍可写作；三路没有正文时，任务每 5 分钟进入一次 `retry_wait`，直至普通 1 小时队列时限到期，并发送冷却后的 Telegram 运维提醒。不会驻留 FOMO 浏览器、daemon、systemd service 或公开远程调试端口；收到提醒后由值班人通过一次性 `meme fomo-login` 维护命令更新服务器运行时 profile。该命令在 `xvfb-run` 中短暂启动浏览器，自动点击唯一可识别的 FOMO 登录、Google 登录及已登录 Google 账号选项；验证码、身份挑战、多个账号或页面结构变化交由值班人通过 loopback DevTools 和 SSH 本地转发接管。DevTools 仅绑定 `127.0.0.1`；profile、Cookie 和 JWT 不得复制、打印或提交。
 
-OdAIly 使用 `gpt-6-luna` 对三路材料做一次结构化写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路不调用 Grok、Grok X Search、Grok 实体补充或 GMGN。
+两个栏目同时请求Grok Bot Routine；请求持久化并以15秒间隔非阻塞读取回调，最多等待15分钟，失败或超时使用三路材料继续写作。Grok可用时作为独立材料进入同一次写作，正文单独成段，以 `Grok补充资料显示，` 开头，允许重复前文角度。
+
+OdAIly 使用 `gpt-6-luna` 对三路材料及可用Grok结果做一次结构化分类与写作，继续输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文。该链路通过Webhook调用Grok Bot，不调用Grok X Search、Grok实体补充或GMGN叙事。GMGN仅用于今日热门Meme榜单发现。
 
 meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜索 0x，排除当前白名单实体，输出群组汇总和样本；它不自动修改白名单，也不直接把发现结果写入 Meme 触发库。
 
@@ -54,6 +58,7 @@ meme tg-discover 是白名单维护辅助命令：它使用 Telegram 全局搜�
 - `failure_stage`：`local_fast_evidence`、`final_writer`、`final_validation`。
 - `failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`。
 - OdAIly 本地 collector 返回的 Telegram、X、FOMO Thesis 规范化材料、三路安全错误码与性能诊断。
+- `grok_routine`：请求ID、状态、开始时间和回传原始JSON；`discovery`：榜单命中条件与首次入选时间。
 - 最终 `primary_type`、`source_materials`、`angle_materials`、`supplemental_information`、`used_material_ids`、`discarded_material_ids` 和 `reader_text`。
 
 叙事生成器返回的 `output_path` 必须是字符串路径，并且返回值要包含写入文件的完整审计对象；worker 会把生成结果作为 JSON 写入任务状态，不能返回 `Path` 等非 JSON 类型，也不能用精简的最终正文对象覆盖审计文件。输出文件已经写成功但进程随后返回非零时，worker 仍会按阶段异常重试，因此生成器必须在写文件和返回结果两处都保持成功。
