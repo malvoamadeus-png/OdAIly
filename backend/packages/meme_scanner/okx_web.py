@@ -143,30 +143,47 @@ class OKXMemeWebClient:
 
     def _fetch_chain_ranking(self, chain: str) -> list[dict[str, Any]]:
         chain_id = OKX_MEME_CHAIN_IDS[chain]
-        payload = self._page.evaluate(
+        results = self._page.evaluate(
             """async ({chainId, rankingPath}) => {
-                const query = {rankType: '4', chainId};
-                if (chainId === '501') {
-                    query.protocolIdList = ['120596', '141620'];
-                    query.tokenTypeList = ['2', '4'];
+                const platformIds = chainId === '501' ? ['120596', '141620'] : [null];
+                const results = [];
+                for (const platformId of platformIds) {
+                    const query = {rankType: '4', chainId};
+                    if (platformId) {
+                        query.protocolIdList = [platformId];
+                        query.tokenTypeList = ['2', '4'];
+                    }
+                    const response = await fetch(`${location.origin}${rankingPath}/batch?t=${Date.now()}`, {
+                        method: 'POST',
+                        headers: {'content-type': 'application/json'},
+                        body: JSON.stringify({rankType: '4', chainQueryList: [query]}),
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const payload = await response.json();
+                    if (String(payload.code) !== '0' || !Array.isArray(payload.data)) {
+                        throw new Error(`OKX response code ${payload.code}`);
+                    }
+                    results.push(payload.data);
                 }
-                const response = await fetch(`${location.origin}${rankingPath}/batch?t=${Date.now()}`, {
-                    method: 'POST',
-                    headers: {'content-type': 'application/json'},
-                    body: JSON.stringify({rankType: '4', chainQueryList: [query]}),
-                });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                return await response.json();
+                return results;
             }""",
             {"chainId": chain_id, "rankingPath": OKX_MEME_RANKING_PATH},
         )
-        return parse_meme_ranking_response(payload)
+        rows_by_platform = [parse_meme_ranking_response({"code": 0, "data": rows}) for rows in results]
+        # Interleave each launchpad's ranking so the per-chain cap cannot hide
+        # one platform behind the other.
+        combined: list[dict[str, Any]] = []
+        for index in range(max((len(rows) for rows in rows_by_platform), default=0)):
+            for rows in rows_by_platform:
+                if index < len(rows):
+                    combined.append(rows[index])
+        return combined
 
     def _wait_for_chain(self, chain: str, timeout: float) -> None:
         deadline = time.monotonic() + max(timeout, 0.1)
         while chain not in self._latest and time.monotonic() < deadline:
             self._page.wait_for_timeout(250)
-        if chain in self._latest:
+        if chain in self._latest and chain != "solana":
             return
         detail = self._errors.get(chain) or self._errors.get("discovery") or "no rankType=4 response"
         raise OKXMemeWebError(f"OKX MemePump web discovery timed out for {chain}: {detail}")

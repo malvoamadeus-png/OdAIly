@@ -60,13 +60,14 @@ class OKXMemeWebAdapterTests(unittest.TestCase):
     def test_refresh_fetches_explicit_chain_rank_from_page_context(self) -> None:
         client = OKXMemeWebClient()
         client._page = MagicMock()
-        client._page.evaluate.return_value = {"code": 0, "data": [{"ca": "0xabc"}]}
+        client._page.evaluate.return_value = [[{"ca": "0xabc"}]]
 
         client._refresh_current_chain("bsc")
 
         self.assertEqual(client._latest["bsc"], [{"ca": "0xabc"}])
         script, args = client._page.evaluate.call_args.args
         self.assertIn("fetch(", script)
+        self.assertIn("['120596', '141620']", script)
         self.assertEqual(args, {"chainId": "56", "rankingPath": "/priapi/v1/dx/market/v2/memefun/meme-ranking/content"})
 
     def test_ranking_response_reads_chain_and_rank_type_from_post_body(self) -> None:
