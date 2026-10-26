@@ -257,6 +257,60 @@ def _ensure_account_title_subject(title: str) -> str:
     return f'{match.group(1)}，某地址{remainder}'
 
 
+def _account_action_detail(event: dict[str, Any]) -> str | None:
+    """Build an amount-bound action phrase when the model omitted it."""
+    evidence = event.get('evidence', {})
+    actions = evidence.get('actions') or {}
+    contract = str(event.get('coin', ''))
+    coin = contract.rsplit(':', 1)[-1]
+    previous = evidence.get('previous_position') or {}
+    current = evidence.get('position') or {}
+    previous_size = number(previous.get('size', '0'))
+    current_size = number(current.get('size', '0'))
+    close_side = 'long' if previous_size > 0 else 'short'
+    if previous_size == 0:
+        close_side = 'long' if number(actions.get('close_long_notional', '0')) > 0 else 'short'
+    open_side = 'long' if current_size > 0 else 'short'
+    if current_size == 0:
+        open_side = 'long' if number(actions.get('open_long_notional', '0')) > 0 else 'short'
+    close_amount = number(actions.get(f'close_{close_side}_notional', '0'))
+    open_amount = number(actions.get(f'open_{open_side}_notional', '0'))
+    if close_amount > 0 and open_amount > 0:
+        close_copy = f'平仓{money(close_amount).replace(" ", "")}{coin}{"多" if close_side == "long" else "空"}单'
+        open_copy = f'再开仓{money(open_amount).replace(" ", "")}{coin}{"多" if open_side == "long" else "空"}单'
+        return f'{close_copy}后{open_copy}'
+    if close_amount > 0:
+        side = '多' if close_side == 'long' else '空'
+        return f'减仓{money(close_amount).replace(" ", "")}{coin}{side}单'
+    if open_amount > 0:
+        side = '多' if open_side == 'long' else '空'
+        verb = '加仓' if previous_size and previous_size * current_size > 0 else '开仓'
+        return f'{verb}{money(open_amount).replace(" ", "")}{coin}{side}单'
+    return None
+
+
+def _ensure_account_action_amounts(title: str, content: str, event: dict[str, Any]) -> tuple[str, str]:
+    """Keep account-result copy from collapsing a supported action to a bare verb."""
+    detail = _account_action_detail(event)
+    if not detail:
+        return title, content
+    action_pattern = re.compile(
+        r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}?(?:多单|空单|开多|开空)')
+    has_amount = re.compile(r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}(?:万美元|亿美元)')
+    if not has_amount.search(content):
+        if action_pattern.search(content):
+            content = action_pattern.sub(detail, content, count=1)
+        else:
+            content = content.rstrip('。！？') + '。' + detail + '。'
+    if not has_amount.search(title):
+        subject = title.find('某地址')
+        if subject >= 0:
+            title = title[:subject] + '某地址' + detail
+        elif action_pattern.search(title):
+            title = action_pattern.sub(detail, title, count=1)
+    return title, content
+
+
 def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     """Enforce account profit/loss wording independently of model compliance."""
     labels = event.get('evidence', {}).get('highlights', [])
@@ -300,6 +354,7 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         note = str(note).strip()
         content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?某地址(合约账户)?(?:（[^）]*）)?',
             lambda m: (m.group(1) or '') + '某地址' + (m.group(2) or '') + ('（' + note + '）' if note else ''), content, count=1)
+    title, content = _ensure_account_action_amounts(title, content, event)
     return DraftBrief(title=title, content=content)
 
 

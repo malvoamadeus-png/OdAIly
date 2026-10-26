@@ -525,6 +525,40 @@ def test_account_copy_corrects_model_wording_with_alltime_evidence():
     assert finite.content.startswith('Odaily星球日报讯 据Odaily监测，某地址')
 
 
+def test_account_copy_restores_action_amounts_when_model_omits_them():
+    event = {'addresses': [A], 'coin': 'xyz:XYZ100', 'observed_ms': 2000,
+             'kinds': ['highlighted_address_action'], 'evidence': {
+                 'highlights': ['official_account_high_profit'],
+                 'previous_position': {'size': '-521.04'},
+                 'position': {'size': '-436.6975'},
+                 'actions': {'open_short_notional': '4088841.66680',
+                             'close_short_notional': '6547851.45650'},
+                 'history': {'official_account_performance': {'windows': {
+                     'allTime': {'pnl': '30641546.762097', 'observed_ms': 1000}}}},
+             }}
+    result = format_news(DraftBrief(
+        title='总盈利约3065万美元，某地址减持XYZ100空单',
+        content='某地址在累计获得约3065万美元合约账户收益的同时，减持XYZ100空单'), event)
+    assert '平仓约655万美元XYZ100空单' in result.title
+    assert '再开仓约409万美元 XYZ100 空单' in result.content
+
+
+def test_account_copy_restores_close_then_reopen_amounts():
+    event = {'addresses': [A], 'coin': 'BTC', 'observed_ms': 2000,
+             'kinds': ['highlighted_address_action'], 'evidence': {
+                 'highlights': ['official_account_high_profit'],
+                 'actions': {'open_long_notional': '12025518.309810',
+                             'close_long_notional': '11975306.430510'},
+                 'history': {'official_account_performance': {'windows': {
+                     'allTime': {'pnl': '23060000', 'observed_ms': 1000}}}},
+             }}
+    result = format_news(DraftBrief(
+        title='总盈利约2306万美元，某地址平仓BTC多单后再开多',
+        content='某地址合约账户累计收益约2306万美元，平仓BTC多单后再开多'), event)
+    assert '平仓约1,198万美元BTC多单' in result.title
+    assert '再开仓约1,203万美元 BTC 多单' in result.content
+
+
 def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
     path = tmp_path/'offline.sqlite'
     SQLiteXProcessingRepository(path).init_schema()
