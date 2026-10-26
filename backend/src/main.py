@@ -599,12 +599,6 @@ def parse_args() -> argparse.Namespace:
         help="Maximum seconds to keep the one-shot browser open.",
     )
     meme_bloomberg_read.add_argument(
-        "--cdp-port",
-        type=int,
-        default=int(os.getenv("MEME_FOMO_LOGIN_CDP_PORT") or 9224),
-        help="Loopback-only DevTools port shared with the existing FOMO login maintenance command.",
-    )
-    meme_bloomberg_read.add_argument(
         "--output",
         help="Text output path. Defaults to a timestamped file under data/exports/bloomberg/.",
     )

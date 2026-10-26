@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import select
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -18,18 +17,9 @@ from dotenv import load_dotenv
 from packages.common.paths import get_paths
 from .browser_lock import exclusive_browser
 from .fast_evidence import _browser_lock_timeout_seconds, _fomo_profile_dir
-from .fomo_login import (
-    _assert_loopback_port_available,
-    _stop_process,
-    _validated_port,
-    _wait_for_cdp,
-    chromium_command,
-    chromium_executable,
-)
 
 
 DEFAULT_TIMEOUT_SECONDS = 15 * 60
-DEFAULT_CDP_PORT = 9224
 _BLOOMBERG_HOSTS = {"bloomberg.com", "www.bloomberg.com"}
 _ARTICLE_PARAGRAPH_SELECTOR = 'div > p[class^="ArticleBodyText_"]'
 
@@ -138,13 +128,11 @@ def _save_body(result: dict[str, Any], body: str, output_value: str | None) -> P
     raise RuntimeError(f"could not create a unique Bloomberg output file for {safe_slug}")
 
 
-def _wait_for_operator(process: subprocess.Popen[Any], timeout_seconds: int) -> bool:
+def _wait_for_operator(timeout_seconds: int) -> bool:
     if not sys.stdin.isatty():
         raise RuntimeError("Bloomberg access requires an interactive terminal")
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError("Meme Chromium closed before article capture")
         remaining = deadline - time.monotonic()
         ready, _, _ = select.select([sys.stdin], [], [], min(1.0, remaining))
         if ready:
@@ -166,64 +154,33 @@ def run(args: Any) -> int:
 
     article_url = validate_article_url(getattr(args, "article_url", ""))
     timeout_seconds = max(60, int(getattr(args, "timeout", DEFAULT_TIMEOUT_SECONDS)))
-    cdp_port = _validated_port(int(getattr(args, "cdp_port", DEFAULT_CDP_PORT)))
     profile_dir = _fomo_profile_dir()
     if not profile_dir.is_dir():
         raise RuntimeError("Meme FOMO browser profile is missing; initialize it with meme fomo-login first")
 
-    command = chromium_command(
-        executable=chromium_executable(),
-        profile_dir=profile_dir,
-        cdp_port=cdp_port,
-        initial_url=article_url,
-    )
-    process: subprocess.Popen[Any] | None = None
     with exclusive_browser(timeout_seconds=_browser_lock_timeout_seconds()):
         try:
-            _assert_loopback_port_available(cdp_port)
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=os.name == "posix",
-            )
-            ready_deadline = min(time.monotonic() + 10, time.monotonic() + timeout_seconds)
-            if not _wait_for_cdp(process, cdp_port, ready_deadline):
-                raise RuntimeError("Meme Chromium did not expose its local DevTools endpoint")
-
             from playwright.sync_api import sync_playwright
 
-            print(f"[meme-bloomberg-read] DevTools is local-only at 127.0.0.1:{cdp_port}")
-            print("[meme-bloomberg-read] Complete any Bloomberg sign-in in this existing Meme profile.")
-            print(
-                "[meme-bloomberg-read] Return the page to the article, then press Enter to read visible paragraphs."
-            )
-            if not _wait_for_operator(process, timeout_seconds):
-                print("[meme-bloomberg-read] timed out; closing Chromium")
-                return 124
-
             with sync_playwright() as playwright:
-                browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                launch_kwargs: dict[str, Any] = {
+                    "headless": False,
+                    "viewport": {"width": 1440, "height": 900},
+                    "locale": "en-US",
+                    "timezone_id": "Asia/Shanghai",
+                }
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    launch_kwargs["args"] = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                context = playwright.chromium.launch_persistent_context(str(profile_dir), **launch_kwargs)
                 try:
-                    context = browser.contexts[0] if browser.contexts else None
-                    if context is None:
-                        raise RuntimeError("Meme Chromium has no browser context")
-                    pages = context.pages
-                    page = next(
-                        (
-                            candidate
-                            for candidate in reversed(pages)
-                            if (urlsplit(candidate.url).hostname or "").lower() in _BLOOMBERG_HOSTS
-                            and urlsplit(candidate.url).path.rstrip("/").rsplit("/", 1)[-1]
-                            == urlsplit(article_url).path.rstrip("/").rsplit("/", 1)[-1]
-                        ),
-                        None,
-                    )
-                    if page is None:
-                        raise RuntimeError(
-                            "Return the browser to the requested Bloomberg article before pressing Enter"
-                        )
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(article_url, wait_until="domcontentloaded", timeout=60_000)
+                    print("[meme-bloomberg-read] Chromium opened in the existing server-side Meme profile.")
+                    print("[meme-bloomberg-read] Complete any Bloomberg sign-in in the server browser session.")
+                    print("[meme-bloomberg-read] Return to the requested article and press Enter to save visible text.")
+                    if not _wait_for_operator(timeout_seconds):
+                        print("[meme-bloomberg-read] timed out; closing Chromium")
+                        return 124
                     result = visible_article_result(page)
                     body = str(result.pop("text", ""))
                     result.pop("summary", None)
@@ -233,10 +190,7 @@ def run(args: Any) -> int:
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                     return 0 if result["paragraph_count"] else 1
                 finally:
-                    browser.close()
+                    context.close()
         except KeyboardInterrupt:
             print("[meme-bloomberg-read] stopped by operator")
             return 130
-        finally:
-            if process is not None:
-                _stop_process(process)
