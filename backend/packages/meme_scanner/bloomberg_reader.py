@@ -103,6 +103,16 @@ def visible_article_result(page: Any) -> dict[str, Any]:
     }
 
 
+def _write_body_file(output_path: Path, body: str) -> bool:
+    try:
+        descriptor = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(body + "\n")
+    return True
+
+
 def _save_body(result: dict[str, Any], body: str, output_value: str | None) -> Path:
     if not body:
         raise ValueError("cannot save an empty Bloomberg article body")
@@ -110,11 +120,8 @@ def _save_body(result: dict[str, Any], body: str, output_value: str | None) -> P
     if output_value:
         output_path = Path(output_value).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with output_path.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(body + "\n")
-        except FileExistsError as exc:
-            raise RuntimeError(f"output file already exists: {output_path}") from exc
+        if not _write_body_file(output_path, body):
+            raise RuntimeError(f"output file already exists: {output_path}")
         return output_path
 
     article_slug = urlsplit(str(result.get("canonical_url") or result.get("url") or "")).path.rstrip("/").rsplit("/", 1)[-1]
@@ -126,12 +133,8 @@ def _save_body(result: dict[str, Any], body: str, output_value: str | None) -> P
     base_path = output_dir / f"{safe_slug}-{timestamp}"
     for suffix in range(100):
         output_path = base_path.with_name(f"{base_path.name}{f'-{suffix}' if suffix else ''}.txt")
-        try:
-            with output_path.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(body + "\n")
+        if _write_body_file(output_path, body):
             return output_path
-        except FileExistsError:
-            continue
     raise RuntimeError(f"could not create a unique Bloomberg output file for {safe_slug}")
 
 
@@ -202,30 +205,35 @@ def run(args: Any) -> int:
 
             with sync_playwright() as playwright:
                 browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
-                context = browser.contexts[0] if browser.contexts else None
-                if context is None:
-                    raise RuntimeError("Meme Chromium has no browser context")
-                pages = context.pages
-                page = next(
-                    (
-                        candidate
-                        for candidate in reversed(pages)
-                        if (urlsplit(candidate.url).hostname or "").lower() in _BLOOMBERG_HOSTS
-                        and urlsplit(candidate.url).path.rstrip("/").rsplit("/", 1)[-1]
-                        == urlsplit(article_url).path.rstrip("/").rsplit("/", 1)[-1]
-                    ),
-                    None,
-                )
-                if page is None:
-                    raise RuntimeError("Return the browser to the requested Bloomberg article before pressing Enter")
-                result = visible_article_result(page)
-                body = str(result.pop("text", ""))
-                result.pop("summary", None)
-                if result["paragraph_count"]:
-                    output_path = _save_body(result, body, getattr(args, "output", None))
-                    result["output_path"] = str(output_path)
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-                return 0 if result["paragraph_count"] else 1
+                try:
+                    context = browser.contexts[0] if browser.contexts else None
+                    if context is None:
+                        raise RuntimeError("Meme Chromium has no browser context")
+                    pages = context.pages
+                    page = next(
+                        (
+                            candidate
+                            for candidate in reversed(pages)
+                            if (urlsplit(candidate.url).hostname or "").lower() in _BLOOMBERG_HOSTS
+                            and urlsplit(candidate.url).path.rstrip("/").rsplit("/", 1)[-1]
+                            == urlsplit(article_url).path.rstrip("/").rsplit("/", 1)[-1]
+                        ),
+                        None,
+                    )
+                    if page is None:
+                        raise RuntimeError(
+                            "Return the browser to the requested Bloomberg article before pressing Enter"
+                        )
+                    result = visible_article_result(page)
+                    body = str(result.pop("text", ""))
+                    result.pop("summary", None)
+                    if result["paragraph_count"]:
+                        output_path = _save_body(result, body, getattr(args, "output", None))
+                        result["output_path"] = str(output_path)
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    return 0 if result["paragraph_count"] else 1
+                finally:
+                    browser.close()
         except KeyboardInterrupt:
             print("[meme-bloomberg-read] stopped by operator")
             return 130
