@@ -267,6 +267,7 @@ class ExternalMediaAlertWorker:
             model=self.settings.domain_judge_model,
             prompt=build_domain_prompt(task=task, prompt=prompt),
             text_format=DOMAIN_JSON_SCHEMA,
+            reasoning_effort="none",
         )
         route, discard_reason = parse_domain_route(raw_output)
         if route == "discard":
@@ -292,6 +293,7 @@ class ExternalMediaAlertWorker:
             model=self.settings.domain_judge_model,
             prompt=build_bloomberg_domain_prompt(task=task, prompt=prompt),
             text_format=BLOOMBERG_DOMAIN_JSON_SCHEMA,
+            reasoning_effort="none",
         )
         eligible, categories = parse_bloomberg_domain_result(raw_output)
         if not eligible:

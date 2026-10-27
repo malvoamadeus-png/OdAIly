@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from packages.common.config import ExternalMediaAlertSettings, load_external_media_alert_settings
 from packages.common.storage import connect_sqlite
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.editor_plugin_local_store import LocalEditorPluginStore
@@ -68,6 +69,14 @@ def test_bloomberg_site_is_registered_in_mixed_alert_only_group() -> None:
     assert site.list_url == "https://www.bloomberg.com/feeds/news.rss"
     assert site.pipeline_mode == "alert_only"
     assert site.source_group == "mixed_source"
+
+
+def test_external_media_alert_domain_judge_defaults_to_gpt_6_luna(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL", "")
+    assert ExternalMediaAlertSettings().domain_judge_model == "gpt-6-luna"
+    assert load_external_media_alert_settings().domain_judge_model == "gpt-6-luna"
 
 
 class RecordingPipelineClient:
@@ -229,6 +238,7 @@ def test_bloomberg_domain_judge_uses_own_prompt_and_saves_categories() -> None:
     assert repository.completed[0]["categories"] == ("crypto", "ai")
     assert client.calls[0]["text_format"] == BLOOMBERG_DOMAIN_JSON_SCHEMA
     assert "RSS 摘要：A summary from RSS." in client.calls[0]["prompt"]
+    assert client.calls[0]["reasoning_effort"] == "none"
 
 
 def test_non_bloomberg_alerts_keep_existing_domain_prompt() -> None:
@@ -250,6 +260,7 @@ def test_non_bloomberg_alerts_keep_existing_domain_prompt() -> None:
     assert repository.prompt_keys == ["external_media_alert_domain_judge"]
     assert repository.completed[0]["route"] == "crypto"
     assert "categories" not in repository.completed[0]
+    assert client.calls[0]["reasoning_effort"] == "none"
 
 
 def test_bloomberg_categories_persist_in_alert_pipeline_sqlite(tmp_path: Path) -> None:

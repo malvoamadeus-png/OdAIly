@@ -17,6 +17,7 @@ DEFAULT_DEEPSEEK_FAST_MODEL = "odaily-deepseek-fast"
 DEFAULT_GPT_WRITER_MODEL = "odaily-gpt-writer"
 DEFAULT_DEEPSEEK_REVIEW_MODEL = "odaily-deepseek-review"
 DEFAULT_GPT_AUDITOR_MODEL = "odaily-gpt-auditor"
+DEFAULT_EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL = "gpt-6-luna"
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 90.0
 
 
@@ -533,7 +534,7 @@ class ExternalMediaAlertSettings(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: HttpUrl = "https://api.openai.com/v1"
     openai_api_style: Literal["responses", "chat_completions"] = "responses"
-    domain_judge_model: str = DEFAULT_DEEPSEEK_FAST_MODEL
+    domain_judge_model: str = DEFAULT_EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL
     dashscope_api_key: str | None = None
     search_embedding_model: str = "text-embedding-v4"
     search_embedding_base_url: HttpUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -554,7 +555,10 @@ def load_external_media_alert_settings() -> ExternalMediaAlertSettings:
         "openai_api_key": _llm_api_key(),
         "openai_base_url": _llm_base_url("EXTERNAL_MEDIA_ALERT_OPENAI_BASE_URL", "X_PROCESS_OPENAI_BASE_URL"),
         "openai_api_style": _llm_api_style("EXTERNAL_MEDIA_ALERT_OPENAI_API_STYLE"),
-        "domain_judge_model": _llm_fast_model("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL"),
+        "domain_judge_model": (
+            os.getenv("EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL")
+            or DEFAULT_EXTERNAL_MEDIA_ALERT_DOMAIN_JUDGE_MODEL
+        ),
         "dashscope_api_key": os.getenv("DASHSCOPE_API_KEY") or None,
         "search_embedding_model": os.getenv("EXTERNAL_MEDIA_ALERT_SEARCH_EMBEDDING_MODEL") or os.getenv("SEARCH_EMBEDDING_MODEL") or "text-embedding-v4",
         "search_embedding_base_url": (
