@@ -23,7 +23,7 @@ import requests
 
 from packages.common.storage import connect_sqlite
 
-from .capture import AccountRow, ContentItem
+from .capture import AccountRow, ContentItem, compact_text
 
 
 EVENT_TRACKING_MAX_ACCOUNTS_PER_EVENT = 3
