@@ -85,7 +85,7 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 ### 事件自动追踪模型
 
-热点自动快讯使用 GPT Responses 调用：任务 1 用文本 JSON 判断是否追踪，账号候选发现请求启用 `web_search` 工具。默认沿用既有 HotTopic / `ODAILY_LLM` 中转站；只有需要单独隔离路由时才配置事件专用 endpoint。候选需提供符合 X handle 格式的用户名；搜索 citations 不作为身份判断依据。程序读取 FXTwitter 简介和最多 4 条最新原创帖，使用独立身份判断 Prompt；只有被判断为事件主体/处置主体或直接涉事者、且身份线索能对应账号资料的候选才进入追踪。搜索调用、引用、资料、身份结论和失败均保留审计。当前使用账号候选发现 v3、账号身份判断 v1 和事件更新判断 v3，历史 Prompt 版本保留。
+热点自动快讯使用 GPT Responses 调用：任务 1 用文本 JSON 判断是否追踪，账号候选发现请求启用 `web_search` 工具。默认沿用既有 HotTopic / `ODAILY_LLM` 中转站；只有需要单独隔离路由时才配置事件专用 endpoint。候选需提供符合 X handle 格式的用户名；搜索 citations 不作为身份判断依据。程序读取 FXTwitter 简介和最多 4 条最新原创帖，使用独立身份判断 Prompt；只有被判断为事件主体/处置主体或直接涉事者的候选才进入追踪。身份判断基于简介、显示名和近期原创帖的整体内容，不要求逐字匹配引用或外部身份证明。搜索调用、引用、资料、身份结论和失败均保留审计。当前使用账号候选发现 v3、账号身份判断 v2 和事件更新判断 v3，历史 Prompt 版本保留。
 
 - `HOTTOPIC_EVENT_TRACKING_ENABLED`：默认 `true`；关闭时不再创建或推进事件追踪。
 - `HOTTOPIC_EVENT_OPENAI_BASE_URL` / `HOTTOPIC_EVENT_OPENAI_API_KEY`：可选的专用 Responses-compatible 路由与凭据，不是启动前置条件；为空时按既有 `HOTTOPIC`、`ODAILY_LLM`、`OPENAI_API_KEY` 回退顺序读取。
