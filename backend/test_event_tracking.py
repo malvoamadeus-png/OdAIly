@@ -59,9 +59,18 @@ class FakeFeedWriter:
 
 
 class FakeAI:
-    def __init__(self, *, include_citations: bool = True, prefix_discovery: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        include_citations: bool = True,
+        prefix_discovery: bool = False,
+        include_third_party: bool = False,
+        fail_discovery: bool = False,
+    ) -> None:
         self.include_citations = include_citations
         self.prefix_discovery = prefix_discovery
+        self.include_third_party = include_third_party
+        self.fail_discovery = fail_discovery
         self.web_search_calls = 0
 
     @staticmethod
@@ -101,7 +110,7 @@ class FakeAI:
                 for topic in topics
             ]
             return self._result(json.dumps(decisions, ensure_ascii=False), model=model)
-        if "官方事件进展判断器" in prompt:
+        if "事件账号帖子进展判断器" in prompt:
             return self._result(
                 json.dumps(
                     {
@@ -122,6 +131,8 @@ class FakeAI:
 
     def web_search_json(self, *, model: str, prompt: str) -> EventModelResult:
         self.web_search_calls += 1
+        if self.fail_discovery:
+            raise RuntimeError("search request failed")
         accounts = [
             {
                 "handle": "lookonchain",
@@ -146,7 +157,9 @@ class FakeAI:
                 "person_involvement": "",
             },
         ]
-        discovery_text = json.dumps({"accounts": accounts, "reason": "仅项目官方账号应被追踪"}, ensure_ascii=False)
+        if not self.include_third_party:
+            accounts = accounts[1:]
+        discovery_text = json.dumps({"accounts": accounts, "reason": "候选账号可能提供事件后续"}, ensure_ascii=False)
         if self.prefix_discovery:
             discovery_text = "我会先核验事件主体的官方账号。\n" + discovery_text
         return self._result(
@@ -270,27 +283,27 @@ def test_official_only_discovery_material_progress_outbox_and_silence_lifecycle(
         connection.close()
 
 
-def test_web_search_without_citations_never_creates_a_manual_or_third_party_tracking_path(tmp_path: Path) -> None:
-    ai = FakeAI(include_citations=False)
+def test_account_candidates_do_not_require_citations_or_official_identity(tmp_path: Path) -> None:
+    ai = FakeAI(include_citations=False, include_third_party=True)
     tracker, connection, clock, _dispatcher = _tracker(tmp_path, ai=ai)
     try:
         _seed_topic(connection, clock)
         tracker.observe_topics(["topic:giwa"])
-        tracker.discovery_retry_model = "gpt-fallback"
         outcome = tracker.discover_official_accounts()
 
-        assert outcome == {"discovered": 1, "failed": 1, "bound": 0}
-        assert ai.web_search_calls == 2
-        assert connection.execute("SELECT COUNT(*) FROM event_tracking_bindings").fetchone()[0] == 0
-        event = connection.execute("SELECT status,end_reason FROM event_tracking_events").fetchone()
-        assert dict(event) == {"status": "discovery_failed", "end_reason": "discovery_failed"}
-        assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries WHERE status='failed'").fetchone()[0] == 1
+        assert outcome == {"discovered": 1, "failed": 0, "bound": 2}
+        assert ai.web_search_calls == 1
+        assert [row[0] for row in connection.execute("SELECT handle_lower FROM event_tracking_accounts ORDER BY handle_lower")] == ["giwaofficial", "lookonchain"]
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_bindings").fetchone()[0] == 2
+        assert connection.execute("SELECT status FROM event_tracking_events").fetchone()[0] == "active"
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries WHERE status='succeeded'").fetchone()[0] == 1
         discovery = connection.execute(
-            "SELECT raw_output,search_tool_calls_json,citations_json FROM event_tracking_account_discoveries"
+            "SELECT search_tool_calls_json,citations_json,result_json FROM event_tracking_account_discoveries"
         ).fetchone()
-        assert "GIWAofficial" in discovery[0]
-        assert json.loads(discovery[1])[0]["type"] == "web_search_call"
-        assert json.loads(discovery[2]) == []
+        assert json.loads(discovery[0])[0]["type"] == "web_search_call"
+        assert json.loads(discovery[1]) == []
+        assert [item["handle"] for item in json.loads(discovery[2])["accounts"]] == ["lookonchain", "GIWAofficial"]
+        assert connection.execute("SELECT official_relation FROM event_tracking_accounts WHERE handle_lower='lookonchain'").fetchone()[0] == "official_project"
     finally:
         connection.close()
 
@@ -308,7 +321,7 @@ def test_official_discovery_recovers_json_after_explanatory_prefix(tmp_path: Pat
 
 
 def test_discovery_failure_does_not_reopen_cycle_on_topic_refresh(tmp_path: Path) -> None:
-    ai = FakeAI(include_citations=False)
+    ai = FakeAI(fail_discovery=True)
     tracker, connection, clock, _dispatcher = _tracker(tmp_path, ai=ai)
     try:
         _seed_topic(connection, clock)

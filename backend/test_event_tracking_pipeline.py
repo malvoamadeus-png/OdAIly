@@ -21,7 +21,12 @@ class FakePushClient:
 
     def push(self, **kwargs):
         self.calls.append(kwargs)
-        return PushResult(ok=True, status_code=200, response_text="ok")
+        return PushResult(
+            ok=True,
+            status_code=200,
+            response_text="ok",
+            dry_run=bool(kwargs.get("dry_run", False)),
+        )
 
 
 class FakeFeedWriter:
@@ -37,7 +42,7 @@ class FakePipelineClient:
         self.jobs.append(kwargs)
 
 
-def test_event_tracking_source_starts_at_search_and_auto_publishes_with_tweet_idempotency() -> None:
+def test_event_tracking_source_starts_at_search_and_queues_manual_review() -> None:
     task = TaskRecord(
         id=73,
         source=EVENT_TRACKING_SOURCE,
@@ -46,7 +51,7 @@ def test_event_tracking_source_starts_at_search_and_auto_publishes_with_tweet_id
         title="GIWA：官方进展",
         content="GIWA confirms a material recovery update.",
         published_at=datetime.now(UTC),
-        metadata={"event_tracking": {"auto_publish": True, "classification": "material_progress"}},
+        metadata={"event_tracking": {"candidate_verification": "unverified", "classification": "material_progress"}},
         status="publisher_pending",
     )
     assert LocalPipelineProcessor._write_flow_sequence(None, task) == ["search", "write", "format_publish", "publish"]  # type: ignore[arg-type]
@@ -63,20 +68,20 @@ def test_event_tracking_source_starts_at_search_and_auto_publishes_with_tweet_id
     worker = XProcessingWorker(
         stage="publish",
         repository=repository,
-        settings=XProcessingSettings(dry_run=False),
+        settings=XProcessingSettings(dry_run=True),
         push_client=push_client,  # type: ignore[arg-type]
     )
     worker.feed_writer = FakeFeedWriter()  # type: ignore[assignment]
 
     worker._run_publish(task)
 
-    assert repository.tasks[task.id].status == "auto_published"
+    assert repository.tasks[task.id].status == "ready_review"
     pipeline = repository.pipelines[task.id]
-    assert pipeline.publisher_decision == "auto_publish"
-    assert pipeline.publisher_reason_code == "event_tracking_material_progress"
+    assert pipeline.publisher_decision == "manual_review"
+    assert pipeline.publisher_reason_code == "event_tracking_manual_review"
     assert len(push_client.calls) == 1
-    assert push_client.calls[0]["is_publish"] is True
-    assert push_client.calls[0]["idempotency_key"] == "event-tracking:official-tweet-73"
+    assert push_client.calls[0]["is_publish"] is False
+    assert push_client.calls[0]["idempotency_key"] == "odaily-task-73"
 
 
 def test_event_tracking_dispatcher_creates_one_prejudged_task_and_reuses_tweet_identity(tmp_path: Path) -> None:
@@ -114,7 +119,8 @@ def test_event_tracking_dispatcher_creates_one_prejudged_task_and_reuses_tweet_i
         row = connection.execute("SELECT source,source_item_id,status,metadata FROM tasks").fetchone()
         pipeline = connection.execute("SELECT news_type,judge_output FROM x_task_pipeline WHERE task_id=?", (first,)).fetchone()
     assert row[:3] == (EVENT_TRACKING_SOURCE, "official-tweet-91", "judged")
-    assert json.loads(row[3])["event_tracking"]["auto_publish"] is True
+    assert json.loads(row[3])["event_tracking"]["candidate_verification"] == "unverified"
+    assert "auto_publish" not in json.loads(row[3])["event_tracking"]
     assert json.loads(row[3])["author_display_name"] == "GIWA"
     assert json.loads(row[3])["author_username"] == "GIWAofficial"
     assert pipeline[0] == "onchain"

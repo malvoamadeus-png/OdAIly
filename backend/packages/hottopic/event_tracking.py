@@ -1,9 +1,9 @@
-"""Autonomous, official-account-only follow-up tracking for HotTopic events.
+"""Autonomous candidate-account follow-up tracking for HotTopic events.
 
-The module owns the complete event-tracking state machine.  Callers only feed
+The module owns the complete event-tracking state machine. Callers only feed
 it newly affected HotTopic ids, provide an X timeline scanner, and render its
-read-only projections.  In particular, neither account discovery nor any
-failure path creates an editorial approval queue.
+read-only projections. Candidate accounts are tracked without identity checks;
+material drafts go to the existing editorial review queue before publication.
 """
 from __future__ import annotations
 
@@ -41,20 +41,6 @@ EVENT_TRACKING_SOURCE = "event_tracking"
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
-# These are sources of reporting or observation, never official event channels.
-THIRD_PARTY_HANDLE_MARKERS = {
-    "lookonchain",
-    "odaily",
-    "chaincatcher",
-    "blockbeats",
-    "panews",
-    "wu_blockchain",
-    "cointelegraph",
-    "coindesk",
-    "decryptmedia",
-    "theblock",
-    "arkham",
-}
 TRACKING_TYPES = {
     "security_asset_incident",
     "official_dispute_or_denial",
@@ -110,26 +96,20 @@ OdAIly 用 AI 代替新闻值班人员：从已经形成的热点中，立即判
 """
 
 
-OFFICIAL_DISCOVERY_PROMPT_V1 = """你是 OdAIly 的官方 X 账号核验器。必须使用刚刚实际执行的 Web Search 结果，寻找下列事件中未来几天最可能发布实质进展的账号。
+ACCOUNT_DISCOVERY_PROMPT_V2 = """你是 OdAIly 的 X 账号候选搜索器。围绕下列事件，使用可用的 Web Search 寻找未来几天可能发布相关信息的 X 账号。
 
-只可返回以下关系：official_institution、official_project、official_security、official_regulator、directly_involved_person。最后一种只限事件直接涉事者本人。媒体、记者、链上追踪者、研究员、KOL、社区、投资人和转述账号一律排除，即使他们信息更快也不能返回。
+这里只收集候选账号，不核验账号身份。不要因为缺少引用、官网链接、身份说明或官方关系就排除账号；也不要按媒体、研究员、KOL、社区、投资人或其他第三方身份过滤。搜索结果中的账号只要可能提供与事件有关的后续信息，就可以列为候选。最多返回 3 个，按相关性排序。
 
-每个候选必须有能证明“该 X handle 属于该主体”的官方关系说明，至少一个实际 Web Search 引用 URL，且 X profile URL 与 handle 一致。不要猜 handle；无法完成严格核验就返回空 accounts。最多返回 3 个，优先事件主体，其次官方安全/处置主体，最后才是直接涉事者本人。
+只需提供可用的 X handle；可附显示名和候选理由。不要把推测写成已确认身份。无法找到可用 handle 时返回空 accounts。
 
 整体只输出一个 JSON 对象，不要 Markdown：
 {
   "accounts":[{
     "handle":"不带@的 X handle",
-    "display_name":"显示名",
-    "official_entity":"主体名称",
-    "official_relation":"official_institution|official_project|official_security|official_regulator|directly_involved_person",
-    "role":"为什么该账号会给出后续",
-    "x_profile_url":"https://x.com/handle",
-    "official_evidence":"简洁说明官方归属或本人涉事关系",
-    "official_evidence_urls":["必须来自本次 Web Search 实际引用的 URL"],
-    "person_involvement":"仅 directly_involved_person 时说明其与事件的直接关系，否则为空字符串"
+    "display_name":"搜索结果中的显示名，没有则留空",
+    "role":"该账号可能提供什么事件后续，没有则留空"
   }],
-  "reason":"为何这些是唯一应追踪的官方账号"
+  "reason":"简短说明搜索结果"
 }
 
 事件：
@@ -137,9 +117,9 @@ OFFICIAL_DISCOVERY_PROMPT_V1 = """你是 OdAIly 的官方 X 账号核验器。�
 """
 
 
-UPDATE_MATERIALITY_PROMPT_V1 = """你是 OdAIly 的官方事件进展判断器。比较一条新官方 X 帖子与既有事件时间线，只能输出 `material_progress`、`relevant_no_progress` 或 `irrelevant`。
+UPDATE_MATERIALITY_PROMPT_V2 = """你是 OdAIly 的事件账号帖子进展判断器。比较一条新 X 帖子与既有事件时间线，只能输出 `material_progress`、`relevant_no_progress` 或 `irrelevant`。
 
-material_progress 必须含新增、可报道且能明显改变事件理解的事实，例如官方确认/否认、影响范围、资金处置、调查发现、风险控制、服务恢复、冻结追回、赔偿、责任结论、可验证证据或争议升级。重复、安抚、营销、转发、没有新增事实的旧结论换说法是 relevant_no_progress；无关内容是 irrelevant。未确认说法必须明确标为未确认，不能写成事实。
+不要假设被追踪账号代表事件主体或具备官方身份。material_progress 表示帖子提出了与事件直接相关、可能明显改变事件理解的新信息或主张，例如影响范围、资金处置、调查发现、风险控制、服务恢复、冻结追回、赔偿、责任判断或争议升级。帖子作者身份和帖子中的主张都不因进入追踪列表而得到证实。除输入中已有材料明确支持的内容外，将帖子中的主张列为未确认，不得写成客观定论。重复、安抚、营销、转发或没有新增信息的旧结论换说法是 relevant_no_progress；无关内容是 irrelevant。
 
 整体只输出一个 JSON 对象，不要 Markdown：
 {
@@ -159,7 +139,7 @@ material_progress 必须含新增、可报道且能明显改变事件理解的�
 既有实质进展：
 {{TIMELINE}}
 
-新官方帖子：
+新账号帖子：
 {{POST}}
 """
 
@@ -479,7 +459,7 @@ class OpenAIEventTrackingAI:
 
 
 class SQLiteEventTrackingTaskDispatcher:
-    """Narrow cross-database adapter for material official posts only."""
+    """Narrow cross-database adapter for material candidate-account posts."""
 
     def __init__(self, database_path: Path, *, pipeline_client: Any | None = None) -> None:
         self.database_path = database_path
@@ -506,15 +486,15 @@ class SQLiteEventTrackingTaskDispatcher:
                 "difference_from_timeline": update.get("difference_text") or "",
                 "confirmed_facts": json_value(update.get("confirmed_facts_json"), []),
                 "unconfirmed_claims": json_value(update.get("unconfirmed_claims_json"), []),
-                "official_handle": post.get("account_screen_name") or post.get("author_screen_name") or update["handle_lower"],
-                "auto_publish": True,
+                "candidate_handle": post.get("account_screen_name") or post.get("author_screen_name") or update["handle_lower"],
+                "candidate_verification": "unverified",
             },
         }
         raw_payload = {
             "event_tracking": metadata["event_tracking"],
-            "official_post": post,
+            "candidate_post": post,
         }
-        title = f"{event['title']}：官方进展"
+        title = f"{event['title']}：账号更新"
         content = str(post.get("expanded_text") or post.get("text") or "").strip()
         source_url = str(post.get("url") or "").strip() or None
         published_at = str(post.get("created_at_iso") or post.get("created_at") or now)
@@ -798,11 +778,6 @@ def _datetime(value: str | None, *, fallback: datetime | None = None) -> datetim
     return fallback or utc_now()
 
 
-def _is_obvious_third_party(handle: str) -> bool:
-    normalized = handle.lower().strip().lstrip("@")
-    return normalized in THIRD_PARTY_HANDLE_MARKERS or any(marker in normalized for marker in THIRD_PARTY_HANDLE_MARKERS)
-
-
 class EventTracker:
     """Deep event-tracking module with a deliberately small caller surface.
 
@@ -857,14 +832,54 @@ class EventTracker:
         now = utc_iso(self.now())
         versions = (
             ("topic_judgment", 2, TOPIC_JUDGMENT_PROMPT_V2),
-            ("official_discovery", 1, OFFICIAL_DISCOVERY_PROMPT_V1),
-            ("update_materiality", 1, UPDATE_MATERIALITY_PROMPT_V1),
+            ("official_discovery", 2, ACCOUNT_DISCOVERY_PROMPT_V2),
+            ("update_materiality", 2, UPDATE_MATERIALITY_PROMPT_V2),
         )
         with self.db:
             for prompt_key, version_number, content in versions:
                 self.db.execute(
                     "INSERT OR IGNORE INTO event_tracking_prompt_versions(prompt_key,version_number,content,created_at) VALUES(?,?,?,?)",
                     (prompt_key, version_number, content, now),
+                )
+        self._reopen_recent_legacy_discoveries()
+
+    def _reopen_recent_legacy_discoveries(self) -> None:
+        prompt = self._prompt("official_discovery")
+        cutoff = utc_iso(self.now() - EVENT_TRACKING_INITIAL_WINDOW)
+        rows = self.db.execute(
+            """
+            SELECT e.event_id,e.current_cycle_id,c.started_at,d.prompt_version_id
+            FROM event_tracking_events e
+            JOIN event_tracking_cycles c ON c.cycle_id=e.current_cycle_id
+            JOIN event_tracking_account_discoveries d ON d.cycle_id=c.cycle_id
+            WHERE e.status='discovery_failed' AND d.status='failed'
+              AND c.started_at>=? AND d.prompt_version_id<?
+              AND NOT EXISTS (
+                SELECT 1 FROM event_tracking_dismissals x WHERE x.event_id=e.event_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM event_tracking_audit a
+                WHERE a.event_id=e.event_id AND a.kind='legacy_discovery_reopened'
+              )
+            """,
+            (cutoff, int(prompt["id"])),
+        ).fetchall()
+        if not rows:
+            return
+        with self.db:
+            for row in rows:
+                event = self.db.execute(
+                    "SELECT * FROM event_tracking_events WHERE event_id=?", (row["event_id"],)
+                ).fetchone()
+                if event is None or str(event["status"]) != "discovery_failed":
+                    continue
+                now = self.now()
+                cycle_id = self._open_cycle(dict(event), now)
+                self._audit(
+                    "legacy_discovery_reopened",
+                    {"previous_cycle_id": row["current_cycle_id"], "prompt_version_id": int(prompt["id"])},
+                    event_id=str(row["event_id"]),
+                    cycle_id=cycle_id,
                 )
 
     def _prompt(self, prompt_key: str) -> sqlite3.Row:
@@ -1448,8 +1463,8 @@ class EventTracker:
         result: EventModelResult | None = None
         error: Exception | None = None
         attempts = 0
-        # This is intentionally exactly one initial Web Search plus one bounded
-        # retry.  A text-only answer is not a successful discovery.
+        # Keep one bounded retry for transport or response failures. Account
+        # candidates do not need citations or identity evidence to be accepted.
         if self.ai is None:
             error = RuntimeError("event tracking GPT Web Search client is not configured")
         else:
@@ -1459,18 +1474,13 @@ class EventTracker:
                 try:
                     candidate = self.ai.web_search_json(model=model, prompt=prompt)
                     result = candidate
-                    if not candidate.tool_calls or not candidate.citations:
-                        raise ValueError("Web Search did not return both tool calls and citations")
                     break
                 except Exception as exc:
                     error = exc
                     if candidate is not None:
                         result = candidate
         now = self.now()
-        search_contract_failed = result is not None and (not result.tool_calls or not result.citations)
-        if search_contract_failed:
-            error = ValueError("Web Search did not return both tool calls and citations")
-        if result is None or search_contract_failed:
+        if result is None:
             message = f"{type(error).__name__}: {error}" if error else "unknown Web Search failure"
             with self.db:
                 self._finish_discovery(
@@ -1478,7 +1488,7 @@ class EventTracker:
                     prompt_version,
                     status="failed",
                     result=result,
-                    payload={"failure_stage": "web_search_response" if result is not None else "web_search_request"},
+                    payload={"failure_stage": "web_search_request"},
                     error=message,
                     bound=0,
                     now=now,
@@ -1489,7 +1499,7 @@ class EventTracker:
             parsed = _parse_json_output(result.text)
             if not isinstance(parsed, dict):
                 raise ValueError("official discovery output must be a JSON object")
-            accounts = self._verified_official_accounts(parsed.get("accounts"), citations=result.citations)
+            accounts = self._candidate_accounts(parsed.get("accounts"), reason=str(parsed.get("reason") or ""))
         except Exception as exc:
             with self.db:
                 self._finish_discovery(
@@ -1584,51 +1594,35 @@ class EventTracker:
             )
         return {"status": "succeeded", "bound": len(selected)}
 
-    def _verified_official_accounts(self, value: Any, *, citations: list[str]) -> list[dict[str, Any]]:
+    def _candidate_accounts(self, value: Any, *, reason: str = "") -> list[dict[str, Any]]:
         if not isinstance(value, list):
             return []
-        cited = {_canonical_url(item) for item in citations if URL_RE.match(item)}
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
         for raw in value:
             if not isinstance(raw, dict):
                 continue
             handle = str(raw.get("handle") or "").strip().lstrip("@")
-            if not HANDLE_RE.fullmatch(handle) or _is_obvious_third_party(handle):
+            if not HANDLE_RE.fullmatch(handle):
                 continue
             lower = handle.lower()
             if lower in seen:
                 continue
             relation = str(raw.get("official_relation") or "").strip()
-            if relation not in OFFICIAL_RELATIONS:
-                continue
-            entity = str(raw.get("official_entity") or "").strip()
-            evidence = str(raw.get("official_evidence") or "").strip()
             role = str(raw.get("role") or "").strip()
-            profile_url = str(raw.get("x_profile_url") or "").strip()
-            evidence_urls = [
-                _canonical_url(item)
-                for item in _string_list(raw.get("official_evidence_urls"))
-                if URL_RE.match(item)
-            ]
-            if not entity or not evidence or not role or not _is_matching_x_profile(profile_url, handle):
-                continue
-            if not evidence_urls or not any(item in cited for item in evidence_urls):
-                continue
-            person_involvement = str(raw.get("person_involvement") or "").strip()
-            if relation == "directly_involved_person" and not person_involvement:
-                continue
+            display_name = str(raw.get("display_name") or "").strip()
             result.append(
                 {
                     "handle": handle,
-                    "display_name": str(raw.get("display_name") or "").strip(),
-                    "official_entity": entity,
-                    "official_relation": relation,
+                    "display_name": display_name,
+                    "official_entity": str(raw.get("official_entity") or display_name or handle),
+                    # Retained for legacy SQLite enum compatibility; the UI and
+                    # writer treat this row solely as an unverified candidate.
+                    "official_relation": relation if relation in OFFICIAL_RELATIONS else "official_project",
                     "role": role,
-                    "x_profile_url": profile_url,
-                    "official_evidence": evidence,
-                    "official_evidence_urls": evidence_urls,
-                    "person_involvement": person_involvement,
+                    "verification_status": "unverified_candidate",
+                    "candidate_relation": relation,
+                    "search_reason": reason,
                 }
             )
             seen.add(lower)
@@ -1985,7 +1979,7 @@ class EventTracker:
                     "UPDATE event_tracking_bindings SET last_contributed_at=? WHERE cycle_id=? AND handle_lower=?",
                     (now_text, binding["cycle_id"], inbox["handle_lower"]),
                 )
-                self._audit("material_official_progress", {"tweet_id": inbox["tweet_id"], "fact_summary": decision["fact_summary"]}, event_id=binding["event_id"], cycle_id=binding["cycle_id"])
+                self._audit("material_candidate_account_progress", {"tweet_id": inbox["tweet_id"], "fact_summary": decision["fact_summary"]}, event_id=binding["event_id"], cycle_id=binding["cycle_id"])
         return {"classified": True, "material": decision["classification"] == "material_progress", "failed": False, "terminal": True}
 
     def _parse_update_decision(self, parsed: Any) -> dict[str, Any]:
@@ -1993,7 +1987,7 @@ class EventTracker:
             raise ValueError("update judgment output must be a JSON object")
         classification = str(parsed.get("classification") or "").strip()
         if classification not in UPDATE_CLASSIFICATIONS:
-            raise ValueError("invalid official update classification")
+            raise ValueError("invalid event-account update classification")
         news_type = str(parsed.get("news_type") or "regular").strip()
         if news_type not in EVENT_NEWS_TYPES:
             raise ValueError("invalid event tracking news_type")
@@ -2407,9 +2401,8 @@ class EventTracker:
             {
                 "handle": row["screen_name"],
                 "displayName": row["display_name"],
-                "officialEntity": row["official_entity"],
-                "officialRelation": row["official_relation"],
-                "officialEvidence": json_value(row["official_evidence_json"], {}),
+                "candidateName": row["display_name"] or row["official_entity"],
+                "verificationStatus": "unverified_candidate",
                 "status": row["status"],
                 "nextDueAt": row["next_due_at"],
                 "lastPolledAt": row["last_polled_at"],
@@ -2577,13 +2570,3 @@ def _confidence(value: Any) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
-
-
-def _canonical_url(value: str) -> str:
-    return value.strip().rstrip("/").lower()
-
-
-def _is_matching_x_profile(value: str, handle: str) -> bool:
-    canonical = _canonical_url(value)
-    allowed_prefixes = ("https://x.com/", "https://twitter.com/", "https://www.twitter.com/")
-    return canonical.startswith(allowed_prefixes) and canonical.rsplit("/", 1)[-1].lower() == handle.lower()

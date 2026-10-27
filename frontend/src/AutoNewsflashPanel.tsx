@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Activity, AlertTriangle, ChevronRight, ExternalLink, FileText, Radio, ShieldCheck, Trash2 } from 'lucide-react';
+import { Activity, AlertTriangle, ChevronRight, ExternalLink, FileText, Radio, Search, Trash2 } from 'lucide-react';
 import {
   getAutoNewsflashDashboard,
   getAutoNewsflashEvent,
@@ -28,9 +28,9 @@ function time(value: string | null | undefined): string {
 function statusLabel(value: string): string {
   const labels: Record<string, string> = {
     active: '追踪中',
-    discovering: '发现官方账号',
+    discovering: '发现账号候选',
     ended: '已结束',
-    discovery_failed: '官方账号未核验',
+    discovery_failed: '账号候选发现失败',
     capacity_exhausted: '追踪容量已满',
     material_progress: '实质进展',
     relevant_no_progress: '相关但无进展',
@@ -50,17 +50,17 @@ function statusLabel(value: string): string {
     publisher_pending: '等待发布',
     publishing: '发布中',
     auto_published: '已发布',
-    ready_review: '待人工复核',
+    ready_review: '待人工审核',
     publisher_failed: '失败',
     event_tracking_cancelled: '已取消',
-    no_official_account: '未发现可核验账号',
+    no_official_account: '未找到候选账号',
   };
   return labels[value] || value;
 }
 
 function discoveryStatusLabel(value: string): string {
   if (value === 'failed') return '发现失败';
-  if (value === 'succeeded') return '发现成功';
+  if (value === 'succeeded') return '候选已加入';
   return statusLabel(value);
 }
 
@@ -138,13 +138,13 @@ export function AutoNewsflashPanel() {
       {error && <div className="notice error"><AlertTriangle size={17} /> {error}</div>}
       <div className="autoNewsflashSummary">
         <Metric icon={<Radio size={16} />} label="追踪中" value={dashboard?.summary.eventsByStatus.active || 0} />
-        <Metric icon={<ShieldCheck size={16} />} label="官方账号" value={`${dashboard?.summary.activeAccounts || 0}/${dashboard?.summary.maxActiveAccounts || 15}`} />
+        <Metric icon={<Search size={16} />} label="追踪候选账号" value={`${dashboard?.summary.activeAccounts || 0}/${dashboard?.summary.maxActiveAccounts || 15}`} />
         <Metric icon={<Activity size={16} />} label="待判帖子" value={dashboard?.summary.pendingUpdates || 0} />
         <Metric icon={<FileText size={16} />} label="待投递" value={dashboard?.summary.pendingOutbox || 0} />
       </div>
       <div className="autoNewsflashWorkspace">
         <section className="autoNewsflashEvents">
-          <div className="sectionHeader"><div><h2>事件</h2><span>{dashboard?.enabled === false ? '任务未启用' : '官方账号短期追踪'}</span></div></div>
+          <div className="sectionHeader"><div><h2>事件</h2><span>{dashboard?.enabled === false ? '任务未启用' : '候选账号短期追踪'}</span></div></div>
           <div className="autoNewsflashEventList">
             {!dashboard && <span className="muted">加载中</span>}
             {dashboard?.events.length === 0 && <span className="muted">暂无自动追踪事件</span>}
@@ -196,11 +196,11 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
       <DetailList title="关联热点" description="事件从这些热点话题中发现；事件账号帖子不会回灌到热点话题列表。">
         {detail.topics.length === 0 ? <span className="muted">暂无关联热点</span> : detail.topics.map((topic) => <article className="autoNewsflashTopicLink" key={topic.topicId}><strong>{topic.snapshot.title || topic.topicId}</strong>{topic.snapshot.brief ? <p>{topic.snapshot.brief}</p> : <p className="muted">正文生成中</p>}<small>{topic.topicId} · {time(topic.updatedAt)}</small></article>)}
       </DetailList>
-      <DetailList title="官方账号">
-        {detail.accounts.length === 0 ? <span className="muted">暂无已核验账号</span> : detail.accounts.map((account) => <a key={account.handle} href={`https://x.com/${account.handle}`} target="_blank" rel="noreferrer"><span>@{account.handle} · {account.officialEntity}</span><small>{statusLabel(account.status)} · {time(account.lastPolledAt)}</small></a>)}
+      <DetailList title="候选账号" description="AI 搜索到的账号会直接加入追踪；账号身份尚未核验。">
+        {detail.accounts.length === 0 ? <span className="muted">暂无候选账号</span> : detail.accounts.map((account) => <a key={account.handle} href={`https://x.com/${account.handle}`} target="_blank" rel="noreferrer"><span>@{account.handle} · {account.candidateName}</span><small>未核验候选 · {statusLabel(account.status)} · {time(account.lastPolledAt)}</small></a>)}
       </DetailList>
-      <DetailList title="官方进展">
-        {detail.updates.length === 0 ? <span className="muted">尚未发现新官方帖子</span> : detail.updates.map((update) => <div className="autoNewsflashUpdate" key={update.id}><div><span className={`autoNewsflashStatus ${update.classification || update.status}`}>{statusLabel(update.classification || update.status)}</span><small>@{update.handle} · {time(update.classifiedAt)}</small></div>{update.factSummary && <strong>{update.factSummary}</strong>}{update.difference && <p>{update.difference}</p>}{update.post.url && <a href={update.post.url} target="_blank" rel="noreferrer" title="打开官方原帖"><ExternalLink size={15} /></a>}</div>)}
+      <DetailList title="账号更新">
+        {detail.updates.length === 0 ? <span className="muted">尚未发现账号新帖</span> : detail.updates.map((update) => <div className="autoNewsflashUpdate" key={update.id}><div><span className={`autoNewsflashStatus ${update.classification || update.status}`}>{statusLabel(update.classification || update.status)}</span><small>@{update.handle} · {time(update.classifiedAt)}</small></div>{update.factSummary && <strong>{update.factSummary}</strong>}{update.difference && <p>{update.difference}</p>}{update.post.url && <a href={update.post.url} target="_blank" rel="noreferrer" title="打开账号原帖"><ExternalLink size={15} /></a>}</div>)}
       </DetailList>
       <DetailList title="快讯投递">
         {detail.outbox.length === 0 ? <span className="muted">暂无可投递实质进展</span> : detail.outbox.map((item) => (
@@ -219,14 +219,14 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
               {item.submittedAt && <span>投递时间：{time(item.submittedAt)}</span>}
               {item.publishedAt && <span>发布时间：{time(item.publishedAt)}</span>}
               {!item.submittedAt && item.updatedAt && <span>更新时间：{time(item.updatedAt)}</span>}
-              {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer" title="打开官方原帖"><ExternalLink size={14} /> 官方原帖</a>}
+              {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer" title="打开账号原帖"><ExternalLink size={14} /> 账号原帖</a>}
             </div>
             {item.error && <p className="autoNewsflashOutboxError">{item.error}</p>}
           </article>
         ))}
       </DetailList>
-      <DetailList title="官方账号发现与身份核验" description="Web Search 只用于寻找事件主体的官方账号并保存身份依据；后续帖子由事件专用账号轮询获取。">
-        {detail.discoveries.length === 0 ? <span className="muted">暂无核验记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{discoveryStatusLabel(discovery.status)}</span><small>{discovery.citations.length} 个引用 · {time(discovery.completedAt)}</small>{discovery.error && <p className="autoNewsflashDiscoveryError">{discovery.error}</p>}</div>)}
+      <DetailList title="账号搜索记录" description="搜索到的 handle 会直接作为候选追踪，后续快讯发布前由人工审核。">
+        {detail.discoveries.length === 0 ? <span className="muted">暂无搜索记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{discoveryStatusLabel(discovery.status)}</span><small>{discovery.result.accounts?.length || 0} 个候选 · {time(discovery.completedAt)}</small>{discovery.error && <p className="autoNewsflashDiscoveryError">{discovery.error}</p>}</div>)}
       </DetailList>
     </article>
   );

@@ -252,8 +252,8 @@ export type AutoNewsflashEventDetail = {
   accounts: Array<{
     handle: string;
     displayName: string;
-    officialEntity: string;
-    officialRelation: string;
+    candidateName: string;
+    verificationStatus: string;
     status: string;
     lastPolledAt: string | null;
     lastError: string | null;
@@ -293,7 +293,15 @@ export type AutoNewsflashEventDetail = {
     publishedAt: string | null;
     updatedAt: string | null;
   }>;
-  discoveries: Array<{ id: string; cycleId: string; status: string; citations: string[]; error: string | null; completedAt: string }>;
+  discoveries: Array<{
+    id: string;
+    cycleId: string;
+    status: string;
+    citations: string[];
+    result: { accounts?: unknown[] };
+    error: string | null;
+    completedAt: string;
+  }>;
   promptVersions: AutoNewsflashPrompt[];
 };
 

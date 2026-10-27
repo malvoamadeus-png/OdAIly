@@ -11,11 +11,10 @@ from packages.x_processing.worker import XProcessingWorker, build_structured_wri
 
 
 def _task() -> TaskRecord:
-    # Matches the legacy production task shape: the real author is only in
-    # official_post, and the materiality decision selects the onchain template.
+    # Matches the pre-candidate production task shape and the onchain template.
     return TaskRecord(
         id=1, source="event_tracking", source_item_id="official-post", source_url=None,
-        title="PaperTrade报价套利质疑：官方进展",
+        title="PaperTrade报价套利质疑：账号更新",
         content="We have begun tightening OI caps onchain and at the relayer level.",
         metadata={"event_tracking": {
             "official_handle": "papertrade_xyz",
@@ -84,7 +83,7 @@ def test_event_writer_uses_real_author_and_event_progress_for_legacy_tasks() -> 
         task=_task(), prompt=repo.prompts["x_onchain_writer"], known_subjects=[],
     )
     assert "发布人：papertrade.xyz" in prompt
-    assert "官方账号：@papertrade_xyz" in prompt
+    assert "候选账号：@papertrade_xyz" in prompt
     assert "发布人：PaperTrade报价套利质疑" not in prompt
     assert "首次披露收紧措施。" in prompt
     assert "官方称已开始收紧持仓量上限。" in prompt

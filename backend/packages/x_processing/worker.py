@@ -1479,81 +1479,24 @@ class XProcessingWorker:
         pipeline: PipelineRecord,
         decided_at: datetime,
     ) -> None:
-        """Material official event posts bypass the generic manual-review model.
-
-        They have already passed the event-specific materiality decision and
-        the shared global searcher.  Retry safety comes from the official X
-        tweet id rather than the mutable main-database task id.
-        """
-        publisher_channel = "x"
-        context_output = {
-            "source": task.source,
-            "publisher_channel": publisher_channel,
-            "decision": "material_official_progress",
-            "reason": "已通过官方账号核验、事件实质进展判断和全站查重，按事件自动快讯规则直发。",
-            "event_tracking": (task.metadata or {}).get("event_tracking", {}),
-        }
+        """Queue material event-account drafts for editorial review."""
         if self._event_tracking_cancelled(task.id):
             return
         if self._hyperliquid_blocked(task):
             return
-        event_priority = self._event_tracking_priority(pipeline)
-        push_result = self.push_client.push(
-            title=pipeline.final_title or task.title or "",
-            content=pipeline.final_content or task.content,
-            dry_run=self.settings.dry_run,
-            source_url=task.source_url,
-            is_publish=True,
-            is_push=False,
-            idempotency_key=f"event-tracking:{task.source_item_id}",
-            origin_key="hot_topic_auto",
-            priority_status=str(event_priority.get("status") or "failed"),
-            priority_level=event_priority.get("level"),
-            priority_reason=event_priority.get("reason"),
-            duplicate_result=pipeline.search_result,
-        )
-        context_output["newsflash_priority"] = event_priority
-        if not push_result.ok:
-            error = push_result.error or "push failed"
-            self.repository.complete_publish(
-                task.id,
-                publisher_channel=publisher_channel,
-                publisher_model=None,
-                publisher_category="other",
-                publisher_decision="failed",
-                publisher_reason_code="event_tracking_push_failed",
-                publisher_output=context_output,
-                push_result=push_result.model_dump(mode="json"),
-                telegram_result={},
-                decided_at=decided_at,
-                status="publisher_failed",
-                last_error=error,
-            )
-            self._release_local_candidate_for_task(task.id, release_reason="publisher_failed")
-            raise HandledStageError(error)
-        telegram_result = self._send_publish_notice(task=task, pipeline=pipeline)
-        self.repository.complete_publish(
-            task.id,
-            publisher_channel=publisher_channel,
-            publisher_model=None,
-            publisher_category="other",
-            publisher_decision="auto_publish",
-            publisher_reason_code="event_tracking_material_progress",
-            publisher_output=context_output,
-            push_result=push_result.model_dump(mode="json"),
-            telegram_result=telegram_result.model_dump(mode="json"),
-            decided_at=decided_at,
-            status="auto_published",
-        )
-        self._write_newsflash_feed(
+        self._complete_manual_review_publish(
             task=task,
             pipeline=pipeline,
-            status="auto_published",
-            publisher_decision="auto_publish",
-            publisher_reason_code="event_tracking_material_progress",
+            publisher_channel="x",
+            reason_code="event_tracking_manual_review",
+            output={
+                "source": task.source,
+                "decision": "manual_review",
+                "reason": "AI 候选账号发现了可能与事件相关的进展，稿件已挂入后台，发布前需人工审核。",
+                "event_tracking": (task.metadata or {}).get("event_tracking", {}),
+            },
             decided_at=decided_at,
         )
-        self._release_local_candidate_for_task(task.id, release_reason="auto_published")
 
     def _complete_manual_review_publish(
         self,
@@ -1570,6 +1513,8 @@ class XProcessingWorker:
             "reason": output.get("reason") or publisher_manual_review_reason(reason_code, task=task),
         }
         if self._hyperliquid_blocked(task):
+            return
+        if task.source == EVENT_TRACKING_SOURCE and self._event_tracking_cancelled(task.id):
             return
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
@@ -1630,25 +1575,6 @@ class XProcessingWorker:
             decided_at=decided_at,
         )
         self._release_local_candidate_for_task(task.id, release_reason="ready_review")
-
-    @staticmethod
-    def _event_tracking_priority(pipeline: PipelineRecord) -> dict[str, Any]:
-        output = pipeline.writer_output if isinstance(pipeline.writer_output, dict) else {}
-        trace = output.get("trace") if isinstance(output.get("trace"), dict) else {}
-        priority = trace.get("newsflash_priority") if isinstance(trace, dict) else None
-        if not isinstance(priority, dict):
-            return {"status": "failed", "level": None, "reason": None, "error": "priority missing"}
-        status = str(priority.get("status") or "failed")
-        level = priority.get("level")
-        reason = priority.get("reason")
-        if status != "evaluated" or level not in {"high", "medium", "low"} or not reason:
-            return {
-                "status": "failed",
-                "level": None,
-                "reason": None,
-                "error": priority.get("error") or "priority missing or invalid",
-            }
-        return {"status": "evaluated", "level": level, "reason": reason}
 
     def _evaluate_and_store_newsflash_priority(
         self,
@@ -1969,19 +1895,24 @@ def build_writer_prompt(
     if task.source == EVENT_TRACKING_SOURCE:
         event_context = task.metadata.get("event_tracking")
         event_context = event_context if isinstance(event_context, dict) else {}
-        official_post = task.raw_payload.get("official_post")
-        official_post = official_post if isinstance(official_post, dict) else {}
+        candidate_post = task.raw_payload.get("candidate_post")
+        if not isinstance(candidate_post, dict):
+            candidate_post = task.raw_payload.get("official_post")
+        candidate_post = candidate_post if isinstance(candidate_post, dict) else {}
         author = (
             task.metadata.get("author_display_name")
-            or official_post.get("author_name")
-            or official_post.get("account_name")
+            or candidate_post.get("author_name")
+            or candidate_post.get("account_name")
             or task.metadata.get("author_username")
+            or event_context.get("candidate_handle")
             or event_context.get("official_handle")
-            or "官方账号"
+            or "候选账号"
         )
         handle = str(
             task.metadata.get("author_username")
-            or official_post.get("author_screen_name")
+            or candidate_post.get("author_screen_name")
+            or candidate_post.get("account_screen_name")
+            or event_context.get("candidate_handle")
             or event_context.get("official_handle")
             or ""
         ).lstrip("@")
@@ -1994,9 +1925,9 @@ def build_writer_prompt(
             "【正在追踪的事件与本次进展（参考，不作为新增信源）】\n"
             f"事件标题：{task.title or ''}\n"
             f"{json.dumps(writing_context, ensure_ascii=False)}\n\n"
-            "【本次播报：官方原帖】\n"
+            "【本次播报：候选账号原帖】\n"
             f"发布人：{author}\n"
-            f"官方账号：@{handle}\n"
+            f"候选账号：@{handle}\n"
             f"来源链接：{task.source_url or ''}\n"
             f"原文内容：{task.content}\n\n"
             f"{output_instruction}"
