@@ -254,6 +254,15 @@ export type AutoNewsflashEventDetail = {
     displayName: string;
     candidateName: string;
     verificationStatus: string;
+    identitySummary?: string;
+    identityEntity?: string;
+    identityEvidence?: string[];
+    identityError?: string;
+    identityProfile?: {
+      bio?: string;
+      profile_url?: string;
+      posts?: Array<{ tweet_id?: string; created_at?: string; url?: string; text?: string }>;
+    };
     status: string;
     lastPolledAt: string | null;
     lastError: string | null;
@@ -298,7 +307,23 @@ export type AutoNewsflashEventDetail = {
     cycleId: string;
     status: string;
     citations: string[];
-    result: { accounts?: unknown[] };
+    result: {
+      accounts?: unknown[];
+      identity_pending?: boolean;
+      identity_verification?: {
+        candidates?: Array<{
+          handle: string;
+          status: string;
+          error?: string;
+          identity?: { decision?: string; reason?: string; evidence?: string[] };
+          profile?: {
+            bio?: string;
+            profile_url?: string;
+            posts?: Array<{ created_at?: string; url?: string; text?: string }>;
+          };
+        }>;
+      };
+    };
     error: string | null;
     completedAt: string;
   }>;

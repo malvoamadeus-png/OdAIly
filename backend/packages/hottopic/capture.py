@@ -246,6 +246,90 @@ def latest_post_snapshot(account: AccountRow, results: list[dict[str, Any]]) -> 
     }
 
 
+def fetch_account_identity_snapshot(
+    screen_name: str,
+    *,
+    post_count: int = 4,
+    timeline_count: int = 20,
+    retries: int = 1,
+    before_request: Callable[[], None] | None = None,
+    on_rate_limited: Callable[[float], None] | None = None,
+) -> dict[str, Any]:
+    """Read a candidate's public profile fields and latest original posts."""
+    normalized = screen_name.strip().lstrip("@")
+    if not normalized:
+        return {"status": "failed", "error": "empty account handle"}
+    url = f"{FXTWITTER_BASE_URL}/2/profile/{normalized}/statuses"
+    payload: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for attempt in range(max(0, retries) + 1):
+        try:
+            if before_request is not None:
+                before_request()
+            payload = fetch_json(url, {"count": max(1, min(timeline_count, 100))})
+            break
+        except Exception as exc:
+            last_error = exc
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                if on_rate_limited is not None:
+                    on_rate_limited(retry_after_seconds(exc))
+                break
+            if attempt >= max(0, retries):
+                break
+            time.sleep(0.8 * (attempt + 1))
+    if payload is None:
+        return {
+            "status": "failed",
+            "error": f"{type(last_error).__name__}: {last_error}" if last_error else "FXTwitter returned no response",
+        }
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return {"status": "failed", "error": "FXTwitter profile response had no results list"}
+    target = normalized.lower()
+    own_posts: list[tuple[datetime, dict[str, Any]]] = []
+    profile: dict[str, Any] | None = None
+    for raw in results:
+        if not isinstance(raw, dict):
+            continue
+        author = nested_dict(raw.get("author"))
+        author_handle = str(author.get("screen_name") or "").strip().lstrip("@")
+        if author_handle.lower() == target and profile is None:
+            profile = author
+        if author_handle.lower() != target or is_pure_repost(normalized, raw):
+            continue
+        created = parse_created_at(str(raw.get("created_at") or ""))
+        text = compact_text(raw.get("text") or raw.get("raw_text"))
+        if created is None or not text:
+            continue
+        own_posts.append((created, raw))
+
+    if profile is None:
+        return {"status": "failed", "error": "FXTwitter timeline did not include the requested account profile"}
+
+    posts: list[dict[str, str]] = []
+    for created, raw in sorted(own_posts, key=lambda item: item[0], reverse=True)[: max(1, min(post_count, 4))]:
+        tweet_id = str(raw.get("id") or "").strip()
+        posts.append(
+            {
+                "tweet_id": tweet_id,
+                "created_at": created.isoformat(),
+                "url": str(raw.get("url") or f"https://x.com/{normalized}/status/{tweet_id}"),
+                "text": compact_text(raw.get("text") or raw.get("raw_text"))[:2000],
+            }
+        )
+    return {
+        "status": "succeeded",
+        "profile": {
+            "handle": normalized,
+            "display_name": str(profile.get("name") or "").strip(),
+            "bio": str(profile.get("description") or profile.get("raw_description") or "").strip()[:2000],
+            "profile_url": str(profile.get("url") or f"https://x.com/{normalized}"),
+            "posts": posts,
+        },
+    }
+
+
 def retry_after_seconds(error: urllib.error.HTTPError, *, now: datetime | None = None) -> float:
     """Parse either permitted Retry-After form into a non-negative delay."""
     raw = error.headers.get("Retry-After") if error.headers is not None else None

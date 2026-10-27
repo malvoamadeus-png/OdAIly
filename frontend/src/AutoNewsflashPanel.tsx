@@ -28,6 +28,7 @@ function time(value: string | null | undefined): string {
 function statusLabel(value: string): string {
   const labels: Record<string, string> = {
     active: '追踪中',
+    inactive: '已停止追踪',
     discovering: '发现账号候选',
     ended: '已结束',
     discovery_failed: '账号候选发现失败',
@@ -58,9 +59,20 @@ function statusLabel(value: string): string {
   return labels[value] || value;
 }
 
-function discoveryStatusLabel(value: string): string {
+function identityStatusLabel(decision: string, status: string): string {
+  if (decision === 'subject') return 'AI 判断为事件主体';
+  if (decision === 'directly_involved') return 'AI 判断为直接涉事者';
+  if (decision === 'third_party' || status === 'rejected') return 'AI 判断为第三方';
+  if (decision === 'unclear' || status === 'unclear') return '身份不明确';
+  if (status === 'verified') return '身份判断通过';
+  return '待身份判断';
+}
+
+function discoveryStatusLabel(value: string, identityPending = false): string {
+  if (identityPending) return '身份资料待重试';
   if (value === 'failed') return '发现失败';
-  if (value === 'succeeded') return '候选已加入';
+  if (value === 'succeeded') return '身份判断通过并开始追踪';
+  if (value === 'no_official_account') return '未发现符合条件的账号';
   return statusLabel(value);
 }
 
@@ -138,13 +150,13 @@ export function AutoNewsflashPanel() {
       {error && <div className="notice error"><AlertTriangle size={17} /> {error}</div>}
       <div className="autoNewsflashSummary">
         <Metric icon={<Radio size={16} />} label="追踪中" value={dashboard?.summary.eventsByStatus.active || 0} />
-        <Metric icon={<Search size={16} />} label="追踪候选账号" value={`${dashboard?.summary.activeAccounts || 0}/${dashboard?.summary.maxActiveAccounts || 15}`} />
+        <Metric icon={<Search size={16} />} label="追踪主体账号" value={`${dashboard?.summary.activeAccounts || 0}/${dashboard?.summary.maxActiveAccounts || 15}`} />
         <Metric icon={<Activity size={16} />} label="待判帖子" value={dashboard?.summary.pendingUpdates || 0} />
         <Metric icon={<FileText size={16} />} label="待投递" value={dashboard?.summary.pendingOutbox || 0} />
       </div>
       <div className="autoNewsflashWorkspace">
         <section className="autoNewsflashEvents">
-          <div className="sectionHeader"><div><h2>事件</h2><span>{dashboard?.enabled === false ? '任务未启用' : '候选账号短期追踪'}</span></div></div>
+          <div className="sectionHeader"><div><h2>事件</h2><span>{dashboard?.enabled === false ? '任务未启用' : '事件主体与直接涉事者短期追踪'}</span></div></div>
           <div className="autoNewsflashEventList">
             {!dashboard && <span className="muted">加载中</span>}
             {dashboard?.events.length === 0 && <span className="muted">暂无自动追踪事件</span>}
@@ -196,8 +208,30 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
       <DetailList title="关联热点" description="事件从这些热点话题中发现；事件账号帖子不会回灌到热点话题列表。">
         {detail.topics.length === 0 ? <span className="muted">暂无关联热点</span> : detail.topics.map((topic) => <article className="autoNewsflashTopicLink" key={topic.topicId}><strong>{topic.snapshot.title || topic.topicId}</strong>{topic.snapshot.brief ? <p>{topic.snapshot.brief}</p> : <p className="muted">正文生成中</p>}<small>{topic.topicId} · {time(topic.updatedAt)}</small></article>)}
       </DetailList>
-      <DetailList title="候选账号" description="AI 搜索到的账号会直接加入追踪；账号身份尚未核验。">
-        {detail.accounts.length === 0 ? <span className="muted">暂无候选账号</span> : detail.accounts.map((account) => <a key={account.handle} href={`https://x.com/${account.handle}`} target="_blank" rel="noreferrer"><span>@{account.handle} · {account.candidateName}</span><small>未核验候选 · {statusLabel(account.status)} · {time(account.lastPolledAt)}</small></a>)}
+      <DetailList title="账号身份判断" description="搜索结果只提供候选。程序读取 FXTwitter 账号简介和最多四条最新原创帖，由 AI 判断是否为事件主体或直接涉事者；通过判断后才开始追踪。">
+        {detail.accounts.length === 0 ? <span className="muted">暂无账号记录</span> : detail.accounts.map((account) => (
+          <article className="autoNewsflashAccount" key={account.handle}>
+            <header>
+              <a href={`https://x.com/${account.handle}`} target="_blank" rel="noreferrer">@{account.handle} · {account.candidateName}</a>
+              <span className="autoNewsflashStatus">{identityStatusLabel(account.verificationStatus, account.status)}</span>
+              <small>{account.verificationStatus === 'pending' ? '身份判断完成前不抓取帖子' : statusLabel(account.status)} · 最近轮询 {time(account.lastPolledAt)}</small>
+            </header>
+            {account.identitySummary && <p>{account.identitySummary}</p>}
+            {account.identityError && <p>{account.identityError}</p>}
+            {account.identityEvidence?.length ? <small>身份线索：{account.identityEvidence?.join('；')}</small> : null}
+            {(account.identityProfile?.bio || account.identityProfile?.posts?.length) && (
+              <details>
+                <summary>查看身份判断材料</summary>
+                {account.identityProfile?.bio && <p><strong>简介：</strong>{account.identityProfile.bio}</p>}
+                {account.identityProfile?.posts?.map((post, index) => (
+                  <a className="autoNewsflashIdentityPost" key={`${post.url || index}`} href={post.url || `https://x.com/${account.handle}`} target="_blank" rel="noreferrer">
+                    <small>{time(post.created_at)}</small><span>{post.text}</span><ExternalLink size={14} />
+                  </a>
+                ))}
+              </details>
+            )}
+          </article>
+        ))}
       </DetailList>
       <DetailList title="账号更新">
         {detail.updates.length === 0 ? <span className="muted">尚未发现账号新帖</span> : detail.updates.map((update) => <div className="autoNewsflashUpdate" key={update.id}><div><span className={`autoNewsflashStatus ${update.classification || update.status}`}>{statusLabel(update.classification || update.status)}</span><small>@{update.handle} · {time(update.classifiedAt)}</small></div>{update.factSummary && <strong>{update.factSummary}</strong>}{update.difference && <p>{update.difference}</p>}{update.post.url && <a href={update.post.url} target="_blank" rel="noreferrer" title="打开账号原帖"><ExternalLink size={15} /></a>}</div>)}
@@ -225,8 +259,32 @@ function EventDetail({ detail, dismissing, onDismiss }: { detail: AutoNewsflashE
           </article>
         ))}
       </DetailList>
-      <DetailList title="账号搜索记录" description="搜索到的 handle 会直接作为候选追踪，后续快讯发布前由人工审核。">
-        {detail.discoveries.length === 0 ? <span className="muted">暂无搜索记录</span> : detail.discoveries.map((discovery) => <div className="autoNewsflashDiscovery" key={discovery.id}><span className={`autoNewsflashStatus ${discovery.status}`}>{discoveryStatusLabel(discovery.status)}</span><small>{discovery.result.accounts?.length || 0} 个候选 · {time(discovery.completedAt)}</small>{discovery.error && <p className="autoNewsflashDiscoveryError">{discovery.error}</p>}</div>)}
+      <DetailList title="账号搜索记录" description="Web Search 负责找候选；FXTwitter 资料读取或身份判断暂时失败时会保留候选并重试。">
+        {detail.discoveries.length === 0 ? <span className="muted">暂无搜索记录</span> : detail.discoveries.map((discovery) => {
+          const identityCandidates = discovery.result.identity_verification?.candidates || [];
+          const candidateCount = identityCandidates.length || discovery.result.accounts?.length || 0;
+          return (
+            <article className="autoNewsflashDiscovery" key={discovery.id}>
+              <span className={`autoNewsflashStatus ${discovery.status}`}>{discoveryStatusLabel(discovery.status, discovery.result.identity_pending)}</span>
+              <small>{candidateCount} 个候选 · {time(discovery.completedAt)}</small>
+              {discovery.error && <p className="autoNewsflashDiscoveryError">{discovery.error}</p>}
+              {identityCandidates.length > 0 && <details>
+                <summary>查看候选账号身份判断</summary>
+                {identityCandidates.map((candidate) => (
+                  <div className="autoNewsflashIdentityCandidate" key={candidate.handle}>
+                    <a href={`https://x.com/${candidate.handle}`} target="_blank" rel="noreferrer">@{candidate.handle}</a>
+                    <span>{identityStatusLabel(candidate.identity?.decision || '', candidate.status)}</span>
+                    {candidate.identity?.reason && <p>{candidate.identity.reason}</p>}
+                    {candidate.error && <p>{candidate.error}</p>}
+                    {candidate.identity?.evidence?.length ? <p>身份线索：{candidate.identity.evidence.join('；')}</p> : null}
+                    {candidate.profile?.bio && <p>简介：{candidate.profile.bio}</p>}
+                    {candidate.profile?.posts?.map((post, index) => <p key={`${post.url || index}`}>近期帖 {time(post.created_at)}：{post.text}</p>)}
+                  </div>
+                ))}
+              </details>}
+            </article>
+          );
+        })}
       </DetailList>
     </article>
   );

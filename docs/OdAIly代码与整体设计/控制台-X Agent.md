@@ -10,9 +10,9 @@
 
 ## 热点自动快讯（已上线）
 
-热点自动快讯不是账号目录的第四个订阅开关。它从 HotTopic 的 `track` 判断创建独立事件和 cycle，以 GPT Web Search 搜索可能提供事件后续的 X 账号候选，并将有效 handle 直接加入 `event_tracking_*` 追踪池和事件专用 inbox，按 1 分钟目标轮询。候选身份不做核验，媒体、链上追踪、研究、KOL、社区及其他账号都可能被加入；候选本身不代表其身份或主张已确认。
+热点自动快讯不是账号目录的第四个订阅开关。它从 HotTopic 的 `track` 判断创建独立事件和 cycle，以 GPT Web Search 搜索可能提供第一手进展的 X 账号候选，再通过 FXTwitter 读取候选账号简介和最多 4 条最新原创帖子，由 AI 判断账号是否代表事件主体、负责处置方或直接涉事者。媒体、研究、KOL、社区、行情/链上观察及其他转述账号不会进入追踪池；只有身份判断通过的账号才进入事件专用 inbox，按 1 分钟目标轮询。
 
-每条候选账号新帖都先经过事件相关性和信息增量判断。只有 `material_progress` 才会更新事件时间线并通过 outbox 进入 `tasks.source = 'event_tracking'`；该任务复用全站搜索、写作和格式化，查重通过后挂入编辑后台，状态为 `ready_review`，发布前由人工审核。`relevant_no_progress`、`irrelevant`、营销和重复内容都只保存审计，不创建普通 HotTopic 或快讯任务。
+每条通过身份判断的事件主体/直接涉事者账号新帖都先经过事件相关性和信息增量判断。只有 `material_progress` 才会更新事件时间线并通过 outbox 进入 `tasks.source = 'event_tracking'`；该任务复用全站搜索、写作和格式化，查重通过后挂入编辑后台，状态为 `ready_review`，发布前由人工审核。`relevant_no_progress`、`irrelevant`、营销和重复内容都只保存审计，不创建普通 HotTopic 或快讯任务。AI 对账号身份的判断不等于外部认证，帖子主张仍须归属原帖并由编辑审核。
 
 AI 首次将热点判定为 `track` 并创建事件后，后端会向 Chrome 信息流写入一条高频提醒，标题为 `热点自动快讯新增：{事件标题}`。提醒使用 `event_id` 幂等，不为历史事件补发，也不会因标题更新、重复观察或 worker 重启重复出现；提醒卡片可进入控制台的 X Agent/热点自动快讯页，人工可在那里删除不合适的追踪事件。插件提醒属于次级展示链路，写入失败只保留审计，不阻断事件追踪。
 
@@ -30,9 +30,9 @@ AI 首次将热点判定为 `track` 并创建事件后，后端会向 Chrome 信
 
 热点话题 dashboard 同步返回当日执行状态。页面显示待执行/等待 worker/执行中/无合格候选/已挂后台/格式化失败/推送失败、检查数量、排除数量、选中标题及错误信息。`waiting` 表示已过 08:30 但当天没有运行记录，可据此检查 `odaily-hottopic.service`。
 
-控制台展示当前/已结束事件、未核验候选账号、账号原帖、进展判断、快讯结果、GPT 搜索记录、Prompt 版本和自动失败。只有被判定为 `material_progress` 的帖子才会显示在快讯投递区；该区同时展示任务状态、生成阶段、可用草稿或终稿标题/正文、发布决定、时间和原帖链接。`ready_review` 表示已经挂入人工审核后台；`relevant_no_progress` 与 `irrelevant` 仍只保留审计记录。
+控制台展示当前/已结束事件、账号身份判断及理由/线索、FXTwitter 简介和近期原创帖、进展判断、快讯结果、GPT 搜索记录、Prompt 版本和自动失败。身份判断未完成、拒绝或不明确的账号不会轮询；暂时性 FXTwitter/模型错误保留候选并重试身份判断，不重复 Web Search。只有被判定为 `material_progress` 的已通过账号帖子才会显示在快讯投递区；该区同时展示任务状态、生成阶段、可用草稿或终稿标题/正文、发布决定、时间和原帖链接。`ready_review` 表示已经挂入人工审核后台；`relevant_no_progress` 与 `irrelevant` 仍只保留审计记录。
 
-管理员可以在事件详情中删除热点自动快讯。删除是软删除：通过 `POST /console/auto-newsflash/dismiss` 写入人工忽略记录，停止后续追踪、结束活动 cycle、释放账号绑定、取消尚未发布的 outbox 和主 SQLite 任务，并从默认事件列表隐藏；事件、账号帖子、判断、已进后台稿件和审计记录都保留。重复删除返回幂等结果，不提供网页恢复入口。任务 1 仍只有 `track` / `do_not_track`，账号搜索与运行失败由系统自动重试或结束；最近 72 小时内由旧身份核验 Prompt 失败的事件最多自动重新搜索一次。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
+管理员可以在事件详情中删除热点自动快讯。删除是软删除：通过 `POST /console/auto-newsflash/dismiss` 写入人工忽略记录，停止后续追踪、结束活动 cycle、释放账号绑定、取消尚未发布的 outbox 和主 SQLite 任务，并从默认事件列表隐藏；事件、账号帖子、判断、已进后台稿件和审计记录都保留。重复删除返回幂等结果，不提供网页恢复入口。任务 1 仍只有 `track` / `do_not_track`；Web Search、资料读取和身份判断失败按阶段自动重试，身份资料/模型暂时失败不会重复 Web Search。旧版身份核验 Prompt 失败的事件仍可在最近 72 小时内最多自动重新搜索一次。初始 72 小时、24 小时静默退出、单次进展最多延长 48 小时、7 天硬上限、每事件 3 账号与全局 15 账号上限见正式任务书。
 
 ## 账号目录
 
@@ -85,12 +85,13 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 ### 事件自动追踪模型
 
-热点自动快讯使用 GPT Responses 调用：任务 1 用文本 JSON 判断是否追踪，账号候选发现请求启用 `web_search` 工具。默认沿用既有 HotTopic / `ODAILY_LLM` 中转站；只有需要单独隔离路由时才配置事件专用 endpoint。响应必须包含可解析的账号列表；每个候选只需提供符合 X handle 格式的用户名，程序会去重并直接加入追踪，不检查搜索引用、身份关系、profile URL 或账号类别。搜索工具调用和引用仍保存为审计信息，但不影响候选准入。历史 Prompt 版本保留，当前使用账号候选发现 v2 和事件更新判断 v2。
+热点自动快讯使用 GPT Responses 调用：任务 1 用文本 JSON 判断是否追踪，账号候选发现请求启用 `web_search` 工具。默认沿用既有 HotTopic / `ODAILY_LLM` 中转站；只有需要单独隔离路由时才配置事件专用 endpoint。候选需提供符合 X handle 格式的用户名；搜索 citations 不作为身份判断依据。程序读取 FXTwitter 简介和最多 4 条最新原创帖，使用独立身份判断 Prompt；只有被判断为事件主体/处置主体或直接涉事者、且身份线索能对应账号资料的候选才进入追踪。搜索调用、引用、资料、身份结论和失败均保留审计。当前使用账号候选发现 v3、账号身份判断 v1 和事件更新判断 v3，历史 Prompt 版本保留。
 
 - `HOTTOPIC_EVENT_TRACKING_ENABLED`：默认 `true`；关闭时不再创建或推进事件追踪。
 - `HOTTOPIC_EVENT_OPENAI_BASE_URL` / `HOTTOPIC_EVENT_OPENAI_API_KEY`：可选的专用 Responses-compatible 路由与凭据，不是启动前置条件；为空时按既有 `HOTTOPIC`、`ODAILY_LLM`、`OPENAI_API_KEY` 回退顺序读取。
 - `HOTTOPIC_EVENT_TOPIC_MODEL` / `HOTTOPIC_EVENT_TOPIC_FALLBACK_MODEL`：任务 1 与实质进展判断的模型与重试模型，默认均为 `gpt-6-luna`。
 - `HOTTOPIC_EVENT_WEB_SEARCH_MODEL` / `HOTTOPIC_EVENT_WEB_SEARCH_RETRY_MODEL`：账号候选搜索的主/回退模型，默认同上。
+- `HOTTOPIC_EVENT_IDENTITY_MODEL` / `HOTTOPIC_EVENT_IDENTITY_RETRY_MODEL`：基于 FXTwitter 简介和近期原创帖的账号身份判断模型与重试模型，默认沿用事件追踪文本模型配置。
 - `HOTTOPIC_EVENT_REQUEST_TIMEOUT_SECONDS`：单次 GPT 请求超时，默认 `90` 秒，范围为 `1–180` 秒。
 
 ## 控制台接口

@@ -22,7 +22,7 @@ from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.x_agent import XAgentAnalyzer, is_relevant
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
-from .capture import AccountRow, ContentItem, scan_account
+from .capture import AccountRow, ContentItem, fetch_account_identity_snapshot, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
 from .topic_aggregator import ModelBriefWriter, TopicCandidateResolver, TopicClaimReviewer, TopicVisibleMergeReviewer, TopicAggregator
 from .yesterday_hot_discussion import YesterdayHotDiscussion
@@ -377,6 +377,7 @@ class HotTopicService:
             ai=event_tracking_ai,
             dispatcher=event_tracking_dispatcher,
             feed_writer=LocalEditorPluginFeedWriter(),
+            account_identity_fetcher=self._fetch_event_account_identity,
             owns_connection=True,
         )
         self.yesterday_hot_discussion = YesterdayHotDiscussion(self.db)
@@ -958,6 +959,17 @@ class HotTopicService:
             ),
         )
 
+    def _fetch_event_account_identity(self, screen_name: str) -> dict[str, Any]:
+        return fetch_account_identity_snapshot(
+            screen_name,
+            post_count=4,
+            retries=1,
+            before_request=self.collect_request_pacer.wait,
+            on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
+                max(self.rate_limit_cooldown_seconds, retry_after)
+            ),
+        )
+
     def _advance_event_tracking(self, *, poll_accounts: bool) -> dict[str, Any]:
         discovery = self.event_tracker.discover_official_accounts()
         polling = self.event_tracker.poll_due_accounts(self._scan_event_account, workers=self.workers) if poll_accounts else {
@@ -973,6 +985,8 @@ class HotTopicService:
         # broad baseline account pool while sharing the same FXTwitter pacer.
         self.event_tracker.reconcile_topic_merges()
         self.event_tracker.observe_topics()
+        self.event_tracker.retry_pending_identity_discoveries()
+        self.event_tracker.reverify_pending_account_bindings()
         event_before = self._advance_event_tracking(poll_accounts=True)
         self.scan_visible_topic_merges()
         accounts = self._due_accounts()

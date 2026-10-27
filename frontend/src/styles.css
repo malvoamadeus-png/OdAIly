@@ -916,6 +916,22 @@ body {
 .autoNewsflashTopicLink p { color: #35444d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
 .autoNewsflashTopicLink small { color: #74808a; font-size: 11px; }
 .autoNewsflashDetailSection a, .autoNewsflashUpdate, .autoNewsflashOutbox, .autoNewsflashDiscovery { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 9px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #155f50; text-decoration: none; }
+.autoNewsflashAccount { display: grid; gap: 7px; padding: 9px 10px; border: 1px solid #dce4e6; border-radius: 6px; color: #35444d; }
+.autoNewsflashAccount header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; }
+.autoNewsflashAccount header > a { display: inline; min-width: 0; padding: 0; border: 0; color: #155f50; overflow-wrap: anywhere; }
+.autoNewsflashAccount header small { grid-column: 1 / -1; }
+.autoNewsflashAccount p { margin: 0; color: #58666f; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.autoNewsflashAccount > small { color: #65727b; font-size: 11px; line-height: 1.5; }
+.autoNewsflashAccount details, .autoNewsflashDiscovery details { grid-column: 1 / -1; min-width: 0; color: #65727b; font-size: 12px; }
+.autoNewsflashAccount details summary, .autoNewsflashDiscovery details summary { cursor: pointer; }
+.autoNewsflashAccount details > p { margin-top: 8px; }
+.autoNewsflashAccount details > a.autoNewsflashIdentityPost { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; margin-top: 8px; padding: 0; border: 0; color: #35444d; }
+.autoNewsflashIdentityPost small, .autoNewsflashIdentityPost span { grid-column: 1; }
+.autoNewsflashIdentityPost span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.autoNewsflashIdentityPost svg { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #28735d; }
+.autoNewsflashIdentityCandidate { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; margin-top: 8px; }
+.autoNewsflashIdentityCandidate a { display: inline; min-width: 0; padding: 0; border: 0; overflow-wrap: anywhere; }
+.autoNewsflashIdentityCandidate p { grid-column: 1 / -1; margin: 0; color: #65727b; font-size: 11px; line-height: 1.5; }
 .autoNewsflashOutbox { color: #35444d; }
 .autoNewsflashOutboxHeader { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 7px; }
 .autoNewsflashGeneratedTitle { grid-column: 1 / -1; overflow-wrap: anywhere; color: #25333d; font-size: 14px; line-height: 1.5; }

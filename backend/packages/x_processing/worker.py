@@ -1895,12 +1895,15 @@ def build_writer_prompt(
     if task.source == EVENT_TRACKING_SOURCE:
         event_context = task.metadata.get("event_tracking")
         event_context = event_context if isinstance(event_context, dict) else {}
+        account_identity = event_context.get("account_identity")
+        account_identity = account_identity if isinstance(account_identity, dict) else {}
         candidate_post = task.raw_payload.get("candidate_post")
         if not isinstance(candidate_post, dict):
             candidate_post = task.raw_payload.get("official_post")
         candidate_post = candidate_post if isinstance(candidate_post, dict) else {}
         author = (
-            task.metadata.get("author_display_name")
+            account_identity.get("entity")
+            or task.metadata.get("author_display_name")
             or candidate_post.get("author_name")
             or candidate_post.get("account_name")
             or task.metadata.get("author_username")
@@ -1919,15 +1922,17 @@ def build_writer_prompt(
         writing_context = {key: event_context[key] for key in (
             "fact_summary", "difference_from_timeline", "confirmed_facts", "unconfirmed_claims",
         ) if event_context.get(key)}
+        if account_identity:
+            writing_context["account_identity"] = account_identity
         return (
             f"{render_prompt_content(prompt)}\n\n"
             f"{EVENT_TRACKING_WRITER_RULES}\n\n"
             "【正在追踪的事件与本次进展（参考，不作为新增信源）】\n"
             f"事件标题：{task.title or ''}\n"
             f"{json.dumps(writing_context, ensure_ascii=False)}\n\n"
-            "【本次播报：候选账号原帖】\n"
+            "【本次播报：事件主体/涉事者账号原帖】\n"
             f"发布人：{author}\n"
-            f"候选账号：@{handle}\n"
+            f"X 账号：@{handle}\n"
             f"来源链接：{task.source_url or ''}\n"
             f"原文内容：{task.content}\n\n"
             f"{output_instruction}"
