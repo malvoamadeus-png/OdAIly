@@ -86,6 +86,7 @@ BUSINESS_INSIDER_BASE_URL = "https://www.businessinsider.com"
 BUSINESS_INSIDER_LATEST_URL = "https://www.businessinsider.com/latest"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
+BLOOMBERG_NEWS_RSS_URL = "https://www.bloomberg.com/feeds/news.rss"
 GOOGLE_NEWS_BASE_URL = "https://news.google.com"
 FT_GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q=site:ft.com+crypto&hl=en-US&gl=US&ceid=US:en"
 FT_GOOGLE_NEWS_MAX_ITEMS = 25
@@ -304,6 +305,15 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         pipeline_mode="alert_only",
         discovery_mode=DISCOVERY_MODE_TELEGRAM_PRIMARY_DIRECT_FALLBACK,
     ),
+    "bloomberg_news": SiteDefinition(
+        site_key="bloomberg_news",
+        display_name="Bloomberg",
+        homepage_url=BLOOMBERG_BASE_URL,
+        list_url=BLOOMBERG_NEWS_RSS_URL,
+        capture_method="html_request",
+        pipeline_mode="alert_only",
+        source_group=SOURCE_GROUP_MIXED_SOURCE,
+    ),
 }
 
 
@@ -429,6 +439,14 @@ def fetch_discovered_pages(
             max_attempts=max_attempts,
             backoff_seconds=backoff_seconds,
         )
+    if site.site_key == "bloomberg_news":
+        xml = fetch_html(
+            site.list_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        return discover_bloomberg_rss_pages(xml, base_url=site.homepage_url)
     raise ValueError(f"unsupported site registry entry: {site.site_key}")
 
 
@@ -1105,6 +1123,19 @@ def discover_rss_pages(
             )
         )
     return results
+
+
+def discover_bloomberg_rss_pages(
+    xml_text: str,
+    *,
+    base_url: str = BLOOMBERG_BASE_URL,
+) -> list[DiscoveredPage]:
+    pages = discover_rss_pages(
+        xml_text,
+        base_url=base_url,
+        href_patterns=(r"^https://(?:www\.)?bloomberg\.com/(?:news/articles|opinion/articles)/.+$",),
+    )
+    return [page for page in pages if is_bloomberg_article_url(page.detail_url)]
 
 
 def discover_hk01_pages(html: str, *, base_url: str = HK01_BASE_URL) -> list[DiscoveredPage]:
@@ -3018,7 +3049,7 @@ def is_wsj_article_url(url: str) -> bool:
 
 def is_bloomberg_article_url(url: str) -> bool:
     parsed = urlparse(url)
-    if not parsed.netloc.lower().endswith("bloomberg.com"):
+    if (parsed.hostname or "").lower() not in {"bloomberg.com", "www.bloomberg.com"}:
         return False
     return parsed.path.startswith(("/news/articles/", "/opinion/articles/", "/graphics/"))
 

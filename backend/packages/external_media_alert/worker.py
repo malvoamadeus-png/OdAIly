@@ -32,6 +32,7 @@ from .models import (
     AI_SOURCE_ALERT_TASK_SOURCE,
     ALERT_TASK_SOURCE,
     AlertStage,
+    BLOOMBERG_PROMPT_KEY,
     DomainDiscardReason,
     DomainJudgeRoute,
     MAINSTREAM_MEDIA_TASK_SOURCE,
@@ -64,6 +65,26 @@ DOMAIN_JSON_SCHEMA = {
     },
     "strict": True,
 }
+
+BLOOMBERG_DOMAIN_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "bloomberg_alert_domain_judge",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "route": {"type": "string", "enum": ["eligible", "discard"]},
+            "categories": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["crypto", "trump", "ai"]},
+            },
+        },
+        "required": ["route", "categories"],
+    },
+    "strict": True,
+}
+
+BLOOMBERG_CATEGORY_ORDER = ("crypto", "trump", "ai")
 
 
 ALERT_AI_REVIEW_SCHEMA = {
@@ -238,6 +259,9 @@ class ExternalMediaAlertWorker:
         raise ValueError(f"unknown stage: {self.stage}")
 
     def _run_domain_judge(self, task) -> None:
+        if task.metadata.get("site_key") == "bloomberg_news":
+            self._run_bloomberg_domain_judge(task)
+            return
         prompt = self._get_prompt(ALERT_PROMPT_KEY)
         raw_output = self.ai_client.generate_text(
             model=self.settings.domain_judge_model,
@@ -257,6 +281,32 @@ class ExternalMediaAlertWorker:
         self.repository.complete_domain(
             task.id,
             route="crypto",
+            prompt=prompt,
+            model=self.settings.domain_judge_model,
+            raw_output=raw_output,
+        )
+
+    def _run_bloomberg_domain_judge(self, task) -> None:
+        prompt = self._get_prompt(BLOOMBERG_PROMPT_KEY)
+        raw_output = self.ai_client.generate_text(
+            model=self.settings.domain_judge_model,
+            prompt=build_bloomberg_domain_prompt(task=task, prompt=prompt),
+            text_format=BLOOMBERG_DOMAIN_JSON_SCHEMA,
+        )
+        eligible, categories = parse_bloomberg_domain_result(raw_output)
+        if not eligible:
+            self.repository.complete_domain_discard(
+                task.id,
+                prompt=prompt,
+                model=self.settings.domain_judge_model,
+                raw_output=raw_output,
+                discard_reason="outside_watchlist",
+            )
+            return
+        self.repository.complete_domain(
+            task.id,
+            route="bloomberg",
+            categories=categories,
             prompt=prompt,
             model=self.settings.domain_judge_model,
             raw_output=raw_output,
@@ -382,13 +432,18 @@ class ExternalMediaAlertWorker:
 
     def _write_external_alert_feed(self, task) -> None:
         try:
+            metadata = task.metadata
+            if metadata.get("site_key") == "bloomberg_news":
+                pipeline = self.repository.get_pipeline(task.id)
+                categories = pipeline.domain_output.get("categories", [])
+                metadata = {**metadata, "bloomberg_categories": categories}
             self.feed_writer.upsert_external_media_alert(
                 task_id=task.id,
                 source=task.source,
                 source_url=task.source_url,
                 title=task.title,
                 content=task.content,
-                metadata=task.metadata,
+                metadata=metadata,
                 occurred_at=datetime.now(UTC),
             )
         except Exception as exc:
@@ -453,6 +508,39 @@ def build_domain_prompt(*, task, prompt: PromptTemplateVersion) -> str:
         f"内容摘要：{excerpt}\n"
         f"原链接：{task.source_url or ''}\n"
     )
+
+
+def build_bloomberg_domain_prompt(*, task, prompt: PromptTemplateVersion) -> str:
+    excerpt = str(task.metadata.get("excerpt") or task.content or "").strip()
+    return (
+        f"{render_prompt_content(prompt)}\n\n"
+        "【待判断内容】\n"
+        "任务类型：Bloomberg 标题提醒\n"
+        f"来源媒体：{task.metadata.get('site_display_name') or 'Bloomberg'}\n"
+        f"标题：{task.title or ''}\n"
+        f"RSS 摘要：{excerpt}\n"
+        f"原链接：{task.source_url or ''}\n"
+    )
+
+
+def parse_bloomberg_domain_result(value: str) -> tuple[bool, tuple[str, ...]]:
+    payload = json.loads(strip_code_fence(value))
+    if not isinstance(payload, dict):
+        raise ValueError("Bloomberg domain judge output must be a JSON object")
+    route = payload.get("route")
+    raw_categories = payload.get("categories")
+    if route not in {"eligible", "discard"}:
+        raise ValueError(f"invalid Bloomberg domain route: {route}")
+    if not isinstance(raw_categories, list):
+        raise ValueError("Bloomberg domain categories must be an array")
+    if any(category not in BLOOMBERG_CATEGORY_ORDER for category in raw_categories):
+        raise ValueError("invalid Bloomberg domain category")
+    categories = tuple(category for category in BLOOMBERG_CATEGORY_ORDER if category in raw_categories)
+    if route == "eligible" and not categories:
+        raise ValueError("eligible Bloomberg item must have at least one category")
+    if route == "discard" and categories:
+        raise ValueError("discarded Bloomberg item must not have categories")
+    return route == "eligible", categories
 
 
 def parse_domain_route(value: str) -> tuple[DomainJudgeRoute, DomainDiscardReason]:

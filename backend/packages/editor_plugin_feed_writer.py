@@ -188,6 +188,33 @@ class LocalEditorPluginFeedWriter:
         occurred_at: datetime | None = None,
     ) -> None:
         site = str(metadata.get("site_display_name") or "").strip() or _source_label(source)
+        category_labels = {
+            "crypto": "Crypto",
+            "trump": "特朗普",
+            "ai": "AI",
+        }
+        bloomberg_categories = metadata.get("bloomberg_categories")
+        topic_badge = None
+        if metadata.get("site_key") == "bloomberg_news" and isinstance(bloomberg_categories, list):
+            labels = [category_labels[item] for item in bloomberg_categories if item in category_labels]
+            if labels:
+                topic_badge = {"label": "主题", "value": " / ".join(labels), "tone": "accent"}
+        badges = [
+            {"label": "来源", "value": site, "tone": "neutral"},
+            {"label": "类型", "value": "标题提醒", "tone": "accent"},
+        ]
+        if topic_badge:
+            badges.append(topic_badge)
+        details = {
+            "task_id": task_id,
+            "source": source,
+            "task_status": "notified",
+            "site_key": metadata.get("site_key"),
+            "pipeline_mode": metadata.get("pipeline_mode"),
+            "discovery_mode": metadata.get("discovery_mode"),
+        }
+        if metadata.get("site_key") == "bloomberg_news":
+            details["bloomberg_categories"] = bloomberg_categories
         self.store.upsert_feed_items(
             [
                 {
@@ -197,24 +224,14 @@ class LocalEditorPluginFeedWriter:
                     "priority": 86,
                     "title": title or content or "Crypto信源标题提醒",
                     "summary": content or title or "Crypto信源标题提醒暂无摘要",
-                    "badges": [
-                        {"label": "来源", "value": site, "tone": "neutral"},
-                        {"label": "类型", "value": "标题提醒", "tone": "accent"},
-                    ],
+                    "badges": badges,
                     "status_label": "标题提醒",
                     "status_tone": "warning",
                     "occurred_at": occurred_at or _now(),
                     "source_url": source_url,
                     "detail_url": source_url,
                     "action_schema": {"type": "read"},
-                    "meta_json": {
-                        "task_id": task_id,
-                        "source": source,
-                        "task_status": "notified",
-                        "site_key": metadata.get("site_key"),
-                        "pipeline_mode": metadata.get("pipeline_mode"),
-                        "discovery_mode": metadata.get("discovery_mode"),
-                    },
+                    "meta_json": details,
                 }
             ]
         )

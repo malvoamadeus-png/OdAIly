@@ -71,6 +71,7 @@ class ExternalMediaAlertRepository(Protocol):
         prompt: PromptTemplateVersion | None,
         model: str,
         raw_output: str,
+        categories: tuple[str, ...] = (),
     ) -> None: ...
     def complete_domain_discard(
         self,
@@ -131,7 +132,7 @@ def _row_to_prompt(row: dict[str, Any]) -> PromptTemplateVersion:
 
 def _row_to_pipeline(row: dict[str, Any]) -> ExternalMediaAlertPipelineRecord:
     domain_route = row.get("domain_route")
-    if domain_route != "crypto":
+    if domain_route not in {"crypto", "bloomberg"}:
         domain_route = None
     return ExternalMediaAlertPipelineRecord(
         task_id=int(row["task_id"]),
@@ -368,7 +369,11 @@ class PostgresExternalMediaAlertRepository:
         prompt: PromptTemplateVersion | None,
         model: str,
         raw_output: str,
+        categories: tuple[str, ...] = (),
     ) -> None:
+        domain_output = {"route": route, "raw_output": raw_output}
+        if categories:
+            domain_output["categories"] = list(categories)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -388,7 +393,7 @@ class PostgresExternalMediaAlertRepository:
                     prompt.template_key if prompt else None,
                     prompt.id if prompt else None,
                     model,
-                    self._Jsonb({"route": route, "raw_output": raw_output}),
+                    self._Jsonb(domain_output),
                     task_id,
                 ),
             )
@@ -733,8 +738,12 @@ class InMemoryExternalMediaAlertRepository:
         prompt: PromptTemplateVersion | None,
         model: str,
         raw_output: str,
+        categories: tuple[str, ...] = (),
     ) -> None:
         current = self.pipelines[task_id]
+        domain_output = {"route": route, "raw_output": raw_output}
+        if categories:
+            domain_output["categories"] = list(categories)
         self.pipelines[task_id] = ExternalMediaAlertPipelineRecord(
             **{
                 **asdict(current),
@@ -743,7 +752,7 @@ class InMemoryExternalMediaAlertRepository:
                 "prompt_template_key": prompt.template_key if prompt else None,
                 "prompt_version_id": prompt.id if prompt else None,
                 "domain_model": model,
-                "domain_output": {"route": route, "raw_output": raw_output},
+                "domain_output": domain_output,
                 "last_error": None,
             }
         )
@@ -884,8 +893,8 @@ ON tasks(source, status, locked_until, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS external_media_alert_pipeline (
     task_id bigint PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    domain_route text CHECK (domain_route IS NULL OR domain_route IN ('crypto')),
-    discard_reason text CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis')),
+    domain_route text CHECK (domain_route IS NULL OR domain_route IN ('crypto', 'bloomberg')),
+    discard_reason text CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis', 'outside_watchlist')),
     prompt_template_key text REFERENCES prompt_templates(template_key),
     prompt_version_id bigint REFERENCES prompt_template_versions(id),
     domain_model text,
@@ -903,10 +912,10 @@ ALTER TABLE external_media_alert_pipeline
     DROP CONSTRAINT IF EXISTS external_media_alert_pipeline_discard_reason_check;
 ALTER TABLE external_media_alert_pipeline
     ADD CONSTRAINT external_media_alert_pipeline_domain_route_check
-    CHECK (domain_route IS NULL OR domain_route IN ('crypto'));
+    CHECK (domain_route IS NULL OR domain_route IN ('crypto', 'bloomberg'));
 ALTER TABLE external_media_alert_pipeline
     ADD CONSTRAINT external_media_alert_pipeline_discard_reason_check
-    CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis'));
+    CHECK (discard_reason IS NULL OR discard_reason IN ('non_crypto', 'market_analysis', 'outside_watchlist'));
 
 CREATE INDEX IF NOT EXISTS idx_external_media_alert_pipeline_route
 ON external_media_alert_pipeline(domain_route);

@@ -23,6 +23,18 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 class SQLiteExternalMediaAlertRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -76,8 +88,8 @@ class SQLiteExternalMediaAlertRepository:
     def get_pipeline(self, task_id: int) -> ExternalMediaAlertPipelineRecord:
         with connect_sqlite(self.path) as conn: row=conn.execute("SELECT * FROM external_media_alert_pipeline WHERE task_id=?",(task_id,)).fetchone()
         if row is None: raise ValueError(f"external media alert pipeline row not found for task {task_id}")
-        data=_record(row); route=data.get("domain_route") if data.get("domain_route")=="crypto" else None
-        return ExternalMediaAlertPipelineRecord(task_id=task_id,domain_route=route,discard_reason=data.get("discard_reason"),prompt_template_key=data.get("prompt_template_key"),prompt_version_id=data.get("prompt_version_id"),domain_model=data.get("domain_model"),domain_output=data.get("domain_output") or {},search_result=data.get("search_result") or {},telegram_result=data.get("telegram_result") or {},last_error=data.get("last_error"))
+        data=_record(row); route=data.get("domain_route") if data.get("domain_route") in {"crypto", "bloomberg"} else None
+        return ExternalMediaAlertPipelineRecord(task_id=task_id,domain_route=route,discard_reason=data.get("discard_reason"),prompt_template_key=data.get("prompt_template_key"),prompt_version_id=data.get("prompt_version_id"),domain_model=data.get("domain_model"),domain_output=_json_object(data.get("domain_output")),search_result=_json_object(data.get("search_result")),telegram_result=_json_object(data.get("telegram_result")),last_error=data.get("last_error"))
 
     def get_task(self, task_id: int) -> TaskRecord:
         with connect_sqlite(self.path) as conn: row=conn.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
@@ -112,14 +124,15 @@ class SQLiteExternalMediaAlertRepository:
         if row is None: raise ValueError(f"active prompt not found: {template_key}")
         data=_record(row); return PromptTemplateVersion(id=int(data["id"]),template_key=str(data["template_key"]),version_number=int(data["version_number"]),content=str(data["content"]),feature_mode_enabled=bool(data.get("feature_mode_enabled")),feature_mode_text=str(data.get("feature_mode_text") or ""),note=data.get("note"),created_at=data.get("created_at"),published_at=data.get("published_at"))
 
-    def complete_domain(self,task_id:int,*,route:DomainRoute,prompt:PromptTemplateVersion|None,model:str,raw_output:str)->None:
-        self._complete_domain(task_id,route=route,discard_reason=None,prompt=prompt,model=model,raw_output=raw_output,status="classified")
+    def complete_domain(self,task_id:int,*,route:DomainRoute,prompt:PromptTemplateVersion|None,model:str,raw_output:str,categories:tuple[str,...]=())->None:
+        self._complete_domain(task_id,route=route,discard_reason=None,categories=categories,prompt=prompt,model=model,raw_output=raw_output,status="classified")
 
     def complete_domain_discard(self,task_id:int,*,prompt:PromptTemplateVersion|None,model:str,raw_output:str,discard_reason:str="non_crypto")->None:
         self._complete_domain(task_id,route=None,discard_reason=discard_reason,prompt=prompt,model=model,raw_output=raw_output,status="discarded")
 
-    def _complete_domain(self,task_id:int,*,route:str|None,discard_reason:str|None,prompt,model:str,raw_output:str,status:str)->None:
+    def _complete_domain(self,task_id:int,*,route:str|None,discard_reason:str|None,prompt,model:str,raw_output:str,status:str,categories:tuple[str,...]=())->None:
         output={"route":route or "discard","raw_output":raw_output}
+        if categories: output["categories"]=list(categories)
         if discard_reason: output["discard_reason"]=discard_reason
         with connect_sqlite(self.path) as conn:
             conn.execute("UPDATE external_media_alert_pipeline SET domain_route=?,discard_reason=?,prompt_template_key=?,prompt_version_id=?,domain_model=?,domain_output=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE task_id=?",(route,discard_reason,prompt.template_key if prompt else None,prompt.id if prompt else None,model,_json(output),task_id)); self._set_status(conn,task_id,status); conn.commit()

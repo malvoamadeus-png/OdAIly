@@ -356,7 +356,7 @@ class NonMainstreamMediaWorker:
                 continue
             classified_target = None
             classification_metadata: dict[str, Any] | None = None
-            if source.source_group == SOURCE_GROUP_MIXED_SOURCE:
+            if source.source_group == SOURCE_GROUP_MIXED_SOURCE and source.site_key != "bloomberg_news":
                 if self.mixed_classifier is None:
                     item_errors[page.source_item_id] = self._mixed_classifier_init_error or "mixed source classifier unavailable"
                     continue

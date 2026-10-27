@@ -123,6 +123,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str, str]] = {
         f"{PROMPT_DOCS_DIR}/外媒标题领域判断模板.txt",
         "initial external media alert domain judge template",
     ),
+    "bloomberg_alert_domain_judge": (
+        "Bloomberg 标题主题判断",
+        f"{PROMPT_DOCS_DIR}/Bloomberg标题主题判断模板.txt",
+        "Bloomberg alert topic eligibility and multi-label classification",
+    ),
     "jin10_judge": (
         "判断者-金十",
         f"{PROMPT_DOCS_DIR}/判断者-金十模板.txt",

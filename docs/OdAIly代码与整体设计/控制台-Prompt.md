@@ -35,6 +35,7 @@ python backend/src/main.py x-process-publish-prompt-version \
 - `x_funding_writer`
 - `mainstream_media_writer`
 - `external_media_alert_domain_judge`
+- `bloomberg_alert_domain_judge`
 - `jin10_judge`
 
 ## Crypto信源与 AI信源模板口径
@@ -63,6 +64,7 @@ python backend/src/main.py x-process-publish-prompt-version \
 - AI信源全文：`docs/OdAIly代码与整体设计/主流外媒快讯模板.txt` -> `mainstream_media_writer`
 - 历史保留：`docs/OdAIly代码与整体设计/外媒模板.txt` -> `non_mainstream_media_writer`
 - 标题提醒领域判断：`docs/OdAIly代码与整体设计/外媒标题领域判断模板.txt` -> `external_media_alert_domain_judge`
+- Bloomberg 标题主题判断：`docs/OdAIly代码与整体设计/Bloomberg标题主题判断模板.txt` -> `bloomberg_alert_domain_judge`
 - 金十判断：`docs/OdAIly代码与整体设计/判断者-金十模板.txt` -> `jin10_judge`
 
 ## 相关文档

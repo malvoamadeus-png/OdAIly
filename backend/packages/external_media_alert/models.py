@@ -8,9 +8,9 @@ from packages.common.text import normalize_inline_text, normalize_multiline_text
 
 
 AlertStage = Literal["domain_judge", "search", "notify"]
-DomainRoute = Literal["crypto"]
+DomainRoute = Literal["crypto", "bloomberg"]
 DomainJudgeRoute = Literal["crypto", "discard"]
-DomainDiscardReason = Literal["none", "non_crypto", "market_analysis"]
+DomainDiscardReason = Literal["none", "non_crypto", "market_analysis", "outside_watchlist"]
 ExternalMediaCaptureMethod = Literal["rss", "html_request"]
 ExternalMediaCaptureStatus = Literal["success", "fetch_failed", "parse_failed", "parse_empty"]
 
@@ -21,6 +21,7 @@ MAINSTREAM_MEDIA_TASK_SOURCE = "mainstream_media"
 ALERT_NOTIFY_TASK_SOURCES = (ALERT_TASK_SOURCE, AI_SOURCE_ALERT_TASK_SOURCE)
 DOMAIN_WORKER_TASK_SOURCES = (ALERT_TASK_SOURCE, AI_SOURCE_ALERT_TASK_SOURCE, MAINSTREAM_MEDIA_TASK_SOURCE)
 ALERT_PROMPT_KEY = "external_media_alert_domain_judge"
+BLOOMBERG_PROMPT_KEY = "bloomberg_alert_domain_judge"
 
 
 @dataclass(frozen=True, slots=True)
