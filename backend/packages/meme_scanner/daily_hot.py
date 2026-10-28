@@ -33,9 +33,14 @@ def fetch_rows(chain: str, interval: str, order: str) -> list[dict[str, Any]]:
     from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
     if not ensure_cli_ready():
         raise RuntimeError('GMGN CLI is not ready')
+    command = [
+        GMGN, 'market', 'trending', '--chain', 'sol' if chain == 'solana' else chain,
+        '--interval', interval, '--limit', '50', '--order-by', order, '--raw',
+    ]
+    if chain == 'solana':
+        command.extend(['--filter', 'not_wash_trading'])
     result = subprocess.run(
-        [GMGN, 'market', 'trending', '--chain', 'sol' if chain == 'solana' else chain,
-         '--interval', interval, '--limit', '50', '--order-by', order, '--raw'],
+        command,
         capture_output=True, text=True, encoding='utf-8', errors='replace',
         timeout=45, env=gmgn_subprocess_env(), check=False,
     )

@@ -22,7 +22,7 @@
 
 ## 今日热门Meme
 
-`daily_hot.py` 从HideOnBush迁移GMGN CLI的榜单查询和 `data.rank` 解析；独立发现线程每小时扫描Solana、BSC、Base、Ethereum、Robinhood，各取1小时涨幅榜、6小时市值榜、24小时市值榜前20名。1小时要求涨幅至少20%，6小时至少30%，24小时无涨幅要求。市值由Dexscreener提供，三类均要求至少100万美元并通过现有 `volume_ratio_gate`。不限制发行平台，不增加控盘/刷量或安全筛选，不截断全链候选数。
+`daily_hot.py` 从HideOnBush迁移GMGN CLI的榜单查询和 `data.rank` 解析；独立发现线程每小时扫描Solana、BSC、Base、Ethereum、Robinhood，各取1小时涨幅榜、6小时市值榜、24小时市值榜前20名。Solana 请求固定使用 GMGN `not_wash_trading` 标签；其他链不传筛选标签。1小时要求涨幅至少20%，6小时至少30%，24小时无涨幅要求。市值由Dexscreener提供，三类均要求至少100万美元并通过现有 `volume_ratio_gate`。不限制发行平台，不增加其他控盘或安全筛选，不截断全链候选数。
 
 每链全部榜单及行情批次首次成功后，原子建立基线而不发稿；部分失败不完成该链初始化。按链＋CA永久记录首次满足全部条件的代币，成交量不足不消耗资格；首次入选后离榜回榜不再触发。Solana地址保留大小写。GMGN负责排名和对应时段涨幅，Dexscreener按完整行情字段和最高USD流动性选择交易对。
 
