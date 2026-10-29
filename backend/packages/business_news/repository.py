@@ -146,8 +146,14 @@ class BusinessNewsRepository:
             for key in ("first_name", "last_name")
             if str(sender.get(key) or "").strip()
         ) or str(sender.get("username") or (sender_chat or {}).get("title") or "").strip()
-        text_content = message.get("text") if isinstance(message, dict) else None
-        is_text = isinstance(text_content, str)
+        text_content = None
+        if isinstance(message, dict):
+            text_content = message.get("text")
+            if not isinstance(text_content, str):
+                text_content = message.get("caption")
+        if not isinstance(text_content, str) or not text_content.strip():
+            text_content = None
+        is_text = text_content is not None
 
         with connect_sqlite(self.database_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -176,17 +182,16 @@ class BusinessNewsRepository:
             if (
                 isinstance(message, dict)
                 and isinstance(message_id, int)
+                and is_text
                 and enabled
                 and not startup_backfill
                 and str(sender.get("id") or "") != str(own_bot_id or "")
             ):
-                raw_text = text_content if is_text else None
+                raw_text = text_content
                 compact_length = sum(
                     1 for char in _without_urls(raw_text or "") if not char.isspace()
                 )
-                if not is_text:
-                    status, reason, stored_text = "skipped_non_text", "非纯文字消息", None
-                elif compact_length < 15:
+                if compact_length < 15:
                     status, reason, stored_text = "filtered_short", "去掉空白和 URL 后不足 15 字", None
                 else:
                     status, reason, stored_text = "pending", None, raw_text
@@ -336,7 +341,7 @@ class BusinessNewsRepository:
     def list_dashboard(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = max(0, int(payload.get("page") or 0))
         page_size = max(1, min(100, int(payload.get("page_size") or 50)))
-        filters: list[str] = []
+        filters: list[str] = ["m.status!='skipped_non_text'"]
         values: list[Any] = []
         for key, column in (("chat_id", "m.chat_id"), ("classification", "m.classification"), ("status", "m.status")):
             value = str(payload.get(key) or "").strip()

@@ -22,7 +22,6 @@ const statusLabels: Record<string, string> = {
   pending: '待处理',
   processing: 'AI 处理中',
   filtered_short: '字数过滤',
-  skipped_non_text: '非文字跳过',
   activity_pending_api: '活动待接 API',
   skipped_long_content: '长内容跳过',
   skipped_other: '其他跳过',
@@ -186,7 +185,7 @@ function BusinessNewsRow({ item }: { item: BusinessNewsItem }) {
       <td>{labelForStatus(item.status)}<small className="businessNewsSecondary">{item.status_reason || ''}</small></td>
       <td>{item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">打开</a> : '—'}</td>
       <td><details className="businessNewsDetails"><summary>查看</summary><div>
-        <strong>原文</strong><p>{item.raw_text || '原文已清理或非文字消息'}</p>
+        <strong>原文</strong><p>{item.raw_text || '原文已清理'}</p>
         {item.writer4_title && <><strong>Writer4 标题 / 正文</strong><p>{item.writer4_title}<br />{item.writer4_content}</p></>}
         {item.writer2_title && <><strong>Writer2 定稿</strong><p>{item.writer2_title}<br />{item.writer2_content}</p></>}
         {item.push_result && <><strong>Push API</strong><p>{item.push_result}</p></>}
