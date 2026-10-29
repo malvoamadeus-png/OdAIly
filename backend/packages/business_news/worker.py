@@ -383,9 +383,9 @@ class BusinessTelegramWorker:
 
 def build_business_telegram_worker() -> BusinessTelegramWorker:
     load_dotenv()
-    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    token = business_telegram_bot_token()
     if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
+        raise RuntimeError("BUSINESS_NEWS_TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN is required")
     settings = load_x_processing_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OpenAI-compatible API key is required for Business Writer4")
@@ -418,6 +418,10 @@ def build_business_telegram_worker() -> BusinessTelegramWorker:
         workers=int(os.getenv("BUSINESS_NEWS_WORKERS") or 4),
         poll_timeout_seconds=int(os.getenv("BUSINESS_NEWS_POLL_TIMEOUT_SECONDS") or 50),
     )
+
+
+def business_telegram_bot_token() -> str:
+    return (os.getenv("BUSINESS_NEWS_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 
 
 def run_business_telegram_worker() -> int:

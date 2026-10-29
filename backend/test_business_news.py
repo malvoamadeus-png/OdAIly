@@ -6,6 +6,7 @@ from pathlib import Path
 from packages.business_news.repository import BusinessNewsRepository
 from packages.business_news.worker import (
     BusinessNewsProcessor,
+    business_telegram_bot_token,
     count_non_whitespace_without_urls,
     extract_urls,
 )
@@ -47,6 +48,20 @@ def test_text_gate_counts_unicode_without_whitespace_or_urls() -> None:
     assert extract_urls("打开说明", [{"type": "text_link", "url": "https://example.com/ref"}]) == [
         "https://example.com/ref"
     ]
+
+
+def test_business_bot_token_prefers_dedicated_token(monkeypatch) -> None:
+    monkeypatch.setenv("BUSINESS_NEWS_TELEGRAM_BOT_TOKEN", "business-token")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shared-token")
+
+    assert business_telegram_bot_token() == "business-token"
+
+
+def test_business_bot_token_falls_back_to_shared_token(monkeypatch) -> None:
+    monkeypatch.delenv("BUSINESS_NEWS_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", " shared-token ")
+
+    assert business_telegram_bot_token() == "shared-token"
 
 
 def test_startup_backfill_registers_group_but_does_not_store_old_message(tmp_path: Path) -> None:
