@@ -4293,6 +4293,150 @@ textarea:focus {
   margin-top: 18px;
 }
 
+.businessNewsLayout {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  min-width: 0;
+}
+
+.businessNewsTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid #dce2e7;
+}
+
+.businessNewsTabs > button:not(.businessNewsRefresh) {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #53606b;
+  cursor: pointer;
+}
+
+.businessNewsTabs > button.active {
+  border-bottom-color: #08765a;
+  color: #075f49;
+  font-weight: 650;
+}
+
+.businessNewsRefresh {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  border: 1px solid #cfd7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #43515e;
+  cursor: pointer;
+}
+
+.businessNewsRefresh:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.businessNewsFilters {
+  margin-top: 0;
+}
+
+.businessNewsTable {
+  min-width: 1040px;
+}
+
+.businessNewsTable td {
+  vertical-align: top;
+}
+
+.businessNewsSecondary {
+  display: block;
+  max-width: 250px;
+  margin-top: 3px;
+  color: #6b7680;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.businessNewsDetails summary {
+  color: #09684f;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.businessNewsDetails > div {
+  position: fixed;
+  z-index: 4;
+  top: 16vh;
+  right: 18px;
+  left: 18px;
+  max-height: 68vh;
+  margin-top: 6px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #cbd4dc;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(20 35 45 / 14%);
+  white-space: normal;
+}
+
+.businessNewsDetails p {
+  margin: 5px 0 14px;
+  color: #36434d;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.businessNewsDetails strong {
+  color: #27343d;
+  font-size: 12px;
+}
+
+.businessNewsPagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #68737d;
+  font-size: 12px;
+}
+
+.businessNewsGroupsWrap {
+  margin-top: 2px;
+}
+
+.businessNewsGroupsTable {
+  min-width: 800px;
+}
+
+.businessNewsCustomerInput {
+  width: min(100%, 220px);
+  min-width: 120px;
+}
+
+@media (max-width: 720px) {
+  .businessNewsFilters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .businessNewsFilters .wideFilter {
+    grid-column: 1 / -1;
+  }
+
+  .businessNewsDetails > div {
+    right: 8px;
+    left: 8px;
+  }
+}
+
 .promptModeSwitch {
   width: fit-content;
   margin-top: 18px;

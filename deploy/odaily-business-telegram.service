@@ -1,5 +1,5 @@
 [Unit]
-Description=OdAIly Writer3 Telegram confirmation worker
+Description=OdAIly business Telegram group news intake worker
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py writer3-confirm-worker
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py business-telegram-worker
 Restart=always
 RestartSec=10
 

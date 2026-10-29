@@ -12,6 +12,7 @@ import {
   Globe2,
   Layers3,
   Megaphone,
+  MessageSquareText,
   Newspaper,
   Pause,
   Plus,
@@ -137,6 +138,7 @@ import {
 import { HyperliquidNewsPanel } from './HyperliquidNewsPanel';
 import { GateMarketPanel } from './GateMarketPanel';
 import { StockMarketPanel } from './StockMarketPanel';
+import { BusinessNewsPanel } from './BusinessNewsPanel';
 import {
   workflowFilters,
   workflowGroups,
@@ -164,6 +166,7 @@ type ConsoleView =
   | 'prompts'
   | 'competitor'
   | 'newsflash'
+  | 'business_news'
   | 'jin10'
   | 'x_agent';
 
@@ -912,9 +915,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
+  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'business_news' ? 'business_news' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
   const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
+  const [businessNewsRefreshToken, setBusinessNewsRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
@@ -1785,6 +1789,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Cycle Monitor'
       : view === 'newsflash'
         ? 'Newsflash Operations'
+      : view === 'business_news'
+        ? 'Business News'
       : view === 'dedupe'
         ? 'AI Duplicate Check'
       : view === 'timing'
@@ -1817,6 +1823,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '信息周期监控'
       : view === 'newsflash'
         ? '快讯及数据总览'
+      : view === 'business_news'
+        ? '商务快讯'
       : view === 'dedupe'
         ? 'AI查重'
       : view === 'timing'
@@ -1849,6 +1857,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? `第 ${processingTaskPage + 1} 页 · ${visibleProcessingTasks.length} / ${processingTasks.length} 条当前页任务 · 发布者说明随任务展示`
       : view === 'newsflash'
         ? '快讯、排班、值班绩效、贡献和首发事件统一工作区'
+      : view === 'business_news'
+        ? '商务群消息、AI 分类、脱水和挂后台结果'
       : view === 'dedupe'
         ? '粘贴一段快讯内容，检索疑似重复的已发布快讯和运行中候选'
       : view === 'timing'
@@ -1881,6 +1891,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadBinanceSquareAll()
       : view === 'newsflash'
         ? (setNewsflashRefreshToken((value) => value + 1), Promise.resolve())
+      : view === 'business_news'
+        ? (setBusinessNewsRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'dedupe'
         ? Promise.resolve()
       : view === 'tasks'
@@ -1934,6 +1946,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'newsflash' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('newsflash')}>
             <Newspaper size={18} /> 快讯及数据总览
+          </button>
+          <button className={view === 'business_news' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('business_news')}>
+            <MessageSquareText size={18} /> 商务快讯
           </button>
           <button className={view === 'dedupe' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('dedupe')}>
             <Search size={18} /> AI查重
@@ -2059,6 +2074,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <XAgentPanel refreshToken={xAgentRefreshToken} />
         ) : view === 'newsflash' ? (
           <NewsflashOperationsPanel refreshToken={newsflashRefreshToken} />
+        ) : view === 'business_news' ? (
+          <BusinessNewsPanel refreshToken={businessNewsRefreshToken} />
         ) : view === 'dedupe' ? (
           <DuplicateSearchPanel />
         ) : view === 'x' ? (

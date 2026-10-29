@@ -76,6 +76,22 @@ def test_auto_newsflash_event_feed_item_is_idempotent_and_links_to_console(
     )
 
 
+def test_business_news_plugin_notice_contains_only_the_customer_sentence(tmp_path: Path) -> None:
+    store = LocalEditorPluginStore(tmp_path / "feed.sqlite")
+    writer = LocalEditorPluginFeedWriter(store)
+    occurred_at = datetime.now(UTC)
+
+    writer.upsert_business_news_notice(inbox_id=91, customer_name="Soso", occurred_at=occurred_at)
+
+    rows = store.list_feed_items(limit=10, max_age_hours=2)
+    assert len(rows) == 1
+    assert rows[0]["feed_kind"] == "business_news"
+    assert rows[0]["title"] == "Soso商务有新消息"
+    assert rows[0]["summary"] == ""
+    assert rows[0]["status_label"] is None
+    assert rows[0]["badges"] == []
+
+
 def test_hyperliquid_completed_draft_uses_existing_plugin_alert_and_console_link(tmp_path, monkeypatch):
     monkeypatch.setenv('EDITOR_PLUGIN_CONSOLE_URL','https://console.example.test/#tasks')
     store=LocalEditorPluginStore(tmp_path/'feed.sqlite');writer=LocalEditorPluginFeedWriter(store)

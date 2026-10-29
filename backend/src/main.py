@@ -401,9 +401,10 @@ def parse_args() -> argparse.Namespace:
     writer3_worker = subparsers.add_parser("writer3-worker", help="Run Writer3 Telegram topic worker.")
     writer3_worker.add_argument("--once", action="store_true", help="Process one Writer3 task and exit.")
 
-    writer3_confirm_worker = subparsers.add_parser("writer3-confirm-worker", help="Run Writer3 Telegram confirmation button worker.")
-    writer3_confirm_worker.add_argument("--once", action="store_true", help="Process one Telegram getUpdates response and exit.")
-    writer3_confirm_worker.add_argument("--poll-timeout", type=int, default=20, help="Telegram getUpdates timeout in seconds.")
+    subparsers.add_parser(
+        "business-telegram-worker",
+        help="Run the business Telegram group intake and newsflash worker.",
+    )
 
     writer3_reset = subparsers.add_parser("writer3-reset-task", help="Reset one Writer3 task for retry.")
     writer3_reset.add_argument("--task-id", type=int, required=True)
@@ -1675,26 +1676,6 @@ def writer3_worker_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def writer3_confirm_worker_command(args: argparse.Namespace) -> int:
-    from packages.writer3 import Writer3Index, Writer3TelegramConfirmWorker
-
-    paths = get_paths()
-    ensure_runtime_dirs(paths)
-    settings = load_writer3_settings()
-    index = Writer3Index(paths.writer3_index_path)
-    worker = Writer3TelegramConfirmWorker(index=index, settings=settings, poll_timeout_seconds=args.poll_timeout)
-    if args.once:
-        result = worker.run_once()
-        print(
-            "[odaily] writer3 confirm once "
-            f"updates={result.updates} confirmed={result.confirmed} ignored={result.ignored} "
-            f"failed={result.failed} message={result.message}"
-        )
-        return result.exit_code
-    worker.run_forever()
-    return 0
-
-
 def writer3_reset_task_command(args: argparse.Namespace) -> int:
     from packages.writer3 import create_writer3_repository
 
@@ -2201,8 +2182,10 @@ def main() -> int:
             return writer3_sync_index_command(args)
         if args.command == "writer3-worker":
             return writer3_worker_command(args)
-        if args.command == "writer3-confirm-worker":
-            return writer3_confirm_worker_command(args)
+        if args.command == "business-telegram-worker":
+            from packages.business_news.worker import run_business_telegram_worker
+
+            return run_business_telegram_worker()
         if args.command == "writer3-reset-task":
             return writer3_reset_task_command(args)
         if args.command == "auditor-init-db":

@@ -70,6 +70,35 @@ class LocalEditorPluginFeedWriter:
             store = LocalEditorPluginStore(paths.runtime_dir / "editor_plugin_local.sqlite")
         self.store = store
 
+    def upsert_business_news_notice(
+        self,
+        *,
+        inbox_id: int,
+        customer_name: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        name = str(customer_name or "商务").strip() or "商务"
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": f"business_news:{inbox_id}",
+                    "feed_kind": "business_news",
+                    "lane": "high",
+                    "priority": 90,
+                    "title": f"{name}商务有新消息",
+                    "summary": "",
+                    "badges": [],
+                    "status_label": None,
+                    "status_tone": None,
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": None,
+                    "detail_url": None,
+                    "action_schema": {"type": "read"},
+                    "meta_json": {"inbox_id": inbox_id, "customer_name": name},
+                }
+            ]
+        )
+
     def upsert_auto_newsflash_event(
         self,
         *,

@@ -123,6 +123,50 @@ export type PipelineTimingDashboard = {
   last_error?: string | null;
 };
 
+export type BusinessNewsGroup = {
+  chat_id: string;
+  chat_title: string;
+  chat_username: string | null;
+  customer_name: string;
+  is_enabled: number | boolean;
+  discovered_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+};
+
+export type BusinessNewsItem = {
+  id: number;
+  chat_id: string;
+  chat_title: string;
+  customer_name: string;
+  sender_id: string;
+  sender_name: string;
+  received_at: string;
+  message_date: string | null;
+  is_text: number;
+  raw_text: string | null;
+  classification: 'newsflash' | 'activity' | 'long_content' | 'other' | 'uncertain' | null;
+  classification_reason: string | null;
+  writing_style: 'plain' | 'promotional' | null;
+  writer4_title: string | null;
+  writer4_content: string | null;
+  writer2_title: string | null;
+  writer2_content: string | null;
+  source_url: string | null;
+  status: string;
+  status_reason: string | null;
+  push_result: string | null;
+  plugin_notice_result: string | null;
+};
+
+export type BusinessNewsDashboard = {
+  items: BusinessNewsItem[];
+  groups: BusinessNewsGroup[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
 export type Jin10Settings = {
   enabled: boolean;
   interval_seconds: number;
@@ -1438,6 +1482,27 @@ async function consoleApiGet<T>(path: string): Promise<T> {
 
 export async function getPipelineTimingDashboard(): Promise<PipelineTimingDashboard> {
   return consoleApiPost<PipelineTimingDashboard>('/console/pipeline-timing/get');
+}
+
+export async function getBusinessNewsDashboard(filters: {
+  page?: number;
+  page_size?: number;
+  chat_id?: string;
+  classification?: string;
+  status?: string;
+  query?: string;
+  date_from?: string;
+  date_to?: string;
+} = {}): Promise<BusinessNewsDashboard> {
+  return consoleApiPost<BusinessNewsDashboard>('/console/business-news/get', filters);
+}
+
+export async function saveBusinessNewsGroup(input: {
+  chat_id: string;
+  customer_name: string;
+  enabled: boolean;
+}): Promise<BusinessNewsGroup> {
+  return consoleApiPost<BusinessNewsGroup>('/console/business-news/groups/save', input);
 }
 
 export async function getTaskFailureDiagnostics(taskId: number): Promise<TaskFailureDiagnostics> {

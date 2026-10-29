@@ -26,6 +26,7 @@ from packages.common.editor_plugin_auth import (
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
+from packages.business_news.repository import BusinessNewsRepository
 from packages.competitor_monitor.blockbeats_key_config import (
     BlockbeatsKeySaveRequest,
     load_blockbeats_key_config,
@@ -379,6 +380,7 @@ class EditorPluginNewsGenService:
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         storage_settings = load_storage_settings()
         self.console_data = ConsoleDataApi(storage_settings.sqlite_path)
+        self.business_news = BusinessNewsRepository(storage_settings.sqlite_path)
         self.failure_diagnostics = FailureDiagnosticsStore(
             storage_settings.sqlite_path,
             self.paths.runtime_dir / "local_pipeline.sqlite",
@@ -511,6 +513,24 @@ class EditorPluginNewsGenService:
     def execute_newsflash_operations(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         action = str(payload.get("action") or "")
         return self.newsflash_operations.execute(action, payload, actor_email=actor.email)
+
+    def get_business_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        return self.business_news.list_dashboard(payload)
+
+    def save_business_news_group(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise EditorPluginApiError("enabled 必须是布尔值")
+        try:
+            return self.business_news.save_group(
+                chat_id=str(payload.get("chat_id") or ""),
+                customer_name=str(payload.get("customer_name") or ""),
+                enabled=enabled,
+            )
+        except ValueError as exc:
+            raise EditorPluginApiError(str(exc)) from exc
 
     def get_hottopic_dashboard(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
@@ -1222,6 +1242,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
         "/console/newsflash-operations",
+        "/console/business-news/get",
+        "/console/business-news/groups/save",
         "/console/hottopic/dashboard",
         "/console/hottopic/topic",
         "/console/auto-newsflash/dashboard",
@@ -1440,6 +1462,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/newsflash-operations":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_newsflash_operations(actor, self._read_json())})
+                    return
+                if self.path == "/console/business-news/get":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_business_news(actor, self._read_json())})
+                    return
+                if self.path == "/console/business-news/groups/save":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_business_news_group(actor, self._read_json())})
                     return
                 if self.path == "/console/hottopic/dashboard":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hottopic_dashboard(actor)})

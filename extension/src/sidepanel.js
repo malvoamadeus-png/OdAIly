@@ -258,6 +258,9 @@ function soundKeyForFeedItem(item) {
   if (item.feed_kind === "auto_newsflash_event") {
     return "newsflash_backstage";
   }
+  if (item.feed_kind === "business_news") {
+    return "newsflash_backstage";
+  }
   return null;
 }
 
@@ -395,6 +398,7 @@ function renderFeedCard(item) {
   const isFeedback = item.action_schema?.type === "feedback";
   const isWriter3 = item.feed_kind === "writer3_context";
   const isAutoNewsflashEvent = item.feed_kind === "auto_newsflash_event";
+  const isBusinessNotice = item.feed_kind === "business_news";
   const isFastLane = item.lane !== "low";
   const titleShouldLink = Boolean(detailUrlForItem(item)) && !isFastLane;
   const isExpanded = state.expandedFeedKeys.has(itemKey);
@@ -444,10 +448,10 @@ function renderFeedCard(item) {
       <div class="feedCard__rail feedCard__rail--${escapeHtml(item.feed_kind)}"></div>
       <div class="feedCard__body">
         <div class="feedCard__top">
-          <div class="feedCard__meta">
-            <span class="statusChip statusChip--${escapeHtml(statusChipTone)}">${escapeHtml(
+        <div class="feedCard__meta">
+            ${isBusinessNotice ? "" : `<span class="statusChip statusChip--${escapeHtml(statusChipTone)}">${escapeHtml(
               statusChipLabel
-            )}</span>
+            )}</span>`}
             ${badgeHtml}
           </div>
           <div class="feedCard__quickActions">
@@ -466,9 +470,9 @@ function renderFeedCard(item) {
               : escapeHtml(safeTitle)
           }
         </h3>
-        <p class="feedCard__summary${
+        ${isBusinessNotice ? "" : `<p class="feedCard__summary${
           isExpanded ? " feedCard__summary--expanded" : ""
-        }">${linkifyText(safeSummary)}</p>
+        }">${linkifyText(safeSummary)}</p>`}
         ${
           footerActionsHtml
             ? `

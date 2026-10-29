@@ -192,6 +192,26 @@ class _StockMarketReadOnlyService:
         return {"contract_count": 1, "contracts": [{"symbol": "AAPLUSDT"}], "recent_events": []}
 
 
+class _BusinessNewsService:
+    api_settings = SimpleNamespace(cors_allow_origin="*")
+
+    def __init__(self, *, allowed: bool) -> None:
+        self.allowed = allowed
+        self.saved_group: dict[str, object] | None = None
+
+    def authenticate_console_admin(self, _authorization_header: str | None) -> AuthenticatedEditor:
+        if not self.allowed:
+            raise EditorPluginForbiddenError("当前账号不是控制台管理员")
+        return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+    def get_business_news(self, _actor: AuthenticatedEditor, payload: dict[str, object]) -> dict[str, object]:
+        return {"items": [], "groups": [], "page": payload.get("page", 0)}
+
+    def save_business_news_group(self, _actor: AuthenticatedEditor, payload: dict[str, object]) -> dict[str, object]:
+        self.saved_group = payload
+        return payload
+
+
 def test_x_agent_market_sentiment_history_route_is_exposed() -> None:
     service = _XAgentHistoryService()
     server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
@@ -264,6 +284,38 @@ def test_stock_market_get_route_requires_admin_and_returns_dashboard_snapshot() 
         thread.join(timeout=2)
         server.server_close()
 
+
+def test_business_news_routes_require_admin_and_save_group_mapping() -> None:
+    service = _BusinessNewsService(allowed=True)
+    server = EditorPluginApiServer(("127.0.0.1", 0), service)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/business-news/get", {"page": 2})
+        assert status == HTTPStatus.OK
+        assert body == {"ok": True, "data": {"items": [], "groups": [], "page": 2}}
+        group = {"chat_id": "-1001", "customer_name": "Soso", "enabled": True}
+        status, body = _post_json(server, "/console/business-news/groups/save", group)
+        assert status == HTTPStatus.OK
+        assert body == {"ok": True, "data": group}
+        assert service.saved_group == group
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+    denied = _BusinessNewsService(allowed=False)
+    server = EditorPluginApiServer(("127.0.0.1", 0), denied)  # type: ignore[arg-type]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body = _post_json(server, "/console/business-news/get", {})
+        assert status == HTTPStatus.FORBIDDEN
+        assert body == {"ok": False, "message": "当前账号不是控制台管理员"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
 
 def test_legacy_hottopic_account_routes_are_not_exposed() -> None:
     server = EditorPluginApiServer(("127.0.0.1", 0), UnusedService())  # type: ignore[arg-type]
