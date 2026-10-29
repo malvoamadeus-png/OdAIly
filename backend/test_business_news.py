@@ -83,6 +83,20 @@ def test_startup_backfill_registers_group_but_does_not_store_old_message(tmp_pat
     assert dashboard["items"] == []
 
 
+def test_update_cursor_is_scoped_to_bot_id(tmp_path: Path) -> None:
+    repository = BusinessNewsRepository(tmp_path / "main.sqlite")
+    repository.ingest_update(
+        _message_update(101, 31),
+        source_urls=[],
+        own_bot_id="999",
+        bot_id="bot-one",
+    )
+
+    assert repository.last_update_id("bot-one") == 101
+    assert repository.last_update_id("bot-two") is None
+    assert repository.last_update_id() is None
+
+
 def test_short_and_non_text_messages_are_filtered_before_ai(tmp_path: Path) -> None:
     repository = BusinessNewsRepository(tmp_path / "main.sqlite")
     _enable_group(repository, _message_update(1, 1, text="群组介绍消息"))

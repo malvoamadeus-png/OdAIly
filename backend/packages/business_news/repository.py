@@ -18,6 +18,10 @@ def _iso(value: datetime | None = None) -> str:
     return (value or _now()).isoformat()
 
 
+def _cursor_key(bot_id: str | None) -> str:
+    return f"last_update_id:{bot_id}" if bot_id else "last_update_id"
+
+
 class BusinessNewsRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -96,10 +100,12 @@ class BusinessNewsRepository:
                 """
             )
 
-    def last_update_id(self) -> int | None:
+    def last_update_id(self, bot_id: str | None = None) -> int | None:
+        state_key = _cursor_key(bot_id)
         with connect_sqlite(self.database_path) as conn:
             row = conn.execute(
-                "SELECT state_value FROM business_telegram_state WHERE state_key='last_update_id'"
+                "SELECT state_value FROM business_telegram_state WHERE state_key=?",
+                (state_key,),
             ).fetchone()
         return int(row[0]) if row else None
 
@@ -110,6 +116,7 @@ class BusinessNewsRepository:
         source_urls: list[str],
         own_bot_id: str | None,
         startup_backfill: bool = False,
+        bot_id: str | None = None,
     ) -> dict[str, Any] | None:
         update_id = update.get("update_id")
         if not isinstance(update_id, int):
@@ -119,12 +126,12 @@ class BusinessNewsRepository:
         payload = message if isinstance(message, dict) else member_update if isinstance(member_update, dict) else None
         chat = payload.get("chat") if isinstance(payload, dict) else None
         if not isinstance(chat, dict) or chat.get("type") not in {"group", "supergroup"}:
-            self._save_cursor(update_id)
+            self._save_cursor(update_id, bot_id)
             return None
 
         chat_id = str(chat.get("id") or "").strip()
         if not chat_id:
-            self._save_cursor(update_id)
+            self._save_cursor(update_id, bot_id)
             return None
         title = str(chat.get("title") or chat.get("username") or "").strip()
         username = str(chat.get("username") or "").strip() or None
@@ -228,11 +235,11 @@ class BusinessNewsRepository:
             conn.execute("DELETE FROM business_telegram_recent_messages WHERE expires_at<?", (_iso(now),))
             conn.execute(
                 """INSERT INTO business_telegram_state(state_key,state_value,updated_at)
-                   VALUES('last_update_id',?,?)
+                   VALUES(?,?,?)
                    ON CONFLICT(state_key) DO UPDATE SET
                      state_value=MAX(CAST(business_telegram_state.state_value AS INTEGER),CAST(excluded.state_value AS INTEGER)),
                      updated_at=excluded.updated_at""",
-                (str(update_id), _iso(now)),
+                (_cursor_key(bot_id), str(update_id), _iso(now)),
             )
         return {
             "chat_id": chat_id,
@@ -242,15 +249,15 @@ class BusinessNewsRepository:
             "newly_discovered": not group_existed,
         }
 
-    def _save_cursor(self, update_id: int) -> None:
+    def _save_cursor(self, update_id: int, bot_id: str | None = None) -> None:
         with connect_sqlite(self.database_path) as conn:
             conn.execute(
                 """INSERT INTO business_telegram_state(state_key,state_value,updated_at)
-                   VALUES('last_update_id',?,?)
+                   VALUES(?,?,?)
                    ON CONFLICT(state_key) DO UPDATE SET
                      state_value=MAX(CAST(business_telegram_state.state_value AS INTEGER),CAST(excluded.state_value AS INTEGER)),
                      updated_at=excluded.updated_at""",
-                (str(update_id), _iso()),
+                (_cursor_key(bot_id), str(update_id), _iso()),
             )
 
     def claim_pending(self, limit: int = 4) -> list[dict[str, Any]]:

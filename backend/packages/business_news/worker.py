@@ -308,7 +308,7 @@ class BusinessTelegramWorker:
         with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="business-news") as executor:
             while True:
                 self._dispatch_pending(executor)
-                offset = self.repository.last_update_id()
+                offset = self.repository.last_update_id(self._bot_id)
                 try:
                     updates = self.telegram.get_updates(
                         offset=offset + 1 if offset is not None else None,
@@ -319,6 +319,7 @@ class BusinessTelegramWorker:
                             update,
                             source_urls=_message_urls(update),
                             own_bot_id=self._bot_id,
+                            bot_id=self._bot_id,
                         )
                         if discovered and discovered["newly_discovered"]:
                             title = str(discovered["chat_title"] or "").replace("\n", " ")[:100]
@@ -331,12 +332,12 @@ class BusinessTelegramWorker:
                     time.sleep(3)
 
     def _skip_initial_backlog_if_needed(self) -> None:
-        if self.repository.last_update_id() is not None:
+        if self.repository.last_update_id(self._bot_id) is not None:
             return
         skipped = 0
         while True:
             try:
-                last_update_id = self.repository.last_update_id()
+                last_update_id = self.repository.last_update_id(self._bot_id)
                 updates = self.telegram.get_updates(
                     offset=last_update_id + 1 if last_update_id is not None else None,
                     timeout_seconds=0,
@@ -352,6 +353,7 @@ class BusinessTelegramWorker:
                     source_urls=_message_urls(update),
                     own_bot_id=self._bot_id,
                     startup_backfill=True,
+                    bot_id=self._bot_id,
                 )
                 if discovered and discovered["newly_discovered"]:
                     title = str(discovered["chat_title"] or "").replace("\n", " ")[:100]
