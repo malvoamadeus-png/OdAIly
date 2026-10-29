@@ -143,6 +143,13 @@ def parse_args() -> argparse.Namespace:
     hottopic_worker.add_argument("--model", help="Optional model used to write visible topic briefs.")
     hottopic_worker.add_argument("--workers", type=int, default=8, help="Maximum concurrent profile polls.")
 
+    investment_leads_worker = subparsers.add_parser(
+        "x-agent-investment-leads-worker",
+        help="Run the independent X Agent investment-leads analyzer.",
+    )
+    investment_leads_worker.add_argument("--once", action="store_true", help="Process one bounded queue pass and exit.")
+    investment_leads_worker.add_argument("--database", help="Override the shared HotTopic/X Agent SQLite path.")
+
     x_agent_import = subparsers.add_parser(
         "x-agent-import-screening",
         help="Import a local X Agent screening report into the independent shared account directory.",
@@ -914,6 +921,15 @@ def hottopic_worker_command(args: argparse.Namespace) -> int:
         model=args.model,
         workers=args.workers,
     )
+
+
+def x_agent_investment_leads_worker_command(args: argparse.Namespace) -> int:
+    from packages.investment_leads.service import run_worker
+
+    paths = get_paths()
+    ensure_runtime_dirs(paths)
+    database_path = Path(args.database).expanduser().resolve() if args.database else paths.runtime_dir / "hottopic.sqlite"
+    return run_worker(database_path, once=args.once)
 
 
 def x_agent_import_screening_command(args: argparse.Namespace) -> int:
@@ -2105,6 +2121,8 @@ def main() -> int:
             return x_capture_worker_command(args)
         if args.command == "hottopic-worker":
             return hottopic_worker_command(args)
+        if args.command == "x-agent-investment-leads-worker":
+            return x_agent_investment_leads_worker_command(args)
         if args.command == "x-agent-import-screening":
             return x_agent_import_screening_command(args)
         if args.command == "x-agent-retry-failed":

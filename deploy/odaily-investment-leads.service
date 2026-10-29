@@ -1,0 +1,18 @@
+[Unit]
+Description=OdAIly X Agent investment leads analyzer
+After=network-online.target odaily-hottopic.service
+Wants=network-online.target odaily-hottopic.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=X_AGENT_MODEL=gpt-6-luna
+Environment=X_AGENT_FALLBACK_MODEL=gpt-6-luna
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py x-agent-investment-leads-worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

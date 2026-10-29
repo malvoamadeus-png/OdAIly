@@ -678,6 +678,40 @@ class EditorPluginNewsGenService:
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc
 
+    def get_x_agent_investment_leads(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.list_investment_leads(
+                window=str(payload.get("window") or "7d"),
+                query=str(payload.get("query") or ""),
+                account=str(payload.get("account") or ""),
+                unlocated_only=payload.get("unlocated_only") in {True, "true", 1},
+                offset=int(payload.get("offset") or 0),
+                limit=int(payload.get("limit") or 50),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def get_x_agent_investment_lead_detail(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        lead_id = str(payload.get("lead_id") or "").strip()
+        if not lead_id:
+            raise EditorPluginApiError("lead_id 不能为空")
+        return {"item": self.hottopic.investment_lead_detail(lead_id)}
+
+    def get_x_agent_investment_leads_status(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.hottopic.investment_leads_dashboard()
+
+    def retry_x_agent_investment_leads(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return {"requeued": self.hottopic.retry_investment_lead_jobs(
+                stage=str(payload.get("stage") or ""), limit=int(payload.get("limit") or 100)
+            )}
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
         local_stats = self.local_store.stats(max_age_hours=self.api_settings.local_feed_max_age_hours)
@@ -1260,6 +1294,10 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/x-agent/project-promotion",
         "/console/x-agent/project-promotion/detail",
         "/console/x-agent/retry-failed",
+        "/console/x-agent/investment-leads",
+        "/console/x-agent/investment-leads/detail",
+        "/console/x-agent/investment-leads/status",
+        "/console/x-agent/investment-leads/retry-failed",
     }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -1516,6 +1554,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/x-agent/retry-failed":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.retry_x_agent_failed_jobs(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/investment-leads/status":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_investment_leads_status(actor)})
+                    return
+                if self.path == "/console/x-agent/investment-leads":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_investment_leads(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/investment-leads/detail":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_x_agent_investment_lead_detail(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/investment-leads/retry-failed":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.retry_x_agent_investment_leads(actor, self._read_json())})
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})

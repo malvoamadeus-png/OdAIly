@@ -389,12 +389,14 @@ export type XAgentDashboard = {
     hotTopicEnabled: number;
     marketSentimentEnabled: number;
     projectPromotionEnabled: number;
+    investmentLeadsEnabled: number;
     errors: number;
   };
   jobs: {
     pending: number;
     failed: number;
   };
+  investmentLeads?: XAgentInvestmentLeadsStatus;
   topics?: unknown;
 };
 
@@ -405,6 +407,7 @@ export type XAgentAccount = {
   hotTopicEnabled: boolean;
   marketSentimentEnabled: boolean;
   projectPromotionEnabled: boolean;
+  investmentLeadsEnabled: boolean;
   cumulativeContentCount: number;
   cumulativeHotTopicCount: number;
   lastPolledAt: string | null;
@@ -419,11 +422,92 @@ export type XAgentPage<T> = {
   total: number;
 };
 
-export type XAgentAccountModule = 'hot_topic' | 'market_sentiment' | 'project_promotion';
+export type XAgentAccountModule = 'hot_topic' | 'market_sentiment' | 'project_promotion' | 'investment_leads';
 
 export type XAgentSubscriptionPatch = Partial<Pick<XAgentAccount,
-  'hotTopicEnabled' | 'marketSentimentEnabled' | 'projectPromotionEnabled'
+  'hotTopicEnabled' | 'marketSentimentEnabled' | 'projectPromotionEnabled' | 'investmentLeadsEnabled'
 >>;
+
+export type XAgentInvestmentLeadsStatus = {
+  generatedAt: string;
+  captureStartedAt: string;
+  workerLastSeenAt: string | null;
+  modelError: string | null;
+  accounts: { total: number; investmentLeadsEnabled: number };
+  tasks: {
+    pendingScan: number;
+    processingScan: number;
+    pendingDerive: number;
+    processingDerive: number;
+    pendingSupplement: number;
+    processingSupplement: number;
+    pendingIdentitySearch: number;
+    processingIdentitySearch: number;
+    failed: number;
+    budgetPaused: number;
+    identitySearchFailures: number;
+    identitySearchUnresolved: number;
+    incomplete: number;
+    oldestPendingAt: string | null;
+  };
+  results: { active: number; unlocated: number; scannedNoCandidate: number };
+  usage: { inputTokens: number; inputTokenBudget: number; scanCalls: number; deriveCalls: number; deriveCallBudget: number; supplementReads: number; supplementReadBudget: number; searchCalls: number; searchCallBudget: number; outputTokens: number };
+};
+
+export type XAgentInvestmentLead = {
+  id: string;
+  subject: string;
+  driverLogic: string;
+  conditions: string;
+  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string }>;
+  sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
+  firstSeenAt: string;
+  lastSubstantiveAt: string;
+  revision: number;
+  status: 'active' | 'unlocated';
+  accounts: string;
+};
+
+export type XAgentInvestmentLeadSource = {
+  materialId: string;
+  account: string;
+  author: string;
+  authorName: string;
+  url: string;
+  text: string;
+  postedAt: string | null;
+  activityAt: string | null;
+  activityTimeComplete: boolean;
+  relation: string;
+  role: string;
+  relatedMaterials: Array<{ material_id: string; author_screen_name: string; role: string; relation: string; created_at_iso: string | null; url: string; text: string }>;
+  supplementMaterials: Array<{ url: string; text: string }>;
+};
+
+export type XAgentInvestmentLeadRevision = {
+  revision: number;
+  subject: string;
+  driverLogic: string;
+  conditions: string;
+  assets: XAgentInvestmentLead['assets'];
+  sourceClaims: XAgentInvestmentLead['sourceClaims'];
+  actualModel: string;
+  createdAt: string;
+};
+
+export type XAgentInvestmentLeadDetail = XAgentInvestmentLead & {
+  sources: XAgentInvestmentLeadSource[];
+  revisions: XAgentInvestmentLeadRevision[];
+  identitySearches: Array<{
+    assetName: string;
+    status: 'pending' | 'processing' | 'succeeded' | 'unresolved' | 'budget_paused' | 'ignored' | 'failed' | 'expired';
+    identity: { name?: string; ticker?: string; market?: string; summary?: string };
+    summaries: Array<{ url: string; text: string }>;
+    citations: Array<{ url: string; title: string }>;
+    error: string | null;
+    updatedAt: string;
+  }>;
+};
 
 export type XAgentMarketSentimentItem = {
   instrumentKey: string;
@@ -1826,6 +1910,7 @@ export async function updateXAgentSubscriptions(
   if (patch.hotTopicEnabled !== undefined) payload.hot_topic_enabled = patch.hotTopicEnabled;
   if (patch.marketSentimentEnabled !== undefined) payload.market_sentiment_enabled = patch.marketSentimentEnabled;
   if (patch.projectPromotionEnabled !== undefined) payload.project_promotion_enabled = patch.projectPromotionEnabled;
+  if (patch.investmentLeadsEnabled !== undefined) payload.investment_leads_enabled = patch.investmentLeadsEnabled;
   return consoleApiPost<{ items: XAgentAccount[] }>('/console/x-agent/subscriptions', {
     screen_names: screenNames,
     patch: payload,
@@ -1931,6 +2016,52 @@ export async function getXAgentProjectPromotionDetail({
     window,
     offset,
     limit,
+  });
+}
+
+export async function getXAgentInvestmentLeadsStatus(): Promise<XAgentInvestmentLeadsStatus> {
+  return consoleApiPost<XAgentInvestmentLeadsStatus>('/console/x-agent/investment-leads/status');
+}
+
+export async function listXAgentInvestmentLeads({
+  window,
+  query = '',
+  account = '',
+  unlocatedOnly = false,
+  offset = 0,
+  limit = 50,
+}: {
+  window: '24h' | '7d' | '30d';
+  query?: string;
+  account?: string;
+  unlocatedOnly?: boolean;
+  offset?: number;
+  limit?: number;
+}): Promise<XAgentPage<XAgentInvestmentLead>> {
+  return consoleApiPost<XAgentPage<XAgentInvestmentLead>>('/console/x-agent/investment-leads', {
+    window,
+    query,
+    account,
+    unlocated_only: unlocatedOnly,
+    offset,
+    limit,
+  });
+}
+
+export async function getXAgentInvestmentLeadDetail(leadId: string): Promise<XAgentInvestmentLeadDetail | null> {
+  const result = await consoleApiPost<{ item: XAgentInvestmentLeadDetail | null }>(
+    '/console/x-agent/investment-leads/detail', { lead_id: leadId },
+  );
+  return result.item;
+}
+
+export async function retryXAgentInvestmentLeadJobs(
+  stage: 'scan' | 'derive' | '' = '',
+  limit = 100,
+): Promise<{ requeued: number }> {
+  return consoleApiPost<{ requeued: number }>('/console/x-agent/investment-leads/retry-failed', {
+    stage,
+    limit: Math.min(500, Math.max(1, limit)),
   });
 }
 

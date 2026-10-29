@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -59,6 +59,8 @@ class ContentItem:
     quotes: int
     likes: int
     views: int
+    investment_materials: list[dict[str, Any]] = field(default_factory=list)
+    investment_only: bool = False
 
 
 def int_value(value: Any) -> int:
@@ -173,11 +175,115 @@ def reply_target(item: dict[str, Any]) -> str | None:
     return status_id or None
 
 
-def item_to_content(account: AccountRow, item: dict[str, Any], *, cutoff: datetime) -> ContentItem | None:
-    if is_pure_repost(account.screen_name, item):
+def _material_record(
+    raw: dict[str, Any],
+    *,
+    role: str,
+    relation: str,
+    activity_at: datetime | None = None,
+    activity_time_complete: bool = True,
+) -> dict[str, Any] | None:
+    material_id = str(raw.get("id") or raw.get("rest_id") or "").strip()
+    text = compact_text(raw.get("text") or raw.get("raw_text"))
+    author = author_username(raw)
+    created_at = str(raw.get("created_at") or "").strip()
+    created = parse_created_at(created_at)
+    if not material_id:
         return None
+    entities = nested_dict(raw.get("entities"))
+    urls = entities.get("urls") if isinstance(entities.get("urls"), list) else []
+    links = [
+        str(value.get("expanded_url") or value.get("url") or "").strip()
+        for value in urls[:10]
+        if isinstance(value, dict) and (value.get("expanded_url") or value.get("url"))
+    ]
+    attachments = raw.get("media") or nested_dict(raw.get("extended_entities")).get("media") or []
+    attachment_info = []
+    if isinstance(attachments, list):
+        for value in attachments[:8]:
+            if not isinstance(value, dict):
+                continue
+            attachment_info.append({
+                "type": str(value.get("type") or value.get("media_type") or ""),
+                "url": str(value.get("url") or value.get("media_url_https") or ""),
+                "expanded_url": str(value.get("expanded_url") or ""),
+                "alt_text": str(value.get("alt_text") or ""),
+            })
+    if not text and not links and not attachment_info:
+        return None
+    canonical_created = created.isoformat() if created else None
+    selected_activity = activity_at or created
+    return {
+        "material_id": material_id,
+        "author_screen_name": author,
+        "author_name": author_name(raw),
+        "created_at": created_at,
+        "created_at_iso": canonical_created,
+        "activity_at": selected_activity.isoformat() if selected_activity else None,
+        "activity_time_complete": bool(activity_time_complete and selected_activity),
+        "url": str(raw.get("url") or (f"https://x.com/{author}/status/{material_id}" if author else "")),
+        "text": text,
+        "role": role,
+        "relation": relation,
+        "links": links,
+        "attachments": attachment_info,
+    }
+
+
+def investment_materials_from_item(account: AccountRow, item: dict[str, Any]) -> list[dict[str, Any]]:
+    repost = is_pure_repost(account.screen_name, item)
+    activity_at = None
+    for key in ("reposted_at", "retweeted_at", "repost_created_at", "activity_created_at"):
+        activity_at = parse_created_at(str(item.get(key) or ""))
+        if activity_at:
+            break
+    if activity_at is None:
+        repost_payload = nested_dict(item.get("repost")) or nested_dict(item.get("retweeted_status"))
+        activity_at = parse_created_at(str(repost_payload.get("created_at") or ""))
+
+    root = _material_record(
+        item,
+        role="source_post",
+        relation="repost" if repost else "reply" if reply_target(item) else "quote" if find_quote(item) else "original",
+        activity_at=activity_at if repost else None,
+        activity_time_complete=not repost or activity_at is not None,
+    )
+    materials = [root] if root else []
+    quote = find_quote(item)
+    if quote:
+        quoted = _material_record(quote, role="quoted_post", relation="quoted_by")
+        if quoted:
+            materials.append(quoted)
+    parent = nested_dict(item.get("replying_to_status")) or nested_dict(item.get("in_reply_to_status"))
+    if parent:
+        reply_parent = _material_record(parent, role="reply_parent", relation="replied_to")
+        if reply_parent:
+            materials.append(reply_parent)
+    return materials
+
+
+def item_to_content(
+    account: AccountRow,
+    item: dict[str, Any],
+    *,
+    cutoff: datetime,
+    include_investment_materials: bool = False,
+) -> ContentItem | None:
+    pure_repost = is_pure_repost(account.screen_name, item)
+    investment_materials = investment_materials_from_item(account, item) if include_investment_materials else []
     created = parse_created_at(str(item.get("created_at") or ""))
-    if created is None or created < cutoff:
+    activity_created = next(
+        (parse_created_at(str(material.get("activity_at") or "")) for material in investment_materials
+         if material.get("relation") == "repost" and material.get("activity_at")),
+        None,
+    )
+    eligibility_time = activity_created if pure_repost and activity_created else created
+    if eligibility_time is None:
+        return None
+    outside_collection_window = eligibility_time < cutoff
+    if outside_collection_window and not include_investment_materials:
+        return None
+    if outside_collection_window and not investment_materials:
         return None
 
     tweet_id = str(item.get("id") or "").strip()
@@ -196,11 +302,20 @@ def item_to_content(account: AccountRow, item: dict[str, Any], *, cutoff: dateti
         if quote_text:
             expanded_parts.append(f"引用 @{quote_author or 'unknown'}: {quote_text}")
     expanded_text = "\n".join(expanded_parts).strip()
-    if not tweet_id or not expanded_text:
+    investment_only = bool(include_investment_materials and (outside_collection_window or pure_repost or not expanded_text))
+    if outside_collection_window:
+        text = ""
+        expanded_text = ""
+    if not tweet_id or (not expanded_text and not investment_only):
         return None
 
+    if pure_repost and investment_only:
+        activity_type = "repost"
+        expanded_text = ""
+        text = ""
+
     reply_to = reply_target(item)
-    activity_type = "quote" if quote else "reply" if reply_to else "original"
+    activity_type = "repost" if pure_repost else "quote" if quote else "reply" if reply_to else "original"
     return ContentItem(
         account_screen_name=account.screen_name,
         account_name=account.name,
@@ -209,7 +324,7 @@ def item_to_content(account: AccountRow, item: dict[str, Any], *, cutoff: dateti
         author_screen_name=author_username(item),
         author_name=author_name(item),
         created_at=str(item.get("created_at") or "").strip(),
-        created_at_iso=created.isoformat(),
+        created_at_iso=eligibility_time.isoformat(),
         url=str(item.get("url") or f"https://x.com/{author_username(item)}/status/{tweet_id}"),
         text=text,
         expanded_text=expanded_text,
@@ -222,6 +337,8 @@ def item_to_content(account: AccountRow, item: dict[str, Any], *, cutoff: dateti
         quotes=int_value(item.get("quotes")),
         likes=int_value(item.get("likes")),
         views=int_value(item.get("views")),
+        investment_materials=investment_materials,
+        investment_only=investment_only,
     )
 
 
@@ -359,6 +476,7 @@ def scan_account(
     retries: int,
     before_request: Callable[[], None] | None = None,
     on_rate_limited: Callable[[float], None] | None = None,
+    include_investment_materials: bool = False,
 ) -> tuple[list[ContentItem], dict[str, Any] | None, dict[str, Any] | None]:
     if account.protected:
         return [], None, {"account": account.screen_name, "kind": "protected", "error": "protected account skipped"}
@@ -379,7 +497,7 @@ def scan_account(
             items = [
                 content
                 for raw in raw_results
-                for content in [item_to_content(account, raw, cutoff=cutoff)]
+                for content in [item_to_content(account, raw, cutoff=cutoff, include_investment_materials=include_investment_materials)]
                 if content is not None
             ]
             return items, latest, None

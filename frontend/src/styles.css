@@ -71,7 +71,7 @@
 
 .xAgentSummary {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -255,8 +255,8 @@ button.xAgentMetric {
 
 .xAgentAccountHead,
 .xAgentAccountRow {
-  grid-template-columns: minmax(210px, 2fr) 80px 90px 104px 104px 104px minmax(122px, 1fr) minmax(122px, 1fr);
-  min-width: 1050px;
+  grid-template-columns: minmax(210px, 2fr) 80px 90px 104px 104px 104px 104px minmax(122px, 1fr) minmax(122px, 1fr);
+  min-width: 1160px;
 }
 
 .xAgentMarketHead,
@@ -393,6 +393,62 @@ button.xAgentMetric {
 .xAgentProjectRow.active {
   background: #f0f8f5;
 }
+
+.xAgentInvestmentStatus {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #d8e0e4;
+  border-radius: 7px;
+  background: #f8faf9;
+}
+
+.xAgentInvestmentUsage {
+  display: grid;
+  gap: 5px;
+  min-height: 70px;
+  padding: 12px 14px;
+  border: 1px solid #d8e0e4;
+  border-radius: 7px;
+  background: #fff;
+  color: #66717d;
+  font-size: 12px;
+}
+
+.xAgentInvestmentUsage strong { color: #263640; font-size: 13px; }
+.xAgentInvestmentStatusFoot { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 16px; color: #68757e; font-size: 12px; }
+.xAgentInvestmentFilters > input { min-height: 36px; padding: 0 10px; border: 1px solid #d2dbdf; border-radius: 6px; background: #fff; color: #293842; }
+.xAgentInvestmentFilters .xAgentUnlocatedFilter { display: inline-flex; flex-basis: auto; align-items: center; gap: 7px; color: #53616a; font-size: 12px; }
+.xAgentUnlocatedFilter input { width: 15px; height: 15px; accent-color: #08775a; }
+.xAgentInvestmentList { display: grid; gap: 9px; }
+.xAgentInvestmentCard { overflow: hidden; border: 1px solid #d8e0e4; border-radius: 7px; background: #fff; }
+.xAgentInvestmentCard.active { border-color: #9bc9b6; }
+.xAgentInvestmentCardButton { display: grid; width: 100%; gap: 8px; padding: 14px 16px; border: 0; background: transparent; color: #293842; cursor: pointer; text-align: left; }
+.xAgentInvestmentCardButton:hover, .xAgentInvestmentCard.active .xAgentInvestmentCardButton { background: #f4faf7; }
+.xAgentInvestmentCardHeading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.xAgentInvestmentCardHeading strong { flex: 1 1 300px; font-size: 15px; line-height: 1.45; }
+.xAgentInvestmentCardHeading > span { padding: 3px 7px; border: 1px solid #e4d4a3; border-radius: 5px; background: #fff9e8; color: #80651a; font-size: 11px; }
+.xAgentInvestmentCardHeading time, .xAgentInvestmentMeta { color: #68757e; font-size: 12px; }
+.xAgentInvestmentLogic { color: #35444d; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.xAgentInvestmentAssets { display: flex; flex-wrap: wrap; gap: 6px; }
+.xAgentInvestmentAssets > span { padding: 4px 7px; border-radius: 4px; background: #f0f5f3; color: #466157; font-size: 12px; }
+.xAgentInvestmentMeta { overflow-wrap: anywhere; }
+.xAgentInvestmentDetail { display: grid; gap: 14px; padding: 14px 16px 18px; border-top: 1px solid #e4ece8; background: #fbfdfc; }
+.xAgentInvestmentDetail > p { margin: 0; color: #475760; font-size: 13px; line-height: 1.6; }
+.xAgentInvestmentDetail section { display: grid; gap: 8px; }
+.xAgentInvestmentDetail h3 { margin: 0; color: #34434c; font-size: 13px; }
+.xAgentInvestmentDetail section > p { display: flex; gap: 8px; margin: 0; color: #475760; font-size: 13px; line-height: 1.6; }
+.xAgentClaimSource, .xAgentClaimInference { flex: 0 0 auto; height: max-content; padding: 2px 6px; border-radius: 4px; background: #e7f4ef; color: #08775a; font-size: 11px; }
+.xAgentClaimInference { background: #edf2fa; color: #526d9d; }
+.xAgentInvestmentSource { display: grid; gap: 8px; padding: 12px; border: 1px solid #e3e9e6; border-radius: 6px; background: #fff; }
+.xAgentInvestmentSource > small { color: #74808a; font-size: 11px; }
+.xAgentInvestmentSource > p { margin: 0; color: #384750; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.xAgentInvestmentSource blockquote { margin: 0; padding: 9px 11px; border-left: 2px solid #c4d5ce; background: #f7faf8; }
+.xAgentInvestmentSource blockquote small { color: #6d7a82; font-size: 11px; }
+.xAgentInvestmentSource blockquote p { margin: 5px 0; color: #4a5961; font-size: 12px; line-height: 1.55; }
+.xAgentInvestmentSource blockquote a { color: #08775a; font-size: 12px; }
+.xAgentInvestmentDetail ol { display: grid; gap: 6px; margin: 0; padding-left: 20px; color: #5f6d76; font-size: 12px; line-height: 1.55; }
 
 .xAgentDetailTrigger {
   display: flex;
@@ -759,6 +815,10 @@ button.xAgentMetric {
 
 @media (max-width: 850px) {
   .xAgentSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .xAgentInvestmentStatus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

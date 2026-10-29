@@ -21,6 +21,12 @@ from typing import Any, Iterable
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.x_agent import XAgentAnalyzer, is_relevant
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
+from packages.investment_leads.schema import ensure_schema as ensure_investment_leads_schema
+from packages.investment_leads.service import (
+    InvestmentLeadService,
+    cancel_ineligible_jobs,
+    persist_capture_materials,
+)
 
 from .capture import AccountRow, ContentItem, fetch_account_identity_snapshot, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
@@ -276,7 +282,11 @@ class HotTopicService:
         self.workers = max(1, workers)
         self.db = open_worker_database(self.path)
         self.db.executescript(SCHEMA)
+        ensure_investment_leads_schema(self.db, capture_started_at=iso(utc_now()))
         self._migrate_x_agent_schema()
+        self.investment_lead_queries = InvestmentLeadService(
+            self.path, connection=self.db, reader_only=True
+        )
         self._init_meta()
         writer = None
         configured_model = model or os.getenv("HOTTOPIC_MODEL") or "gpt-6-luna"
@@ -399,6 +409,7 @@ class HotTopicService:
             self.x_agent_analyzer_error = f"{type(exc).__name__}: {exc}"
 
     def close(self) -> None:
+        self.investment_lead_queries.close()
         self.event_tracker.close()
         self.aggregator.close()
         self.db.close()
@@ -419,6 +430,8 @@ class HotTopicService:
             "hot_topic_enabled": "INTEGER NOT NULL DEFAULT 1",
             "market_sentiment_enabled": "INTEGER NOT NULL DEFAULT 0",
             "project_promotion_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "investment_leads_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "investment_leads_enabled_at": "TEXT",
             "last_x_agent_analyzed_at": "TEXT",
             "last_x_agent_error": "TEXT",
         }
@@ -432,6 +445,9 @@ class HotTopicService:
                 if name not in columns:
                     self.db.execute(f"ALTER TABLE hottopic_accounts ADD COLUMN {name} {definition}")
             self.db.executescript(X_AGENT_SCHEMA)
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS hottopic_migrations(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL)"
+            )
             # A former HotTopic blacklist is not an X Agent account state.
             # During the first migration all such rows receive the normal
             # account-directory default. If a partial prior deployment already
@@ -475,6 +491,38 @@ class HotTopicService:
                 normalized = [str(row["screen_name_lower"]) for row in legacy_rows]
                 marks = ",".join("?" for _ in normalized)
                 self.db.execute(f"DELETE FROM hottopic_account_cleanup WHERE screen_name_lower IN ({marks})", normalized)
+            migration = "x_agent_investment_leads_enabled_v1"
+            applied = self.db.execute("SELECT 1 FROM hottopic_migrations WHERE name=?", (migration,)).fetchone()
+            if applied is None:
+                now = iso(utc_now())
+                # The initial release enables this module once for every existing
+                # directory entry, including accounts with the other switches off.
+                self.db.execute(
+                    "UPDATE hottopic_accounts SET investment_leads_enabled=1,status='followed',"
+                    "next_due_at=?,updated_at=?",
+                    (now, now),
+                )
+                self.db.execute(
+                    "INSERT INTO hottopic_migrations(name,applied_at) VALUES(?,?)", (migration, now)
+                )
+            capture_start_migration = "x_agent_investment_leads_capture_start_v1"
+            capture_start_applied = self.db.execute(
+                "SELECT 1 FROM hottopic_migrations WHERE name=?", (capture_start_migration,)
+            ).fetchone()
+            if capture_start_applied is None:
+                capture_row = self.db.execute(
+                    "SELECT capture_started_at FROM investment_leads_meta WHERE singleton_key='global'"
+                ).fetchone()
+                capture_started_at = str(capture_row[0]) if capture_row else iso(utc_now())
+                self.db.execute(
+                    "UPDATE hottopic_accounts SET investment_leads_enabled_at=? "
+                    "WHERE investment_leads_enabled=1 AND investment_leads_enabled_at IS NULL",
+                    (capture_started_at,),
+                )
+                self.db.execute(
+                    "INSERT INTO hottopic_migrations(name,applied_at) VALUES(?,?)",
+                    (capture_start_migration, iso(utc_now())),
+                )
 
     @_serialized
     def deployment_started_at(self) -> str:
@@ -499,10 +547,10 @@ class HotTopicService:
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO hottopic_accounts("
                     "screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
-                    "market_sentiment_enabled,project_promotion_enabled,created_at,updated_at"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,investment_leads_enabled_at,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (handle, lower, str(row.get("display_name") or row.get("name") or ""), "followed",
-                     now, 1, 0, 0, now, now),
+                     now, 1, 0, 0, 1, now, now, now),
                 )
                 inserted += cursor.rowcount
         return inserted
@@ -525,7 +573,8 @@ class HotTopicService:
         rows = self.db.execute(
             "SELECT screen_name,screen_name_lower,display_name,protected,status,last_polled_at,last_success_at,last_error,"
             "consecutive_failures,last_item_count,cumulative_content_count,cumulative_hot_topic_count,"
-            "hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,last_x_agent_analyzed_at,last_x_agent_error "
+            "hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,"
+            "last_x_agent_analyzed_at,last_x_agent_error "
             f"FROM hottopic_accounts{where} "
             "ORDER BY CASE status WHEN 'followed' THEN 0 WHEN 'unfollowed' THEN 1 ELSE 2 END, "
             "cumulative_hot_topic_count DESC,cumulative_content_count DESC,screen_name_lower",
@@ -540,11 +589,11 @@ class HotTopicService:
         with self.db:
             self.db.execute(
                 "INSERT INTO hottopic_accounts(screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
-                "market_sentiment_enabled,project_promotion_enabled,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(screen_name_lower) DO UPDATE SET "
+                "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,investment_leads_enabled_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(screen_name_lower) DO UPDATE SET "
                 "screen_name=excluded.screen_name,display_name=excluded.display_name,status='followed',next_due_at=excluded.next_due_at,"
                 "hot_topic_enabled=1,updated_at=excluded.updated_at",
-                (normalized, lower, display_name.strip(), "followed", now, 1, 0, 0, now, now),
+                (normalized, lower, display_name.strip(), "followed", now, 1, 0, 0, 1, now, now, now),
             )
         return self._account(lower)
 
@@ -564,14 +613,19 @@ class HotTopicService:
                 hot_topic_enabled = 1
                 market_sentiment_enabled = int(row["market_sentiment_enabled"])
                 project_promotion_enabled = int(row["project_promotion_enabled"])
+                investment_leads_enabled = int(row["investment_leads_enabled"])
             else:
-                hot_topic_enabled, market_sentiment_enabled, project_promotion_enabled = 0, 0, 0
+                hot_topic_enabled, market_sentiment_enabled, project_promotion_enabled, investment_leads_enabled = 0, 0, 0, 0
             next_due = now if status == "followed" else None
             self.db.execute(
                 "UPDATE hottopic_accounts SET status=?,next_due_at=?,hot_topic_enabled=?,market_sentiment_enabled=?,"
-                "project_promotion_enabled=?,updated_at=? WHERE screen_name_lower=?",
-                (status, next_due, hot_topic_enabled, market_sentiment_enabled, project_promotion_enabled, now, lower),
+                "project_promotion_enabled=?,investment_leads_enabled=?,investment_leads_enabled_at=?,updated_at=? WHERE screen_name_lower=?",
+                (status, next_due, hot_topic_enabled, market_sentiment_enabled, project_promotion_enabled,
+                 investment_leads_enabled,
+                 row["investment_leads_enabled_at"] if status == "followed" else None, now, lower),
             )
+            if status == "unfollowed":
+                cancel_ineligible_jobs(self.db, account_lower=lower, now=now)
         return self._account(lower)
 
     def _account(self, lower: str) -> dict[str, Any]:
@@ -592,9 +646,9 @@ class HotTopicService:
                 self.db.execute(
                     "INSERT INTO hottopic_accounts("
                     "screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
-                    "market_sentiment_enabled,project_promotion_enabled,created_at,updated_at"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (normalized, lower, display_name.strip(), "followed", now, 1, 0, 0, now, now),
+                        "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,investment_leads_enabled_at,created_at,updated_at"
+                        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (normalized, lower, display_name.strip(), "followed", now, 1, 0, 0, 1, now, now, now),
                 )
             elif display_name.strip():
                 self.db.execute(
@@ -617,6 +671,7 @@ class HotTopicService:
             "hot_topic": "hot_topic_enabled",
             "market_sentiment": "market_sentiment_enabled",
             "project_promotion": "project_promotion_enabled",
+            "investment_leads": "investment_leads_enabled",
         }
         clauses: list[str] = []
         params: list[Any] = []
@@ -636,10 +691,11 @@ class HotTopicService:
         total = int(self.db.execute(f"SELECT COUNT(*) FROM hottopic_accounts{where}", params).fetchone()[0])
         rows = self.db.execute(
             "SELECT screen_name,screen_name_lower,display_name,status,hot_topic_enabled,market_sentiment_enabled,"
-            "project_promotion_enabled,cumulative_content_count,cumulative_hot_topic_count,"
+            "project_promotion_enabled,investment_leads_enabled,cumulative_content_count,cumulative_hot_topic_count,"
             "last_polled_at,last_success_at,last_error,last_x_agent_analyzed_at,last_x_agent_error "
             f"FROM hottopic_accounts{where} "
-            "ORDER BY hot_topic_enabled DESC,market_sentiment_enabled DESC,project_promotion_enabled DESC,screen_name_lower "
+            "ORDER BY hot_topic_enabled DESC,market_sentiment_enabled DESC,project_promotion_enabled DESC,"
+            "investment_leads_enabled DESC,screen_name_lower "
             "LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
@@ -647,7 +703,7 @@ class HotTopicService:
 
     @_serialized
     def set_x_agent_subscriptions(self, handles: Iterable[str], patch: dict[str, Any]) -> list[dict[str, Any]]:
-        allowed = {"hot_topic_enabled", "market_sentiment_enabled", "project_promotion_enabled"}
+        allowed = {"hot_topic_enabled", "market_sentiment_enabled", "project_promotion_enabled", "investment_leads_enabled"}
         changes = {key: value for key, value in patch.items() if key in allowed}
         if not changes:
             raise ValueError("至少提供一个订阅开关")
@@ -678,13 +734,20 @@ class HotTopicService:
                 any_enabled = any(bool(values[key]) for key in allowed)
                 status = "followed" if any_enabled else "unfollowed"
                 next_due = now if any_enabled else None
+                investment_enabled_at = (
+                    (row["investment_leads_enabled_at"] or now)
+                    if values["investment_leads_enabled"] else None
+                )
                 self.db.execute(
                     "UPDATE hottopic_accounts SET hot_topic_enabled=?,market_sentiment_enabled=?,"
-                    "project_promotion_enabled=?,status=?,next_due_at=?,updated_at=? WHERE screen_name_lower=?",
+                    "project_promotion_enabled=?,investment_leads_enabled=?,investment_leads_enabled_at=?,"
+                    "status=?,next_due_at=?,updated_at=? WHERE screen_name_lower=?",
                     (
                         int(bool(values["hot_topic_enabled"])),
                         int(bool(values["market_sentiment_enabled"])),
                         int(bool(values["project_promotion_enabled"])),
+                        int(bool(values["investment_leads_enabled"])),
+                        investment_enabled_at,
                         status,
                         next_due,
                         now,
@@ -713,6 +776,10 @@ class HotTopicService:
                             "AND tweet_id IN (SELECT tweet_id FROM hottopic_inbox WHERE screen_name_lower=?)",
                             (now, now, module, values["screen_name_lower"]),
                         )
+                if bool(row["investment_leads_enabled"]) and not bool(values["investment_leads_enabled"]):
+                    cancel_ineligible_jobs(
+                        self.db, account_lower=str(values["screen_name_lower"]), now=now
+                    )
                 # An ignored former subscription no longer represents a live
                 # analysis failure. Preserve an error only while another
                 # enabled module still has unresolved failed work.
@@ -730,6 +797,7 @@ class HotTopicService:
             "hotTopicEnabled": bool(row.get("hot_topic_enabled")),
             "marketSentimentEnabled": bool(row.get("market_sentiment_enabled")),
             "projectPromotionEnabled": bool(row.get("project_promotion_enabled")),
+            "investmentLeadsEnabled": bool(row.get("investment_leads_enabled")),
             "cumulativeContentCount": int(row.get("cumulative_content_count") or 0),
             "cumulativeHotTopicCount": int(row.get("cumulative_hot_topic_count") or 0),
             "lastPolledAt": row.get("last_polled_at"),
@@ -772,9 +840,10 @@ class HotTopicService:
                 if current is None:
                     self.db.execute(
                         "INSERT INTO hottopic_accounts(screen_name,screen_name_lower,display_name,status,next_due_at,"
-                        "hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,created_at,updated_at) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        (handle, lower, str(raw.get("display_name") or ""), "followed", due, 1, market, project, iso(now), iso(now)),
+                        "hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,"
+                        "investment_leads_enabled_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (handle, lower, str(raw.get("display_name") or ""), "followed", due, 1, market, project, 1,
+                         iso(now), iso(now), iso(now)),
                     )
                     inserted += 1
                 elif apply_suggestions:
@@ -939,7 +1008,8 @@ class HotTopicService:
     def _due_accounts(self) -> list[AccountRow]:
         rows = self.db.execute(
             "SELECT screen_name,display_name,protected FROM hottopic_accounts "
-            "WHERE status='followed' AND (hot_topic_enabled=1 OR market_sentiment_enabled=1 OR project_promotion_enabled=1) "
+            "WHERE status='followed' AND (hot_topic_enabled=1 OR market_sentiment_enabled=1 OR "
+            "project_promotion_enabled=1 OR investment_leads_enabled=1) "
             "AND (next_due_at IS NULL OR next_due_at<=?) "
             "ORDER BY COALESCE(next_due_at,''),screen_name_lower LIMIT ?",
             (iso(utc_now()), self.workers * 2),
@@ -1018,6 +1088,7 @@ class HotTopicService:
                     on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
                         max(self.rate_limit_cooldown_seconds, retry_after)
                     ),
+                    include_investment_materials=True,
                 ): account
                 for account in accounts
             }
@@ -1050,17 +1121,29 @@ class HotTopicService:
         deployment_started = datetime.fromisoformat(self.deployment_started_at())
         # scan_account applies this bound too.  Keep it at the persistence
         # boundary so a future collector cannot accidentally backfill history.
-        items = [item for item in items if datetime.fromisoformat(item.created_at_iso) >= deployment_started]
         with self.db:
             current = self.db.execute(
-                "SELECT status,consecutive_failures,last_success_at,hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled "
+                "SELECT status,consecutive_failures,last_success_at,hot_topic_enabled,market_sentiment_enabled,"
+                "project_promotion_enabled,investment_leads_enabled "
                 "FROM hottopic_accounts WHERE screen_name_lower=?",
                 (lower,),
             ).fetchone()
             if current is None or current["status"] != "followed":
                 return 0
+            if current["investment_leads_enabled"]:
+                for item in items:
+                    if item.investment_materials:
+                        persist_capture_materials(
+                            self.db,
+                            account_lower=lower,
+                            materials=item.investment_materials,
+                            observed_at=at,
+                        )
+            items = [item for item in items if datetime.fromisoformat(item.created_at_iso) >= deployment_started]
             accepted = 0
             for item in items:
+                if item.investment_only:
+                    continue
                 processed_at = None if current["hot_topic_enabled"] else at
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO hottopic_inbox(tweet_id,screen_name_lower,payload_json,collected_at,processed_at) VALUES(?,?,?,?,?)",
@@ -1445,6 +1528,7 @@ class HotTopicService:
         jobs = self.db.execute(
             "SELECT SUM(status IN ('pending','processing')) pending,SUM(status='failed') failed FROM x_agent_analysis_jobs"
         ).fetchone()
+        investment = self.investment_lead_queries.dashboard()
         return {
             "generatedAt": iso(utc_now()),
             "accounts": {
@@ -1452,10 +1536,28 @@ class HotTopicService:
                 "hotTopicEnabled": int(accounts["hot_topic_enabled"] or 0),
                 "marketSentimentEnabled": int(accounts["market_sentiment_enabled"] or 0),
                 "projectPromotionEnabled": int(accounts["project_promotion_enabled"] or 0),
+                "investmentLeadsEnabled": int(investment["accounts"]["investmentLeadsEnabled"] or 0),
                 "errors": int(accounts["errors"] or 0),
             },
             "jobs": {"pending": int(jobs["pending"] or 0), "failed": int(jobs["failed"] or 0)},
+            "investmentLeads": investment,
         }
+
+    @_serialized
+    def investment_leads_dashboard(self) -> dict[str, Any]:
+        return self.investment_lead_queries.dashboard()
+
+    @_serialized
+    def list_investment_leads(self, **kwargs: Any) -> dict[str, Any]:
+        return self.investment_lead_queries.list_leads(**kwargs)
+
+    @_serialized
+    def investment_lead_detail(self, lead_id: str) -> dict[str, Any] | None:
+        return self.investment_lead_queries.lead_detail(lead_id)
+
+    @_serialized
+    def retry_investment_lead_jobs(self, *, stage: str = "", limit: int = 100) -> int:
+        return self.investment_lead_queries.retry_failed(stage=stage, limit=limit)
 
     @staticmethod
     def _window_cutoff(window: str, allowed: dict[str, timedelta]) -> str:
