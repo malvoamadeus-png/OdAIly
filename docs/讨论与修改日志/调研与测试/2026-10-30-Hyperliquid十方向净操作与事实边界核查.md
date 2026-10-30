@@ -49,3 +49,13 @@
 最后补测正文描述已验证多步窗口的局部过程，以及旧清算候选缺失方向时不倒用新仓方向。完整回归 `PYTHONPATH=backend .venv/bin/python -m pytest backend/test_hyperliquid*.py -q`：243项通过（20.44秒）。`git diff --check`通过。
 
 本轮没有撤回、覆盖、重投历史稿件，没有改变生产开关或运行资产。线上仍运行核查时版本；本地修复与生产状态分开记录。
+
+## 用户授权后的生产部署
+
+用户随后明确要求“部署生产”。2026-10-30 14:35（北京时间）将本地修复提交 `bee8757` 推送GitHub，再由 `odaily-official`（root，`/opt/OdAIly`）执行 `git fetch origin` 与 `git pull --ff-only origin main`，服务器工作区干净。暂时停止并重新启动 `odaily-hyperliquid-account-profit.service`、`odaily-local-pipeline.service`、`odaily-editor-plugin-api.service`，三者均为active/running、自动重启次数0。未部署本地其他功能的未提交改动。
+
+激活并逐项核验数据库正文与已提交模板全文一致：通用v13、账户盈亏v4、浮盈回吐v4；单资产浮盈亏、资产表现、大仓反手、亏损加仓、平仓兑现、清算均为v3，共九份模板。旧版本保留。生产十方向继续开启，原始上线时刻不重置，`publication_mode=backend_only`。
+
+部署后本机8776与8765健康接口均返回ok，流水线worker存活且无记录错误，插件同步器无错误。插件API启动约25秒，首次过早探测连接被拒，日志确认监听后复查通过。监测日志已出现成功完成地址检查，完整成交分页后正常提交观察结果。
+
+服务器以只读数据库及脱敏夹具验证新代码：ETH、ZEC账户操作旧样本被净额门控拦截，HYPE有效净减仓放行；两条高胜率无效净操作被拦截；BTC清仓标题和ETH已实现亏损约587万美元标题正确。该回放没有创建任务、调用发布接口或修改历史稿件。本次部署不撤回、覆盖或重投已挂后台稿件。
