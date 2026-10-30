@@ -966,6 +966,7 @@ body {
 .autoNewsflashStatus.active, .autoNewsflashStatus.material_progress, .autoNewsflashStatus.published { border-color: #a9d8c8; background: #edf9f4; color: #087451; }
 .autoNewsflashStatus.discovering, .autoNewsflashStatus.submitted { border-color: #b8d9e6; background: #f0f9fc; color: #236c89; }
 .autoNewsflashStatus.discovery_failed, .autoNewsflashStatus.capacity_exhausted, .autoNewsflashStatus.failed, .autoNewsflashStatus.publisher_failed { border-color: #e9c5bf; background: #fff5f2; color: #aa3e32; }
+.autoNewsflashStatus.not_tracked, .autoNewsflashStatus.not_observed, .autoNewsflashStatus.disabled { background: #f7f8f8; color: #68747c; }
 .autoNewsflashStatus.pending, .autoNewsflashStatus.judging, .autoNewsflashStatus.deduping, .autoNewsflashStatus.writing, .autoNewsflashStatus.formatting, .autoNewsflashStatus.publishing { border-color: #b8d9e6; background: #f0f9fc; color: #236c89; }
 .autoNewsflashStatus.duplicate, .autoNewsflashStatus.ended, .autoNewsflashStatus.relevant_no_progress, .autoNewsflashStatus.irrelevant, .autoNewsflashStatus.cancelled, .autoNewsflashStatus.event_tracking_cancelled { background: #f7f8f8; color: #68747c; }
 .autoNewsflashDetailSection { margin-top: 25px; }
@@ -1002,6 +1003,11 @@ body {
 .autoNewsflashDetailSection a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .autoNewsflashDetailSection small, .autoNewsflashUpdate small, .autoNewsflashOutbox small, .autoNewsflashDiscovery small { color: #74808a; font-size: 11px; }
 .autoNewsflashDiscoveryError { grid-column: 1 / -1; overflow-wrap: anywhere; margin: 0; color: #aa3e32; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.hottopicTrackingStatus { margin: 22px 0; padding: 12px 0; border-top: 1px solid #e4eaec; border-bottom: 1px solid #e4eaec; }
+.hottopicTrackingStatus h3 { margin: 0 0 8px; color: #25333d; font-size: 14px; }
+.hottopicTrackingStatus > div { display: grid; justify-items: start; gap: 7px; }
+.hottopicTrackingStatus p { margin: 0; color: #35444d; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.hottopicTrackingStatus small { color: #74808a; font-size: 11px; line-height: 1.5; }
 .autoNewsflashUpdate > div { display: flex; grid-column: 1 / -1; align-items: center; gap: 8px; }
 .autoNewsflashUpdate strong { color: #2c3b44; font-size: 13px; line-height: 1.5; }
 .autoNewsflashUpdate p { grid-column: 1 / -1; margin: 0; color: #65727b; font-size: 12px; line-height: 1.55; }

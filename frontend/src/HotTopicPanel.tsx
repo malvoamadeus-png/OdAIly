@@ -131,5 +131,19 @@ function TopicRow({ topic, active, onSelect }: { topic: HotTopicCard; active: bo
 }
 
 function TopicDetail({ detail }: { detail: HotTopicDetail }) {
-  return <article className="hottopicDetailCopy"><div className="hottopicDetailMeta"><span><Flame size={15} /> 热度 {detail.hotness.toFixed(1)}</span><span><Users size={15} /> {detail.participants.twentyFourHours} 位参与者</span><span><CalendarClock size={15} /> 首次生成 {formatTime(detail.firstGeneratedAt)}</span><span><CalendarClock size={15} /> 最后更新 {formatTime(detail.lastUpdatedAt)}</span></div><h2>{detail.title}</h2><p>{detail.brief}</p><section><h3>参与账号</h3>{detail.speakers.length === 0 ? <span className="muted">暂无参与记录</span> : <div className="hottopicSpeakers">{detail.speakers.map((speaker) => <a key={speaker.account} href={speaker.sourceUrl || `https://x.com/${speaker.account}`} target="_blank" rel="noreferrer"><span>@{speaker.account}</span><time>{formatTime(speaker.lastParticipationAt)}</time></a>)}</div>}</section></article>;
+  const assessment = detail.autoNewsflashAssessment;
+  const assessmentLabels: Record<string, string> = {
+    disabled: '追踪已关闭', not_observed: '尚未入队', pending: '排队中', judging: '判断中', tracked: '已追踪', not_tracked: '不追踪', failed: '判断失败',
+  };
+  return <article className="hottopicDetailCopy"><div className="hottopicDetailMeta"><span><Flame size={15} /> 热度 {detail.hotness.toFixed(1)}</span><span><Users size={15} /> {detail.participants.twentyFourHours} 位参与者</span><span><CalendarClock size={15} /> 首次生成 {formatTime(detail.firstGeneratedAt)}</span><span><CalendarClock size={15} /> 最后更新 {formatTime(detail.lastUpdatedAt)}</span></div><h2>{detail.title}</h2><p>{detail.brief}</p>
+    <section className="hottopicTrackingStatus"><h3>热点自动快讯</h3><div><span className={`autoNewsflashStatus ${assessment.status}`}>{assessmentLabels[assessment.status] || assessment.status}</span>{assessment.reason && <p>{assessment.reason}</p>}<small>首次入队 {formatTime(assessment.firstQueuedAt || assessment.firstEligibleAt)} · 最近尝试 {formatTime(assessment.lastAttemptAt)} · 判断完成 {formatTime(assessment.judgedAt)}{assessment.delaySeconds !== null ? ` · ${assessment.judgedAt ? '首次生成至判断' : '首次生成后已等待'} ${formatDuration(assessment.delaySeconds)}` : ''}{assessment.queueDelaySeconds !== null ? ` · 入队后已等待 ${formatDuration(assessment.queueDelaySeconds)}` : ''}{assessment.attempts ? ` · 尝试 ${assessment.attempts} 次` : ''}</small>{assessment.nextAttemptAt && <small>下次重试 {formatTime(assessment.nextAttemptAt)}</small>}</div></section>
+    <section><h3>参与账号</h3>{detail.speakers.length === 0 ? <span className="muted">暂无参与记录</span> : <div className="hottopicSpeakers">{detail.speakers.map((speaker) => <a key={speaker.account} href={speaker.sourceUrl || `https://x.com/${speaker.account}`} target="_blank" rel="noreferrer"><span>@{speaker.account}</span><time>{formatTime(speaker.lastParticipationAt)}</time></a>)}</div>}</section></article>;
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
 }

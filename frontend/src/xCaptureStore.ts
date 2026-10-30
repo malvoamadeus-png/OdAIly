@@ -222,6 +222,18 @@ export type HotTopicDetail = {
   lastUpdatedAt: string;
   hotness: number;
   participants: { oneHour: number; sixHours: number; twentyFourHours: number };
+  autoNewsflashAssessment: {
+    status: 'not_observed' | 'pending' | 'judging' | 'tracked' | 'not_tracked' | 'failed' | string;
+    reason: string;
+    firstEligibleAt: string | null;
+    firstQueuedAt: string | null;
+    lastAttemptAt: string | null;
+    judgedAt: string | null;
+    delaySeconds: number | null;
+    queueDelaySeconds: number | null;
+    attempts: number;
+    nextAttemptAt: string | null;
+  };
   speakers: Array<{ account: string; lastParticipationAt: string; sourceUrl: string | null }>;
 };
 

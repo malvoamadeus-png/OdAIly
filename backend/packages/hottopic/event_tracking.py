@@ -246,6 +246,21 @@ CREATE TABLE IF NOT EXISTS event_tracking_topic_assessments (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_event_tracking_assessments_due ON event_tracking_topic_assessments(next_attempt_at, decision);
+CREATE TABLE IF NOT EXISTS event_tracking_topic_observations (
+  topic_id TEXT PRIMARY KEY,
+  first_eligible_at TEXT NOT NULL,
+  last_eligible_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','judging','tracked','not_tracked','failed')),
+  first_queued_at TEXT NOT NULL,
+  last_queued_at TEXT NOT NULL,
+  last_attempt_at TEXT,
+  judged_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_tracking_topic_observations_queue ON event_tracking_topic_observations(status, first_eligible_at);
 CREATE TABLE IF NOT EXISTS event_tracking_topic_links (
   event_id TEXT NOT NULL REFERENCES event_tracking_events(event_id),
   topic_id TEXT NOT NULL,
@@ -1054,21 +1069,22 @@ class EventTracker:
 
     def _topic_snapshots(self, topic_ids: Iterable[str] | None) -> list[dict[str, Any]]:
         requested = sorted({str(item) for item in topic_ids or [] if str(item)})
-        params: list[Any] = []
+        params: list[str] = []
         where = "t.matching_status='active' AND t.visibility='visible'"
         if requested:
             where += f" AND t.topic_id IN ({','.join('?' for _ in requested)})"
             params.extend(requested)
-        # First rollout and later model failures intentionally inspect active
-        # topics as well; Python compares the durable snapshot hash below.
         rows = self.db.execute(
             f"""
             SELECT t.*,b.title AS brief_title,b.brief,b.generated_at
             FROM topics t
             LEFT JOIN brief_revisions b ON b.topic_id=t.topic_id
               AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id)
+            LEFT JOIN event_tracking_topic_assessments a ON a.topic_id=t.topic_id
+            LEFT JOIN event_tracking_topic_observations o ON o.topic_id=t.topic_id
             WHERE {where}
-            ORDER BY t.hotness_score DESC,t.last_evidence_at DESC
+            ORDER BY CASE WHEN a.topic_id IS NULL OR a.decision='failed' OR o.status IN ('pending','failed') THEN 0 ELSE 1 END,
+                     COALESCE(o.first_eligible_at,t.first_seen_at),t.hotness_score DESC,t.last_evidence_at DESC
             LIMIT 100
             """,
             params,
@@ -1101,6 +1117,7 @@ class EventTracker:
                 "core_entities": json_value(row["core_entities_json"], []),
                 "event_or_issue": str(row["event_or_issue"]),
                 "started_at": str(row["started_at"]),
+                "first_seen_at": str(row["first_seen_at"]),
                 "last_evidence_at": row["last_evidence_at"],
                 "hotness": float(row["hotness_score"] or 0),
                 "participants": [str(item["activity_account"]) for item in participants],
@@ -1123,12 +1140,23 @@ class EventTracker:
         return snapshots
 
     def observe_topics(self, topic_ids: Iterable[str] | None = None) -> dict[str, int]:
-        """Run task 1 for changed or as-yet-unassessed visible HotTopics."""
+        """Assess eligible HotTopics, keeping new and failed topics ahead of rechecks."""
         if not self.enabled:
             return {"assessed": 0, "tracked": 0, "failed": 0}
         snapshots = self._topic_snapshots(topic_ids)
         pending: list[dict[str, Any]] = []
         current = utc_iso(self.now())
+        with self.db:
+            for snapshot in snapshots:
+                self.db.execute(
+                    """
+                    INSERT INTO event_tracking_topic_observations(
+                      topic_id,first_eligible_at,last_eligible_at,status,first_queued_at,last_queued_at,updated_at
+                    ) VALUES(?,?,?,'pending',?,?,?)
+                    ON CONFLICT(topic_id) DO UPDATE SET last_eligible_at=excluded.last_eligible_at,updated_at=excluded.updated_at
+                    """,
+                    (snapshot["topic_id"], snapshot["first_seen_at"], current, current, current, current),
+                )
         for snapshot in snapshots:
             assessment = self.db.execute(
                 "SELECT snapshot_hash,decision,next_attempt_at,actual_model FROM event_tracking_topic_assessments WHERE topic_id=?",
@@ -1138,13 +1166,41 @@ class EventTracker:
                 continue
             if assessment is not None and assessment["snapshot_hash"] == snapshot["snapshot_hash"]:
                 if assessment["decision"] in {"track", "do_not_track"}:
+                    self._save_topic_observation_result(snapshot["topic_id"], assessment["decision"], current)
                     continue
                 if assessment["next_attempt_at"] and str(assessment["next_attempt_at"]) > current:
                     continue
+            elif assessment is not None:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE event_tracking_topic_observations SET status='pending',reason='热点内容已更新，需重新判断追踪资格。',last_queued_at=?,updated_at=? WHERE topic_id=?",
+                        (current, current, snapshot["topic_id"]),
+                    )
             pending.append(snapshot)
         pending = pending[:EVENT_TRACKING_TOPIC_BATCH_SIZE]
         if not pending:
             return {"assessed": 0, "tracked": 0, "failed": 0}
+
+        with self.db:
+            for snapshot in pending:
+                row = self.db.execute(
+                    "SELECT first_eligible_at,first_queued_at,attempts FROM event_tracking_topic_observations WHERE topic_id=?",
+                    (snapshot["topic_id"],),
+                ).fetchone()
+                self.db.execute(
+                    "UPDATE event_tracking_topic_observations SET status='judging',last_queued_at=?,last_attempt_at=?,attempts=attempts+1,reason=NULL,last_error=NULL,updated_at=? WHERE topic_id=?",
+                    (current, current, current, snapshot["topic_id"]),
+                )
+                self._audit(
+                    "topic_judgment_started",
+                    {
+                        "topic_id": snapshot["topic_id"],
+                        "first_eligible_at": str(row["first_eligible_at"]),
+                        "first_queued_at": str(row["first_queued_at"]),
+                        "queued_at": current,
+                        "prior_attempts": int(row["attempts"]),
+                    },
+                )
 
         prompt_version = self._prompt("topic_judgment")
         prompt = str(prompt_version["content"]).replace("{{TOPICS}}", compact_json(pending))
@@ -1160,16 +1216,130 @@ class EventTracker:
 
         tracked = 0
         with self.db:
+            judged_at = utc_iso(self.now())
             for snapshot in pending:
                 decision = decisions.get(snapshot["topic_id"])
                 if decision is None:
                     decision = self._do_not_track_decision(snapshot, "模型未返回该热点的有效判断")
                 self._store_topic_assessment(snapshot, decision, prompt_version, result)
+                self._save_topic_observation_result(snapshot["topic_id"], decision["decision"], judged_at, reason=decision["reason"])
                 if decision["decision"] == "track":
                     self._link_tracked_topic(snapshot, decision)
                     tracked += 1
             self._audit("topic_judgment_completed", {"topic_count": len(pending), "tracked": tracked})
         return {"assessed": len(pending), "tracked": tracked, "failed": 0}
+
+    def _save_topic_observation_result(self, topic_id: str, decision: str, at: str, *, reason: str | None = None) -> None:
+        status = "tracked" if decision == "track" else "not_tracked" if decision == "do_not_track" else "failed"
+        assessment = self.db.execute(
+            "SELECT result_json,last_error,judged_at FROM event_tracking_topic_assessments WHERE topic_id=?",
+            (topic_id,),
+        ).fetchone()
+        if reason is None and assessment is not None:
+            try:
+                reason = str(json.loads(str(assessment["result_json"])).get("reason") or "") or None
+            except (TypeError, ValueError):
+                reason = None
+        last_error = str(assessment["last_error"] or "") if assessment is not None else ""
+        judged_at = str(assessment["judged_at"] or at) if assessment is not None else at
+        observation = self.db.execute(
+            "SELECT first_eligible_at,first_queued_at,attempts,status,reason,judged_at FROM event_tracking_topic_observations WHERE topic_id=?",
+            (topic_id,),
+        ).fetchone()
+        self.db.execute(
+            "UPDATE event_tracking_topic_observations SET status=?,judged_at=?,reason=?,last_error=?,updated_at=? WHERE topic_id=?",
+            (status, judged_at, reason, last_error or None, at, topic_id),
+        )
+        if observation is not None and (
+            str(observation["status"]) != status
+            or str(observation["reason"] or "") != str(reason or "")
+            or str(observation["judged_at"] or "") != judged_at
+        ):
+            self._audit(
+                "topic_judgment_completed",
+                {
+                    "topic_id": topic_id,
+                    "decision": decision,
+                    "reason": reason,
+                    "first_eligible_at": str(observation["first_eligible_at"]),
+                    "first_queued_at": str(observation["first_queued_at"]),
+                    "judged_at": judged_at,
+                    "attempts": int(observation["attempts"]),
+                },
+            )
+
+    def topic_assessment_status(self, topic_id: str, *, first_seen_at: str | None = None) -> dict[str, Any]:
+        if not self.enabled:
+            return {
+                "status": "disabled",
+                "reason": "热点自动快讯追踪总开关已关闭。",
+                "firstEligibleAt": first_seen_at,
+                "firstQueuedAt": None,
+                "lastAttemptAt": None,
+                "judgedAt": None,
+                "delaySeconds": None,
+                "queueDelaySeconds": None,
+                "attempts": 0,
+                "nextAttemptAt": None,
+            }
+        observation = self.db.execute(
+            "SELECT * FROM event_tracking_topic_observations WHERE topic_id=?", (topic_id,)
+        ).fetchone()
+        assessment = self.db.execute(
+            "SELECT decision,result_json,last_error,created_at,judged_at,attempts,next_attempt_at FROM event_tracking_topic_assessments WHERE topic_id=?",
+            (topic_id,),
+        ).fetchone()
+        result: dict[str, Any] = {}
+        if assessment is not None:
+            try:
+                result = json.loads(str(assessment["result_json"] or "{}"))
+            except (TypeError, ValueError):
+                result = {}
+        status = str(observation["status"]) if observation is not None else "not_observed"
+        if assessment is not None:
+            status = {
+                "track": "tracked",
+                "do_not_track": "not_tracked",
+                "failed": "failed",
+            }.get(str(assessment["decision"]), status)
+        reason = str(result.get("reason") or "")
+        if status == "failed":
+            reason = str((observation["last_error"] if observation is not None else None) or (assessment["last_error"] if assessment is not None else None) or reason)
+        elif status == "pending" and not reason:
+            reason = "已进入追踪资格判断队列，等待处理。"
+        elif status == "judging" and not reason:
+            reason = "追踪资格判断正在处理中。"
+        elif status == "not_observed":
+            reason = "资格判断尚未留存：热点自动快讯只评估已归并且可见的话题；若该话题已可见，说明 worker 尚未扫描到它。"
+        eligible_at = str(observation["first_eligible_at"]) if observation is not None else first_seen_at
+        judged_at = str(assessment["judged_at"] or "") if assessment is not None else str(observation["judged_at"] or "") if observation is not None else ""
+        delay_seconds = None
+        queue_delay_seconds = None
+        if first_seen_at:
+            try:
+                endpoint = _datetime(judged_at, fallback=self.now()) if judged_at else self.now()
+                delay_seconds = max(0, int((endpoint - _datetime(first_seen_at, fallback=self.now())).total_seconds()))
+            except (TypeError, ValueError):
+                delay_seconds = None
+        first_queued_at = str(observation["first_queued_at"]) if observation is not None else None
+        if first_queued_at:
+            try:
+                endpoint = _datetime(judged_at, fallback=self.now()) if judged_at else self.now()
+                queue_delay_seconds = max(0, int((endpoint - _datetime(first_queued_at, fallback=self.now())).total_seconds()))
+            except (TypeError, ValueError):
+                queue_delay_seconds = None
+        return {
+            "status": status,
+            "reason": reason or (str(observation["reason"] or "") if observation is not None else ""),
+            "firstEligibleAt": eligible_at,
+            "firstQueuedAt": first_queued_at,
+            "lastAttemptAt": str(observation["last_attempt_at"]) if observation is not None else None,
+            "judgedAt": judged_at or None,
+            "delaySeconds": delay_seconds,
+            "queueDelaySeconds": queue_delay_seconds,
+            "attempts": int(observation["attempts"] if observation is not None else assessment["attempts"] if assessment is not None else 0),
+            "nextAttemptAt": str(assessment["next_attempt_at"] or "") if assessment is not None else None,
+        }
 
     def start_tracking_topic(
         self,
@@ -1223,7 +1393,17 @@ class EventTracker:
         }
         model_result = EventModelResult(compact_json(decision), "operator_override", {}, 0.0, {}, [], [])
         with self.db:
+            now_text = utc_iso(self.now())
+            self.db.execute(
+                """
+                INSERT OR IGNORE INTO event_tracking_topic_observations(
+                  topic_id,first_eligible_at,last_eligible_at,status,first_queued_at,last_queued_at,last_attempt_at,judged_at,attempts,reason,updated_at
+                ) VALUES(?,?,?,'judging',?,?,?,?,1,?,?)
+                """,
+                (topic_id, now_text, now_text, now_text, now_text, now_text, now_text, reason.strip(), now_text),
+            )
             self._store_topic_assessment(snapshot, decision, self._prompt("topic_judgment"), model_result)
+            self._save_topic_observation_result(topic_id, "track", now_text, reason=reason.strip())
             self._link_tracked_topic(snapshot, decision, allow_failed_reopen=True)
             linked = self._find_event(snapshot)
             if linked is None:
@@ -1327,6 +1507,26 @@ class EventTracker:
                       last_error=excluded.last_error,next_attempt_at=excluded.next_attempt_at,updated_at=excluded.updated_at
                     """,
                     (snapshot["topic_id"], snapshot["snapshot_hash"], compact_json(snapshot), int(prompt["id"]), message, retry_at, utc_iso(now), utc_iso(now)),
+                )
+                observation = self.db.execute(
+                    "SELECT first_eligible_at,first_queued_at,attempts FROM event_tracking_topic_observations WHERE topic_id=?",
+                    (snapshot["topic_id"],),
+                ).fetchone()
+                self.db.execute(
+                    "UPDATE event_tracking_topic_observations SET status='failed',last_error=?,reason=?,last_attempt_at=?,updated_at=? WHERE topic_id=?",
+                    (message, message, utc_iso(now), utc_iso(now), snapshot["topic_id"]),
+                )
+                self._audit(
+                    "topic_judgment_failed",
+                    {
+                        "topic_id": snapshot["topic_id"],
+                        "first_eligible_at": str(observation["first_eligible_at"]),
+                        "first_queued_at": str(observation["first_queued_at"]),
+                        "failed_at": utc_iso(now),
+                        "attempts": int(observation["attempts"]),
+                        "retry_at": retry_at,
+                        "error": message,
+                    },
                 )
             self._audit("topic_judgment_failed", {"topic_ids": [item["topic_id"] for item in snapshots], "error": message})
 

@@ -1228,7 +1228,7 @@ class HotTopicService:
             # Task 1 only sees deterministic, successfully aggregated HotTopic
             # state. Its own model calls are deliberately outside the HotTopic
             # aggregation transaction.
-            self.event_tracker.observe_topics(result.get("metrics", {}).get("affected_topic_ids") or [])
+            self.event_tracker.observe_topics()
             return result
         except Exception as exc:
             self._record_worker_failure("aggregate_error", exc)
@@ -1985,6 +1985,7 @@ class HotTopicService:
                 "firstGeneratedAt": row["first_seen_at"],
                 "lastUpdatedAt": row["last_evidence_at"] or row["first_seen_at"],
                 "hotness": row["hotness_score"], "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"], "twentyFourHours": row["participant_count_24h"]},
+                "autoNewsflashAssessment": self.event_tracker.topic_assessment_status(topic_id, first_seen_at=str(row["first_seen_at"])),
                 "speakers": [{"account": item["activity_account"], "lastParticipationAt": item["last_participation_at"], "sourceUrl": item["source_url"]} for item in speakers]}
 
     @_serialized
