@@ -475,7 +475,7 @@ class InvestmentLeadService:
             if fair_account is None:
                 return 0
             rows = self.db.execute(
-                "SELECT t.id,t.material_id,t.content_hash,m.payload_json,t.created_at "
+                "SELECT t.id,t.material_id,t.content_hash,t.attempts,m.payload_json,t.created_at "
                 "FROM investment_lead_tasks t JOIN investment_lead_materials m "
                 "ON m.material_id=t.material_id AND m.content_hash=t.content_hash "
                 "WHERE t.stage='scan' AND t.status='pending' AND t.attempts<? "
