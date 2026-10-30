@@ -864,11 +864,16 @@ class EditorPluginNewsGenService:
         return self.local_store.feed_state(actor_email=actor.email, feed_item_ids=feed_item_ids)
 
     def mark_seen(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        read_method = str(payload.get("p_read_method") or "").strip()
+        if not read_method:
+            # Older installed extensions do not send a read method. Preserve
+            # their former no-op behavior until clients reload the new build.
+            return {"ok": True, "recorded": False, "local": True}
         try:
             return self.local_store.mark_seen(
                 feed_item_id=str(payload.get("p_feed_item_id") or ""),
                 feed_kind=str(payload.get("p_feed_kind") or ""),
-                read_method=str(payload.get("p_read_method") or ""),
+                read_method=read_method,
                 actor_user_id=actor.user_id,
                 actor_email=actor.email,
                 actor_display_name=actor.display_name,
