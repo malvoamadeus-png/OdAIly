@@ -20,9 +20,20 @@ ORIGIN_LABELS = {
     "gate_market": "Gate 行情",
     "stock_market": "股票行情",
     "meme": "Meme 速递",
+    "business_news": "商务快讯",
     "scheduled_brief": "定时简报",
     "manual": "人工发布",
 }
+OUTLET_CATEGORY_LABELS = {
+    "manual": "人工",
+    "ai_regular": "AI常规",
+    "business": "商务",
+    "market": "行情",
+    "meme_digest": "Meme速递",
+    "hot_topic_auto": "热点自动快讯",
+    "scheduled_brief": "定时简报",
+}
+OUTLET_CATEGORY_CODES = frozenset(OUTLET_CATEGORY_LABELS)
 
 PRIORITY_LEVELS = {"high", "medium", "low"}
 PRIORITY_STATUSES = {"evaluated", "not_applicable", "pending", "failed", "historical"}
@@ -31,6 +42,7 @@ NEWSFLASH_METADATA_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS newsflash_production_metadata (
     delivery_key text PRIMARY KEY,
     origin_key text NOT NULL,
+    outlet_category text CHECK (outlet_category IS NULL OR outlet_category IN ('manual','ai_regular','business','market','meme_digest','hot_topic_auto','scheduled_brief')),
     odaily_id text,
     id_match_status text NOT NULL DEFAULT 'missing',
     title text NOT NULL,
@@ -125,6 +137,26 @@ def ensure_newsflash_metadata_tables(conn) -> None:
     for column in ("duplicate_target_type", "duplicate_target_id", "duplicate_target_title", "duplicate_reason"):
         if column not in columns:
             conn.execute(f"ALTER TABLE newsflash_production_metadata ADD COLUMN {column} text")
+    if "outlet_category" not in columns:
+        conn.execute(
+            "ALTER TABLE newsflash_production_metadata ADD COLUMN outlet_category text "
+            "CHECK (outlet_category IS NULL OR outlet_category IN "
+            "('manual','ai_regular','business','market','meme_digest','hot_topic_auto','scheduled_brief'))"
+        )
+    conn.execute(
+        """UPDATE newsflash_production_metadata SET outlet_category=CASE
+            WHEN delivery_key LIKE 'okx-stock-brief:%' THEN 'market'
+            WHEN delivery_key LIKE 'yesterday-hot-discussion:%' THEN 'ai_regular'
+            WHEN origin_key='manual' THEN 'manual'
+            WHEN origin_key='business_news' THEN 'business'
+            WHEN origin_key IN ('hyperliquid_monitor','gate_market','stock_market') THEN 'market'
+            WHEN origin_key='meme' THEN 'meme_digest'
+            WHEN origin_key='hot_topic_auto' THEN 'hot_topic_auto'
+            WHEN origin_key='scheduled_brief' THEN 'scheduled_brief'
+            WHEN origin_key IN ('x','binance_square','competitor','external_media') THEN 'ai_regular'
+            ELSE NULL END
+        WHERE outlet_category IS NULL"""
+    )
 
 
 def _matching_metadata_rows(conn, *, title: str | None, published_at: Any) -> list[Any]:
@@ -194,6 +226,7 @@ def record_newsflash_delivery(
     *,
     delivery_key: str | None,
     origin_key: str,
+    outlet_category: str | None = None,
     title: str,
     response_text: str | None,
     pushed_at: str | None = None,
@@ -203,6 +236,27 @@ def record_newsflash_delivery(
     duplicate_result: dict[str, Any] | None = None,
 ) -> str:
     """Persist origin, priority and duplicate-check metadata after a successful push."""
+    if outlet_category is None:
+        outlet_category = {
+            "manual": "manual",
+            "business_news": "business",
+            "hyperliquid_monitor": "market",
+            "gate_market": "market",
+            "stock_market": "market",
+            "meme": "meme_digest",
+            "hot_topic_auto": "hot_topic_auto",
+            "scheduled_brief": "scheduled_brief",
+            "x": "ai_regular",
+            "binance_square": "ai_regular",
+            "competitor": "ai_regular",
+            "external_media": "ai_regular",
+        }.get(origin_key)
+        if delivery_key and str(delivery_key).startswith("okx-stock-brief:"):
+            outlet_category = "market"
+        elif delivery_key and str(delivery_key).startswith("yesterday-hot-discussion:"):
+            outlet_category = "ai_regular"
+    if outlet_category not in OUTLET_CATEGORY_CODES:
+        raise ValueError(f"invalid newsflash outlet category: {outlet_category}")
     ensure_newsflash_metadata_schema(path)
     key = str(delivery_key or uuid.uuid4().hex)
     stamp = pushed_at or datetime.now(UTC).isoformat()
@@ -232,12 +286,13 @@ def record_newsflash_delivery(
     with connect_sqlite(path) as conn:
         conn.execute(
             """INSERT INTO newsflash_production_metadata(
-                delivery_key,origin_key,odaily_id,id_match_status,title,pushed_at,
+                delivery_key,origin_key,outlet_category,odaily_id,id_match_status,title,pushed_at,
                 priority_status,priority_level,priority_reason,duplicate_status,
                 duplicate_target_type,duplicate_target_id,duplicate_target_title,duplicate_reason
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(delivery_key) DO UPDATE SET
                 origin_key=excluded.origin_key,
+                outlet_category=excluded.outlet_category,
                 odaily_id=COALESCE(excluded.odaily_id,newsflash_production_metadata.odaily_id),
                 id_match_status=CASE
                     WHEN COALESCE(excluded.odaily_id,newsflash_production_metadata.odaily_id) IS NOT NULL THEN 'matched'
@@ -254,7 +309,7 @@ def record_newsflash_delivery(
                 duplicate_target_title=excluded.duplicate_target_title,
                 duplicate_reason=excluded.duplicate_reason,
                 updated_at=CURRENT_TIMESTAMP""",
-            (key, origin_key, odaily_id, id_match_status, title, stamp, priority_status, priority_level,
+            (key, origin_key, outlet_category, odaily_id, id_match_status, title, stamp, priority_status, priority_level,
              priority_reason, duplicate_status, duplicate_target_type, duplicate_target_id,
              duplicate_target_title, duplicate_reason),
         )
@@ -324,6 +379,7 @@ def metadata_for_reference(
             else:
                 return {
                     "origin_key": None,
+                    "outlet_category": None,
                     "origin_label": "来源待匹配",
                     "origin_status": "pending",
                     "priority_status": "pending",
@@ -338,6 +394,7 @@ def metadata_for_reference(
         elif candidates:
             return {
                 "origin_key": None,
+                "outlet_category": None,
                 "origin_label": "来源待匹配",
                 "origin_status": "pending",
                 "priority_status": "pending",
@@ -353,6 +410,7 @@ def metadata_for_reference(
             if _has_unresolved_metadata_for_title(conn, title):
                 return {
                     "origin_key": None,
+                    "outlet_category": None,
                     "origin_label": "来源待匹配",
                     "origin_status": "pending",
                     "priority_status": "pending",
@@ -370,6 +428,8 @@ def metadata_for_reference(
                 return {
                     "origin_key": "manual",
                     "origin_label": ORIGIN_LABELS["manual"],
+                    "outlet_category": "manual",
+                    "outlet_category_label": OUTLET_CATEGORY_LABELS["manual"],
                     "origin_status": "matched",
                     "priority_status": "not_applicable",
                     "priority_level": None,
@@ -382,6 +442,7 @@ def metadata_for_reference(
                 }
             return {
                 "origin_key": None,
+                "outlet_category": None,
                 "origin_label": "历史未记录",
                 "origin_status": "historical",
                 "priority_status": "historical",
@@ -397,6 +458,8 @@ def metadata_for_reference(
     return {
         "origin_key": str(row["origin_key"]),
         "origin_label": ORIGIN_LABELS.get(str(row["origin_key"]), str(row["origin_key"])),
+        "outlet_category": row["outlet_category"] if row["outlet_category"] in OUTLET_CATEGORY_CODES else None,
+        "outlet_category_label": OUTLET_CATEGORY_LABELS.get(str(row["outlet_category"] or "")),
         "origin_status": "matched" if row["odaily_id"] else "pending",
         "priority_status": status,
         "priority_level": row["priority_level"] if status == "evaluated" else None,

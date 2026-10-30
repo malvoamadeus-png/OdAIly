@@ -196,6 +196,8 @@ class BusinessNewsProcessor:
             is_publish=False,
             is_push=False,
             idempotency_key=f"business-telegram:{item['chat_id']}:{item['message_id']}",
+            origin_key="business_news",
+            outlet_category="business",
         )
         if not push_result.ok:
             self.repository.update_message(

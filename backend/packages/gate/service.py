@@ -117,6 +117,7 @@ def run_gate_once(
         is_publish=brief.isPublish,
         idempotency_key=f"scheduled-brief:gate:{run_id}",
         origin_key="scheduled_brief",
+        outlet_category="scheduled_brief",
         priority_status="not_applicable",
     )
     status = "success" if push_result.ok else "error"

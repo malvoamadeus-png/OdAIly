@@ -401,6 +401,14 @@ def newsflash_origin_key_for_task(task: TaskRecord) -> str:
     return "external_media"
 
 
+def newsflash_outlet_category_for_task(task: TaskRecord) -> str:
+    if task.source == EVENT_TRACKING_SOURCE:
+        return "hot_topic_auto"
+    if task.source == HYPERLIQUID_SOURCE:
+        return "market"
+    return "ai_regular"
+
+
 AI_JUDGE_JSON_SCHEMA = {
     "type": "json_schema",
     "name": "ai_judge_route",
@@ -1406,6 +1414,7 @@ class XProcessingWorker:
             is_push=False,
             idempotency_key=delivery_key,
             origin_key=newsflash_origin_key_for_task(task),
+            outlet_category=newsflash_outlet_category_for_task(task),
             priority_status=publisher_decision_result.priority_status,
             priority_level=publisher_decision_result.priority_level,
             priority_reason=publisher_decision_result.priority_reason,
@@ -1525,6 +1534,7 @@ class XProcessingWorker:
             is_push=False,
             idempotency_key=f"odaily-task-{task.id}",
             origin_key=newsflash_origin_key_for_task(task),
+            outlet_category=newsflash_outlet_category_for_task(task),
             priority_status="not_applicable" if task.source == HYPERLIQUID_SOURCE else "pending",
             duplicate_result=pipeline.search_result,
         )

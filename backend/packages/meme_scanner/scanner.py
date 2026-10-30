@@ -1633,6 +1633,7 @@ def push_pending(
                     load_storage_settings().sqlite_path,
                     delivery_key=idempotency_key,
                     origin_key="meme",
+                    outlet_category="meme_digest",
                     title=title,
                     response_text=response.text,
                     pushed_at=datetime.now(UTC).isoformat(),
@@ -1723,6 +1724,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
                     content=content,
                     trigger_kind=str(job["trigger_kind"]),
                     market_cap=token.market_cap,
+                    delivery_key=f"odaily:meme:{token.chain}:{token.address}:{job['trigger_key']}",
                     occurred_at=datetime.now(UTC),
                 )
             except Exception as exc:

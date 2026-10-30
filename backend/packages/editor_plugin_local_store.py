@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -176,6 +177,31 @@ class LocalEditorPluginStore:
                 ON editor_plugin_local_feedbacks(sync_status, updated_at)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS editor_plugin_local_reads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    feed_item_id TEXT NOT NULL,
+                    feed_kind TEXT NOT NULL,
+                    delivery_key TEXT,
+                    content_hash TEXT NOT NULL,
+                    actor_user_id TEXT,
+                    actor_email TEXT NOT NULL,
+                    actor_display_name TEXT,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    seen_count INTEGER NOT NULL DEFAULT 1,
+                    read_method TEXT NOT NULL CHECK (read_method IN ('alt_lens','title_expand')),
+                    UNIQUE(feed_item_id, feed_kind, actor_email, content_hash)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_editor_plugin_local_reads_delivery
+                ON editor_plugin_local_reads(delivery_key, last_seen_at DESC)
+                """
+            )
 
     def upsert_session(
         self,
@@ -344,25 +370,140 @@ class LocalEditorPluginStore:
                 """,
                 (actor_email.strip().lower(), *ids),
             ).fetchall()
-        return [
-            {
+        state = {
+            (str(row["feed_item_id"]), str(row["feed_kind"])): {
                 "feed_item_id": str(row["feed_item_id"]),
                 "feed_kind": str(row["feed_kind"]),
-                "first_seen_at": None,
-                "last_seen_at": None,
-                "seen_count": None,
                 "latest_feedback": str(row["feedback"]),
                 "latest_feedback_at": row["acted_at"],
             }
             for row in rows
-        ]
+        }
+        with self._connect() as conn:
+            current_rows = conn.execute(
+                f"SELECT feed_item_id,feed_kind,title,summary FROM editor_plugin_local_feed_items WHERE feed_item_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            current = {
+                (str(row["feed_item_id"]), str(row["feed_kind"])): hashlib.sha256(
+                    f"{row['title']}\n{row['summary']}".encode("utf-8")
+                ).hexdigest()
+                for row in current_rows
+            }
+            reads = conn.execute(
+                f"""SELECT feed_item_id,feed_kind,content_hash,first_seen_at,last_seen_at,seen_count,read_method
+                FROM editor_plugin_local_reads WHERE lower(actor_email)=? AND feed_item_id IN ({placeholders})
+                ORDER BY last_seen_at DESC,id DESC""",
+                (actor_email.strip().lower(), *ids),
+            ).fetchall()
+        for row in reads:
+            key = (str(row["feed_item_id"]), str(row["feed_kind"]))
+            if current.get(key) != str(row["content_hash"]):
+                continue
+            entry = state.setdefault(key, {"feed_item_id": key[0], "feed_kind": key[1]})
+            if "is_read" not in entry:
+                entry.update(
+                    {
+                        "is_read": True,
+                        "first_seen_at": row["first_seen_at"],
+                        "last_seen_at": row["last_seen_at"],
+                        "seen_count": int(row["seen_count"]),
+                        "read_method": row["read_method"],
+                    }
+                )
+        return list(state.values())
 
-    def mark_seen(self, *, feed_item_id: str, feed_kind: str) -> dict[str, Any]:
+    def mark_seen(
+        self,
+        *,
+        feed_item_id: str,
+        feed_kind: str,
+        read_method: str,
+        actor_user_id: str | None,
+        actor_email: str,
+        actor_display_name: str | None,
+    ) -> dict[str, Any]:
         if not feed_item_id.strip():
             raise ValueError("editor_plugin_feed_item_id_required")
         if not feed_kind.strip():
             raise ValueError("editor_plugin_feed_kind_required")
-        return {"ok": True, "recorded": False, "local": True}
+        if read_method not in {"alt_lens", "title_expand"}:
+            raise ValueError("editor_plugin_invalid_read_method")
+        actor = actor_email.strip().lower()
+        if not actor:
+            raise ValueError("editor_plugin_actor_email_required")
+        now = encode_dt()
+        clean_feed_item_id = feed_item_id.strip()
+        clean_feed_kind = feed_kind.strip()
+        with self._connect() as conn:
+            item = conn.execute(
+                "SELECT title,summary,meta_json FROM editor_plugin_local_feed_items WHERE feed_item_id=? AND feed_kind=?",
+                (clean_feed_item_id, clean_feed_kind),
+            ).fetchone()
+            if item is None:
+                raise ValueError("editor_plugin_feed_item_not_found")
+            title = str(item["title"] or "")
+            summary = str(item["summary"] or "")
+            if not summary.strip():
+                return {"ok": True, "recorded": False, "local": True}
+            content_hash = hashlib.sha256(f"{title}\n{summary}".encode("utf-8")).hexdigest()
+            meta = decode_json(item["meta_json"], {})
+            delivery_key = str(meta.get("odaily_delivery_key") or "").strip() if isinstance(meta, dict) else ""
+            conn.execute(
+                """INSERT INTO editor_plugin_local_reads(
+                    feed_item_id,feed_kind,delivery_key,content_hash,actor_user_id,actor_email,actor_display_name,
+                    first_seen_at,last_seen_at,seen_count,read_method
+                ) VALUES(?,?,?,?,?,?,?,?,?,1,?)
+                ON CONFLICT(feed_item_id,feed_kind,actor_email,content_hash) DO UPDATE SET
+                    delivery_key=excluded.delivery_key,
+                    actor_user_id=excluded.actor_user_id,
+                    actor_display_name=excluded.actor_display_name,
+                    last_seen_at=excluded.last_seen_at,
+                    seen_count=editor_plugin_local_reads.seen_count+1,
+                    read_method=excluded.read_method""",
+                (
+                    clean_feed_item_id,
+                    clean_feed_kind,
+                    delivery_key or None,
+                    content_hash,
+                    actor_user_id,
+                    actor,
+                    actor_display_name,
+                    now,
+                    now,
+                    read_method,
+                ),
+            )
+        return {"ok": True, "recorded": True, "local": True, "first_seen_at": now}
+
+    def readers_for_delivery_keys(self, delivery_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
+        keys = [str(key).strip() for key in delivery_keys if str(key).strip()]
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT delivery_key,content_hash,actor_user_id,actor_email,actor_display_name,
+                    first_seen_at,last_seen_at,seen_count,read_method
+                FROM editor_plugin_local_reads WHERE delivery_key IN ({placeholders})
+                ORDER BY delivery_key,last_seen_at DESC,id DESC""",
+                keys,
+            ).fetchall()
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            result.setdefault(str(row["delivery_key"]), []).append(
+                {
+                    "content_hash": str(row["content_hash"]),
+                    "actor_user_id": row["actor_user_id"],
+                    "actor_email": str(row["actor_email"]),
+                    "actor_display_name": row["actor_display_name"],
+                    "first_seen_at": row["first_seen_at"],
+                    "last_seen_at": row["last_seen_at"],
+                    "seen_count": int(row["seen_count"]),
+                    "read_method": str(row["read_method"]),
+                }
+            )
+        return result
 
     def record_feedback(
         self,

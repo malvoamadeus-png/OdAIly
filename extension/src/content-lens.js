@@ -152,6 +152,12 @@ function render(message) {
   card.append(meta, title, summary, time);
   shadow.replaceChildren(style, card);
   nextHost.hidden = false;
+  chrome.runtime.sendMessage({
+    type: "ODAILY_TEXT_LENS_RENDERED",
+    message_id: Number(message.message_id || 0),
+    feed_item_id: text(item.feed_item_id),
+    feed_kind: text(item.feed_kind)
+  }).catch(() => undefined);
 }
 
 if (!globalThis.__odailyTextLensInstalled) {

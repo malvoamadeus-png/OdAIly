@@ -3,18 +3,21 @@ from __future__ import annotations
 import calendar
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from packages.common.storage import connect_sqlite
 from packages.newsflash_metadata import (
+    OUTLET_CATEGORY_LABELS,
     ensure_newsflash_metadata_tables,
     metadata_for_reference,
 )
+from packages.fact_auditor.alerts import plugin_alert_summary
 from packages.fact_auditor.repository import (
     SCHEMA_SQL as FACT_REVIEW_SCHEMA_SQL, LABELS as FACT_REVIEW_LABELS,
     FactReviewRepository, current_join as fact_review_join, summary_from_row as fact_review_summary,
@@ -753,6 +756,116 @@ class NewsflashOperationsRepository:
     @staticmethod
     def _table_exists(conn, table: str) -> bool:
         return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+    def export_newsflashes(self, *, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        safe_offset = max(0, int(offset or 0))
+        fact_join = fact_review_join()
+        with connect_sqlite(self.path) as conn:
+            where = "(m.outlet_category IS NOT NULL OR (m.delivery_key IS NULL AND f.publisher_kind='human'))"
+            total = int(conn.execute(
+                f"""SELECT count(*) FROM odaily_reference_items r
+                LEFT JOIN newsflash_production_metadata m ON m.odaily_id=r.source_item_id
+                LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
+                WHERE {where}"""
+            ).fetchone()[0])
+            rows = conn.execute(
+                f"""SELECT r.source_item_id,r.title,r.content,r.published_at,r.updated_at AS reference_updated_at,
+                    m.delivery_key,m.outlet_category,m.priority_status,m.priority_level,m.updated_at AS metadata_updated_at,
+                    f.publisher_kind,
+                    fc.status AS fact_status,fc.result_json AS fact_result_json,fc.updated_at AS fact_updated_at
+                FROM odaily_reference_items r
+                LEFT JOIN newsflash_production_metadata m ON m.odaily_id=r.source_item_id
+                LEFT JOIN newsflash_operation_facts f ON f.source_item_id=r.source_item_id
+                {fact_join}
+                WHERE {where}
+                ORDER BY julianday(r.published_at) DESC,r.source_item_id DESC
+                LIMIT ? OFFSET ?""",
+                (safe_limit, safe_offset),
+            ).fetchall()
+            has_text_reviews = self._table_exists(conn, "auditor_checks")
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                source_item_id = str(row["source_item_id"])
+                category_code = str(row["outlet_category"] or ("manual" if row["publisher_kind"] == "human" else ""))
+                if category_code not in OUTLET_CATEGORY_LABELS:
+                    continue
+                content = str(row["content"] or "")
+                title = str(row["title"] or "")
+                text_review: dict[str, Any] = {
+                    "status": "unreviewed",
+                    "feedback": None,
+                    "text": "",
+                    "updated_at": None,
+                }
+                if has_text_reviews:
+                    digest = hashlib.md5(f"{title}\n{content}".encode("utf-8"), usedforsecurity=False).hexdigest()
+                    audit = conn.execute(
+                        """SELECT status,audit_result,telegram_text,updated_at FROM auditor_checks
+                        WHERE source_item_id=? AND content_hash=? ORDER BY id DESC LIMIT 1""",
+                        (source_item_id, digest),
+                    ).fetchone()
+                    if audit is not None:
+                        result = _decode(audit["audit_result"], {})
+                        result = result if isinstance(result, dict) else {}
+                        text_review = {
+                            "status": str(audit["status"] or "unreviewed"),
+                            "feedback": result,
+                            "text": str(audit["telegram_text"] or result.get("summary") or ""),
+                            "updated_at": audit["updated_at"],
+                        }
+                fact_result = _decode(row["fact_result_json"], {})
+                fact_result = fact_result if isinstance(fact_result, dict) else {}
+                fact_status = str(row["fact_status"] or "unreviewed")
+                fact_text = plugin_alert_summary(fact_result) if fact_status == "flagged" else ""
+                update_stamps = [
+                    str(value) for value in (
+                        row["reference_updated_at"],
+                        row["metadata_updated_at"],
+                        text_review["updated_at"],
+                        row["fact_updated_at"],
+                    ) if value
+                ]
+                console_url = (os.getenv("EDITOR_PLUGIN_CONSOLE_URL") or "").strip()
+                parsed_console = urlsplit(console_url)
+                if parsed_console.scheme in {"http", "https"} and parsed_console.netloc:
+                    query = dict(parse_qsl(parsed_console.query, keep_blank_values=True))
+                    query.update({"view": "newsflash", "fact_review": source_item_id})
+                    fact_review_url = urlunsplit(
+                        (parsed_console.scheme, parsed_console.netloc, parsed_console.path or "/", urlencode(query), "")
+                    )
+                else:
+                    fact_review_url = "https://odaily.info/content/newsflash/newsflash-list?" + urlencode(
+                        {"view": "newsflash", "fact_review": source_item_id}
+                    )
+                items.append(
+                    {
+                        "id": source_item_id,
+                        "title": title,
+                        "content": content,
+                        "published_at": row["published_at"],
+                        "outlet_category": OUTLET_CATEGORY_LABELS[category_code],
+                        "priority_level": row["priority_level"] if row["priority_status"] == "evaluated" else None,
+                        "text_review": text_review,
+                        "fact_review": {
+                            "status": fact_status,
+                            "text": fact_text,
+                            "url": fact_review_url,
+                            "updated_at": row["fact_updated_at"],
+                        },
+                        "duplicate": {"status": "not_implemented", "text": None, "url": None},
+                        "read_status": {"is_read": False, "readers": []},
+                        "updated_at": max(update_stamps) if update_stamps else None,
+                        "_delivery_key": row["delivery_key"],
+                    }
+                )
+        return {
+            "items": items,
+            "total": total,
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "next_offset": safe_offset + safe_limit if safe_offset + safe_limit < total else None,
+        }
 
     def list_newsflashes(self, payload: dict[str, Any]) -> dict[str, Any]:
         page = max(1, int(payload.get("page") or 1))

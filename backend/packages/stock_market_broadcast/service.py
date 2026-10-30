@@ -159,6 +159,7 @@ class StockMarketBroadcastService:
                     is_publish=alert.tier == "live", is_push=False,
                     idempotency_key=f"stock-market:{alert.event_key}",
                     origin_key="stock_market",
+                    outlet_category="market",
                     priority_status="not_applicable",
                 )
             except Exception as exc:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -184,6 +185,7 @@ class EditorPluginApiSettings(BaseModel):
     local_feed_sync_interval_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     local_feed_max_age_hours: int = Field(default=2, ge=1, le=168)
     pipeline_timing_refresh_interval_seconds: float = Field(default=3600.0, ge=60.0, le=86400.0)
+    newsflash_export_api_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -263,6 +265,7 @@ def load_editor_plugin_api_settings(*, host: str | None = None, port: int | None
         "local_feed_sync_interval_seconds": float(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_SYNC_INTERVAL_SECONDS") or 30.0),
         "local_feed_max_age_hours": int(os.getenv("EDITOR_PLUGIN_LOCAL_FEED_MAX_AGE_HOURS") or 2),
         "pipeline_timing_refresh_interval_seconds": float(os.getenv("PIPELINE_TIMING_REFRESH_INTERVAL_SECONDS") or 3600.0),
+        "newsflash_export_api_token": (os.getenv("NEWSFLASH_EXPORT_API_TOKEN") or "").strip(),
     }
     try:
         return EditorPluginApiSettings.model_validate(payload)
@@ -861,10 +864,40 @@ class EditorPluginNewsGenService:
         return self.local_store.feed_state(actor_email=actor.email, feed_item_ids=feed_item_ids)
 
     def mark_seen(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
-        return self.local_store.mark_seen(
-            feed_item_id=str(payload.get("p_feed_item_id") or ""),
-            feed_kind=str(payload.get("p_feed_kind") or ""),
-        )
+        try:
+            return self.local_store.mark_seen(
+                feed_item_id=str(payload.get("p_feed_item_id") or ""),
+                feed_kind=str(payload.get("p_feed_kind") or ""),
+                read_method=str(payload.get("p_read_method") or ""),
+                actor_user_id=actor.user_id,
+                actor_email=actor.email,
+                actor_display_name=actor.display_name,
+            )
+        except ValueError as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
+    def export_newsflashes(self, *, limit: int, offset: int) -> dict[str, Any]:
+        data = self.newsflash_operations.export_newsflashes(limit=limit, offset=offset)
+        keys = [str(item["_delivery_key"]) for item in data["items"] if item.get("_delivery_key")]
+        readers_by_delivery = self.local_store.readers_for_delivery_keys(keys)
+        for item in data["items"]:
+            delivery_key = str(item.pop("_delivery_key", "") or "")
+            expected_hash = hashlib.sha256(
+                f"{item['title']}\n{item['content']}".encode("utf-8")
+            ).hexdigest()
+            readers = [
+                {
+                    key: value
+                    for key, value in reader.items()
+                    if key != "content_hash"
+                }
+                for reader in readers_by_delivery.get(delivery_key, [])
+                if reader["content_hash"] == expected_hash
+            ]
+            item["read_status"] = {"is_read": bool(readers), "readers": readers}
+            item.pop("title", None)
+            item.pop("content", None)
+        return data
 
     def submit_feedback(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
         result = self.local_store.record_feedback(
@@ -1309,6 +1342,33 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed_path = urlparse(self.path)
+        if parsed_path.path == "/integration/newsflashes":
+            expected_token = self.server.service.api_settings.newsflash_export_api_token
+            if not expected_token:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "Export API is not configured"}, no_store=True)
+                return
+            authorization = (self.headers.get("Authorization") or "").strip()
+            supplied_token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            if not supplied_token or not hmac.compare_digest(supplied_token, expected_token):
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "message": "Unauthorized"}, no_store=True)
+                return
+            query = parse_qs(parsed_path.query)
+            try:
+                limit = int((query.get("limit") or ["100"])[0])
+                offset = int((query.get("offset") or ["0"])[0])
+                if limit < 1 or offset < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Invalid limit or offset"}, no_store=True)
+                return
+            try:
+                data = self.server.service.export_newsflashes(limit=limit, offset=offset)
+            except Exception:
+                self.log_error("newsflash export failed")
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": "Export failed"}, no_store=True)
+                return
+            self._send_json(HTTPStatus.OK, {"ok": True, "data": data}, no_store=True)
+            return
         if parsed_path.path.startswith("/hooks/grok-meme-result/"):
             parts = parsed_path.path.split("/")
             if len(parts) != 5 or not parts[3] or not parts[4] or parts[4] == "register":
@@ -1684,7 +1744,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-    def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+    def _send_json(self, status: HTTPStatus, payload: dict[str, Any], *, no_store: bool = False) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
         compressed = False
         hyperliquid = self.path == '/console/hyperliquid-news/get'
@@ -1704,6 +1764,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     break
         self.send_response(status)
         self._send_common_headers()
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         if hyperliquid:
             self.send_header('Vary', 'Accept-Encoding')
         if compressed:

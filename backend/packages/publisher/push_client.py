@@ -53,6 +53,7 @@ class PushClient:
         is_push: bool = False,
         idempotency_key: str | None = None,
         origin_key: str | None = None,
+        outlet_category: str | None = None,
         priority_status: str = "pending",
         priority_level: str | None = None,
         priority_reason: str | None = None,
@@ -89,10 +90,13 @@ class PushClient:
                 )
                 if origin_key:
                     try:
+                        if not outlet_category:
+                            raise ValueError("outlet_category is required when recording newsflash metadata")
                         record_newsflash_delivery(
                             load_storage_settings().sqlite_path,
                             delivery_key=idempotency_key,
                             origin_key=origin_key,
+                            outlet_category=outlet_category,
                             title=title,
                             response_text=response.text,
                             pushed_at=datetime.now(UTC).isoformat(),

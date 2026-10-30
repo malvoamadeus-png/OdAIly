@@ -256,6 +256,7 @@ class GateMarketBroadcastService:
             is_push=False,
             idempotency_key=f"gate-market:{event_id}",
             origin_key="gate_market",
+            outlet_category="market",
             priority_status="not_applicable",
         )
         if not result.ok:

@@ -34,3 +34,7 @@ export async function fetchFeedState(config, session, feedItemIds) {
 export async function submitFeedback(config, session, payload) {
   return await rpc(config, session, "editor_plugin_submit_feedback", payload);
 }
+
+export async function markFeedItemSeen(config, session, payload) {
+  return await rpc(config, session, "editor_plugin_mark_seen", payload);
+}

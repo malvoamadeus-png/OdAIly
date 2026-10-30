@@ -128,6 +128,7 @@ class YesterdayHotDiscussion:
                 is_push=False,
                 idempotency_key=f"yesterday-hot-discussion:{day_key}:{topic['topic_id']}",
                 origin_key="scheduled_brief",
+                outlet_category="ai_regular",
                 priority_status="not_applicable",
             )
             status = "backstage_created" if result.ok else "push_failed"

@@ -191,6 +191,7 @@ class LocalEditorPluginFeedWriter:
                     "action_schema": {"type": "read"},
                     "meta_json": {
                         "task_id": task_id,
+                        "odaily_delivery_key": f"odaily-task-{task_id}",
                         "source": source,
                         "task_status": status,
                         "publisher_decision": publisher_decision,
@@ -502,6 +503,7 @@ class LocalEditorPluginFeedWriter:
                     "action_schema": {"type": "read"},
                     "meta_json": {
                         "event_id": event_id,
+                        "odaily_delivery_key": f"gate-market:{event_id}",
                         "source": "gate_market",
                         "symbol": symbol,
                         "mode": mode,
@@ -523,6 +525,7 @@ class LocalEditorPluginFeedWriter:
         content: str,
         trigger_kind: str,
         market_cap: float,
+        delivery_key: str | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
         self.store.upsert_feed_items(
@@ -546,6 +549,7 @@ class LocalEditorPluginFeedWriter:
                     "action_schema": {"type": "read"},
                     "meta_json": {
                         "job_id": job_id,
+                        "odaily_delivery_key": delivery_key,
                         "source": "meme_scanner",
                         "address": address,
                         "platform": platform,

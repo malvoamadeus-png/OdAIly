@@ -2,6 +2,7 @@
   fetchEditorProfile,
   fetchFeedItems,
   fetchFeedState,
+  markFeedItemSeen,
   submitFeedback
 } from "./lib/feed.js";
 import {
@@ -74,6 +75,7 @@ const state = {
   textLensActive: false,
   textLensHoverKey: null,
   textLensMessageId: 0,
+  textLensLastVisibleMessage: null,
   newsGenDraft: null,
   newsGenResult: null,
   newsGenRequestState: {
@@ -342,6 +344,13 @@ async function sendTextLensToActiveTab() {
     visible: Boolean(state.textLensActive && item),
     item: item || null
   };
+  state.textLensLastVisibleMessage = message.visible
+    ? {
+      message_id: message.message_id,
+      feed_item_id: item.feed_item_id,
+      feed_kind: item.feed_kind
+    }
+    : null;
   try {
     await chrome.tabs.sendMessage(tab.id, message);
   } catch {
@@ -955,8 +964,13 @@ function wireCardToolButtons() {
         if (!summary) {
           return;
         }
+        const isOpening = !state.expandedFeedKeys.has(itemKey);
+        const item = findFeedItem(feedKind, feedItemId);
         toggleExpandedFeedKey(itemKey);
         renderPreservingLaneScroll(button.closest(".laneList"));
+        if (isOpening && item?.summary?.trim()) {
+          markItemRead(item, "title_expand");
+        }
         return;
       }
 
@@ -1017,8 +1031,13 @@ function wireFastLaneToggles() {
           return;
         }
         const itemKey = feedKeyOf(feedKind, feedItemId);
+        const isOpening = !state.expandedFeedKeys.has(itemKey);
+        const item = findFeedItem(feedKind, feedItemId);
         toggleExpandedFeedKey(itemKey);
         renderPreservingLaneScroll(card.closest(".laneList"));
+        if (isOpening && item?.summary?.trim()) {
+          markItemRead(item, "title_expand");
+        }
       });
     }
   }
@@ -1084,6 +1103,28 @@ async function withSessionRetry(task) {
   }
   await ensureLiveSession(true);
   return await task();
+}
+
+function markItemRead(item, method) {
+  if (!item?.meta_json?.odaily_delivery_key || !item?.summary?.trim()) {
+    return;
+  }
+  withSessionRetry(async () => {
+    const result = await markFeedItemSeen(state.settings, state.session, {
+      p_feed_item_id: item.feed_item_id,
+      p_feed_kind: item.feed_kind,
+      p_read_method: method
+    });
+    if (!result?.recorded) {
+      return;
+    }
+    const key = feedKey(item);
+    const current = state.feedState.get(key) || { feed_item_id: item.feed_item_id, feed_kind: item.feed_kind };
+    state.feedState.set(key, { ...current, is_read: true, read_method: method });
+    state.seenFeedKeys.add(key);
+  }).catch((error) => {
+    console.warn("failed to record feed read", error);
+  });
 }
 
 function wireFeedbackButtons() {
@@ -1180,6 +1221,11 @@ function wireLaneResizers() {
 
 function wireSeenTracking() {
   state.seenFeedKeys.clear();
+  for (const [key, value] of state.feedState) {
+    if (value?.is_read) {
+      state.seenFeedKeys.add(key);
+    }
+  }
 }
 
 function wireFeedInteractions() {
@@ -1221,6 +1267,18 @@ document.addEventListener("keyup", handleTextLensKeyup, true);
 window.addEventListener("blur", hideTextLens);
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "ODAILY_TEXT_LENS_RENDERED") {
+    const expected = state.textLensLastVisibleMessage;
+    if (
+      expected?.message_id === Number(message.message_id || 0) &&
+      expected.feed_item_id === message.feed_item_id &&
+      expected.feed_kind === message.feed_kind
+    ) {
+      const item = findFeedItem(message.feed_kind, message.feed_item_id);
+      markItemRead(item, "alt_lens");
+    }
+    return;
+  }
   if (message?.type !== "ODAILY_TEXT_LENS_KEY_STATE") {
     return;
   }
