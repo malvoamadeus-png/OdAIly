@@ -7,6 +7,7 @@ from typing import Any
 
 from .history import fill_key, perp_fill
 from .models import Candidate, Position, Rules, ZERO, number
+from .actions import execution_sequence, snapshot_net_change
 
 
 def highlights(history: dict[str, Any], coin: str, rules: Rules) -> list[str]:
@@ -83,6 +84,8 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
         if size <= 0 or price <= 0 or fill['side'] not in ('B', 'A'):
             raise ValueError('Invalid fill action')
         delta = size if fill['side'] == 'B' else -size
+        if before and before * (before + delta) <= 0:
+            data['position_episode_closed'] = True
         closing_size = min(abs(before), size) if before * delta < 0 else ZERO
         data['close_notional'] += closing_size * price
         data['open_notional'] += (size - closing_size) * price
@@ -99,7 +102,9 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
         is_liquidation = (isinstance(liquidation, dict) and
                           str(liquidation.get('liquidatedUser', '')).lower() == address.lower())
         if is_liquidation:
-            data['liquidated_notional'] += size * price
+            data['liquidated_notional'] += closing_size * price
+            key = 'liquidated_long_notional' if before > 0 else 'liquidated_short_notional'
+            data[key] = data.get(key, ZERO) + closing_size * price
         elif closing_size:
             data['ordinary_closed_pnl'] += closed_pnl
             data['ordinary_close_notional'] += closing_size * price
@@ -110,16 +115,15 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if quantity:
                 data[f'{direction}_average_execution_price_usd'] = (
                     data[f'{direction}_notional'] / quantity)
+    for coin, data in actions.items():
+        data['execution_sequence'] = execution_sequence([f for f in new_fills if f['coin'] == coin])
     candidates = []
     for coin in sorted(set(positions) | set(old_positions) | set(actions)):
         p = positions.get(coin)
         old = old_positions.get(coin)
-        amount = max(actions.get(coin, {}).get('open_notional', ZERO),
-                     actions.get(coin, {}).get('close_notional', ZERO))
-        if previous is not None and old is not None:
-            snapshot_amount = (min(old.notional, p.notional) if p and p.size*old.size < 0
-                               else abs((abs(p.size) if p else ZERO)-abs(old.size)) * (p.mark if p else old.mark))
-            amount = max(amount, snapshot_amount)
+        net = snapshot_net_change({'position': p.facts() if p else None,
+                                   'previous_position': old.facts() if old else None})
+        amount = number(net['estimated_value']) if net and previous is not None else ZERO
         event_history = ((history_before_actions or {}).get(coin, history)
                          if actions.get(coin) else history)
         labels = action_highlights(highlights(event_history, coin, rules), amount, rules)
@@ -199,7 +203,7 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                 facts['reversal_basis'] = 'net_direction_between_successful_snapshots'
         action = actions.get(coin)
         if action:
-            if max(p.notional if p else ZERO, old.notional if old else ZERO) >= rules.large_position and max(action['open_notional'], action['close_notional']) >= rules.action:
+            if max(p.notional if p else ZERO, old.notional if old else ZERO) >= rules.large_position and amount >= rules.action:
                 kinds.append('large_position_action')
             facts['actions'] = {k: str(v) if isinstance(v, Decimal) else v for k, v in action.items()}
             if labels:
@@ -210,7 +214,8 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
             if action['liquidated_notional'] >= rules.action:
                 kinds.append('actual_liquidation')
             if (old is not None and p is not None and same_episode and old.unrealized_pnl <= -rules.pnl_line(coin)
-                    and action['open_notional'] >= rules.action and abs(p.size) > abs(old.size)):
+                    and amount >= rules.action and abs(p.size) > abs(old.size)
+                    and not action.get('position_episode_closed')):
                 kinds.append('loss_addition')
             if (previous is not None and old is None and p is not None and p.notional >= rules.action
                     and action['open_notional'] >= rules.action and observed_ms - first_seen_ms <= rules.new_address_window_ms):
@@ -224,7 +229,8 @@ def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,
                     kinds.append('large_position_action')
                 if labels:
                     kinds.append('highlighted_address_action')
-                if snapshot_amount >= rules.action and p is not None and old.unrealized_pnl <= -rules.pnl_line(coin) and abs(p.size)>abs(old.size):
+                if (snapshot_amount >= rules.action and p is not None and old.unrealized_pnl <= -rules.pnl_line(coin)
+                        and abs(p.size)>abs(old.size) and not (action or {}).get('position_episode_closed')):
                     kinds.append('loss_addition')
                 facts['net_position_change'] = {
                     'direction': '减仓' if p is None or abs(p.size)<abs(old.size) else '加仓',

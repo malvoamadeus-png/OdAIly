@@ -11,6 +11,7 @@ from packages.x_processing.formatter import ODAILY_PREFIX, format_brief
 from packages.x_processing.models import DraftBrief
 from .client import address_key
 from .models import number
+from .actions import snapshot_net_change, single_reversal_legs
 
 PREFIX = '据Odaily监测，'
 ACCOUNT_PNL_MAX_AGE_MS = 60 * 60 * 1000
@@ -178,8 +179,8 @@ def _high_win_execution_prices(event: dict[str, Any]) -> str | None:
     if close_amount <= 0 or open_amount <= 0 or close_price is None or open_price is None:
         return None
     coin=event.get('coin','')
-    return (f'本次{coin}{"多" if close_side == "long" else "空"}单平仓的加权成交价约为'
-            f'{_execution_price(close_price)}美元，开仓的加权成交价约为'
+    return (f'窗口内{coin}{"多" if close_side == "long" else "空"}单平仓的加权成交价约为'
+            f'{_execution_price(close_price)}美元，{coin}{"多" if open_side == "long" else "空"}单开仓的加权成交价约为'
             f'{_execution_price(open_price)}美元。')
 
 
@@ -277,8 +278,8 @@ def _account_action_detail(event: dict[str, Any]) -> str | None:
     open_amount = number(actions.get(f'open_{open_side}_notional', '0'))
     if close_amount > 0 and open_amount > 0:
         close_copy = f'平仓{money(close_amount).replace(" ", "")}{coin}{"多" if close_side == "long" else "空"}单'
-        open_copy = f'再开仓{money(open_amount).replace(" ", "")}{coin}{"多" if open_side == "long" else "空"}单'
-        return f'{close_copy}后{open_copy}'
+        open_copy = f'开仓{money(open_amount).replace(" ", "")}{coin}{"多" if open_side == "long" else "空"}单'
+        return f'窗口内累计{close_copy}，累计{open_copy}'
     if close_amount > 0:
         side = '多' if close_side == 'long' else '空'
         return f'减仓{money(close_amount).replace(" ", "")}{coin}{side}单'
@@ -291,12 +292,13 @@ def _account_action_detail(event: dict[str, Any]) -> str | None:
 
 def _ensure_account_action_amounts(title: str, content: str, event: dict[str, Any]) -> tuple[str, str]:
     """Keep account-result copy from collapsing a supported action to a bare verb."""
-    detail = _account_action_detail(event)
+    detail = _account_action_detail(event) or _highlight_action_description(
+        event.get('evidence', {}), str(event.get('coin', '')))
     if not detail:
         return title, content
     action_pattern = re.compile(
-        r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}?(?:多单|空单|开多|开空)')
-    has_amount = re.compile(r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}(?:万美元|亿美元)')
+        r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}?(?:多单|空单|开多|开空)(?:后再开[多空])?')
+    has_amount = re.compile(r'(?:开仓|加仓|平仓|减仓|减持|增持|减少|开多|开空|平掉)[约\d,.\s]+(?:万美元|亿美元)')
     if not has_amount.search(content):
         if action_pattern.search(content):
             content = action_pattern.sub(detail, content, count=1)
@@ -308,6 +310,16 @@ def _ensure_account_action_amounts(title: str, content: str, event: dict[str, An
             title = title[:subject] + '某地址' + detail
         elif action_pattern.search(title):
             title = action_pattern.sub(detail, title, count=1)
+    change = snapshot_net_change(event.get('evidence', {}))
+    operation_only = not set(event.get('kinds', [])).intersection(
+        {'large_realized_result', 'actual_liquidation', 'near_liquidation', 'large_reversal',
+         'large_profit', 'large_loss', 'profit_giveback', 'profit_to_loss', 'pnl_sign_flip', 'loss_addition'})
+    if change and number(change['estimated_value']) > 0 and operation_only:
+        description = _highlight_action_description(event['evidence'], str(event.get('coin', '')))
+        if description:
+            subject = re.search(r'某地址|该地址|地址', title)
+            if subject:
+                title = title[:subject.start()] + '某地址' + description
     return title, content
 
 
@@ -316,6 +328,7 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
     labels = event.get('evidence', {}).get('highlights', [])
     if ('highlighted_address_action' not in event.get('kinds', []) or
             not set(labels) & {'official_account_high_profit', 'account_high_profit', 'historical_loss'}):
+        _validate_action_chronology(draft, event)
         return draft
     title = draft.title.strip()
     evidence = event['evidence']
@@ -355,7 +368,34 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?某地址(合约账户)?(?:（[^）]*）)?',
             lambda m: (m.group(1) or '') + '某地址' + (m.group(2) or '') + ('（' + note + '）' if note else ''), content, count=1)
     title, content = _ensure_account_action_amounts(title, content, event)
+    if 'position' in evidence and evidence['position'] is None:
+        coin = str(event.get('coin', '')).rsplit(':', 1)[-1]
+        if not re.search(r'清仓|空仓|已无.*仓位', content):
+            content = content.rstrip('。！？') + f'。其已无{coin}仓位。'
+    _validate_action_chronology(DraftBrief(title=title, content=content), event)
     return DraftBrief(title=title, content=content)
+
+
+def _validate_action_chronology(draft: DraftBrief, event: dict[str, Any]) -> None:
+    """Every direction shares the same execution-order evidence boundary."""
+    actions = event.get('evidence', {}).get('actions') or {}
+    if (number(actions.get('open_notional', 0)) > 0 and
+            number(actions.get('close_notional', 0)) > 0):
+        sequence = actions.get('execution_sequence') or []
+        families = []
+        for leg in sequence:
+            family = leg['action'].split('_', 1)[0]
+            if not families or families[-1] != family:
+                families.append(family)
+        ordered_claim = re.compile(
+            r'(平仓|减仓|开仓|加仓|开多|开空|平多|平空)[^。；]*?(?:随后|然后|后再|之后|后)[^。；]*?(平仓|减仓|开仓|加仓|开多|开空|平多|平空)')
+        for text in (draft.title, draft.content):
+            for match in ordered_claim.finditer(text):
+                claimed = ['close' if verb in ('平仓', '减仓', '平多', '平空') else 'open' for verb in match.groups()]
+                # A body may describe part of a verified multistep window.
+                supported = any(families[i:i+2] == claimed for i in range(len(families)-1))
+                if claimed[0] != claimed[1] and not supported:
+                    raise ValueError('Action chronology requires matching execution sequence')
 
 
 def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
@@ -388,6 +428,10 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     title = scenario_title(event) or normalized.title
     normalized_account_copy = normalize_account_copy(DraftBrief(title=title, content=body), event)
     title, body = normalized_account_copy.title, normalized_account_copy.content
+    evidence = event.get('evidence', {})
+    if ('position' in evidence and evidence['position'] is None and evidence.get('actions')
+            and not re.search(r'清仓|空仓|已无.*仓位', body)):
+        body = body.rstrip('。！？') + f'。其已无{display_coin}仓位。'
     title = _remove_sample_timestamps(title)
     body = _remove_sample_timestamps(body)
     body = _ACCOUNT_PNL_QUALIFIER_PATTERN.sub('', body)
@@ -436,9 +480,14 @@ def scenario_title(event: dict[str, Any]) -> str | None:
     side = '多单' if number(position.get('size', '0')) > 0 else '空单'
     actions = evidence.get('actions') or {}
     if 'actual_liquidation' in kinds:
+        sides = [(s, number(actions.get(f'liquidated_{key}_notional', 0)))
+                 for s, key in [('多单', 'long'), ('空单', 'short')]]
+        details = [f'{coin}{s}发生{money(value)}清算' for s, value in sides if value > 0]
+        if details:
+            return address + '，'.join(details)
         liquidated = number(actions.get('liquidated_notional', '0'))
         if liquidated > 0:
-            return f'{address}{coin}{side}发生{money(liquidated)}清算'
+            return f'{address}{coin}合约发生{money(liquidated)}清算'
     if 'near_liquidation' in kinds:
         current = evidence.get('position') or {}
         distance = evidence.get('liquidation_distance')
@@ -452,19 +501,29 @@ def scenario_title(event: dict[str, Any]) -> str | None:
                 pnl_value = number(pnl)
                 title += f'，{"浮盈" if pnl_value >= 0 else "浮亏"}{money(abs(pnl_value))}'
             return title
+    if 'large_realized_result' in kinds:
+        pnl = number(actions.get('ordinary_closed_pnl', actions.get('closed_pnl', 0)))
+        threshold = number(evidence.get('threshold_rules', {}).get(
+            'major_pnl' if contract in ('BTC', 'ETH') else 'other_pnl',
+            '5000000' if contract in ('BTC', 'ETH') else '2000000'))
+        # Completed rounds and the current batch overlap: choose one basis.
+        if abs(pnl) < threshold and evidence.get('completed_round_results'):
+            pnl = sum((number(r['pnl']) for r in evidence['completed_round_results']), Decimal(0))
+        if pnl:
+            return f'{address}平仓{coin}合约，已实现{"盈利" if pnl > 0 else "亏损"}{money(abs(pnl))}'
     if 'large_reversal' in kinds:
         previous = evidence.get('previous_position') or {}
         current = evidence.get('position') or {}
         old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
         new_side = '多单' if number(current.get('size', '0')) > 0 else '空单'
         actions = evidence.get('actions') or {}
-        close_key = 'close_long_notional' if old_side == '多单' else 'close_short_notional'
-        open_key = 'open_long_notional' if new_side == '多单' else 'open_short_notional'
-        closed, opened = number(actions.get(close_key, '0')), number(actions.get(open_key, '0'))
-        if closed > 0 and opened > 0:
+        legs = single_reversal_legs(evidence)
+        if legs:
+            closed, opened = legs
             return f'{address}平仓{money(closed)}{coin}{old_side}并开仓{money(opened)}{coin}{new_side}'
         if previous and current:
-            return f'{address}平掉{coin}{old_side}并反手持有{coin}{new_side}'
+            value = f'价值{money(current["notional"])}' if current.get('notional') is not None else ''
+            return f'{address}由{coin}{old_side}反手持有{value}{coin}{new_side}'
     if 'pnl_sign_flip' in kinds or 'profit_to_loss' in kinds:
         before = evidence.get('news_change', {}).get('previous_floating_pnl')
         if before is None:
@@ -488,9 +547,10 @@ def scenario_title(event: dict[str, Any]) -> str | None:
         previous=evidence.get('previous_position') or {}
         loss=number(previous.get('unrealized_pnl',0))
         actions=evidence.get('actions') or {}
-        amount=number(actions.get('open_notional',0))
+        net = snapshot_net_change(evidence)
+        amount=number(net['estimated_value']) if net else Decimal(0)
         if loss < 0 and amount > 0:
-            return f'{address}持有的{coin}{side}浮亏{money(abs(loss))}时加仓{money(amount)}'
+            return f'{address}持有的{coin}{side}浮亏{money(abs(loss))}时净增持{money(amount)}'
     if 'large_profit' in kinds or 'large_loss' in kinds:
         current = position.get('unrealized_pnl')
         if current is not None:
@@ -549,11 +609,16 @@ def _highlight_action_description(evidence: dict[str, Any], coin: str) -> str | 
     change = evidence.get('net_position_change') or {}
     if previous and current and number(previous.get('size', '0')) * number(current.get('size', '0')) < 0:
         old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
-        old_close = number(actions.get(f'close_{"long" if old_side == "多单" else "short"}_notional', '0'))
-        if opening > 0:
-            prefix = f'平仓{money(old_close)}{coin}{old_side}并' if old_close > 0 else f'平掉{coin}{old_side}并'
-            return f'{prefix}开仓{money(opening)}{coin}{side}'
-        return f'反手持有价值{money(side_position.get("notional", "0"))}{coin}{side}'
+        legs = single_reversal_legs(evidence)
+        if legs:
+            closed, opened = legs
+            return f'平仓{money(closed)}{coin}{old_side}并开仓{money(opened)}{coin}{side}'
+        return f'由{coin}{old_side}反手持有价值{money(side_position.get("notional", "0"))}{coin}{side}'
+    net = snapshot_net_change(evidence)
+    if net and number(net['estimated_value']) > 0:
+        if net['closed']:
+            return f'清仓{coin}{side}，净减少{money(net["estimated_value"])}仓位'
+        return f'{net["direction"]}{money(net["estimated_value"])}{coin}{side}'
     if previous and not current:
         old_side = '多单' if number(previous.get('size', '0')) > 0 else '空单'
         old_close = number(actions.get(f'close_{"long" if old_side == "多单" else "short"}_notional', '0'))
@@ -637,6 +702,12 @@ def _action_material(raw: dict[str, Any], highlights: list[str], kinds: list[str
     facts = {key: value for key, value in raw.items()
              if key not in ('fill_keys', 'first_fill_ms', 'last_fill_ms')
              and not key.endswith('_quantity')}
+    sequence = raw.get('execution_sequence')
+    if sequence:
+        facts['execution_sequence'] = [
+            {'action': leg['action'], 'quantity': str(leg['quantity']), 'notional': str(leg['notional']),
+             'period': [timestamp(leg['first_fill_ms']), timestamp(leg['last_fill_ms'])]}
+            for leg in sequence]
     if 'asset_high_win_rate' in highlights and 'large_realized_result' not in kinds:
         facts.pop('closed_pnl', None)
         facts.pop('ordinary_closed_pnl', None)
@@ -679,6 +750,12 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
             facts['peak_time'] = timestamp(e['episode_peak_ms'])
     if e.get('net_position_change'):
         facts['net_position_change'] = e['net_position_change']
+    if 'highlighted_address_action' in kinds or 'loss_addition' in kinds:
+        net = snapshot_net_change(e)
+        if net:
+            facts['net_position_change'] = net
+    if 'position' in e:
+        facts['current_position_status'] = '持仓' if e['position'] else '空仓'
     if e.get('previous_reported_floating_pnl') is not None and not loss_addition_context:
         facts['previous_reported_floating_pnl_usd'] = e['previous_reported_floating_pnl']
         if e.get('previous_reported_floating_pnl_ms') is not None:

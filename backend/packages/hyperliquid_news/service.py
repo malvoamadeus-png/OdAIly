@@ -95,8 +95,12 @@ class NewsMonitor:
                         positions[p.coin] = p
                 start_ms = max(0, now_ms - self.history_window_ms)
                 cached = self.store.fills(address, start_ms, now_ms)
+                pending_key = 'normal_pending_fills:' + address
+                pending = self.store.metadata(pending_key, {})
                 # Unfinished initial backfill resumes at its inclusive page boundary.
-                if old and old['coverage'].get('coverage') == 'not_queried_no_eligibility':
+                if pending:
+                    request_start = max(start_ms, int(pending['coverage']['next_start_ms']))
+                elif old and old['coverage'].get('coverage') == 'not_queried_no_eligibility':
                     request_start = start_ms
                 elif old and not old['coverage']['pagination_complete']:
                     request_start = max(start_ms, old['coverage']['next_start_ms'])
@@ -110,13 +114,19 @@ class NewsMonitor:
                                     'observed_ms': s['observed_ms']} for s in sources
                                     if s['kind'] == 'leaderboard' and s.get('window') and
                                     now_ms - int(s['observed_ms']) <= 86400000}
-                if reasons:
+                if reasons or pending:
                     fetched, coverage = self.client.history(address, request_start, now_ms)
                     result['attribute_queries'] += 1
                 else:
                     fetched = []
                     coverage = {'pagination_complete': True, 'next_start_ms': start_ms,
                                 'coverage': 'not_queried_no_eligibility'}
+                fetched = list({fill_key(f): f for f in pending.get('fills', []) + fetched}.values())
+                if not coverage.get('pagination_complete', True):
+                    self.store.save_global(pending_key, {'fills': fetched, 'coverage': coverage}, [])
+                    self.store.record_error(address, now_ms, 'incomplete_history: baseline preserved')
+                    result.setdefault('incomplete_history', []).append(address)
+                    continue
                 known = {fill_key(f) for f in cached}
                 new_fills = [f for f in fetched if old and fill_key(f) not in known
                              and int(f['time']) >= old['state'].get('monitoring_since_ms', old['state']['observed_ms'])]
@@ -156,6 +166,8 @@ class NewsMonitor:
                 self.store.commit_observation(address=address, now_ms=now_ms, state=state, history=history,
                                               coverage=coverage, fills=fetched, candidates=events,
                                               state_table='hl_news_normal_state')
+                if pending:
+                    self.store.save_global(pending_key, {}, [])
                 result['processed'] += 1
                 result['candidates'] += len(events)
             except Exception as exc:

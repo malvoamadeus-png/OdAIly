@@ -66,7 +66,15 @@ def test_actions_and_account_copy(before,size,side,field):
     e['evidence']['address_notes']={A:'模拟地址'}
     draft=DraftBrief(title='总亏损2500万美元的地址操作ETH', content='该地址合约账户累计亏损2500万美元。')
     result=format_news(draft,e)
-    assert result.title=='总亏损2,500万美元地址操作ETH'
+    expected = {
+        ('0','2000','B'): '增持600万美元ETH多单',
+        ('2000','2000','B'): '增持600万美元ETH多单',
+        ('4000','2000','A'): '减少600万美元ETH多单',
+        ('2000','2000','A'): '清仓ETH多单，净减少600万美元仓位',
+        ('2000','4000','A'): '平仓600万美元ETH多单并开仓600万美元ETH空单',
+        ('-2000','4000','B'): '平仓600万美元ETH空单并开仓600万美元ETH多单',
+    }[(before,size,side)]
+    assert result.title == '总亏损2,500万美元某地址' + expected
     assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户（模拟地址）')
     assert format_news(result,e).content.count('模拟地址')==1
 

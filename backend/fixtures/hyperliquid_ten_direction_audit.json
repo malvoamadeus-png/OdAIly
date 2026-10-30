@@ -1,0 +1,1454 @@
+[
+  {
+    "scenarios": [
+      "asset_win_rate"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "BTC",
+      "evidence": {
+        "actions": {
+          "close_long_average_execution_price_usd": "83068.29937579299750699361619",
+          "close_long_notional": "10303041.747830",
+          "close_long_quantity": "124.03097",
+          "close_notional": "15449900.510670",
+          "close_short_average_execution_price_usd": "82938.61766101201104030795291",
+          "close_short_notional": "5146858.762840",
+          "close_short_quantity": "62.05624",
+          "closed_pnl": "19953.185851",
+          "first_fill_ms": 1792537349466,
+          "last_fill_ms": 1792572609176,
+          "liquidated_notional": "0",
+          "open_long_average_execution_price_usd": "83030.05605493269984667500147",
+          "open_long_notional": "1595888.325710",
+          "open_long_quantity": "19.22061",
+          "open_notional": "6744799.591260",
+          "open_short_average_execution_price_usd": "82971.69254131413698284008184",
+          "open_short_notional": "5148911.265550",
+          "open_short_quantity": "62.05624",
+          "ordinary_close_notional": "15449900.510670",
+          "ordinary_closed_pnl": "19953.185851",
+          "fill_count": 890
+        },
+        "episode_started_ms": 1792535799867,
+        "first_observation": false,
+        "highlights": [
+          "asset_high_win_rate"
+        ],
+        "history": {
+          "account_closed_pnl_less_fees": "1411913.3215529996",
+          "account_rounds": 95,
+          "account_win_rate": "0.9894736842105263157894736842",
+          "account_wins": 94,
+          "assets": {
+            "BTC": {
+              "first_observed_fill_ms": 1789737144223,
+              "last_30d_closed_pnl_less_fees": "456800.1953529997",
+              "last_30d_first_observed_fill_ms": 1789979897937,
+              "last_30d_last_observed_fill_ms": 1792530896253,
+              "last_observed_fill_ms": 1792530896253,
+              "rounds": 37,
+              "win_rate": "1"
+            }
+          },
+          "coverage": "pre_action_history",
+          "end_ms": 1792537349465,
+          "fee_currency_complete": true,
+          "fills": 37838,
+          "first_observed_fill_ms": 1789737144223,
+          "last_observed_fill_ms": 1792536839004,
+          "official_account_total_pnl": {
+            "observed_ms": 1792519320063,
+            "pnl": "476296.791361",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1784761349466
+        },
+        "net_position_change": {
+          "closed": true,
+          "direction": "减仓",
+          "estimated_value": "8699050.259279999900000000000",
+          "quantity": "104.81036",
+          "side": "多单"
+        },
+        "news_change": {
+          "current_size": "0",
+          "observed_ms": 1792573884720,
+          "previous_floating_pnl": "9794.27675",
+          "previous_observed_ms": 1792535799867,
+          "previous_position_value": "8699050.2592799999",
+          "previous_size": "104.81036"
+        },
+        "position": null,
+        "previous_position": {
+          "coin": "BTC",
+          "liquidation": "31324.8956657927",
+          "mark": "82997.99999999999904589584465",
+          "notional": "8699050.2592799999",
+          "size": "104.81036",
+          "unrealized_pnl": "9794.27675"
+        },
+        "previous_snapshot_ms": 1792535799867,
+        "snapshot_times": {
+          "": 1792573912417,
+          "abcd": 1792573914763,
+          "cash": 1792573915172,
+          "flx": 1792573913144,
+          "hyna": 1792573913956,
+          "io": 1792573916374,
+          "km": 1792573914362,
+          "mkts": 1792573915969,
+          "para": 1792573915632,
+          "vntl": 1792573913622,
+          "xyz": 1792573912819
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {}
+      },
+      "key": "audit:159",
+      "kinds": [
+        "highlighted_address_action"
+      ],
+      "observed_ms": 1792573884720
+    },
+    "task_id": 878214,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "BTC交易胜率达100.00%的某地址加仓约159.59 万美元BTC多单",
+    "final_content": "据Odaily监测，某地址在 2026 年 9 月 18 日至 10 月 21 日期间交易 BTC 共 37 轮，胜率为 100%。2026 年 10 月 21 日 07:02 至 16:50，其减仓多单并完成平仓，涉及 104.81036 BTC，按持仓估值参考价格计价值约 869.91 万美元。本次BTC多单平仓的加权成交价约为83,068.30美元，开仓的加权成交价约为82,971.69美元。\n地址：0x1111111111111111111111111111111111111111；总盈亏：47.63 万美元（样本截至2026-10-21 02:02）\nBTC 交易轮数：37；胜率：100.00%\n统计时间：2026-09-18 至 2026-10-21",
+    "draft_title": "BTC交易胜率100%：某地址减仓多单，持仓价值约869.91万美元",
+    "draft_content": "某地址在2026年9月18日至10月21日期间交易BTC共37轮，胜率为100%。2026年10月21日07:02至16:50，其减仓多单并完成平仓，涉及104.81036 BTC，按持仓估值参考价格计价值约869.91万美元。"
+  },
+  {
+    "scenarios": [
+      "asset_win_rate"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "NEAR",
+      "evidence": {
+        "actions": {
+          "close_long_notional": "0",
+          "close_long_quantity": "0",
+          "close_notional": "1352095.20011",
+          "close_short_average_execution_price_usd": "5.333071432132569558747021559",
+          "close_short_notional": "1352095.20011",
+          "close_short_quantity": "253530.3",
+          "closed_pnl": "3434.173727",
+          "first_fill_ms": 1792569782579,
+          "last_fill_ms": 1792610232147,
+          "liquidated_notional": "0",
+          "open_long_notional": "0.00000",
+          "open_long_quantity": "0.0",
+          "open_notional": "1196428.52917",
+          "open_short_average_execution_price_usd": "5.378579921391168621922360405",
+          "open_short_notional": "1196428.52917",
+          "open_short_quantity": "222443.2",
+          "ordinary_close_notional": "1352095.20011",
+          "ordinary_closed_pnl": "3434.173727",
+          "fill_count": 1280
+        },
+        "episode_started_ms": 1792531642218,
+        "first_observation": false,
+        "highlights": [
+          "asset_high_win_rate"
+        ],
+        "history": {
+          "account_closed_pnl_less_fees": "13280.688457",
+          "account_rounds": 636,
+          "account_win_rate": "0.6210691823899371069182389937",
+          "account_wins": 395,
+          "assets": {
+            "NEAR": {
+              "first_observed_fill_ms": 1792016741589,
+              "last_30d_closed_pnl_less_fees": "4.402796",
+              "last_30d_first_observed_fill_ms": 1792016741589,
+              "last_30d_last_observed_fill_ms": 1792569691804,
+              "last_observed_fill_ms": 1792569691804,
+              "rounds": 94,
+              "win_rate": "0.7553191489361702127659574468"
+            }
+          },
+          "coverage": "pre_action_history",
+          "end_ms": 1792569782578,
+          "fee_currency_complete": true,
+          "fills": 28635,
+          "first_observed_fill_ms": 1792010627171,
+          "last_observed_fill_ms": 1792569782294,
+          "official_account_total_pnl": {
+            "observed_ms": 1792352375345,
+            "pnl": "7961200.2863640003",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1784793782579
+        },
+        "liquidation_distance": "7.774379864520859576228167478",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "5.3487",
+          "oi_notional": "400276841.8584599839539"
+        },
+        "news_change": {
+          "current_size": "-22026.9",
+          "observed_ms": 1792610256158,
+          "previous_floating_pnl": "290.929431",
+          "previous_observed_ms": 1792569770702,
+          "previous_position_value": "274509.02945",
+          "previous_size": "-52582.9"
+        },
+        "position": {
+          "coin": "NEAR",
+          "liquidation": "46.6700490614",
+          "mark": "5.3189",
+          "notional": "117158.87841",
+          "size": "-22026.9",
+          "unrealized_pnl": "1314.868233"
+        },
+        "previous_position": {
+          "coin": "NEAR",
+          "liquidation": "22.6157617587",
+          "mark": "5.2205",
+          "notional": "274509.02945",
+          "size": "-52582.9",
+          "unrealized_pnl": "290.929431"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.0008165117639690399879764844926"
+        },
+        "previous_snapshot_ms": 1792569770702,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.0002926946207180979041326770807"
+        },
+        "snapshot_times": {
+          "": 1792610283832,
+          "abcd": 1792610286166,
+          "cash": 1792610286621,
+          "flx": 1792610284637,
+          "hyna": 1792610285424,
+          "io": 1792610287780,
+          "km": 1792610285762,
+          "mkts": 1792610287427,
+          "para": 1792610287023,
+          "vntl": 1792610285012,
+          "xyz": 1792610284236
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 0,
+          "market_cap_share": 0,
+          "near_liquidation": 0,
+          "oi_share": 0
+        }
+      },
+      "key": "audit:175",
+      "kinds": [
+        "highlighted_address_action"
+      ],
+      "observed_ms": 1792610256158
+    },
+    "task_id": 881700,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "NEAR交易胜率达75.53%的某地址加仓约119.64 万美元NEAR空单",
+    "final_content": "据Odaily监测，某地址在 2026 年 10 月 15 日至 10 月 21 日期间的 NEAR 单资产交易胜率为 75.53%。在 2026 年 10 月 21 日 16:03 至 10 月 22 日 03:17 期间，其对 NEAR 空单进行减仓并重新开立空单；截至 10 月 22 日 03:17，其仍持有价值约 11.72 万美元的 NEAR 空单。本次NEAR空单平仓的加权成交价约为5.33美元，开仓的加权成交价约为5.38美元。\n地址：0x1111111111111111111111111111111111111111；总盈亏：796.12 万美元（样本截至2026-10-19 03:39）\nNEAR 交易轮数：94；胜率：75.53%\n统计时间：2026-10-15 至 2026-10-21",
+    "draft_title": "NEAR单资产交易胜率75.53%，某地址减仓空单",
+    "draft_content": "某地址在2026年10月15日至10月21日期间的NEAR单资产交易胜率为75.53%。在2026年10月21日16:03至10月22日03:17期间，其对NEAR空单进行减仓并重新开立空单；截至10月22日03:17，其仍持有价值约11.72万美元的NEAR空单。"
+  },
+  {
+    "scenarios": [
+      "asset_win_rate"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "xyz:SP500",
+      "evidence": {
+        "actions": {
+          "close_long_notional": "0",
+          "close_long_quantity": "0",
+          "close_notional": "1927179.9808",
+          "close_short_average_execution_price_usd": "7755.969288103124232826378297",
+          "close_short_notional": "1927179.9808",
+          "close_short_quantity": "248.477",
+          "closed_pnl": "709.362835",
+          "first_fill_ms": 1792597008961,
+          "last_fill_ms": 1792608497630,
+          "liquidated_notional": "0",
+          "open_long_notional": "0.0000",
+          "open_long_quantity": "0.000",
+          "open_notional": "1927889.3887",
+          "open_short_average_execution_price_usd": "7758.824312511822019744282167",
+          "open_short_notional": "1927889.3887",
+          "open_short_quantity": "248.477",
+          "ordinary_close_notional": "1927179.9808",
+          "ordinary_closed_pnl": "709.362835",
+          "fill_count": 170
+        },
+        "first_observation": false,
+        "highlights": [
+          "asset_high_win_rate"
+        ],
+        "history": {
+          "account_closed_pnl_less_fees": "1248299.5019829996",
+          "account_rounds": 107,
+          "account_win_rate": "0.9813084112149532710280373832",
+          "account_wins": 105,
+          "assets": {
+            "xyz:SP500": {
+              "first_observed_fill_ms": 1791827857981,
+              "last_30d_closed_pnl_less_fees": "23378.0721139999",
+              "last_30d_first_observed_fill_ms": 1791827857981,
+              "last_30d_last_observed_fill_ms": 1792540949564,
+              "last_observed_fill_ms": 1792540949564,
+              "rounds": 5,
+              "win_rate": "1"
+            }
+          },
+          "coverage": "pre_action_history",
+          "end_ms": 1792597008960,
+          "fee_currency_complete": true,
+          "fills": 40506,
+          "first_observed_fill_ms": 1789737144223,
+          "last_observed_fill_ms": 1792596917243,
+          "official_account_total_pnl": {
+            "observed_ms": 1792519320063,
+            "pnl": "476296.791361",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1784821008961
+        },
+        "news_change": {
+          "current_size": "0",
+          "observed_ms": 1792614013284,
+          "previous_floating_pnl": null,
+          "previous_observed_ms": 1792573884720,
+          "previous_position_value": null,
+          "previous_size": null
+        },
+        "position": null,
+        "previous_position": null,
+        "previous_snapshot_ms": 1792573884720,
+        "snapshot_times": {
+          "": 1792614069235,
+          "abcd": 1792614071591,
+          "cash": 1792614071976,
+          "flx": 1792614069971,
+          "hyna": 1792614070842,
+          "io": 1792614073199,
+          "km": 1792614071177,
+          "mkts": 1792614072803,
+          "para": 1792614072262,
+          "vntl": 1792614070374,
+          "xyz": 1792614069572
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {}
+      },
+      "key": "audit:179",
+      "kinds": [
+        "highlighted_address_action"
+      ],
+      "observed_ms": 1792614013284
+    },
+    "task_id": 881849,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "SP500在10月13日至21日5轮交易胜率100%，某地址开空后平空约192.7万美元",
+    "final_content": "据Odaily监测，某地址在 SP500 上于 2026 年 10 月 21 日 23:36 至 10 月 22 日 02:48 期间，先以约 192.79 万美元开空，随后以约 192.72 万美元平空；开空均价约 7758.82 美元，平空均价约 7755.97 美元。其在 2026 年 10 月 13 日至 21 日期间完成 5 轮 SP500 交易，胜率为 100%。本次xyz:SP500空单平仓的加权成交价约为7,755.97美元，开仓的加权成交价约为7,758.82美元。\n地址：0x1111111111111111111111111111111111111111；总盈亏：47.63 万美元（样本截至2026-10-21 02:02）\nxyz:SP500 交易轮数：5；胜率：100.00%\n统计时间：2026-10-13 至 2026-10-21",
+    "draft_title": "SP500在10月13日至21日5轮交易胜率100%，某地址开空后平空约192.7万美元",
+    "draft_content": "某地址在SP500上于2026年10月21日23:36至10月22日02:48期间，先以约192.79万美元开空，随后以约192.72万美元平空；开空均价约7758.82美元，平空均价约7755.97美元。其在2026年10月13日至21日期间完成5轮SP500交易，胜率为100%。"
+  },
+  {
+    "scenarios": [
+      "giveback"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "ZEC",
+      "evidence": {
+        "episode_peak_ms": 1792631229655,
+        "episode_peak_unrealized_pnl": "1675321.0695400001",
+        "episode_started_ms": 1792406639240,
+        "first_observation": false,
+        "highlights": [],
+        "history": {
+          "account_closed_pnl_less_fees": "-3909146.3401929999",
+          "account_rounds": 2,
+          "account_win_rate": "0.5",
+          "account_wins": 1,
+          "api_coverage": {
+            "coverage": "retained_api_history",
+            "end_ms": 1792671188129,
+            "next_start_ms": 1792631169655,
+            "oldest_returned_ms": null,
+            "pages": 1,
+            "pagination_complete": true,
+            "reason": "available_history_exhausted",
+            "start_ms": 1792631169655
+          },
+          "assets": {
+            "ZEC": {
+              "first_observed_fill_ms": 1791138979906,
+              "last_observed_fill_ms": 1791986732021,
+              "rounds": 0,
+              "win_rate": null
+            }
+          },
+          "coverage": "retained_api_history",
+          "end_ms": 1792671188129,
+          "enrichment_reasons": [
+            "important_position",
+            "leaderboard"
+          ],
+          "fee_currency_complete": true,
+          "fills": 40694,
+          "first_observed_fill_ms": 1791123833514,
+          "last_observed_fill_ms": 1791986732021,
+          "official_account_performance": {
+            "pnl_scope": "official_leaderboard_not_assumed_realized",
+            "source": "hyperliquid_public_leaderboard",
+            "windows": {
+              "allTime": {
+                "observed_ms": 1792668528898,
+                "pnl": "21353021.2274530008",
+                "rank": null,
+                "side": "profit"
+              }
+            }
+          },
+          "official_account_total_pnl": {
+            "observed_ms": 1792644120033,
+            "pnl": "14893894.4684289992",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1784895188129
+        },
+        "liquidation_distance": "0.5640476959886417643015629973",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "1257.8",
+          "oi_notional": "623872548.24399987422"
+        },
+        "news_change": {
+          "current_size": "11628.91",
+          "observed_ms": 1792671188129,
+          "previous_floating_pnl": "1675321.0695400001",
+          "previous_observed_ms": 1792631229655,
+          "previous_position_value": "15433889.352",
+          "previous_size": "11628.91"
+        },
+        "position": {
+          "coin": "ZEC",
+          "liquidation": "548.8639507503",
+          "mark": "1258.999999999999957003708860",
+          "notional": "14640797.6899999995",
+          "size": "11628.91",
+          "unrealized_pnl": "882229.40754"
+        },
+        "previous_position": {
+          "coin": "ZEC",
+          "liquidation": "369.5325487192",
+          "mark": "1327.2",
+          "notional": "15433889.352",
+          "size": "11628.91",
+          "unrealized_pnl": "1675321.0695400001"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.02250576863331156202642123042"
+        },
+        "previous_snapshot_ms": 1792631229655,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.02346761006107597732742915147"
+        },
+        "snapshot_times": {
+          "": 1792671244276,
+          "abcd": 1792671246642,
+          "cash": 1792671247039,
+          "flx": 1792671245029,
+          "hyna": 1792671245837,
+          "io": 1792671248276,
+          "km": 1792671246290,
+          "mkts": 1792671247872,
+          "para": 1792671247446,
+          "vntl": 1792671245436,
+          "xyz": 1792671244677
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 1,
+          "market_cap_share": 0,
+          "near_liquidation": 0,
+          "oi_share": 0,
+          "profit_giveback": 1,
+          "profit_to_loss": 0
+        }
+      },
+      "key": "audit:206",
+      "kinds": [
+        "profit_giveback"
+      ],
+      "observed_ms": 1792671188129
+    },
+    "task_id": 886953,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "浮盈约168万美元回落至约88万美元，某地址当前持有价值约1,464万美元ZEC多单",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址持有 ZEC 多单，仓位价值约1,464万美元，数量为 11628.91 枚。监测期间峰值浮盈约168万美元，当前未实现浮盈约88万美元，较峰值回吐约79万美元。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "浮盈168万美元后回吐79万美元，某地址持有ZEC多单，仓位价值1464万美元",
+    "draft_content": "某地址持有ZEC多单，仓位价值约1464万美元，数量为11628.91枚。监测期间峰值浮盈约168万美元，当前未实现浮盈约88万美元，较峰值回吐约79万美元。"
+  },
+  {
+    "scenarios": [
+      "liquidation"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "ZEC",
+      "evidence": {
+        "episode_started_ms": 1792411158621,
+        "first_observation": false,
+        "highlights": [],
+        "history": {
+          "account_closed_pnl_less_fees": "1059344.3234700005",
+          "account_rounds": 5,
+          "account_win_rate": "0.8",
+          "account_wins": 4,
+          "api_coverage": {
+            "coverage": "retained_api_history",
+            "end_ms": 1792675567372,
+            "next_start_ms": 1792635596970,
+            "oldest_returned_ms": null,
+            "pages": 1,
+            "pagination_complete": true,
+            "reason": "available_history_exhausted",
+            "start_ms": 1792635596970
+          },
+          "assets": {
+            "ZEC": {
+              "first_observed_fill_ms": 1791338827871,
+              "last_observed_fill_ms": 1792343670600,
+              "rounds": 1,
+              "win_rate": "1"
+            }
+          },
+          "coverage": "retained_api_history",
+          "end_ms": 1792675567372,
+          "enrichment_reasons": [
+            "important_position",
+            "large_unrealized_pnl",
+            "leaderboard"
+          ],
+          "fee_currency_complete": true,
+          "fills": 48408,
+          "first_observed_fill_ms": 1790881448733,
+          "last_observed_fill_ms": 1792634799972,
+          "official_account_performance": {
+            "pnl_scope": "official_leaderboard_not_assumed_realized",
+            "source": "hyperliquid_public_leaderboard",
+            "windows": {
+              "allTime": {
+                "observed_ms": 1792672510959,
+                "pnl": "22429677.1966449991",
+                "rank": null,
+                "side": "profit"
+              }
+            }
+          },
+          "official_account_total_pnl": {
+            "observed_ms": 1792654800047,
+            "pnl": "14865272.4282530006",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1784899567372
+        },
+        "liquidation_distance": "0.1888143240777277354831397612",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "1254.8",
+          "oi_notional": "630231305.62399974904"
+        },
+        "news_change": {
+          "current_size": "-8016.7",
+          "observed_ms": 1792675567372,
+          "previous_floating_pnl": "-1287872.4574790001",
+          "previous_observed_ms": 1792635656970,
+          "previous_position_value": "10376816.4800000004",
+          "previous_size": "-8016.7"
+        },
+        "position": {
+          "coin": "ZEC",
+          "liquidation": "1477.4584419638",
+          "mark": "1242.799999999999975052078786",
+          "notional": "9963154.7599999998",
+          "size": "-8016.7",
+          "unrealized_pnl": "-874210.737479"
+        },
+        "previous_position": {
+          "coin": "ZEC",
+          "liquidation": "1565.2900630215",
+          "mark": "1294.400000000000049895842429",
+          "notional": "10376816.4800000004",
+          "size": "-8016.7",
+          "unrealized_pnl": "-1287872.4574790001"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01591932681710372975017028670"
+        },
+        "previous_snapshot_ms": 1792635656970,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01580872716269681020976157187"
+        },
+        "snapshot_times": {
+          "": 1792675623278,
+          "abcd": 1792675625659,
+          "cash": 1792675626039,
+          "flx": 1792675624108,
+          "hyna": 1792675624917,
+          "io": 1792675627356,
+          "km": 1792675625311,
+          "mkts": 1792675626831,
+          "para": 1792675626494,
+          "vntl": 1792675624512,
+          "xyz": 1792675623704
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 0,
+          "market_cap_share": 0,
+          "near_liquidation": 1,
+          "oi_share": 0
+        }
+      },
+      "key": "audit:211",
+      "kinds": [
+        "near_liquidation"
+      ],
+      "observed_ms": 1792675567372
+    },
+    "task_id": 887464,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "距清算价约19%，某地址持仓价值约996万美元ZEC空单，浮亏约87万美元",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址持有 ZEC 空单，当前距清算价约19%，价格上涨至约 1477.46 美元将接近清算。其浮动亏损约87万美元。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "ZEC空单距清算价约19%，某地址持仓价值约996万美元",
+    "draft_content": "某地址持有ZEC空单，当前距清算价约19%，价格上涨至约1477.46美元将接近清算。其浮动亏损约87万美元。"
+  },
+  {
+    "scenarios": [
+      "account_profit",
+      "reversal"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "SOL",
+      "evidence": {
+        "episode_started_ms": 1792829148089,
+        "first_observation": false,
+        "highlights": [
+          "official_account_high_profit"
+        ],
+        "history": {
+          "account_closed_pnl_less_fees": "-2925899.4610929993",
+          "account_rounds": 5,
+          "account_win_rate": "0.8",
+          "account_wins": 4,
+          "api_coverage": {
+            "coverage": "retained_api_history",
+            "end_ms": 1792829148089,
+            "next_start_ms": 1792791157158,
+            "oldest_returned_ms": 1792794829614,
+            "pages": 1,
+            "pagination_complete": true,
+            "reason": "available_history_exhausted",
+            "start_ms": 1792791157158
+          },
+          "assets": {
+            "SOL": {
+              "first_observed_fill_ms": 1790955787236,
+              "last_observed_fill_ms": 1792169015130,
+              "rounds": 1,
+              "win_rate": "1"
+            }
+          },
+          "coverage": "retained_api_history",
+          "end_ms": 1792829148089,
+          "enrichment_reasons": [
+            "important_position",
+            "leaderboard"
+          ],
+          "fee_currency_complete": true,
+          "fills": 52181,
+          "first_observed_fill_ms": 1790881448733,
+          "last_observed_fill_ms": 1792815186019,
+          "official_account_performance": {
+            "pnl_scope": "official_leaderboard_not_assumed_realized",
+            "source": "hyperliquid_public_leaderboard",
+            "windows": {
+              "allTime": {
+                "observed_ms": 1792827149822,
+                "pnl": "22652506.7709029987",
+                "rank": null,
+                "side": "profit"
+              }
+            }
+          },
+          "official_account_total_pnl": {
+            "observed_ms": 1792654800047,
+            "pnl": "14865272.4282530006",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1785053148089
+        },
+        "liquidation_distance": "0.2722636875618235404839052197",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "102.0051",
+          "oi_notional": "546419679.29798398979949"
+        },
+        "net_position_change": {
+          "closed": false,
+          "direction": "反手",
+          "estimated_value": "9998912.3746889997",
+          "previous_side": "多单",
+          "quantity": "98219.31",
+          "side": "空单"
+        },
+        "news_change": {
+          "current_size": "-98219.31",
+          "observed_ms": 1792829148089,
+          "previous_floating_pnl": "-299568.724815",
+          "previous_observed_ms": 1792791217158,
+          "previous_position_value": "6343563.3006999996",
+          "previous_size": "61151.62"
+        },
+        "position": {
+          "coin": "SOL",
+          "liquidation": "129.5188606948",
+          "mark": "101.8018999999999969456107969",
+          "notional": "9998912.3746889997",
+          "size": "-98219.31",
+          "unrealized_pnl": "69491.639411"
+        },
+        "previous_position": {
+          "coin": "SOL",
+          "liquidation": "64.3597390065",
+          "mark": "103.7349999999999934588813837",
+          "notional": "6343563.3006999996",
+          "size": "61151.62",
+          "unrealized_pnl": "-299568.724815"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01112675782919690385157454931"
+        },
+        "previous_snapshot_ms": 1792791217158,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01829896095165379705594594648"
+        },
+        "reversal_basis": "net_direction_between_successful_snapshots",
+        "snapshot_times": {
+          "": 1792829204145,
+          "abcd": 1792829206586,
+          "cash": 1792829207054,
+          "flx": 1792829204947,
+          "hyna": 1792829205761,
+          "io": 1792829208127,
+          "km": 1792829206163,
+          "mkts": 1792829207795,
+          "para": 1792829207390,
+          "vntl": 1792829205441,
+          "xyz": 1792829204547
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 0,
+          "market_cap_share": 0,
+          "near_liquidation": 0,
+          "oi_share": 0
+        }
+      },
+      "key": "audit:257",
+      "kinds": [
+        "highlighted_address_action",
+        "large_reversal"
+      ],
+      "observed_ms": 1792829148089
+    },
+    "task_id": 896449,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "某地址平掉SOL多单并反手持有SOL空单",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址合约账户累计收益约2,265万美元。其反手操作中，平掉约634万美元的 SOL 多单，并建立约1,000万美元的 SOL 空单，持仓数量为 98,219.31 枚。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "总盈利约2265万美元，某地址反手平掉SOL多单并建立约1000万美元空单",
+    "draft_content": "某地址合约账户累计收益约2265万美元。其反手操作中，平掉约634万美元的SOL多单，并建立约1000万美元的SOL空单，持仓数量为98,219.31枚。"
+  },
+  {
+    "scenarios": [
+      "asset_profit"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "SOL",
+      "evidence": {
+        "actions": {
+          "close_long_notional": "0",
+          "close_long_quantity": "0",
+          "close_notional": "6382037.39872",
+          "close_short_average_execution_price_usd": "99.88228293564548038448349878",
+          "close_short_notional": "6382037.39872",
+          "close_short_quantity": "63895.59",
+          "closed_pnl": "162666.483359",
+          "first_fill_ms": 1792832921465,
+          "last_fill_ms": 1792851521174,
+          "liquidated_notional": "0",
+          "open_long_notional": "0.00000",
+          "open_long_quantity": "0.00",
+          "open_notional": "1100037.94450",
+          "open_short_average_execution_price_usd": "101.6901187884502498255150196",
+          "open_short_notional": "1100037.9445",
+          "open_short_quantity": "10817.55",
+          "ordinary_close_notional": "6382037.39872",
+          "ordinary_closed_pnl": "162666.483359",
+          "fill_count": 464
+        },
+        "episode_started_ms": 1792829148089,
+        "first_observation": false,
+        "highlights": [
+          "asset_high_profit"
+        ],
+        "history": {
+          "account_closed_pnl_less_fees": "-2927159.3366819993",
+          "account_rounds": 5,
+          "account_win_rate": "0.8",
+          "account_wins": 4,
+          "assets": {
+            "SOL": {
+              "first_observed_fill_ms": 1790955787236,
+              "last_30d_closed_pnl_less_fees": "1323133.3284180002",
+              "last_30d_first_observed_fill_ms": 1790955787236,
+              "last_30d_last_observed_fill_ms": 1792169015130,
+              "last_observed_fill_ms": 1792169015130,
+              "rounds": 1,
+              "win_rate": "1"
+            }
+          },
+          "coverage": "pre_action_history",
+          "end_ms": 1792832921464,
+          "fee_currency_complete": true,
+          "fills": 53615,
+          "first_observed_fill_ms": 1790881448733,
+          "last_observed_fill_ms": 1792831571962,
+          "official_account_total_pnl": {
+            "observed_ms": 1792654800047,
+            "pnl": "14865272.4282530006",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1785056921465
+        },
+        "liquidation_distance": "0.5819853090655454564337580861",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "100.62",
+          "oi_notional": "560697168.04920020124"
+        },
+        "net_position_change": {
+          "closed": false,
+          "direction": "减仓",
+          "estimated_value": "5364862.892999999764835858628",
+          "quantity": "53078.04",
+          "side": "空单"
+        },
+        "news_change": {
+          "current_size": "-45141.27",
+          "observed_ms": 1792867789030,
+          "previous_floating_pnl": "69491.639411",
+          "previous_observed_ms": 1792829148089,
+          "previous_position_value": "9998912.3746889997",
+          "previous_size": "-98219.31"
+        },
+        "position": {
+          "coin": "SOL",
+          "liquidation": "159.8991651138",
+          "mark": "101.0749999999999955694644834",
+          "notional": "4562653.8652499998",
+          "size": "-45141.27",
+          "unrealized_pnl": "61082.125678"
+        },
+        "previous_position": {
+          "coin": "SOL",
+          "liquidation": "129.5188606948",
+          "mark": "101.8018999999999969456107969",
+          "notional": "9998912.3746889997",
+          "size": "-98219.31",
+          "unrealized_pnl": "69491.639411"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01829896095165379705594594648"
+        },
+        "previous_snapshot_ms": 1792829148089,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.008137465507672467608109901903"
+        },
+        "snapshot_times": {
+          "": 1792867845179,
+          "abcd": 1792867847495,
+          "cash": 1792867847898,
+          "flx": 1792867845931,
+          "hyna": 1792867846688,
+          "io": 1792867849137,
+          "km": 1792867847086,
+          "mkts": 1792867848729,
+          "para": 1792867848300,
+          "vntl": 1792867846275,
+          "xyz": 1792867845473
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 0,
+          "market_cap_share": 0,
+          "near_liquidation": 0,
+          "oi_share": 0
+        }
+      },
+      "key": "audit:267",
+      "kinds": [
+        "highlighted_address_action"
+      ],
+      "observed_ms": 1792867789030
+    },
+    "task_id": 898541,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "近30天SOL交易净盈利约132万美元，某地址减仓约536万美元SOL空单",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址在 SOL 近 30 天（2026 年 10 月 2 日至 10 月 17 日）的单资产交易净盈利为132万美元，统计周期内完整交易轮数及胜率未提供。其于 10 月 24 日 17:08 至 22:18 减仓空单，平仓金额约638万美元，并开仓空单约110万美元。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "SOL近30天单资产净盈利132万美元，某地址减仓空单",
+    "draft_content": "某地址在SOL近30天（2026年10月2日至10月17日）的单资产交易净盈利为132万美元，统计周期内完整交易轮数及胜率未提供。其于10月24日17:08至22:18减仓空单，平仓金额约638万美元，并开仓空单约110万美元。"
+  },
+  {
+    "scenarios": [
+      "large_pnl"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "HYPE",
+      "evidence": {
+        "episode_peak_ms": 1793307971703,
+        "episode_peak_unrealized_pnl": "13162196.4167340007",
+        "episode_started_ms": 1792422227146,
+        "first_observation": false,
+        "highlights": [],
+        "history": {
+          "account_closed_pnl_less_fees": "3064199.4041500001",
+          "account_rounds": 0,
+          "account_win_rate": null,
+          "account_wins": 0,
+          "api_coverage": {
+            "coverage": "retained_api_history",
+            "end_ms": 1793307971703,
+            "next_start_ms": 1793261230836,
+            "oldest_returned_ms": null,
+            "pages": 1,
+            "pagination_complete": true,
+            "reason": "available_history_exhausted",
+            "start_ms": 1793261230836
+          },
+          "assets": {
+            "HYPE": {
+              "first_observed_fill_ms": 1786209829557,
+              "last_observed_fill_ms": 1788698297170,
+              "rounds": 0,
+              "win_rate": null
+            }
+          },
+          "coverage": "retained_api_history",
+          "end_ms": 1793307971703,
+          "enrichment_reasons": [
+            "important_position",
+            "large_unrealized_pnl",
+            "leaderboard"
+          ],
+          "fee_currency_complete": true,
+          "fills": 8789,
+          "first_observed_fill_ms": 1785848010523,
+          "last_observed_fill_ms": 1788698297170,
+          "official_account_performance": {
+            "pnl_scope": "official_leaderboard_not_assumed_realized",
+            "source": "hyperliquid_public_leaderboard",
+            "windows": {
+              "allTime": {
+                "observed_ms": 1793306636033,
+                "pnl": "30666622.9092079997",
+                "rank": null,
+                "side": "profit"
+              }
+            }
+          },
+          "official_account_total_pnl": {
+            "observed_ms": 1793279760026,
+            "pnl": "15414910.0114769991",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1785531971703
+        },
+        "liquidation_distance": "0.3572316654403169242758799844",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "91.559",
+          "oi_notional": "2004968201.9913026643669"
+        },
+        "news_change": {
+          "current_size": "249500.0",
+          "observed_ms": 1793307971703,
+          "previous_floating_pnl": "9789205.9167340007",
+          "previous_observed_ms": 1793261290836,
+          "previous_position_value": "19677815.5",
+          "previous_size": "249500.0"
+        },
+        "position": {
+          "coin": "HYPE",
+          "liquidation": "59.3840808933",
+          "mark": "92.388",
+          "notional": "23050806.0",
+          "size": "249500.0",
+          "unrealized_pnl": "13162196.4167340007"
+        },
+        "previous_position": {
+          "coin": "HYPE",
+          "liquidation": "59.3611074526",
+          "mark": "78.869",
+          "notional": "19677815.5",
+          "size": "249500.0",
+          "unrealized_pnl": "9789205.9167340007"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01221133764088427330481543043"
+        },
+        "previous_reported_floating_pnl": "9772239.9167340007",
+        "previous_reported_floating_pnl_ms": 1792422227146,
+        "previous_snapshot_ms": 1793261290836,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.01149684367916972675669348265"
+        },
+        "snapshot_times": {
+          "": 1793307999280,
+          "abcd": 1793308001365,
+          "cash": 1793308001835,
+          "flx": 1793308000087,
+          "hyna": 1793308000681,
+          "io": 1793308003445,
+          "km": 1793308001041,
+          "mkts": 1793308002909,
+          "para": 1793308002379,
+          "vntl": 1793308000360,
+          "xyz": 1793307999683
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 2,
+          "market_cap_share": 0,
+          "near_liquidation": 0,
+          "oi_share": 0,
+          "profit_giveback": 0,
+          "profit_to_loss": 0
+        }
+      },
+      "key": "audit:359",
+      "kinds": [
+        "large_position",
+        "large_profit"
+      ],
+      "observed_ms": 1793307971703
+    },
+    "task_id": 934276,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "某地址持有的HYPE多单浮盈扩大至约1,316万美元",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址持有 249,500 枚 HYPE 多单，仓位数量未变，估值从1,968万美元升至2,305万美元。其未实现浮盈在 2026 年 10 月 19 日 23:03 至 10 月 30 日 05:06 期间从979万美元扩大至1,316万美元，增加约337万美元。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "HYPE 多单未实现浮盈扩大至 1316 万美元",
+    "draft_content": "某地址持有 249,500 枚 HYPE 多单，仓位数量未变，估值从 1968 万美元升至 2305 万美元。其未实现浮盈在 2026 年 10 月 19 日 23:03 至 10 月 30 日 05:06 期间从 979 万美元扩大至 1316 万美元，增加约 337 万美元。"
+  },
+  {
+    "scenarios": [
+      "realized"
+    ],
+    "event": {
+      "addresses": [
+        "0x1111111111111111111111111111111111111111"
+      ],
+      "coin": "ETH",
+      "evidence": {
+        "actions": {
+          "close_long_average_execution_price_usd": "2204.973565821838367235697056",
+          "close_long_notional": "41254531.29431",
+          "close_long_quantity": "18709.7623",
+          "close_notional": "41254531.29431",
+          "close_short_notional": "0",
+          "close_short_quantity": "0",
+          "closed_pnl": "-5869934.1083229996",
+          "first_fill_ms": 1793320502456,
+          "last_fill_ms": 1793320615326,
+          "liquidated_notional": "0",
+          "open_long_notional": "0",
+          "open_long_quantity": "0",
+          "open_notional": "0.00000",
+          "open_short_notional": "0.00000",
+          "open_short_quantity": "0.0000",
+          "ordinary_close_notional": "41254531.29431",
+          "ordinary_closed_pnl": "-5869934.1083229996",
+          "fill_count": 5459
+        },
+        "episode_started_ms": 1792431759581,
+        "first_observation": false,
+        "highlights": [],
+        "history": {
+          "account_closed_pnl_less_fees": "-2268107.9213940003",
+          "account_rounds": 0,
+          "account_win_rate": null,
+          "account_wins": 0,
+          "assets": {
+            "ETH": {
+              "first_observed_fill_ms": 1787738641451,
+              "last_30d_closed_pnl_less_fees": "-2237863.3116270003",
+              "last_30d_first_observed_fill_ms": 1791473732693,
+              "last_30d_last_observed_fill_ms": 1792570678986,
+              "last_observed_fill_ms": 1792570678986,
+              "rounds": 0,
+              "win_rate": null
+            }
+          },
+          "coverage": "pre_action_history",
+          "end_ms": 1793320502455,
+          "fee_currency_complete": true,
+          "fills": 9390,
+          "first_observed_fill_ms": 1787738641451,
+          "last_observed_fill_ms": 1792570678986,
+          "official_account_total_pnl": {
+            "observed_ms": 1793319840061,
+            "pnl": "-17836587.4138530008",
+            "scope": "perpAllTime_including_unrealized",
+            "source": "hyperliquid_portfolio"
+          },
+          "pnl_scope": "observed_perp_fills_excluding_funding",
+          "start_ms": 1785544502456
+        },
+        "liquidation_distance": "0.03358568365638046832455981122",
+        "market": {
+          "collateral_token": 0,
+          "dex": "",
+          "mark": "2207.0",
+          "oi_notional": "2340304895.32579691020"
+        },
+        "net_position_change": {
+          "closed": false,
+          "direction": "减仓",
+          "estimated_value": "41228832.20428",
+          "quantity": "18709.7623",
+          "side": "多单"
+        },
+        "news_change": {
+          "current_size": "26025.0511",
+          "observed_ms": 1793326414244,
+          "previous_floating_pnl": "-8853751.6328679994",
+          "previous_observed_ms": 1793267456342,
+          "previous_position_value": "103820554.9387200028",
+          "previous_size": "44734.8134"
+        },
+        "position": {
+          "coin": "ETH",
+          "liquidation": "2129.5905874948",
+          "mark": "2203.6",
+          "notional": "57348802.60396",
+          "size": "26025.0511",
+          "unrealized_pnl": "-8200919.4850850003"
+        },
+        "previous_position": {
+          "coin": "ETH",
+          "liquidation": "2179.9659646709",
+          "mark": "2320.800000000000062591073645",
+          "notional": "103820554.9387200028",
+          "size": "44734.8134",
+          "unrealized_pnl": "-8853751.6328679994"
+        },
+        "previous_ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.03985811535822319758796834616"
+        },
+        "previous_snapshot_ms": 1793267456342,
+        "ratios": {
+          "market_cap_share": null,
+          "oi_share": "0.02450484238976750850426083548"
+        },
+        "snapshot_times": {
+          "": 1793326470296,
+          "abcd": 1793326472724,
+          "cash": 1793326473136,
+          "flx": 1793326471100,
+          "hyna": 1793326471932,
+          "io": 1793326474289,
+          "km": 1793326472333,
+          "mkts": 1793326473941,
+          "para": 1793326473538,
+          "vntl": 1793326471529,
+          "xyz": 1793326470700
+        },
+        "threshold_rules": {
+          "account_profit": "20000000",
+          "action": "3000000",
+          "asset_profit": "3000000",
+          "asset_profit_action": "2000000",
+          "escalation": "2",
+          "giveback_fraction": "0.40",
+          "giveback_major_pnl": "3000000",
+          "giveback_other_pnl": "1000000",
+          "historical_loss": "20000000",
+          "large_position": "10000000",
+          "liquidation_distance": "0.20",
+          "major_pnl": "5000000",
+          "market_cap_share": "0.10",
+          "min_rounds": 5,
+          "new_address_window_ms": 3600000,
+          "oi_share": "0.10",
+          "other_asset_profit": "1000000",
+          "other_pnl": "2000000",
+          "win_rate": "0.70",
+          "win_rate_action": "1000000"
+        },
+        "trigger_levels": {
+          "large_position": 3,
+          "market_cap_share": 0,
+          "near_liquidation": 1,
+          "oi_share": 0
+        }
+      },
+      "key": "audit:371",
+      "kinds": [
+        "large_position_action",
+        "large_realized_result"
+      ],
+      "observed_ms": 1793326414244
+    },
+    "task_id": 936038,
+    "dispatch_status": "queued",
+    "task_status": "ready_review",
+    "final_title": "某地址减仓约4,123万美元ETH多单",
+    "final_content": "Odaily星球日报讯 据Odaily监测，某地址平仓约4,125万美元 ETH 多单，已实现亏损约587万美元。其仍持有多单，尚未清仓。\n地址：0x1111111111111111111111111111111111111111",
+    "draft_title": "ETH多单部分平仓，已实现亏损约587万美元",
+    "draft_content": "某地址平仓约4125万美元ETH多单，已实现亏损约587万美元。其仍持有多单，尚未清仓。"
+  }
+]

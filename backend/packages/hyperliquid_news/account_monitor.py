@@ -11,6 +11,7 @@ from .discovery import LEADERBOARD_WINDOWS, trade_candidates
 from .history import fill_key
 from .models import Rules, Position, number
 from .store import NewsStore, encode
+from .actions import snapshot_net_change
 
 HOUR = 3600000
 DAY = 24 * HOUR
@@ -84,20 +85,16 @@ def account_event(event, rules: Rules | None = None, *, include_loss: bool = Fal
     profit = 'official_account_high_profit' in labels
     if 'highlighted_address_action' not in event.kinds or not (loss or profit):
         return None
-    if loss:
-        old, current = event.evidence.get('previous_position'), event.evidence.get('position')
-        before = number(old['size']) if old else number(0)
-        after = number(current['size']) if current else number(0)
-        reference = current or old
-        if not reference or abs(after-before)*number(reference['mark']) < rules.action:
-            return None
+    change = snapshot_net_change(event.evidence)
+    if not change or number(change['estimated_value']) < rules.action:
+        return None
     evidence = {k: v for k, v in event.evidence.items() if k not in (
         'previous_reported_floating_pnl', 'previous_reported_floating_pnl_ms',
         'episode_peak_unrealized_pnl', 'episode_peak_ms', 'completed_round_results')}
     evidence.update(highlights=['historical_loss' if loss else 'official_account_high_profit'],
                     production_direction='historical_loss' if loss else 'account_profit')
-    if loss:
-        evidence['net_action_notional_usd'] = str(abs(after-before)*number(reference['mark']))
+    evidence['net_action_notional_usd'] = change['estimated_value']
+    evidence['net_position_change'] = change
     return replace(event, kinds=('highlighted_address_action',), evidence=evidence)
 
 

@@ -143,7 +143,7 @@ def test_loss_addition_uses_pre_action_loss_without_reporting_small_pnl_change()
     assert 'floating_pnl_usd' not in facts['position']
     assert facts['previous_position']['floating_pnl_usd']=='-24844732.254914'
     assert 'previous_floating_pnl_usd' not in facts
-    assert scenario_title(event)=='某地址持有的ZEC空单浮亏约2,484 万美元时加仓约837 万美元'
+    assert scenario_title(event)=='某地址持有的ZEC空单浮亏约2,484 万美元时净增持约835 万美元'
 
 
 def test_footer_uses_only_official_account_total_and_keeps_asset_win_rate():

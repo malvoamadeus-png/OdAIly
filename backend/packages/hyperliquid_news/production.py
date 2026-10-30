@@ -5,6 +5,7 @@ from typing import Any
 
 from .models import Rules, number
 from .scenarios import PRODUCTION_SCENARIOS, event_scenarios
+from .actions import snapshot_net_change, action_scenario_allowed
 
 
 def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> bool:
@@ -13,6 +14,8 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
     if not policy.get('enabled'):
         return False
     evidence = event.get('evidence', {})
+    if evidence.get('history', {}).get('api_coverage', {}).get('pagination_complete') is False:
+        return False
     observed = int(event['observed_ms'])
     direction = evidence.get('production_direction')
     loss = direction == 'historical_loss'
@@ -25,6 +28,8 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
         normal_enabled = enabled.intersection(PRODUCTION_SCENARIOS) - {'account_profit', 'historical_loss'}
         starts = policy.get('scenario_started_ms_by_direction', {})
         for scenario in normal_enabled.intersection(event_scenarios(event)):
+            if not action_scenario_allowed(scenario, evidence):
+                continue
             started = int(starts.get(scenario, policy.get('scenario_started_ms', policy['started_ms'])))
             if observed < started:
                 continue
@@ -42,6 +47,9 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
     performance = evidence.get('history', {}).get('official_account_loss' if loss else 'official_account_performance', {})
     fetched = int(performance.get('fetched_ms', 0))
     if not 0 <= observed-fetched <= 3600000:
+        return False
+    change = snapshot_net_change(evidence)
+    if not change or number(change['estimated_value']) < Rules().action:
         return False
     if loss:
         if number(evidence.get('net_action_notional_usd', 0)) < Rules().action:

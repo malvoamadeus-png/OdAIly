@@ -103,7 +103,7 @@ def test_high_win_rate_title_matches_flat_final_position_and_compacts_precision(
              }}
     result = format_news(DraftBrief(title='BTC交易胜率达100.00%的地址加仓约159.59万美元BTC多单',
                                     content='某地址交易BTC共37轮，胜率为100.00%。其平仓104.81036 BTC多单。'), event)
-    assert result.title == '近期BTC胜率达100%的某地址平仓约1,030万美元BTC多单'
+    assert result.title == '近期BTC胜率达100%的某地址清仓BTC多单，净减少约870万美元仓位'
     assert result.content.startswith('Odaily星球日报讯 据Odaily监测，')
     assert '104.81 BTC' in result.content
     assert '100.00%' not in result.content

@@ -171,7 +171,7 @@ def test_requested_asset_pnl_reversal_and_sign_flip_titles():
             'previous_position':{'size':'1'},'position':{'size':'-1'},
             'actions':{'close_long_notional':'5000000','open_short_notional':'6000000'}}
     }
-    assert scenario_title(reversal)=='某地址平仓500 万美元BTC多单并开仓600 万美元BTC空单'
+    assert scenario_title(reversal)=='某地址由BTC多单反手持有BTC空单'
     flip={
         'coin':'SOL','kinds':['pnl_sign_flip'],'evidence':{
             'previous_position':{'unrealized_pnl':'-2300000'},

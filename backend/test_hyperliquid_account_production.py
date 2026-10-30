@@ -233,7 +233,7 @@ def test_partial_pages_resume_before_any_action_is_published(tmp_path):
     assert store.candidates()[0]['evidence']['actions']['close_notional'] == '4000000'
 
 
-def test_unchanged_position_uses_cheap_checks_but_periodic_fills_catch_roundtrip(tmp_path):
+def test_unchanged_position_periodic_fills_record_roundtrip_without_news(tmp_path):
     store, client, monitor = setup(tmp_path)
     run(monitor, client, T)
     run(monitor, client, T+180000)
@@ -245,8 +245,8 @@ def test_unchanged_position_uses_cheap_checks_but_periodic_fills_catch_roundtrip
          'sz': '40', 'px': '100000', 'side': 'B', 'closedPnl': '0', 'fee': '0', 'feeToken': 'USDC'}]
     run(monitor, client, T+900000)
     assert client.history_calls == 1
-    assert len(store.candidates()) == 1
-    assert store.candidates()[0]['evidence']['actions']['close_notional'] == '4000000'
+    assert len(store.candidates()) == 0
+    assert len(store.fills(A, T, T+900000)) == 2
 
 
 def enable_loss(store):

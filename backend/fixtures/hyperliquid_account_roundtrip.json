@@ -1,0 +1,268 @@
+[
+  {
+    "addresses": [
+      "0x1111111111111111111111111111111111111111"
+    ],
+    "coin": "ZEC",
+    "evidence": {
+      "actions": {
+        "close_long_average_execution_price_usd": "1243.200415125",
+        "close_long_notional": "9945603.321",
+        "close_long_quantity": "8000.00",
+        "close_notional": "9945603.321",
+        "close_short_notional": "0",
+        "close_short_quantity": "0",
+        "closed_pnl": "-385652.67900",
+        "fill_keys": [],
+        "first_fill_ms": 1793314502906,
+        "last_fill_ms": 1793326508502,
+        "liquidated_notional": "0",
+        "open_long_average_execution_price_usd": "1248.779416533333333333333333",
+        "open_long_notional": "9365845.624",
+        "open_long_quantity": "7500.00",
+        "open_notional": "9365845.624",
+        "open_short_notional": "0.000",
+        "open_short_quantity": "0.00",
+        "ordinary_close_notional": "9945603.321",
+        "ordinary_closed_pnl": "-385652.67900"
+      },
+      "history": {
+        "official_account_performance": {
+          "fetched_ms": 1793338507822,
+          "pnl_scope": "official_portfolio_including_unrealized",
+          "source": "hyperliquid_portfolio",
+          "windows": {
+            "allTime": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "22669407.4440659992",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "day": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-58399.274634",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "month": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-770483.424786",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "week": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "49677.521879",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            }
+          }
+        }
+      },
+      "position": {
+        "coin": "ZEC",
+        "liquidation": "107.7696070298",
+        "mark": "1273.8",
+        "notional": "9553500.0",
+        "size": "7500.0",
+        "unrealized_pnl": "187654.376"
+      },
+      "previous_position": {
+        "coin": "ZEC",
+        "liquidation": "285.4699266589",
+        "mark": "1252.4",
+        "notional": "10019200.0",
+        "size": "8000.0",
+        "unrealized_pnl": "-312056.762"
+      },
+      "highlights": [
+        "official_account_high_profit"
+      ],
+      "production_direction": "account_profit"
+    },
+    "key": "redacted-roundtrip-zec",
+    "kinds": [
+      "highlighted_address_action"
+    ],
+    "observed_ms": 1793338507832
+  },
+  {
+    "addresses": [
+      "0x1111111111111111111111111111111111111111"
+    ],
+    "coin": "ETH",
+    "evidence": {
+      "actions": {
+        "close_long_notional": "0",
+        "close_long_quantity": "0",
+        "close_notional": "22072363.99150",
+        "close_short_average_execution_price_usd": "2207.23639915",
+        "close_short_notional": "22072363.99150",
+        "close_short_quantity": "10000.0000",
+        "closed_pnl": "584236.0084999995",
+        "fill_keys": [],
+        "first_fill_ms": 1793314749876,
+        "last_fill_ms": 1793324076466,
+        "liquidated_notional": "0",
+        "open_long_notional": "0.00000",
+        "open_long_quantity": "0.0000",
+        "open_notional": "22656698.68242",
+        "open_short_average_execution_price_usd": "2265.669868242",
+        "open_short_notional": "22656698.68242",
+        "open_short_quantity": "10000.0000",
+        "ordinary_close_notional": "22072363.99150",
+        "ordinary_closed_pnl": "584236.0084999995"
+      },
+      "history": {
+        "official_account_performance": {
+          "fetched_ms": 1793338507822,
+          "pnl_scope": "official_portfolio_including_unrealized",
+          "source": "hyperliquid_portfolio",
+          "windows": {
+            "allTime": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "22669407.4440659992",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "day": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-58399.274634",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "month": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-770483.424786",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "week": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "49677.521879",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            }
+          }
+        }
+      },
+      "position": null,
+      "previous_position": null,
+      "highlights": [
+        "official_account_high_profit"
+      ],
+      "production_direction": "account_profit"
+    },
+    "key": "redacted-roundtrip-eth",
+    "kinds": [
+      "highlighted_address_action"
+    ],
+    "observed_ms": 1793338507832
+  },
+  {
+    "addresses": [
+      "0x1111111111111111111111111111111111111111"
+    ],
+    "coin": "HYPE",
+    "evidence": {
+      "actions": {
+        "close_long_average_execution_price_usd": "90.02139466060147484409236266",
+        "close_long_notional": "18225552.42041",
+        "close_long_quantity": "202458.01",
+        "close_notional": "18225552.42041",
+        "close_short_notional": "0",
+        "close_short_quantity": "0",
+        "closed_pnl": "-583768.507038",
+        "fill_keys": [],
+        "first_fill_ms": 1793317549696,
+        "last_fill_ms": 1793327187020,
+        "liquidated_notional": "0",
+        "open_long_average_execution_price_usd": "89.75860525011167594876961790",
+        "open_long_notional": "10466724.92822",
+        "open_long_quantity": "116609.71",
+        "open_notional": "10466724.92822",
+        "open_short_notional": "0.00000",
+        "open_short_quantity": "0.00",
+        "ordinary_close_notional": "18225552.42041",
+        "ordinary_closed_pnl": "-583768.507038"
+      },
+      "history": {
+        "official_account_performance": {
+          "fetched_ms": 1793338507822,
+          "pnl_scope": "official_portfolio_including_unrealized",
+          "source": "hyperliquid_portfolio",
+          "windows": {
+            "allTime": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "22669407.4440659992",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "day": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-58399.274634",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "month": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "-770483.424786",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            },
+            "week": {
+              "history_sample_ms": 1793338507464,
+              "observed_ms": 1793338507464,
+              "pnl": "49677.521879",
+              "rank": null,
+              "scope": "official_portfolio_window_change"
+            }
+          }
+        }
+      },
+      "position": {
+        "coin": "HYPE",
+        "liquidation": "18.5292904036",
+        "mark": "93.525",
+        "notional": "10905923.12775",
+        "size": "116609.71",
+        "unrealized_pnl": "439198.19953"
+      },
+      "previous_position": {
+        "coin": "HYPE",
+        "liquidation": "54.4283707403",
+        "mark": "92.63599999999999357891545017",
+        "notional": "18754900.2143599987",
+        "size": "202458.01",
+        "unrealized_pnl": "-54431.25416"
+      },
+      "highlights": [
+        "official_account_high_profit"
+      ],
+      "production_direction": "account_profit",
+      "net_position_change": {
+        "closed": false,
+        "direction": "减仓",
+        "estimated_value": "8028962.25750",
+        "quantity": "85848.30",
+        "side": "多单"
+      }
+    },
+    "key": "redacted-roundtrip-hype",
+    "kinds": [
+      "highlighted_address_action"
+    ],
+    "observed_ms": 1793338507832
+  }
+]

@@ -515,7 +515,7 @@ def test_account_copy_corrects_model_wording_with_alltime_evidence():
     draft = DraftBrief(title='合约账户累计收益超1.73亿美元的地址加仓约459万美元BTC空单',
         content='该地址合约账户累计收益超过1.73亿美元。该地址随后加仓BTC空单。')
     result = format_news(draft, e)
-    assert result.title == '总盈利超1.73亿美元地址加仓约459万美元BTC空单'
+    assert result.title == '总盈利超1.73亿美元某地址增持500万美元STRK多单'
     assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户')
     assert '。其随后' in result.content
     assert format_news(result, e).title == result.title
@@ -529,8 +529,8 @@ def test_account_copy_restores_action_amounts_when_model_omits_them():
     event = {'addresses': [A], 'coin': 'xyz:XYZ100', 'observed_ms': 2000,
              'kinds': ['highlighted_address_action'], 'evidence': {
                  'highlights': ['official_account_high_profit'],
-                 'previous_position': {'size': '-521.04'},
-                 'position': {'size': '-436.6975'},
+                 'previous_position': {'size': '-521.04', 'mark': '30000'},
+                 'position': {'size': '-436.6975', 'mark': '30000'},
                  'actions': {'open_short_notional': '4088841.66680',
                              'close_short_notional': '6547851.45650'},
                  'history': {'official_account_performance': {'windows': {
@@ -539,11 +539,12 @@ def test_account_copy_restores_action_amounts_when_model_omits_them():
     result = format_news(DraftBrief(
         title='总盈利约3065万美元，某地址减持XYZ100空单',
         content='某地址在累计获得约3065万美元合约账户收益的同时，减持XYZ100空单'), event)
-    assert '平仓约655万美元XYZ100空单' in result.title
-    assert '再开仓约409万美元 XYZ100 空单' in result.content
+    assert '减少约253万美元XYZ100空单' in result.title
+    assert '累计开仓约409万美元 XYZ100 空单' in result.content
+    assert '后再' not in result.content
 
 
-def test_account_copy_restores_close_then_reopen_amounts():
+def test_account_copy_restores_gross_amounts_without_inventing_order():
     event = {'addresses': [A], 'coin': 'BTC', 'observed_ms': 2000,
              'kinds': ['highlighted_address_action'], 'evidence': {
                  'highlights': ['official_account_high_profit'],
@@ -556,7 +557,9 @@ def test_account_copy_restores_close_then_reopen_amounts():
         title='总盈利约2306万美元，某地址平仓BTC多单后再开多',
         content='某地址合约账户累计收益约2306万美元，平仓BTC多单后再开多'), event)
     assert '平仓约1,198万美元BTC多单' in result.title
-    assert '再开仓约1,203万美元 BTC 多单' in result.content
+    assert '累计开仓约1,203万美元 BTC 多单' in result.content
+    assert '后再' not in result.content
+    assert result.content.count('累计开仓') == 1
 
 
 def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
