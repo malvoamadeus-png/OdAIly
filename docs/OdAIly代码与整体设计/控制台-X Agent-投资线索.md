@@ -109,6 +109,14 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 ## 环境变量
 
+### 存量回放
+
+`scripts/replay_investment_leads.py --source /opt/OdAIly/data/runtime/hottopic.sqlite --output /opt/OdAIly/data/exports/investment_replay_20261102` 只读冻结已有扫描事件对应的全部公开材料，以及原有线索与来源关系。输出目录保存 `input.json`、独立生成的 `replay.sqlite`、`summary.json`、`leads.json`、`sources.json`、`materials.csv` 和 `report.md`。不复制生产数据库，不写生产任务、线索、用量或账号开关。回放也包含当前已关闭账号的历史材料，影子库使用独立 replay 观察账号，不重新开启生产账号。
+
+回放复用线上新版分析器、归一化门槛、关联召回和保存逻辑；先批量扫描全部冻结材料，再推导。默认三个并发模型请求、独立 300 万输入 token 预算，无身份搜索、附件追加抓取或事实核查。该预算仅适用于本次有界回放，不修改日常服务额度；并发请求可能使预算超出最多一轮在途请求的用量。目录内保存检查点，使用相同目录可续跑；Prompt 版本不同须新建目录。失败最多尝试三次，缺失响应不得当作无候选。
+
+回放使用材料原始发布时间，并在报告中明确标记历史回看。扫描按跨账号批次执行，并发推导看到各自提交时的已有线索上下文，归并结果可能与串行在线处理不同。由于全部材料先扫描，可能关联到原帖发布之后的材料，不能用回放结果声称实时发现能力。`previous_leads_with_retained_source` 只表示旧线索有来源被新版保留，并不表示原有逻辑被完整认可。完成数、失败、待补充和预算未完成项必须分别报告。
+
 - `X_AGENT_OPENAI_BASE_URL` / `X_AGENT_OPENAI_API_KEY`：可选专用兼容 API 路由与凭据；为空时沿用现有 X Agent / ODAILY LLM 配置。
 - `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：文本分析主模型和回退模型，默认 `gpt-6-luna`。
 - `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：单次模型或 Web Search 超时，默认 `90` 秒，范围 `5–300`。
