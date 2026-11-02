@@ -21,6 +21,32 @@ class StockInstrument:
     def asset_name(self) -> str:
         return self.symbol.removesuffix("USDT")
 
+    @property
+    def display_name(self) -> str:
+        return DISPLAY_NAMES.get((self.market, self.asset_name), self.asset_name)
+
+
+DISPLAY_NAMES: dict[tuple[Market, str], str] = {
+    ("cn", "CXMT"): "长鑫存储",
+    ("cn", "UNITREE"): "宇树科技",
+    ("hk", "BYD"): "比亚迪",
+    ("hk", "HK0700"): "腾讯",
+    ("hk", "HK0992"): "联想集团",
+    ("hk", "HK1810"): "小米集团",
+    ("hk", "KUAISHOU"): "快手",
+    ("hk", "MEITUAN"): "美团",
+    ("hk", "MINIMAX"): "MiniMax",
+    ("hk", "POPMART"): "泡泡玛特",
+    ("hk", "TENCENT"): "腾讯",
+    ("hk", "ZHIPU"): "智谱",
+    ("hk", "ZHONGJI"): "中际旭创",
+    ("kr", "HANMI"): "韩美半导体",
+    ("kr", "HYUNDAI"): "现代汽车",
+    ("kr", "LGELECTRONICS"): "LG电子",
+    ("kr", "SAMSUNG"): "三星电子",
+    ("kr", "SKHYNIX"): "SK海力士",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class StockQuote:
