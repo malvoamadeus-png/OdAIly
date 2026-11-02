@@ -335,7 +335,7 @@ class InvestmentLeadService:
             ensure_schema(self.db, capture_started_at=_iso())
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 20, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 60, 0, 300)
-        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 500_000, 0, 100_000_000)
+        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 1_000_000, 0, 100_000_000)
         self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
         self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
         self.daily_identity_searches = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS", 50, 0, 10_000)
