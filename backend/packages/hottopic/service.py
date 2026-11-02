@@ -1094,6 +1094,7 @@ class HotTopicService:
         return {"discovery": discovery, "polling": polling, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
 
     def poll_once(self) -> dict[str, Any]:
+        ai_review = self._run_ai_review_if_due()
         # Existing events first: their 1-minute schedule has priority over the
         # broad baseline account pool while sharing the same FXTwitter pacer.
         self.event_tracker.reconcile_topic_merges()
@@ -1108,7 +1109,6 @@ class HotTopicService:
             yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
             event_after = self._advance_event_tracking(poll_accounts=True)
             analyzed = self.process_x_agent_jobs()
-            ai_review = self._run_ai_review_if_due()
             self.process_account_cleanup_jobs()
             self.maintain()
             return {
@@ -1150,7 +1150,6 @@ class HotTopicService:
         yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
         event_after = self._advance_event_tracking(poll_accounts=True)
         analyzed = self.process_x_agent_jobs()
-        ai_review = self._run_ai_review_if_due()
         self.process_account_cleanup_jobs()
         self.maintain()
         return {
