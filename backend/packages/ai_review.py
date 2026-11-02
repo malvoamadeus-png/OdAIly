@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -19,8 +20,8 @@ REVIEW_LOOKBACK_DAYS = 3
 MAX_ANALYSIS_BATCH = 50
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
-EVENT_SCAN_VERSION = 2
-EVENT_ANALYSIS_VERSION = 2
+EVENT_SCAN_VERSION = 4
+EVENT_ANALYSIS_VERSION = 4
 RECOMMENDATIONS = {"priority", "consider", "drop"}
 RECOMMENDATION_LABELS = {"priority": "优先考虑", "consider": "可考虑", "drop": "不建议跟进"}
 STATUS_VALUES = {"pending", "accepted", "rejected", "deferred"}
@@ -48,6 +49,25 @@ TRACKED_SOURCE_DOMAINS = {
     "odaily.news", "theblockbeats.info", "blockbeats.info", "panewslab.com", "jinse.cn",
     "coindesk.com", "cointelegraph.com", "decrypt.co", "theblock.co",
 }
+PUBLISHER_DOMAINS = {
+    "odaily": ("odaily.news",),
+    "blockbeats": ("theblockbeats.info", "blockbeats.info"),
+    "panews": ("panewslab.com",),
+    "jinse": ("jinse.cn",),
+    "coindesk": ("coindesk.com",),
+    "cointelegraph": ("cointelegraph.com",),
+    "theblock": ("theblock.co",),
+    "decrypt": ("decrypt.co",),
+}
+PUBLISHER_LABELS = {
+    "blockbeats": "BlockBeats", "panews": "PANews", "jinse": "金色财经",
+    "coindesk": "CoinDesk", "cointelegraph": "Cointelegraph", "theblock": "The Block", "decrypt": "Decrypt",
+}
+ORIGINAL_LINK_KEYS = {
+    "link", "href", "sourceurl", "originurl", "originalurl", "referencelink", "referenceurl",
+    "sourcelink", "originallink", "externallink", "externalurl", "jumpurl", "detailurl", "canonicalurl",
+}
+BODY_LINK_KEYS = {"content", "body", "description", "desc", "summary", "text", "excerpt"}
 
 
 SCHEMA_SQL = """
@@ -193,9 +213,9 @@ class AIReviewRepository:
             )
             if cursor.rowcount == 0 and refresh_existing and item_type == "event":
                 self.db.execute(
-                    "UPDATE ai_review_items SET evidence_json=?,clues_json=?,source_updated_at=?,updated_at=? "
+                    "UPDATE ai_review_items SET title=?,evidence_json=?,clues_json=?,source_updated_at=?,updated_at=? "
                     "WHERE item_key=? AND item_type='event'",
-                    (_json(evidence), _json(clues or {}), source_updated_at, now, key),
+                    (title[:300], _json(evidence), _json(clues or {}), source_updated_at, now, key),
                 )
         return cursor.rowcount > 0
 
@@ -206,6 +226,27 @@ class AIReviewRepository:
             (item_type, MAX_ANALYSIS_ATTEMPTS, limit),
         ).fetchall()
         return [self._item(row) for row in rows]
+
+    def delete_stale_event_candidates(self, since: datetime, keep_keys: set[str]) -> int:
+        rows = self.db.execute(
+            "SELECT item_key,category,status,source_updated_at,created_at FROM ai_review_items WHERE item_type='event'"
+        ).fetchall()
+        allowed_categories = {"competitor_first_ai", "multiple_competitors_no_odaily"}
+        stale_keys = []
+        for row in rows:
+            key = str(row["item_key"])
+            updated = _parse_datetime(row["source_updated_at"] or row["created_at"])
+            legacy_key = not key.startswith("event-source:")
+            stale_category = str(row["category"]) not in allowed_categories
+            stale_recent = bool(updated and updated >= since and key not in keep_keys)
+            expired_pending = bool(updated and updated < since and row["status"] == "pending")
+            if legacy_key or stale_category or stale_recent or expired_pending:
+                stale_keys.append(key)
+        if not stale_keys:
+            return 0
+        with self.db:
+            self.db.executemany("DELETE FROM ai_review_items WHERE item_key=?", ((key,) for key in stale_keys))
+        return len(stale_keys)
 
     def complete_analysis(
         self, item_id: int, *, recommendation: str, reason: str, model: str,
@@ -421,14 +462,13 @@ class AIReviewAnalyzer:
             raise RuntimeError("AI 审阅需要配置 X Agent 兼容模型路由和 API key")
         if item["type"] == "event":
             system = (
-                "你是 Crypto 垂直媒体的选题编辑，只分析给定事件和竞品/自有原文，不搜索外部资料。你判断的是这条具体事件是否值得 Odaily 报道或继续跟进，"
-                "不是判断某个主题或账号是否值得长期追踪。单次申领、资产找回、上线、重大治理或监管变化，只要对 Crypto 读者的资产操作、交易判断或行业理解有明确价值，"
-                "可以优先考虑；不能因为它是一次性事件而降为不建议。"
-                "竞品先发且 Odaily 已由 AI 发布属于已覆盖，判断其编辑价值并简要指出直发/挂后台信号；多家竞品发而 Odaily 未发，要判断是否是值得补上的选题；"
-                "仅 Odaily 发布要判断这是有价值的独家/独立选题还是不必要的内容。"
-                "以 Crypto 垂直媒体为核心，优先读者交易决策和明确行业价值，少量股票内容可纳入；无关的科技新闻或低价值喊单应 drop。"
-                "只按现有原文判断，不能推断来源未提供的事实。负面事件与来源归因从严，避免错误指认造成名誉风险。"
-                "reason 简短说明此条选题价值或不跟进的具体原因；原文链接、账号/域名和已追踪状态由证据列表提供，不要求事件必须产生长期信源建议。"
+                "你是 Crypto 垂直媒体的信源编辑，只根据给定竞品报道和它们明确链接的原始信源判断哪些值得持续监控，不搜索外部资料。每个候选只对应一个原始账号或域名，竞品媒体只是发现入口，"
+                "不是推荐追踪对象；证据里的 originSources 是从竞品原文链接、结构化原文字段或正文 URL 提取的候选。"
+                "优先推荐持续发布 Crypto 一手数据、研究、公告或对读者交易决策有价值内容的原始账号/网站。若链接只指向一次性文章、一次性项目页面、临时活动或普通转载，"
+                "而没有证据表明背后的账号/网站会持续产出有价值信息，应不建议跟进。仅有竞品自己的文章链接不构成原始信源。"
+                "同一事件的多个竞品可能链接到同一个源；按原始账号/域名判断，避免把 PANews、金色财经、BlockBeats 等竞品误当追踪对象。"
+                "只按提供的原文和链接判断，不能把被提及对象或作者姓名猜成信源；错误归因可能损害个人或机构名誉。"
+                "reason 简短说明这个原始账号/域名是否有持续追踪价值；证据列表提供对应原始信源链接和发现它的竞品。"
                 "只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
             )
         else:
@@ -437,8 +477,11 @@ class AIReviewAnalyzer:
                 "判断其是否持续表达可用于读者交易决策的态度，或是否提供有逻辑的 Crypto/链上项目观点。少量股票观点可用于市场情绪。"
                 "不要将引用者观点归给作者。只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
             )
+        evidence = item["evidence"][:6]
+        if item["type"] == "event":
+            evidence = [row for row in item["evidence"] if row.get("originSources")][:8]
         prompt = _json({
-            "item": {"title": item["title"], "category": item["category"], "evidence": item["evidence"][:6]},
+            "item": {"title": item["title"], "category": item["category"], "evidence": evidence},
             "similar_human_decisions": examples,
         })
         body = json.dumps(
@@ -581,6 +624,94 @@ def _extract_clues(texts: list[str]) -> dict[str, list[str]]:
     return {"xAccounts": sorted(accounts)[:30], "domains": sorted(domains)[:30]}
 
 
+def _embedded_urls(value: Any, *, urls: set[str], scan_body: bool = False) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized_key = re.sub(r"[^a-z]", "", str(key).casefold())
+            if normalized_key in ORIGINAL_LINK_KEYS:
+                _embedded_urls(child, urls=urls, scan_body=True)
+            elif normalized_key in BODY_LINK_KEYS:
+                _embedded_urls(child, urls=urls, scan_body=True)
+            elif isinstance(child, (dict, list, tuple)):
+                _embedded_urls(child, urls=urls)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _embedded_urls(child, urls=urls, scan_body=scan_body)
+    elif isinstance(value, str):
+        if scan_body:
+            for match in URL_RE.findall(html.unescape(value)):
+                urls.add(match.rstrip(".,;:!?"))
+
+
+def _publisher_article_url(source: str, source_item_id: str, source_url: str) -> str:
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").casefold().removeprefix("www.")
+    publisher_domains = PUBLISHER_DOMAINS.get(source.casefold(), ())
+    if host and any(host == domain or host.endswith(f".{domain}") for domain in publisher_domains):
+        return source_url
+    if source.casefold() == "panews" and source_item_id:
+        return f"https://www.panewslab.com/zh/articledetails/{source_item_id}.html"
+    if source.casefold() == "jinse" and source_item_id.isdigit():
+        return f"https://www.jinse.cn/lives/{source_item_id}.html"
+    if source.casefold() == "blockbeats" and source_item_id.isdigit():
+        return f"https://www.theblockbeats.info/flash/{source_item_id}"
+    return ""
+
+
+def _extract_original_sources(
+    source: sqlite3.Row, *, known_handles: set[str], known_domains: set[str],
+) -> list[dict[str, Any]]:
+    urls: set[str] = set()
+    source_url = str(source["source_url"] or "").strip()
+    if source_url:
+        urls.add(source_url.rstrip(".,;:!?"))
+    for field in ("raw_payload", "metadata"):
+        _embedded_urls(_decode(source[field], {}), urls=urls)
+    _embedded_urls(str(source["content"] or ""), urls=urls, scan_body=True)
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for url in sorted(urls):
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").casefold().removeprefix("www.")
+        if parsed.scheme not in {"http", "https"} or not host:
+            continue
+        if host in {"x.com", "twitter.com", "t.co"}:
+            handle_match = X_URL_RE.search(url)
+            if not handle_match:
+                continue
+            account = handle_match.group(1).casefold()
+            source_domain = None
+            tracked = account in known_handles
+        else:
+            if parsed.path.casefold().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")):
+                continue
+            if any(
+                host == domain or host.endswith(f".{domain}")
+                for domains in PUBLISHER_DOMAINS.values() for domain in domains
+            ):
+                continue
+            account = None
+            source_domain = host
+            tracked = AIReviewService._is_tracked_domain(host, known_domains)
+        identity = f"x:{account}" if account else f"domain:{source_domain}"
+        candidate = candidates.setdefault(identity, {
+            "identity": identity, "url": url, "urls": [], "sourceAccount": account,
+            "sourceDomain": source_domain, "tracked": tracked, "discoveryOutlet": str(source["source"]),
+        })
+        normalized_url = url.casefold().rstrip("/")
+        if all(existing.casefold().rstrip("/") != normalized_url for existing in candidate["urls"]):
+            candidate["urls"].append(url)
+        candidate["url"] = min(candidate["urls"], key=str.casefold)
+    for candidate in candidates.values():
+        candidate["urls"].sort(key=str.casefold)
+    return list(candidates.values())
+
+
+def _event_source_key(event_id: str, category: str, identity: str) -> str:
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return f"event-source:{event_id}:{category}:{digest}"
+
+
 class AIReviewService:
     def __init__(
         self, *, database_path: Path, primary_database_path: Path, hottopic_database_path: Path,
@@ -683,7 +814,8 @@ class AIReviewService:
                 return 0
             rows = conn.execute(
                 "SELECT e.event_id,e.representative_title,e.event_time,e.first_published_at,e.first_sources,e.first_source,"
-                "e.competitor_source_count,e.has_odaily,i.source,i.source_item_id,i.source_url,i.title,i.content,i.published_at "
+                "e.competitor_source_count,e.has_odaily,i.source,i.source_item_id,i.source_url,i.title,i.content,"
+                "i.published_at,i.raw_payload,i.metadata "
                 "FROM newsflash_events e JOIN newsflash_event_sources s ON s.event_id=e.event_id "
                 "JOIN newsflash_items i ON i.id=s.item_id WHERE e.status='active' AND datetime(e.event_time)>=datetime(?) "
                 "ORDER BY datetime(e.event_time) DESC LIMIT 10000", (since.isoformat(),),
@@ -692,6 +824,7 @@ class AIReviewService:
             for row in rows:
                 events[str(row["event_id"])].append(row)
             known_handles, known_domains = self._known_source_clues()
+            retained_keys: set[str] = set()
             for event_id, sources in events.items():
                 if any(self._is_hyperbot_source(row) for row in sources):
                     continue
@@ -715,64 +848,71 @@ class AIReviewService:
                             category = "competitor_first_ai"
                 elif len(outlets - {"odaily"}) >= 2 and not odaily:
                     category = "multiple_competitors_no_odaily"
-                elif odaily and not competitors:
-                    category = "odaily_only"
                 if not category:
                     continue
                 title = str(sources[0]["representative_title"] or sources[0]["title"] or "未命名事件")
                 if category == "competitor_first_ai":
                     title = f"{title} · 竞品先发 / Odaily {'直发' if publish_status == 'auto_published' else '挂后台'}"
-                elif category == "multiple_competitors_no_odaily":
-                    title = f"{title} · 多家竞品发布，Odaily 未发"
                 else:
-                    title = f"{title} · 仅 Odaily 发布"
-                relevant_sources = odaily if category == "odaily_only" else competitors
-                linked_outlets = {
-                    str(row["source"]).casefold()
-                    for row in relevant_sources if str(row["source_url"] or "").strip()
-                }
-                if not linked_outlets or (
-                    category == "multiple_competitors_no_odaily" and len(linked_outlets) < 2
-                ):
-                    continue
-
-                ordered_sources = sorted(
-                    sources,
-                    key=lambda row: (
-                        str(row["source"]).casefold() == "odaily",
-                        _parse_datetime(row["published_at"]) or datetime.max.replace(tzinfo=UTC),
-                    ),
+                    title = f"{title} · 多家竞品发布，Odaily 未发"
+                ordered_competitors = sorted(
+                    competitors,
+                    key=lambda row: _parse_datetime(row["published_at"]) or datetime.max.replace(tzinfo=UTC),
                 )
-                evidence, text_parts = [], []
-                for source in ordered_sources[:20]:
-                    source_url = str(source["source_url"] or "")
-                    parsed_url = urlparse(source_url)
-                    domain = (parsed_url.hostname or "").casefold().removeprefix("www.")
-                    if domain in {"x.com", "twitter.com", "t.co"}:
-                        domain = ""
-                    handle_match = X_URL_RE.search(source_url)
-                    source_account = handle_match.group(1).lower() if handle_match else ""
-                    source_kind = "odaily" if str(source["source"]).casefold() == "odaily" else "competitor"
-                    tracked = None
-                    if source_account:
-                        tracked = source_account in known_handles
-                    elif domain:
-                        tracked = self._is_tracked_domain(domain, known_domains)
-                    source_title = str(source["title"] or "")
-                    content = str(source["content"] or "")[:1800]
-                    evidence.append({
-                        "source": str(source["source"]), "sourceKind": source_kind,
-                        "sourceDomain": domain or None, "sourceAccount": source_account or None,
-                        "tracked": tracked, "title": source_title, "url": source_url,
-                        "publishedAt": source["published_at"], "text": content,
-                    })
-                    text_parts.extend((source_title, content, source_url))
-                key = f"event:{event_id}:{category}"
-                clues = _extract_clues(text_parts)
-                inserted += int(self.repository.insert_candidate(
-                    key=key, item_type="event", category=category, title=title, evidence=evidence,
-                    clues=clues, source_updated_at=str(sources[0]["published_at"] or ""), refresh_existing=True,
-                ))
+                candidates: dict[str, dict[str, Any]] = {}
+                for source in ordered_competitors[:20]:
+                    outlet = str(source["source"]).casefold()
+                    article_url = _publisher_article_url(
+                        outlet, str(source["source_item_id"] or ""), str(source["source_url"] or ""),
+                    )
+                    origins = _extract_original_sources(
+                        source, known_handles=known_handles, known_domains=known_domains,
+                    )
+                    for origin in origins:
+                        identity = str(origin["identity"])
+                        candidate = candidates.setdefault(identity, {"origin": dict(origin), "urls": set(), "evidence": []})
+                        candidate["urls"].update(origin.get("urls") or [origin["url"]])
+                        article_evidence = {
+                            "source": PUBLISHER_LABELS.get(outlet, str(source["source"])),
+                            "sourceKind": "competitor", "url": article_url or None,
+                            "title": str(source["title"] or ""), "publishedAt": source["published_at"],
+                            "text": str(source["content"] or "")[:1800],
+                        }
+                        evidence_key = (outlet, article_url, article_evidence["title"])
+                        if not any(
+                            (row["_outlet"], row["url"], row["title"]) == evidence_key
+                            for row in candidate["evidence"]
+                        ):
+                            candidate["evidence"].append({**article_evidence, "_outlet": outlet})
+                if not candidates:
+                    continue
+                for identity, candidate in candidates.items():
+                    origin = candidate["origin"]
+                    origin["urls"] = sorted(candidate["urls"], key=str.casefold)
+                    origin["url"] = min(origin["urls"], key=str.casefold)
+                    evidence = []
+                    for item in candidate["evidence"]:
+                        item = {key: value for key, value in item.items() if key != "_outlet"}
+                        evidence.append({**item, "originSources": [origin]})
+                    account = str(origin.get("sourceAccount") or "")
+                    domain = str(origin.get("sourceDomain") or "")
+                    source_label = f"@{account}" if account else domain
+                    key = _event_source_key(event_id, category, identity)
+                    retained_keys.add(key)
+                    clues = {
+                        "xAccounts": [account] if account else [],
+                        "domains": [domain] if domain else [],
+                    }
+                    latest_published = max(
+                        (str(item.get("publishedAt") or "") for item in evidence),
+                        key=lambda value: _parse_datetime(value) or datetime.min.replace(tzinfo=UTC),
+                    )
+                    inserted += int(self.repository.insert_candidate(
+                        key=key, item_type="event", category=category,
+                        title=f"{source_label} · {title}", evidence=evidence[:20], clues=clues,
+                        source_updated_at=latest_published, refresh_existing=True,
+                    ))
+            self.repository.delete_stale_event_candidates(since, retained_keys)
         finally:
             conn.close()
         return inserted

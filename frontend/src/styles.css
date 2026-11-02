@@ -6231,6 +6231,16 @@ textarea:focus {
 .aiReviewAnalysisState { margin: 14px 0 8px; color: #99721b; font-size: 12px; }
 .aiReviewAnalysisState.failed { color: #a3483d; }
 .aiReviewClues h3,.aiReviewEvidenceList h3 { margin: 0; color: #3b4b53; font-size: 13px; }
+.aiReviewOriginSources { display: grid; gap: 0; padding: 14px 0 4px; }
+.aiReviewOriginSourcesHead { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; }
+.aiReviewOriginSourcesHead h3 { margin: 0; color: #34464d; font-size: 13px; }
+.aiReviewOriginSourcesHead span { color: #849097; font-size: 10px; }
+.aiReviewOriginSource { display: grid; gap: 7px; padding: 12px 0; border-bottom: 1px solid #edf0f1; }
+.aiReviewDiscoveredBy { color: #849097; font-size: 10px; }
+.aiReviewDiscoveredBy a,.aiReviewDiscoveredBy span { margin-left: 7px; color: #68777b; text-decoration: none; }
+.aiReviewCompetitorEvidence { margin-top: 12px; border-top: 1px solid #e7ecee; }
+.aiReviewCompetitorEvidence summary { padding: 12px 0; color: #69777d; cursor: pointer; font-size: 11px; }
+.aiReviewCompetitorEvidence .aiReviewEvidenceList { padding-top: 0; }
 .aiReviewSelect { display: flex; align-items: center; gap: 12px; color: #647179; font-size: 12px; }
 .aiReviewSelect select { min-width: 150px; padding: 7px 9px; border: 1px solid #d8e0e4; border-radius: 4px; background: #fff; color: #35444d; }
 .aiReviewActions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 11px; border: 1px solid #d4dfdb; border-radius: 4px; background: #fff; color: #28735d; cursor: pointer; font-size: 12px; }
@@ -6248,7 +6258,6 @@ textarea:focus {
 .aiReviewEvidenceMeta a { color: #1d735d; text-decoration: none; }
 .aiReviewSourceKind { padding: 2px 5px; border-radius: 3px; background: #eef1f2; color: #59666c; font-size: 10px; }
 .aiReviewSourceKind.competitor { background: #edf4f0; color: #28735d; }
-.aiReviewSourceKind.odaily { background: #f4f1e6; color: #766a32; }
 .aiReviewTrackingState { color: #8a711e; font-size: 10px; }
 .aiReviewTrackingState.tracked { color: #68777b; }
 .aiReviewEvidence h4 { margin: 0; color: #35444d; font-size: 12px; line-height: 1.5; }

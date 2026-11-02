@@ -18,12 +18,11 @@ const STATUS_LABELS: Record<AIReviewStatus, string> = {
 const CATEGORY_LABELS: Record<string, string> = {
   competitor_first_ai: '竞品先发 · Odaily AI 发布',
   multiple_competitors_no_odaily: '多家竞品发布 · Odaily 未发',
-  odaily_only: '仅 Odaily 发布',
   market_sentiment: '市场情绪账号',
   project_promotion: '项目推介账号',
 };
 const CATEGORY_OPTIONS: Record<AIReviewType, string[]> = {
-  event: ['competitor_first_ai', 'multiple_competitors_no_odaily', 'odaily_only'],
+  event: ['competitor_first_ai', 'multiple_competitors_no_odaily'],
   account: ['market_sentiment', 'project_promotion'],
 };
 
@@ -76,6 +75,31 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
 
   const pageCount = page ? Math.max(1, Math.ceil(page.total / page.limit)) : 1;
   const currentPage = page ? Math.floor(page.offset / page.limit) + 1 : 1;
+  const originSources = new Map<string, {
+    identity?: string;
+    url: string;
+    urls?: string[];
+    sourceAccount?: string | null;
+    sourceDomain?: string | null;
+    tracked?: boolean | null;
+    discoveredBy: Array<{ outlet: string; articleUrl?: string | null }>;
+  }>();
+  if (selected?.type === 'event') {
+    selected.evidence.forEach((evidence) => {
+      evidence.originSources?.forEach((origin) => {
+        const key = origin.identity || (origin.sourceAccount ? 'x:' + origin.sourceAccount : 'domain:' + (origin.sourceDomain || origin.url));
+        const current = originSources.get(key) || { ...origin, urls: [], discoveredBy: [] };
+        const urls = origin.urls?.length ? origin.urls : [origin.url];
+        current.urls = [...new Set([...(current.urls || []), ...urls])];
+        current.url = [...current.urls].sort()[0] || origin.url;
+        const attribution = { outlet: evidence.source || origin.discoveryOutlet || '竞品', articleUrl: evidence.url };
+        if (!current.discoveredBy.some((item) => item.outlet === attribution.outlet && item.articleUrl === attribution.articleUrl)) {
+          current.discoveredBy.push(attribution);
+        }
+        originSources.set(key, current);
+      });
+    });
+  }
 
   return (
     <section className="aiReviewPanel">
@@ -182,31 +206,77 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
                 </section>
               ) : null}
 
-              <section className="aiReviewEvidenceList">
-                <h3>{selected.type === 'event' ? '来源原文' : '证据原文'}</h3>
-                {selected.evidence.map((evidence, index) => (
-                  <article key={(evidence.tweetId || evidence.url || evidence.source || 'evidence') + '-' + index} className="aiReviewEvidence">
-                    <div className="aiReviewEvidenceMeta">
-                      {evidence.sourceKind && <span className={'aiReviewSourceKind ' + evidence.sourceKind}>{evidence.sourceKind === 'odaily' ? 'Odaily' : '竞品'}</span>}
-                      <strong>{evidence.source || 'X'}</strong>
-                      {evidence.sourceAccount && <a href={'https://x.com/' + evidence.sourceAccount} target="_blank" rel="noreferrer">@{evidence.sourceAccount}</a>}
-                      {evidence.sourceDomain && <span>{evidence.sourceDomain}</span>}
-                      {evidence.sourceKind === 'competitor' && evidence.tracked != null && (
-                        <small className={evidence.tracked ? 'aiReviewTrackingState tracked' : 'aiReviewTrackingState'}>
-                          {evidence.tracked ? '已追踪' : '可考虑追踪'}
-                        </small>
-                      )}
-                      <time>{formatDate(evidence.postedAt || evidence.publishedAt)}</time>
-                      {evidence.url && <a href={evidence.url} target="_blank" rel="noreferrer">打开原文</a>}
+              {selected.type === 'event' ? (
+                <>
+                  <section className="aiReviewOriginSources">
+                    <div className="aiReviewOriginSourcesHead">
+                      <h3>原始信源</h3>
+                      <span>{originSources.size} 个</span>
                     </div>
-                    {evidence.title && <h4>{evidence.title}</h4>}
-                    <p>{evidence.text || '无正文'}</p>
-                    {(evidence.matchedAssets?.length || evidence.matchedProjects?.length) ? (
-                      <small>命中：{[...(evidence.matchedAssets || []), ...(evidence.matchedProjects || [])].join('、')}</small>
-                    ) : null}
-                  </article>
-                ))}
-              </section>
+                    {originSources.size === 0 ? <p className="aiReviewEmpty">未从竞品材料提取到原始信源</p> : null}
+                    {[...originSources.values()].map((origin) => (
+                      <article className="aiReviewOriginSource" key={origin.url}>
+                        <div className="aiReviewEvidenceMeta">
+                          <strong>{origin.sourceAccount ? 'X 账号' : origin.sourceDomain || '网站信源'}</strong>
+                          {origin.sourceAccount && <a href={'https://x.com/' + origin.sourceAccount} target="_blank" rel="noreferrer">@{origin.sourceAccount}</a>}
+                          {origin.sourceDomain && <span>{origin.sourceDomain}</span>}
+                          {origin.tracked != null && (
+                            <small className={origin.tracked ? 'aiReviewTrackingState tracked' : 'aiReviewTrackingState'}>
+                              {origin.tracked ? '已追踪' : '待评估'}
+                            </small>
+                          )}
+                          {(origin.urls?.length ? origin.urls : [origin.url]).slice(0, 3).map((url, index) => (
+                            <a href={url} target="_blank" rel="noreferrer" key={url}>
+                              {index === 0 ? '打开原文' : `原文 ${index + 1}`}
+                            </a>
+                          ))}
+                          {(origin.urls?.length || 0) > 3 && <small>另有 {(origin.urls?.length || 0) - 3} 条</small>}
+                        </div>
+                        <small className="aiReviewDiscoveredBy">
+                          竞品报道：{origin.discoveredBy.map((item) => item.articleUrl ? (
+                            <a href={item.articleUrl} target="_blank" rel="noreferrer" key={item.outlet + item.articleUrl}>{item.outlet}</a>
+                          ) : <span key={item.outlet}>{item.outlet}</span>)}
+                        </small>
+                      </article>
+                    ))}
+                  </section>
+                  <details className="aiReviewCompetitorEvidence">
+                    <summary>竞品报道（发现入口，不是追踪对象）· {selected.evidence.length}</summary>
+                    <section className="aiReviewEvidenceList">
+                      {selected.evidence.map((evidence, index) => (
+                        <article key={(evidence.url || evidence.source || 'evidence') + '-' + index} className="aiReviewEvidence">
+                          <div className="aiReviewEvidenceMeta">
+                            <span className="aiReviewSourceKind competitor">发现入口</span>
+                            <strong>{evidence.source || '竞品'}</strong>
+                            <time>{formatDate(evidence.publishedAt)}</time>
+                            {evidence.url && <a href={evidence.url} target="_blank" rel="noreferrer">打开竞品报道</a>}
+                          </div>
+                          {evidence.title && <h4>{evidence.title}</h4>}
+                          <p>{evidence.text || '无正文'}</p>
+                        </article>
+                      ))}
+                    </section>
+                  </details>
+                </>
+              ) : (
+                <section className="aiReviewEvidenceList">
+                  <h3>证据原文</h3>
+                  {selected.evidence.map((evidence, index) => (
+                    <article key={(evidence.tweetId || evidence.url || evidence.source || 'evidence') + '-' + index} className="aiReviewEvidence">
+                      <div className="aiReviewEvidenceMeta">
+                        <strong>{evidence.source || 'X'}</strong>
+                        <time>{formatDate(evidence.postedAt || evidence.publishedAt)}</time>
+                        {evidence.url && <a href={evidence.url} target="_blank" rel="noreferrer">打开原文</a>}
+                      </div>
+                      {evidence.title && <h4>{evidence.title}</h4>}
+                      <p>{evidence.text || '无正文'}</p>
+                      {(evidence.matchedAssets?.length || evidence.matchedProjects?.length) ? (
+                        <small>命中：{[...(evidence.matchedAssets || []), ...(evidence.matchedProjects || [])].join('、')}</small>
+                      ) : null}
+                    </article>
+                  ))}
+                </section>
+              )}
 
               {selected.type === 'event' && selected.status === 'pending' && (
                 <div className="aiReviewActions">

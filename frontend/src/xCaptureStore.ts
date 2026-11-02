@@ -1149,10 +1149,6 @@ export type AIReviewRecommendation = 'priority' | 'consider' | 'drop';
 
 export type AIReviewEvidence = {
   source?: string;
-  sourceKind?: 'competitor' | 'odaily';
-  sourceDomain?: string | null;
-  sourceAccount?: string | null;
-  tracked?: boolean | null;
   title?: string;
   url?: string;
   publishedAt?: string | null;
@@ -1161,6 +1157,17 @@ export type AIReviewEvidence = {
   text?: string;
   matchedAssets?: string[];
   matchedProjects?: string[];
+  originSources?: AIReviewOriginSource[];
+};
+
+export type AIReviewOriginSource = {
+  identity?: string;
+  url: string;
+  urls?: string[];
+  sourceDomain?: string | null;
+  sourceAccount?: string | null;
+  tracked?: boolean | null;
+  discoveryOutlet?: string;
 };
 
 export type AIReviewItem = {

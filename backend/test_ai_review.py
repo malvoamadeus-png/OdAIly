@@ -14,6 +14,7 @@ from packages.ai_review import (
     AIReviewRepository,
     AIReviewService,
     _compile_alias_matcher,
+    _event_source_key,
     _find_alias_matches,
     _match_alias,
 )
@@ -38,7 +39,7 @@ def _create_main_database(path: Path):
         CREATE TABLE tasks(id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,source_url TEXT,title TEXT,
           content TEXT,published_at TEXT,created_at TEXT,metadata TEXT,raw_payload TEXT,status TEXT);
         CREATE TABLE newsflash_items(id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,source_url TEXT,
-          title TEXT,content TEXT,published_at TEXT);
+          title TEXT,content TEXT,published_at TEXT,raw_payload TEXT,metadata TEXT);
         CREATE TABLE newsflash_events(event_id TEXT PRIMARY KEY,representative_title TEXT,event_time TEXT,
           first_published_at TEXT,first_source TEXT,first_sources TEXT,competitor_source_count INTEGER,
           has_odaily INTEGER,status TEXT);
@@ -62,10 +63,16 @@ def _add_event(conn, event_id, sources, *, odaily_publish=None):
     )
     for index, (source, item_id, published) in enumerate(sources):
         source_row_id = int(event_id[-1]) * 10 + index + 1
+        publisher_domains = {
+            "odaily": "odaily.news", "blockbeats": "theblockbeats.info", "panews": "panewslab.com",
+            "jinse": "jinse.cn", "cointelegraph": "cointelegraph.com",
+        }
+        article_url = f"https://{publisher_domains.get(source, source + '.example')}/news/{item_id}"
         conn.execute(
-            "INSERT INTO newsflash_items VALUES(?,?,?,?,?,?,?)",
-            (source_row_id, source, item_id, f"https://{source}.example/news/{item_id}",
-             f"{source} report", f"Body from {source} @editor https://example.org/story", published),
+            "INSERT INTO newsflash_items VALUES(?,?,?,?,?,?,?,?,?)",
+            (source_row_id, source, item_id, article_url,
+             f"{source} report", f"Body from {source} @editor https://example.org/story", published,
+             json.dumps({"link": f"https://origin.example/{source}/{item_id}"}), "{}"),
         )
         conn.execute(
             "INSERT INTO newsflash_event_sources VALUES(?,?,?,?)",
@@ -97,6 +104,18 @@ def _create_hot_database(path: Path):
     return connection
 
 
+def _event_candidates(service, event_id, category=None):
+    rows = service.repository.db.execute(
+        "SELECT item_key,category FROM ai_review_items WHERE item_type='event' AND item_key LIKE ?",
+        (f"event-source:{event_id}:%",),
+    ).fetchall()
+    return [
+        service.get_item(row["item_key"])
+        for row in rows
+        if category is None or row["category"] == category
+    ]
+
+
 def test_ticker_matching_requires_complete_word_boundary():
     assert _match_alias("BTC is bullish", "BTC")
     assert _match_alias("$BTC is bullish", "btc")
@@ -112,7 +131,7 @@ def test_ticker_matching_requires_complete_word_boundary():
     assert _find_alias_matches("STRASSE", _compile_alias_matcher({"straße": "street"})) == {"strasse"}
 
 
-def test_event_queue_includes_only_three_supported_event_scenarios():
+def test_event_queue_includes_competitor_scenarios_and_extracts_original_sources():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         main = _create_main_database(root / "main.sqlite")
@@ -137,6 +156,10 @@ def test_event_queue_includes_only_three_supported_event_scenarios():
             ("panews", "pa6", (now - timedelta(hours=2)).isoformat()),
             ("odaily", "odaily6", (now - timedelta(hours=1)).isoformat()),
         ], odaily_publish=("ready_review", "odaily6"))
+        main.execute(
+            "UPDATE newsflash_items SET raw_payload=? WHERE source='blockbeats' AND source_item_id='bb1'",
+            (json.dumps({"link": "https://x.com/editor/status/123"}),),
+        )
         main.commit()
         main.close()
         hot.close()
@@ -148,20 +171,28 @@ def test_event_queue_includes_only_three_supported_event_scenarios():
             analyzer=FakeAnalyzer(),
         )
         try:
-            assert service._queue_events(now - timedelta(days=7)) == 4
-            items = [
-                service.get_item(f"event:event-{index}:" + next(
-                    category for category in ("competitor_first_ai", "multiple_competitors_no_odaily", "odaily_only")
-                    if service.get_item(f"event:event-{index}:{category}")
-                ))
-                for index in (1, 2, 3, 6)
-            ]
+            service.repository.insert_candidate(
+                key="event:event-3:competitor_first_ai", item_type="event", category="competitor_first_ai",
+                title="Legacy event candidate", evidence=[],
+            )
+            assert service._queue_events(now - timedelta(days=7)) == 6
+            items = [item for index in (1, 2, 6) for item in _event_candidates(service, f"event-{index}")]
             categories = {item["category"] for item in items}
-            assert categories == {"competitor_first_ai", "multiple_competitors_no_odaily", "odaily_only"}
-            first = next(item for item in items if "直发" in item["title"])
+            assert categories == {"competitor_first_ai", "multiple_competitors_no_odaily"}
+            first = service.get_item(_event_source_key("event-1", "competitor_first_ai", "x:editor"))
             assert any("挂后台" in item["title"] for item in items)
             assert "editor" in first["clues"]["xAccounts"]
-            assert "example.org" in first["clues"]["domains"]
+            assert first["clues"]["domains"] == []
+            domain_candidate = service.get_item(
+                _event_source_key("event-1", "competitor_first_ai", "domain:example.org")
+            )
+            assert domain_candidate["clues"]["domains"] == ["example.org"]
+            assert all(evidence["sourceKind"] == "competitor" for item in items for evidence in item["evidence"])
+            assert all(
+                len(evidence["originSources"]) == 1
+                for item in items for evidence in item["evidence"]
+            )
+            assert service.get_item("event:event-3:competitor_first_ai") is None
         finally:
             service.close()
 
@@ -188,7 +219,7 @@ def test_event_queue_marks_reviewed_publication_and_ignores_parallel_first_publi
         )
         try:
             assert service._queue_events(now - timedelta(days=7)) == 0
-            assert service.get_item("event:event-1:competitor_first_ai") is None
+            assert _event_candidates(service, "event-1") == []
         finally:
             service.close()
 
@@ -213,15 +244,16 @@ def test_event_queue_marks_ai_background_publish_and_keeps_source_attribution():
             analyzer=FakeAnalyzer(),
         )
         try:
-            assert service._queue_events(now - timedelta(days=7)) == 1
-            item = service.get_item("event:event-2:competitor_first_ai")
+            assert service._queue_events(now - timedelta(days=7)) == 2
+            item = service.get_item(_event_source_key("event-2", "competitor_first_ai", "domain:origin.example"))
             assert "挂后台" in item["title"]
-            assert all("blockbeats" in evidence["url"] or "odaily" in evidence["url"] for evidence in item["evidence"])
+            assert all("blockbeats" in evidence["url"] for evidence in item["evidence"])
+            assert any(origin["url"].startswith("https://origin.example/") for evidence in item["evidence"] for origin in evidence["originSources"])
         finally:
             service.close()
 
 
-def test_event_queue_requires_an_untracked_x_clue_and_skips_tracked_or_hyperbot_sources():
+def test_event_queue_requires_linked_original_sources_and_skips_unlinked_mentions():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         main = _create_main_database(root / "main.sqlite")
@@ -250,6 +282,7 @@ def test_event_queue_requires_an_untracked_x_clue_and_skips_tracked_or_hyperbot_
         ], odaily_publish=("auto_published", "odaily4"))
         main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-4')")
         main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Story cites @tracked_account' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-4' AND source='cointelegraph')")
+        main.execute("UPDATE newsflash_items SET raw_payload='{}' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id IN ('event-2','event-3','event-4'))")
         main.execute("INSERT INTO x_capture_accounts(username_lower) VALUES('tracked_account')")
         _add_event(main, "event-5", [
             ("cointelegraph", "ct5", (now - timedelta(hours=2)).isoformat()),
@@ -257,6 +290,7 @@ def test_event_queue_requires_an_untracked_x_clue_and_skips_tracked_or_hyperbot_
         ], odaily_publish=("auto_published", "odaily5"))
         main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-5')")
         main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Report from @new_source' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-5' AND source='cointelegraph')")
+        main.execute("UPDATE newsflash_items SET raw_payload=? WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-5' AND source='cointelegraph')", (json.dumps({"link": "https://x.com/new_source/status/456"}),))
         main.commit()
         main.close()
         hot.close()
@@ -266,15 +300,15 @@ def test_event_queue_requires_an_untracked_x_clue_and_skips_tracked_or_hyperbot_
         )
         try:
             assert service._queue_events(now - timedelta(days=3)) == 1
-            item = service.get_item("event:event-5:competitor_first_ai")
+            item = service.get_item(_event_source_key("event-5", "competitor_first_ai", "x:new_source"))
             assert item is not None
             assert item["clues"]["xAccounts"] == ["new_source"]
             assert "cointelegraph.com" not in item["clues"]["domains"]
             assert "panewslab.com" not in item["clues"]["domains"]
-            assert service.get_item("event:event-1:competitor_first_ai") is None
-            assert service.get_item("event:event-2:multiple_competitors_no_odaily") is None
-            assert service.get_item("event:event-3:competitor_first_ai") is None
-            assert service.get_item("event:event-4:competitor_first_ai") is None
+            assert _event_candidates(service, "event-1") == []
+            assert _event_candidates(service, "event-2") == []
+            assert _event_candidates(service, "event-3") == []
+            assert _event_candidates(service, "event-4") == []
         finally:
             service.close()
 
@@ -394,16 +428,16 @@ def test_history_examples_are_limited_to_matching_review_category():
     with TemporaryDirectory() as tmp:
         repository = AIReviewRepository(Path(tmp) / "review.sqlite")
         try:
-            for index, category in enumerate(("odaily_only", "odaily_only", "multiple_competitors_no_odaily")):
+            for index, category in enumerate(("competitor_first_ai", "competitor_first_ai", "multiple_competitors_no_odaily")):
                 key = f"event:history-{index}:{category}"
                 repository.insert_candidate(
                     key=key, item_type="event", category=category, title=category, evidence=[],
                 )
                 repository.decide(key, decision="accepted", actor="editor@example.com", note=category)
-            examples = repository.history_examples("event", "odaily_only")
+            examples = repository.history_examples("event", "competitor_first_ai")
             assert len(examples) == 2
-            assert all(example["category"] == "odaily_only" for example in examples)
-            assert all(repository.get_item(f"event:history-{index}:{category}") for index, category in enumerate(("odaily_only", "odaily_only", "multiple_competitors_no_odaily")))
+            assert all(example["category"] == "competitor_first_ai" for example in examples)
+            assert all(repository.get_item(f"event:history-{index}:{category}") for index, category in enumerate(("competitor_first_ai", "competitor_first_ai", "multiple_competitors_no_odaily")))
         finally:
             repository.close()
 
@@ -414,11 +448,11 @@ def test_queue_hides_unanalyzed_and_drop_recommendations():
         try:
             for key in ("visible", "drop", "queued"):
                 repository.insert_candidate(
-                    key=f"event:{key}:odaily_only", item_type="event", category="odaily_only",
+                    key=f"event:{key}:multiple_competitors_no_odaily", item_type="event", category="multiple_competitors_no_odaily",
                     title=key, evidence=[],
                 )
-            visible = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:visible:odaily_only'").fetchone()[0]
-            dropped = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:drop:odaily_only'").fetchone()[0]
+            visible = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:visible:multiple_competitors_no_odaily'").fetchone()[0]
+            dropped = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:drop:multiple_competitors_no_odaily'").fetchone()[0]
             repository.complete_analysis(visible, recommendation="consider", reason="可持续追踪", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             repository.complete_analysis(dropped, recommendation="drop", reason="不跟进", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             page = repository.list_items(item_type="event")
