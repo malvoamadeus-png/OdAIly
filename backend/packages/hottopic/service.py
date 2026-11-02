@@ -1479,6 +1479,8 @@ class HotTopicService:
                 "source_tweet_id,source_url,source_text,first_mentioned_at,last_mentioned_at,actual_model,fallback_reason,created_at,updated_at"
                 ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(identity_key,account_lower,logic_hash) DO UPDATE SET "
+                "project_name=excluded.project_name,ticker=excluded.ticker,chain_name=excluded.chain_name,"
+                "contract_address=excluded.contract_address,official_url=excluded.official_url,logic=excluded.logic,"
                 "source_tweet_id=excluded.source_tweet_id,source_url=excluded.source_url,source_text=excluded.source_text,"
                 "last_mentioned_at=excluded.last_mentioned_at,actual_model=excluded.actual_model,fallback_reason=excluded.fallback_reason,updated_at=excluded.updated_at",
                 (
@@ -1491,9 +1493,10 @@ class HotTopicService:
     @staticmethod
     def _project_identity(item: dict[str, Any], tweet_id: str) -> str:
         name = str(item.get("project_name") or "").strip().lower()
-        contract = str(item.get("contract_address") or "").strip().lower()
-        if name and contract:
-            return f"name:{name}:ca:{contract}"
+        contract = str(item.get("contract_address") or "").strip()
+        if contract:
+            normalized_contract = contract.lower() if contract.lower().startswith("0x") else contract
+            return f"ca:{normalized_contract}"
         if name:
             return f"name:{name}"
         return f"tweet:{tweet_id}"
@@ -1736,7 +1739,10 @@ class HotTopicService:
             WITH named AS (
               SELECT p.*,
                 CASE WHEN trim(project_name)='' THEN 'tweet:' || source_tweet_id ELSE lower(trim(project_name)) END AS project_name_key,
-                NULLIF(lower(trim(contract_address)),'') AS normalized_contract_address
+                CASE
+                  WHEN lower(trim(contract_address)) LIKE '0x%' THEN NULLIF(lower(trim(contract_address)),'')
+                  ELSE NULLIF(trim(contract_address),'')
+                END AS normalized_contract_address
               FROM x_agent_project_observations p
             ), project_ca_counts AS (
               SELECT project_name_key,COUNT(DISTINCT normalized_contract_address) AS ca_count,
@@ -1745,8 +1751,9 @@ class HotTopicService:
             ), identified AS (
               SELECT n.*,
                 CASE
-                  WHEN c.ca_count=1 THEN 'name:' || n.project_name_key || ':ca:' || c.only_contract_address
-                  WHEN c.ca_count>1 THEN 'name:' || n.project_name_key || ':ca:' || COALESCE(n.normalized_contract_address,'unresolved')
+                  WHEN n.normalized_contract_address IS NOT NULL THEN 'ca:' || n.normalized_contract_address
+                  WHEN c.ca_count=1 THEN 'ca:' || c.only_contract_address
+                  WHEN c.ca_count>1 THEN 'name:' || n.project_name_key || ':ca:unresolved'
                   ELSE 'name:' || n.project_name_key
                 END AS merged_identity_key
               FROM named n JOIN project_ca_counts c ON c.project_name_key=n.project_name_key

@@ -298,6 +298,37 @@ def test_project_same_identity_and_logic_updates_instead_of_creating_a_second_ro
         value.close()
 
 
+def test_project_same_contract_merges_different_names_and_keeps_solana_case_sensitive(tmp_path: Path) -> None:
+    value = service(tmp_path)
+    try:
+        source = {
+            "account_screen_name": "alice",
+            "tweet_id": "choo-one",
+            "url": "https://x.com/alice/status/choo-one",
+            "expanded_text": "CHOO project",
+            "created_at_iso": iso(utc_now()),
+        }
+        first = {"project_name": "CHOO", "ticker": "CHOO", "chain": "Solana", "contract_address": "ExactCaseAddress", "official_url": "", "logic": "联创关注项目官推。"}
+        second = {**first, "project_name": "ChooTheRescue", "logic": "作者称该项目官推获得联创关注。"}
+        with value.db:
+            value._save_project_results(source, AnalysisResult("project_promotion", "gpt-6-luna", None, [first]), iso(utc_now()))
+            source["tweet_id"] = "choo-two"
+            source["url"] = "https://x.com/alice/status/choo-two"
+            value._save_project_results(source, AnalysisResult("project_promotion", "gpt-6-luna", None, [second]), iso(utc_now() + timedelta(minutes=1)))
+
+        assert value.db.execute("SELECT COUNT(DISTINCT identity_key) FROM x_agent_project_observations").fetchone()[0] == 1
+        listing = value.list_project_promotions(window="30d")
+        assert listing["total"] == 1
+        assert listing["items"][0]["identityKey"] == "ca:ExactCaseAddress"
+        assert value.project_promotion_detail("ca:ExactCaseAddress", window="30d")["total"] == 2
+
+        assert value._project_identity({**first, "contract_address": "SoLCase"}, "one") == "ca:SoLCase"
+        assert value._project_identity({**first, "contract_address": "solcase"}, "two") == "ca:solcase"
+        assert value._project_identity({**first, "contract_address": "0xAbCd"}, "three") == "ca:0xabcd"
+    finally:
+        value.close()
+
+
 def test_project_detail_shows_one_source_once_and_merges_project_logics(tmp_path: Path) -> None:
     value = service(tmp_path)
     try:
