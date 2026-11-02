@@ -161,11 +161,11 @@ def main() -> None:
                     "SELECT t.*,m.payload_json FROM investment_lead_tasks t JOIN investment_lead_materials m "
                     "ON m.material_id=t.material_id AND m.content_hash=t.content_hash "
                     "WHERE t.stage=? AND t.status='pending' AND t.attempts<3 ORDER BY t.created_at,t.id LIMIT ?",
-                    (stage, workers * (20 if stage == "scan" else 1))) ]
+                    (stage, workers * (8 if stage == "scan" else 1))) ]
                 if not jobs:
                     break
                 futures = {}
-                width = 20 if stage == "scan" else 1
+                width = 8 if stage == "scan" else 1
                 for start in range(0, len(jobs), width):
                     batch = jobs[start:start + width]
                     with db:
@@ -194,7 +194,9 @@ def main() -> None:
                             for job in batch:
                                 result = results.get((job["material_id"], job["content_hash"]))
                                 if result is None:
-                                    raise RuntimeError("扫描响应缺少材料，保留重试")
+                                    with db:
+                                        db.execute("UPDATE investment_lead_tasks SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,last_error='扫描响应缺少材料，保留重试' WHERE id=?", (job["id"],))
+                                    continue
                                 service._save_scan_result(job, result, output, now)
                         else:
                             job = batch[0]
