@@ -625,8 +625,12 @@ class AIReviewService:
         account_scan_due = self.repository.get_state("last_scan_date") != today
         event_scan_due = self.repository.get_state(event_scan_key) != today
         event_analysis_due = self.repository.get_state(event_analysis_key) != str(EVENT_ANALYSIS_VERSION)
+        analysis_pending = (
+            self.repository.has_pending_analysis("account")
+            or self.repository.has_pending_analysis("event")
+        )
         if self.repository.get_state("last_completed_date") == today and not (
-            account_scan_due or event_scan_due or event_analysis_due
+            account_scan_due or event_scan_due or event_analysis_due or analysis_pending
         ):
             return {"status": "already_ran", "date": today}
         since = current - timedelta(days=REVIEW_LOOKBACK_DAYS)
