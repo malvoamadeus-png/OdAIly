@@ -3421,6 +3421,8 @@ function MemeNarrativeAudit({ item }: { item: MemeDashboardItem }) {
                   {section === 'fast_sources' && (
                     <div className="memeAuditSectionBody">
                       <MaterialList title="X 原帖" materials={listValue(narrative?.x_posts)} />
+                      <MaterialList title="GMGN 链接账号推文" materials={listValue(narrative?.gmgn_x_posts)} />
+                      <MaterialList title="GMGN 链接网站内容" materials={listValue(narrative?.gmgn_website_pages)} />
                       <MaterialList title="某信源材料" materials={listValue(narrative?.fomo_materials)} />
                       <strong>榜单入选条件与首次入选时间</strong>
                       <pre className="memeAuditPre">{JSON.stringify(narrative?.discovery || {}, null, 2)}</pre>

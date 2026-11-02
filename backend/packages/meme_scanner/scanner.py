@@ -402,20 +402,9 @@ def fetch_gmgn_token_info(
     allow_unknown_platform: bool = False,
     identity_only: bool = False,
 ) -> Token | None:
-    _raise_if_gmgn_backing_off()
-    if not ensure_cli_ready():
-        raise RuntimeError("GMGN CLI is not ready")
-    requested_chain = normalize_chain(chain)
-    command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
-    _wait_for_gmgn_request_slot()
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
-    if result.returncode:
-        error = result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed"
-        _record_gmgn_rate_limit(error)
-        raise RuntimeError(error)
-    payload = json.loads(result.stdout)
+    payload = fetch_gmgn_token_info_payload(address, chain)
     row = _find_token_info_row(payload, address.lower())
-    top_level = payload if isinstance(payload, dict) and str(payload.get("address") or "").lower() == address.lower() else {}
+    top_level = payload if str(payload.get("address") or "").lower() == address.lower() else {}
     normalized = {**top_level, **(row or {})}
     market_cap = number(normalized.get("usd_market_cap") or normalized.get("market_cap"))
     if market_cap <= 0:
@@ -428,7 +417,7 @@ def fetch_gmgn_token_info(
         return None
     normalized["usd_market_cap"] = market_cap
     normalized.setdefault("address", address.lower())
-    normalized["chain"] = requested_chain
+    normalized["chain"] = normalize_chain(chain)
     normalized.setdefault(
         "launchpad_platform",
         _recursive_pick(payload, ("launchpad_platform", "launchpad")) or "telegram",
@@ -447,6 +436,71 @@ def fetch_gmgn_token_info(
         and normalized.get("volume_24h") not in (None, "")
     )
     return token_from_row(normalized, allow_unknown_platform=allow_unknown_platform)
+
+
+def fetch_gmgn_token_info_payload(address: str, chain: str = CHAIN) -> dict[str, Any]:
+    """Return the raw public token-info response for screening and social links."""
+    _raise_if_gmgn_backing_off()
+    if not ensure_cli_ready():
+        raise RuntimeError("GMGN CLI is not ready")
+    requested_chain = normalize_chain(chain)
+    command = [GMGN, "token", "info", "--chain", "sol" if requested_chain == "solana" else requested_chain, "--address", address, "--raw"]
+    _wait_for_gmgn_request_slot()
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=gmgn_subprocess_env(), check=False)
+    if result.returncode:
+        error = result.stderr.strip() or result.stdout.strip() or "GMGN token-info query failed"
+        _record_gmgn_rate_limit(error)
+        raise RuntimeError(error)
+    payload = json.loads(result.stdout)
+    if not isinstance(payload, dict):
+        raise RuntimeError("GMGN token-info response is not an object")
+    return payload
+
+
+def _find_token_profile_row(value: Any, address: str) -> dict[str, Any] | None:
+    target = address.casefold() if address.startswith("0x") else address
+    if isinstance(value, dict):
+        candidate_address = str(value.get("address") or value.get("token_address") or "")
+        candidate_address = candidate_address.casefold() if address.startswith("0x") else candidate_address
+        if candidate_address == target:
+            return value
+        for child in value.values():
+            found = _find_token_profile_row(child, address)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_token_profile_row(child, address)
+            if found:
+                return found
+    return None
+
+
+def _gmgn_prewrite_profile(payload: dict[str, Any], token: Token) -> dict[str, Any]:
+    row = _find_token_profile_row(payload, token.address)
+    if row is None:
+        raise RuntimeError("GMGN token-info response did not match the requested address")
+    wallet_tags = row.get("wallet_tags_stat") if isinstance(row.get("wallet_tags_stat"), dict) else None
+    if wallet_tags is None or wallet_tags.get("renowned_wallets") in (None, ""):
+        raise RuntimeError("GMGN token-info response has no KOL wallet count")
+    raw_kol_count = wallet_tags["renowned_wallets"]
+    if isinstance(raw_kol_count, bool) or (isinstance(raw_kol_count, float) and not raw_kol_count.is_integer()):
+        raise RuntimeError("GMGN returned an invalid KOL wallet count")
+    try:
+        kol_count = int(raw_kol_count)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("GMGN returned an invalid KOL wallet count") from exc
+    if kol_count < 0:
+        raise RuntimeError("GMGN returned a negative KOL wallet count")
+    link = row.get("link") if isinstance(row.get("link"), dict) else {}
+    return {
+        "address": token.address,
+        "chain": token.chain,
+        "kol_count": kol_count,
+        "twitter_username": str(link.get("twitter_username") or "").strip(),
+        "website": str(link.get("website") or "").strip(),
+        "checked_at": now_iso(),
+    }
 
 
 def _find_token_info_row(value: Any, address: str) -> dict[str, Any] | None:
@@ -1649,6 +1703,31 @@ def push_pending(
     return {"ok": False, "error": str(last_error) if last_error else "push failed", "payload": payload}
 
 
+def _ensure_gmgn_kol_profile(
+    store: Store,
+    job: sqlite3.Row,
+    token: Token,
+    job_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    cached = job_evidence.get("gmgn_token_profile")
+    if (
+        isinstance(cached, dict)
+        and cached.get("address") == token.address
+        and cached.get("chain") == token.chain
+        and isinstance(cached.get("kol_count"), int)
+    ):
+        return cached
+    payload = fetch_gmgn_token_info_payload(token.address, token.chain)
+    profile = _gmgn_prewrite_profile(payload, token)
+    job_evidence["gmgn_token_profile"] = profile
+    with store.conn:
+        store.conn.execute(
+            "UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?",
+            (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job["id"]),
+        )
+    return profile
+
+
 def process_one(store: Store, args: argparse.Namespace, *, address: str | None = None) -> str | None:
     job = store.claim_job(address)
     if job is None:
@@ -1662,6 +1741,56 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     if token is None:
         store.update_job(job["id"], "discarded", reason="invalid_token_payload")
         return "invalid_token_payload"
+    job_evidence = json.loads(job["evidence_json"]) if job["evidence_json"] else {}
+    try:
+        gmgn_profile = _ensure_gmgn_kol_profile(store, job, token, job_evidence)
+    except Exception as exc:
+        screening = {
+            "status": "error",
+            "source": "gmgn",
+            "chain": token.chain,
+            "address": token.address,
+            "error": type(exc).__name__,
+            "checked_at": now_iso(),
+        }
+        audit = {
+            "status": "error",
+            "decision_code": "gmgn_kol_query_failed",
+            "decision_reason": "GMGN KOL 数量查询失败，任务进入重试。",
+            "gmgn_kol_screening": screening,
+            "reader_text": "",
+        }
+        return store.retry_job(job, "gmgn_kol_query_failed", narrative=audit)
+    screening = {
+        "status": "passed" if gmgn_profile["kol_count"] > 0 else "skipped",
+        "source": "gmgn",
+        "chain": token.chain,
+        "address": token.address,
+        "kol_count": gmgn_profile["kol_count"],
+        "checked_at": gmgn_profile["checked_at"],
+    }
+    job_evidence["gmgn_kol_screening"] = screening
+    if gmgn_profile["kol_count"] == 0:
+        store.update_job(
+            job["id"],
+            "discarded",
+            reason="kol_count_zero",
+            narrative={
+                "status": "skipped",
+                "decision_code": "kol_count_zero",
+                "decision_reason": "GMGN 标记的 KOL 钱包数为 0，未进入写作。",
+                "material_counts": {"gmgn_kol_wallets": 0},
+                "gmgn_kol_screening": screening,
+                "gmgn_token_profile": gmgn_profile,
+                "reader_text": "",
+            },
+        )
+        return "kol_count_zero"
+    with store.conn:
+        store.conn.execute(
+            "UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?",
+            (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job["id"]),
+        )
     from .grok_jobs import prepare as prepare_grok
     grok_ready, grok_audit = prepare_grok(store, job, token)
     if not grok_ready:
@@ -1669,7 +1798,6 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     if job["reason"] == "grok_pending":
         with store.conn:
             store.conn.execute("UPDATE jobs SET reason=NULL WHERE id=?", (job["id"],))
-    job_evidence = json.loads(job["evidence_json"]) if job["evidence_json"] else {}
     job_evidence["grok_routine"] = grok_audit
     narrative = collect_narrative(
         token,

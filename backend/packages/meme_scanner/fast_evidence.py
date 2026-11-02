@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from packages.common.paths import get_paths
 
-from . import narrative_v2
+from . import narrative_v2, token_social
 from .browser_lock import BrowserLockTimeout, exclusive_browser
 from .fast_narrative import INTERFACE_VERSION
 
@@ -199,6 +199,28 @@ def _collect_x(contract: str) -> dict[str, Any]:
             "status": "partial" if upstream.get("degraded") else ("success" if evidence else "empty"),
             "code": "upstream_degraded" if upstream.get("degraded") else "",
             "itemCount": len(evidence),
+            "durationMs": round((time.perf_counter() - started) * 1000),
+        },
+    }
+
+
+def _collect_token_social(profile: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
+    result = token_social.collect(
+        profile,
+        timeout=_int_env("MEME_TOKEN_SOCIAL_TIMEOUT_SECONDS", 12, minimum=1, maximum=30),
+        max_posts=_int_env("MEME_TOKEN_SOCIAL_MAX_POSTS", 20, minimum=1, maximum=50),
+    )
+    diagnostic = result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {}
+    return {
+        "evidence": result.get("evidence") if isinstance(result.get("evidence"), list) else [],
+        "contexts": [],
+        "diagnostic": {
+            "stage": "gmgn_linked_social_collection",
+            "status": str(diagnostic.get("status") or "error"),
+            "x_account": diagnostic.get("x_account") or {},
+            "website": diagnostic.get("website") or {},
+            "itemCount": int(diagnostic.get("itemCount") or 0),
             "durationMs": round((time.perf_counter() - started) * 1000),
         },
     }
@@ -543,10 +565,11 @@ def _fomo_error(code: str, started: float) -> dict[str, Any]:
 
 
 class LocalFastEvidenceAdapter:
-    """Collect the three public/owned Meme evidence sources in bounded parallelism."""
+    """Collect Meme evidence sources in bounded parallelism."""
 
-    def __init__(self, *, timeout_seconds: int = 45) -> None:
+    def __init__(self, *, timeout_seconds: int = 45, token_profile: dict[str, Any] | None = None) -> None:
         self.timeout_seconds = max(1, int(timeout_seconds))
+        self.token_profile = token_profile if isinstance(token_profile, dict) else {}
 
     def collect(self, *, chain: str, contract: str, symbol: str, request_id: str) -> dict[str, Any]:
         del symbol, request_id
@@ -555,9 +578,10 @@ class LocalFastEvidenceAdapter:
         workers = {
             "telegram": lambda: _collect_telegram(contract),
             "x": lambda: _collect_x(contract),
+            "token_social": lambda: _collect_token_social(self.token_profile),
         }
         results: dict[str, dict[str, Any]] = {}
-        executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="meme-fast-evidence")
+        executor = ThreadPoolExecutor(max_workers=len(workers), thread_name_prefix="meme-fast-evidence")
         try:
             futures = {executor.submit(worker): source for source, worker in workers.items()}
             try:
@@ -584,7 +608,7 @@ class LocalFastEvidenceAdapter:
         evidence: list[dict[str, Any]] = []
         contexts: list[dict[str, Any]] = []
         diagnostics: dict[str, Any] = {}
-        for source in ("telegram", "x", "fomo_thesis"):
+        for source in ("telegram", "x", "token_social", "fomo_thesis"):
             result = results.get(source) or _source_error(source, "collection_failed")
             evidence.extend(item for item in result.get("evidence") or [] if isinstance(item, dict))
             if source == "telegram":
@@ -596,7 +620,7 @@ class LocalFastEvidenceAdapter:
         technical_errors = {"error"}
         if evidence:
             status = "success" if not (statuses & technical_errors or "login_required" in statuses or "partial" in statuses) else "partial"
-        elif statuses == {"empty"} or statuses.issubset({"empty", "disabled", "unsupported"}):
+        elif statuses == {"empty"} or statuses.issubset({"empty", "disabled", "unsupported", "skipped"}):
             status = "empty"
         elif "login_required" in statuses:
             status = "partial"

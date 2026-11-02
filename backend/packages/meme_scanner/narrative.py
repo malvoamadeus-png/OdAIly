@@ -51,6 +51,7 @@ def generate_reader_text(
     args.grok_routine = (evidence or {}).get("grok_routine", {})
     provider = fast_evidence.LocalFastEvidenceAdapter(
         timeout_seconds=int(os.getenv("MEME_LOCAL_EVIDENCE_TIMEOUT") or min(timeout, 45)),
+        token_profile=(evidence or {}).get("gmgn_token_profile"),
     )
     try:
         result = _run(lambda: fast_narrative.run(args, provider=provider))

@@ -16,9 +16,9 @@
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 先查询 Robinhood Chain，再以 BNB Chain（30 万美元）兜底；Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议入选时以当时市值建立跟踪基线，不为已经生成热议稿的当前水位重复生成普通里程碑稿。后续跟踪观察上破新档时，仍按普通里程碑成交量资格和幂等规则生成任务。
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议成功入队时立即写 active 跟踪状态及查询计划；后续 OKX `completed` 扫描复用该观察和里程碑账本，不重新启动窗口。
-- 两类任务均执行成交量门槛、叙事生成、重试和 OdAIly 挂后台写入逻辑。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。Dexscreener 的所选交易对、流动性、市值和成交量字段写入原始快照；Meme 链路不调用 OKX 签名详情接口，也不执行 OKX 风险字段拦截。
+- 两类任务均执行成交量门槛、GMGN KOL 数量筛选、叙事生成、重试和 OdAIly 挂后台写入逻辑。开始等待 Grok 或进入写作前，按任务 CA 和链查询 GMGN `token info`；`wallet_tags_stat.renowned_wallets` 为 0 时以 `kol_count_zero` 结束且不写作，字段缺失、响应地址不匹配或请求失败均作为暂时错误重试，不能按 0 处理。查询成功的 KOL 数量与 GMGN X/官网链接随任务审计保存，重试时复用同一任务的结果。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。Dexscreener 的所选交易对、流动性、市值和成交量字段写入原始快照；Meme 链路不调用 OKX 签名详情接口，也不执行 OKX 风险字段拦截。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成保留版本化快速材料契约，但 Telegram、FxTwitter 和 FOMO Thesis 都由 `odaily-official` 的本地 collector 并行收集；两个栏目额外请求Grok Bot Routine，非阻塞等待回调最多15分钟；失败或超时仍用其他材料写稿。OdAIly使用 `gpt-6-luna` 在同一次调用内判断 `pure_meme/celebrity_anchor/app_linked`，再按对应入口写作；Grok材料单独以 `Grok补充资料显示，` 开头，允许重复炒作角度。Telegram/FxTwitter 不启动浏览器。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存三路材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成保留版本化快速材料契约。通过 KOL 筛选后，Telegram、CA 搜索到的 FxTwitter 帖子、GMGN 链接账号最多 20 条近期原创帖、GMGN 提供的网站页面正文和 FOMO Thesis 均由 `odaily-official` 本地 collector 并行收集；账号帖子和网页材料分别审计来源 URL、账号/站点名及最终采用状态。两个栏目额外请求 Grok Bot Routine，非阻塞等待回调最多 15 分钟；失败或超时仍用其他材料写稿。OdAIly 使用 `gpt-6-luna` 在同一次调用内判断 `pure_meme/celebrity_anchor/app_linked`，再按对应入口写作；采用 GMGN 链接账号或网站内容时，正文按“信源@账号表示”或“信源站点表示”归因，不把未经材料确认的账号身份写成项目方。Grok 材料单独以 `Grok补充资料显示，` 开头，允许重复炒作角度。FxTwitter 不启动浏览器。网页抓取仅允许公开 HTTP(S) 页面，限制响应大小、跳转次数和超时。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存材料、调用诊断和最终判断；真正没有可用材料时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 今日热门Meme
 
@@ -61,7 +61,7 @@ Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 - 前端列表隐藏明确未通过门槛的任务：`volume_gate_failed`、`tg_market_cap_gate_failed`、`unsupported_chain`、`token_not_found`；这些任务仍保留在 SQLite 中用于审计。
 - 列表响应仅增加叙事摘要：`narrative_available`、`narrative_status`、`failure_stage`、`failure_code`、`primary_type`、`type_hypothesis`；不把 Telegram 上下文塞入列表。
 - 任务详情的 `timing` 还原生命周期耗时：排队（`queued_at -> processing_started_at`）、叙事（`narrative.performance.total_duration_ms`）、发布写入（`publishing_started_at -> completed_at`）和总耗时（`queued_at -> completed_at`）。新库由 `jobs.processing_started_at`、`publishing_started_at`、`completed_at` 记录，旧任务缺字段时返回 `null`。
-- 叙事审计的“性能与调用诊断”展示本地三路快速材料汇合耗时、各来源诊断和 Luna 最终写作耗时；来源并行，因此来源耗时之和可能大于汇合耗时。
+- 叙事审计的“性能与调用诊断”展示本地多路快速材料汇合耗时、各来源诊断和 Luna 最终写作耗时；来源并行，因此来源耗时之和可能大于汇合耗时。
 - `GET /console/meme/detail?id=<job_id>` 按需返回单条任务的完整 `narrative_json`。旧库或旧任务没有该字段时返回 `available=false`，不影响列表。
 - 数据库不存在、不可读或 schema 不兼容时，接口返回 `available=false` 和错误文本，不创建空库。
 
@@ -93,9 +93,9 @@ python backend/src/main.py meme tg-watch
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。
 - CA 匹配：EVM 使用 `0x` 加 40 位十六进制；Solana 使用 32-44 位 Base58 公钥格式，并在候选中保存 `chain`。EVM 候选按 Robinhood、BSC 顺序以 Dexscreener 查询并采用首个市场指标完整的链结果；任务 payload、快照、观察、里程碑、叙事和标题沿用该链值，BSC/Robinhood 的发现来源仍是 OKX MemePump 网页。
-- 叙事 Telegram：本地 collector 使用 `MEME_NARRATIVE_TELEGRAM_CONFIG`、`MEME_NARRATIVE_TELEGRAM_SESSION` 和 `MEME_NARRATIVE_TELEGRAM_ALLOWED_CHATS`；它与 watcher 使用不同 session，但使用同一白名单。FxTwitter 请求由 `MEME_NARRATIVE_X_TIMEOUT_SECONDS` 控制。
+- 叙事 Telegram：本地 collector 使用 `MEME_NARRATIVE_TELEGRAM_CONFIG`、`MEME_NARRATIVE_TELEGRAM_SESSION` 和 `MEME_NARRATIVE_TELEGRAM_ALLOWED_CHATS`；它与 watcher 使用不同 session，但使用同一白名单。CA 搜索 FxTwitter 请求由 `MEME_NARRATIVE_X_TIMEOUT_SECONDS` 控制；GMGN 链接账号时间线与网站正文采集分别受 `MEME_TOKEN_SOCIAL_MAX_POSTS`（默认 20）和 `MEME_TOKEN_SOCIAL_TIMEOUT_SECONDS`（默认 12 秒）限制。
 - FOMO：`MEME_FOMO_PROFILE_DIR` 是服务器本地、权限 `0700` 的独立运行时 profile，绝不纳入 Git 或审计 JSON；其中浏览器自身保留的认证状态只供后续按需采集使用，应用不读取、导出、打印或写入 Cookie/JWT。`MEME_FOMO_ENABLED`、`MEME_FOMO_NAVIGATION_TIMEOUT_SECONDS`、`MEME_FOMO_REQUEST_TIMEOUT_SECONDS`、`MEME_FOMO_MAX_PAGES` 和 `MEME_FOMO_PAGE_SIZE` 约束单次按需采集。`MEME_FOMO_HEADLESS` 默认 `false`：FOMO 的 Privy runtime 目前只在有头 Chromium 中就绪，生产 scanner 已由 Xvfb 提供虚拟显示；每次采集仍在完成后立即关闭 Chromium。没有 profile、跳转登录页或认证响应时，collector 标记 `login_required`；scanner 使用 `MEME_FOMO_LOGIN_ALERT_CHAT_ID`（回退 `TELEGRAM_CHAT_ID`）、`MEME_FOMO_LOGIN_ALERT_THREAD_ID`（回退全局 topic）、`MEME_FOMO_LOGIN_ALERT_COOLDOWN_SECONDS` 和 `MEME_FOMO_LOGIN_ALERT_TIMEOUT_SECONDS` 向值班人提醒。`MEME_FOMO_LOGIN_RETRY_SECONDS` 默认 300 秒；`MEME_FOMO_LOGIN_TIMEOUT_SECONDS` 和 `MEME_FOMO_LOGIN_CDP_PORT` 控制一次性 `meme fomo-login` 与 `meme bloomberg-read` 维护窗口及其 loopback DevTools 端口。登录辅助只在选项唯一时自动点击，Google 验证挑战由操作者接管；不会启动常驻 FOMO 服务或公开远程调试端口。
-- 快速材料不再使用 `MEME_FAST_EVIDENCE_URL` 或 `MEME_FAST_EVIDENCE_INTERNAL_KEY`，不再请求 HideOnBush。`MEME_LOCAL_EVIDENCE_TIMEOUT` 控制本地采集的总配置上限。
+- 快速材料不再使用 `MEME_FAST_EVIDENCE_URL` 或 `MEME_FAST_EVIDENCE_INTERNAL_KEY`，不再请求 HideOnBush。GMGN `token info` 用于 KOL 数量筛选和取得链接元数据；所链接的公开 X 时间线和网页正文由本地 collector 获取。`MEME_LOCAL_EVIDENCE_TIMEOUT` 控制本地采集的总配置上限。
 - 最终写作：使用独立的 `MEME_FAST_WRITER_BASE_URL`、`MEME_FAST_WRITER_API_KEY` 和 `MEME_FAST_WRITER_MODEL`，模型默认固定为 `gpt-6-luna`，请求使用 `reasoning_effort=none`，GPT 客户端默认超时为 `90` 秒。Grok补充来自Bot Routine回调；不调用Grok X Search、Grok实体补充或GMGN叙事。
 - 未单独设置快速 writer 地址或密钥时才回退 OdAIly 的 `ODAILY_LLM_BASE_URL`、`ODAILY_LLM_API_KEY`；生产应显式配置支持 Luna 的独立 relay。
 - 推送接口复用 `ODAILY_PUSH_ENDPOINT`，也可由 `MEME_ODAILY_PUSH_ENDPOINT` 单独覆盖。
@@ -105,10 +105,10 @@ python backend/src/main.py meme tg-watch
 - 最终叙事通过 `narrative_v2` 的生成阶段校验后，scanner 不再维护或执行另一套发布前正文禁词与角度正则；非空正文直接进入标题、正文组装和挂后台流程。
 - `queued -> processing -> publishing -> publisher_pending`：正常挂后台路径。
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
-- `volume_gate_failed`、`tg_market_cap_gate_failed`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。
+- `volume_gate_failed`、`tg_market_cap_gate_failed`、`kol_count_zero`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。GMGN 查询失败或没有可解析的 KOL 数量时任务进入 `retry_wait`；只有成功确认计数为 0 才跳过。
 - 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
 - OKX 网页发现成功后只更新最新发现窗口并释放 Chromium；网页页面失败会保留明确错误，不把空结果或浏览器异常当成“没有迁移代币”，也不会回退官方发现。Dexscreener 市场适配器成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；发现阶段按链批量请求，列表外跟踪按单币请求。任一市场适配器失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗；调度积压写入 worker 日志。
-- FOMO 的 `login_required` 不阻断已有 Telegram/FxTwitter 材料；若三路均无正文且 FOMO 登录缺失，任务进入 `retry_wait`，每 `MEME_FOMO_LOGIN_RETRY_SECONDS`（默认 300 秒）再试一次，不受通常 3 次临时重试上限限制，但仍在入队 1 小时后按 `queue_expired` 结束；同时通知在冷却窗口内只发一次。FOMO 其他浏览器或页面错误保留安全错误码，不导出会话或上游原始响应。
+- FOMO 的 `login_required` 不阻断已有 Telegram、FxTwitter、GMGN 账号或网站材料；若其他来源均无正文且 FOMO 登录缺失，任务进入 `retry_wait`，每 `MEME_FOMO_LOGIN_RETRY_SECONDS`（默认 300 秒）再试一次，不受通常 3 次临时重试上限限制，但仍在入队 1 小时后按 `queue_expired` 结束；同时通知在冷却窗口内只发一次。FOMO 其他浏览器或页面错误保留安全错误码，不导出会话或上游原始响应。
 - `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、首次开始时间、滑动窗口锚点与截止时间、永久成交量资格、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按持久化截止时间、资格和 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 Dexscreener 查询。旧库新增锚点时从原始开始时间回填，新增档位不会依据历史最高市值补发；原 `market_cap_milestones` 档位账本保持不变，避免旧档重触发。历史库的 `chain` 字段优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。
 - `observations` 是当前跟踪状态，不是完整历史；溯源和首次档位判断以 `token_snapshots`、`market_cap_milestones` 为准。
 - TG 消息按 `CA + chat_id + message_id` 和转发源双重去重，候选 6 小时冷却，原始提及默认保留 3 天。
@@ -133,7 +133,7 @@ python backend/src/main.py meme tg-watch
 
 ## 叙事契约
 
-内部审计保存 `status`、`failure_stage`、`failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`、`fast_evidence`、`telegram_messages`、`x_posts`、`fomo_materials`、最终分类材料、使用/丢弃材料、`reader_text` 和性能诊断。命中频次、群组数量、用户情绪、税务或官网链接、机器人卡片和检索过程不能进入正文。详细规则见 控制台-Meme速递叙事规范.md。
+内部审计保存 `status`、`failure_stage`、`failure_code`、`failure_message`、`material_counts`、`decision_code`、`decision_reason`、`gmgn_kol_screening`、`gmgn_token_profile`、`fast_evidence`、`telegram_messages`、`x_posts`、GMGN 链接账号/网站材料、`fomo_materials`、最终分类材料、使用/丢弃材料、`reader_text` 和性能诊断。命中频次、群组数量、用户情绪、裸链接、机器人卡片和检索过程不能进入正文；写入的网页事实必须来自已采集正文并按站点归因。详细规则见 控制台-Meme速递叙事规范.md。
 
 ## 白名单外发现
 
