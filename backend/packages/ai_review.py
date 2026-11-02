@@ -495,6 +495,33 @@ def _match_alias(text: str, alias: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_]){re.escape(clean)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
 
 
+def _compile_alias_matcher(aliases: dict[str, Any]) -> tuple[re.Pattern[str] | None, dict[str, str]]:
+    normalized = sorted(
+        {str(alias).strip().casefold() for alias in aliases if str(alias).strip()},
+        key=lambda alias: (-len(alias), alias),
+    )
+    if not normalized:
+        return None, {}
+    group_aliases: dict[str, str] = {}
+    alternatives = []
+    for index, alias in enumerate(normalized):
+        group = f"a{index}"
+        if re.fullmatch(r"\$?[A-Za-z][A-Za-z0-9]{0,9}", alias):
+            body = rf"\$?{re.escape(alias.lstrip('$'))}"
+        else:
+            body = re.escape(alias)
+        alternatives.append(rf"(?P<{group}>(?<![A-Za-z0-9_]){body}(?![A-Za-z0-9_]))")
+        group_aliases[group] = alias
+    return re.compile("|".join(alternatives), re.IGNORECASE), group_aliases
+
+
+def _find_alias_matches(text: str, matcher: tuple[re.Pattern[str] | None, dict[str, str]]) -> set[str]:
+    pattern, group_aliases = matcher
+    if pattern is None:
+        return set()
+    return {group_aliases[match.lastgroup] for match in pattern.finditer(text) if match.lastgroup}
+
+
 def _extract_clues(texts: list[str]) -> dict[str, list[str]]:
     accounts: set[str] = set()
     domains: set[str] = set()
@@ -821,11 +848,13 @@ class AIReviewService:
         if not assets and not project_aliases:
             return 0
         posts = self._account_posts(since)
+        usable_assets = {alias: target for alias, target in assets.items() if target}
+        asset_matcher = _compile_alias_matcher(usable_assets)
         by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for post in posts:
-            aliases = [alias for alias in assets if assets[alias] and _match_alias(post["text"], alias)]
+            aliases = _find_alias_matches(post["text"], asset_matcher)
             if aliases and ATTITUDE_RE.search(post["text"]):
-                post["matchedAssets"] = list(dict.fromkeys(assets[alias] for alias in aliases))
+                post["matchedAssets"] = list(dict.fromkeys(usable_assets[alias] for alias in aliases))
                 by_account[post["account"].lower()].append(post)
         inserted = 0
         enabled = self._enabled_modules()
@@ -847,8 +876,9 @@ class AIReviewService:
             **project_aliases,
             **{alias: target for alias, target in assets.items() if target and target.startswith("Crypto具体标的:")},
         }
+        crypto_matcher = _compile_alias_matcher(crypto_aliases)
         for post in posts:
-            known = [alias for alias in crypto_aliases if _match_alias(post["text"], alias)]
+            known = _find_alias_matches(post["text"], crypto_matcher)
             if known or CRYPTO_CONTEXT_RE.search(post["text"]):
                 post["matchedProjects"] = list(dict.fromkeys(crypto_aliases[alias] for alias in known))
                 crypto_by_account[post["account"].lower()].append(post)

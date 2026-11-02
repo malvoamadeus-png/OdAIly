@@ -13,6 +13,8 @@ from packages.ai_review import (
     DAILY_TOKEN_LIMIT,
     AIReviewRepository,
     AIReviewService,
+    _compile_alias_matcher,
+    _find_alias_matches,
     _match_alias,
 )
 from packages.hottopic.service import HotTopicService
@@ -134,6 +136,8 @@ def test_ticker_matching_requires_complete_word_boundary():
     assert _match_alias("Bitcoin is bullish", "bitcoin")
     assert ATTITUDE_RE.search("Bitcoin is bullish")
     assert not ATTITUDE_RE.search("a longer story about a shortage")
+    matcher = _compile_alias_matcher({"btc": "bitcoin", "bitcoin": "bitcoin", "比特币": "bitcoin"})
+    assert _find_alias_matches("$BTC, Bitcoin and 比特币; BTCXYZ", matcher) == {"btc", "bitcoin", "比特币"}
 
 
 def test_event_queue_includes_only_three_supported_event_scenarios():
