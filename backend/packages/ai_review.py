@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 DAILY_TOKEN_LIMIT = 50_000_000
 REVIEW_LOOKBACK_DAYS = 3
+MAX_ANALYSIS_BATCH = 50
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
 RECOMMENDATIONS = {"priority", "consider", "drop"}
@@ -189,7 +190,7 @@ class AIReviewRepository:
             )
         return cursor.rowcount > 0
 
-    def pending_analysis(self, item_type: str, limit: int = 500) -> list[dict[str, Any]]:
+    def pending_analysis(self, item_type: str, limit: int = MAX_ANALYSIS_BATCH) -> list[dict[str, Any]]:
         rows = self.db.execute(
             "SELECT * FROM ai_review_items WHERE item_type=? AND analysis_status IN ('queued','failed') "
             "AND analysis_attempts<? ORDER BY datetime(COALESCE(source_updated_at,created_at)) DESC,id DESC LIMIT ?",

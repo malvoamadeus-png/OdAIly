@@ -440,7 +440,7 @@ def test_daily_run_uses_three_day_window_and_continues_beyond_one_batch():
             analyzer=FakeAnalyzer(),
         )
         try:
-            for index in range(501):
+            for index in range(51):
                 service.repository.insert_candidate(
                     key=f"account:batch{index}:market_sentiment", item_type="account", category="market_sentiment",
                     title=f"@batch{index}", evidence=[], account_lower=f"batch{index}",
@@ -450,7 +450,7 @@ def test_daily_run_uses_three_day_window_and_continues_beyond_one_batch():
             assert service.run_if_due(now=before_six)["status"] == "not_due"
             first = service.run_if_due(now=at_six)
             assert first["status"] == "in_progress"
-            assert first["analyzed"] == 500
+            assert first["analyzed"] == 50
             assert service.repository.get_state("last_scan_date") == "2026-11-03"
             second = service.run_if_due(now=at_six + timedelta(seconds=2))
             assert second["status"] == "completed"
