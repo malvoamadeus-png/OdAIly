@@ -442,18 +442,20 @@ def test_history_examples_are_limited_to_matching_review_category():
             repository.close()
 
 
-def test_queue_hides_unanalyzed_and_drop_recommendations():
+def test_queue_shows_only_completed_priority_recommendations():
     with TemporaryDirectory() as tmp:
         repository = AIReviewRepository(Path(tmp) / "review.sqlite")
         try:
-            for key in ("visible", "drop", "queued"):
+            for key in ("visible", "consider", "drop", "queued"):
                 repository.insert_candidate(
                     key=f"event:{key}:multiple_competitors_no_odaily", item_type="event", category="multiple_competitors_no_odaily",
                     title=key, evidence=[],
                 )
             visible = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:visible:multiple_competitors_no_odaily'").fetchone()[0]
+            consider = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:consider:multiple_competitors_no_odaily'").fetchone()[0]
             dropped = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:drop:multiple_competitors_no_odaily'").fetchone()[0]
-            repository.complete_analysis(visible, recommendation="consider", reason="可持续追踪", model="gpt-6-luna", input_tokens=10, output_tokens=2)
+            repository.complete_analysis(visible, recommendation="priority", reason="可持续追踪", model="gpt-6-luna", input_tokens=10, output_tokens=2)
+            repository.complete_analysis(consider, recommendation="consider", reason="证据有限", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             repository.complete_analysis(dropped, recommendation="drop", reason="不跟进", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             page = repository.list_items(item_type="event")
             assert page["total"] == 1

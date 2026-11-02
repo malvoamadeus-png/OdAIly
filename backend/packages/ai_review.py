@@ -331,10 +331,7 @@ class AIReviewRepository:
         self, *, item_type: str = "all", status: str = "all", category: str = "all",
         offset: int = 0, limit: int = 30,
     ) -> dict[str, Any]:
-        clauses, params = [
-            "analysis_status='completed'", "recommendation<>'drop'",
-            "(item_type<>'account' OR recommendation='priority')",
-        ], []
+        clauses, params = ["analysis_status='completed'", "recommendation='priority'"], []
         if item_type in {"event", "account"}:
             clauses.append("item_type=?")
             params.append(item_type)
@@ -366,7 +363,7 @@ class AIReviewRepository:
             "SUM(CASE WHEN status='deferred' THEN 1 ELSE 0 END) AS deferred,"
             "COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens "
             "FROM ai_review_items WHERE datetime(created_at)>=datetime(?) AND analysis_status='completed' "
-            "AND recommendation<>'drop' AND (item_type<>'account' OR recommendation='priority')",
+            "AND recommendation='priority'",
             (cutoff,),
         ).fetchone()
         candidates = int(row["candidates"] or 0)
