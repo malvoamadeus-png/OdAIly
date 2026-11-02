@@ -471,7 +471,8 @@ export type XAgentInvestmentLead = {
   subject: string;
   driverLogic: string;
   conditions: string;
-  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string }>;
+  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional' }>;
+  replay?: { label?: string; sourcePostedAt?: string; importedAt?: string };
   sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
   firstSeenAt: string;
   lastSubstantiveAt: string;

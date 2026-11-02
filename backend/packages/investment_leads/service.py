@@ -890,7 +890,7 @@ class InvestmentLeadService:
         revision = int(row["revision"]) + 1
         self.db.execute(
             "UPDATE investment_leads SET assets_json=?,last_substantive_at=?,revision=?,updated_at=? WHERE id=?",
-            (assets_json, now, revision, now, lead_id),
+            (assets_json, _decoded(row["replay_json"], {}).get("sourcePostedAt") or now, revision, now, lead_id),
         )
         self.db.execute(
             "INSERT INTO investment_lead_revisions(lead_id,revision,subject,driver_logic,conditions,assets_json,"
@@ -1114,7 +1114,7 @@ class InvestmentLeadService:
             if substantive:
                 self.db.execute(
                     "UPDATE investment_leads SET subject=?,driver_logic=?,conditions=?,assets_json=?,source_claims_json=?,"
-                    "last_substantive_at=?,revision=?,status=?,updated_at=? WHERE id=?",
+                    "last_substantive_at=?,revision=?,status=?,updated_at=?,replay_json='{}' WHERE id=?",
                     (lead["subject"], lead["driver_logic"], lead.get("conditions") or "", assets_json,
                      claims_json, now, revision, status, now, lead_id),
                 )
@@ -1478,6 +1478,7 @@ class InvestmentLeadService:
             "sourceClaims": _decoded(row["source_claims_json"], []),
             "firstSeenAt": row["first_seen_at"], "lastSubstantiveAt": row["last_substantive_at"],
             "revision": int(row["revision"]), "status": row["status"], "accounts": row.get("accounts") or "",
+            "replay": _decoded(row.get("replay_json"), {}),
         }
 
 

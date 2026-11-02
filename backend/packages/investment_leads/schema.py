@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS investment_leads (
   conditions TEXT NOT NULL DEFAULT '',
   assets_json TEXT NOT NULL DEFAULT '[]',
   source_claims_json TEXT NOT NULL DEFAULT '[]',
+  replay_json TEXT NOT NULL DEFAULT '{}',
   first_seen_at TEXT NOT NULL,
   last_substantive_at TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 1,
@@ -97,6 +98,13 @@ CREATE TABLE IF NOT EXISTS investment_leads (
 );
 CREATE INDEX IF NOT EXISTS idx_investment_leads_window
   ON investment_leads(last_substantive_at DESC,status);
+CREATE TABLE IF NOT EXISTS investment_lead_replay_imports (
+  run_id TEXT NOT NULL,
+  source_lead_id TEXT NOT NULL,
+  lead_id TEXT NOT NULL REFERENCES investment_leads(id),
+  imported_at TEXT NOT NULL,
+  PRIMARY KEY(run_id,source_lead_id)
+);
 CREATE TABLE IF NOT EXISTS investment_lead_revisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id TEXT NOT NULL REFERENCES investment_leads(id) ON DELETE CASCADE,
@@ -160,6 +168,9 @@ CREATE TABLE IF NOT EXISTS investment_lead_scheduler_cursor (
 
 def ensure_schema(connection: sqlite3.Connection, *, capture_started_at: str) -> None:
     connection.executescript(SCHEMA)
+    lead_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_leads)")}
+    if "replay_json" not in lead_columns:
+        connection.execute("ALTER TABLE investment_leads ADD COLUMN replay_json TEXT NOT NULL DEFAULT '{}'")
     meta_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_leads_meta)").fetchall()}
     if "model_error" not in meta_columns:
         connection.execute("ALTER TABLE investment_leads_meta ADD COLUMN model_error TEXT")

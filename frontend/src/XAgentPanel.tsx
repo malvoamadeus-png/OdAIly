@@ -1094,7 +1094,8 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               <button className="xAgentInvestmentCardButton" type="button" aria-expanded={selected} onClick={() => setInvestmentSelectedId((current) => current === item.id ? null : item.id)}>
                 <span className="xAgentInvestmentCardHeading"><strong>{item.subject}</strong><span>{item.status === 'unlocated' ? '标的待定位' : `${item.assets.length} 个标的`}</span><time>{formatTime(item.lastSubstantiveAt)}</time></span>
                 <span className="xAgentInvestmentLogic">{item.driverLogic}</span>
-                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}{asset.driver_type && ` · ${asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}`}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                {item.replay?.label && <span className="xAgentInvestmentMeta">{item.replay.label} · 原帖 {formatTime(item.replay.sourcePostedAt)} · 分析更新 {formatTime(item.replay.importedAt)}</span>}
                 <span className="xAgentInvestmentMeta">来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}</span>
               </button>
               <InvestmentSourceControls accounts={item.accounts || ''} onChanged={() => {

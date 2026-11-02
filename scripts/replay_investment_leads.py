@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 import csv
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from dotenv import load_dotenv
 from packages.investment_leads.analysis import (
-    DERIVE_PROMPT_VERSION, SCAN_PROMPT_VERSION, InvestmentLeadAnalyzer,
+    DERIVE_PROMPT_VERSION, SCAN_PROMPT_VERSION, ModelOutput,
 )
 from packages.investment_leads.service import InvestmentLeadService, _iso
 
@@ -25,18 +26,32 @@ def dump(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
-def freeze(source: Path, folder: Path) -> dict:
+def freeze(source: Path, folder: Path, snapshot_from: Path | None = None, latest_limit: int = 0) -> dict:
     target = folder / "input.json"
     if target.exists():
         return json.loads(target.read_text(encoding="utf-8"))
+    if snapshot_from:
+        result = json.loads(snapshot_from.read_text(encoding="utf-8"))
+        result.update(scan_version=SCAN_PROMPT_VERSION, derive_version=DERIVE_PROMPT_VERSION,
+                      source_snapshot=str(snapshot_from))
+        dump(target, result)
+        return result
     db = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
     db.row_factory = sqlite3.Row
     db.execute("BEGIN")
-    materials = [dict(row) for row in db.execute(
-        "SELECT m.* FROM investment_lead_materials m WHERE EXISTS("
-        "SELECT 1 FROM investment_lead_events e WHERE e.material_id=m.material_id "
-        "AND e.content_hash=m.content_hash) ORDER BY m.first_observed_at,m.material_id"
-    )]
+    if latest_limit:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        materials = [dict(row) for row in db.execute(
+            "SELECT m.* FROM investment_lead_materials m WHERE m.posted_at>=? "
+            "AND json_extract(m.payload_json,'$.role')='source_post' "
+            "ORDER BY m.posted_at DESC,m.material_id LIMIT ?", (cutoff, min(2000, latest_limit))) ]
+        materials.reverse()
+    else:
+        materials = [dict(row) for row in db.execute(
+            "SELECT m.* FROM investment_lead_materials m WHERE EXISTS("
+            "SELECT 1 FROM investment_lead_events e WHERE e.material_id=m.material_id "
+            "AND e.content_hash=m.content_hash) ORDER BY m.first_observed_at,m.material_id"
+        )]
     events = [dict(row) for row in db.execute(
         "SELECT e.* FROM investment_lead_events e WHERE e.id=(SELECT MAX(v.id) "
         "FROM investment_lead_events v WHERE v.material_id=e.material_id AND v.content_hash=e.content_hash)"
@@ -47,6 +62,7 @@ def freeze(source: Path, folder: Path) -> dict:
     result = {"frozen_at": _iso(), "scan_version": SCAN_PROMPT_VERSION,
               "derive_version": DERIVE_PROMPT_VERSION, "materials": materials,
               "previous_events": events, "previous_leads": previous, "previous_sources": sources}
+    result["selection"] = f"latest_{latest_limit}_within_24h" if latest_limit else "already_judged"
     dump(target, result)
     return result
 
@@ -91,7 +107,7 @@ def report(service: InvestmentLeadService, snapshot: dict, folder: Path) -> dict
                              key in retained, event.get("reason", "")])
     lines = ["# 投资线索新版全量回放结果", "", f"冻结时间：{snapshot['frozen_at']}", "",
              "独立回放；不写生产结果、不做事实核查或身份搜索；发布时间沿用原帖。", "",
-             "三个并发请求复用线上新版模型、归一化门槛、关联召回和保存逻辑；扫描按跨账号批次执行。",
+             "回放复用线上新版模型、归一化门槛、关联召回和保存逻辑；扫描按跨账号批次执行。",
              "先扫描全部冻结材料，再推导，属于存量回看；可能关联到原帖发布之后才出现的材料，不代表实时发现能力。", "",
              f"材料 {summary['materials']}，完成扫描 {len(events)}，形成线索 {len(rows)}。", ""]
     material_map = {(m["material_id"], m["content_hash"]): m for m in snapshot["materials"]}
@@ -114,16 +130,79 @@ def report(service: InvestmentLeadService, snapshot: dict, folder: Path) -> dict
     return summary
 
 
+def publish(source: Path, folder: Path, label: str) -> None:
+    snapshot = json.loads((folder / "input.json").read_text(encoding="utf-8"))
+    replay = sqlite3.connect((folder / "replay.sqlite").resolve().as_uri() + "?mode=ro", uri=True)
+    replay.row_factory = sqlite3.Row
+    unfinished = replay.execute(
+        "SELECT COUNT(*) FROM investment_lead_tasks WHERE stage IN ('scan','derive') "
+        "AND status IN ('pending','processing','failed','budget_paused')"
+    ).fetchone()[0]
+    if unfinished:
+        raise RuntimeError(f"回放还有 {unfinished} 项未完成，不发布部分结果")
+    if snapshot["derive_version"] != DERIVE_PROMPT_VERSION:
+        raise RuntimeError("回放版本不匹配")
+    live = InvestmentLeadService(source, reader_only=True)
+    run_id = folder.name
+    now = _iso()
+    result = {"run_id": run_id, "imported": [], "already_imported": [], "ineligible": []}
+    rows = replay.execute(
+        "SELECT l.* FROM investment_leads l WHERE EXISTS(SELECT 1 FROM investment_lead_revisions r "
+        "WHERE r.lead_id=l.id AND r.prompt_version=?) ORDER BY l.last_substantive_at", (DERIVE_PROMPT_VERSION,)
+    ).fetchall()
+    for row in rows:
+        with live.db:
+            live.db.execute("UPDATE investment_leads_meta SET worker_last_seen_at=worker_last_seen_at WHERE singleton_key='global'")
+            if live.db.execute("SELECT 1 FROM investment_lead_replay_imports WHERE run_id=? AND source_lead_id=?",
+                               (run_id, row["id"])).fetchone():
+                result["already_imported"].append(row["id"])
+                continue
+            pairs = [(r[0], r[1]) for r in replay.execute(
+                "SELECT material_id,content_hash FROM investment_lead_sources WHERE lead_id=?", (row["id"],))]
+            pairs = [p for p in pairs if live._eligible(*p)]
+            if not pairs:
+                result["ineligible"].append(row["id"])
+                continue
+            assets = json.loads(row["assets_json"])
+            if not assets or any(a.get("premise_type") not in {"observed", "event_conditional"}
+                                 or a.get("driver_type") not in {"operating", "theme"} for a in assets):
+                raise RuntimeError("回放结果不符合新版结构化门槛")
+            dates = [r[0] for p in pairs for r in replay.execute(
+                "SELECT posted_at FROM investment_lead_materials WHERE material_id=? AND content_hash=?", p) if r[0]]
+            source_at = max(dates) if dates else snapshot["frozen_at"]
+            lead = {"matched_lead_id": row["id"], "subject": row["subject"], "driver_logic": row["driver_logic"],
+                    "conditions": row["conditions"], "assets": assets, "source_claims": json.loads(row["source_claims_json"])}
+            model = replay.execute("SELECT actual_model FROM investment_lead_revisions WHERE lead_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()[0]
+            lead_id = live._save_lead(lead, pairs, ModelOutput([], model, None, 0, 0, 0), now)
+            meta = {"label": label, "sourcePostedAt": source_at, "importedAt": now, "runId": run_id}
+            live.db.execute("UPDATE investment_leads SET last_substantive_at=?,first_seen_at=MIN(first_seen_at,?),replay_json=? WHERE id=?",
+                            (source_at, source_at, json.dumps(meta, ensure_ascii=False), lead_id))
+            live.db.execute("INSERT INTO investment_lead_replay_imports VALUES(?,?,?,?)", (run_id, row["id"], lead_id, now))
+            result["imported"].append(lead_id)
+    replay.close()
+    live.close()
+    dump(folder / "publish.json", result)
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--input-token-budget", type=int, default=3_000_000)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--snapshot-from", type=Path)
+    selection.add_argument("--latest-limit", type=int, default=0)
+    parser.add_argument("--publish-only", action="store_true", help="显式将完整回放结果导入来源数据库")
+    parser.add_argument("--publish-label", default="历史重分析")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-    snapshot = freeze(args.source, args.output)
+    if args.publish_only:
+        publish(args.source, args.output, args.publish_label)
+        return
+    snapshot = freeze(args.source, args.output, args.snapshot_from, args.latest_limit)
     if (snapshot["scan_version"], snapshot["derive_version"]) != (SCAN_PROMPT_VERSION, DERIVE_PROMPT_VERSION):
         raise RuntimeError("已有回放版本不同，请使用新输出目录")
     replay_path = args.output / "replay.sqlite"
@@ -145,7 +224,7 @@ def main() -> None:
         for lead in snapshot["previous_leads"]:
             fields = list(lead)
             db.execute(f"INSERT OR IGNORE INTO investment_leads({','.join(fields)}) VALUES({','.join('?' for _ in fields)})", list(lead.values()))
-        db.execute("UPDATE investment_lead_tasks SET status='pending' WHERE status='processing'")
+        db.execute("UPDATE investment_lead_tasks SET status='pending',attempts=MAX(0,attempts-1) WHERE status='processing'")
     analyzer = service.analyzer
     if analyzer is None:
         raise RuntimeError(service.analyzer_error)
