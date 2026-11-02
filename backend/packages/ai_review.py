@@ -20,6 +20,7 @@ MAX_ANALYSIS_BATCH = 50
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
 EVENT_SCAN_VERSION = 2
+EVENT_ANALYSIS_VERSION = 2
 RECOMMENDATIONS = {"priority", "consider", "drop"}
 RECOMMENDATION_LABELS = {"priority": "优先考虑", "consider": "可考虑", "drop": "不建议跟进"}
 STATUS_VALUES = {"pending", "accepted", "rejected", "deferred"}
@@ -365,6 +366,16 @@ class AIReviewRepository:
             "AND analysis_attempts<? LIMIT 1", (item_type, MAX_ANALYSIS_ATTEMPTS),
         ).fetchone() is not None
 
+    def requeue_event_analyses(self) -> int:
+        with self.db:
+            cursor = self.db.execute(
+                "UPDATE ai_review_items SET analysis_status='queued',recommendation='consider',reason='',"
+                "analysis_model=NULL,input_tokens=0,output_tokens=0,analysis_attempts=0,analysis_error=NULL,updated_at=? "
+                "WHERE item_type='event' AND analysis_status='completed'",
+                (datetime.now(UTC).isoformat(),),
+            )
+        return cursor.rowcount
+
     def history_examples(self, item_type: str, category: str, limit: int = 2) -> list[dict[str, str]]:
         rows = self.db.execute(
             "SELECT category,human_decision,feedback_note FROM ai_review_items WHERE item_type=? AND human_decision IS NOT NULL "
@@ -410,10 +421,14 @@ class AIReviewAnalyzer:
             raise RuntimeError("AI 审阅需要配置 X Agent 兼容模型路由和 API key")
         if item["type"] == "event":
             system = (
-                "你是 Crypto 垂直媒体的信源编辑，只分析给定事件原文，不搜索外部资料。你判断的是是否值得持续跟踪这个主题或信源，"
-                "不是单条新闻是否重要。单次申领通知、一次性上线或孤立观点即使对读者有用，也不能据此推荐长期追踪；"
-                "优先考虑持续更新且可能影响读者交易决策的 Crypto 信源，少量股票内容可纳入。对来源归因和名誉风险从严；"
-                "若原文账号只是被提及而非信息来源，应选择 drop。"
+                "你是 Crypto 垂直媒体的选题编辑，只分析给定事件和竞品/自有原文，不搜索外部资料。你判断的是这条具体事件是否值得 Odaily 报道或继续跟进，"
+                "不是判断某个主题或账号是否值得长期追踪。单次申领、资产找回、上线、重大治理或监管变化，只要对 Crypto 读者的资产操作、交易判断或行业理解有明确价值，"
+                "可以优先考虑；不能因为它是一次性事件而降为不建议。"
+                "竞品先发且 Odaily 已由 AI 发布属于已覆盖，判断其编辑价值并简要指出直发/挂后台信号；多家竞品发而 Odaily 未发，要判断是否是值得补上的选题；"
+                "仅 Odaily 发布要判断这是有价值的独家/独立选题还是不必要的内容。"
+                "以 Crypto 垂直媒体为核心，优先读者交易决策和明确行业价值，少量股票内容可纳入；无关的科技新闻或低价值喊单应 drop。"
+                "只按现有原文判断，不能推断来源未提供的事实。负面事件与来源归因从严，避免错误指认造成名誉风险。"
+                "reason 简短说明此条选题价值或不跟进的具体原因；原文链接、账号/域名和已追踪状态由证据列表提供，不要求事件必须产生长期信源建议。"
                 "只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
             )
         else:
@@ -606,12 +621,19 @@ class AIReviewService:
             return {"status": "not_due"}
         today = local.date().isoformat()
         event_scan_key = f"last_event_scan_date_v{EVENT_SCAN_VERSION}"
+        event_analysis_key = f"event_analysis_version"
         account_scan_due = self.repository.get_state("last_scan_date") != today
         event_scan_due = self.repository.get_state(event_scan_key) != today
-        if self.repository.get_state("last_completed_date") == today and not (account_scan_due or event_scan_due):
+        event_analysis_due = self.repository.get_state(event_analysis_key) != str(EVENT_ANALYSIS_VERSION)
+        if self.repository.get_state("last_completed_date") == today and not (
+            account_scan_due or event_scan_due or event_analysis_due
+        ):
             return {"status": "already_ran", "date": today}
         since = current - timedelta(days=REVIEW_LOOKBACK_DAYS)
         queued = {"account": 0, "event": 0}
+        if event_analysis_due:
+            queued["event"] += self.repository.requeue_event_analyses()
+            self.repository.set_state(event_analysis_key, str(EVENT_ANALYSIS_VERSION))
         if account_scan_due:
             queued["account"] = self._queue_accounts(since)
             self.repository.set_state("last_scan_date", today)
