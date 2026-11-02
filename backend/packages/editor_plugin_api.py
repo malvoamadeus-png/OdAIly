@@ -517,6 +517,52 @@ class EditorPluginNewsGenService:
         action = str(payload.get("action") or "")
         return self.newsflash_operations.execute(action, payload, actor_email=actor.email)
 
+    def execute_ai_review(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "list")
+        service = self.hottopic.ai_review
+        try:
+            if action == "list":
+                return service.list_items(payload)
+            item_key = str(payload.get("item_key") or "").strip()
+            if not item_key:
+                raise EditorPluginApiError("item_key 不能为空")
+            if action == "detail":
+                item = service.get_item(item_key)
+                if item is None:
+                    raise EditorPluginApiError("审阅项目不存在")
+                return {"item": item}
+            if action == "decide":
+                return {"item": service.decide(
+                    item_key,
+                    decision=str(payload.get("decision") or ""),
+                    actor=actor.email,
+                    note=str(payload.get("note") or ""),
+                )}
+            if action == "adopt_account":
+                targets = payload.get("targets")
+                if not isinstance(targets, dict):
+                    raise EditorPluginApiError("targets 必须是对象")
+                return {"item": service.adopt_account(
+                    item_key,
+                    actor=actor.email,
+                    targets=targets,
+                    hottopic=self.hottopic,
+                    x_capture=self.x_capture_repository,
+                )}
+            if action == "adopt_event_accounts":
+                handles = payload.get("handles")
+                if not isinstance(handles, list):
+                    raise EditorPluginApiError("handles 必须是数组")
+                return {"item": service.adopt_event_accounts(
+                    item_key,
+                    handles=[str(handle) for handle in handles],
+                    x_channel=str(payload.get("x_channel") or ""),
+                    x_capture=self.x_capture_repository,
+                )}
+            raise EditorPluginApiError("不支持的 AI 审阅操作")
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
     def get_business_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
         return self.business_news.list_dashboard(payload)
@@ -1314,6 +1360,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/blockbeats-key/get",
         "/console/blockbeats-key/save",
         "/console/newsflash-operations",
+        "/console/ai-review",
         "/console/business-news/get",
         "/console/business-news/groups/save",
         "/console/hottopic/dashboard",
@@ -1565,6 +1612,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/newsflash-operations":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_newsflash_operations(actor, self._read_json())})
+                    return
+                if self.path == "/console/ai-review":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_ai_review(actor, self._read_json())})
                     return
                 if self.path == "/console/business-news/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_business_news(actor, self._read_json())})

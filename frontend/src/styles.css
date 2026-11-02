@@ -6191,3 +6191,84 @@ textarea:focus {
 .factReviewIssue { padding: 14px 0; border-top: 1px solid #e2e8f0; overflow-wrap: anywhere; }
 .factReviewIssue blockquote { margin: 10px 0; padding: 8px 14px; background: #f8fafc; border-left: 3px solid #cbd5e1; white-space: pre-wrap; }
 @media (max-width: 900px) { .factReviewColumns { grid-template-columns: 1fr; gap: 0; } }
+
+.aiReviewPanel { display: grid; gap: 12px; min-width: 0; }
+.aiReviewToolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.aiReviewFilters { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1px solid #d8e0e4; border-radius: 6px; background: #f7f9f9; }
+.aiReviewFilters button { min-height: 30px; padding: 5px 10px; border: 0; border-radius: 4px; background: transparent; color: #63717a; cursor: pointer; font-size: 12px; }
+.aiReviewFilters button.active { background: #fff; color: #176b55; box-shadow: 0 0 0 1px #d7e4df; }
+.aiReviewIconButton,.aiReviewPagination button { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid #d8e0e4; border-radius: 5px; background: #fff; color: #52636c; cursor: pointer; }
+.aiReviewIconButton:disabled,.aiReviewPagination button:disabled { opacity: .45; cursor: default; }
+.aiReviewUsage { display: flex; flex-wrap: wrap; gap: 7px 18px; padding: 4px 0 10px; border-bottom: 1px solid #e3e8eb; color: #68757c; font-size: 12px; font-variant-numeric: tabular-nums; }
+.aiReviewNotice { padding: 9px 11px; border-radius: 5px; font-size: 12px; }
+.aiReviewNotice.error { background: #fff2f0; color: #a43d34; }
+.aiReviewNotice.success { background: #eef8f2; color: #23734e; }
+.aiReviewWorkspace { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(0, 1.5fr); min-height: 540px; border: 1px solid #d8e0e4; border-radius: 6px; background: #fff; overflow: hidden; }
+.aiReviewQueue { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; border-right: 1px solid #e2e8ea; }
+.aiReviewQueueHead { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 15px; border-bottom: 1px solid #e8edef; color: #35444d; font-size: 13px; }
+.aiReviewQueueHead span { color: #7b878e; font-size: 11px; }
+.aiReviewRows { min-height: 0; overflow: auto; }
+.aiReviewRow { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 12px 13px; border: 0; border-bottom: 1px solid #edf0f1; background: #fff; color: #35444d; cursor: pointer; text-align: left; }
+.aiReviewRow:hover,.aiReviewRow.active { background: #f1f8f5; }
+.aiReviewTypeIcon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 5px; background: #edf3f1; color: #28735d; }
+.aiReviewTypeIcon.account { background: #f3f2e9; color: #776d31; }
+.aiReviewRowText { display: grid; gap: 5px; min-width: 0; }
+.aiReviewRowText strong { overflow: hidden; color: #2d3c43; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.aiReviewRowText small { color: #7a878e; font-size: 10px; }
+.aiReviewRecommendation { flex: 0 0 auto; padding: 4px 6px; border-radius: 4px; background: #f2f4f4; color: #6b7479; font-size: 10px; white-space: nowrap; }
+.aiReviewRecommendation.priority { background: #e9f5ee; color: #207146; }
+.aiReviewRecommendation.consider { background: #fff5df; color: #89651b; }
+.aiReviewRecommendation.drop { background: #fff0ee; color: #a24a40; }
+.aiReviewPagination { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 9px; border-top: 1px solid #e8edef; color: #68757c; font-size: 11px; }
+.aiReviewPagination button { width: 28px; height: 28px; }
+.aiReviewDetail { min-width: 0; max-height: 75vh; overflow: auto; padding: 18px 20px; }
+.aiReviewDetailHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.aiReviewDetailHeader > div { min-width: 0; }
+.aiReviewDetailHeader small { color: #77848b; font-size: 11px; }
+.aiReviewDetailHeader h2 { margin: 5px 0 0; color: #293941; font-size: 17px; line-height: 1.45; overflow-wrap: anywhere; }
+.aiReviewReason { margin: 14px 0 8px; color: #34454d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.aiReviewMeta { display: flex; flex-wrap: wrap; gap: 5px 14px; padding: 0 0 14px; border-bottom: 1px solid #e7ecee; color: #849097; font-size: 10px; }
+.aiReviewAnalysisState { margin: 14px 0 8px; color: #99721b; font-size: 12px; }
+.aiReviewAnalysisState.failed { color: #a3483d; }
+.aiReviewAdoption { display: grid; gap: 11px; padding: 13px 0; border-bottom: 1px solid #e7ecee; }
+.aiReviewAdoption h3,.aiReviewClues h3,.aiReviewEvidenceList h3 { margin: 0; color: #3b4b53; font-size: 13px; }
+.aiReviewSelect { display: flex; align-items: center; gap: 12px; color: #647179; font-size: 12px; }
+.aiReviewSelect select { min-width: 150px; padding: 7px 9px; border: 1px solid #d8e0e4; border-radius: 4px; background: #fff; color: #35444d; }
+.aiReviewChecks { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.aiReviewChecks label { display: inline-flex; align-items: center; gap: 6px; color: #41525a; font-size: 12px; }
+.aiReviewChecks input { accent-color: #28735d; }
+.aiReviewPrimary,.aiReviewActions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 7px 11px; border: 1px solid #d4dfdb; border-radius: 4px; background: #fff; color: #28735d; cursor: pointer; font-size: 12px; }
+.aiReviewPrimary { justify-self: start; background: #28735d; color: #fff; }
+.aiReviewPrimary:disabled,.aiReviewActions button:disabled { opacity: .45; cursor: default; }
+.aiReviewClues { display: grid; gap: 8px; padding: 13px 0; border-bottom: 1px solid #e7ecee; }
+.aiReviewClues p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; color: #43545b; font-size: 11px; }
+.aiReviewClues p > strong { min-width: 70px; color: #77848b; font-weight: 500; }
+.aiReviewClues a { color: #1d735d; text-decoration: none; }
+.aiReviewClues p > span { color: #42525a; }
+.aiReviewClues p > span small { margin-left: 5px; color: #8b9397; }
+.aiReviewEventAccounts { display: grid; gap: 8px; padding: 13px 0; border-bottom: 1px solid #e7ecee; }
+.aiReviewEventAccounts h3 { margin: 0; color: #3b4b53; font-size: 13px; }
+.aiReviewEventAccounts > label { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #43545b; font-size: 11px; }
+.aiReviewEventAccounts input { accent-color: #28735d; }
+.aiReviewEventAccounts > label small { color: #7e898f; }
+.aiReviewEventAccountControls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 3px; }
+.aiReviewEventAccountControls select { min-height: 34px; padding: 6px 9px; border: 1px solid #d8e0e4; border-radius: 4px; background: #fff; color: #35444d; }
+.aiReviewEventAccountControls button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 7px 11px; border: 1px solid #d4dfdb; border-radius: 4px; background: #fff; color: #28735d; cursor: pointer; font-size: 12px; }
+.aiReviewEventAccountControls button:disabled { opacity: .45; cursor: default; }
+.aiReviewEvidenceList { display: grid; gap: 0; padding-top: 14px; }
+.aiReviewEvidence { display: grid; gap: 7px; padding: 12px 0; border-bottom: 1px solid #edf0f1; }
+.aiReviewEvidenceMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 12px; color: #7b878e; font-size: 10px; }
+.aiReviewEvidenceMeta strong { color: #53636a; font-size: 11px; }
+.aiReviewEvidenceMeta a { color: #1d735d; text-decoration: none; }
+.aiReviewEvidence h4 { margin: 0; color: #35444d; font-size: 12px; line-height: 1.5; }
+.aiReviewEvidence p { margin: 0; color: #44545c; font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.aiReviewEvidence > small { color: #858f94; font-size: 10px; }
+.aiReviewActions { display: flex; flex-wrap: wrap; gap: 7px; padding-top: 14px; }
+.aiReviewActions button:last-child { color: #a3483d; border-color: #ecd8d5; }
+.aiReviewAdopted { color: #28735d; font-size: 12px; }
+.aiReviewEmpty { padding: 24px 16px; color: #879197; font-size: 12px; text-align: center; }
+@media (max-width: 850px) {
+  .aiReviewWorkspace { grid-template-columns: 1fr; }
+  .aiReviewQueue { min-height: 290px; border-right: 0; border-bottom: 1px solid #e2e8ea; }
+  .aiReviewDetail { max-height: none; padding: 16px; }
+}

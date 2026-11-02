@@ -390,6 +390,13 @@ class HotTopicService:
             account_identity_fetcher=self._fetch_event_account_identity,
             owns_connection=True,
         )
+        from packages.ai_review import AIReviewService
+
+        self.ai_review = AIReviewService(
+            database_path=paths.runtime_dir / "ai_review.sqlite",
+            primary_database_path=event_primary_database,
+            hottopic_database_path=self.path,
+        )
         self.yesterday_hot_discussion = YesterdayHotDiscussion(self.db)
         self.rate_limit_cooldown_seconds = configured_seconds(
             "HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS",
@@ -409,6 +416,7 @@ class HotTopicService:
             self.x_agent_analyzer_error = f"{type(exc).__name__}: {exc}"
 
     def close(self) -> None:
+        self.ai_review.close()
         self.investment_lead_queries.close()
         self.event_tracker.close()
         self.aggregator.close()
@@ -655,6 +663,41 @@ class HotTopicService:
                     "UPDATE hottopic_accounts SET display_name=?,updated_at=? WHERE screen_name_lower=?",
                     (display_name.strip(), now, lower),
                 )
+        return self._x_agent_account_payload(self._account(lower))
+
+    @_serialized
+    def ensure_ai_review_account(
+        self,
+        handle: str,
+        *,
+        market_sentiment: bool,
+        project_promotion: bool,
+    ) -> dict[str, Any]:
+        """Enable selected review-approved modules without changing other subscriptions."""
+        normalized = normalize_handle(handle)
+        lower, now = normalized.lower(), iso(utc_now())
+        existing = self.db.execute(
+            "SELECT 1 FROM hottopic_accounts WHERE screen_name_lower=?", (lower,)
+        ).fetchone()
+        if existing is None:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO hottopic_accounts("
+                    "screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
+                    "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,"
+                    "investment_leads_enabled_at,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (normalized, lower, "", "followed", now, 0, int(market_sentiment), int(project_promotion),
+                     0, None, now, now),
+                )
+        else:
+            patch: dict[str, bool] = {}
+            if market_sentiment:
+                patch["market_sentiment_enabled"] = True
+            if project_promotion:
+                patch["project_promotion_enabled"] = True
+            if patch:
+                self.set_x_agent_subscriptions([normalized], patch)
         return self._x_agent_account_payload(self._account(lower))
 
     @_serialized
@@ -1065,6 +1108,7 @@ class HotTopicService:
             yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
             event_after = self._advance_event_tracking(poll_accounts=True)
             analyzed = self.process_x_agent_jobs()
+            ai_review = self._run_ai_review_if_due()
             self.process_account_cleanup_jobs()
             self.maintain()
             return {
@@ -1073,6 +1117,7 @@ class HotTopicService:
                 "analyzed": analyzed,
                 "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
                 "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
+                "ai_review": ai_review,
             }
         cutoff = datetime.fromisoformat(self.deployment_started_at())
         accepted = 0
@@ -1105,6 +1150,7 @@ class HotTopicService:
         yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
         event_after = self._advance_event_tracking(poll_accounts=True)
         analyzed = self.process_x_agent_jobs()
+        ai_review = self._run_ai_review_if_due()
         self.process_account_cleanup_jobs()
         self.maintain()
         return {
@@ -1113,7 +1159,15 @@ class HotTopicService:
             "analyzed": analyzed,
             "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
             "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
+            "ai_review": ai_review,
         }
+
+    def _run_ai_review_if_due(self) -> dict[str, Any]:
+        try:
+            return self.ai_review.run_if_due()
+        except Exception as exc:
+            self.event("ai_review_error", {"error": f"{type(exc).__name__}: {exc}"})
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
     @_serialized
     def _store_poll(self, account: AccountRow, items: list[ContentItem], error: dict[str, Any] | None, at: str) -> int:

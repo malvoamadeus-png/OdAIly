@@ -1,8 +1,9 @@
-﻿import { type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { Suspense, lazy, type ReactNode, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from './localApiClient';
 import {
   Activity,
   Ban,
+  ClipboardCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -29,6 +30,7 @@ import {
 import NewsflashOperationsPanel from './NewsflashOperationsPanel';
 import DuplicateSearchPanel from './DuplicateSearchPanel';
 import { XAgentPanel } from './XAgentPanel';
+const AIReviewPanel = lazy(() => import('./AIReviewPanel'));
 import {
   createSourceExclusionRuleGroup,
   createAccount,
@@ -168,7 +170,8 @@ type ConsoleView =
   | 'newsflash'
   | 'business_news'
   | 'jin10'
-  | 'x_agent';
+  | 'x_agent'
+  | 'ai_review';
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
   return view === 'x' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
@@ -915,11 +918,12 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'business_news' ? 'business_news' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'stock_market' ? 'stock_market' : 'x';
+  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'business_news' ? 'business_news' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'ai_review' ? 'ai_review' : requestedView === 'stock_market' ? 'stock_market' : 'x';
   const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [businessNewsRefreshToken, setBusinessNewsRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
+  const [aiReviewRefreshToken, setAIReviewRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
@@ -1308,6 +1312,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           await loadCompetitorKeywords();
           return;
         case 'x_agent':
+        case 'ai_review':
         case 'workflow':
         default:
           return;
@@ -1791,6 +1796,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Newsflash Operations'
       : view === 'business_news'
         ? 'Business News'
+      : view === 'ai_review'
+        ? 'AI Review'
       : view === 'dedupe'
         ? 'AI Duplicate Check'
       : view === 'timing'
@@ -1825,6 +1832,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '快讯及数据总览'
       : view === 'business_news'
         ? '商务快讯'
+      : view === 'ai_review'
+        ? 'AI 审阅'
       : view === 'dedupe'
         ? 'AI查重'
       : view === 'timing'
@@ -1859,6 +1868,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '快讯、排班、值班绩效、贡献和首发事件统一工作区'
       : view === 'business_news'
         ? '商务群消息、AI 分类、脱水和挂后台结果'
+      : view === 'ai_review'
+        ? '事件选题判断与 X Agent 账号发现'
       : view === 'dedupe'
         ? '粘贴一段快讯内容，检索疑似重复的已发布快讯和运行中候选'
       : view === 'timing'
@@ -1893,6 +1904,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? (setNewsflashRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'business_news'
         ? (setBusinessNewsRefreshToken((value) => value + 1), Promise.resolve())
+      : view === 'ai_review'
+        ? (setAIReviewRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'dedupe'
         ? Promise.resolve()
       : view === 'tasks'
@@ -1946,6 +1959,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </button>
           <button className={view === 'newsflash' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('newsflash')}>
             <Newspaper size={18} /> 快讯及数据总览
+          </button>
+          <button className={view === 'ai_review' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('ai_review')}>
+            <ClipboardCheck size={18} /> AI 审阅
           </button>
           <button className={view === 'business_news' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('business_news')}>
             <MessageSquareText size={18} /> 商务快讯
@@ -2072,6 +2088,10 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
         {view === 'x_agent' ? (
           <XAgentPanel refreshToken={xAgentRefreshToken} />
+        ) : view === 'ai_review' ? (
+          <Suspense fallback={<div className="aiReviewEmpty">加载审阅台…</div>}>
+            <AIReviewPanel refreshToken={aiReviewRefreshToken} />
+          </Suspense>
         ) : view === 'newsflash' ? (
           <NewsflashOperationsPanel refreshToken={newsflashRefreshToken} />
         ) : view === 'business_news' ? (

@@ -1143,6 +1143,113 @@ async function consoleApiPost<T>(path: string, body: Record<string, unknown> = {
   return payload.data as T;
 }
 
+export type AIReviewType = 'event' | 'account';
+export type AIReviewStatus = 'pending' | 'accepted' | 'rejected' | 'deferred';
+export type AIReviewRecommendation = 'priority' | 'consider' | 'drop';
+
+export type AIReviewEvidence = {
+  source?: string;
+  title?: string;
+  url?: string;
+  publishedAt?: string | null;
+  postedAt?: string | null;
+  tweetId?: string;
+  text?: string;
+  matchedAssets?: string[];
+  matchedProjects?: string[];
+};
+
+export type AIReviewItem = {
+  id: number;
+  itemKey: string;
+  type: AIReviewType;
+  category: string;
+  status: AIReviewStatus;
+  analysisStatus: 'queued' | 'completed' | 'failed';
+  title: string;
+  recommendation: AIReviewRecommendation;
+  recommendationLabel: string;
+  reason: string;
+  evidence: AIReviewEvidence[];
+  clues: { xAccounts?: string[]; domains?: string[] };
+  account_lower?: string;
+  analysisModel?: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  analysisError?: string | null;
+  humanDecision?: string | null;
+  feedbackNote?: string | null;
+  adoptedTargets: Record<string, unknown>;
+  sourceUpdatedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AIReviewPage = {
+  items: AIReviewItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  usage: Record<'account' | 'event', { usedTokens: number; reservedTokens: number; calls: number }>;
+  weekly: {
+    candidates: number;
+    accepted: number;
+    rejected: number;
+    deferred: number;
+    acceptanceRate: number;
+    rejectionRate: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+};
+
+export async function listAIReviewItems(filters: {
+  type?: 'all' | AIReviewType;
+  status?: 'all' | AIReviewStatus;
+  category?: string;
+  offset?: number;
+  limit?: number;
+} = {}): Promise<AIReviewPage> {
+  return consoleApiPost<AIReviewPage>('/console/ai-review', { action: 'list', ...filters });
+}
+
+export async function getAIReviewItem(itemKey: string): Promise<AIReviewItem> {
+  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', { action: 'detail', item_key: itemKey });
+  return result.item;
+}
+
+export async function decideAIReviewItem(
+  itemKey: string,
+  decision: 'accepted' | 'rejected' | 'deferred',
+  note = '',
+): Promise<AIReviewItem> {
+  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
+    action: 'decide', item_key: itemKey, decision, note,
+  });
+  return result.item;
+}
+
+export async function adoptAIReviewAccount(
+  itemKey: string,
+  targets: { xChannel: 'none' | 'x' | 'ai_source'; marketSentiment: boolean; projectPromotion: boolean },
+): Promise<AIReviewItem> {
+  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
+    action: 'adopt_account', item_key: itemKey, targets,
+  });
+  return result.item;
+}
+
+export async function adoptEventAIReviewAccounts(
+  itemKey: string,
+  handles: string[],
+  xChannel: 'x' | 'ai_source',
+): Promise<AIReviewItem> {
+  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
+    action: 'adopt_event_accounts', item_key: itemKey, handles, x_channel: xChannel,
+  });
+  return result.item;
+}
+
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
   const {
     data: { subscription },
