@@ -1149,6 +1149,10 @@ export type AIReviewRecommendation = 'priority' | 'consider' | 'drop';
 
 export type AIReviewEvidence = {
   source?: string;
+  sourceKind?: 'competitor' | 'odaily';
+  sourceDomain?: string | null;
+  sourceAccount?: string | null;
+  tracked?: boolean | null;
   title?: string;
   url?: string;
   publishedAt?: string | null;

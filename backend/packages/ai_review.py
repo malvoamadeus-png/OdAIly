@@ -19,6 +19,7 @@ REVIEW_LOOKBACK_DAYS = 3
 MAX_ANALYSIS_BATCH = 50
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
+EVENT_SCAN_VERSION = 2
 RECOMMENDATIONS = {"priority", "consider", "drop"}
 RECOMMENDATION_LABELS = {"priority": "优先考虑", "consider": "可考虑", "drop": "不建议跟进"}
 STATUS_VALUES = {"pending", "accepted", "rejected", "deferred"}
@@ -179,6 +180,7 @@ class AIReviewRepository:
         self, *, key: str, item_type: str, category: str, title: str,
         evidence: list[dict[str, Any]], clues: dict[str, Any] | None = None,
         account_lower: str | None = None, source_updated_at: str | None = None,
+        refresh_existing: bool = False,
     ) -> bool:
         now = datetime.now(UTC).isoformat()
         with self.db:
@@ -188,6 +190,12 @@ class AIReviewRepository:
                 (key, item_type, category, title[:300], _json(evidence), _json(clues or {}), account_lower,
                  source_updated_at, now, now),
             )
+            if cursor.rowcount == 0 and refresh_existing and item_type == "event":
+                self.db.execute(
+                    "UPDATE ai_review_items SET evidence_json=?,clues_json=?,source_updated_at=?,updated_at=? "
+                    "WHERE item_key=? AND item_type='event'",
+                    (_json(evidence), _json(clues or {}), source_updated_at, now, key),
+                )
         return cursor.rowcount > 0
 
     def pending_analysis(self, item_type: str, limit: int = MAX_ANALYSIS_BATCH) -> list[dict[str, Any]]:
@@ -281,7 +289,10 @@ class AIReviewRepository:
         self, *, item_type: str = "all", status: str = "all", category: str = "all",
         offset: int = 0, limit: int = 30,
     ) -> dict[str, Any]:
-        clauses, params = ["analysis_status='completed'", "recommendation<>'drop'"], []
+        clauses, params = [
+            "analysis_status='completed'", "recommendation<>'drop'",
+            "(item_type<>'account' OR recommendation='priority')",
+        ], []
         if item_type in {"event", "account"}:
             clauses.append("item_type=?")
             params.append(item_type)
@@ -312,7 +323,8 @@ class AIReviewRepository:
             "SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,"
             "SUM(CASE WHEN status='deferred' THEN 1 ELSE 0 END) AS deferred,"
             "COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens "
-            "FROM ai_review_items WHERE datetime(created_at)>=datetime(?) AND analysis_status='completed' AND recommendation<>'drop'",
+            "FROM ai_review_items WHERE datetime(created_at)>=datetime(?) AND analysis_status='completed' "
+            "AND recommendation<>'drop' AND (item_type<>'account' OR recommendation='priority')",
             (cutoff,),
         ).fetchone()
         candidates = int(row["candidates"] or 0)
@@ -593,14 +605,19 @@ class AIReviewService:
         if local.hour < 6:
             return {"status": "not_due"}
         today = local.date().isoformat()
-        if self.repository.get_state("last_completed_date") == today:
+        event_scan_key = f"last_event_scan_date_v{EVENT_SCAN_VERSION}"
+        account_scan_due = self.repository.get_state("last_scan_date") != today
+        event_scan_due = self.repository.get_state(event_scan_key) != today
+        if self.repository.get_state("last_completed_date") == today and not (account_scan_due or event_scan_due):
             return {"status": "already_ran", "date": today}
         since = current - timedelta(days=REVIEW_LOOKBACK_DAYS)
-        if self.repository.get_state("last_scan_date") == today:
-            queued = {"account": 0, "event": 0}
-        else:
-            queued = {"account": self._queue_accounts(since), "event": self._queue_events(since)}
+        queued = {"account": 0, "event": 0}
+        if account_scan_due:
+            queued["account"] = self._queue_accounts(since)
             self.repository.set_state("last_scan_date", today)
+        if event_scan_due:
+            queued["event"] = self._queue_events(since)
+            self.repository.set_state(event_scan_key, today)
         def analyze_kind(kind: str) -> dict[str, int]:
             if self.repository.get_state(f"budget_blocked_{kind}") == today:
                 return {"analyzed": 0, "deferred": 1}
@@ -652,9 +669,9 @@ class AIReviewService:
             for event_id, sources in events.items():
                 if any(self._is_hyperbot_source(row) for row in sources):
                     continue
-                outlets = {str(row["source"]) for row in sources}
-                competitors = [row for row in sources if row["source"] != "odaily"]
-                odaily = [row for row in sources if row["source"] == "odaily"]
+                outlets = {str(row["source"]).casefold() for row in sources}
+                competitors = [row for row in sources if str(row["source"]).casefold() != "odaily"]
+                odaily = [row for row in sources if str(row["source"]).casefold() == "odaily"]
                 category = ""
                 publish_status = None
                 if competitors and odaily:
@@ -676,14 +693,6 @@ class AIReviewService:
                     category = "odaily_only"
                 if not category:
                     continue
-                evidence, text_parts = [], []
-                for source in sources[:8]:
-                    title, content = str(source["title"] or ""), str(source["content"] or "")[:1800]
-                    evidence.append({
-                        "source": str(source["source"]), "title": title, "url": str(source["source_url"] or ""),
-                        "publishedAt": source["published_at"], "text": content,
-                    })
-                    text_parts.extend((title, content, str(source["source_url"] or "")))
                 title = str(sources[0]["representative_title"] or sources[0]["title"] or "未命名事件")
                 if category == "competitor_first_ai":
                     title = f"{title} · 竞品先发 / Odaily {'直发' if publish_status == 'auto_published' else '挂后台'}"
@@ -691,15 +700,52 @@ class AIReviewService:
                     title = f"{title} · 多家竞品发布，Odaily 未发"
                 else:
                     title = f"{title} · 仅 Odaily 发布"
+                relevant_sources = odaily if category == "odaily_only" else competitors
+                linked_outlets = {
+                    str(row["source"]).casefold()
+                    for row in relevant_sources if str(row["source_url"] or "").strip()
+                }
+                if not linked_outlets or (
+                    category == "multiple_competitors_no_odaily" and len(linked_outlets) < 2
+                ):
+                    continue
+
+                ordered_sources = sorted(
+                    sources,
+                    key=lambda row: (
+                        str(row["source"]).casefold() == "odaily",
+                        _parse_datetime(row["published_at"]) or datetime.max.replace(tzinfo=UTC),
+                    ),
+                )
+                evidence, text_parts = [], []
+                for source in ordered_sources[:20]:
+                    source_url = str(source["source_url"] or "")
+                    parsed_url = urlparse(source_url)
+                    domain = (parsed_url.hostname or "").casefold().removeprefix("www.")
+                    if domain in {"x.com", "twitter.com", "t.co"}:
+                        domain = ""
+                    handle_match = X_URL_RE.search(source_url)
+                    source_account = handle_match.group(1).lower() if handle_match else ""
+                    source_kind = "odaily" if str(source["source"]).casefold() == "odaily" else "competitor"
+                    tracked = None
+                    if source_account:
+                        tracked = source_account in known_handles
+                    elif domain:
+                        tracked = self._is_tracked_domain(domain, known_domains)
+                    source_title = str(source["title"] or "")
+                    content = str(source["content"] or "")[:1800]
+                    evidence.append({
+                        "source": str(source["source"]), "sourceKind": source_kind,
+                        "sourceDomain": domain or None, "sourceAccount": source_account or None,
+                        "tracked": tracked, "title": source_title, "url": source_url,
+                        "publishedAt": source["published_at"], "text": content,
+                    })
+                    text_parts.extend((source_title, content, source_url))
                 key = f"event:{event_id}:{category}"
                 clues = _extract_clues(text_parts)
-                clues["xAccounts"] = [handle for handle in clues["xAccounts"] if handle.casefold() not in known_handles]
-                clues["domains"] = [domain for domain in clues["domains"] if not self._is_tracked_domain(domain, known_domains)]
-                if not clues["xAccounts"]:
-                    continue
                 inserted += int(self.repository.insert_candidate(
                     key=key, item_type="event", category=category, title=title, evidence=evidence,
-                    clues=clues, source_updated_at=str(sources[0]["published_at"] or ""),
+                    clues=clues, source_updated_at=str(sources[0]["published_at"] or ""), refresh_existing=True,
                 ))
         finally:
             conn.close()
@@ -718,6 +764,7 @@ class AIReviewService:
 
     def _known_source_clues(self) -> tuple[set[str], set[str]]:
         handles: set[str] = set()
+        domains = set(TRACKED_SOURCE_DOMAINS)
         try:
             primary = _read_only(self.primary_database_path)
         except sqlite3.Error:
@@ -726,8 +773,15 @@ class AIReviewService:
             try:
                 if self._table_exists(primary, "x_capture_accounts"):
                     handles.update(str(row[0]).casefold().lstrip("@") for row in primary.execute(
-                        "SELECT username_lower FROM x_capture_accounts"
+                        "SELECT username_lower FROM x_capture_accounts WHERE enabled=1"
                     ))
+                if self._table_exists(primary, "non_mainstream_media_sources"):
+                    for row in primary.execute(
+                        "SELECT homepage_url FROM non_mainstream_media_sources WHERE enabled=1"
+                    ):
+                        host = (urlparse(str(row[0] or "")).hostname or "").casefold().removeprefix("www.")
+                        if host:
+                            domains.add(host)
             finally:
                 primary.close()
         try:
@@ -738,11 +792,12 @@ class AIReviewService:
             try:
                 if self._table_exists(hot, "hottopic_accounts"):
                     handles.update(str(row[0]).casefold().lstrip("@") for row in hot.execute(
-                        "SELECT screen_name_lower FROM hottopic_accounts"
+                        "SELECT screen_name_lower FROM hottopic_accounts WHERE status='followed' AND ("
+                        "hot_topic_enabled=1 OR market_sentiment_enabled=1 OR project_promotion_enabled=1 OR investment_leads_enabled=1)"
                     ))
             finally:
                 hot.close()
-        return handles, set(TRACKED_SOURCE_DOMAINS)
+        return handles, domains
 
     @staticmethod
     def _ai_competitor_publish(conn: sqlite3.Connection, odaily_id: str) -> str | None:

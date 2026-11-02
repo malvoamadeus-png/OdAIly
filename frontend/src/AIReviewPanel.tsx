@@ -174,7 +174,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
                 <span>{formatDate(selected.sourceUpdatedAt || selected.createdAt)}</span>
               </div>
 
-              {(selected.clues.xAccounts?.length || selected.clues.domains?.length) ? (
+              {selected.type === 'account' && (selected.clues.xAccounts?.length || selected.clues.domains?.length) ? (
                 <section className="aiReviewClues">
                   <h3>来源线索</h3>
                   {selected.clues.xAccounts?.length ? <p><strong>X 账号</strong>{selected.clues.xAccounts.map((handle) => <a key={handle} href={'https://x.com/' + handle} target="_blank" rel="noreferrer">@{handle}</a>)}</p> : null}
@@ -183,11 +183,19 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
               ) : null}
 
               <section className="aiReviewEvidenceList">
-                <h3>证据原文</h3>
+                <h3>{selected.type === 'event' ? '来源原文' : '证据原文'}</h3>
                 {selected.evidence.map((evidence, index) => (
                   <article key={(evidence.tweetId || evidence.url || evidence.source || 'evidence') + '-' + index} className="aiReviewEvidence">
                     <div className="aiReviewEvidenceMeta">
+                      {evidence.sourceKind && <span className={'aiReviewSourceKind ' + evidence.sourceKind}>{evidence.sourceKind === 'odaily' ? 'Odaily' : '竞品'}</span>}
                       <strong>{evidence.source || 'X'}</strong>
+                      {evidence.sourceAccount && <a href={'https://x.com/' + evidence.sourceAccount} target="_blank" rel="noreferrer">@{evidence.sourceAccount}</a>}
+                      {evidence.sourceDomain && <span>{evidence.sourceDomain}</span>}
+                      {evidence.sourceKind === 'competitor' && evidence.tracked != null && (
+                        <small className={evidence.tracked ? 'aiReviewTrackingState tracked' : 'aiReviewTrackingState'}>
+                          {evidence.tracked ? '已追踪' : '可考虑追踪'}
+                        </small>
+                      )}
                       <time>{formatDate(evidence.postedAt || evidence.publishedAt)}</time>
                       {evidence.url && <a href={evidence.url} target="_blank" rel="noreferrer">打开原文</a>}
                     </div>
