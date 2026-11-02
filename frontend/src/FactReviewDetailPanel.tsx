@@ -49,7 +49,13 @@ export default function FactReviewDetailPanel({ sourceId, checkId, refreshToken 
         </section>
         {check.last_error && <div className="notice error">执行失败：{check.last_error}</div>}
         <div className="factReviewColumns">
-          <section className="factReviewBlock"><h3>本次审查的已发布稿件</h3><div className="factReviewCopy">{check.content}</div></section>
+          <section className="factReviewBlock">
+            <h3>本次审查的标题与正文</h3>
+            <p><strong>标题</strong></p>
+            <div className="factReviewCopy">{check.title || '无标题'}</div>
+            <p><strong>正文</strong></p>
+            <div className="factReviewCopy">{check.content}</div>
+          </section>
           <section className="factReviewBlock"><h3>原始材料</h3>{check.original_url && evidenceUrl(check.original_url) && <a href={evidenceUrl(check.original_url)} target="_blank" rel="noreferrer">打开原文 ↗</a>}<div className="factReviewCopy">{check.original_text || '本次未获取原文；未获取不代表审查通过。'}</div></section>
         </div>
         <section className="factReviewBlock"><h3>原文审查</h3><p>{comparison?.result?.summary || '本次未进入原文审查。'}</p>

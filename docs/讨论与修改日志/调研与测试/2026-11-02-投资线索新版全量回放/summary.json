@@ -1,0 +1,62 @@
+{
+  "updated_at": "2026-11-02T01:50:17.864053+00:00",
+  "frozen_at": "2026-11-02T01:19:14.647955+00:00",
+  "materials": 821,
+  "previous_leads": 101,
+  "rescanned": 821,
+  "classifications": {
+    "no_candidate": 525,
+    "composable": 128,
+    "driver_candidate": 141,
+    "incomplete": 27
+  },
+  "new_leads": 15,
+  "retained_materials": 23,
+  "previous_leads_with_retained_source": 14,
+  "tasks": [
+    {
+      "stage": "derive",
+      "status": "no_candidate",
+      "count": 250
+    },
+    {
+      "stage": "derive",
+      "status": "succeeded",
+      "count": 20
+    },
+    {
+      "stage": "scan",
+      "status": "needs_material",
+      "count": 27
+    },
+    {
+      "stage": "scan",
+      "status": "no_candidate",
+      "count": 525
+    },
+    {
+      "stage": "scan",
+      "status": "succeeded",
+      "count": 269
+    },
+    {
+      "stage": "supplement",
+      "status": "pending",
+      "count": 5
+    }
+  ],
+  "usage": [
+    {
+      "kind": "derive",
+      "calls": 205,
+      "input_tokens": 2261191,
+      "output_tokens": 24438
+    },
+    {
+      "kind": "scan",
+      "calls": 109,
+      "input_tokens": 352024,
+      "output_tokens": 190929
+    }
+  ]
+}

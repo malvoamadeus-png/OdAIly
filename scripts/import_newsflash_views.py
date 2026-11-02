@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Import all locally available newsflash statistics XLSX files.
 
-Run from the repository root with no arguments:
+Run from the repository root with no arguments on Windows or WSL:
 
-    python3 scripts/import_newsflash_views.py
+    python scripts/import_newsflash_views.py
 
 The script intentionally uses the Windows OpenSSH client configured for this
 workspace. It performs a read-only production comparison first, then uploads
@@ -28,9 +28,15 @@ from xml.etree import ElementTree
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SSH = Path("/mnt/c/WINDOWS/System32/OpenSSH/ssh.exe")
-SCP = Path("/mnt/c/WINDOWS/System32/OpenSSH/scp.exe")
-SSH_CONFIG = "C:/Users/A/.ssh/config"
+if os.name == "nt":
+    WINDOWS_DIR = Path(os.environ.get("WINDIR", r"C:\Windows"))
+    SSH = WINDOWS_DIR / "System32" / "OpenSSH" / "ssh.exe"
+    SCP = WINDOWS_DIR / "System32" / "OpenSSH" / "scp.exe"
+    SSH_CONFIG = str(Path(os.environ.get("USERPROFILE", r"C:\Users\A")) / ".ssh" / "config")
+else:
+    SSH = Path("/mnt/c/WINDOWS/System32/OpenSSH/ssh.exe")
+    SCP = Path("/mnt/c/WINDOWS/System32/OpenSSH/scp.exe")
+    SSH_CONFIG = "C:/Users/A/.ssh/config"
 SSH_ALIAS = "odaily-official"
 REMOTE_ROOT = "/opt/OdAIly"
 REQUIRED_HEADERS = {"ID", "标题", "操作人", "链接", "发布时间", "阅读量", "是否推送", "推送时间"}
@@ -153,6 +159,8 @@ def run_process(command: list[str], *, input_text: str | None = None) -> str:
 
 
 def windows_local_path(path: Path) -> str:
+    if os.name == "nt":
+        return str(path)
     completed = subprocess.run(["wslpath", "-w", str(path)], text=True, capture_output=True, cwd=ROOT)
     if completed.returncode:
         raise RuntimeError(f"cannot convert WSL path for Windows scp: {path}")

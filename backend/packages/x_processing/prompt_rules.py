@@ -34,6 +34,9 @@ EVENT_TRACKING_WRITER_RULES = """【热点自动快讯事件更新写作规则�
 - 事件进展摘要仅供选题参考。账号帖子只能证明该账号发布了这些内容；对解释、争议判断和未获独立验证的说法保留“称/表示”等归属，不改写为客观定论，不补原帖没有的信息。
 """.strip()
 
+X_ONCHAIN_WRITER_RULES = """【链上模板来源归因校正】
+账号直接发帖时写“发文称/表示”或直接转述；只有原文明示其发布监测或统计所得数据时，才写“据其监测/统计”。""".strip()
+
 
 def validate_event_tracking_attribution(content: str) -> None:
     # Fail in write, where the job retry can regenerate the draft.  Silently

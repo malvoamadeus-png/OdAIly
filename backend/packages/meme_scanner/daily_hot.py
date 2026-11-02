@@ -16,6 +16,13 @@ from typing import Any
 CHAINS = ('solana', 'bsc', 'base', 'eth', 'robinhood')
 QUERIES = (('1h', 'change1h', .20), ('6h', 'marketcap', .30), ('24h', 'marketcap', None))
 
+# Keep the daily-hot feed aligned with HideOnBush's default Pump feed filters.
+# These are tokenized-stock/RWA quote symbols, not Meme candidates to publish.
+HIDEONBUSH_TOKENIZED_STOCK_SYMBOLS = frozenset({
+    'SPCXB', 'SKHYB', 'SPYB', 'XAUT', 'QQQB', 'NVDAB', 'AAPLB', 'TSLAB',
+    'MSFTB', 'GOOGLB', 'HOODB', 'BABAB', 'GMEB', 'NFLXB', 'MSTRB', 'DJTB',
+})
+
 
 def setup(conn: Any) -> None:
     conn.executescript('''
@@ -65,8 +72,23 @@ def ratio(value: Any) -> float:
     return number / 100 if abs(number) > 5 else number
 
 
+def is_tokenized_stock_symbol(value: Any) -> bool:
+    """Return whether a symbol is in HideOnBush's default stock/RWA blocklist."""
+    symbol = str(value or '').strip().lstrip('$').upper()
+    return symbol in HIDEONBUSH_TOKENIZED_STOCK_SYMBOLS
+
+
+def is_tokenized_stock_row(raw: dict[str, Any]) -> bool:
+    """Check all common GMGN symbol fields before market qualification."""
+    return any(
+        is_tokenized_stock_symbol(raw.get(field))
+        for field in ('symbol', 'token_symbol', 'base_token_symbol')
+    )
+
+
 def ranked_candidates(chain: str, views: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
+    blocked_addresses: set[str] = set()
     for interval, _, threshold in QUERIES:
         for raw in views.get(interval, []):
             try:
@@ -81,6 +103,15 @@ def ranked_candidates(chain: str, views: dict[str, list[dict[str, Any]]]) -> dic
                 if not address.startswith('0x'):
                     continue
             elif address.startswith('0x'):
+                continue
+            if address in blocked_addresses:
+                continue
+            if is_tokenized_stock_row(raw):
+                # A symbol can be missing or stale in one of the other views;
+                # once any view identifies this CA as a blocked asset, keep it
+                # out of the merged candidate as well.
+                blocked_addresses.add(address)
+                grouped.pop(address, None)
                 continue
             change = ratio(raw.get('price_change_percent'))
             if threshold is not None and change < threshold:

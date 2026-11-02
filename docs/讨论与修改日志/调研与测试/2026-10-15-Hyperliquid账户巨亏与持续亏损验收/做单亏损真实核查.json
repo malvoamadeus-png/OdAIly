@@ -1,0 +1,136 @@
+[
+  {
+    "address": "0x9321d8117e73b0c79035f0e87debcfd8dbb1d75a",
+    "coverage": {
+      "start_ms": 1789446259307,
+      "end_ms": 1792038259307,
+      "coverage": "retained_api_history",
+      "pages": 6,
+      "pagination_complete": false,
+      "reason": "page_budget",
+      "oldest_returned_ms": 1789482394829,
+      "next_start_ms": 1791134254989
+    },
+    "fills_count": 11959,
+    "records": {},
+    "asset_quality": {
+      "SOL": {
+        "rounds": 0,
+        "position_discontinuities": 11,
+        "ambiguous_order_fills": 0
+      },
+      "ETH": {
+        "rounds": 0,
+        "position_discontinuities": 2,
+        "ambiguous_order_fills": 0
+      },
+      "#12270": {
+        "rounds": 0,
+        "position_discontinuities": 0,
+        "ambiguous_order_fills": 0
+      },
+      "XRP": {
+        "rounds": 0,
+        "position_discontinuities": 12,
+        "ambiguous_order_fills": 0
+      },
+      "BTC": {
+        "rounds": 0,
+        "position_discontinuities": 2,
+        "ambiguous_order_fills": 0
+      },
+      "PUMP": {
+        "rounds": 0,
+        "position_discontinuities": 2,
+        "ambiguous_order_fills": 0
+      },
+      "ENA": {
+        "rounds": 0,
+        "position_discontinuities": 3,
+        "ambiguous_order_fills": 0
+      },
+      "AAVE": {
+        "rounds": 0,
+        "position_discontinuities": 4,
+        "ambiguous_order_fills": 0
+      },
+      "LDO": {
+        "rounds": 0,
+        "position_discontinuities": 6,
+        "ambiguous_order_fills": 0
+      },
+      "xyz:DRAM": {
+        "rounds": 0,
+        "position_discontinuities": 13,
+        "ambiguous_order_fills": 0
+      },
+      "HYPE": {
+        "rounds": 0,
+        "position_discontinuities": 11,
+        "ambiguous_order_fills": 0
+      }
+    },
+    "repeated_loss_events": 0
+  },
+  {
+    "address": "0x020ca66c30bec2c4fe3861a94e4db4a498a35872",
+    "coverage": {
+      "start_ms": 1789446259307,
+      "end_ms": 1792038259307,
+      "coverage": "retained_api_history",
+      "pages": 6,
+      "pagination_complete": false,
+      "reason": "page_budget",
+      "oldest_returned_ms": 1790478486900,
+      "next_start_ms": 1790588207727
+    },
+    "fills_count": 11840,
+    "records": {},
+    "asset_quality": {
+      "ETH": {
+        "rounds": 0,
+        "position_discontinuities": 0,
+        "ambiguous_order_fills": 0
+      },
+      "HYPE": {
+        "rounds": 0,
+        "position_discontinuities": 0,
+        "ambiguous_order_fills": 0
+      },
+      "BTC": {
+        "rounds": 0,
+        "position_discontinuities": 0,
+        "ambiguous_order_fills": 0
+      },
+      "PUMP": {
+        "rounds": 3,
+        "position_discontinuities": 0,
+        "ambiguous_order_fills": 0
+      }
+    },
+    "repeated_loss_events": 0
+  },
+  {
+    "address": "0x1f250df59a777d61cb8bd043c12970f3afe4f925",
+    "coverage": {
+      "start_ms": 1789446259307,
+      "end_ms": 1792038259307,
+      "coverage": "retained_api_history",
+      "pages": 3,
+      "pagination_complete": true,
+      "reason": "available_history_exhausted",
+      "oldest_returned_ms": 1791459674302,
+      "next_start_ms": 1791863571906
+    },
+    "fills_count": 4356,
+    "records": {},
+    "asset_quality": {
+      "BTC": {
+        "rounds": 0,
+        "position_discontinuities": 9,
+        "ambiguous_order_fills": 0
+      }
+    },
+    "repeated_loss_events": 0
+  }
+]

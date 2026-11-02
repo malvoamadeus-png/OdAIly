@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v10"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v11"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
@@ -108,6 +108,8 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 人名、机构、职位、地名、项目名、代币名等实体替换；除非同一条标题或正文内部存在可直接引用的矛盾，并且证据片段里直接出现建议替换后的实体名称，否则不要报警。
 - 不要仅凭常识猜测数字、金额、日期、比例、数量级是否写错；如果想指出这类问题，必须能在同一条标题或正文中引用另一处直接构成矛盾或校验关系的依据片段。
 - 不要根据外部背景知识、历史事件印象、常识时间线去猜测日期或年份是否写错；只有同一条标题或正文内部出现可直接引用的日期矛盾或明确时间关系冲突时，才允许提示。
+- 不要把月份范围直接当成精确天数：例如“2026 年 5 月至 8 月”可能覆盖约 90 天，不能仅凭月份标签判定其与“90 天内”矛盾；只有同文提供的精确日期或时长明确无法同时成立时才报告。
+- 不要仅因法律、金融或技术术语存在另一种更常见译法就判为语病；只有当前写法导致句子明显不完整、关系不清或含义改变时才报告。
 
 报警标准：
 - 只有明确错误或高置信异常才设置 has_issue=true。
