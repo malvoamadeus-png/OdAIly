@@ -13,11 +13,9 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from packages.x_capture.client import normalize_username
-
-
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 DAILY_TOKEN_LIMIT = 50_000_000
+REVIEW_LOOKBACK_DAYS = 3
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
 RECOMMENDATIONS = {"priority", "consider", "drop"}
@@ -43,6 +41,10 @@ URL_RE = re.compile(r"https?://[^\s<>\]\[(){}\"']+", re.IGNORECASE)
 HANDLE_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{1,15})")
 X_URL_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})(?:/|\b)", re.IGNORECASE)
 TICKER_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9]{0,9})\b")
+TRACKED_SOURCE_DOMAINS = {
+    "odaily.news", "theblockbeats.info", "blockbeats.info", "panewslab.com", "jinse.cn",
+    "coindesk.com", "cointelegraph.com", "decrypt.co", "theblock.co",
+}
 
 
 SCHEMA_SQL = """
@@ -68,7 +70,6 @@ CREATE TABLE IF NOT EXISTS ai_review_items (
   feedback_note TEXT,
   decision_by TEXT,
   decided_at TEXT,
-  adopted_targets_json TEXT NOT NULL DEFAULT '{}',
   source_updated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -160,7 +161,7 @@ class AIReviewRepository:
         item = dict(row)
         item["evidence"] = _decode(item.pop("evidence_json"), [])
         item["clues"] = _decode(item.pop("clues_json"), {})
-        item["adoptedTargets"] = _decode(item.pop("adopted_targets_json"), {})
+        item.pop("adopted_targets_json", None)
         for old, new in (
             ("item_key", "itemKey"), ("item_type", "type"), ("analysis_status", "analysisStatus"),
             ("analysis_model", "analysisModel"), ("input_tokens", "inputTokens"), ("output_tokens", "outputTokens"),
@@ -279,7 +280,7 @@ class AIReviewRepository:
         self, *, item_type: str = "all", status: str = "all", category: str = "all",
         offset: int = 0, limit: int = 30,
     ) -> dict[str, Any]:
-        clauses, params = [], []
+        clauses, params = ["analysis_status='completed'", "recommendation<>'drop'"], []
         if item_type in {"event", "account"}:
             clauses.append("item_type=?")
             params.append(item_type)
@@ -303,14 +304,14 @@ class AIReviewRepository:
         }
 
     def weekly_summary(self) -> dict[str, int | float]:
-        cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=REVIEW_LOOKBACK_DAYS)).isoformat()
         row = self.db.execute(
             "SELECT COUNT(*) AS candidates,"
             "SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END) AS accepted,"
             "SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,"
             "SUM(CASE WHEN status='deferred' THEN 1 ELSE 0 END) AS deferred,"
             "COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens "
-            "FROM ai_review_items WHERE datetime(created_at)>=datetime(?)",
+            "FROM ai_review_items WHERE datetime(created_at)>=datetime(?) AND analysis_status='completed' AND recommendation<>'drop'",
             (cutoff,),
         ).fetchone()
         candidates = int(row["candidates"] or 0)
@@ -327,10 +328,7 @@ class AIReviewRepository:
         row = self.db.execute("SELECT * FROM ai_review_items WHERE item_key=?", (item_key,)).fetchone()
         return self._item(row) if row else None
 
-    def decide(
-        self, item_key: str, *, decision: str, actor: str, note: str = "",
-        targets: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    def decide(self, item_key: str, *, decision: str, actor: str, note: str = "") -> dict[str, Any]:
         if decision not in {"accepted", "rejected", "deferred"}:
             raise ValueError("不支持的人工决定")
         now = datetime.now(UTC).isoformat()
@@ -340,31 +338,19 @@ class AIReviewRepository:
                 raise ValueError("审阅项目不存在")
             if row["status"] == "accepted" and decision == "accepted":
                 return self._item(row)
-            existing_targets = _decode(row["adopted_targets_json"], {})
-            merged_targets = {**existing_targets, **(targets or {})}
             self.db.execute(
-                "UPDATE ai_review_items SET status=?,human_decision=?,feedback_note=?,decision_by=?,decided_at=?,"
-                "adopted_targets_json=?,updated_at=? WHERE item_key=?",
-                (decision, decision, note[:500], actor[:200], now, _json(merged_targets), now, item_key),
+                "UPDATE ai_review_items SET status=?,human_decision=?,feedback_note=?,decision_by=?,decided_at=?,updated_at=? WHERE item_key=?",
+                (decision, decision, note[:500], actor[:200], now, now, item_key),
             )
         item = self.get_item(item_key)
         assert item is not None
         return item
 
-    def save_adopted_targets(self, item_key: str, key: str, value: Any) -> dict[str, Any]:
-        with self.db:
-            row = self.db.execute("SELECT adopted_targets_json FROM ai_review_items WHERE item_key=?", (item_key,)).fetchone()
-            if row is None:
-                raise ValueError("审阅项目不存在")
-            targets = _decode(row["adopted_targets_json"], {})
-            targets[key] = value
-            self.db.execute(
-                "UPDATE ai_review_items SET adopted_targets_json=?,updated_at=? WHERE item_key=?",
-                (_json(targets), datetime.now(UTC).isoformat(), item_key),
-            )
-        item = self.get_item(item_key)
-        assert item is not None
-        return item
+    def has_pending_analysis(self, item_type: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM ai_review_items WHERE item_type=? AND analysis_status IN ('queued','failed') "
+            "AND analysis_attempts<? LIMIT 1", (item_type, MAX_ANALYSIS_ATTEMPTS),
+        ).fetchone() is not None
 
     def history_examples(self, item_type: str, category: str, limit: int = 2) -> list[dict[str, str]]:
         rows = self.db.execute(
@@ -411,8 +397,10 @@ class AIReviewAnalyzer:
             raise RuntimeError("AI 审阅需要配置 X Agent 兼容模型路由和 API key")
         if item["type"] == "event":
             system = (
-                "你是 Crypto 垂直媒体的选题编辑，只分析给定事件原文，不搜索外部资料。优先判断是否影响读者交易决策；"
-                "少量股票内容可以纳入，投资相关或有明确行业价值的人物内容可以纳入。对归因错误和名誉风险从严。"
+                "你是 Crypto 垂直媒体的信源编辑，只分析给定事件原文，不搜索外部资料。你判断的是是否值得持续跟踪这个主题或信源，"
+                "不是单条新闻是否重要。单次申领通知、一次性上线或孤立观点即使对读者有用，也不能据此推荐长期追踪；"
+                "优先考虑持续更新且可能影响读者交易决策的 Crypto 信源，少量股票内容可纳入。对来源归因和名誉风险从严；"
+                "若原文账号只是被提及而非信息来源，应选择 drop。"
                 "只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
             )
         else:
@@ -592,72 +580,11 @@ class AIReviewService:
         item = self.repository.get_item(item_key)
         if item is None:
             raise ValueError("审阅项目不存在")
-        if item["type"] == "account" and decision != "rejected":
-            raise ValueError("账号建议只能采纳或驳回")
+        if item["type"] == "account" and decision not in {"accepted", "rejected"}:
+            raise ValueError("账号建议只能认可或驳回")
         if item["type"] == "account" and item["status"] == "accepted":
             return item
         return self.repository.decide(item_key, decision=decision, actor=actor, note=note)
-
-    def adopt_account(self, item_key: str, *, actor: str, targets: dict[str, Any], hottopic: Any, x_capture: Any) -> dict[str, Any]:
-        item = self.repository.get_item(item_key)
-        if item is None or item["type"] != "account":
-            raise ValueError("账号建议不存在")
-        if item["status"] == "accepted":
-            return item
-        if item["status"] == "rejected":
-            raise ValueError("已驳回的账号建议不能采纳")
-        x_channel = targets.get("xChannel") or "none"
-        if x_channel not in {"none", "x", "ai_source"}:
-            raise ValueError("不支持的 X 信源类型")
-        market, project = targets.get("marketSentiment") is True, targets.get("projectPromotion") is True
-        if x_channel == "none" and not (market or project):
-            raise ValueError("至少选择一个账号去向")
-        handle = normalize_username(item["account_lower"] or "")
-        x_result = None
-        if x_channel != "none":
-            existing = x_capture.get_account_by_username(handle)
-            if existing:
-                x_result = x_capture.update_account(existing.id, enabled=True, is_ai_source=x_channel == "ai_source")
-            else:
-                x_result = x_capture.create_account(username_or_url=handle, enabled=True, is_ai_source=x_channel == "ai_source")
-        if market or project:
-            hottopic.ensure_ai_review_account(handle, market_sentiment=market, project_promotion=project)
-        persisted = {
-            "xChannel": x_channel, "marketSentiment": market, "projectPromotion": project,
-            "xAccountId": getattr(x_result, "id", None),
-        }
-        return self.repository.decide(item_key, decision="accepted", actor=actor, note="采纳账号建议", targets=persisted)
-
-    def adopt_event_accounts(self, item_key: str, *, handles: list[str], x_channel: str, x_capture: Any) -> dict[str, Any]:
-        item = self.repository.get_item(item_key)
-        if item is None or item["type"] != "event":
-            raise ValueError("事件建议不存在")
-        if item["status"] in {"rejected", "deferred"}:
-            raise ValueError("已驳回或暂缓的事件不能采纳账号")
-        if x_channel not in {"x", "ai_source"}:
-            raise ValueError("请选择普通 X 或 AI 信源")
-        clues = item.get("clues") if isinstance(item.get("clues"), dict) else {}
-        allowed = {str(value).casefold() for value in clues.get("xAccounts", [])}
-        selected = list(dict.fromkeys(normalize_username(handle).casefold() for handle in handles))
-        if not selected or any(handle not in allowed for handle in selected):
-            raise ValueError("只能采纳当前事件原文中提取到的 X 账号")
-        existing = item["adoptedTargets"].get("eventAccounts", {})
-        if not isinstance(existing, dict):
-            existing = {}
-        updated = dict(existing)
-        conflicting = [handle for handle in selected if handle in updated and updated[handle] != x_channel]
-        if conflicting:
-            raise ValueError(f"@{conflicting[0]} 已按其他信源类型采纳")
-        for handle in selected:
-            if updated.get(handle) == x_channel:
-                continue
-            account = x_capture.get_account_by_username(handle)
-            if account:
-                x_capture.update_account(account.id, enabled=True, is_ai_source=x_channel == "ai_source")
-            else:
-                x_capture.create_account(username_or_url=handle, enabled=True, is_ai_source=x_channel == "ai_source")
-            updated[handle] = x_channel
-        return self.repository.save_adopted_targets(item_key, "eventAccounts", updated)
 
     def run_if_due(self, *, now: datetime | None = None) -> dict[str, Any]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -667,13 +594,31 @@ class AIReviewService:
         today = local.date().isoformat()
         if self.repository.get_state("last_completed_date") == today:
             return {"status": "already_ran", "date": today}
-        since = current - timedelta(days=7)
-        queued = {"account": self._queue_accounts(since), "event": self._queue_events(since)}
-        account_result = self._analyze_pending("account", today)
-        event_result = self._analyze_pending("event", today)
-        self.repository.set_state("last_completed_date", today)
+        since = current - timedelta(days=REVIEW_LOOKBACK_DAYS)
+        if self.repository.get_state("last_scan_date") == today:
+            queued = {"account": 0, "event": 0}
+        else:
+            queued = {"account": self._queue_accounts(since), "event": self._queue_events(since)}
+            self.repository.set_state("last_scan_date", today)
+        def analyze_kind(kind: str) -> dict[str, int]:
+            if self.repository.get_state(f"budget_blocked_{kind}") == today:
+                return {"analyzed": 0, "deferred": 1}
+            result = self._analyze_pending(kind, today)
+            if result["deferred"]:
+                self.repository.set_state(f"budget_blocked_{kind}", today)
+            return result
+
+        account_result = analyze_kind("account")
+        event_result = analyze_kind("event")
+        account_pending = self.repository.has_pending_analysis("account")
+        event_pending = self.repository.has_pending_analysis("event")
+        account_done = not account_pending or account_result["deferred"] > 0
+        event_done = not event_pending or event_result["deferred"] > 0
+        complete = account_done and event_done
+        if complete:
+            self.repository.set_state("last_completed_date", today)
         return {
-            "status": "completed", "date": today, **queued,
+            "status": "completed" if complete else "in_progress", "date": today, **queued,
             "analyzed": account_result["analyzed"] + event_result["analyzed"],
             "deferred": account_result["deferred"] + event_result["deferred"],
             "usage": self.repository.usage(today),
@@ -702,7 +647,10 @@ class AIReviewService:
             events: dict[str, list[sqlite3.Row]] = defaultdict(list)
             for row in rows:
                 events[str(row["event_id"])].append(row)
+            known_handles, known_domains = self._known_source_clues()
             for event_id, sources in events.items():
+                if any(self._is_hyperbot_source(row) for row in sources):
+                    continue
                 outlets = {str(row["source"]) for row in sources}
                 competitors = [row for row in sources if row["source"] != "odaily"]
                 odaily = [row for row in sources if row["source"] == "odaily"]
@@ -743,13 +691,57 @@ class AIReviewService:
                 else:
                     title = f"{title} · 仅 Odaily 发布"
                 key = f"event:{event_id}:{category}"
+                clues = _extract_clues(text_parts)
+                clues["xAccounts"] = [handle for handle in clues["xAccounts"] if handle.casefold() not in known_handles]
+                clues["domains"] = [domain for domain in clues["domains"] if not self._is_tracked_domain(domain, known_domains)]
+                if not clues["xAccounts"]:
+                    continue
                 inserted += int(self.repository.insert_candidate(
                     key=key, item_type="event", category=category, title=title, evidence=evidence,
-                    clues=_extract_clues(text_parts), source_updated_at=str(sources[0]["published_at"] or ""),
+                    clues=clues, source_updated_at=str(sources[0]["published_at"] or ""),
                 ))
         finally:
             conn.close()
         return inserted
+
+    @staticmethod
+    def _is_hyperbot_source(row: sqlite3.Row) -> bool:
+        source = str(row["source"] or "").casefold()
+        host = (urlparse(str(row["source_url"] or "")).hostname or "").casefold()
+        return source == "hyperbot" or host == "hyperbot.network" or host.endswith(".hyperbot.network")
+
+    @staticmethod
+    def _is_tracked_domain(domain: str, configured: set[str]) -> bool:
+        host = domain.casefold().removeprefix("www.")
+        return any(host == known or host.endswith(f".{known}") for known in configured)
+
+    def _known_source_clues(self) -> tuple[set[str], set[str]]:
+        handles: set[str] = set()
+        try:
+            primary = _read_only(self.primary_database_path)
+        except sqlite3.Error:
+            primary = None
+        if primary:
+            try:
+                if self._table_exists(primary, "x_capture_accounts"):
+                    handles.update(str(row[0]).casefold().lstrip("@") for row in primary.execute(
+                        "SELECT username_lower FROM x_capture_accounts"
+                    ))
+            finally:
+                primary.close()
+        try:
+            hot = _read_only(self.hottopic_database_path)
+        except sqlite3.Error:
+            hot = None
+        if hot:
+            try:
+                if self._table_exists(hot, "hottopic_accounts"):
+                    handles.update(str(row[0]).casefold().lstrip("@") for row in hot.execute(
+                        "SELECT screen_name_lower FROM hottopic_accounts"
+                    ))
+            finally:
+                hot.close()
+        return handles, set(TRACKED_SOURCE_DOMAINS)
 
     @staticmethod
     def _ai_competitor_publish(conn: sqlite3.Connection, odaily_id: str) -> str | None:

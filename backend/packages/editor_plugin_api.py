@@ -538,27 +538,6 @@ class EditorPluginNewsGenService:
                     actor=actor.email,
                     note=str(payload.get("note") or ""),
                 )}
-            if action == "adopt_account":
-                targets = payload.get("targets")
-                if not isinstance(targets, dict):
-                    raise EditorPluginApiError("targets 必须是对象")
-                return {"item": service.adopt_account(
-                    item_key,
-                    actor=actor.email,
-                    targets=targets,
-                    hottopic=self.hottopic,
-                    x_capture=self.x_capture_repository,
-                )}
-            if action == "adopt_event_accounts":
-                handles = payload.get("handles")
-                if not isinstance(handles, list):
-                    raise EditorPluginApiError("handles 必须是数组")
-                return {"item": service.adopt_event_accounts(
-                    item_key,
-                    handles=[str(handle) for handle in handles],
-                    x_channel=str(payload.get("x_channel") or ""),
-                    x_capture=self.x_capture_repository,
-                )}
             raise EditorPluginApiError("不支持的 AI 审阅操作")
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc

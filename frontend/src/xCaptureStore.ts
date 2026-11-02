@@ -1179,7 +1179,6 @@ export type AIReviewItem = {
   analysisError?: string | null;
   humanDecision?: string | null;
   feedbackNote?: string | null;
-  adoptedTargets: Record<string, unknown>;
   sourceUpdatedAt?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1225,27 +1224,6 @@ export async function decideAIReviewItem(
 ): Promise<AIReviewItem> {
   const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
     action: 'decide', item_key: itemKey, decision, note,
-  });
-  return result.item;
-}
-
-export async function adoptAIReviewAccount(
-  itemKey: string,
-  targets: { xChannel: 'none' | 'x' | 'ai_source'; marketSentiment: boolean; projectPromotion: boolean },
-): Promise<AIReviewItem> {
-  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
-    action: 'adopt_account', item_key: itemKey, targets,
-  });
-  return result.item;
-}
-
-export async function adoptEventAIReviewAccounts(
-  itemKey: string,
-  handles: string[],
-  xChannel: 'x' | 'ai_source',
-): Promise<AIReviewItem> {
-  const result = await consoleApiPost<{ item: AIReviewItem }>('/console/ai-review', {
-    action: 'adopt_event_accounts', item_key: itemKey, handles, x_channel: xChannel,
   });
   return result.item;
 }

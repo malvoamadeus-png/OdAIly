@@ -31,37 +31,6 @@ class FakeAnalyzer:
         }
 
 
-class FakeXCapture:
-    def __init__(self):
-        self.accounts = {}
-        self.writes = []
-
-    def get_account_by_username(self, handle):
-        return self.accounts.get(handle.lower())
-
-    def create_account(self, *, username_or_url, enabled, is_ai_source):
-        item = SimpleNamespace(id=len(self.accounts) + 1, username=username_or_url, enabled=enabled, is_ai_source=is_ai_source)
-        self.accounts[username_or_url.lower()] = item
-        self.writes.append((username_or_url.lower(), enabled, is_ai_source))
-        return item
-
-    def update_account(self, account_id, *, enabled=None, is_ai_source=None):
-        item = next(value for value in self.accounts.values() if value.id == account_id)
-        item.enabled = enabled if enabled is not None else item.enabled
-        item.is_ai_source = is_ai_source if is_ai_source is not None else item.is_ai_source
-        self.writes.append((item.username.lower(), enabled, is_ai_source))
-        return item
-
-
-class FakeHotTopic:
-    def __init__(self):
-        self.calls = []
-
-    def ensure_ai_review_account(self, handle, *, market_sentiment, project_promotion):
-        self.calls.append((handle, market_sentiment, project_promotion))
-        return {}
-
-
 def _create_main_database(path: Path):
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -76,6 +45,7 @@ def _create_main_database(path: Path):
         CREATE TABLE newsflash_event_sources(event_id TEXT,item_id INTEGER,source TEXT,source_item_id TEXT);
         CREATE TABLE newsflash_production_metadata(delivery_key TEXT,odaily_id TEXT,origin_key TEXT,
           outlet_category TEXT,pushed_at TEXT);
+        CREATE TABLE x_capture_accounts(username_lower TEXT PRIMARY KEY,enabled INTEGER DEFAULT 1);
         """
     )
     connection.commit()
@@ -179,7 +149,13 @@ def test_event_queue_includes_only_three_supported_event_scenarios():
         )
         try:
             assert service._queue_events(now - timedelta(days=7)) == 4
-            items = service.repository.list_items(item_type="event")["items"]
+            items = [
+                service.get_item(f"event:event-{index}:" + next(
+                    category for category in ("competitor_first_ai", "multiple_competitors_no_odaily", "odaily_only")
+                    if service.get_item(f"event:event-{index}:{category}")
+                ))
+                for index in (1, 2, 3, 6)
+            ]
             categories = {item["category"] for item in items}
             assert categories == {"competitor_first_ai", "multiple_competitors_no_odaily", "odaily_only"}
             first = next(item for item in items if "直发" in item["title"])
@@ -212,7 +188,7 @@ def test_event_queue_marks_reviewed_publication_and_ignores_parallel_first_publi
         )
         try:
             assert service._queue_events(now - timedelta(days=7)) == 0
-            assert service.repository.list_items(item_type="event")["total"] == 0
+            assert service.get_item("event:event-1:competitor_first_ai") is None
         finally:
             service.close()
 
@@ -238,9 +214,67 @@ def test_event_queue_marks_ai_background_publish_and_keeps_source_attribution():
         )
         try:
             assert service._queue_events(now - timedelta(days=7)) == 1
-            item = service.repository.list_items(item_type="event")["items"][0]
+            item = service.get_item("event:event-2:competitor_first_ai")
             assert "挂后台" in item["title"]
             assert all("blockbeats" in evidence["url"] or "odaily" in evidence["url"] for evidence in item["evidence"])
+        finally:
+            service.close()
+
+
+def test_event_queue_requires_an_untracked_x_clue_and_skips_tracked_or_hyperbot_sources():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = _create_main_database(root / "main.sqlite")
+        hot = _create_hot_database(root / "hot.sqlite")
+        now = datetime.now(UTC)
+        _add_event(main, "event-1", [
+            ("hyperbot", "hb1", (now - timedelta(hours=2)).isoformat()),
+            ("odaily", "odaily1", (now - timedelta(hours=1)).isoformat()),
+        ], odaily_publish=("auto_published", "odaily1"))
+        _add_event(main, "event-2", [
+            ("cointelegraph", "ct2", (now - timedelta(hours=2)).isoformat()),
+            ("panews", "pa2", (now - timedelta(hours=1)).isoformat()),
+        ])
+        main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-2')")
+        main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-2' AND source='cointelegraph')")
+        main.execute("UPDATE newsflash_items SET source_url='https://www.panewslab.com/story',content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-2' AND source='panews')")
+        _add_event(main, "event-3", [
+            ("cointelegraph", "ct3", (now - timedelta(hours=2)).isoformat()),
+            ("odaily", "odaily3", (now - timedelta(hours=1)).isoformat()),
+        ], odaily_publish=("auto_published", "odaily3"))
+        main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-3')")
+        main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-3' AND source='cointelegraph')")
+        _add_event(main, "event-4", [
+            ("cointelegraph", "ct4", (now - timedelta(hours=2)).isoformat()),
+            ("odaily", "odaily4", (now - timedelta(hours=1)).isoformat()),
+        ], odaily_publish=("auto_published", "odaily4"))
+        main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-4')")
+        main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Story cites @tracked_account' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-4' AND source='cointelegraph')")
+        main.execute("INSERT INTO x_capture_accounts(username_lower) VALUES('tracked_account')")
+        _add_event(main, "event-5", [
+            ("cointelegraph", "ct5", (now - timedelta(hours=2)).isoformat()),
+            ("odaily", "odaily5", (now - timedelta(hours=1)).isoformat()),
+        ], odaily_publish=("auto_published", "odaily5"))
+        main.execute("UPDATE newsflash_items SET content='Source report' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-5')")
+        main.execute("UPDATE newsflash_items SET source_url='https://cointelegraph.com/story',content='Report from @new_source' WHERE id IN (SELECT item_id FROM newsflash_event_sources WHERE event_id='event-5' AND source='cointelegraph')")
+        main.commit()
+        main.close()
+        hot.close()
+        service = AIReviewService(
+            database_path=root / "review.sqlite", primary_database_path=root / "main.sqlite",
+            hottopic_database_path=root / "hot.sqlite", analyzer=FakeAnalyzer(),
+        )
+        try:
+            assert service._queue_events(now - timedelta(days=3)) == 1
+            item = service.get_item("event:event-5:competitor_first_ai")
+            assert item is not None
+            assert item["clues"]["xAccounts"] == ["new_source"]
+            assert "cointelegraph.com" not in item["clues"]["domains"]
+            assert "panewslab.com" not in item["clues"]["domains"]
+            assert service.get_item("event:event-1:competitor_first_ai") is None
+            assert service.get_item("event:event-2:multiple_competitors_no_odaily") is None
+            assert service.get_item("event:event-3:competitor_first_ai") is None
+            assert service.get_item("event:event-4:competitor_first_ai") is None
         finally:
             service.close()
 
@@ -315,7 +349,10 @@ def test_account_scan_uses_distinct_assets_and_skips_reposts_and_quote_text():
         try:
             assert _match_alias("BTCXYZ", "BTC") is False
             assert service._queue_accounts(now - timedelta(days=7)) == 2
-            items = service.repository.list_items(item_type="account")["items"]
+            items = [
+                item for key in ("account:alpha:market_sentiment", "account:alpha:project_promotion")
+                if (item := service.get_item(key))
+            ]
             categories = {(item["account_lower"], item["category"]) for item in items}
             assert ("alpha", "market_sentiment") in categories
             assert ("alpha", "project_promotion") in categories
@@ -366,14 +403,32 @@ def test_history_examples_are_limited_to_matching_review_category():
             examples = repository.history_examples("event", "odaily_only")
             assert len(examples) == 2
             assert all(example["category"] == "odaily_only" for example in examples)
-            filtered = repository.list_items(item_type="event", category="odaily_only")
-            assert filtered["total"] == 2
-            assert all(item["category"] == "odaily_only" for item in filtered["items"])
+            assert all(repository.get_item(f"event:history-{index}:{category}") for index, category in enumerate(("odaily_only", "odaily_only", "multiple_competitors_no_odaily")))
         finally:
             repository.close()
 
 
-def test_daily_run_starts_at_0600_beijing_and_is_idempotent_for_the_day():
+def test_queue_hides_unanalyzed_and_drop_recommendations():
+    with TemporaryDirectory() as tmp:
+        repository = AIReviewRepository(Path(tmp) / "review.sqlite")
+        try:
+            for key in ("visible", "drop", "queued"):
+                repository.insert_candidate(
+                    key=f"event:{key}:odaily_only", item_type="event", category="odaily_only",
+                    title=key, evidence=[],
+                )
+            visible = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:visible:odaily_only'").fetchone()[0]
+            dropped = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:drop:odaily_only'").fetchone()[0]
+            repository.complete_analysis(visible, recommendation="consider", reason="可持续追踪", model="gpt-6-luna", input_tokens=10, output_tokens=2)
+            repository.complete_analysis(dropped, recommendation="drop", reason="不跟进", model="gpt-6-luna", input_tokens=10, output_tokens=2)
+            page = repository.list_items(item_type="event")
+            assert page["total"] == 1
+            assert [item["title"] for item in page["items"]] == ["visible"]
+        finally:
+            repository.close()
+
+
+def test_daily_run_uses_three_day_window_and_continues_beyond_one_batch():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         _create_main_database(root / "main.sqlite").close()
@@ -385,117 +440,48 @@ def test_daily_run_starts_at_0600_beijing_and_is_idempotent_for_the_day():
             analyzer=FakeAnalyzer(),
         )
         try:
+            for index in range(501):
+                service.repository.insert_candidate(
+                    key=f"account:batch{index}:market_sentiment", item_type="account", category="market_sentiment",
+                    title=f"@batch{index}", evidence=[], account_lower=f"batch{index}",
+                )
             before_six = datetime(2026, 11, 2, 21, 59, tzinfo=UTC)
             at_six = datetime(2026, 11, 2, 22, 0, tzinfo=UTC)
             assert service.run_if_due(now=before_six)["status"] == "not_due"
-            assert service.run_if_due(now=at_six)["status"] == "completed"
+            first = service.run_if_due(now=at_six)
+            assert first["status"] == "in_progress"
+            assert first["analyzed"] == 500
+            assert service.repository.get_state("last_scan_date") == "2026-11-03"
+            second = service.run_if_due(now=at_six + timedelta(seconds=2))
+            assert second["status"] == "completed"
+            assert second["analyzed"] == 1
             assert service.run_if_due(now=at_six + timedelta(hours=1))["status"] == "already_ran"
         finally:
             service.close()
 
 
-def test_approved_account_targets_are_idempotent_and_preserve_existing_agent_switches():
+def test_account_recommendation_can_be_accepted_without_changing_source_configuration():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
+        main = _create_main_database(root / "main.sqlite")
+        hot = _create_hot_database(root / "hot.sqlite")
+        main.close()
+        hot.close()
         service = AIReviewService(
             database_path=root / "review.sqlite",
             primary_database_path=root / "main.sqlite",
             hottopic_database_path=root / "hot.sqlite",
             analyzer=FakeAnalyzer(),
         )
-        x_capture, hot = FakeXCapture(), FakeHotTopic()
         try:
             service.repository.insert_candidate(
                 key="account:test:market_sentiment", item_type="account", category="market_sentiment",
                 title="@test · market", evidence=[], account_lower="test",
             )
-            first = service.adopt_account(
-                "account:test:market_sentiment", actor="editor@example.com",
-                targets={"xChannel": "none", "marketSentiment": True, "projectPromotion": False},
-                hottopic=hot, x_capture=x_capture,
-            )
-            assert first["status"] == "accepted"
-            assert hot.calls == [("test", True, False)]
-            assert not x_capture.writes
-            service.adopt_account(
-                "account:test:market_sentiment", actor="editor@example.com",
-                targets={"xChannel": "none", "marketSentiment": True, "projectPromotion": False},
-                hottopic=hot, x_capture=x_capture,
-            )
-            assert len(hot.calls) == 1
-
-            service.repository.insert_candidate(
-                key="event:event-9:odaily_only", item_type="event", category="odaily_only",
-                title="event clue", evidence=[],
-                clues={"xAccounts": ["tracked", "another"]},
-            )
-            adopted = service.adopt_event_accounts(
-                "event:event-9:odaily_only", handles=["tracked"], x_channel="ai_source", x_capture=x_capture,
-            )
-            assert adopted["adoptedTargets"]["eventAccounts"] == {"tracked": "ai_source"}
-            assert x_capture.accounts["tracked"].is_ai_source is True
-            assert len(x_capture.writes) == 1
-            service.adopt_event_accounts(
-                "event:event-9:odaily_only", handles=["tracked"], x_channel="ai_source", x_capture=x_capture,
-            )
-            assert len(x_capture.writes) == 1
-            try:
-                service.adopt_event_accounts(
-                    "event:event-9:odaily_only", handles=["tracked"], x_channel="x", x_capture=x_capture,
-                )
-                raise AssertionError("event account channel was overwritten")
-            except ValueError as exc:
-                assert "其他信源类型" in str(exc)
-            assert len(x_capture.writes) == 1
-            service.decide("event:event-9:odaily_only", decision="accepted", actor="editor@example.com")
-            adopted_after_decision = service.adopt_event_accounts(
-                "event:event-9:odaily_only", handles=["another"], x_channel="x", x_capture=x_capture,
-            )
-            assert adopted_after_decision["status"] == "accepted"
-            assert service.get_item("event:event-9:odaily_only")["humanDecision"] == "accepted"
-
-            service.repository.insert_candidate(
-                key="account:regular:market_sentiment", item_type="account", category="market_sentiment",
-                title="@regular · market", evidence=[], account_lower="regular",
-            )
-            regular = service.adopt_account(
-                "account:regular:market_sentiment", actor="editor@example.com",
-                targets={"xChannel": "x", "marketSentiment": False, "projectPromotion": False},
-                hottopic=hot, x_capture=x_capture,
-            )
-            assert regular["adoptedTargets"]["xChannel"] == "x"
-            assert x_capture.accounts["regular"].enabled is True
-            assert x_capture.accounts["regular"].is_ai_source is False
-
-            service.repository.insert_candidate(
-                key="account:ai:project_promotion", item_type="account", category="project_promotion",
-                title="@ai · project", evidence=[], account_lower="ai",
-            )
-            ai_source = service.adopt_account(
-                "account:ai:project_promotion", actor="editor@example.com",
-                targets={"xChannel": "ai_source", "marketSentiment": False, "projectPromotion": True},
-                hottopic=hot, x_capture=x_capture,
-            )
-            assert ai_source["adoptedTargets"]["xChannel"] == "ai_source"
-            assert x_capture.accounts["ai"].is_ai_source is True
-            assert hot.calls[-1] == ("ai", False, True)
-
-            service.repository.insert_candidate(
-                key="account:rejected:market_sentiment", item_type="account", category="market_sentiment",
-                title="@rejected · market", evidence=[], account_lower="rejected",
-            )
-            before_reject = len(x_capture.writes)
-            service.decide("account:rejected:market_sentiment", decision="rejected", actor="editor@example.com")
-            try:
-                service.adopt_account(
-                    "account:rejected:market_sentiment", actor="editor@example.com",
-                    targets={"xChannel": "x", "marketSentiment": False, "projectPromotion": False},
-                    hottopic=hot, x_capture=x_capture,
-                )
-                raise AssertionError("rejected account recommendation was adopted")
-            except ValueError as exc:
-                assert "已驳回" in str(exc)
-            assert len(x_capture.writes) == before_reject
+            accepted = service.decide("account:test:market_sentiment", decision="accepted", actor="editor@example.com")
+            assert accepted["status"] == "accepted"
+            assert accepted["humanDecision"] == "accepted"
+            assert service.get_item("account:test:market_sentiment")["account_lower"] == "test"
         finally:
             service.close()
 
