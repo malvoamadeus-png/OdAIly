@@ -300,6 +300,69 @@ function ProjectDetail({
   );
 }
 
+function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [sources, setSources] = useState<XAgentAccount[]>([]);
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState('');
+
+  async function showSources() {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    setLoading(true);
+    setError('');
+    setSources([]);
+    try {
+      const names = [...new Set(accounts.split(',').map((name) => name.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))];
+      const results = await Promise.all(names.map(async (name) => {
+        const page = await listXAgentAccounts({ query: name, limit: 100 });
+        const account = page.items.find((item) => item.screenName.toLowerCase() === name);
+        if (!account) throw new Error(`未找到来源账号 @${name}`);
+        return account;
+      }));
+      setSources(results);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '无法读取来源账号');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function disableSource(account: XAgentAccount) {
+    if (pending) return;
+    setPending(account.screenName);
+    setError('');
+    setFeedback('');
+    try {
+      const result = await updateXAgentSubscriptions([account.screenName], { investmentLeadsEnabled: false });
+      const updated = result.items.find((item) => item.screenName.toLowerCase() === account.screenName.toLowerCase());
+      if (!updated || updated.investmentLeadsEnabled) throw new Error('关闭未成功，请重试');
+      setSources((current) => current.map((item) => item.screenName === account.screenName ? updated : item));
+      setFeedback(`已关闭 @${account.screenName} 的投资线索监控`);
+      onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '关闭来源监控失败');
+    } finally {
+      setPending(null);
+    }
+  }
+
+  return <div className="xAgentInvestmentDetail">
+    <button className="secondaryButton compact" type="button" disabled={!accounts || pending !== null} aria-expanded={open} onClick={() => void showSources()}><Power size={14} /> 关闭来源监控</button>
+    {open && <div>
+      <p>选择要关闭投资线索监控的来源账号。历史线索保留，其他订阅继续。</p>
+      {loading && <span role="status">正在读取来源账号…</span>}
+      <div className="inlineActions">{sources.map((account) => <button className="secondaryButton compact" type="button" key={account.screenName} disabled={pending !== null || !account.investmentLeadsEnabled} onClick={() => void disableSource(account)}>
+        @{account.screenName} · {pending === account.screenName ? '关闭中…' : account.investmentLeadsEnabled ? '关闭投资线索' : '已关闭'}
+      </button>)}</div>
+      {feedback && <p role="status">{feedback}</p>}
+      {error && <p role="alert">{error}</p>}
+    </div>}
+  </div>;
+}
+
 function InvestmentLeadDetail({
   detail,
   loading,
@@ -410,7 +473,6 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [investmentWindow, setInvestmentWindow] = useState<'24h' | '7d' | '30d'>('7d');
   const [investmentQuery, setInvestmentQuery] = useState('');
   const [investmentAccount, setInvestmentAccount] = useState('');
-  const [investmentUnlocatedOnly, setInvestmentUnlocatedOnly] = useState(false);
   const [investmentOffset, setInvestmentOffset] = useState(0);
   const [investmentReload, setInvestmentReload] = useState(0);
   const [investmentSelectedId, setInvestmentSelectedId] = useState<string | null>(null);
@@ -588,7 +650,6 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           window: investmentWindow,
           query: investmentQuery.trim(),
           account: investmentAccount.trim(),
-          unlocatedOnly: investmentUnlocatedOnly,
           offset: investmentOffset,
           limit: PAGE_SIZE,
         }),
@@ -606,7 +667,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       });
     }, 200);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentUnlocatedOnly, investmentOffset, investmentReload]);
+  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentOffset, investmentReload]);
 
   useEffect(() => {
     if (tab !== 'investment_leads' || !investmentSelectedId) {
@@ -1013,7 +1074,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <Metric label="待扫描" value={investmentStatus.tasks.pendingScan + investmentStatus.tasks.processingScan} />
           <Metric label="待推导" value={investmentStatus.tasks.pendingDerive + investmentStatus.tasks.processingDerive} />
           <Metric label="待定位搜索" value={investmentStatus.tasks.pendingIdentitySearch + investmentStatus.tasks.processingIdentitySearch} />
-          <Metric label="标的待定位" value={investmentStatus.results.unlocated} />
+          <Metric label="已保留线索" value={investmentStatus.results.active} />
           <Metric label="失败任务" value={investmentStatus.tasks.failed} warning={investmentStatus.tasks.failed > 0} />
           <div className="xAgentInvestmentUsage"><strong>今日用量</strong><span>输入 {investmentStatus.usage.inputTokens.toLocaleString()} / {investmentStatus.usage.inputTokenBudget.toLocaleString()} tokens</span><span>推导 {investmentStatus.usage.deriveCalls.toLocaleString()} / {investmentStatus.usage.deriveCallBudget.toLocaleString()} 次</span><span>身份搜索 {investmentStatus.usage.searchCalls.toLocaleString()} / {investmentStatus.usage.searchCallBudget.toLocaleString()} 次</span></div>
           <div className="xAgentInvestmentStatusFoot"><span>采集起点 {formatTime(investmentStatus.captureStartedAt)}</span><span>Worker {formatTime(investmentStatus.workerLastSeenAt)}</span><span>最早待处理 {formatTime(investmentStatus.tasks.oldestPendingAt)}</span><span>待补充 {investmentStatus.tasks.pendingSupplement + investmentStatus.tasks.processingSupplement}</span><span>材料不完整 {investmentStatus.tasks.incomplete}</span><span>补充读取 {investmentStatus.usage.supplementReads} / {investmentStatus.usage.supplementReadBudget}</span><span>身份搜索未定位 {investmentStatus.tasks.identitySearchUnresolved}</span><span>身份搜索失败 {investmentStatus.tasks.identitySearchFailures}</span><span>预算暂停 {investmentStatus.tasks.budgetPaused}</span></div>
@@ -1024,7 +1085,6 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <label><Search size={16} /><input value={investmentQuery} onChange={(event) => { setInvestmentQuery(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="搜索驱动、标的或行业" /></label>
           <input value={investmentAccount} onChange={(event) => { setInvestmentAccount(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="账号筛选，如 @username" aria-label="账号筛选" />
           <select value={investmentWindow} onChange={(event) => { setInvestmentWindow(event.target.value as '24h' | '7d' | '30d'); setInvestmentOffset(0); setInvestmentSelectedId(null); }}>{INVESTMENT_WINDOW_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
-          <label className="xAgentUnlocatedFilter"><input type="checkbox" checked={investmentUnlocatedOnly} onChange={(event) => { setInvestmentUnlocatedOnly(event.target.checked); setInvestmentOffset(0); setInvestmentSelectedId(null); }} />只看标的待定位</label>
         </div>
         <div className="xAgentInvestmentList">
           {!investmentLoading && investmentItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前筛选没有投资线索。</span><div className="inlineActions"><button className="secondaryButton compact" type="button" onClick={() => { setInvestmentWindow('30d'); setInvestmentOffset(0); }}>查看近 30 天</button><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('investment_leads')}>查看 {investmentStatus?.accounts.investmentLeadsEnabled ?? dashboard?.accounts.investmentLeadsEnabled ?? 0} 个订阅账号</button></div></div>}
@@ -1037,6 +1097,11 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
                 <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
                 <span className="xAgentInvestmentMeta">来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}</span>
               </button>
+              <InvestmentSourceControls accounts={item.accounts || ''} onChanged={() => {
+                void refreshDashboard();
+                setAccountReload((value) => value + 1);
+                void getXAgentInvestmentLeadsStatus().then(setInvestmentStatus).catch(() => {});
+              }} />
               {selected && <InvestmentLeadDetail detail={investmentDetail} loading={investmentDetailLoading} error={investmentDetailError} />}
             </article>;
           })}

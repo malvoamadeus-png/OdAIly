@@ -30,6 +30,11 @@ MAX_ATTEMPTS = 3
 LEASE = timedelta(minutes=30)
 RETRY_DELAY = timedelta(minutes=15)
 RETENTION = timedelta(days=30)
+# Legacy results stay in storage but are not presented as passing the new gate.
+VISIBLE_LEAD_SQL = (
+    "EXISTS(SELECT 1 FROM investment_lead_revisions quality_revision "
+    f"WHERE quality_revision.lead_id=l.id AND quality_revision.prompt_version='{DERIVE_PROMPT_VERSION}')"
+)
 
 
 def _now() -> datetime:
@@ -447,8 +452,7 @@ class InvestmentLeadService:
             params: list[Any] = [stage, MAX_ATTEMPTS, now]
             if stage == "derive":
                 conditions = "AND EXISTS(SELECT 1 FROM investment_lead_events e WHERE e.material_id=t.material_id " \
-                    "AND e.content_hash=t.content_hash AND e.prompt_version=?) "
-                params.append(SCAN_PROMPT_VERSION)
+                    "AND e.content_hash=t.content_hash) "
             params.append(last_account)
             row = self.db.execute(
                 "SELECT a.screen_name_lower FROM investment_lead_tasks t "
@@ -730,8 +734,8 @@ class InvestmentLeadService:
                     self.db.execute(
                         "UPDATE investment_lead_tasks SET status='pending',attempts=0,next_attempt_at=NULL,"
                         "completed_at=NULL,updated_at=? WHERE material_id=? AND content_hash=? AND stage='scan' "
-                        "AND prompt_version=? AND status='needs_material'",
-                        (now, job["material_id"], job["content_hash"], SCAN_PROMPT_VERSION),
+                        "AND status='needs_material'",
+                        (now, job["material_id"], job["content_hash"]),
                     )
                 if urls_to_read:
                     self.db.execute(
@@ -927,7 +931,9 @@ class InvestmentLeadService:
                 "SELECT t.id,t.material_id,t.content_hash,t.attempts,e.classification,e.subject,e.action,e.change_object,e.event_time,"
                 "e.impact_relations_json,e.summary,e.reason,m.payload_json,t.created_at "
                 "FROM investment_lead_tasks t JOIN investment_lead_events e "
-                "ON e.material_id=t.material_id AND e.content_hash=t.content_hash AND e.prompt_version=? "
+                "ON e.material_id=t.material_id AND e.content_hash=t.content_hash "
+                "AND e.id=(SELECT MAX(latest.id) FROM investment_lead_events latest "
+                "WHERE latest.material_id=t.material_id AND latest.content_hash=t.content_hash) "
                 "JOIN investment_lead_materials m ON m.material_id=t.material_id AND m.content_hash=t.content_hash "
                 "WHERE t.stage='derive' AND t.status='pending' AND t.attempts<? "
                 "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=?) "
@@ -936,7 +942,7 @@ class InvestmentLeadService:
                 "AND o.content_hash=t.content_hash AND o.screen_name_lower=? "
                 "AND a.status='followed' AND a.investment_leads_enabled=1) "
                 "ORDER BY t.created_at,t.id LIMIT 1",
-                (SCAN_PROMPT_VERSION, MAX_ATTEMPTS, now, fair_account),
+                (MAX_ATTEMPTS, now, fair_account),
             ).fetchone()
             if row is None:
                 return 0
@@ -1098,6 +1104,10 @@ class InvestmentLeadService:
                 or old["driver_logic"] != lead["driver_logic"]
                 or old["conditions"] != (lead.get("conditions") or "")
                 or old["assets_json"] != assets_json
+                or not self.db.execute(
+                    "SELECT 1 FROM investment_lead_revisions WHERE lead_id=? AND prompt_version=? LIMIT 1",
+                    (lead_id, DERIVE_PROMPT_VERSION),
+                ).fetchone()
             )
             revision = int(old["revision"]) + (1 if substantive else 0)
             status = "active" if lead.get("assets") else "unlocated"
@@ -1348,8 +1358,8 @@ class InvestmentLeadService:
                 "oldestPendingAt": min(oldest_pending) if oldest_pending else None,
             },
             "results": {
-                "active": int(self.db.execute("SELECT COUNT(*) FROM investment_leads WHERE status='active'").fetchone()[0]),
-                "unlocated": int(self.db.execute("SELECT COUNT(*) FROM investment_leads WHERE status='unlocated'").fetchone()[0]),
+                "active": int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l WHERE l.status='active' AND {VISIBLE_LEAD_SQL}").fetchone()[0]),
+                "unlocated": int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l WHERE l.status='unlocated' AND {VISIBLE_LEAD_SQL}").fetchone()[0]),
                 "scannedNoCandidate": counts.get(("scan", "no_candidate"), 0),
             },
             "usage": {
@@ -1380,7 +1390,7 @@ class InvestmentLeadService:
         if window not in durations:
             raise ValueError("不支持的投资线索时间窗口")
         cutoff = _iso(_now() - durations[window])
-        clauses = ["l.last_substantive_at>=?"]
+        clauses = ["l.last_substantive_at>=?", VISIBLE_LEAD_SQL]
         params: list[Any] = [cutoff]
         if unlocated_only:
             clauses.append("l.status='unlocated'")
