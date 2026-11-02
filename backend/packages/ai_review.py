@@ -495,31 +495,60 @@ def _match_alias(text: str, alias: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9_]){re.escape(clean)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
 
 
-def _compile_alias_matcher(aliases: dict[str, Any]) -> tuple[re.Pattern[str] | None, dict[str, str]]:
+def _compile_alias_matcher(aliases: dict[str, Any]) -> dict[Any, Any] | None:
     normalized = sorted(
         {str(alias).strip().casefold() for alias in aliases if str(alias).strip()},
         key=lambda alias: (-len(alias), alias),
     )
     if not normalized:
-        return None, {}
-    group_aliases: dict[str, str] = {}
-    alternatives = []
-    for index, alias in enumerate(normalized):
-        group = f"a{index}"
-        if re.fullmatch(r"\$?[A-Za-z][A-Za-z0-9]{0,9}", alias):
-            body = rf"\$?{re.escape(alias.lstrip('$'))}"
-        else:
-            body = re.escape(alias)
-        alternatives.append(rf"(?P<{group}>(?<![A-Za-z0-9_]){body}(?![A-Za-z0-9_]))")
-        group_aliases[group] = alias
-    return re.compile("|".join(alternatives), re.IGNORECASE), group_aliases
+        return None
+    root: dict[Any, Any] = {}
+    for alias in normalized:
+        searchable = alias.lstrip("$") if re.fullmatch(r"\$?[A-Za-z][A-Za-z0-9]{0,9}", alias) else alias
+        node = root
+        for character in searchable:
+            node = node.setdefault(character, {})
+        node.setdefault(None, []).append(alias)
+    return root
 
 
-def _find_alias_matches(text: str, matcher: tuple[re.Pattern[str] | None, dict[str, str]]) -> set[str]:
-    pattern, group_aliases = matcher
-    if pattern is None:
+def _find_alias_matches(text: str, matcher: dict[Any, Any] | None) -> set[str]:
+    if matcher is None:
         return set()
-    return {group_aliases[match.lastgroup] for match in pattern.finditer(text) if match.lastgroup}
+    folded = text.casefold()
+    original_positions: list[int] = []
+    for index, character in enumerate(text):
+        original_positions.extend([index] * len(character.casefold()))
+
+    def is_word_character(character: str) -> bool:
+        return character.isascii() and (character.isalnum() or character == "_")
+
+    matches: set[str] = set()
+    cursor = 0
+    while cursor < len(folded):
+        node = matcher
+        scan = cursor
+        best_alias = None
+        best_end = cursor
+        while scan < len(folded):
+            node = node.get(folded[scan])
+            if node is None:
+                break
+            scan += 1
+            aliases = node.get(None)
+            if aliases:
+                start = original_positions[cursor]
+                end = original_positions[scan - 1] + 1
+                before = text[start - 1] if start else ""
+                after = text[end] if end < len(text) else ""
+                if not is_word_character(before) and not is_word_character(after):
+                    best_alias, best_end = aliases[0], scan
+        if best_alias is not None:
+            matches.add(best_alias)
+            cursor = best_end
+        else:
+            cursor += 1
+    return matches
 
 
 def _extract_clues(texts: list[str]) -> dict[str, list[str]]:
