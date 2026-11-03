@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,10 @@ from packages.stock_market_broadcast.store import StockMarketStore
 from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
+from packages.system_observability import MainTaskProjector, ProjectionWorker, SystemInformationStore
+from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService, SystemReviewWorker
+from packages.system_observability.registry import BUSINESS_REGISTRY
+from packages.system_observability.runtime import system_observability_directory
 from packages.pipeline_timing import (
     PipelineTimingLocalStore,
     PipelineTimingSnapshotService,
@@ -402,6 +407,38 @@ class EditorPluginNewsGenService:
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
         self.newsflash_operations = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
         self.hottopic = HotTopicService()
+        self.system_observability_dir = system_observability_directory(self.paths.runtime_dir)
+        self.system_observability_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.system_observability_dir.chmod(0o700)
+        system_information_database = self.system_observability_dir / "system_information.sqlite"
+        self.system_information = SystemInformationStore(system_information_database)
+        self.system_information.initialize()
+        self.system_information_projector = ProjectionWorker(
+            MainTaskProjector(
+                storage_settings.sqlite_path,
+                self.system_information,
+                additional_databases={
+                    "main": storage_settings.sqlite_path,
+                    "competitor": self.paths.competitor_monitor_db_path,
+                    "hot": self.hottopic.path,
+                    "meme": self.meme_dashboard_store.path,
+                    "gate": self.gate_market_store.path,
+                    "stock": self.stock_market_store.path,
+                    "queue": self.paths.runtime_dir / "local_pipeline.sqlite",
+                },
+            ),
+            interval_seconds=5,
+        )
+        self.system_review_repository = SystemReviewRepository(system_information_database)
+        self.system_review_service = SystemReviewService(
+            storage_settings.sqlite_path,
+            self.system_review_repository,
+            model_settings=self.x_settings,
+            competitor_database_path=self.paths.competitor_monitor_db_path,
+            evidence_database_path=storage_settings.sqlite_path,
+            local_pipeline_database_path=self.paths.runtime_dir / "local_pipeline.sqlite",
+        )
+        self.system_review_worker = SystemReviewWorker(self.system_review_service)
 
         self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
@@ -422,6 +459,8 @@ class EditorPluginNewsGenService:
         self.embedding_service = self._build_embedding_service()
         self.feed_syncer.start()
         self.pipeline_timing_snapshots.start()
+        self.system_information_projector.start()
+        self.system_review_worker.start()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
         api_key = self.x_settings.search_ai_review_openai_api_key or self.x_settings.openai_api_key
@@ -469,6 +508,8 @@ class EditorPluginNewsGenService:
         )
 
     def close(self) -> None:
+        self.system_information_projector.stop()
+        self.system_review_worker.stop()
         self.pipeline_timing_snapshots.stop()
         self.feed_syncer.stop()
         self.hottopic.close()
@@ -541,6 +582,98 @@ class EditorPluginNewsGenService:
             raise EditorPluginApiError("不支持的 AI 审阅操作")
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc
+
+    def execute_system_information(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        action = str(payload.get("action") or "list")
+        if action == "list":
+            return self.system_information.query(payload)
+        if action == "detail":
+            item_id = str(payload.get("item_id") or "").strip()
+            if not item_id:
+                raise EditorPluginApiError("item_id 不能为空")
+            item = self.system_information.detail(item_id)
+            if item is None:
+                raise EditorPluginApiError("处理记录不存在")
+            return {"item": item}
+        if action == "registry":
+            coverage = self.system_information.coverage()
+            declared = {str(source) for item in BUSINESS_REGISTRY for source in item["sources"]}
+            observed = {str(item["source"]) for item in coverage["sources"]}
+            coverage["registry"] = list(BUSINESS_REGISTRY)
+            coverage["unmapped_sources"] = sorted(observed - declared)
+            return coverage
+        if action == "health":
+            return self.get_system_health()
+        raise EditorPluginApiError("不支持的全量信息流操作")
+
+    def get_system_health(self) -> dict[str, Any]:
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        coverage = self.system_information.coverage()
+        workers: list[dict[str, Any]] = []
+        try:
+            with sqlite3.connect(f"file:{self.system_review_service.primary_database_path.as_posix()}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_worker_heartbeats'").fetchone()
+                if exists:
+                    workers = [dict(row) for row in conn.execute(
+                        "SELECT component,worker_id,status,last_seen_at,last_success_at,last_error,metadata "
+                        "FROM pipeline_worker_heartbeats ORDER BY component,worker_id"
+                    )]
+        except sqlite3.Error as exc:
+            coverage["worker_read_error"] = type(exc).__name__
+        try:
+            from packages.tasks.registry import TASKS
+
+            schedules = [
+                {
+                    "task_id": task.task_id,
+                    "name": task.display_name,
+                    "kinds": list(task.kinds),
+                    "config": task.config_help,
+                    "schedules": [
+                        {"kind": schedule.kind, "job_id": schedule.job_id, "description": schedule.description, "trigger": str(schedule.trigger)}
+                        for schedule in task.schedules
+                    ],
+                }
+                for task in TASKS.values()
+            ]
+        except Exception as exc:
+            schedules = []
+            coverage["schedule_read_error"] = type(exc).__name__
+        recent_briefs = self.system_information.query({"business": "scheduled_brief", "limit": 8})["items"]
+        return {
+            "generated_at_ms": now_ms,
+            "coverage": coverage,
+            "storage": self.system_information.storage_health(),
+            "workers": workers,
+            "review_worker": {
+                "last_seen_at": self.system_review_repository.get_state("worker_last_seen_at"),
+                "last_error": self.system_review_repository.get_state("worker_last_error"),
+            },
+            "inspection_runs": self.system_review_repository.recent_runs(),
+            "scheduled_tasks": schedules,
+            "recent_briefs": recent_briefs,
+        }
+
+    def execute_system_review(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "list")
+        if action == "list":
+            return self.system_review_repository.list_items(payload)
+        if action == "detail":
+            item_key = str(payload.get("item_key") or "").strip()
+            if not item_key:
+                raise EditorPluginApiError("item_key 不能为空")
+            return {"item": self.system_review_repository.detail(item_key)}
+        if action == "decide":
+            try:
+                return {"item": self.system_review_repository.decide(
+                    str(payload.get("item_key") or ""), str(payload.get("decision") or ""),
+                    actor.email, str(payload.get("note") or ""),
+                )}
+            except ValueError as exc:
+                raise EditorPluginApiError(str(exc)) from exc
+        raise EditorPluginApiError("不支持的系统巡检操作")
 
     def get_business_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
@@ -1340,6 +1473,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/blockbeats-key/save",
         "/console/newsflash-operations",
         "/console/ai-review",
+        "/console/system-information",
+        "/console/system-review",
         "/console/business-news/get",
         "/console/business-news/groups/save",
         "/console/hottopic/dashboard",
@@ -1594,6 +1729,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/ai-review":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_ai_review(actor, self._read_json())})
+                    return
+                if self.path == "/console/system-information":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_system_information(actor, self._read_json())})
+                    return
+                if self.path == "/console/system-review":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_system_review(actor, self._read_json())})
                     return
                 if self.path == "/console/business-news/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_business_news(actor, self._read_json())})

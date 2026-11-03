@@ -1,0 +1,737 @@
+from __future__ import annotations
+
+import gzip
+import hashlib
+import json
+import re
+import shutil
+import sqlite3
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+def timestamp_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number * 1000 if abs(number) < 10_000_000_000 else number
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
+def _safe_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _safe_json(item)
+            for key, item in value.items()
+            if not re.search(r"token|secret|password|cookie|authorization|api.?key|credential", str(key), re.I)
+        }
+    if isinstance(value, list):
+        return [_safe_json(item) for item in value]
+    return value
+
+
+def _ngrams(text: str) -> list[tuple[str, int]]:
+    normalized = text.casefold()
+    return [
+        (normalized[index:index + 2], index)
+        for index in range(len(normalized) - 1)
+        if not normalized[index:index + 2].isspace()
+    ]
+
+
+def _fingerprint(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+class SystemInformationStore:
+    def __init__(self, database_path: Path, evidence_dir: Path | None = None) -> None:
+        self.database_path = database_path
+        self.evidence_dir = evidence_dir or database_path.parent / "system_information" / "evidence"
+
+    def connect(self) -> sqlite3.Connection:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.database_path, timeout=15)
+        self.database_path.chmod(0o600)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
+
+    def initialize(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS system_information_items (
+                    item_id TEXT PRIMARY KEY,
+                    business_key TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    source_id TEXT,
+                    task_id INTEGER,
+                    title TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    source_url TEXT,
+                    stage TEXT NOT NULL DEFAULT 'unknown',
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    result TEXT NOT NULL DEFAULT 'unknown',
+                    failure_category TEXT,
+                    created_at_ms INTEGER,
+                    updated_at_ms INTEGER,
+                    observed_at_ms INTEGER NOT NULL,
+                    source_database TEXT NOT NULL,
+                    source_table TEXT NOT NULL,
+                    source_row_id TEXT NOT NULL,
+                    evidence_ref TEXT,
+                    fingerprint TEXT NOT NULL,
+                    legacy_history INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE INDEX IF NOT EXISTS idx_system_information_created
+                    ON system_information_items(created_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_activity
+                    ON system_information_items(updated_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_business
+                    ON system_information_items(business_key, created_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_status
+                    ON system_information_items(status, created_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_source
+                    ON system_information_items(source, created_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_task
+                    ON system_information_items(task_id);
+
+                CREATE TABLE IF NOT EXISTS system_information_events (
+                    event_id TEXT PRIMARY KEY,
+                    item_id TEXT NOT NULL REFERENCES system_information_items(item_id) ON DELETE CASCADE,
+                    event_type TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    happened_at_ms INTEGER,
+                    observed_at_ms INTEGER NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    reason TEXT,
+                    error_code TEXT,
+                    evidence_ref TEXT,
+                    details_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_system_information_events_item
+                    ON system_information_events(item_id, happened_at_ms, event_id);
+
+                CREATE TABLE IF NOT EXISTS system_information_state (
+                    state_key TEXT PRIMARY KEY,
+                    state_value TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS system_information_search (
+                    term TEXT NOT NULL,
+                    item_id TEXT NOT NULL REFERENCES system_information_items(item_id) ON DELETE CASCADE,
+                    PRIMARY KEY(term, item_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_system_information_search_item
+                    ON system_information_search(item_id);
+                CREATE TABLE IF NOT EXISTS system_information_search_positions (
+                    term TEXT NOT NULL,
+                    item_id TEXT NOT NULL REFERENCES system_information_items(item_id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY(term,item_id,position)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_system_information_search_positions_item
+                    ON system_information_search_positions(item_id,position);
+                CREATE TABLE IF NOT EXISTS system_information_evidence (
+                    evidence_ref TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS system_information_evidence_pins (
+                    pin_key TEXT PRIMARY KEY,
+                    evidence_ref TEXT NOT NULL REFERENCES system_information_evidence(evidence_ref),
+                    pinned_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS system_information_storage_samples (
+                    sample_date TEXT PRIMARY KEY,
+                    database_bytes INTEGER NOT NULL,
+                    evidence_bytes INTEGER NOT NULL,
+                    sampled_at_ms INTEGER NOT NULL
+                );
+                """
+            )
+        if not self.get_state("observability_started_at"):
+            self.set_state("observability_started_at", int(datetime.now(UTC).timestamp() * 1000))
+
+    def save_evidence(self, evidence: Any) -> str:
+        safe = _safe_json(evidence)
+        payload = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        directory = self.evidence_dir / digest[:2]
+        path = directory / f"{digest}.json.gz"
+        if not path.exists():
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.write_bytes(gzip.compress(payload, compresslevel=6, mtime=0))
+            path.chmod(0o600)
+        with self.connect() as conn:
+            self._register_evidence(conn, digest, path, len(payload))
+        return digest
+
+    def pin_evidence(self, evidence_ref: str, pin_key: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO system_information_evidence_pins(pin_key,evidence_ref,pinned_at_ms) VALUES(?,?,?) "
+                "ON CONFLICT(pin_key) DO UPDATE SET evidence_ref=excluded.evidence_ref,pinned_at_ms=excluded.pinned_at_ms",
+                (pin_key, evidence_ref, int(datetime.now(UTC).timestamp() * 1000)),
+            )
+
+    def unpin_evidence(self, pin_key: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM system_information_evidence_pins WHERE pin_key=?", (pin_key,))
+
+    @staticmethod
+    def _register_evidence(conn: sqlite3.Connection, digest: str, path: Path, size: int) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES (?,?,?,?)",
+            (digest, str(path), size, int(datetime.now(UTC).timestamp() * 1000)),
+        )
+
+    def _write_evidence_file(self, evidence: Any) -> tuple[str, Path, int]:
+        safe = _safe_json(evidence)
+        payload = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        directory = self.evidence_dir / digest[:2]
+        path = directory / f"{digest}.json.gz"
+        if not path.exists():
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.write_bytes(gzip.compress(payload, compresslevel=6, mtime=0))
+            path.chmod(0o600)
+        return digest, path, len(payload)
+
+    def load_evidence(self, evidence_ref: str | None) -> Any:
+        if not evidence_ref:
+            return None
+        with self.connect() as conn:
+            row = conn.execute("SELECT path FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,)).fetchone()
+        if not row:
+            return None
+        path = Path(row["path"])
+        try:
+            return json.loads(gzip.decompress(path.read_bytes()))
+        except (OSError, EOFError, json.JSONDecodeError):
+            return {"unavailable": True, "evidence_ref": evidence_ref}
+
+    @staticmethod
+    def _compact_evidence(value: Any) -> Any:
+        if isinstance(value, list):
+            return [SystemInformationStore._compact_evidence(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        compacted: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).casefold()
+            if normalized == "content" and isinstance(item, str) and len(item) > 2000:
+                compacted["content_excerpt"] = item[:2000]
+                compacted["content_sha256"] = hashlib.sha256(item.encode("utf-8")).hexdigest()
+            elif normalized == "raw_model_response" and isinstance(item, str):
+                compacted["raw_model_response_excerpt"] = item[:1000]
+                compacted["raw_model_response_sha256"] = hashlib.sha256(item.encode("utf-8")).hexdigest()
+                compacted["raw_model_response_bytes"] = len(item.encode("utf-8"))
+            elif normalized in {"writer_output", "model_response", "response_text", "raw_output"} and isinstance(item, str):
+                compacted[f"{key}_excerpt"] = item[:1000]
+                compacted[f"{key}_sha256"] = hashlib.sha256(item.encode("utf-8")).hexdigest()
+            else:
+                compacted[str(key)] = SystemInformationStore._compact_evidence(item)
+        return compacted
+
+    def cleanup_expired_evidence(self, *, now_ms: int | None = None, retain_days: int = 90, limit: int = 200, dry_run: bool = True) -> dict[str, int]:
+        now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        cutoff = now - max(1, retain_days) * 24 * 60 * 60 * 1000
+        compacted = compacted_bytes = protected = orphaned = orphaned_bytes = 0
+        delete_after_commit: list[Path] = []
+        with self.connect() as conn:
+            evidence_rows = conn.execute(
+                "SELECT evidence_ref,path,byte_size,created_at_ms FROM system_information_evidence "
+                "WHERE created_at_ms<? ORDER BY created_at_ms,evidence_ref LIMIT ?",
+                (cutoff, max(1, min(2000, limit))),
+            ).fetchall()
+            for row in evidence_rows:
+                ref = str(row["evidence_ref"])
+                item_refs = conn.execute(
+                    "SELECT i.status,i.result FROM system_information_items i WHERE i.evidence_ref=?",
+                    (ref,),
+                ).fetchall()
+                event_refs = conn.execute(
+                    "SELECT e.status,e.result FROM system_information_events e WHERE e.evidence_ref=?",
+                    (ref,),
+                ).fetchall()
+                attempt_refs = []
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
+                    attempt_refs = conn.execute(
+                        "SELECT status,'review_evidence' AS result FROM system_review_analysis_attempts WHERE raw_response_ref=?",
+                        (ref,),
+                    ).fetchall()
+                pin_refs = conn.execute(
+                    "SELECT 'pinned' AS status,'source_evidence' AS result FROM system_information_evidence_pins WHERE evidence_ref=?",
+                    (ref,),
+                ).fetchall()
+                references = [dict(item) for item in (*item_refs, *event_refs, *attempt_refs, *pin_refs)]
+                if any(
+                    reference["status"] in {"pending", "processing", "running", "queued", "waiting", "retry"}
+                    or reference["result"] in {"processing", "unknown", "backoffice"}
+                    for reference in references
+                ):
+                    protected += 1
+                    continue
+                path = Path(row["path"])
+                try:
+                    payload = json.loads(gzip.decompress(path.read_bytes()))
+                except (OSError, EOFError, json.JSONDecodeError):
+                    payload = {"unavailable": True, "evidence_ref": ref}
+                compact_payload = self._compact_evidence(payload)
+                if compact_payload == payload:
+                    continue
+                if dry_run:
+                    serialized = json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+                    compact_size = len(serialized)
+                    compacted += 1
+                    compacted_bytes += max(0, int(row["byte_size"]) - compact_size)
+                    continue
+                compact_ref, compact_path, compact_size = self._write_evidence_file(compact_payload)
+                self._register_evidence(conn, compact_ref, compact_path, compact_size)
+                conn.execute("UPDATE system_information_items SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
+                conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
+                if attempt_refs:
+                    conn.execute("UPDATE system_review_analysis_attempts SET raw_response_ref=? WHERE raw_response_ref=?", (compact_ref, ref))
+                conn.execute("UPDATE system_information_evidence_pins SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
+                    still_referenced = conn.execute(
+                        "SELECT 1 FROM system_information_items WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_events WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_review_analysis_attempts WHERE raw_response_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=? LIMIT 1",
+                        (ref, ref, ref, ref),
+                    ).fetchone()
+                else:
+                    still_referenced = conn.execute(
+                        "SELECT 1 FROM system_information_items WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_events WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=? LIMIT 1", (ref, ref, ref),
+                    ).fetchone()
+                if not still_referenced:
+                    conn.execute("DELETE FROM system_information_evidence WHERE evidence_ref=?", (ref,))
+                    delete_after_commit.append(path)
+                compacted += 1
+                compacted_bytes += max(0, int(row["byte_size"]) - compact_size)
+
+            if not dry_run:
+                referenced = {
+                    str(row[0]) for row in conn.execute(
+                        "SELECT evidence_ref FROM system_information_items WHERE evidence_ref IS NOT NULL "
+                        "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL"
+                    )
+                }
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
+                    referenced.update(str(row[0]) for row in conn.execute(
+                        "SELECT raw_response_ref FROM system_review_analysis_attempts WHERE raw_response_ref IS NOT NULL"
+                    ))
+                referenced.update(str(row[0]) for row in conn.execute(
+                    "SELECT evidence_ref FROM system_information_evidence_pins"
+                ))
+                for row in conn.execute("SELECT evidence_ref,path,byte_size FROM system_information_evidence").fetchall():
+                    ref = str(row["evidence_ref"])
+                    if ref not in referenced:
+                        path = Path(row["path"])
+                        conn.execute("DELETE FROM system_information_evidence WHERE evidence_ref=?", (ref,))
+                        delete_after_commit.append(path)
+                        orphaned += 1
+                        orphaned_bytes += int(row["byte_size"])
+            conn.commit()
+        for path in delete_after_commit:
+            path.unlink(missing_ok=True)
+        return {"compacted": compacted, "compacted_bytes": compacted_bytes, "protected": protected,
+                "orphaned": orphaned, "orphaned_bytes": orphaned_bytes, "dry_run": int(dry_run)}
+
+    def prune_orphan_evidence(self, *, limit: int = 500, dry_run: bool = True) -> dict[str, int]:
+        with self.connect() as conn:
+            referenced = {
+                str(row[0]) for row in conn.execute(
+                    "SELECT evidence_ref FROM system_information_items WHERE evidence_ref IS NOT NULL "
+                    "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL"
+                )
+            }
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
+                referenced.update(str(row[0]) for row in conn.execute(
+                    "SELECT raw_response_ref FROM system_review_analysis_attempts WHERE raw_response_ref IS NOT NULL"
+                ))
+            referenced.update(str(row[0]) for row in conn.execute(
+                "SELECT evidence_ref FROM system_information_evidence_pins"
+            ))
+            registered = conn.execute("SELECT evidence_ref,path,byte_size FROM system_information_evidence").fetchall()
+            candidates: dict[str, tuple[Path, int]] = {}
+            for row in registered:
+                ref = str(row["evidence_ref"])
+                if ref not in referenced:
+                    candidates[ref] = (Path(row["path"]), int(row["byte_size"]))
+            for path in self.evidence_dir.glob("[0-9a-f][0-9a-f]/*.json.gz"):
+                ref = path.name.removesuffix(".json.gz")
+                if ref not in referenced and ref not in candidates:
+                    try:
+                        size = len(gzip.decompress(path.read_bytes()))
+                    except (OSError, EOFError):
+                        size = path.stat().st_size
+                    candidates[ref] = (path, size)
+            candidates = dict(list(candidates.items())[:max(1, min(5000, limit))])
+            if not dry_run:
+                conn.executemany("DELETE FROM system_information_evidence WHERE evidence_ref=?", ((ref,) for ref in candidates))
+                conn.commit()
+                for path, _size in candidates.values():
+                    path.unlink(missing_ok=True)
+        return {"files": len(candidates), "bytes": sum(size for _path, size in candidates.values()), "dry_run": int(dry_run)}
+
+    def storage_health(self, *, sample: bool = False, now_ms: int | None = None) -> dict[str, Any]:
+        now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        database_bytes = sum(
+            path.stat().st_size for path in (self.database_path, Path(f"{self.database_path}-wal"), Path(f"{self.database_path}-shm"))
+            if path.exists()
+        )
+        evidence_bytes = sum(path.stat().st_size for path in self.evidence_dir.glob("[0-9a-f][0-9a-f]/*.json.gz")) if self.evidence_dir.exists() else 0
+        usage = shutil.disk_usage(self.database_path.parent)
+        sample_date = datetime.fromtimestamp(now / 1000, UTC).date().isoformat()
+        with self.connect() as conn:
+            if sample:
+                conn.execute(
+                    "INSERT INTO system_information_storage_samples(sample_date,database_bytes,evidence_bytes,sampled_at_ms) VALUES(?,?,?,?) "
+                    "ON CONFLICT(sample_date) DO UPDATE SET database_bytes=excluded.database_bytes,evidence_bytes=excluded.evidence_bytes,sampled_at_ms=excluded.sampled_at_ms",
+                    (sample_date, database_bytes, evidence_bytes, now),
+                )
+            samples = conn.execute(
+                "SELECT database_bytes,evidence_bytes,sampled_at_ms FROM system_information_storage_samples "
+                "WHERE sampled_at_ms>=? ORDER BY sampled_at_ms", (now - 30 * 24 * 60 * 60 * 1000,),
+            ).fetchall()
+        daily_growth = 0
+        if len(samples) >= 2:
+            first = samples[0]
+            last = samples[-1]
+            elapsed_days = max((int(last["sampled_at_ms"]) - int(first["sampled_at_ms"])) / 86_400_000, 1 / 24)
+            growth = (int(last["database_bytes"]) + int(last["evidence_bytes"])) - (int(first["database_bytes"]) + int(first["evidence_bytes"]))
+            daily_growth = max(0, int(growth / elapsed_days))
+        threshold_bytes = max(10 * 1024**3, int(usage.total * 0.15))
+        return {
+            "filesystem_total_bytes": usage.total, "filesystem_free_bytes": usage.free,
+            "required_free_bytes": threshold_bytes, "space_ok": usage.free >= threshold_bytes,
+            "database_bytes": database_bytes, "evidence_bytes": evidence_bytes,
+            "estimated_growth_bytes_per_day": daily_growth, "estimated_growth_next_30d_bytes": daily_growth * 30,
+            "samples": len(samples), "sampled_at_ms": now,
+        }
+
+    def upsert_snapshot(self, snapshot: dict[str, Any], evidence: Any) -> bool:
+        observed = int(datetime.now(UTC).timestamp() * 1000)
+        fingerprint = _fingerprint(snapshot)
+        item_id = str(snapshot["item_id"])
+        with self.connect() as conn:
+            previous = conn.execute(
+                "SELECT fingerprint,title,summary,source_url,stage,status,result FROM system_information_items WHERE item_id=?", (item_id,),
+            ).fetchone()
+            if previous is not None and previous["fingerprint"] == fingerprint:
+                return False
+            evidence_ref = None
+            if evidence is not None:
+                evidence_ref, evidence_path, evidence_size = self._write_evidence_file(evidence)
+                self._register_evidence(conn, evidence_ref, evidence_path, evidence_size)
+            conn.execute(
+                """INSERT INTO system_information_items(
+                    item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
+                    failure_category,created_at_ms,updated_at_ms,observed_at_ms,source_database,source_table,
+                    source_row_id,evidence_ref,fingerprint,legacy_history
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    business_key=excluded.business_key,source=excluded.source,source_id=excluded.source_id,
+                    task_id=excluded.task_id,title=excluded.title,summary=excluded.summary,source_url=excluded.source_url,
+                    stage=excluded.stage,status=excluded.status,result=excluded.result,
+                    failure_category=excluded.failure_category,created_at_ms=excluded.created_at_ms,
+                    updated_at_ms=excluded.updated_at_ms,observed_at_ms=excluded.observed_at_ms,
+                    source_database=excluded.source_database,source_table=excluded.source_table,
+                    source_row_id=excluded.source_row_id,evidence_ref=excluded.evidence_ref,
+                    fingerprint=excluded.fingerprint""",
+                (
+                    item_id, snapshot["business_key"], snapshot["source"], snapshot.get("source_id"),
+                    snapshot.get("task_id"), snapshot.get("title") or "", snapshot.get("summary") or "",
+                    snapshot.get("source_url"), snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
+                    snapshot.get("result") or "unknown", snapshot.get("failure_category"), snapshot.get("created_at_ms"),
+                    snapshot.get("updated_at_ms"), observed, snapshot["source_database"], snapshot["source_table"],
+                    str(snapshot["source_row_id"]), evidence_ref, fingerprint, int(snapshot.get("legacy_history", True)),
+                ),
+            )
+            conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
+            conn.execute("DELETE FROM system_information_search_positions WHERE item_id=?", (item_id,))
+            searchable = " ".join(str(snapshot.get(key) or "") for key in ("title", "summary", "source", "source_id", "source_url", "search_extra"))
+            conn.executemany(
+                "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)",
+                ((term, item_id) for term, _position in _ngrams(searchable)),
+            )
+            conn.executemany(
+                "INSERT OR IGNORE INTO system_information_search_positions(term,item_id,position) VALUES (?,?,?)",
+                ((term, item_id, position) for term, position in _ngrams(searchable)),
+            )
+            event_id = hashlib.sha256(f"{item_id}:{fingerprint}".encode()).hexdigest()
+            state_changed = previous is not None and any(
+                previous[key] != (snapshot.get(key) or ("" if key in {"title", "summary", "source_url"} else None))
+                for key in ("stage", "status", "result", "title", "summary", "source_url")
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO system_information_events(
+                    event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
+                    summary,reason,error_code,evidence_ref,details_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_id, item_id, "legacy_snapshot" if previous is None else "observed_change" if state_changed else "artifact_update",
+                    snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
+                    snapshot.get("result") or "unknown", snapshot.get("updated_at_ms") or snapshot.get("created_at_ms"),
+                    observed, snapshot.get("summary") or "", snapshot.get("reason"), snapshot.get("error_code"),
+                    evidence_ref, json.dumps({
+                        "history_complete": previous is not None and not bool(snapshot.get("legacy_history")),
+                        "source_row_id": str(snapshot["source_row_id"]),
+                        "history_note": "历史初始状态不包含早期尝试；状态变化为投影轮询观察，间隔内变化可能缺失。" if snapshot.get("legacy_history") else "状态变化由常驻投影器轮询观察；轮询间隔内的中间尝试可能缺失。",
+                    }, ensure_ascii=False),
+                )
+            )
+        return True
+
+    def append_event(
+        self,
+        *,
+        item_id: str,
+        event_id: str,
+        event_type: str,
+        stage: str,
+        status: str,
+        result: str,
+        happened_at_ms: int | None,
+        summary: str,
+        reason: str | None = None,
+        error_code: str | None = None,
+        evidence: Any = None,
+        evidence_ref: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        observed = int(datetime.now(UTC).timestamp() * 1000)
+        with self.connect() as conn:
+            if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
+                return False
+            if evidence is not None:
+                evidence_ref, path, size = self._write_evidence_file(evidence)
+                self._register_evidence(conn, evidence_ref, path, size)
+            elif evidence_ref and conn.execute(
+                "SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,),
+            ).fetchone() is None:
+                evidence_ref = None
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO system_information_events(
+                    event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
+                    summary,reason,error_code,evidence_ref,details_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (event_id, item_id, event_type, stage, status, result, happened_at_ms, observed,
+                 summary[:1200], reason[:1200] if reason else None, error_code, evidence_ref,
+                 json.dumps(details or {}, ensure_ascii=False, separators=(",", ":"))),
+            )
+        return cursor.rowcount > 0
+
+    def set_state(self, key: str, value: Any) -> None:
+        encoded = str(value)
+        if self.get_state(key) == encoded:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES (?,?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                (key, encoded, int(datetime.now(UTC).timestamp() * 1000)),
+            )
+
+    def get_state(self, key: str, default: str = "") -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key=?", (key,)).fetchone()
+        return str(row["state_value"]) if row else default
+
+    def has_item(self, item_id: str) -> bool:
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,),
+            ).fetchone() is not None
+
+    def rebuild_search_positions(self, limit: int = 500) -> int:
+        if self.get_state("search_positions_rebuild_done") == "1":
+            return 0
+        batch_size = max(1, min(limit, 2000))
+        with self.connect() as conn:
+            cursor = self.get_state("search_positions_rebuild_cursor")
+            rows = conn.execute(
+                "SELECT i.item_id,i.title,i.summary,i.source,i.source_id,i.source_url,i.evidence_ref "
+                "FROM system_information_items i WHERE i.item_id>? ORDER BY i.item_id LIMIT ?",
+                (cursor, batch_size),
+            ).fetchall()
+            if not rows:
+                conn.execute(
+                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                    ("search_positions_rebuild_done", "1", int(datetime.now(UTC).timestamp() * 1000)),
+                )
+                return 0
+            for row in rows:
+                evidence = None
+                ref = row["evidence_ref"]
+                if ref:
+                    evidence_row = conn.execute("SELECT path FROM system_information_evidence WHERE evidence_ref=?", (ref,)).fetchone()
+                    if evidence_row:
+                        try:
+                            evidence = json.loads(gzip.decompress(Path(evidence_row["path"]).read_bytes()))
+                        except (OSError, EOFError, json.JSONDecodeError):
+                            evidence = None
+                searchable = " ".join(str(row[key] or "") for key in ("title", "summary", "source", "source_id", "source_url"))
+                searchable += " " + json.dumps(evidence, ensure_ascii=False, default=str) if evidence is not None else ""
+                conn.executemany(
+                    "INSERT OR IGNORE INTO system_information_search_positions(term,item_id,position) VALUES (?,?,?)",
+                    ((term, str(row["item_id"]), position) for term, position in _ngrams(searchable)),
+                )
+            next_cursor = str(rows[-1]["item_id"])
+            conn.execute(
+                "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                ("search_positions_rebuild_cursor", next_cursor, int(datetime.now(UTC).timestamp() * 1000)),
+            )
+        return len(rows)
+
+    def query(self, payload: dict[str, Any]) -> dict[str, Any]:
+        limit = max(1, min(int(payload.get("limit") or 50), 100))
+        sort = "updated_at_ms" if payload.get("sort") == "activity" else "created_at_ms"
+        clauses: list[str] = []
+        params: list[Any] = []
+        for key, column in (("business", "business_key"), ("source", "source"), ("stage", "stage"), ("status", "status"), ("result", "result"), ("failure_category", "failure_category")):
+            value = str(payload.get(key) or "").strip()
+            if value and value != "all":
+                if key == "status" and value in {"failed", "processing", "backoffice", "direct_publish", "normal_stop"}:
+                    groups = {
+                        "failed": "i.status LIKE '%failed' OR i.status IN ('failed','error','exhausted')",
+                        "processing": "i.status IN ('pending','judged','searched','written','formatted','queued','processing','running','retry')",
+                        "backoffice": "i.status IN ('publisher_pending','ready_review','pending_review','backoffice')",
+                        "direct_publish": "i.status IN ('auto_published','published','sent','succeeded')",
+                        "normal_stop": "i.status IN ('discarded','duplicate','deduped','ignored','skipped','ended')",
+                    }
+                    clauses.append(f"({groups[value]})")
+                else:
+                    clauses.append(f"i.{column}=?")
+                    params.append(value)
+        since = timestamp_ms(payload.get("since"))
+        until = timestamp_ms(payload.get("until"))
+        if since is not None:
+            clauses.append("i.created_at_ms>=?")
+            params.append(since)
+        if until is not None:
+            clauses.append("i.created_at_ms<?")
+            params.append(until)
+        keyword = str(payload.get("q") or "").strip().casefold()
+        if keyword:
+            if len(keyword) < 2:
+                raise ValueError("关键词至少需要两个字符")
+            terms = sorted(_ngrams(keyword))
+            ordered_terms = [term for term, _position in _ngrams(keyword)]
+            if not ordered_terms:
+                raise ValueError("关键词至少需要两个字符")
+            joins = "".join(
+                f" JOIN system_information_search_positions q{index} ON q{index}.item_id=q0.item_id "
+                f"AND q{index}.term=? AND q{index}.position=q0.position+{index}"
+                for index in range(1, len(ordered_terms))
+            )
+            clauses.append(
+                "i.item_id IN (SELECT q0.item_id FROM system_information_search_positions q0"
+                + joins + " WHERE q0.term=?)"
+            )
+            params.extend(ordered_terms[1:])
+            params.append(ordered_terms[0])
+        base_where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        base_params = list(params)
+        cursor = payload.get("cursor")
+        if isinstance(cursor, dict):
+            cursor_time = int(cursor.get("time") or 0)
+            cursor_id = str(cursor.get("id") or "")
+            clauses.append(f"(COALESCE(i.{sort},0)<? OR (COALESCE(i.{sort},0)=? AND i.item_id<?))")
+            params.extend([cursor_time, cursor_time, cursor_id])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM system_information_items i{base_where}", base_params).fetchone()[0]
+            rows = conn.execute(
+                f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
+                    i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
+                    i.evidence_ref,i.legacy_history
+                    FROM system_information_items i{where}
+                    ORDER BY COALESCE(i.{sort},0) DESC,i.item_id DESC LIMIT ?""",
+                [*params, limit + 1],
+            ).fetchall()
+            more = len(rows) > limit
+            items = [dict(row) for row in rows[:limit]]
+            next_cursor = None
+            if more and items:
+                last = items[-1]
+                next_cursor = {"time": last.get(sort), "id": last["item_id"]}
+            lag = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='main_tasks_lag' ").fetchone()
+            sync = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='main_tasks_last_success' ").fetchone()
+            search_ready = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='search_positions_rebuild_done'").fetchone()
+        return {
+            "items": items, "total": int(total), "limit": limit, "next_cursor": next_cursor,
+            "index": {"generated_at_ms": int(sync["state_value"]) if sync else None, "lag": int(lag["state_value"]) if lag else None},
+            "search_scope": "已登记的标题、正文摘要、来源、ID与URL；已清理原文不会被补搜。",
+            "search_index_ready": bool(search_ready and search_ready["state_value"] == "1"),
+        }
+
+    def detail(self, item_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            item = conn.execute("SELECT * FROM system_information_items WHERE item_id=?", (item_id,)).fetchone()
+            if item is None:
+                return None
+            events = conn.execute(
+                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=? ORDER BY COALESCE(happened_at_ms,observed_at_ms),event_id",
+                (item_id,),
+            ).fetchall()
+        result = dict(item)
+        result["evidence"] = self.load_evidence(result.get("evidence_ref"))
+        result["timeline"] = [dict(row) for row in events]
+        for event in result["timeline"]:
+            event["evidence"] = self.load_evidence(event.get("evidence_ref"))
+            try:
+                event["details"] = json.loads(event.pop("details_json"))
+            except json.JSONDecodeError:
+                event["details"] = {}
+        return result
+
+    def coverage(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            counts = conn.execute(
+                "SELECT business_key,source,COUNT(*) AS items FROM system_information_items GROUP BY business_key,source ORDER BY business_key,source"
+            ).fetchall()
+            states = {
+                row["state_key"]: row["state_value"]
+                for row in conn.execute("SELECT state_key,state_value FROM system_information_state")
+            }
+        return {
+            "sources": [dict(row) for row in counts],
+            "adapters": [
+                {
+                    "name": key.removeprefix("adapter_").removesuffix("_status"), "status": value,
+                    "audit_tables": int(states.get(f"adapter_{key.removeprefix('adapter_').removesuffix('_status')}_audit_tables", "0") or 0),
+                    "audit_skipped": int(states.get(f"adapter_{key.removeprefix('adapter_').removesuffix('_status')}_audit_skipped", "0") or 0),
+                    "audit_watermark": int(states.get(f"source_audit_{key.removeprefix('adapter_').removesuffix('_status')}_watermark", "0") or 0),
+                }
+                for key, value in states.items() if key.startswith("adapter_") and key.endswith("_status")
+            ],
+            "projection": {
+                "watermark": int(states.get("main_tasks_watermark", "0") or 0),
+                "lag": int(states.get("main_tasks_lag", "0") or 0),
+                "last_success_ms": int(states["main_tasks_last_success"]) if states.get("main_tasks_last_success") else None,
+                "last_error": states.get("main_tasks_last_error") or None,
+            },
+        }

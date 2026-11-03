@@ -28,6 +28,10 @@ import {
   Zap,
 } from 'lucide-react';
 import NewsflashOperationsPanel from './NewsflashOperationsPanel';
+import SystemInformationPanel from './SystemInformationPanel';
+import WorkflowGuidePanel from './WorkflowGuidePanel';
+import SystemReviewPanel from './SystemReviewPanel';
+import SystemHealthPanel from './SystemHealthPanel';
 import DuplicateSearchPanel from './DuplicateSearchPanel';
 import { XAgentPanel } from './XAgentPanel';
 const AIReviewPanel = lazy(() => import('./AIReviewPanel'));
@@ -156,6 +160,9 @@ type SourceManagementView = 'x' | 'binance_square' | 'non_mainstream' | 'ai_sour
 type ConsoleView =
   | SourceManagementView
   | 'tasks'
+  | 'system_information'
+  | 'system_health'
+  | 'scheduled_brief'
   | 'dedupe'
   | 'timing'
   | 'gate_market'
@@ -171,7 +178,32 @@ type ConsoleView =
   | 'business_news'
   | 'jin10'
   | 'x_agent'
-  | 'ai_review';
+  | 'ai_review'
+  | 'system_review';
+
+function resolveInitialView(value: string | null): ConsoleView {
+  if (!value || value === 'tasks') return value === 'tasks' ? 'system_information' : 'x';
+  const views: ConsoleView[] = [
+    'x', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief',
+    'tasks', 'dedupe', 'timing', 'gate_market', 'stock_market', 'meme', 'publisher', 'workflow', 'whale',
+    'hyperliquid_news', 'prompts', 'competitor', 'newsflash', 'business_news', 'jin10', 'x_agent', 'ai_review', 'system_review',
+  ];
+  return views.includes(value as ConsoleView) ? value as ConsoleView : 'x';
+}
+
+function NavButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return <button className={active ? 'navItem active' : 'navItem'} type="button" onClick={onClick}>{icon}<span>{children}</span></button>;
+}
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
   return view === 'x' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
@@ -918,12 +950,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  const initialView: ConsoleView = requestedView === 'newsflash' ? 'newsflash' : requestedView === 'business_news' ? 'business_news' : requestedView === 'hyperliquid_news' ? 'hyperliquid_news' : requestedView === 'x_agent' ? 'x_agent' : requestedView === 'ai_review' ? 'ai_review' : requestedView === 'stock_market' ? 'stock_market' : 'x';
+  const initialView = resolveInitialView(requestedView);
   const [view, setView] = useState<ConsoleView>(initialView);
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [businessNewsRefreshToken, setBusinessNewsRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
   const [aiReviewRefreshToken, setAIReviewRefreshToken] = useState(0);
+  const [systemInformationRefreshToken, setSystemInformationRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
@@ -1274,7 +1307,9 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           await loadBinanceSquareAll();
           return;
         case 'tasks':
-          await loadProcessingTasks();
+        case 'system_information':
+        case 'system_health':
+        case 'scheduled_brief':
           return;
         case 'timing':
           await loadPipelineTiming();
@@ -1427,6 +1462,18 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
 
   function switchView(nextView: typeof view) {
     setView(nextView);
+    const params = new URLSearchParams(window.location.search);
+    params.set('view', nextView);
+    if (nextView !== 'workflow') params.delete('item_id');
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}${window.location.hash}`);
+  }
+
+  function openWorkflowPath(itemId: string) {
+    const params = new URLSearchParams(window.location.search);
+    params.set('view', 'workflow');
+    params.set('item_id', itemId);
+    window.history.replaceState({}, '', `${window.location.pathname}?${params.toString()}${window.location.hash}`);
+    setView('workflow');
   }
 
   function openHyperliquidPrompt(templateKey: string) {
@@ -1826,14 +1873,20 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const titleLabel =
     sourceManagementActive
       ? '信源管理'
-      : view === 'tasks'
-        ? '信息周期监控'
+      : view === 'scheduled_brief'
+        ? '定时行情简报'
+      : view === 'system_health'
+        ? '运行健康'
+      : view === 'tasks' || view === 'system_information'
+        ? '全量信息流'
       : view === 'newsflash'
-        ? '快讯及数据总览'
+        ? 'Odaily快讯总览'
       : view === 'business_news'
         ? '商务快讯'
       : view === 'ai_review'
         ? 'AI 审阅'
+      : view === 'system_review'
+        ? '系统巡检问题'
       : view === 'dedupe'
         ? 'AI查重'
       : view === 'timing'
@@ -1862,14 +1915,20 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const subtitle =
     sourceManagementActive
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
-      : view === 'tasks'
-        ? `第 ${processingTaskPage + 1} 页 · ${visibleProcessingTasks.length} / ${processingTasks.length} 条当前页任务 · 发布者说明随任务展示`
+      : view === 'scheduled_brief'
+        ? '现有调度、最近执行结果与稿件'
+      : view === 'system_health'
+        ? 'Worker 心跳、数据接入和信息流投影状态'
+      : view === 'tasks' || view === 'system_information'
+        ? '跨业务处理记录、结果与证据'
       : view === 'newsflash'
         ? '快讯、排班、值班绩效、贡献和首发事件统一工作区'
       : view === 'business_news'
         ? '商务群消息、AI 分类、脱水和挂后台结果'
       : view === 'ai_review'
         ? '竞品先发及未覆盖事件的原始信源审阅'
+      : view === 'system_review'
+        ? '渠道覆盖、产出质量、规则和故障恢复的异步证据审阅'
       : view === 'dedupe'
         ? '粘贴一段快讯内容，检索疑似重复的已发布快讯和运行中候选'
       : view === 'timing'
@@ -1906,10 +1965,12 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? (setBusinessNewsRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'ai_review'
         ? (setAIReviewRefreshToken((value) => value + 1), Promise.resolve())
+      : view === 'system_review'
+        ? (setSystemInformationRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'dedupe'
         ? Promise.resolve()
-      : view === 'tasks'
-        ? loadProcessingTasks()
+      : view === 'tasks' || view === 'system_information' || view === 'system_health' || view === 'scheduled_brief'
+        ? (setSystemInformationRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'timing'
         ? loadPipelineTiming()
       : view === 'gate_market'
@@ -1947,64 +2008,39 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </div>
         </div>
         <nav>
-          <button
-            className={sourceManagementActive ? 'navItem active' : 'navItem'}
-            type="button"
-            onClick={() => switchView(sourceManagementActive ? view : lastSourceManagementView)}
-          >
-            <Globe2 size={18} /> 信源管理
-          </button>
-          <button className={view === 'tasks' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('tasks')}>
-            <Database size={18} /> 信息周期监控
-          </button>
-          <button className={view === 'newsflash' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('newsflash')}>
-            <Newspaper size={18} /> 快讯及数据总览
-          </button>
-          <button className={view === 'ai_review' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('ai_review')}>
-            <ClipboardCheck size={18} /> AI 审阅
-          </button>
-          <button className={view === 'business_news' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('business_news')}>
-            <MessageSquareText size={18} /> 商务快讯
-          </button>
-          <button className={view === 'dedupe' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('dedupe')}>
-            <Search size={18} /> AI查重
-          </button>
-          <button className={view === 'timing' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('timing')}>
-            <Timer size={18} /> 耗时看板
-          </button>
-          <button className={view === 'gate_market' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('gate_market')}>
-            <Activity size={18} /> Gate行情播报
-          </button>
-          <button className={view === 'stock_market' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('stock_market')}>
-            <Activity size={18} /> 股票行情播报
-          </button>
-          <button className={view === 'meme' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('meme')}>
-            <Megaphone size={18} /> Meme速递
-          </button>
-          <button className={view === 'x_agent' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('x_agent')}>
-            <Zap size={18} /> X Agent
-          </button>
-          <button className={view === 'publisher' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('publisher')}>
-            <Send size={18} /> 发布者
-          </button>
-          <button className={view === 'jin10' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('jin10')}>
-            <Radio size={18} /> 金十
-          </button>
-          <button className={view === 'workflow' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('workflow')}>
-            <Layers3 size={18} /> 流程展示
-          </button>
-          <button className={view === 'prompts' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('prompts')}>
-            <FileText size={18} /> Prompt及规则管理
-          </button>
-          <button className={view === 'hyperliquid_news' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('hyperliquid_news')}>
-            <Wallet size={18} /> Hyperliquid监测
-          </button>
-          <button className={view === 'whale' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('whale')}>
-            <Wallet size={18} /> 巨鲸
-          </button>
-          <button className={view === 'competitor' ? 'navItem active' : 'navItem'} type="button" onClick={() => switchView('competitor')}>
-            <Ban size={18} /> 排除词
-          </button>
+          <div className="navGroup"><span className="navGroupTitle">信息工作台</span>
+            <NavButton active={view === 'system_information' || view === 'tasks'} onClick={() => switchView('system_information')} icon={<Database size={18} />}>全量信息流</NavButton>
+            <NavButton active={view === 'newsflash'} onClick={() => switchView('newsflash')} icon={<Newspaper size={18} />}>Odaily快讯总览</NavButton>
+            <NavButton active={view === 'business_news'} onClick={() => switchView('business_news')} icon={<MessageSquareText size={18} />}>商务快讯</NavButton>
+            <NavButton active={view === 'dedupe'} onClick={() => switchView('dedupe')} icon={<Search size={18} />}>AI查重</NavButton>
+          </div>
+          <div className="navGroup"><span className="navGroupTitle">信源与监测</span>
+            <NavButton active={isSourceManagementView(view)} onClick={() => switchView('x')} icon={<Globe2 size={18} />}>账号与网站</NavButton>
+            <NavButton active={view === 'jin10'} onClick={() => switchView('jin10')} icon={<Radio size={18} />}>金十</NavButton>
+            <NavButton active={view === 'whale'} onClick={() => switchView('whale')} icon={<Wallet size={18} />}>巨鲸</NavButton>
+            <NavButton active={view === 'hyperliquid_news'} onClick={() => switchView('hyperliquid_news')} icon={<Wallet size={18} />}>Hyperliquid监测</NavButton>
+            <NavButton active={view === 'meme'} onClick={() => switchView('meme')} icon={<Megaphone size={18} />}>Meme速递</NavButton>
+            <NavButton active={view === 'x_agent'} onClick={() => switchView('x_agent')} icon={<Zap size={18} />}>X Agent</NavButton>
+          </div>
+          <div className="navGroup"><span className="navGroupTitle">行情播报</span>
+            <NavButton active={view === 'gate_market'} onClick={() => switchView('gate_market')} icon={<Activity size={18} />}>Gate行情播报</NavButton>
+            <NavButton active={view === 'stock_market'} onClick={() => switchView('stock_market')} icon={<Activity size={18} />}>股票行情播报</NavButton>
+            <NavButton active={view === 'scheduled_brief'} onClick={() => switchView('scheduled_brief')} icon={<Timer size={18} />}>定时行情简报</NavButton>
+          </div>
+          <div className="navGroup"><span className="navGroupTitle">内容与发布规则</span>
+            <NavButton active={view === 'prompts'} onClick={() => switchView('prompts')} icon={<FileText size={18} />}>Prompt及规则管理</NavButton>
+            <NavButton active={view === 'publisher'} onClick={() => switchView('publisher')} icon={<Send size={18} />}>发布策略</NavButton>
+            <NavButton active={view === 'competitor'} onClick={() => switchView('competitor')} icon={<Ban size={18} />}>排除词</NavButton>
+          </div>
+          <div className="navGroup"><span className="navGroupTitle">系统运行与流程</span>
+            <NavButton active={view === 'workflow'} onClick={() => switchView('workflow')} icon={<Layers3 size={18} />}>交互流程导览</NavButton>
+            <NavButton active={view === 'system_health'} onClick={() => switchView('system_health')} icon={<Activity size={18} />}>运行健康</NavButton>
+            <NavButton active={view === 'timing'} onClick={() => switchView('timing')} icon={<Timer size={18} />}>耗时看板</NavButton>
+          </div>
+          <div className="navGroup"><span className="navGroupTitle">AI质量中心</span>
+            <NavButton active={view === 'ai_review'} onClick={() => switchView('ai_review')} icon={<ClipboardCheck size={18} />}>信源扩展建议</NavButton>
+            <NavButton active={view === 'system_review'} onClick={() => switchView('system_review')} icon={<ClipboardCheck size={18} />}>系统巡检问题</NavButton>
+          </div>
         </nav>
       </aside>
 
@@ -2092,6 +2128,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <Suspense fallback={<div className="aiReviewEmpty">加载审阅台…</div>}>
             <AIReviewPanel refreshToken={aiReviewRefreshToken} />
           </Suspense>
+        ) : view === 'system_review' ? (
+          <SystemReviewPanel refreshToken={systemInformationRefreshToken} />
         ) : view === 'newsflash' ? (
           <NewsflashOperationsPanel refreshToken={newsflashRefreshToken} />
         ) : view === 'business_news' ? (
@@ -2366,8 +2404,22 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             saving={savingJin10Settings}
             onSave={saveJin10Settings}
           />
+        ) : view === 'system_health' || view === 'scheduled_brief' ? (
+          <SystemHealthPanel mode={view === 'scheduled_brief' ? 'briefs' : 'all'} refreshToken={systemInformationRefreshToken} onOpenInformation={() => switchView('system_information')} />
+        ) : view === 'system_information' ? (
+          <SystemInformationPanel
+            refreshToken={systemInformationRefreshToken}
+            onOpenBusiness={(next) => switchView(next as ConsoleView)}
+            onOpenWorkflow={openWorkflowPath}
+          />
         ) : view === 'workflow' ? (
-          <WorkflowPanel />
+          <>
+            <WorkflowGuidePanel
+              instanceId={new URLSearchParams(window.location.search).get('item_id')}
+              onOpenInformation={() => switchView('system_information')}
+            />
+            <WorkflowPanel />
+          </>
         ) : view === 'whale' ? (
           <WhaleWatchPanel
             addresses={whaleAddresses}

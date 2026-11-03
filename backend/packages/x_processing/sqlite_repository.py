@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.system_observability.runtime import system_observability_directory
+from packages.system_observability.store import SystemInformationStore
 
 from .models import (
     ACTIVE_CANDIDATE_TTL,
@@ -95,6 +99,7 @@ class SQLiteXProcessingRepository:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._attempt_evidence_store: SystemInformationStore | None = None
         self.init_schema()
 
     def _connect(self):
@@ -103,6 +108,20 @@ class SQLiteXProcessingRepository:
     def init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(SQLITE_SCHEMA_SQL)
+            attempt_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(x_processing_attempts)")}
+            for name, definition in (
+                ("response_ref", "TEXT"), ("response_excerpt", "TEXT"), ("response_archive_error", "TEXT"),
+            ):
+                if name not in attempt_columns:
+                    conn.execute(f"ALTER TABLE x_processing_attempts ADD COLUMN {name} {definition}")
+            event_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(x_processing_attempt_events)")}
+            for name, definition in (
+                ("call_no", "INTEGER"), ("executor", "TEXT"), ("response_gzip", "BLOB"),
+                ("response_sha256", "TEXT"), ("response_bytes", "INTEGER"), ("response_ref", "TEXT"),
+                ("response_excerpt", "TEXT"), ("response_archive_error", "TEXT"),
+            ):
+                if name not in event_columns:
+                    conn.execute(f"ALTER TABLE x_processing_attempt_events ADD COLUMN {name} {definition}")
             self._ensure_publisher_defaults(conn)
             conn.commit()
 
@@ -430,11 +449,100 @@ class SQLiteXProcessingRepository:
     def _insert_event_source(self, conn, candidate_id: int, task: TaskRecord, role: str, search_result: dict[str, Any]) -> None:
         conn.execute("INSERT INTO search_event_sources(candidate_id, task_id, source, source_item_id, source_url, title, content, role, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(candidate_id, task_id) DO UPDATE SET role=excluded.role, metadata=excluded.metadata, updated_at=CURRENT_TIMESTAMP", (candidate_id, task.id, task.source, task.source_item_id, task.source_url, task.title, task.content, role, _json({"search_result": search_result})))
 
-    def complete_write(self, task_id: int, *, prompt: PromptTemplateVersion, model: str, draft_title: str, draft_content: str, raw_output: str, trace: dict[str, Any]) -> None:
+    def complete_write(self, task_id: int, *, prompt: PromptTemplateVersion, model: str, draft_title: str, draft_content: str, raw_output: str, trace: dict[str, Any], attempt_id: int | None = None) -> None:
         with self._connect() as conn:
             conn.execute("UPDATE x_task_pipeline SET prompt_template_key=?, prompt_version_id=?, writer_feature_mode_enabled=?, writer_model=?, writer_output=?, draft_title=?, draft_content=?, write_completed_at=?, last_error=NULL, updated_at=? WHERE task_id=?", (prompt.template_key, prompt.id, int(prompt.feature_mode_enabled), model, _json({"raw_output": raw_output, "trace": trace}), draft_title, draft_content, _iso(), _iso(), task_id))
+            if attempt_id is not None:
+                self._finish_stage_attempt(conn, attempt_id, "succeeded", result={"draft_title": draft_title, "draft_content": draft_content, "trace": trace})
             self._set_task_status(conn, task_id, "written")
             conn.commit()
+
+    def start_stage_attempt(self, task_id: int, *, stage: str, executor: str, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> int:
+        now = _iso()
+        with self._connect() as conn:
+            attempt_no = int(conn.execute(
+                "SELECT COALESCE(MAX(attempt_no),0)+1 FROM x_processing_attempts WHERE task_id=? AND stage=?",
+                (task_id, stage),
+            ).fetchone()[0])
+            cursor = conn.execute(
+                "INSERT INTO x_processing_attempts(task_id,stage,attempt_no,executor,status,started_at,input_json,rule_json) VALUES(?,?,?,?,?,?,?,?)",
+                (task_id, stage, attempt_no, executor, "running", now, _json(input_evidence), _json(rule_evidence)),
+            )
+            attempt_id = int(cursor.lastrowid)
+            self._append_attempt_event(conn, attempt_id, task_id, "started", "running", now)
+            conn.commit()
+            return attempt_id
+
+    def record_stage_attempt_response(self, attempt_id: int, raw_output: str) -> None:
+        payload = raw_output.encode("utf-8")
+        now = _iso()
+        with self._connect() as conn:
+            row = conn.execute("SELECT task_id,executor FROM x_processing_attempts WHERE id=?", (attempt_id,)).fetchone()
+            if row is None:
+                return
+            call_no = int(conn.execute(
+                "SELECT COALESCE(MAX(call_no),0)+1 FROM x_processing_attempt_events WHERE attempt_id=? AND event_type='response_received'",
+                (attempt_id,),
+            ).fetchone()[0])
+            digest = hashlib.sha256(payload).hexdigest()
+            evidence_ref = None
+            archive_error = None
+            pin_key = f"x-attempt-response:{attempt_id}:{call_no}"
+            try:
+                if self._attempt_evidence_store is None:
+                    evidence_directory = system_observability_directory(self.path.parent / "system_observability")
+                    evidence_directory.mkdir(parents=True, exist_ok=True)
+                    store = SystemInformationStore(evidence_directory / "system_information.sqlite")
+                    store.initialize()
+                    self._attempt_evidence_store = store
+                evidence_ref = self._attempt_evidence_store.save_evidence({"raw_model_response": raw_output})
+                self._attempt_evidence_store.pin_evidence(evidence_ref, pin_key)
+            except (OSError, sqlite3.Error) as exc:
+                archive_error = f"{type(exc).__name__}: {exc}"[:500]
+            conn.execute(
+                "UPDATE x_processing_attempts SET response_gzip=NULL,response_ref=?,response_excerpt=?,response_archive_error=?,response_sha256=?,response_bytes=?,response_received_at=? WHERE id=?",
+                (evidence_ref, raw_output[:1000], archive_error, digest, len(payload), now, attempt_id),
+            )
+            conn.execute(
+                "INSERT INTO x_processing_attempt_events(attempt_id,task_id,event_type,status,happened_at,call_no,executor,response_sha256,response_bytes,response_ref,response_excerpt,response_archive_error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (attempt_id, int(row["task_id"]), "response_received", "running", now, call_no, str(row["executor"]), digest, len(payload), evidence_ref, raw_output[:1000], archive_error),
+            )
+            conn.commit()
+
+    def record_stage_attempt_context(self, attempt_id: int, *, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE x_processing_attempts SET input_json=?,rule_json=? WHERE id=?",
+                (_json(input_evidence), _json(rule_evidence), attempt_id),
+            )
+
+    def complete_stage_attempt(self, attempt_id: int, *, result: dict[str, Any] | None = None) -> None:
+        with self._connect() as conn:
+            self._finish_stage_attempt(conn, attempt_id, "succeeded", result=result)
+            conn.commit()
+
+    def fail_stage_attempt(self, attempt_id: int, error: str, *, error_code: str | None = None) -> None:
+        with self._connect() as conn:
+            self._finish_stage_attempt(conn, attempt_id, "failed", error=error, error_code=error_code)
+            conn.commit()
+
+    def _finish_stage_attempt(self, conn, attempt_id: int, outcome: str, *, error: str | None = None, error_code: str | None = None, result: dict[str, Any] | None = None) -> None:
+        row = conn.execute("SELECT task_id,status FROM x_processing_attempts WHERE id=?", (attempt_id,)).fetchone()
+        if row is None or row["status"] != "running":
+            return
+        now = _iso()
+        conn.execute(
+            "UPDATE x_processing_attempts SET status=?,finished_at=?,error_code=?,error_message=?,result_json=? WHERE id=?",
+            (outcome, now, error_code, error[:2000] if error else None, _json(result or {}), attempt_id),
+        )
+        self._append_attempt_event(conn, attempt_id, int(row["task_id"]), outcome, outcome, now, error_code=error_code, error=error)
+
+    @staticmethod
+    def _append_attempt_event(conn, attempt_id: int, task_id: int, event_type: str, status: str, happened_at: str, *, error_code: str | None = None, error: str | None = None) -> None:
+        conn.execute(
+            "INSERT INTO x_processing_attempt_events(attempt_id,task_id,event_type,status,happened_at,error_code,error_message) VALUES(?,?,?,?,?,?,?)",
+            (attempt_id, task_id, event_type, status, happened_at, error_code, error[:2000] if error else None),
+        )
 
     def complete_format_publish(self, task_id: int, *, final_title: str, final_content: str) -> None:
         with self._connect() as conn:
@@ -449,10 +557,28 @@ class SQLiteXProcessingRepository:
             self._set_task_status(conn, task_id, status)
             conn.commit()
 
-    def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None:
+    def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None, error_code: str | None = None) -> None:
         status = status or STAGE_SPECS[stage].failure_status
         with self._connect() as conn:
             conn.execute("UPDATE x_task_pipeline SET last_error=?, updated_at=? WHERE task_id=?", (error[:2000], _iso(), task_id))
+            attempt = conn.execute(
+                "SELECT id FROM x_processing_attempts WHERE task_id=? AND stage=? AND status='running' ORDER BY id DESC LIMIT 1",
+                (task_id, str(stage)),
+            ).fetchone()
+            outcome = "failed" if status == STAGE_SPECS[stage].failure_status else "stopped"
+            if attempt is not None:
+                self._finish_stage_attempt(conn, int(attempt["id"]), outcome, error=error, error_code=error_code)
+            else:
+                now = _iso()
+                attempt_no = int(conn.execute(
+                    "SELECT COALESCE(MAX(attempt_no),0)+1 FROM x_processing_attempts WHERE task_id=? AND stage=?",
+                    (task_id, str(stage)),
+                ).fetchone()[0])
+                cursor = conn.execute(
+                    "INSERT INTO x_processing_attempts(task_id,stage,attempt_no,executor,status,started_at,finished_at,error_code,error_message) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (task_id, str(stage), attempt_no, "x_processing_worker", outcome, now, now, error_code, error[:2000]),
+                )
+                self._append_attempt_event(conn, int(cursor.lastrowid), task_id, outcome, outcome, now, error_code=error_code, error=error)
             self._release_primary_candidate(conn, task_id, status)
             self._set_task_status(conn, task_id, status)
             conn.commit()
@@ -489,6 +615,10 @@ CREATE TABLE IF NOT EXISTS publisher_settings (singleton_key text PRIMARY KEY, e
 CREATE TABLE IF NOT EXISTS publisher_channels (channel_key text PRIMARY KEY, display_name text NOT NULL, enabled integer NOT NULL DEFAULT 0, created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS publisher_rule_config (singleton_key text PRIMARY KEY, config_json text NOT NULL DEFAULT '{}', prompt_text text NOT NULL DEFAULT '', updated_by text, created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS x_task_pipeline (task_id integer PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, news_type text, candidate_id integer, judge_model text, judge_output text NOT NULL DEFAULT '{}', judge_completed_at text, search_result text NOT NULL DEFAULT '{}', search_completed_at text, prompt_template_key text, prompt_version_id integer, writer_feature_mode_enabled integer, writer_model text, writer_output text NOT NULL DEFAULT '{}', draft_title text, draft_content text, write_completed_at text, final_title text, final_content text, format_completed_at text, publisher_channel text, publisher_model text, publisher_category text, publisher_decision text, publisher_reason_code text, publisher_output text NOT NULL DEFAULT '{}', publisher_decided_at text, publish_completed_at text, push_result text NOT NULL DEFAULT '{}', telegram_result text NOT NULL DEFAULT '{}', last_error text, created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS x_processing_attempts (id integer PRIMARY KEY AUTOINCREMENT, task_id integer NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, stage text NOT NULL, attempt_no integer NOT NULL, executor text NOT NULL, status text NOT NULL, started_at text NOT NULL, response_received_at text, finished_at text, input_json text NOT NULL DEFAULT '{}', rule_json text NOT NULL DEFAULT '{}', response_gzip blob, response_sha256 text, response_bytes integer, response_ref text, response_excerpt text, response_archive_error text, result_json text NOT NULL DEFAULT '{}', error_code text, error_message text, UNIQUE(task_id,stage,attempt_no));
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempts_task ON x_processing_attempts(task_id,stage,attempt_no);
+CREATE TABLE IF NOT EXISTS x_processing_attempt_events (id integer PRIMARY KEY AUTOINCREMENT, attempt_id integer NOT NULL REFERENCES x_processing_attempts(id) ON DELETE CASCADE, task_id integer NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, event_type text NOT NULL, status text NOT NULL, happened_at text NOT NULL, error_code text, error_message text, call_no integer, executor text, response_gzip blob, response_sha256 text, response_bytes integer, response_ref text, response_excerpt text, response_archive_error text);
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempt_events_task ON x_processing_attempt_events(task_id,id);
 CREATE TABLE IF NOT EXISTS search_event_candidates (id integer PRIMARY KEY AUTOINCREMENT, primary_task_id integer REFERENCES tasks(id) ON DELETE SET NULL, status text NOT NULL DEFAULT 'active', title text, content text NOT NULL, content_hash text NOT NULL, metadata text NOT NULL DEFAULT '{}', expires_at text, created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS search_event_sources (id integer PRIMARY KEY AUTOINCREMENT, candidate_id integer NOT NULL REFERENCES search_event_candidates(id) ON DELETE CASCADE, task_id integer REFERENCES tasks(id) ON DELETE SET NULL, source text NOT NULL, source_item_id text NOT NULL, source_url text, title text, content text NOT NULL, role text NOT NULL CHECK(role IN ('primary','supporting')), metadata text NOT NULL DEFAULT '{}', created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(candidate_id, task_id));
 CREATE INDEX IF NOT EXISTS idx_tasks_status_lock ON tasks(status, locked_until, created_at);

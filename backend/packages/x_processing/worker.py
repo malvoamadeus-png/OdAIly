@@ -3,6 +3,7 @@ from __future__ import annotations
 from .models import HYPERLIQUID_SOURCE
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -476,6 +477,7 @@ class XProcessingWorker:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._prompt_cache: dict[str, Any] = {}
+        self._current_attempt_id: int | None = None
         self._search_cache_store = SearchCache(_search_cache_path_for_repository(self.repository))
         self.feed_writer = LocalEditorPluginFeedWriter()
 
@@ -589,6 +591,7 @@ class XProcessingWorker:
 
     def run_once(self) -> StageRunResult:
         task: TaskRecord | None = None
+        attempt_id: int | None = None
         try:
             task = self.repository.claim_task(self.stage, worker_id=self.worker_id)
             if task is None:
@@ -596,13 +599,35 @@ class XProcessingWorker:
                 self._record_heartbeat(result)
                 return result
             task = self._resolve_task_author_name(task)
+            start_attempt = getattr(self.repository, "start_stage_attempt", None)
+            if callable(start_attempt):
+                content_bytes = task.content.encode("utf-8")
+                attempt_id = start_attempt(
+                    task.id,
+                    stage=str(getattr(self.stage, "value", self.stage)),
+                    executor=self.worker_id,
+                    input_evidence={
+                        "source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url,
+                        "title": task.title, "content_sha256": hashlib.sha256(content_bytes).hexdigest(),
+                        "content_bytes": len(content_bytes),
+                    },
+                    rule_evidence={"stage": str(self.stage), "code_revision": os.getenv("ODAILY_CODE_REVISION")},
+                )
+                self._current_attempt_id = attempt_id
             if self._expire_task_if_stale(task):
                 result = StageRunResult(0, self.stage, 1, 0, f"expired task {task.id}")
                 self._record_heartbeat(result)
+                self._current_attempt_id = None
                 return result
             self._process_task(task)
+            complete_attempt = getattr(self.repository, "complete_stage_attempt", None)
+            if self._current_attempt_id is not None and callable(complete_attempt):
+                complete_attempt(self._current_attempt_id, result={"status": "processed"})
             result = StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
         except HandledStageError as exc:
+            fail_attempt = getattr(self.repository, "fail_stage_attempt", None)
+            if self._current_attempt_id is not None and callable(fail_attempt):
+                fail_attempt(self._current_attempt_id, str(exc), error_code=type(exc).__name__)
             task_label = str(task.id) if task is not None else "unknown"
             result = StageRunResult(1, self.stage, 0, 1, f"failed task {task_label}: {exc}")
         except Exception as exc:
@@ -612,8 +637,19 @@ class XProcessingWorker:
                 result = StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
             else:
                 result = StageRunResult(1, self.stage, 0, 1, f"worker failed before claim: {exc}")
+        self._current_attempt_id = None
         self._record_heartbeat(result)
         return result
+
+    def _record_attempt_context(self, *, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> None:
+        recorder = getattr(self.repository, "record_stage_attempt_context", None)
+        if self._current_attempt_id is not None and callable(recorder):
+            recorder(self._current_attempt_id, input_evidence=input_evidence, rule_evidence=rule_evidence)
+
+    def _record_attempt_response(self, raw_output: str) -> None:
+        recorder = getattr(self.repository, "record_stage_attempt_response", None)
+        if self._current_attempt_id is not None and callable(recorder):
+            recorder(self._current_attempt_id, raw_output)
 
     def run_forever(self) -> None:
         notify_thread = self._start_notify_listener()
@@ -798,12 +834,18 @@ class XProcessingWorker:
             )
             schema = COMPETITOR_JUDGE_JSON_SCHEMA
             rule_set = "competitor"
+        self._record_attempt_context(
+            input_evidence={"source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url},
+            rule_evidence={"rule_set": rule_set, "rule_version": JUDGE_RULE_VERSIONS[rule_set], "prompt": prompt, "schema": schema,
+                           "model": self.settings.judge_model, "reasoning_effort": self.settings.judge_reasoning_effort},
+        )
         raw_output = self._get_judge_ai_client().generate_text(
             model=self.settings.judge_model,
             prompt=prompt,
             text_format=schema,
             reasoning_effort=self.settings.judge_reasoning_effort,
         )
+        self._record_attempt_response(raw_output)
         route, discard_type = parse_judge_route(raw_output)
         if route == "discard":
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
@@ -830,12 +872,18 @@ class XProcessingWorker:
     def _run_jin10_judge(self, task: TaskRecord) -> None:
         prompt = self._get_prompt("jin10_judge")
         input_prompt = build_jin10_judge_prompt(task=task, prompt=prompt)
+        self._record_attempt_context(
+            input_evidence={"source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url},
+            rule_evidence={"template_key": prompt.template_key, "version_id": prompt.id, "version_number": prompt.version_number,
+                           "content": prompt.content, "schema": JIN10_JUDGE_JSON_SCHEMA, "model": self.settings.judge_model},
+        )
         raw_output = self._get_judge_ai_client().generate_text(
             model=self.settings.judge_model,
             prompt=input_prompt,
             text_format=JIN10_JUDGE_JSON_SCHEMA,
             reasoning_effort=self.settings.judge_reasoning_effort,
         )
+        self._record_attempt_response(raw_output)
         decision, reason, matched_topic = parse_jin10_judge_output(raw_output)
         if decision == "discard":
             self._release_local_candidate_for_task(task.id, release_reason="discarded")
@@ -1041,12 +1089,20 @@ class XProcessingWorker:
             )
         if best_match.similarity < self.settings.search_batch_ai_review_threshold or self.search_ai_client is None:
             return None
+        review_prompt = build_ai_batch_review_prompt(query=query, matches=matches)
+        self._record_attempt_context(
+            input_evidence={"source": query.source, "source_item_id": query.doc_id, "candidate_count": len(matches)},
+            rule_evidence={"rule": "search_ai_batch_review", "duplicate_threshold": self.settings.search_duplicate_threshold,
+                           "review_threshold": self.settings.search_batch_ai_review_threshold, "prompt": review_prompt,
+                           "model": self.settings.search_ai_review_model, "schema": AI_REVIEW_SCHEMA},
+        )
         raw_output = self.search_ai_client.generate_text(
             model=self.settings.search_ai_review_model,
-            prompt=build_ai_batch_review_prompt(query=query, matches=matches),
+            prompt=review_prompt,
             text_format=AI_REVIEW_SCHEMA,
             reasoning_effort=self.settings.search_ai_review_reasoning_effort,
         )
+        self._record_attempt_response(raw_output)
         payload = parse_ai_review_output(raw_output)
         is_duplicate = bool(payload.get("is_duplicate"))
         if not is_duplicate:
@@ -1169,12 +1225,24 @@ class XProcessingWorker:
             known_subjects=known_subjects,
             include_newsflash_priority=include_priority,
         )
+        self._record_attempt_context(
+            input_evidence={"source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url,
+                            "title": task.title, "input_prompt_sha256": hashlib.sha256(input_prompt.encode("utf-8")).hexdigest()},
+            rule_evidence={
+                "template_key": prompt.template_key, "version_id": prompt.id, "version_number": prompt.version_number,
+                "content": prompt.content, "feature_mode_enabled": prompt.feature_mode_enabled,
+                "feature_mode_text": prompt.feature_mode_text, "model": self.settings.writer_model,
+                "reasoning_effort": self.settings.writer_reasoning_effort,
+                "schema": EVENT_TRACKING_WRITER_JSON_SCHEMA if include_priority else WRITER_JSON_SCHEMA,
+            },
+        )
         raw_output = self._get_ai_client().generate_text(
             model=self.settings.writer_model,
             prompt=input_prompt,
             text_format=EVENT_TRACKING_WRITER_JSON_SCHEMA if include_priority else WRITER_JSON_SCHEMA,
             reasoning_effort=self.settings.writer_reasoning_effort,
         )
+        self._record_attempt_response(raw_output)
         structured = parse_structured_writer_output(
             raw_output,
             known_subjects=known_subjects,
@@ -1201,14 +1269,19 @@ class XProcessingWorker:
             return
         if self._hyperliquid_blocked(task):
             return
-        self.repository.complete_write(
-            task.id,
+        complete_kwargs = dict(
             prompt=prompt,
             model=self.settings.writer_model,
             draft_title=structured.draft.title,
             draft_content=structured.draft.content,
             raw_output=raw_output,
             trace=structured.trace,
+        )
+        if self._current_attempt_id is not None:
+            complete_kwargs["attempt_id"] = self._current_attempt_id
+        self.repository.complete_write(
+            task.id,
+            **complete_kwargs,
         )
 
     def _run_format_publish(self, task: TaskRecord) -> None:
@@ -1369,12 +1442,21 @@ class XProcessingWorker:
             return
 
         try:
+            publisher_prompt = build_publisher_rule_prompt(task=task, pipeline=pipeline, profile=profile)
+            self._record_attempt_context(
+                input_evidence={"source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url,
+                                "final_title": pipeline.final_title, "final_content_sha256": hashlib.sha256((pipeline.final_content or "").encode("utf-8")).hexdigest()},
+                rule_evidence={"profile": profile_key, "allow_rules": [rule.name for rule in allow_rules],
+                               "deny_rules": [rule.name for rule in deny_rules], "prompt": publisher_prompt,
+                               "model": self.settings.publisher_model, "schema": PUBLISHER_DECISION_SCHEMA},
+            )
             raw_output = self._get_ai_client().generate_text(
                 model=self.settings.publisher_model,
-                prompt=build_publisher_rule_prompt(task=task, pipeline=pipeline, profile=profile),
+                prompt=publisher_prompt,
                 text_format=PUBLISHER_DECISION_SCHEMA,
                 reasoning_effort=self.settings.publisher_reasoning_effort,
             )
+            self._record_attempt_response(raw_output)
             publisher_decision_result = parse_publisher_decision(raw_output)
         except Exception as exc:
             error = str(exc)
@@ -1612,6 +1694,7 @@ class XProcessingWorker:
                 text_format=NEWSFLASH_PRIORITY_SCHEMA,
                 reasoning_effort=self.settings.publisher_reasoning_effort,
             )
+            self._record_attempt_response(raw)
             level, reason = parse_newsflash_priority(raw)
             result = {"status": "evaluated", "level": level, "reason": reason}
         except Exception as exc:

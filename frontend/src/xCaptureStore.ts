@@ -1232,6 +1232,204 @@ export async function decideAIReviewItem(
   return result.item;
 }
 
+export type SystemInformationItem = {
+  item_id: string;
+  business_key: string;
+  source: string;
+  source_id: string | null;
+  task_id: number | null;
+  title: string;
+  summary: string;
+  source_url: string | null;
+  stage: string;
+  status: string;
+  result: string;
+  failure_category: string | null;
+  created_at_ms: number | null;
+  updated_at_ms: number | null;
+  observed_at_ms: number;
+  evidence_ref: string | null;
+  legacy_history: number;
+};
+
+export type SystemInformationPage = {
+  items: SystemInformationItem[];
+  total: number;
+  limit: number;
+  next_cursor: { time: number; id: string } | null;
+  index: { generated_at_ms: number | null; lag: number | null };
+  search_scope: string;
+  search_index_ready: boolean;
+};
+
+export type SystemInformationEvidence = {
+  task?: Record<string, unknown>;
+  pipeline?: Record<string, unknown>;
+  history_note?: string;
+  recorded_scope?: string;
+  [key: string]: unknown;
+};
+
+export type SystemInformationDetail = SystemInformationItem & {
+  evidence: SystemInformationEvidence | null;
+  timeline: Array<{
+    event_id: string;
+    event_type: string;
+    stage: string;
+    status: string;
+    result: string;
+    happened_at_ms: number | null;
+    observed_at_ms: number;
+    summary: string;
+    reason: string | null;
+    error_code: string | null;
+    evidence: SystemInformationEvidence | null;
+    details: Record<string, unknown>;
+  }>;
+};
+
+export type SystemInformationRegistry = {
+  sources: Array<{ business_key: string; source: string; items: number }>;
+  unmapped_sources: string[];
+  projection: { watermark: number; lag: number; last_success_ms: number | null; last_error: string | null };
+  adapters: Array<{ name: string; status: string; audit_tables?: number; audit_skipped?: number; audit_watermark?: number }>;
+  registry: Array<{
+    key: string;
+    label: string;
+    kind: string;
+    sources: string[];
+    entry: string;
+    scenarios: Array<{ key: string; label: string; steps: string[]; choices?: Array<{ label: string; next: number }> }>;
+  }>;
+};
+
+export async function listSystemInformation(filters: {
+  q?: string;
+  business?: string;
+  source?: string;
+  stage?: string;
+  status?: string;
+  result?: string;
+  failure_category?: string;
+  since?: string;
+  until?: string;
+  sort?: 'created' | 'activity';
+  cursor?: { time: number; id: string } | null;
+  limit?: number;
+} = {}): Promise<SystemInformationPage> {
+  return consoleApiPost<SystemInformationPage>('/console/system-information', { action: 'list', ...filters });
+}
+
+export async function getSystemInformationDetail(itemId: string): Promise<SystemInformationDetail> {
+  const result = await consoleApiPost<{ item: SystemInformationDetail }>('/console/system-information', {
+    action: 'detail', item_id: itemId,
+  });
+  return result.item;
+}
+
+export async function getSystemInformationRegistry(): Promise<SystemInformationRegistry> {
+  return consoleApiPost<SystemInformationRegistry>('/console/system-information', { action: 'registry' });
+}
+
+export type SystemHealthSnapshot = {
+  generated_at_ms: number;
+  storage: {
+    filesystem_total_bytes: number;
+    filesystem_free_bytes: number;
+    required_free_bytes: number;
+    space_ok: boolean;
+    database_bytes: number;
+    evidence_bytes: number;
+    estimated_growth_bytes_per_day: number;
+    estimated_growth_next_30d_bytes: number;
+    samples: number;
+    sampled_at_ms: number;
+  };
+  coverage: {
+    projection: { watermark: number; lag: number; last_success_ms: number | null; last_error: string | null };
+    adapters: Array<{ name: string; status: string; audit_tables?: number; audit_skipped?: number; audit_watermark?: number }>;
+    sources: Array<{ business_key: string; source: string; items: number }>;
+    unmapped_sources?: string[];
+    worker_read_error?: string;
+    schedule_read_error?: string;
+  };
+  workers: Array<{ component: string; worker_id: string; status: string; last_seen_at: string; last_success_at: string | null; last_error: string | null; metadata: string }>;
+  review_worker: { last_seen_at: string | null; last_error: string | null };
+  inspection_runs: Array<{ run_key: string; task_kind: string; status: string; started_at: string; completed_at: string | null; items_created: number; error: string | null }>;
+  scheduled_tasks: Array<{
+    task_id: string; name: string; kinds: string[]; config: string | null;
+    schedules: Array<{ kind: string; job_id: string; description: string; trigger: string }>;
+  }>;
+  recent_briefs: SystemInformationItem[];
+};
+
+export async function getSystemHealth() {
+  return consoleApiPost<SystemHealthSnapshot>('/console/system-information', { action: 'health' });
+}
+
+export type SystemReviewItem = {
+  item_key: string;
+  task_kind: string;
+  category: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'deferred';
+  analysis_status: 'queued' | 'completed' | 'failed' | 'budget_paused' | 'evidence_insufficient';
+  title: string;
+  summary: string;
+  severity: string;
+  scope: Record<string, unknown>;
+  expected: string;
+  actual: string;
+  evidence: unknown[];
+  counter_evidence: unknown[];
+  certainty: string;
+  suggestion: string;
+  validation: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  recovered_at: string | null;
+  affected_count: number;
+  analysis_attempts: number;
+  input_tokens: number;
+  output_tokens: number;
+  analysis_error: string | null;
+  decision_by: string | null;
+  decision_note: string | null;
+  decisions?: Array<{ decision: string; actor: string; note: string; decided_at: string }>;
+  analysis_history?: Array<{
+    attempt_no: number;
+    started_at: string;
+    finished_at: string | null;
+    status: string;
+    request_id: string | null;
+    input_tokens: number;
+    error: string | null;
+    raw_response: string | null;
+  }>;
+};
+
+export type SystemReviewPage = {
+  items: SystemReviewItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  usage: { calls: number; input_tokens: number; reserved_tokens: number };
+  analyses_incomplete: string[];
+};
+
+export async function listSystemReviewItems(filters: { status?: string; task_kind?: string; offset?: number; limit?: number } = {}) {
+  return consoleApiPost<SystemReviewPage>('/console/system-review', { action: 'list', ...filters });
+}
+
+export async function getSystemReviewItem(itemKey: string) {
+  const result = await consoleApiPost<{ item: SystemReviewItem }>('/console/system-review', { action: 'detail', item_key: itemKey });
+  return result.item;
+}
+
+export async function decideSystemReviewItem(itemKey: string, decision: 'accepted' | 'rejected' | 'deferred', note: string) {
+  const result = await consoleApiPost<{ item: SystemReviewItem }>('/console/system-review', { action: 'decide', item_key: itemKey, decision, note });
+  return result.item;
+}
+
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
   const {
     data: { subscription },

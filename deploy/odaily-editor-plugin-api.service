@@ -2,12 +2,14 @@
 Description=OdAIly editor plugin news generation API
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor=/data/OdAIly/system-observability
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=ODAILY_SYSTEM_OBSERVABILITY_DIR=/data/OdAIly/system-observability
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py editor-plugin-api-server --host 127.0.0.1 --port 8765
 Restart=always
 RestartSec=10
