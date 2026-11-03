@@ -679,7 +679,7 @@ class SystemInformationStore:
                 "SELECT database_bytes,evidence_bytes,sampled_at_ms FROM system_information_storage_samples "
                 "WHERE sampled_at_ms>=? ORDER BY sampled_at_ms", (now - 30 * 24 * 60 * 60 * 1000,),
             ).fetchall()
-        daily_growth = 0
+        daily_growth: int | None = None
         if len(samples) >= 2:
             first = samples[0]
             last = samples[-1]
@@ -691,7 +691,8 @@ class SystemInformationStore:
             "filesystem_total_bytes": usage.total, "filesystem_free_bytes": usage.free,
             "required_free_bytes": threshold_bytes, "space_ok": usage.free >= threshold_bytes,
             "database_bytes": database_bytes, "evidence_bytes": evidence_bytes,
-            "estimated_growth_bytes_per_day": daily_growth, "estimated_growth_next_30d_bytes": daily_growth * 30,
+            "estimated_growth_bytes_per_day": daily_growth,
+            "estimated_growth_next_30d_bytes": daily_growth * 30 if daily_growth is not None else None,
             "samples": len(samples), "sampled_at_ms": now,
         }
 

@@ -1340,8 +1340,8 @@ export type SystemHealthSnapshot = {
     space_ok: boolean;
     database_bytes: number;
     evidence_bytes: number;
-    estimated_growth_bytes_per_day: number;
-    estimated_growth_next_30d_bytes: number;
+    estimated_growth_bytes_per_day: number | null;
+    estimated_growth_next_30d_bytes: number | null;
     samples: number;
     sampled_at_ms: number;
   };

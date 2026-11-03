@@ -292,7 +292,22 @@ def test_storage_health_reports_margin_and_growth_sample_count() -> None:
         assert result["filesystem_free_bytes"] > 0
         assert result["required_free_bytes"] >= 10 * 1024**3
         assert result["samples"] == 2
+        assert result["estimated_growth_bytes_per_day"] is not None
         assert result["estimated_growth_next_30d_bytes"] >= 0
+
+
+def test_storage_health_does_not_report_zero_growth_with_one_sample() -> None:
+    with TemporaryDirectory() as directory:
+        store = SystemInformationStore(Path(directory) / "system_information.sqlite")
+        store.initialize()
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        store.storage_health(sample=True, now_ms=now_ms - 86_400_000)
+
+        result = store.storage_health(now_ms=now_ms)
+
+        assert result["samples"] == 1
+        assert result["estimated_growth_bytes_per_day"] is None
+        assert result["estimated_growth_next_30d_bytes"] is None
 
 
 def test_channel_checks_follow_enabled_config_and_detect_missing_heartbeat() -> None:

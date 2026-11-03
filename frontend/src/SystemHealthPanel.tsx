@@ -24,6 +24,7 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
 
   const projection = snapshot?.coverage.projection;
   const storage = snapshot?.storage;
+  const estimatedGrowth = storage?.estimated_growth_next_30d_bytes;
   return (
     <section className="systemInformationLayout systemHealthLayout">
       {error && <div className="notice error" role="alert">{error}</div>}
@@ -44,7 +45,7 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
           <div><span>最低余量</span><strong>{storage ? formatBytes(storage.required_free_bytes) : '未知'}</strong></div>
           <div><span>信息流数据库</span><strong>{storage ? formatBytes(storage.database_bytes) : '未知'}</strong></div>
           <div><span>压缩证据</span><strong>{storage ? formatBytes(storage.evidence_bytes) : '未知'}</strong></div>
-          <div><span>预计未来 30 天增长</span><strong>{storage ? formatBytes(storage.estimated_growth_next_30d_bytes) : '未知'}</strong></div>
+          <div><span>预计未来 30 天增长</span><strong>{!storage ? '未知' : estimatedGrowth == null ? '样本不足' : formatBytes(estimatedGrowth)}</strong></div>
           <div><span>增长样本</span><strong>{storage ? `${storage.samples} 天` : '未知'}</strong></div>
         </div>
         {storage && !storage.space_ok && <div className="notice error" role="status">可用空间低于当前安全余量门槛；请扩容后再执行大型回填或索引维护。</div>}
