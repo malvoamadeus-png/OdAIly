@@ -9,7 +9,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
-from packages.common.storage import connect_sqlite, load_storage_settings
+from packages.common.storage import ClosingSQLiteConnection, connect_sqlite, load_storage_settings
 
 
 PIPELINE_TIMING_WINDOWS = (24, 72, 168)
@@ -210,7 +210,7 @@ class PipelineTimingLocalStore:
         self.init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30)
+        conn = sqlite3.connect(self.path, timeout=30, factory=ClosingSQLiteConnection)
         conn.row_factory = sqlite3.Row
         return conn
 

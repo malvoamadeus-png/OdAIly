@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
 
 from packages.system_observability import MainTaskProjector, SystemInformationStore
-from packages.system_observability.projector import SourceAuditInstaller, TableSpec
-from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService
+from packages.system_observability.projector import SourceAuditInstaller, TABLE_SPECS, TableSpec
+from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService, SystemReviewWorker
 from packages.system_observability.runtime import system_observability_directory
 from packages.system_observability.store import timestamp_ms
 from packages.x_processing.models import PromptTemplateVersion
@@ -76,6 +76,31 @@ def test_projector_is_idempotent_searches_cjk_and_preserves_observed_changes() -
         assert detail["timeline"][1]["event_type"] == "observed_change"
         assert detail["timeline"][1]["evidence"]["pipeline"]["push_result"] == '{"ok": true}'
         assert detail["legacy_history"] == 1
+
+
+def test_observability_sqlite_connections_close_when_context_exits() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        store = SystemInformationStore(root / "runtime" / "system_information.sqlite")
+        store.initialize()
+        repository = SystemReviewRepository(root / "runtime" / "system_information.sqlite")
+        connections = [store.connect(), repository.connect()]
+        for connection in connections:
+            with connection as active:
+                assert active.execute("SELECT 1").fetchone()[0] == 1
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
+
+        source = root / "source.sqlite"
+        _source_db(source)
+        for connection in (
+            MainTaskProjector(source, store)._read(),
+            SystemReviewService._connect_path(source),
+        ):
+            with connection as active:
+                assert active.execute("SELECT 1").fetchone()[0] == 1
+            with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+                connection.execute("SELECT 1")
 
 
 def test_search_cursor_and_evidence_redaction() -> None:
@@ -241,6 +266,259 @@ def test_channel_checks_follow_enabled_config_and_detect_missing_heartbeat() -> 
         assert ("x_capture", "x_capture") in missing
         assert ("local_pipeline", "local_pipeline") in missing
         assert all(component not in {"non_mainstream_media", "jin10_monitor"} for component, _worker in missing)
+
+
+def test_channel_outages_ignore_unconfigured_historical_components_without_n_plus_one_config_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(main) as conn:
+            conn.execute("""CREATE TABLE pipeline_worker_heartbeats(
+                component TEXT NOT NULL, worker_id TEXT NOT NULL, status TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL, last_success_at TEXT, last_error TEXT, metadata TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(component,worker_id))""")
+            conn.executemany(
+                "INSERT INTO pipeline_worker_heartbeats VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("non_mainstream_media_telegram", f"telegram-{pid}", "ok", now, now, None, "{}")
+                    for pid in range(64)
+                ],
+            )
+        service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"))
+        original = service._expected_components
+        calls = 0
+
+        def counted_expected_components():
+            nonlocal calls
+            calls += 1
+            return original()
+
+        monkeypatch.setattr(service, "_expected_components", counted_expected_components)
+
+        assert service._channel_outages() == []
+        assert calls == 1
+
+
+def test_channel_outages_use_latest_pid_heartbeat_for_singleton_components() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        stale = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=2)
+        with sqlite3.connect(main) as conn:
+            conn.executescript("""
+                CREATE TABLE x_capture_settings(singleton_key TEXT,global_interval_seconds INTEGER);
+                INSERT INTO x_capture_settings VALUES('global',30);
+                CREATE TABLE x_capture_accounts(id INTEGER PRIMARY KEY,enabled INTEGER);
+                INSERT INTO x_capture_accounts VALUES(1,1);
+                CREATE TABLE pipeline_worker_heartbeats(
+                    component TEXT NOT NULL, worker_id TEXT NOT NULL, status TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL, last_success_at TEXT, last_error TEXT, metadata TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY(component,worker_id));
+            """)
+            conn.executemany(
+                "INSERT INTO pipeline_worker_heartbeats VALUES(?,?,?,?,?,?,?)",
+                [
+                    (
+                        "x_capture", f"x_capture-{pid}", "ok",
+                        (stale + timedelta(seconds=pid)).isoformat(),
+                        (stale + timedelta(seconds=pid)).isoformat(), None, "{}",
+                    )
+                    for pid in range(40)
+                ],
+            )
+        service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"))
+
+        issues = service._channel_outages()
+
+        assert len(issues) == 1
+        assert issues[0]["scope"]["worker_id"] == "x_capture-39"
+
+
+def test_system_review_worker_marks_interrupted_runs_after_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        repository = SystemReviewRepository(root / "review.sqlite")
+        repository.start_run("channel_outage:stuck", "channel_outage")
+        service = SystemReviewService(root / "main.sqlite", repository)
+        worker = SystemReviewWorker(service)
+        monkeypatch.setattr(worker, "_run", lambda: None)
+
+        worker.start()
+        worker.stop()
+
+        run = repository.recent_runs()[0]
+        assert run["status"] == "failed"
+        assert "重启" in run["error"]
+        assert run["completed_at"] is not None
+
+
+def test_competitor_events_are_projected_from_the_active_main_database() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "main.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE tasks(id INTEGER PRIMARY KEY);
+                CREATE TABLE newsflash_events(
+                    event_id TEXT PRIMARY KEY, representative_title TEXT, first_source TEXT,
+                    first_published_at TEXT, source_count INTEGER, competitor_source_count INTEGER,
+                    has_odaily INTEGER, needs_review INTEGER, metadata TEXT, updated_at TEXT
+                );
+                INSERT INTO newsflash_events VALUES(
+                    'event-1','竞品首发事件','blockbeats','2026-11-03T10:00:00Z',1,1,0,0,'{}','2026-11-03T10:00:00Z'
+                );
+            """)
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        specs = tuple(spec for spec in TABLE_SPECS if spec.table == "newsflash_events")
+        projector = MainTaskProjector(source, store, additional_databases={"main": source}, table_specs=specs)
+
+        projector.run_once()
+
+        detail = store.detail("main:newsflash_events:event-1")
+        assert detail is not None
+        assert detail["business_key"] == "crypto_media"
+        assert detail["source"] == "competitor_event"
+        assert store.get_state("adapter_main_newsflash_events_status") == "ready"
+        assert not any(spec.database_key == "competitor" for spec in TABLE_SPECS)
+
+
+def test_coverage_review_joins_source_links_and_exact_pipeline_receipts() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(main) as conn:
+            conn.executescript("""
+                CREATE TABLE newsflash_events(
+                    event_id TEXT PRIMARY KEY, representative_title TEXT, first_source TEXT,
+                    first_published_at TEXT, source_count INTEGER, competitor_source_count INTEGER,
+                    has_odaily INTEGER, needs_review INTEGER, metadata TEXT, updated_at TEXT
+                );
+                CREATE TABLE newsflash_items(
+                    id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, source_url TEXT,
+                    title TEXT, created_at TEXT
+                );
+                CREATE TABLE newsflash_event_sources(
+                    event_id TEXT, item_id INTEGER, source TEXT, source_item_id TEXT,
+                    role TEXT, match_method TEXT, created_at TEXT
+                );
+                CREATE TABLE tasks(
+                    id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, status TEXT, updated_at TEXT
+                );
+                CREATE TABLE x_task_pipeline(
+                    task_id INTEGER PRIMARY KEY, publisher_reason_code TEXT, publisher_output TEXT,
+                    push_result TEXT, last_error TEXT, final_title TEXT, final_content TEXT
+                );
+            """)
+            conn.execute("INSERT INTO newsflash_events VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                "event-1", "竞品报道事件", "blockbeats", now, 1, 1, 0, 1, "{}", now,
+            ))
+            conn.execute("INSERT INTO newsflash_items VALUES(1,'blockbeats','item-1','https://source.test/1','原始标题',?)", (now,))
+            conn.execute("INSERT INTO newsflash_event_sources VALUES('event-1',1,'blockbeats','item-1','primary','new_event',?)", (now,))
+            conn.execute("INSERT INTO tasks VALUES(7,'blockbeats','item-1','publisher_failed',?)", (now,))
+            conn.execute("INSERT INTO x_task_pipeline VALUES(7,'push_failed','{}','{}','HTTP timeout','提交标题','提交正文')")
+        service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"), competitor_database_path=main)
+
+        issues = service._coverage_gaps()
+
+        assert len(issues) == 1
+        linked = issues[0]["evidence"][0]
+        assert linked["event_sources"][0]["source_url"] == "https://source.test/1"
+        assert linked["source_tasks"][0]["task"]["status"] == "publisher_failed"
+        assert linked["source_tasks"][0]["task"]["push_result"] == "{}"
+
+
+def test_no_candidate_samples_are_stratified_capped_and_expire_raw_evidence() -> None:
+    with TemporaryDirectory() as directory:
+        store = SystemInformationStore(Path(directory) / "system_information.sqlite")
+        store.initialize()
+        now = int(datetime.now(UTC).timestamp() * 1000)
+        base = {
+            "stage": "判断", "status": "discarded", "result": "stopped", "created_at_ms": now,
+            "updated_at_ms": now, "source_database": "fixture", "source_table": "tasks",
+            "source_row_id": "0", "legacy_history": False,
+        }
+        for index in range(80):
+            business = "x" if index < 60 else "crypto_media"
+            store.upsert_snapshot(
+                {**base, "item_id": f"sample:{index}", "business_key": business, "source": f"source:{index % 3}",
+                 "source_id": str(index), "title": f"无候选 {index}", "summary": "材料不足"},
+                {"task": {"content": "原文" * 80, "prompt_version_id": 3}},
+            )
+
+        result = store.record_decision_samples(now_ms=now)
+        samples = store.decision_samples(sample_date=datetime.fromtimestamp(now / 1000, UTC).date().isoformat())
+        assert result["sampled"] == 50
+        assert result["evidence_bytes"] <= 20 * 1024 * 1024
+        assert {item["business_key"] for item in samples} == {"x", "crypto_media"}
+        assert all(item["rule_version"] == "3" for item in samples)
+        assert store.record_decision_samples(now_ms=now)["already_sampled"] == 1
+
+        expired = store.expire_decision_samples(now_ms=now + 15 * 86_400_000)
+        assert expired["raw_expired"] == 50
+        assert all(item["evidence_ref"] is None for item in store.decision_samples(sample_date=samples[0]["sample_date"]))
+        assert store.decision_sample_details([samples[0]["sample_key"]])[0]["evidence_available"] is False
+        removed = store.expire_decision_samples(now_ms=now + 31 * 86_400_000)
+        assert removed["index_removed"] == 50
+
+
+def test_no_candidate_samples_feed_review_card_detail_and_ai_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        with sqlite3.connect(main):
+            pass
+        repository = SystemReviewRepository(root / "observability.sqlite")
+        service = SystemReviewService(main, repository)
+        now = int(datetime.now(UTC).timestamp() * 1000)
+        repository.information_store.upsert_snapshot(
+            {
+                "item_id": "decision:sample-1", "business_key": "x_agent", "source": "investment_leads",
+                "source_id": "post-1", "title": "待核对线索", "summary": "未发现投资候选",
+                "stage": "筛选", "status": "no_candidate", "result": "stopped",
+                "created_at_ms": now, "updated_at_ms": now, "source_database": "fixture",
+                "source_table": "investment_lead_tasks", "source_row_id": "1", "legacy_history": False,
+            },
+            {"decision": {"reason": "缺少明确传导"}, "source": {"content": "完整待复核原文"}, "prompt_version_id": "leads-v4"},
+        )
+        repository.information_store.upsert_snapshot(
+            {
+                "item_id": "output:sample-1", "business_key": "x_agent", "source": "hot_topic",
+                "source_id": "event-1", "title": "热点研究摘要", "summary": "事件主体确认",
+                "stage": "内部研究完成", "status": "succeeded", "result": "internal_complete",
+                "created_at_ms": now, "updated_at_ms": now, "source_database": "fixture",
+                "source_table": "hottopic_events", "source_row_id": "1", "legacy_history": False,
+            },
+            {"event": {"source_claim": "原帖称项目完成升级", "analysis": "仅代表公开主张"}, "prompt_version_id": "topic-v3"},
+        )
+
+        issues = service._audit_findings()
+        sample_issue = next(issue for issue in issues if issue["category"] == "no_candidate_sample_review")
+        key = repository.upsert_issue({**sample_issue, "task_kind": "output_audit"})
+        detail = repository.detail(key)
+        output_issue = next(issue for issue in issues if issue["category"] == "successful_output_sample_review")
+        output_key = repository.upsert_issue({**output_issue, "task_kind": "output_audit"})
+        output_detail = repository.detail(output_key)
+
+        assert detail["evidence"][0]["evidence_available"] is True
+        assert "完整待复核原文" in detail["evidence"][0]["evidence_excerpt"]
+        assert output_detail["evidence"][0]["evidence_available"] is True
+        assert "原帖称项目完成升级" in output_detail["evidence"][0]["evidence_excerpt"]
+        captured: list[dict[str, object]] = []
+
+        def inspect_input(item: dict[str, object], *, attempt_id: int, on_usage) -> dict[str, object]:
+            captured.extend(json.loads(str(item["evidence_json"])))
+            on_usage(80)
+            return {"summary": "证据已检查", "severity": "unknown", "certainty": "low", "suggestion": "保持人工判断", "validation": "核对原文", "input_tokens": 80, "output_tokens": 10}
+
+        monkeypatch.setattr(service, "_analyze", inspect_input)
+        assert service.analyze_pending()["analyzed"] == 2
+        assert any("完整待复核原文" in str(item.get("evidence_excerpt")) for item in captured)
+        assert any("原帖称项目完成升级" in str(item.get("evidence_excerpt")) for item in captured)
 
 
 def test_binance_square_channel_checks_settings_worker_and_enabled_accounts() -> None:
@@ -512,3 +790,94 @@ def test_rule_conflict_checks_only_active_template_versions() -> None:
         issues = service._rule_conflicts()
         assert len(issues) == 1
         assert issues[0]["scope"]["template_key"] == "conflict"
+
+
+def test_rule_execution_checks_existing_onchain_opener_hyperliquid_backend_and_format_rules() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        database = root / "main.sqlite"
+        with sqlite3.connect(database) as conn:
+            conn.executescript("""
+                CREATE TABLE tasks(
+                    id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, source_url TEXT, title TEXT,
+                    status TEXT, metadata TEXT, raw_payload TEXT, updated_at TEXT
+                );
+                CREATE TABLE x_task_pipeline(
+                    task_id INTEGER PRIMARY KEY, prompt_template_key TEXT, prompt_version_id INTEGER,
+                    draft_title TEXT, draft_content TEXT, final_title TEXT, final_content TEXT
+                );
+            """)
+            now = datetime.now(UTC).isoformat()
+            conn.execute("INSERT INTO tasks VALUES(1,'x','x-1','https://x.test/1','链上消息','written',?,?,?)", (
+                json.dumps({"author_display_name": "Alice"}), "{}", now,
+            ))
+            conn.execute("INSERT INTO x_task_pipeline VALUES(1,'x_onchain_writer',7,'标题','Alice在X平台发文称事实','标题','Alice在X平台发文称事实')")
+            conn.execute("INSERT INTO tasks VALUES(2,'hyperliquid_news','hl-1','https://hl.test/1','账户变化','published',?,?,?)", (
+                json.dumps({"force_backend_only": True}), "{}", now,
+            ))
+            conn.execute("INSERT INTO x_task_pipeline VALUES(2,'hyperliquid_writer',9,'账户盈利','金额12345万美元，样本时间：2026-11-03','账户盈利','金额12345万美元，样本时间：2026-11-03')")
+            conn.execute("INSERT INTO tasks VALUES(3,'hyperliquid_news','hl-preview','https://hl.test/preview','预览','published',?,?,?)", (
+                json.dumps({"mode": "preview_only"}), "{}", now,
+            ))
+            conn.execute("INSERT INTO x_task_pipeline VALUES(3,'hyperliquid_writer',9,'预览','样本时间：2026-11-03','预览','样本时间：2026-11-03')")
+
+        service = SystemReviewService(database, SystemReviewRepository(root / "review.sqlite"))
+        issues = service._rule_conflicts()
+        execution = [item for item in issues if item["category"] == "rule_execution_mismatch"]
+
+        assert len(execution) == 2
+        onchain = next(item for item in execution if item["scope"]["source"] == "x")
+        hyperliquid = next(item for item in execution if item["scope"]["source"] == "hyperliquid_news")
+        assert "据Alice监测" in onchain["actual"]
+        assert "强制进入后台" in hyperliquid["actual"]
+        assert "金额/比例" in hyperliquid["actual"]
+        assert "样本时间" in hyperliquid["actual"]
+
+
+def test_failure_clusters_include_capture_attempts_and_count_later_success_as_recovery() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        now = datetime.now(UTC)
+        earlier = (now - timedelta(minutes=4)).isoformat()
+        latest = (now - timedelta(minutes=1)).isoformat()
+        with sqlite3.connect(main) as conn:
+            conn.executescript("""
+                CREATE TABLE tasks(id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,status TEXT,updated_at TEXT);
+                CREATE TABLE x_task_pipeline(task_id INTEGER PRIMARY KEY,last_error TEXT,prompt_template_key TEXT,prompt_version_id INTEGER);
+                CREATE TABLE x_processing_attempts(
+                    id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,attempt_no INTEGER,executor TEXT,status TEXT,
+                    error_code TEXT,error_message TEXT,started_at TEXT,finished_at TEXT,rule_json TEXT
+                );
+                CREATE TABLE x_capture_attempts(
+                    id INTEGER PRIMARY KEY,account_id INTEGER,username_lower TEXT,status TEXT,source TEXT,error TEXT,
+                    started_at TEXT,finished_at TEXT,candidate_count INTEGER,new_count INTEGER,saved_count INTEGER
+                );
+                CREATE TABLE binance_square_attempts(
+                    id INTEGER PRIMARY KEY,account_id INTEGER,slug_lower TEXT,status TEXT,error TEXT,
+                    started_at TEXT,finished_at TEXT,candidate_count INTEGER,new_count INTEGER,saved_count INTEGER
+                );
+            """)
+            conn.executemany("INSERT INTO tasks VALUES(?,?,?,?,?)", [(1, "x", "x-1", "written", latest), (2, "x", "x-2", "write_failed", earlier)])
+            conn.executemany("INSERT INTO x_task_pipeline VALUES(?,?,?,?)", [(1, None, "x_onchain_writer", 4), (2, "failed", "x_onchain_writer", 4)])
+            conn.executemany("INSERT INTO x_processing_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
+                (1, 1, "write", 1, "model", "failed", "E500", "HTTP 500", earlier, earlier, '{"prompt_version_id":4}'),
+                (2, 1, "write", 2, "model", "succeeded", None, None, latest, latest, '{"prompt_version_id":4}'),
+                (3, 2, "write", 1, "model", "failed", "E500", "HTTP 500", earlier, earlier, '{"prompt_version_id":4}'),
+            ])
+            conn.executemany("INSERT INTO x_capture_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
+                (1, 10, "account_a", "failed", "fxtwitter", "HTTP 503", earlier, earlier, 0, 0, 0),
+                (2, 10, "account_a", "success", "fxtwitter", None, latest, latest, 2, 2, 2),
+            ])
+            conn.execute("INSERT INTO binance_square_attempts VALUES(1,20,'square_a','failed','HTTP 429',?,?,0,0,0)", (earlier, earlier))
+
+        service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"))
+        issues = service._failure_clusters()
+        processing = next(item for item in issues if item["scope"]["source"] == "x" and item["scope"]["stage"] == "write")
+        capture = next(item for item in issues if item["scope"]["source"].startswith("x_capture:"))
+        square = next(item for item in issues if item["scope"]["source"] == "binance_square")
+
+        assert "恢复 1 个" in processing["summary"]
+        assert "仍处失败状态 1 个" in processing["summary"]
+        assert "恢复 1 个" in capture["summary"]
+        assert "恢复 0 个" in square["summary"]

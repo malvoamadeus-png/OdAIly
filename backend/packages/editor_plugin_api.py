@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
 from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
 from packages.common.console_auth import create_console_auth_repository
-from packages.common.storage import load_storage_settings
+from packages.common.storage import connect_sqlite_readonly, load_storage_settings
 from packages.console_data_api import ConsoleDataApi
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
@@ -419,7 +419,6 @@ class EditorPluginNewsGenService:
                 self.system_information,
                 additional_databases={
                     "main": storage_settings.sqlite_path,
-                    "competitor": self.paths.competitor_monitor_db_path,
                     "hot": self.hottopic.path,
                     "meme": self.meme_dashboard_store.path,
                     "gate": self.gate_market_store.path,
@@ -434,7 +433,7 @@ class EditorPluginNewsGenService:
             storage_settings.sqlite_path,
             self.system_review_repository,
             model_settings=self.x_settings,
-            competitor_database_path=self.paths.competitor_monitor_db_path,
+            competitor_database_path=storage_settings.sqlite_path,
             evidence_database_path=storage_settings.sqlite_path,
             local_pipeline_database_path=self.paths.runtime_dir / "local_pipeline.sqlite",
         )
@@ -612,7 +611,7 @@ class EditorPluginNewsGenService:
         coverage = self.system_information.coverage()
         workers: list[dict[str, Any]] = []
         try:
-            with sqlite3.connect(f"file:{self.system_review_service.primary_database_path.as_posix()}?mode=ro", uri=True, timeout=5) as conn:
+            with connect_sqlite_readonly(self.system_review_service.primary_database_path, timeout_seconds=5) as conn:
                 conn.row_factory = sqlite3.Row
                 exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_worker_heartbeats'").fetchone()
                 if exists:

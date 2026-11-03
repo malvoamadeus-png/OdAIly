@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 from .registry import SOURCE_TO_BUSINESS
 from .store import SystemInformationStore, timestamp_ms
 
@@ -69,11 +70,9 @@ TABLE_SPECS = (
     TableSpec("main", "fact_checks", "post_publish_review", "fact_audit"),
     TableSpec("main", "fact_check_runs", "post_publish_review", "fact_audit"),
     TableSpec("main", "editor_plugin_generation_logs", "editor_plugin", "editor_plugin"),
-    TableSpec("main", "newsflash_items", "scheduled_brief", "scheduled_brief"),
-    TableSpec("main", "newsflash_events", "x_agent", "auto_newsflash"),
-    TableSpec("competitor", "newsflash_items", "crypto_media", "competitor_news"),
-    TableSpec("competitor", "newsflash_events", "crypto_media", "competitor_event"),
-    TableSpec("competitor", "newsflash_event_sources", "crypto_media", "competitor_event_source"),
+    TableSpec("main", "newsflash_items", "crypto_media", "competitor_news"),
+    TableSpec("main", "newsflash_events", "crypto_media", "competitor_event"),
+    TableSpec("main", "newsflash_event_sources", "crypto_media", "competitor_event_source"),
     TableSpec("hot", "hottopic_events", "x_agent", "hot_topic"),
     TableSpec("hot", "x_agent_analysis_jobs", "x_agent", "x_agent_analysis"),
     TableSpec("hot", "x_agent_sentiment_results", "x_agent", "market_sentiment"),
@@ -144,7 +143,7 @@ class SourceAuditInstaller:
 
     def install(self, database_path: Path, specs: tuple[TableSpec, ...]) -> dict[str, int]:
         installed = skipped = 0
-        with sqlite3.connect(database_path, timeout=15) as conn:
+        with sqlite3.connect(database_path, timeout=15, factory=ClosingSQLiteConnection) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=15000")
             conn.execute("""
@@ -343,12 +342,7 @@ class MainTaskProjector:
         self.audit_installer = SourceAuditInstaller()
 
     def _read(self) -> sqlite3.Connection:
-        uri = f"file:{self.source_database.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA busy_timeout=10000")
-        return conn
+        return connect_sqlite_readonly(self.source_database, timeout_seconds=10)
 
     def run_once(self) -> dict[str, int]:
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
@@ -704,7 +698,7 @@ class MainTaskProjector:
             last_seq = int(rows[-1]["seq"])
             self.store.set_state(watermark_key, last_seq)
             source_cutoff = now_ms - 24 * 60 * 60 * 1000
-            with sqlite3.connect(path, timeout=15) as conn:
+            with sqlite3.connect(path, timeout=15, factory=ClosingSQLiteConnection) as conn:
                 conn.execute("PRAGMA busy_timeout=15000")
                 conn.execute(
                     "DELETE FROM odaily_observability_outbox WHERE seq<=? AND happened_at_ms<?",
@@ -714,12 +708,7 @@ class MainTaskProjector:
 
     @staticmethod
     def _read_path(path: Path) -> sqlite3.Connection:
-        uri = f"file:{path.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=10)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA busy_timeout=10000")
-        return conn
+        return connect_sqlite_readonly(path, timeout_seconds=10)
 
 
 class ProjectionWorker:

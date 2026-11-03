@@ -62,6 +62,15 @@ def connect_sqlite(path: Path, *, timeout_seconds: float = 30.0) -> sqlite3.Conn
     return conn
 
 
+def connect_sqlite_readonly(path: Path, *, timeout_seconds: float = 10.0) -> sqlite3.Connection:
+    uri = f"file:{path.as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=timeout_seconds, factory=ClosingSQLiteConnection)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute(f"PRAGMA busy_timeout={max(0, int(timeout_seconds * 1000))}")
+    return conn
+
+
 def initialize_storage_metadata(path: Path) -> None:
     with connect_sqlite(path) as conn:
         conn.executescript(

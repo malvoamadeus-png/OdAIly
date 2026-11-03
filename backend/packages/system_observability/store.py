@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from packages.common.storage import ClosingSQLiteConnection
+
 
 def timestamp_ms(value: Any) -> int | None:
     if value is None:
@@ -62,7 +64,7 @@ class SystemInformationStore:
 
     def connect(self) -> sqlite3.Connection:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.database_path, timeout=15)
+        conn = sqlite3.connect(self.database_path, timeout=15, factory=ClosingSQLiteConnection)
         self.database_path.chmod(0o600)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=15000")
@@ -163,6 +165,25 @@ class SystemInformationStore:
                     evidence_bytes INTEGER NOT NULL,
                     sampled_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS system_information_decision_samples (
+                    sample_key TEXT PRIMARY KEY,
+                    sample_date TEXT NOT NULL,
+                    sampled_at_ms INTEGER NOT NULL,
+                    raw_expires_at_ms INTEGER NOT NULL,
+                    item_id TEXT NOT NULL,
+                    business_key TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    source_id TEXT,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    reason_summary TEXT NOT NULL DEFAULT '',
+                    rule_version TEXT,
+                    evidence_ref TEXT,
+                    evidence_bytes INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_system_information_decision_samples_date
+                    ON system_information_decision_samples(sampled_at_ms DESC, business_key, source, result);
                 """
             )
         if not self.get_state("observability_started_at"):
@@ -251,6 +272,7 @@ class SystemInformationStore:
 
     def cleanup_expired_evidence(self, *, now_ms: int | None = None, retain_days: int = 90, limit: int = 200, dry_run: bool = True) -> dict[str, int]:
         now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        self.expire_decision_samples(now_ms=now)
         cutoff = now - max(1, retain_days) * 24 * 60 * 60 * 1000
         compacted = compacted_bytes = protected = orphaned = orphaned_bytes = 0
         delete_after_commit: list[Path] = []
@@ -306,6 +328,7 @@ class SystemInformationStore:
                 self._register_evidence(conn, compact_ref, compact_path, compact_size)
                 conn.execute("UPDATE system_information_items SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
+                conn.execute("UPDATE system_information_decision_samples SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
                 if attempt_refs:
                     conn.execute("UPDATE system_review_analysis_attempts SET raw_response_ref=? WHERE raw_response_ref=?", (compact_ref, ref))
                 conn.execute("UPDATE system_information_evidence_pins SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
@@ -313,15 +336,17 @@ class SystemInformationStore:
                     still_referenced = conn.execute(
                         "SELECT 1 FROM system_information_items WHERE evidence_ref=? UNION ALL "
                         "SELECT 1 FROM system_information_events WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_decision_samples WHERE evidence_ref=? UNION ALL "
                         "SELECT 1 FROM system_review_analysis_attempts WHERE raw_response_ref=? UNION ALL "
                         "SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=? LIMIT 1",
-                        (ref, ref, ref, ref),
+                        (ref, ref, ref, ref, ref),
                     ).fetchone()
                 else:
                     still_referenced = conn.execute(
                         "SELECT 1 FROM system_information_items WHERE evidence_ref=? UNION ALL "
                         "SELECT 1 FROM system_information_events WHERE evidence_ref=? UNION ALL "
-                        "SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=? LIMIT 1", (ref, ref, ref),
+                        "SELECT 1 FROM system_information_decision_samples WHERE evidence_ref=? UNION ALL "
+                        "SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=? LIMIT 1", (ref, ref, ref, ref),
                     ).fetchone()
                 if not still_referenced:
                     conn.execute("DELETE FROM system_information_evidence WHERE evidence_ref=?", (ref,))
@@ -333,7 +358,8 @@ class SystemInformationStore:
                 referenced = {
                     str(row[0]) for row in conn.execute(
                         "SELECT evidence_ref FROM system_information_items WHERE evidence_ref IS NOT NULL "
-                        "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL"
+                        "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL "
+                        "UNION SELECT evidence_ref FROM system_information_decision_samples WHERE evidence_ref IS NOT NULL"
                     )
                 }
                 if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
@@ -357,12 +383,228 @@ class SystemInformationStore:
         return {"compacted": compacted, "compacted_bytes": compacted_bytes, "protected": protected,
                 "orphaned": orphaned, "orphaned_bytes": orphaned_bytes, "dry_run": int(dry_run)}
 
+    def record_decision_samples(
+        self,
+        *,
+        now_ms: int | None = None,
+        limit: int = 50,
+        max_bytes: int = 20 * 1024 * 1024,
+    ) -> dict[str, int]:
+        now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        sample_date = datetime.fromtimestamp(now / 1000, UTC).date().isoformat()
+        sample_cutoff = now - 24 * 60 * 60 * 1000
+        with self.connect() as conn:
+            state = conn.execute(
+                "SELECT state_value FROM system_information_state WHERE state_key='decision_sample_date'",
+            ).fetchone()
+            existing = int(conn.execute(
+                "SELECT COUNT(*) FROM system_information_decision_samples WHERE sample_date=?", (sample_date,),
+            ).fetchone()[0])
+            if state and state["state_value"] == sample_date:
+                return {"sampled": existing, "evidence_bytes": 0, "already_sampled": 1}
+            conn.execute("DELETE FROM system_information_decision_samples WHERE sampled_at_ms<?", (now - 30 * 86_400_000,))
+            rows = conn.execute(
+                "SELECT i.item_id,i.business_key,i.source,i.source_id,i.stage,i.status,i.result,i.summary,i.evidence_ref,e.byte_size "
+                "FROM system_information_items i JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref "
+                "WHERE i.updated_at_ms>=? AND (i.result='stopped' OR i.status IN ('no_candidate','ignored','discarded','deduped','duplicate')) "
+                "ORDER BY i.item_id",
+                (sample_cutoff,),
+            ).fetchall()
+            strata: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
+            for row in rows:
+                key = (str(row["business_key"]), str(row["source"]), str(row["status"]), str(row["result"]))
+                strata.setdefault(key, []).append(row)
+            for key, values in strata.items():
+                values.sort(key=lambda row: hashlib.sha256(f"{sample_date}:{key}:{row['item_id']}".encode()).digest())
+
+            sample_limit = max(1, min(50, int(limit)))
+            byte_limit = max(1, min(20 * 1024 * 1024, int(max_bytes)))
+            sampled: list[sqlite3.Row] = []
+            total_bytes = 0
+            remaining = sorted(strata)
+            while remaining and len(sampled) < sample_limit:
+                next_round = []
+                for key in remaining:
+                    candidates = strata[key]
+                    while candidates:
+                        candidate = candidates.pop(0)
+                        size = max(0, int(candidate["byte_size"] or 0))
+                        if total_bytes + size <= byte_limit:
+                            sampled.append(candidate)
+                            total_bytes += size
+                            break
+                    if candidates:
+                        next_round.append(key)
+                remaining = next_round
+
+            for row in sampled:
+                item_id = str(row["item_id"])
+                sample_key = hashlib.sha256(f"{sample_date}:{item_id}".encode()).hexdigest()
+                evidence_ref = str(row["evidence_ref"])
+                conn.execute(
+                    "INSERT OR IGNORE INTO system_information_decision_samples("
+                    "sample_key,sample_date,sampled_at_ms,raw_expires_at_ms,item_id,business_key,source,source_id,stage,status,result,reason_summary,rule_version,evidence_ref,evidence_bytes) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (sample_key, sample_date, now, now + 14 * 86_400_000, item_id, row["business_key"], row["source"],
+                     row["source_id"], row["stage"], row["status"], row["result"], str(row["summary"] or "")[:1200],
+                     self._sample_rule_version(evidence_ref), evidence_ref, int(row["byte_size"] or 0)),
+                )
+                conn.execute(
+                    "INSERT INTO system_information_evidence_pins(pin_key,evidence_ref,pinned_at_ms) VALUES(?,?,?) "
+                    "ON CONFLICT(pin_key) DO UPDATE SET evidence_ref=excluded.evidence_ref,pinned_at_ms=excluded.pinned_at_ms",
+                    (f"decision-sample:{sample_key}", evidence_ref, now),
+                )
+            conn.execute(
+                "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('decision_sample_date',?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                (sample_date, now),
+            )
+        return {"sampled": len(sampled), "evidence_bytes": total_bytes, "already_sampled": 0}
+
+    def expire_decision_samples(self, *, now_ms: int | None = None) -> dict[str, int]:
+        now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        with self.connect() as conn:
+            expired = conn.execute(
+                "SELECT sample_key FROM system_information_decision_samples WHERE evidence_ref IS NOT NULL AND raw_expires_at_ms<=?",
+                (now,),
+            ).fetchall()
+            for row in expired:
+                sample_key = str(row["sample_key"])
+                conn.execute("DELETE FROM system_information_evidence_pins WHERE pin_key=?", (f"decision-sample:{sample_key}",))
+                conn.execute(
+                    "UPDATE system_information_decision_samples SET evidence_ref=NULL,evidence_bytes=0 WHERE sample_key=?",
+                    (sample_key,),
+                )
+            removed = conn.execute(
+                "DELETE FROM system_information_decision_samples WHERE sampled_at_ms<?", (now - 30 * 86_400_000,),
+            ).rowcount
+        return {"raw_expired": len(expired), "index_removed": int(removed)}
+
+    def decision_samples(self, *, sample_date: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        where = " WHERE sample_date=?" if sample_date else ""
+        params: tuple[Any, ...] = (sample_date, max(1, min(100, int(limit)))) if sample_date else (max(1, min(100, int(limit))),)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM system_information_decision_samples{where} ORDER BY sampled_at_ms DESC,business_key,source,item_id LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def output_review_samples(self, *, now_ms: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        sample_date = datetime.fromtimestamp(now / 1000, UTC).date().isoformat()
+        cutoff = now - 24 * 60 * 60 * 1000
+        sample_limit = max(1, min(30, int(limit)))
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT item_id,business_key,source,source_id,title,summary,source_url,stage,status,result,"
+                "updated_at_ms,evidence_ref FROM system_information_items "
+                "WHERE business_key IN ('x','crypto_media','meme','x_agent') "
+                "AND result IN ('internal_complete','direct_publish','backoffice') "
+                "AND evidence_ref IS NOT NULL AND updated_at_ms>=? ORDER BY item_id",
+                (cutoff,),
+            ).fetchall()
+        strata: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in rows:
+            key = (str(row["business_key"]), str(row["source"]))
+            strata.setdefault(key, []).append(row)
+        for key, values in strata.items():
+            values.sort(key=lambda row: hashlib.sha256(f"{sample_date}:{key}:{row['item_id']}".encode()).digest())
+        selected: list[sqlite3.Row] = []
+        remaining = sorted(strata)
+        while remaining and len(selected) < sample_limit:
+            next_round = []
+            for key in remaining:
+                if strata[key]:
+                    selected.append(strata[key].pop(0))
+                if strata[key]:
+                    next_round.append(key)
+                if len(selected) >= sample_limit:
+                    break
+            remaining = next_round
+        return [dict(row) for row in selected]
+
+    def stream_item_evidence_details(self, item_ids: list[str]) -> list[dict[str, Any]]:
+        if not item_ids:
+            return []
+        keys = sorted({str(item_id) for item_id in item_ids})[:30]
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT item_id,business_key,source,source_id,stage,status,result,evidence_ref "
+                "FROM system_information_items WHERE item_id IN (" + ",".join("?" for _ in keys) + ")",
+                keys,
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["stream_item_id"] = item["item_id"]
+            reference = item.pop("evidence_ref")
+            evidence = self.load_evidence(reference) if reference else None
+            if evidence is not None:
+                encoded = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), default=str)
+                item["evidence_excerpt"] = encoded[:8000]
+                item["evidence_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                item["evidence_truncated"] = len(encoded) > 8000
+            else:
+                item["evidence_excerpt"] = None
+                item["evidence_sha256"] = None
+                item["evidence_truncated"] = False
+            item["evidence_available"] = evidence is not None
+            result.append(item)
+        return result
+
+    def decision_sample_details(self, sample_keys: list[str]) -> list[dict[str, Any]]:
+        if not sample_keys:
+            return []
+        keys = sorted({str(key) for key in sample_keys})[:50]
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT sample_key,item_id,business_key,source,source_id,stage,status,result,reason_summary,rule_version,evidence_ref "
+                "FROM system_information_decision_samples WHERE sample_key IN (" + ",".join("?" for _ in keys) + ") "
+                "ORDER BY sample_date DESC,business_key,source,item_id",
+                keys,
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            reference = item.pop("evidence_ref")
+            evidence = self.load_evidence(reference) if reference else None
+            if evidence is not None:
+                encoded = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), default=str)
+                item["evidence_excerpt"] = encoded[:8000]
+                item["evidence_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                item["evidence_truncated"] = len(encoded) > 8000
+            else:
+                item["evidence_excerpt"] = None
+                item["evidence_sha256"] = None
+                item["evidence_truncated"] = False
+            item["evidence_available"] = evidence is not None
+            result.append(item)
+        return result
+
+    def _sample_rule_version(self, evidence_ref: str) -> str | None:
+        evidence = self.load_evidence(evidence_ref)
+        if not isinstance(evidence, dict):
+            return None
+        pending: list[Any] = [evidence]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                for key in ("prompt_version", "prompt_version_id", "policy_version", "template_version"):
+                    if value.get(key) not in (None, ""):
+                        return str(value[key])[:160]
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+        return None
+
     def prune_orphan_evidence(self, *, limit: int = 500, dry_run: bool = True) -> dict[str, int]:
         with self.connect() as conn:
             referenced = {
                 str(row[0]) for row in conn.execute(
                     "SELECT evidence_ref FROM system_information_items WHERE evidence_ref IS NOT NULL "
-                    "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL"
+                    "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL "
+                    "UNION SELECT evidence_ref FROM system_information_decision_samples WHERE evidence_ref IS NOT NULL"
                 )
             }
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
