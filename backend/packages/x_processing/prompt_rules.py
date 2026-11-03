@@ -35,7 +35,13 @@ EVENT_TRACKING_WRITER_RULES = """【热点自动快讯事件更新写作规则�
 """.strip()
 
 X_ONCHAIN_WRITER_RULES = """【链上模板来源归因校正】
-账号直接发帖时写“发文称/表示”或直接转述；只有原文明示其发布监测或统计所得数据时，才写“据其监测/统计”。""".strip()
+当前任务已匹配链上模板，正文必须严格使用该模板规定的固定开头“据{发言人}监测，”。不得改成常规模板的“{发言人}在 X 平台发文表示”，不得替换“监测”或与“发文称/表示”混用；从固定开头后直接陈述事实。""".strip()
+
+
+def validate_x_onchain_attribution(content: str, speaker: str) -> None:
+    prefix = re.compile(rf"^据\s*{re.escape(speaker)}\s*监测\s*[，,]")
+    if not prefix.match(content.strip()):
+        raise ValueError(f"x_onchain writer content must start with 据{speaker}监测，")
 
 
 def validate_event_tracking_attribution(content: str) -> None:

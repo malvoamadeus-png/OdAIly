@@ -77,6 +77,7 @@ from .prompt_rules import (
     X_ARTICLE_WRITER_RULES,
     is_x_article_content_format,
     validate_event_tracking_attribution,
+    validate_x_onchain_attribution,
 )
 from .repository import XProcessingRepository
 from .searcher import (
@@ -1188,6 +1189,14 @@ class XProcessingWorker:
                     'account_copy_normalization': {'title': corrected.title, 'content': corrected.content}})
         if task.source == EVENT_TRACKING_SOURCE:
             validate_event_tracking_attribution(structured.draft.content)
+        elif template_key == "x_onchain_writer":
+            speaker = (
+                task.metadata.get("effective_author_name")
+                or task.metadata.get("author_display_name")
+                or task.metadata.get("author_username")
+            )
+            if speaker:
+                validate_x_onchain_attribution(structured.draft.content, str(speaker).strip())
         if self._event_tracking_cancelled(task.id):
             return
         if self._hyperliquid_blocked(task):
