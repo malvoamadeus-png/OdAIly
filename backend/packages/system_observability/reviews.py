@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 from packages.x_processing.ai_client import extract_chat_completion_text, extract_response_text, parse_openai_response_payload
-from .store import SystemInformationStore, timestamp_ms
+from .store import SQLITE_BUSY_TIMEOUT_MS, SystemInformationStore, timestamp_ms
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -206,9 +206,11 @@ class SystemReviewRepository:
                 conn.execute("ALTER TABLE system_review_items ADD COLUMN evidence_hash TEXT NOT NULL DEFAULT ''")
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=15, factory=ClosingSQLiteConnection)
+        conn = sqlite3.connect(
+            self.path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, factory=ClosingSQLiteConnection,
+        )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def upsert_issue(self, issue: dict[str, Any]) -> str:
@@ -1260,6 +1262,9 @@ class SystemReviewWorker:
             try:
                 self.run_once()
             except Exception as exc:
-                self.service.repository.set_state("worker_last_error", f"{type(exc).__name__}: {exc}"[:1000])
+                try:
+                    self.service.repository.set_state("worker_last_error", f"{type(exc).__name__}: {exc}"[:1000])
+                except Exception as state_error:
+                    print(f"[odaily] system review error state persistence failed: {type(state_error).__name__}: {state_error}")
                 print(f"[odaily] system review round failed: {type(exc).__name__}: {exc}")
             self._stop.wait(self.interval_seconds)

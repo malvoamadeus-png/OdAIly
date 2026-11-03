@@ -103,6 +103,20 @@ def test_observability_sqlite_connections_close_when_context_exits() -> None:
                 connection.execute("SELECT 1")
 
 
+def test_observability_store_uses_wal_and_extended_busy_timeout() -> None:
+    with TemporaryDirectory() as directory:
+        database = Path(directory) / "system_information.sqlite"
+        store = SystemInformationStore(database)
+        store.initialize()
+        repository = SystemReviewRepository(database)
+
+        with store.connect() as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 60_000
+        with repository.connect() as conn:
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 60_000
+
+
 def test_search_cursor_and_evidence_redaction() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -437,6 +451,35 @@ def test_system_review_worker_marks_interrupted_runs_after_restart(monkeypatch: 
         assert run["status"] == "failed"
         assert "重启" in run["error"]
         assert run["completed_at"] is not None
+
+
+def test_system_review_worker_survives_lock_while_persisting_error() -> None:
+    class LockedRepository:
+        calls = 0
+
+        def set_state(self, _key: str, _value: str) -> None:
+            self.calls += 1
+            raise sqlite3.OperationalError("database is locked")
+
+    class Service:
+        repository = LockedRepository()
+
+    worker = SystemReviewWorker(Service())
+    worker.interval_seconds = 0
+    run_calls = 0
+
+    def run_once() -> None:
+        nonlocal run_calls
+        run_calls += 1
+        if run_calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        worker._stop.set()
+
+    worker.run_once = run_once
+    worker._run()
+
+    assert run_calls == 2
+    assert worker.service.repository.calls == 1
 
 
 def test_competitor_events_are_projected_from_the_active_main_database() -> None:

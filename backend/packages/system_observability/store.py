@@ -12,6 +12,8 @@ from typing import Any
 
 from packages.common.storage import ClosingSQLiteConnection
 
+SQLITE_BUSY_TIMEOUT_MS = 60_000
+
 
 def timestamp_ms(value: Any) -> int | None:
     if value is None:
@@ -71,14 +73,17 @@ class SystemInformationStore:
 
     def connect(self) -> sqlite3.Connection:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.database_path, timeout=15, factory=ClosingSQLiteConnection)
+        conn = sqlite3.connect(
+            self.database_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, factory=ClosingSQLiteConnection,
+        )
         self.database_path.chmod(0o600)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def initialize(self) -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS system_information_items (
