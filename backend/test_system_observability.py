@@ -154,6 +154,75 @@ def test_search_requires_contiguous_phrase_order() -> None:
         assert [item["item_id"] for item in store.query({"q": "甲乙丙"})["items"]] == ["ordered"]
 
 
+def test_compact_search_migration_is_resumable_and_indexes_long_evidence_once() -> None:
+    with TemporaryDirectory() as directory:
+        database = Path(directory) / "index.sqlite"
+        store = SystemInformationStore(database)
+        store.initialize()
+        base = {
+            "business_key": "x", "source": "x", "stage": "写作", "status": "written", "result": "processing",
+            "created_at_ms": 1, "updated_at_ms": 1, "source_database": "fixture", "source_table": "items",
+            "legacy_history": False,
+        }
+        store.upsert_snapshot(
+            {**base, "item_id": "item:1", "source_row_id": "1", "title": "正文样本"},
+            {"content": "开头" + "甲乙丙" * 5000 + "结尾"},
+        )
+        store.upsert_snapshot(
+            {**base, "item_id": "item:2", "source_row_id": "2", "title": "正文样本"},
+            {"content": "其他正文"},
+        )
+
+        with sqlite3.connect(database) as conn:
+            conn.execute(
+                "CREATE TABLE system_information_search_positions "
+                "(term TEXT NOT NULL,item_id TEXT NOT NULL,position INTEGER NOT NULL,PRIMARY KEY(term,item_id,position))"
+            )
+            conn.execute("DELETE FROM system_information_state WHERE state_key LIKE 'search_bigrams_rebuild_%'")
+        store.initialize()
+        assert store.query({"q": "甲乙丙"})["search_index_ready"] is False
+
+        assert store.rebuild_search_index(limit=1) == 1
+        assert store.get_state("search_bigrams_rebuild_done") == "0"
+        assert store.rebuild_search_index(limit=1) == 1
+        assert store.rebuild_search_index(limit=1) == 0
+        assert store.get_state("search_bigrams_rebuild_done") == "1"
+
+        with sqlite3.connect(database) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_information_search_positions'"
+            ).fetchone() is None
+            distinct_terms = conn.execute(
+                "SELECT COUNT(*) FROM system_information_search WHERE item_id='item:1'"
+            ).fetchone()[0]
+        assert distinct_terms < 100
+        result = store.query({"q": "甲乙丙"})
+        assert result["search_index_ready"] is True
+        assert result["total"] == 1
+        assert result["items"][0]["item_id"] == "item:1"
+
+
+def test_sparse_task_ids_report_unprojected_row_count() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        _source_db(source)
+        with sqlite3.connect(source) as conn:
+            conn.executemany(
+                "INSERT INTO tasks(id,source,source_item_id,title,content,status,created_at,metadata) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (100_000 * index, "x", f"sparse-{index}", "标题", "正文", "pending", "2026-11-03T00:00:00Z", "{}")
+                    for index in range(1, 28)
+                ],
+            )
+        store = SystemInformationStore(root / "runtime" / "system_information.sqlite")
+        store.initialize()
+        MainTaskProjector(source, store, batch_size=25).run_once()
+
+        assert int(store.get_state("main_tasks_lag")) == 5
+
+
 def test_pinned_attempt_evidence_survives_orphan_pruning_until_projection() -> None:
     with TemporaryDirectory() as directory:
         store = SystemInformationStore(Path(directory) / "system_information.sqlite")

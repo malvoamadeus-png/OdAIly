@@ -531,16 +531,19 @@ class MainTaskProjector:
                         )
                         if event_type == "response_received":
                             self.store.unpin_evidence(f"x-attempt-response:{event['attempt_id']}:{event['call_no']}")
+                current_watermark = max(last_id, max((int(row["id"]) for row in new_rows), default=last_id))
                 if new_rows:
-                    self.store.set_state("main_tasks_watermark", max(last_id, max(int(row["id"]) for row in new_rows)))
+                    self.store.set_state("main_tasks_watermark", current_watermark)
                 if attempt_events:
                     self.store.set_state("main_attempt_events_watermark", max(int(event["id"]) for event in attempt_events))
-                latest = conn.execute("SELECT MAX(id) FROM tasks").fetchone()[0]
-            self.store.set_state("main_tasks_lag", max(0, int(latest or 0) - int(self.store.get_state("main_tasks_watermark", "0") or 0)))
+                remaining_tasks = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE id>?", (current_watermark,),
+                ).fetchone()[0]
+            self.store.set_state("main_tasks_lag", int(remaining_tasks or 0))
             self.store.set_state("main_tasks_last_success", now_ms)
             self.store.set_state("main_tasks_last_error", "")
             extra_read, extra_changed = self._project_additional(now_ms, started_at_ms)
-            self.store.rebuild_search_positions(self.batch_size)
+            self.store.rebuild_search_index(self.batch_size)
             return {"read": imported + extra_read, "changed": changed + extra_changed}
         except Exception as exc:
             self.store.set_state("main_tasks_last_error", f"{type(exc).__name__}: {exc}"[:1000])

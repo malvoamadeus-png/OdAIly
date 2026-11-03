@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from typing import Callable
 
 from packages.system_observability import SystemInformationStore
-from packages.system_observability.store import _ngrams
+from packages.system_observability.store import _search_terms
 
 
 ROW_COUNT = 100_000
@@ -24,7 +24,7 @@ def seed(store: SystemInformationStore, count: int = ROW_COUNT) -> None:
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
     with store.connect() as conn:
         item_batch: list[tuple[object, ...]] = []
-        position_batch: list[tuple[str, str, int]] = []
+        term_batch: list[tuple[str, str]] = []
         for index in range(count):
             item_id = f"bench:{index:06d}"
             created = BASE_TIME_MS + index
@@ -43,23 +43,23 @@ def seed(store: SystemInformationStore, count: int = ROW_COUNT) -> None:
                 "offline-benchmark", "items", str(index), None, f"fingerprint-{index}", 0,
             ))
             searchable = " ".join((title, summary, business, source_id, source_url))
-            position_batch.extend((term, item_id, position) for term, position in _ngrams(searchable))
+            term_batch.extend((term, item_id) for term in _search_terms(searchable))
             if len(item_batch) >= 1000:
                 conn.executemany(item_sql, item_batch)
                 conn.executemany(
-                    "INSERT INTO system_information_search_positions(term,item_id,position) VALUES(?,?,?)",
-                    position_batch,
+                    "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES(?,?)",
+                    term_batch,
                 )
                 item_batch.clear()
-                position_batch.clear()
+                term_batch.clear()
         if item_batch:
             conn.executemany(item_sql, item_batch)
             conn.executemany(
-                "INSERT INTO system_information_search_positions(term,item_id,position) VALUES(?,?,?)",
-                position_batch,
+                "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES(?,?)",
+                term_batch,
             )
         conn.execute("ANALYZE")
-    store.set_state("search_positions_rebuild_done", "1")
+    store.set_state("search_bigrams_rebuild_done", "1")
 
 
 def percentile(values: list[float], fraction: float) -> float:
