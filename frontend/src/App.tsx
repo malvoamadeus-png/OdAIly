@@ -1869,7 +1869,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'business_news'
         ? '商务群消息、AI 分类、脱水和挂后台结果'
       : view === 'ai_review'
-        ? '事件选题判断与 X Agent 账号发现'
+        ? '竞品先发及未覆盖事件的原始信源审阅'
       : view === 'dedupe'
         ? '粘贴一段快讯内容，检索疑似重复的已发布快讯和运行中候选'
       : view === 'timing'

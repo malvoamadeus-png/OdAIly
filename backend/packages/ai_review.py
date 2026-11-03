@@ -25,26 +25,8 @@ EVENT_ANALYSIS_VERSION = 4
 RECOMMENDATIONS = {"priority", "consider", "drop"}
 RECOMMENDATION_LABELS = {"priority": "优先考虑", "consider": "可考虑", "drop": "不建议跟进"}
 STATUS_VALUES = {"pending", "accepted", "rejected", "deferred"}
-ATTITUDE_RE = re.compile(
-    r"看多|看涨|偏多|买入|加仓|增持|强势|低估|上涨空间|利好|看空|看跌|偏空|卖出|减仓|做空|高估|下行|利空|"
-    r"(?<![A-Za-z])(?:bullish|bull|long|buy(?:ing)?|accumulat\w*|undervalued|upside|bearish|bear|short|"
-    r"sell(?:ing)?|overvalued|downside)(?![A-Za-z])",
-    re.IGNORECASE,
-)
-CRYPTO_CONTEXT_RE = re.compile(
-    r"加密|区块链|链上|代币|币种|合约地址|空投|质押|流动性|协议|主网|公链|DeFi|DEX|TVL|token|crypto|"
-    r"blockchain|on.chain|airdrop|staking|protocol|mainnet|liquidity|defi|dex|tvl|\bCA\b",
-    re.IGNORECASE,
-)
-LOGIC_RE = re.compile(
-    r"因为|由于|原因|逻辑|基本面|价值|采用|收入|用户增长|生态|催化|供需|估值|相比|因此|若|如果|"
-    r"because|since|fundamental|thesis|value|adoption|revenue|growth|ecosystem|catalyst|supply|valuation|therefore",
-    re.IGNORECASE,
-)
 URL_RE = re.compile(r"https?://[^\s<>\]\[(){}\"']+", re.IGNORECASE)
-HANDLE_RE = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_]{1,15})")
 X_URL_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})(?:/|\b)", re.IGNORECASE)
-TICKER_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9]{0,9})\b")
 TRACKED_SOURCE_DOMAINS = {
     "odaily.news", "theblockbeats.info", "blockbeats.info", "panewslab.com", "jinse.cn",
     "coindesk.com", "cointelegraph.com", "decrypt.co", "theblock.co",
@@ -74,7 +56,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS ai_review_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   item_key TEXT NOT NULL UNIQUE,
-  item_type TEXT NOT NULL CHECK(item_type IN ('event','account')),
+  item_type TEXT NOT NULL DEFAULT 'event' CHECK(item_type='event'),
   category TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','rejected','deferred')),
   analysis_status TEXT NOT NULL DEFAULT 'queued' CHECK(analysis_status IN ('queued','completed','failed')),
@@ -83,7 +65,6 @@ CREATE TABLE IF NOT EXISTS ai_review_items (
   reason TEXT NOT NULL DEFAULT '',
   evidence_json TEXT NOT NULL DEFAULT '[]',
   clues_json TEXT NOT NULL DEFAULT '{}',
-  account_lower TEXT,
   analysis_model TEXT,
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -101,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_review_queue ON ai_review_items(status,item_ty
 CREATE INDEX IF NOT EXISTS idx_ai_review_analysis ON ai_review_items(analysis_status,analysis_attempts,created_at);
 CREATE TABLE IF NOT EXISTS ai_review_daily_usage (
   usage_date TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('account','event')),
+  kind TEXT NOT NULL DEFAULT 'event' CHECK(kind='event'),
   used_tokens INTEGER NOT NULL DEFAULT 0,
   reserved_tokens INTEGER NOT NULL DEFAULT 0,
   calls INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +165,7 @@ class AIReviewRepository:
         item = dict(row)
         item["evidence"] = _decode(item.pop("evidence_json"), [])
         item["clues"] = _decode(item.pop("clues_json"), {})
+        item.pop("account_lower", None)
         item.pop("adopted_targets_json", None)
         for old, new in (
             ("item_key", "itemKey"), ("item_type", "type"), ("analysis_status", "analysisStatus"),
@@ -198,20 +180,18 @@ class AIReviewRepository:
         return item
 
     def insert_candidate(
-        self, *, key: str, item_type: str, category: str, title: str,
-        evidence: list[dict[str, Any]], clues: dict[str, Any] | None = None,
-        account_lower: str | None = None, source_updated_at: str | None = None,
+        self, *, key: str, category: str, title: str, evidence: list[dict[str, Any]],
+        clues: dict[str, Any] | None = None, source_updated_at: str | None = None,
         refresh_existing: bool = False,
     ) -> bool:
         now = datetime.now(UTC).isoformat()
         with self.db:
             cursor = self.db.execute(
                 "INSERT OR IGNORE INTO ai_review_items(item_key,item_type,category,title,evidence_json,clues_json,"
-                "account_lower,source_updated_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (key, item_type, category, title[:300], _json(evidence), _json(clues or {}), account_lower,
-                 source_updated_at, now, now),
+                "source_updated_at,created_at,updated_at) VALUES(?,'event',?,?,?,?,?,?,?)",
+                (key, category, title[:300], _json(evidence), _json(clues or {}), source_updated_at, now, now),
             )
-            if cursor.rowcount == 0 and refresh_existing and item_type == "event":
+            if cursor.rowcount == 0 and refresh_existing:
                 self.db.execute(
                     "UPDATE ai_review_items SET title=?,evidence_json=?,clues_json=?,source_updated_at=?,updated_at=? "
                     "WHERE item_key=? AND item_type='event'",
@@ -219,11 +199,11 @@ class AIReviewRepository:
                 )
         return cursor.rowcount > 0
 
-    def pending_analysis(self, item_type: str, limit: int = MAX_ANALYSIS_BATCH) -> list[dict[str, Any]]:
+    def pending_analysis(self, limit: int = MAX_ANALYSIS_BATCH) -> list[dict[str, Any]]:
         rows = self.db.execute(
-            "SELECT * FROM ai_review_items WHERE item_type=? AND analysis_status IN ('queued','failed') "
+            "SELECT * FROM ai_review_items WHERE item_type='event' AND analysis_status IN ('queued','failed') "
             "AND analysis_attempts<? ORDER BY datetime(COALESCE(source_updated_at,created_at)) DESC,id DESC LIMIT ?",
-            (item_type, MAX_ANALYSIS_ATTEMPTS, limit),
+            (MAX_ANALYSIS_ATTEMPTS, limit),
         ).fetchall()
         return [self._item(row) for row in rows]
 
@@ -266,48 +246,46 @@ class AIReviewRepository:
                 (error[:1000], datetime.now(UTC).isoformat(), item_id),
             )
 
-    def update_usage(self, usage_date: str, kind: str, *, reserve: int = 0, settle: tuple[int, int] | None = None) -> bool:
+    def update_usage(self, usage_date: str, *, reserve: int = 0, settle: tuple[int, int] | None = None) -> bool:
         now = datetime.now(UTC).isoformat()
         with self.db:
             self.db.execute(
-                "INSERT OR IGNORE INTO ai_review_daily_usage(usage_date,kind,updated_at) VALUES(?,?,?)",
-                (usage_date, kind, now),
+                "INSERT OR IGNORE INTO ai_review_daily_usage(usage_date,kind,updated_at) VALUES(?,'event',?)",
+                (usage_date, now),
             )
             row = self.db.execute(
-                "SELECT used_tokens,reserved_tokens FROM ai_review_daily_usage WHERE usage_date=? AND kind=?",
-                (usage_date, kind),
+                "SELECT used_tokens,reserved_tokens FROM ai_review_daily_usage WHERE usage_date=? AND kind='event'",
+                (usage_date,),
             ).fetchone()
             if reserve:
                 if int(row["used_tokens"]) + int(row["reserved_tokens"]) + reserve > DAILY_TOKEN_LIMIT:
                     return False
                 self.db.execute(
-                    "UPDATE ai_review_daily_usage SET reserved_tokens=reserved_tokens+?,updated_at=? WHERE usage_date=? AND kind=?",
-                    (reserve, now, usage_date, kind),
+                    "UPDATE ai_review_daily_usage SET reserved_tokens=reserved_tokens+?,updated_at=? WHERE usage_date=? AND kind='event'",
+                    (reserve, now, usage_date),
                 )
             elif settle is not None:
                 reserved, actual = settle
                 self.db.execute(
                     "UPDATE ai_review_daily_usage SET reserved_tokens=max(0,reserved_tokens-?),used_tokens=used_tokens+?,"
-                    "calls=calls+1,updated_at=? WHERE usage_date=? AND kind=?",
-                    (reserved, max(0, actual), now, usage_date, kind),
+                    "calls=calls+1,updated_at=? WHERE usage_date=? AND kind='event'",
+                    (reserved, max(0, actual), now, usage_date),
                 )
         return True
 
-    def release_usage(self, usage_date: str, kind: str, reserved: int) -> None:
+    def release_usage(self, usage_date: str, reserved: int) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE ai_review_daily_usage SET reserved_tokens=max(0,reserved_tokens-?),updated_at=? WHERE usage_date=? AND kind=?",
-                (reserved, datetime.now(UTC).isoformat(), usage_date, kind),
+                "UPDATE ai_review_daily_usage SET reserved_tokens=max(0,reserved_tokens-?),updated_at=? WHERE usage_date=? AND kind='event'",
+                (reserved, datetime.now(UTC).isoformat(), usage_date),
             )
 
     def usage(self, usage_date: str) -> dict[str, dict[str, int]]:
         rows = self.db.execute(
-            "SELECT kind,used_tokens,reserved_tokens,calls FROM ai_review_daily_usage WHERE usage_date=?", (usage_date,)
+            "SELECT kind,used_tokens,reserved_tokens,calls FROM ai_review_daily_usage WHERE usage_date=? AND kind='event'",
+            (usage_date,),
         ).fetchall()
-        result = {
-            "account": {"usedTokens": 0, "reservedTokens": 0, "calls": 0},
-            "event": {"usedTokens": 0, "reservedTokens": 0, "calls": 0},
-        }
+        result = {"event": {"usedTokens": 0, "reservedTokens": 0, "calls": 0}}
         for row in rows:
             result[row["kind"]] = {
                 "usedTokens": int(row["used_tokens"]), "reservedTokens": int(row["reserved_tokens"]),
@@ -328,13 +306,9 @@ class AIReviewRepository:
             )
 
     def list_items(
-        self, *, item_type: str = "all", status: str = "all", category: str = "all",
-        offset: int = 0, limit: int = 30,
+        self, *, status: str = "all", category: str = "all", offset: int = 0, limit: int = 30,
     ) -> dict[str, Any]:
-        clauses, params = ["analysis_status='completed'", "recommendation='priority'"], []
-        if item_type in {"event", "account"}:
-            clauses.append("item_type=?")
-            params.append(item_type)
+        clauses, params = ["item_type='event'", "analysis_status='completed'", "recommendation='priority'"], []
         if status in STATUS_VALUES:
             clauses.append("status=?")
             params.append(status)
@@ -362,7 +336,7 @@ class AIReviewRepository:
             "SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected,"
             "SUM(CASE WHEN status='deferred' THEN 1 ELSE 0 END) AS deferred,"
             "COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens "
-            "FROM ai_review_items WHERE datetime(created_at)>=datetime(?) AND analysis_status='completed' "
+            "FROM ai_review_items WHERE item_type='event' AND datetime(created_at)>=datetime(?) AND analysis_status='completed' "
             "AND recommendation='priority'",
             (cutoff,),
         ).fetchone()
@@ -377,7 +351,9 @@ class AIReviewRepository:
         }
 
     def get_item(self, item_key: str) -> dict[str, Any] | None:
-        row = self.db.execute("SELECT * FROM ai_review_items WHERE item_key=?", (item_key,)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM ai_review_items WHERE item_key=? AND item_type='event'", (item_key,),
+        ).fetchone()
         return self._item(row) if row else None
 
     def decide(self, item_key: str, *, decision: str, actor: str, note: str = "") -> dict[str, Any]:
@@ -385,7 +361,9 @@ class AIReviewRepository:
             raise ValueError("不支持的人工决定")
         now = datetime.now(UTC).isoformat()
         with self.db:
-            row = self.db.execute("SELECT * FROM ai_review_items WHERE item_key=?", (item_key,)).fetchone()
+            row = self.db.execute(
+                "SELECT * FROM ai_review_items WHERE item_key=? AND item_type='event'", (item_key,),
+            ).fetchone()
             if row is None:
                 raise ValueError("审阅项目不存在")
             if row["status"] == "accepted" and decision == "accepted":
@@ -398,10 +376,10 @@ class AIReviewRepository:
         assert item is not None
         return item
 
-    def has_pending_analysis(self, item_type: str) -> bool:
+    def has_pending_analysis(self) -> bool:
         return self.db.execute(
-            "SELECT 1 FROM ai_review_items WHERE item_type=? AND analysis_status IN ('queued','failed') "
-            "AND analysis_attempts<? LIMIT 1", (item_type, MAX_ANALYSIS_ATTEMPTS),
+            "SELECT 1 FROM ai_review_items WHERE item_type='event' AND analysis_status IN ('queued','failed') "
+            "AND analysis_attempts<? LIMIT 1", (MAX_ANALYSIS_ATTEMPTS,),
         ).fetchone() is not None
 
     def requeue_event_analyses(self) -> int:
@@ -414,10 +392,10 @@ class AIReviewRepository:
             )
         return cursor.rowcount
 
-    def history_examples(self, item_type: str, category: str, limit: int = 2) -> list[dict[str, str]]:
+    def history_examples(self, category: str, limit: int = 2) -> list[dict[str, str]]:
         rows = self.db.execute(
-            "SELECT category,human_decision,feedback_note FROM ai_review_items WHERE item_type=? AND human_decision IS NOT NULL "
-            "AND category=? ORDER BY decided_at DESC LIMIT ?", (item_type, category, limit),
+            "SELECT category,human_decision,feedback_note FROM ai_review_items WHERE item_type='event' "
+            "AND human_decision IS NOT NULL AND category=? ORDER BY decided_at DESC LIMIT ?", (category, limit),
         ).fetchall()
         return [
             {"category": str(row["category"]), "decision": str(row["human_decision"]), "note": str(row["feedback_note"] or "")[:120]}
@@ -457,26 +435,17 @@ class AIReviewAnalyzer:
     def analyze(self, item: dict[str, Any], examples: list[dict[str, str]]) -> dict[str, Any]:
         if not self.base_url or not self.api_key:
             raise RuntimeError("AI 审阅需要配置 X Agent 兼容模型路由和 API key")
-        if item["type"] == "event":
-            system = (
-                "你是 Crypto 垂直媒体的信源编辑，只根据给定竞品报道和它们明确链接的原始信源判断哪些值得持续监控，不搜索外部资料。每个候选只对应一个原始账号或域名，竞品媒体只是发现入口，"
-                "不是推荐追踪对象；证据里的 originSources 是从竞品原文链接、结构化原文字段或正文 URL 提取的候选。"
-                "优先推荐持续发布 Crypto 一手数据、研究、公告或对读者交易决策有价值内容的原始账号/网站。若链接只指向一次性文章、一次性项目页面、临时活动或普通转载，"
-                "而没有证据表明背后的账号/网站会持续产出有价值信息，应不建议跟进。仅有竞品自己的文章链接不构成原始信源。"
-                "同一事件的多个竞品可能链接到同一个源；按原始账号/域名判断，避免把 PANews、金色财经、BlockBeats 等竞品误当追踪对象。"
-                "只按提供的原文和链接判断，不能把被提及对象或作者姓名猜成信源；错误归因可能损害个人或机构名誉。"
-                "reason 简短说明这个原始账号/域名是否有持续追踪价值；证据列表提供对应原始信源链接和发现它的竞品。"
-                "只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
-            )
-        else:
-            system = (
-                "你是 Crypto 垂直媒体的信源编辑。只根据给定作者原文和聚合证据判断账号是否值得纳入市场情绪或项目推介观察；"
-                "判断其是否持续表达可用于读者交易决策的态度，或是否提供有逻辑的 Crypto/链上项目观点。少量股票观点可用于市场情绪。"
-                "不要将引用者观点归给作者。只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
-            )
-        evidence = item["evidence"][:6]
-        if item["type"] == "event":
-            evidence = [row for row in item["evidence"] if row.get("originSources")][:8]
+        system = (
+            "你是 Crypto 垂直媒体的信源编辑，只根据给定竞品报道和它们明确链接的原始信源判断哪些值得持续监控，不搜索外部资料。每个候选只对应一个原始账号或域名，竞品媒体只是发现入口，"
+            "不是推荐追踪对象；证据里的 originSources 是从竞品原文链接、结构化原文字段或正文 URL 提取的候选。"
+            "优先推荐持续发布 Crypto 一手数据、研究、公告或对读者交易决策有价值内容的原始账号/网站。若链接只指向一次性文章、一次性项目页面、临时活动或普通转载，"
+            "而没有证据表明背后的账号/网站会持续产出有价值信息，应不建议跟进。仅有竞品自己的文章链接不构成原始信源。"
+            "同一事件的多个竞品可能链接到同一个源；按原始账号/域名判断，避免把 PANews、金色财经、BlockBeats 等竞品误当追踪对象。"
+            "只按提供的原文和链接判断，不能把被提及对象或作者姓名猜成信源；错误归因可能损害个人或机构名誉。"
+            "reason 简短说明这个原始账号/域名是否有持续追踪价值；证据列表提供对应原始信源链接和发现它的竞品。"
+            "只返回 JSON：{\"recommendation\":\"priority|consider|drop\",\"reason\":\"简短中文理由\"}。"
+        )
+        evidence = [row for row in item["evidence"] if row.get("originSources")][:8]
         prompt = _json({
             "item": {"title": item["title"], "category": item["category"], "evidence": evidence},
             "similar_human_decisions": examples,
@@ -513,112 +482,6 @@ def _usage_int(usage: dict[str, Any], *keys: str) -> int:
         except (TypeError, ValueError):
             continue
     return 0
-
-
-def _is_pure_x_repost(handle: str, metadata: dict[str, Any], raw: dict[str, Any]) -> bool:
-    if str(metadata.get("activity_type") or metadata.get("source") or "").casefold() in {
-        "repost", "retweet", "retweeted", "pure_repost",
-    } or metadata.get("is_retweet") is True or metadata.get("is_repost") is True:
-        return True
-    envelope = raw.get("raw_payload") if isinstance(raw.get("raw_payload"), dict) else {}
-    nested = envelope.get("raw_payload") if isinstance(envelope.get("raw_payload"), dict) else {}
-    timeline = nested.get("timeline") if isinstance(nested.get("timeline"), dict) else envelope.get("timeline")
-    candidates = [raw, envelope, nested, timeline if isinstance(timeline, dict) else {}]
-    target = handle.casefold().lstrip("@")
-    author = str(metadata.get("author_username") or "").casefold().lstrip("@")
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        reposted_by = candidate.get("reposted_by") if isinstance(candidate.get("reposted_by"), dict) else {}
-        reposted_by_name = str(reposted_by.get("screen_name") or "").casefold().lstrip("@")
-        candidate_author = candidate.get("author") if isinstance(candidate.get("author"), dict) else {}
-        original_author = str(candidate_author.get("screen_name") or author).casefold().lstrip("@")
-        if reposted_by_name == target and original_author and original_author != target:
-            return True
-        if any(isinstance(candidate.get(key), dict) and candidate.get(key) for key in ("retweeted_status", "repost")):
-            if original_author and original_author != target:
-                return True
-    return False
-
-
-def _match_alias(text: str, alias: str) -> bool:
-    clean = alias.strip()
-    if not clean:
-        return False
-    if re.fullmatch(r"\$?[A-Za-z][A-Za-z0-9]{0,9}", clean):
-        token = re.escape(clean.lstrip("$").casefold())
-        return re.search(rf"(?<![A-Za-z0-9_])\$?{token}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
-    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(clean)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
-
-
-def _compile_alias_matcher(aliases: dict[str, Any]) -> dict[Any, Any] | None:
-    normalized = sorted(
-        {str(alias).strip().casefold() for alias in aliases if str(alias).strip()},
-        key=lambda alias: (-len(alias), alias),
-    )
-    if not normalized:
-        return None
-    root: dict[Any, Any] = {}
-    for alias in normalized:
-        searchable = alias.lstrip("$") if re.fullmatch(r"\$?[A-Za-z][A-Za-z0-9]{0,9}", alias) else alias
-        node = root
-        for character in searchable:
-            node = node.setdefault(character, {})
-        node.setdefault(None, []).append(alias)
-    return root
-
-
-def _find_alias_matches(text: str, matcher: dict[Any, Any] | None) -> set[str]:
-    if matcher is None:
-        return set()
-    folded = text.casefold()
-    original_positions: list[int] = []
-    for index, character in enumerate(text):
-        original_positions.extend([index] * len(character.casefold()))
-
-    def is_word_character(character: str) -> bool:
-        return character.isascii() and (character.isalnum() or character == "_")
-
-    matches: set[str] = set()
-    cursor = 0
-    while cursor < len(folded):
-        node = matcher
-        scan = cursor
-        best_alias = None
-        best_end = cursor
-        while scan < len(folded):
-            node = node.get(folded[scan])
-            if node is None:
-                break
-            scan += 1
-            aliases = node.get(None)
-            if aliases:
-                start = original_positions[cursor]
-                end = original_positions[scan - 1] + 1
-                before = text[start - 1] if start else ""
-                after = text[end] if end < len(text) else ""
-                if not is_word_character(before) and not is_word_character(after):
-                    best_alias, best_end = aliases[0], scan
-        if best_alias is not None:
-            matches.add(best_alias)
-            cursor = best_end
-        else:
-            cursor += 1
-    return matches
-
-
-def _extract_clues(texts: list[str]) -> dict[str, list[str]]:
-    accounts: set[str] = set()
-    domains: set[str] = set()
-    for text in texts:
-        accounts.update(handle.lower() for handle in HANDLE_RE.findall(text))
-        accounts.update(handle.lower() for handle in X_URL_RE.findall(text))
-        for raw in URL_RE.findall(text):
-            host = urlparse(raw.rstrip(".,;!?")).hostname or ""
-            host = host.lower().removeprefix("www.")
-            if host and host not in {"x.com", "twitter.com", "t.co"}:
-                domains.add(host)
-    return {"xAccounts": sorted(accounts)[:30], "domains": sorted(domains)[:30]}
 
 
 def _embedded_urls(value: Any, *, urls: set[str], scan_body: bool = False) -> None:
@@ -724,7 +587,7 @@ class AIReviewService:
 
     def list_items(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.repository.list_items(
-            item_type=str(payload.get("type") or "all"), status=str(payload.get("status") or "all"),
+            status=str(payload.get("status") or "all"),
             category=str(payload.get("category") or "all"),
             offset=int(payload.get("offset") or 0), limit=int(payload.get("limit") or 30),
         )
@@ -736,10 +599,6 @@ class AIReviewService:
         item = self.repository.get_item(item_key)
         if item is None:
             raise ValueError("审阅项目不存在")
-        if item["type"] == "account" and decision not in {"accepted", "rejected"}:
-            raise ValueError("账号建议只能认可或驳回")
-        if item["type"] == "account" and item["status"] == "accepted":
-            return item
         return self.repository.decide(item_key, decision=decision, actor=actor, note=note)
 
     def run_if_due(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -750,49 +609,34 @@ class AIReviewService:
         today = local.date().isoformat()
         event_scan_key = f"last_event_scan_date_v{EVENT_SCAN_VERSION}"
         event_analysis_key = f"event_analysis_version"
-        account_scan_due = self.repository.get_state("last_scan_date") != today
         event_scan_due = self.repository.get_state(event_scan_key) != today
         event_analysis_due = self.repository.get_state(event_analysis_key) != str(EVENT_ANALYSIS_VERSION)
-        analysis_pending = (
-            self.repository.has_pending_analysis("account")
-            or self.repository.has_pending_analysis("event")
-        )
+        analysis_pending = self.repository.has_pending_analysis()
         if self.repository.get_state("last_completed_date") == today and not (
-            account_scan_due or event_scan_due or event_analysis_due or analysis_pending
+            event_scan_due or event_analysis_due or analysis_pending
         ):
             return {"status": "already_ran", "date": today}
         since = current - timedelta(days=REVIEW_LOOKBACK_DAYS)
-        queued = {"account": 0, "event": 0}
+        queued = 0
         if event_analysis_due:
-            queued["event"] += self.repository.requeue_event_analyses()
+            queued += self.repository.requeue_event_analyses()
             self.repository.set_state(event_analysis_key, str(EVENT_ANALYSIS_VERSION))
-        if account_scan_due:
-            queued["account"] = self._queue_accounts(since)
-            self.repository.set_state("last_scan_date", today)
         if event_scan_due:
-            queued["event"] = self._queue_events(since)
+            queued += self._queue_events(since)
             self.repository.set_state(event_scan_key, today)
-        def analyze_kind(kind: str) -> dict[str, int]:
-            if self.repository.get_state(f"budget_blocked_{kind}") == today:
-                return {"analyzed": 0, "deferred": 1}
-            result = self._analyze_pending(kind, today)
-            if result["deferred"]:
-                self.repository.set_state(f"budget_blocked_{kind}", today)
-            return result
-
-        account_result = analyze_kind("account")
-        event_result = analyze_kind("event")
-        account_pending = self.repository.has_pending_analysis("account")
-        event_pending = self.repository.has_pending_analysis("event")
-        account_done = not account_pending or account_result["deferred"] > 0
-        event_done = not event_pending or event_result["deferred"] > 0
-        complete = account_done and event_done
+        if self.repository.get_state("budget_blocked_event") == today:
+            event_result = {"analyzed": 0, "deferred": 1}
+        else:
+            event_result = self._analyze_pending(today)
+            if event_result["deferred"]:
+                self.repository.set_state("budget_blocked_event", today)
+        event_pending = self.repository.has_pending_analysis()
+        complete = not event_pending or event_result["deferred"] > 0
         if complete:
             self.repository.set_state("last_completed_date", today)
         return {
-            "status": "completed" if complete else "in_progress", "date": today, **queued,
-            "analyzed": account_result["analyzed"] + event_result["analyzed"],
-            "deferred": account_result["deferred"] + event_result["deferred"],
+            "status": "completed" if complete else "in_progress", "date": today, "queued": queued,
+            "analyzed": event_result["analyzed"], "deferred": event_result["deferred"],
             "usage": self.repository.usage(today),
         }
 
@@ -905,7 +749,7 @@ class AIReviewService:
                         key=lambda value: _parse_datetime(value) or datetime.min.replace(tzinfo=UTC),
                     )
                     inserted += int(self.repository.insert_candidate(
-                        key=key, item_type="event", category=category,
+                        key=key, category=category,
                         title=f"{source_label} · {title}", evidence=evidence[:20], clues=clues,
                         source_updated_at=latest_published, refresh_existing=True,
                     ))
@@ -974,219 +818,26 @@ class AIReviewService:
         ).fetchone()
         return str(row["status"]) if row else None
 
-    def _vocabulary(self, since: datetime) -> tuple[dict[str, str | None], dict[str, str]]:
-        sentiment: dict[str, str | None] = {}
-        projects: dict[str, str] = {}
-        try:
-            conn = _read_only(self.hottopic_database_path)
-        except sqlite3.Error:
-            return sentiment, projects
-        try:
-            if self._table_exists(conn, "x_agent_sentiment_results"):
-                for row in conn.execute(
-                    "SELECT instrument_key,instrument_name,ticker,scope FROM x_agent_sentiment_results WHERE datetime(posted_at)>=datetime(?)",
-                    (since.isoformat(),),
-                ):
-                    if str(row["scope"]) not in {"Crypto具体标的", "美股具体标的", "大盘"}:
-                        continue
-                    canonical = str(row["instrument_key"] or "").strip()
-                    for alias in (row["ticker"], row["instrument_name"]):
-                        clean = str(alias or "").strip()
-                        if clean and len(clean) >= 2 and canonical:
-                            normalized = clean.casefold()
-                            if normalized not in sentiment:
-                                sentiment[normalized] = canonical
-                            elif sentiment[normalized] is not None and sentiment[normalized] != canonical:
-                                sentiment[normalized] = None
-            if self._table_exists(conn, "x_agent_project_observations"):
-                for row in conn.execute(
-                    "SELECT identity_key,project_name,ticker,chain_name FROM x_agent_project_observations WHERE datetime(last_mentioned_at)>=datetime(?)",
-                    (since.isoformat(),),
-                ):
-                    for alias in (row["project_name"], row["ticker"], row["chain_name"]):
-                        if alias and len(str(alias).strip()) >= 2:
-                            projects.setdefault(str(alias).strip().casefold(), str(row["identity_key"] or alias))
-        finally:
-            conn.close()
-        return sentiment, projects
-
-    def _account_posts(self, since: datetime) -> list[dict[str, Any]]:
-        posts: dict[str, dict[str, Any]] = {}
-        try:
-            hot = _read_only(self.hottopic_database_path)
-        except sqlite3.Error:
-            return []
-        try:
-            if not self._table_exists(hot, "hottopic_accounts"):
-                return []
-            tracked_accounts = {
-                str(row["screen_name_lower"]).casefold()
-                for row in hot.execute(
-                    "SELECT screen_name_lower FROM hottopic_accounts WHERE status='followed' AND ("
-                    "hot_topic_enabled=1 OR market_sentiment_enabled=1 OR project_promotion_enabled=1 OR investment_leads_enabled=1)"
-                )
-            }
-        finally:
-            hot.close()
-        try:
-            conn = _read_only(self.primary_database_path)
-        except sqlite3.Error:
-            conn = None
-        if conn:
-            try:
-                if self._table_exists(conn, "tasks"):
-                    rows = conn.execute(
-                        "SELECT source_item_id,source_url,content,published_at,metadata,raw_payload FROM tasks "
-                        "WHERE source='x' AND datetime(COALESCE(published_at,created_at))>=datetime(?) "
-                        "ORDER BY datetime(COALESCE(published_at,created_at)) DESC LIMIT 20000",
-                        (since.isoformat(),),
-                    ).fetchall()
-                    for row in rows:
-                        meta = _decode(row["metadata"], {})
-                        if not isinstance(meta, dict):
-                            continue
-                        handle = str(meta.get("account_username") or meta.get("author_username") or "").strip().lstrip("@")
-                        text = str(row["content"] or "").strip()
-                        if (handle.casefold() in tracked_accounts and text
-                                and not _is_pure_x_repost(handle, meta, _decode(row["raw_payload"], {}))):
-                            posts[str(row["source_item_id"])] = {
-                                "account": handle, "text": text, "url": str(row["source_url"] or ""),
-                                "postedAt": row["published_at"], "tweetId": str(row["source_item_id"]),
-                            }
-            finally:
-                conn.close()
-        try:
-            hot = _read_only(self.hottopic_database_path)
-        except sqlite3.Error:
-            return []
-        try:
-            if self._table_exists(hot, "hottopic_inbox"):
-                rows = hot.execute(
-                    "SELECT tweet_id,screen_name_lower,payload_json,collected_at FROM hottopic_inbox "
-                    "WHERE datetime(collected_at)>=datetime(?) LIMIT 20000", (since.isoformat(),),
-                ).fetchall()
-                for row in rows:
-                    payload = _decode(row["payload_json"], {})
-                    if not isinstance(payload, dict) or str(payload.get("activity_type") or "").lower() in {"repost", "retweet", "pure_repost"}:
-                        continue
-                    account = str(row["screen_name_lower"] or "").casefold()
-                    if account not in tracked_accounts:
-                        continue
-                    own_text = str(payload.get("text") or "").strip()
-                    if own_text:
-                        posts.setdefault(str(row["tweet_id"]), {
-                            "account": account, "text": own_text,
-                            "url": str(payload.get("url") or ""),
-                            "postedAt": payload.get("created_at_iso") or row["collected_at"], "tweetId": str(row["tweet_id"]),
-                        })
-        finally:
-            hot.close()
-        return list(posts.values())
-
-    def _queue_accounts(self, since: datetime) -> int:
-        assets, project_aliases = self._vocabulary(since)
-        if not assets and not project_aliases:
-            return 0
-        posts = self._account_posts(since)
-        usable_assets = {alias: target for alias, target in assets.items() if target}
-        asset_matcher = _compile_alias_matcher(usable_assets)
-        by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for post in posts:
-            aliases = _find_alias_matches(post["text"], asset_matcher)
-            if aliases and ATTITUDE_RE.search(post["text"]):
-                post["matchedAssets"] = list(dict.fromkeys(usable_assets[alias] for alias in aliases))
-                by_account[post["account"].lower()].append(post)
-        inserted = 0
-        enabled = self._enabled_modules()
-        for account, rows in by_account.items():
-            unique_assets: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                for asset in row["matchedAssets"]:
-                    unique_assets.setdefault(asset.casefold(), row)
-            if len(unique_assets) >= 3 and "market_sentiment" not in enabled.get(account, set()):
-                evidence = self._compact_account_evidence(list(unique_assets.values()))
-                latest = max((str(row.get("postedAt") or "") for row in evidence), default="")
-                inserted += int(self.repository.insert_candidate(
-                    key=f"account:{account}:market_sentiment", item_type="account", category="market_sentiment",
-                    title=f"@{account} · 市场情绪信源候选", evidence=evidence,
-                    clues=_extract_clues([row["text"] for row in evidence]), account_lower=account, source_updated_at=latest,
-                ))
-        crypto_by_account: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        crypto_aliases = {
-            **project_aliases,
-            **{alias: target for alias, target in assets.items() if target and target.startswith("Crypto具体标的:")},
-        }
-        crypto_matcher = _compile_alias_matcher(crypto_aliases)
-        for post in posts:
-            known = _find_alias_matches(post["text"], crypto_matcher)
-            if known or CRYPTO_CONTEXT_RE.search(post["text"]):
-                post["matchedProjects"] = list(dict.fromkeys(crypto_aliases[alias] for alias in known))
-                crypto_by_account[post["account"].lower()].append(post)
-        for account, rows in crypto_by_account.items():
-            unique_posts = {str(row.get("tweetId") or hashlib.sha1(row["text"].encode()).hexdigest()): row for row in rows}
-            logic_rows = [row for row in unique_posts.values() if LOGIC_RE.search(row["text"])]
-            if len(unique_posts) >= 3 and logic_rows and "project_promotion" not in enabled.get(account, set()):
-                selected = sorted(unique_posts.values(), key=lambda row: str(row.get("postedAt") or ""), reverse=True)[:6]
-                evidence = self._compact_account_evidence(selected)
-                latest = max((str(row.get("postedAt") or "") for row in evidence), default="")
-                inserted += int(self.repository.insert_candidate(
-                    key=f"account:{account}:project_promotion", item_type="account", category="project_promotion",
-                    title=f"@{account} · 项目推介信源候选", evidence=evidence,
-                    clues=_extract_clues([row["text"] for row in evidence]), account_lower=account, source_updated_at=latest,
-                ))
-        return inserted
-
-    @staticmethod
-    def _compact_account_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        selected = sorted(rows, key=lambda row: str(row.get("postedAt") or ""), reverse=True)[:6]
-        return [{
-            "source": "X", "url": row.get("url", ""), "postedAt": row.get("postedAt"), "tweetId": row.get("tweetId"),
-            "text": str(row.get("text") or "")[:500], "matchedAssets": row.get("matchedAssets", []),
-            "matchedProjects": row.get("matchedProjects", []),
-        } for row in selected]
-
-    def _enabled_modules(self) -> dict[str, set[str]]:
-        try:
-            conn = _read_only(self.hottopic_database_path)
-        except sqlite3.Error:
-            return {}
-        try:
-            if not self._table_exists(conn, "hottopic_accounts"):
-                return {}
-            result: dict[str, set[str]] = {}
-            for row in conn.execute(
-                "SELECT screen_name_lower,market_sentiment_enabled,project_promotion_enabled FROM hottopic_accounts"
-            ):
-                enabled: set[str] = set()
-                if row["market_sentiment_enabled"]:
-                    enabled.add("market_sentiment")
-                if row["project_promotion_enabled"]:
-                    enabled.add("project_promotion")
-                result[str(row["screen_name_lower"]).lower()] = enabled
-            return result
-        finally:
-            conn.close()
-
-    def _analyze_pending(self, kind: str, usage_date: str) -> dict[str, int]:
-        items = self.repository.pending_analysis(kind)
+    def _analyze_pending(self, usage_date: str) -> dict[str, int]:
+        items = self.repository.pending_analysis()
         analyzed = deferred = 0
         for item in items:
-            examples = self.repository.history_examples(kind, item["category"])
+            examples = self.repository.history_examples(item["category"])
             prompt_material = _json(item["evidence"]) + item["title"] + item["category"] + _json(examples)
             reservation = max(estimate_tokens(prompt_material), len(prompt_material) * 4) + OUTPUT_TOKEN_RESERVE + 2_000
-            if not self.repository.update_usage(usage_date, kind, reserve=reservation):
+            if not self.repository.update_usage(usage_date, reserve=reservation):
                 deferred += 1
                 continue
             try:
                 result = self.analyzer.analyze(item, examples)
                 actual = result["input_tokens"] + result["output_tokens"]
-                self.repository.update_usage(usage_date, kind, settle=(reservation, actual))
+                self.repository.update_usage(usage_date, settle=(reservation, actual))
                 self.repository.complete_analysis(
                     item["id"], recommendation=result["recommendation"], reason=result["reason"], model=result["model"],
                     input_tokens=result["input_tokens"], output_tokens=result["output_tokens"],
                 )
                 analyzed += 1
             except Exception as exc:
-                self.repository.release_usage(usage_date, kind, reservation)
+                self.repository.release_usage(usage_date, reservation)
                 self.repository.fail_analysis(item["id"], f"{type(exc).__name__}: {exc}")
         return {"analyzed": analyzed, "deferred": deferred}

@@ -1143,7 +1143,6 @@ async function consoleApiPost<T>(path: string, body: Record<string, unknown> = {
   return payload.data as T;
 }
 
-export type AIReviewType = 'event' | 'account';
 export type AIReviewStatus = 'pending' | 'accepted' | 'rejected' | 'deferred';
 export type AIReviewRecommendation = 'priority' | 'consider' | 'drop';
 
@@ -1152,11 +1151,7 @@ export type AIReviewEvidence = {
   title?: string;
   url?: string;
   publishedAt?: string | null;
-  postedAt?: string | null;
-  tweetId?: string;
   text?: string;
-  matchedAssets?: string[];
-  matchedProjects?: string[];
   originSources?: AIReviewOriginSource[];
 };
 
@@ -1173,7 +1168,7 @@ export type AIReviewOriginSource = {
 export type AIReviewItem = {
   id: number;
   itemKey: string;
-  type: AIReviewType;
+  type: 'event';
   category: string;
   status: AIReviewStatus;
   analysisStatus: 'queued' | 'completed' | 'failed';
@@ -1183,7 +1178,6 @@ export type AIReviewItem = {
   reason: string;
   evidence: AIReviewEvidence[];
   clues: { xAccounts?: string[]; domains?: string[] };
-  account_lower?: string;
   analysisModel?: string | null;
   inputTokens: number;
   outputTokens: number;
@@ -1200,7 +1194,7 @@ export type AIReviewPage = {
   total: number;
   offset: number;
   limit: number;
-  usage: Record<'account' | 'event', { usedTokens: number; reservedTokens: number; calls: number }>;
+  usage: { event: { usedTokens: number; reservedTokens: number; calls: number } };
   weekly: {
     candidates: number;
     accepted: number;
@@ -1214,7 +1208,6 @@ export type AIReviewPage = {
 };
 
 export async function listAIReviewItems(filters: {
-  type?: 'all' | AIReviewType;
   status?: 'all' | AIReviewStatus;
   category?: string;
   offset?: number;

@@ -2,23 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from packages.ai_review import (
-    ATTITUDE_RE,
-    DAILY_TOKEN_LIMIT,
-    AIReviewRepository,
-    AIReviewService,
-    _compile_alias_matcher,
-    _event_source_key,
-    _find_alias_matches,
-    _match_alias,
-)
-from packages.hottopic.service import HotTopicService
+from packages.ai_review import DAILY_TOKEN_LIMIT, AIReviewRepository, AIReviewService, _event_source_key
 
 
 class FakeAnalyzer:
@@ -116,21 +105,6 @@ def _event_candidates(service, event_id, category=None):
     ]
 
 
-def test_ticker_matching_requires_complete_word_boundary():
-    assert _match_alias("BTC is bullish", "BTC")
-    assert _match_alias("$BTC is bullish", "btc")
-    assert not _match_alias("BTCXYZ is bullish", "BTC")
-    assert not _match_alias("ABTC is bullish", "BTC")
-    assert _match_alias("比特币看多", "比特币")
-    assert _match_alias("Bitcoin is bullish", "bitcoin")
-    assert ATTITUDE_RE.search("Bitcoin is bullish")
-    assert not ATTITUDE_RE.search("a longer story about a shortage")
-    matcher = _compile_alias_matcher({"btc": "bitcoin", "bitcoin": "bitcoin", "比特币": "bitcoin"})
-    assert _find_alias_matches("$BTC, Bitcoin and 比特币; BTCXYZ", matcher) == {"btc", "bitcoin", "比特币"}
-    assert _find_alias_matches("bitcoin", _compile_alias_matcher({"coin": "coin", "bitcoin": "bitcoin"})) == {"bitcoin"}
-    assert _find_alias_matches("STRASSE", _compile_alias_matcher({"straße": "street"})) == {"strasse"}
-
-
 def test_event_queue_includes_competitor_scenarios_and_extracts_original_sources():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -172,7 +146,7 @@ def test_event_queue_includes_competitor_scenarios_and_extracts_original_sources
         )
         try:
             service.repository.insert_candidate(
-                key="event:event-3:competitor_first_ai", item_type="event", category="competitor_first_ai",
+                key="event:event-3:competitor_first_ai", category="competitor_first_ai",
                 title="Legacy event candidate", evidence=[],
             )
             assert service._queue_events(now - timedelta(days=7)) == 6
@@ -195,7 +169,6 @@ def test_event_queue_includes_competitor_scenarios_and_extracts_original_sources
             assert service.get_item("event:event-3:competitor_first_ai") is None
         finally:
             service.close()
-
 
 def test_event_queue_marks_reviewed_publication_and_ignores_parallel_first_publish():
     with TemporaryDirectory() as tmp:
@@ -313,111 +286,15 @@ def test_event_queue_requires_linked_original_sources_and_skips_unlinked_mention
             service.close()
 
 
-def test_account_scan_uses_distinct_assets_and_skips_reposts_and_quote_text():
-    with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        main = _create_main_database(root / "main.sqlite")
-        hot = _create_hot_database(root / "hot.sqlite")
-        now = datetime.now(UTC)
-        for key, name, ticker in (
-            ("Crypto具体标的:bitcoin", "Bitcoin", "BTC"),
-            ("Crypto具体标的:ethereum", "Ethereum", "ETH"),
-            ("Crypto具体标的:solana", "Solana", "SOL"),
-        ):
-            hot.execute(
-                "INSERT INTO x_agent_sentiment_results VALUES(?,?,?,?,?)",
-                (key, name, ticker, "Crypto具体标的", now.isoformat()),
-            )
-        posts = [
-            ("alpha", "tweet-1", "BTC and Bitcoin bullish because the chain grows"),
-            ("alpha", "tweet-2", "ETH bullish on protocol adoption"),
-            ("alpha", "tweet-3", "SOL bullish and DeFi users grow"),
-            ("two_only", "tweet-4", "BTC Bitcoin bullish"),
-            ("two_only", "tweet-5", "ETH bullish"),
-            ("retweeted", "tweet-6", "BTC ETH SOL bullish because price rises"),
-            ("market_on", "tweet-7", "BTC bullish because users grow"),
-            ("market_on", "tweet-8", "ETH bullish because adoption grows"),
-            ("market_on", "tweet-9", "SOL bullish because usage grows"),
-        ]
-        for index, (account, tweet_id, content) in enumerate(posts):
-            meta = {"account_username": account, "author_username": account}
-            raw = {}
-            if account == "retweeted":
-                raw = {"raw_payload": {"timeline": {
-                    "reposted_by": {"screen_name": "retweeted"},
-                    "author": {"screen_name": "original_author"},
-                }}}
-            main.execute(
-                "INSERT INTO tasks(id,source,source_item_id,source_url,title,content,published_at,created_at,metadata,raw_payload,status) "
-                "VALUES(?, 'x', ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
-                (index + 1, tweet_id, f"https://x.com/{account}/status/{tweet_id}", tweet_id, content,
-                 now.isoformat(), now.isoformat(), json.dumps(meta), json.dumps(raw)),
-            )
-        hot.execute(
-            "INSERT INTO hottopic_inbox VALUES(?,?,?,?)",
-            ("quoted-tweet", "quoted", json.dumps({
-                "activity_type": "quote", "text": "I disagree with this take",
-                "quote_text": "BTC ETH SOL bullish because blockchain is great",
-                "url": "https://x.com/quoted/status/quoted-tweet", "created_at_iso": now.isoformat(),
-            }), now.isoformat()),
-        )
-        for account in ("alpha", "two_only", "retweeted", "quoted"):
-            hot.execute(
-                "INSERT INTO hottopic_accounts(screen_name_lower,hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled) "
-                "VALUES(?,1,0,0)", (account,),
-            )
-        hot.execute(
-            "INSERT INTO hottopic_accounts(screen_name_lower,market_sentiment_enabled,project_promotion_enabled) "
-            "VALUES('market_on',1,1)"
-        )
-        main.commit()
-        hot.commit()
-        main.close()
-        hot.close()
-        service = AIReviewService(
-            database_path=root / "review.sqlite",
-            primary_database_path=root / "main.sqlite",
-            hottopic_database_path=root / "hot.sqlite",
-            analyzer=FakeAnalyzer(),
-        )
-        try:
-            assert _match_alias("BTCXYZ", "BTC") is False
-            assert service._queue_accounts(now - timedelta(days=7)) == 2
-            items = [
-                item for key in ("account:alpha:market_sentiment", "account:alpha:project_promotion")
-                if (item := service.get_item(key))
-            ]
-            categories = {(item["account_lower"], item["category"]) for item in items}
-            assert ("alpha", "market_sentiment") in categories
-            assert ("alpha", "project_promotion") in categories
-            assert not any(item["account_lower"] in {"two_only", "retweeted", "quoted", "market_on"} for item in items)
-            assert service._queue_accounts(now - timedelta(days=7)) == 0
-            outsider = {
-                "account_username": "not_agent",
-                "author_username": "not_agent",
-            }
-            main = sqlite3.connect(root / "main.sqlite")
-            main.execute(
-                "INSERT INTO tasks(id,source,source_item_id,source_url,title,content,published_at,created_at,metadata,raw_payload,status) "
-                "VALUES(99,'x','outsider','https://x.com/not_agent/status/outsider','outsider','BTC ETH SOL bullish because users grow',?,?,?,?, 'pending')",
-                (now.isoformat(), now.isoformat(), json.dumps(outsider), "{}"),
-            )
-            main.commit()
-            main.close()
-            assert service._queue_accounts(now - timedelta(days=7)) == 0
-        finally:
-            service.close()
-
-
 def test_daily_budget_reservation_and_usage_settlement():
     with TemporaryDirectory() as tmp:
         repository = AIReviewRepository(Path(tmp) / "review.sqlite")
         try:
             day = "2026-11-02"
-            assert repository.update_usage(day, "account", reserve=DAILY_TOKEN_LIMIT - 100)
-            assert not repository.update_usage(day, "account", reserve=101)
-            repository.update_usage(day, "account", settle=(DAILY_TOKEN_LIMIT - 100, 20))
-            usage = repository.usage(day)["account"]
+            assert repository.update_usage(day, reserve=DAILY_TOKEN_LIMIT - 100)
+            assert not repository.update_usage(day, reserve=101)
+            repository.update_usage(day, settle=(DAILY_TOKEN_LIMIT - 100, 20))
+            usage = repository.usage(day)["event"]
             assert usage["usedTokens"] == 20
             assert usage["reservedTokens"] == 0
         finally:
@@ -431,10 +308,10 @@ def test_history_examples_are_limited_to_matching_review_category():
             for index, category in enumerate(("competitor_first_ai", "competitor_first_ai", "multiple_competitors_no_odaily")):
                 key = f"event:history-{index}:{category}"
                 repository.insert_candidate(
-                    key=key, item_type="event", category=category, title=category, evidence=[],
+                    key=key, category=category, title=category, evidence=[],
                 )
                 repository.decide(key, decision="accepted", actor="editor@example.com", note=category)
-            examples = repository.history_examples("event", "competitor_first_ai")
+            examples = repository.history_examples("competitor_first_ai")
             assert len(examples) == 2
             assert all(example["category"] == "competitor_first_ai" for example in examples)
             assert all(repository.get_item(f"event:history-{index}:{category}") for index, category in enumerate(("competitor_first_ai", "competitor_first_ai", "multiple_competitors_no_odaily")))
@@ -448,7 +325,7 @@ def test_queue_shows_only_completed_priority_recommendations():
         try:
             for key in ("visible", "consider", "drop", "queued"):
                 repository.insert_candidate(
-                    key=f"event:{key}:multiple_competitors_no_odaily", item_type="event", category="multiple_competitors_no_odaily",
+                    key=f"event:{key}:multiple_competitors_no_odaily", category="multiple_competitors_no_odaily",
                     title=key, evidence=[],
                 )
             visible = repository.db.execute("SELECT id FROM ai_review_items WHERE item_key='event:visible:multiple_competitors_no_odaily'").fetchone()[0]
@@ -457,7 +334,7 @@ def test_queue_shows_only_completed_priority_recommendations():
             repository.complete_analysis(visible, recommendation="priority", reason="可持续追踪", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             repository.complete_analysis(consider, recommendation="consider", reason="证据有限", model="gpt-6-luna", input_tokens=10, output_tokens=2)
             repository.complete_analysis(dropped, recommendation="drop", reason="不跟进", model="gpt-6-luna", input_tokens=10, output_tokens=2)
-            page = repository.list_items(item_type="event")
+            page = repository.list_items()
             assert page["total"] == 1
             assert [item["title"] for item in page["items"]] == ["visible"]
         finally:
@@ -478,8 +355,8 @@ def test_daily_run_uses_three_day_window_and_continues_beyond_one_batch():
         try:
             for index in range(51):
                 service.repository.insert_candidate(
-                    key=f"account:batch{index}:market_sentiment", item_type="account", category="market_sentiment",
-                    title=f"@batch{index}", evidence=[], account_lower=f"batch{index}",
+                    key=f"event:batch{index}:multiple_competitors_no_odaily",
+                    category="multiple_competitors_no_odaily", title=f"batch{index}", evidence=[],
                 )
             before_six = datetime(2026, 11, 2, 21, 59, tzinfo=UTC)
             at_six = datetime(2026, 11, 2, 22, 0, tzinfo=UTC)
@@ -487,76 +364,9 @@ def test_daily_run_uses_three_day_window_and_continues_beyond_one_batch():
             first = service.run_if_due(now=at_six)
             assert first["status"] == "in_progress"
             assert first["analyzed"] == 50
-            assert service.repository.get_state("last_scan_date") == "2026-11-03"
             second = service.run_if_due(now=at_six + timedelta(seconds=2))
             assert second["status"] == "completed"
             assert second["analyzed"] == 1
             assert service.run_if_due(now=at_six + timedelta(hours=1))["status"] == "already_ran"
         finally:
             service.close()
-
-
-def test_account_recommendation_can_be_accepted_without_changing_source_configuration():
-    with TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        main = _create_main_database(root / "main.sqlite")
-        hot = _create_hot_database(root / "hot.sqlite")
-        main.close()
-        hot.close()
-        service = AIReviewService(
-            database_path=root / "review.sqlite",
-            primary_database_path=root / "main.sqlite",
-            hottopic_database_path=root / "hot.sqlite",
-            analyzer=FakeAnalyzer(),
-        )
-        try:
-            service.repository.insert_candidate(
-                key="account:test:market_sentiment", item_type="account", category="market_sentiment",
-                title="@test · market", evidence=[], account_lower="test",
-            )
-            accepted = service.decide("account:test:market_sentiment", decision="accepted", actor="editor@example.com")
-            assert accepted["status"] == "accepted"
-            assert accepted["humanDecision"] == "accepted"
-            assert service.get_item("account:test:market_sentiment")["account_lower"] == "test"
-        finally:
-            service.close()
-
-
-def test_new_hot_topic_review_account_only_opens_selected_modules():
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    connection.executescript(
-        """
-        CREATE TABLE hottopic_accounts(screen_name TEXT,screen_name_lower TEXT PRIMARY KEY,display_name TEXT,
-          status TEXT,next_due_at TEXT,hot_topic_enabled INTEGER,market_sentiment_enabled INTEGER,
-          project_promotion_enabled INTEGER,investment_leads_enabled INTEGER,investment_leads_enabled_at TEXT,
-          created_at TEXT,updated_at TEXT,cumulative_content_count INTEGER DEFAULT 0,cumulative_hot_topic_count INTEGER DEFAULT 0,
-          last_polled_at TEXT,last_success_at TEXT,last_error TEXT,last_x_agent_analyzed_at TEXT,last_x_agent_error TEXT);
-        """
-    )
-    service = HotTopicService.__new__(HotTopicService)
-    service.db = connection
-    service.lock = threading.RLock()
-    service._update_x_agent_account_state = lambda *_args, **_kwargs: None
-    service._update_x_agent_account_state = lambda *_args, **_kwargs: None
-    now = datetime.now(UTC).isoformat()
-    connection.execute(
-        "INSERT INTO hottopic_accounts(screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
-        "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,investment_leads_enabled_at,created_at,updated_at) "
-        "VALUES('existing','existing','Existing','followed',?,1,0,0,1,?,?,?)",
-        (now, now, now, now),
-    )
-    result = service.ensure_ai_review_account("candidate", market_sentiment=True, project_promotion=False)
-    row = connection.execute(
-        "SELECT hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled "
-        "FROM hottopic_accounts WHERE screen_name_lower='candidate'"
-    ).fetchone()
-    assert result["marketSentimentEnabled"] is True
-    assert tuple(row) == (0, 1, 0, 0)
-    service.ensure_ai_review_account("existing", market_sentiment=True, project_promotion=False)
-    existing = connection.execute(
-        "SELECT hot_topic_enabled,market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled "
-        "FROM hottopic_accounts WHERE screen_name_lower='existing'"
-    ).fetchone()
-    assert tuple(existing) == (1, 1, 0, 1)
-    connection.close()

@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, CircleX, Pause, RefreshCcw, Search, UserRoundSearch } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, CircleX, Pause, RefreshCcw, Search } from 'lucide-react';
 import {
   decideAIReviewItem,
   listAIReviewItems,
   type AIReviewItem,
   type AIReviewPage,
   type AIReviewStatus,
-  type AIReviewType,
 } from './xCaptureStore';
 
 const STATUS_LABELS: Record<AIReviewStatus, string> = {
@@ -18,18 +17,11 @@ const STATUS_LABELS: Record<AIReviewStatus, string> = {
 const CATEGORY_LABELS: Record<string, string> = {
   competitor_first_ai: '竞品先发 · Odaily AI 发布',
   multiple_competitors_no_odaily: '多家竞品发布 · Odaily 未发',
-  market_sentiment: '市场情绪账号',
-  project_promotion: '项目推介账号',
-};
-const CATEGORY_OPTIONS: Record<AIReviewType, string[]> = {
-  event: ['competitor_first_ai', 'multiple_competitors_no_odaily'],
-  account: ['market_sentiment', 'project_promotion'],
 };
 
 export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [page, setPage] = useState<AIReviewPage | null>(null);
   const [selected, setSelected] = useState<AIReviewItem | null>(null);
-  const [type, setType] = useState<'all' | AIReviewType>('all');
   const [category, setCategory] = useState('all');
   const [status, setStatus] = useState<'all' | AIReviewStatus>('pending');
   const [offset, setOffset] = useState(0);
@@ -42,7 +34,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
     setLoading(true);
     setError('');
     try {
-      const data = await listAIReviewItems({ type, status, category, offset: nextOffset, limit: 30 });
+      const data = await listAIReviewItems({ status, category, offset: nextOffset, limit: 30 });
       setPage(data);
       setSelected((current) => data.items.find((item) => item.itemKey === current?.itemKey) || data.items[0] || null);
       setOffset(nextOffset);
@@ -55,7 +47,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
 
   useEffect(() => {
     void loadPage(0);
-  }, [type, category, status, refreshToken]);
+  }, [category, status, refreshToken]);
 
   async function decide(decision: 'accepted' | 'rejected' | 'deferred') {
     if (!selected) return;
@@ -84,7 +76,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
     tracked?: boolean | null;
     discoveredBy: Array<{ outlet: string; articleUrl?: string | null }>;
   }>();
-  if (selected?.type === 'event') {
+  if (selected) {
     selected.evidence.forEach((evidence) => {
       evidence.originSources?.forEach((origin) => {
         const key = origin.identity || (origin.sourceAccount ? 'x:' + origin.sourceAccount : 'domain:' + (origin.sourceDomain || origin.url));
@@ -104,16 +96,11 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
   return (
     <section className="aiReviewPanel">
       <div className="aiReviewToolbar">
-        <div className="aiReviewFilters" role="group" aria-label="审阅项目类型">
-          {([['all', '全部'], ['event', '事件'], ['account', '账号']] as const).map(([value, label]) => (
-            <button className={type === value ? 'active' : ''} key={value} type="button" onClick={() => { setType(value); setCategory('all'); }}>{label}</button>
-          ))}
-        </div>
         <label className="aiReviewSelect aiReviewCategoryFilter">
           <span>类别</span>
-          <select value={category} disabled={type === 'all'} onChange={(event) => setCategory(event.target.value)}>
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
             <option value="all">全部类别</option>
-            {type !== 'all' && CATEGORY_OPTIONS[type].map((value) => (
+            {(['competitor_first_ai', 'multiple_competitors_no_odaily']).map((value) => (
               <option key={value} value={value}>{CATEGORY_LABELS[value]}</option>
             ))}
           </select>
@@ -129,7 +116,6 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
       </div>
 
       <div className="aiReviewUsage">
-        <span>账号挖掘 {formatTokens(page?.usage.account.usedTokens || 0)} / 5,000 万</span>
         <span>事件研究 {formatTokens(page?.usage.event.usedTokens || 0)} / 5,000 万</span>
         <span>当前筛选 {page?.total ?? 0} 条</span>
         {page?.weekly.candidates ? (
@@ -158,7 +144,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
                 onClick={() => setSelected(item)}
               >
                 <span className={'aiReviewTypeIcon ' + item.type} aria-hidden="true">
-                  {item.type === 'event' ? <Search size={15} /> : <UserRoundSearch size={15} />}
+                  <Search size={15} />
                 </span>
                 <span className="aiReviewRowText">
                   <strong>{item.title}</strong>
@@ -198,16 +184,7 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
                 <span>{formatDate(selected.sourceUpdatedAt || selected.createdAt)}</span>
               </div>
 
-              {selected.type === 'account' && (selected.clues.xAccounts?.length || selected.clues.domains?.length) ? (
-                <section className="aiReviewClues">
-                  <h3>来源线索</h3>
-                  {selected.clues.xAccounts?.length ? <p><strong>X 账号</strong>{selected.clues.xAccounts.map((handle) => <a key={handle} href={'https://x.com/' + handle} target="_blank" rel="noreferrer">@{handle}</a>)}</p> : null}
-                  {selected.clues.domains?.length ? <p><strong>网站域名</strong>{selected.clues.domains.map((domain) => <span key={domain}>{domain} <small>仅线索</small></span>)}</p> : null}
-                </section>
-              ) : null}
-
-              {selected.type === 'event' ? (
-                <>
+              <>
                   <section className="aiReviewOriginSources">
                     <div className="aiReviewOriginSourcesHead">
                       <h3>原始信源</h3>
@@ -257,38 +234,13 @@ export default function AIReviewPanel({ refreshToken = 0 }: { refreshToken?: num
                       ))}
                     </section>
                   </details>
-                </>
-              ) : (
-                <section className="aiReviewEvidenceList">
-                  <h3>证据原文</h3>
-                  {selected.evidence.map((evidence, index) => (
-                    <article key={(evidence.tweetId || evidence.url || evidence.source || 'evidence') + '-' + index} className="aiReviewEvidence">
-                      <div className="aiReviewEvidenceMeta">
-                        <strong>{evidence.source || 'X'}</strong>
-                        <time>{formatDate(evidence.postedAt || evidence.publishedAt)}</time>
-                        {evidence.url && <a href={evidence.url} target="_blank" rel="noreferrer">打开原文</a>}
-                      </div>
-                      {evidence.title && <h4>{evidence.title}</h4>}
-                      <p>{evidence.text || '无正文'}</p>
-                      {(evidence.matchedAssets?.length || evidence.matchedProjects?.length) ? (
-                        <small>命中：{[...(evidence.matchedAssets || []), ...(evidence.matchedProjects || [])].join('、')}</small>
-                      ) : null}
-                    </article>
-                  ))}
-                </section>
-              )}
+              </>
 
-              {selected.type === 'event' && selected.status === 'pending' && (
+              {selected.status === 'pending' && (
                 <div className="aiReviewActions">
                   <button type="button" disabled={saving} onClick={() => void decide('accepted')}><Check size={15} /> 认可</button>
                   <button type="button" disabled={saving} onClick={() => void decide('deferred')}><Pause size={15} /> 暂缓</button>
                   <button type="button" disabled={saving} onClick={() => void decide('rejected')}><CircleX size={15} /> 驳回</button>
-                </div>
-              )}
-              {selected.type === 'account' && selected.status === 'pending' && (
-                <div className="aiReviewActions">
-                  <button type="button" disabled={saving} onClick={() => void decide('accepted')}><Check size={15} /> 认可</button>
-                  <button type="button" disabled={saving} onClick={() => void decide('rejected')}><CircleX size={15} /> 驳回账号建议</button>
                 </div>
               )}
             </>

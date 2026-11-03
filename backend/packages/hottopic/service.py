@@ -666,41 +666,6 @@ class HotTopicService:
         return self._x_agent_account_payload(self._account(lower))
 
     @_serialized
-    def ensure_ai_review_account(
-        self,
-        handle: str,
-        *,
-        market_sentiment: bool,
-        project_promotion: bool,
-    ) -> dict[str, Any]:
-        """Enable selected review-approved modules without changing other subscriptions."""
-        normalized = normalize_handle(handle)
-        lower, now = normalized.lower(), iso(utc_now())
-        existing = self.db.execute(
-            "SELECT 1 FROM hottopic_accounts WHERE screen_name_lower=?", (lower,)
-        ).fetchone()
-        if existing is None:
-            with self.db:
-                self.db.execute(
-                    "INSERT INTO hottopic_accounts("
-                    "screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
-                    "market_sentiment_enabled,project_promotion_enabled,investment_leads_enabled,"
-                    "investment_leads_enabled_at,created_at,updated_at"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (normalized, lower, "", "followed", now, 0, int(market_sentiment), int(project_promotion),
-                     0, None, now, now),
-                )
-        else:
-            patch: dict[str, bool] = {}
-            if market_sentiment:
-                patch["market_sentiment_enabled"] = True
-            if project_promotion:
-                patch["project_promotion_enabled"] = True
-            if patch:
-                self.set_x_agent_subscriptions([normalized], patch)
-        return self._x_agent_account_payload(self._account(lower))
-
-    @_serialized
     def list_x_agent_accounts(
         self,
         *,
