@@ -2947,7 +2947,7 @@ h2 {
 
 .memeSummaryBand {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border: 1px solid #e1e5e9;
   border-radius: 8px;
   background: #ffffff;
@@ -3047,6 +3047,67 @@ h2 {
   color: #394150;
   font-size: 13px;
   text-decoration: none;
+}
+
+.memeQuoteAudit {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf0f3;
+}
+
+.memeQuoteAuditHeader,
+.memeQuoteAuditValues {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.memeQuoteAuditHeader {
+  color: #59646d;
+  font-size: 12px;
+}
+
+.memeQuoteAuditHeader strong {
+  color: #35414a;
+  font-size: 13px;
+}
+
+.memeQuoteAuditHeader time {
+  margin-left: auto;
+  color: #737f87;
+}
+
+.memeQuoteAudit.divergent .memeQuoteAuditHeader > span {
+  color: #a23b32;
+  font-weight: 650;
+}
+
+.memeQuoteAudit.incomplete .memeQuoteAuditHeader > span {
+  color: #8b641d;
+}
+
+.memeQuoteAuditValues {
+  align-items: stretch;
+}
+
+.memeQuoteAuditValues > div {
+  display: grid;
+  flex: 1 1 0;
+  gap: 3px;
+  min-width: 0;
+}
+
+.memeQuoteAuditValues span,
+.memeQuoteAuditValues small,
+.memeQuoteAuditValues time {
+  color: #707b83;
+  font-size: 11px;
+}
+
+.memeQuoteAuditValues strong {
+  color: #26343c;
+  font-size: 13px;
 }
 
 .memeAddressMeta a {
@@ -5850,6 +5911,7 @@ textarea:focus {
   .gateMarketSymbolGrid,
   .memeSummaryBand,
   .memeMetaGrid,
+  .memeQuoteAuditValues,
   .memeAuditDiagnosticGrid,
   .memeAuditDecisionGrid,
   .memeAuditCounts,
@@ -5860,6 +5922,19 @@ textarea:focus {
   .workflowRoute,
   .workflowSideNoteGrid {
     grid-template-columns: 1fr;
+  }
+
+  .memeQuoteAuditHeader {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .memeQuoteAuditValues {
+    flex-direction: column;
+  }
+
+  .memeQuoteAuditHeader time {
+    margin-left: 0;
   }
 
   .workflowHero {

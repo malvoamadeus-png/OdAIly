@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,11 @@ from packages.common.paths import get_paths
 def load_meme_scanner_database_path() -> Path:
     default_path = get_paths().processed_dir / "meme_scanner.sqlite3"
     return Path(os.getenv("MEME_SCANNER_DB_PATH") or default_path).expanduser().resolve()
+
+
+def load_meme_quote_audit_database_path() -> Path:
+    default_path = get_paths().processed_dir / "meme_quote_audit.sqlite3"
+    return Path(os.getenv("MEME_QUOTE_AUDIT_DB_PATH") or default_path).expanduser().resolve()
 
 
 def _json_object(value: Any) -> dict[str, Any]:
@@ -109,6 +114,120 @@ def _current_market_observations(connection: sqlite3.Connection) -> dict[tuple[s
     }
 
 
+def _quote_audit_data(addresses: set[str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    path = load_meme_quote_audit_database_path()
+    empty_summary = {
+        "available": False,
+        "samples_24h": 0,
+        "divergent_24h": 0,
+        "pool_mismatches_24h": 0,
+        "missing_values_24h": 0,
+        "provider_calls_24h": {},
+        "provider_failures_24h": {},
+        "backlog": None,
+    }
+    if not path.exists():
+        return {}, empty_summary
+    try:
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=2)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=2000")
+        try:
+            samples = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='quote_samples'"
+            ).fetchone()
+            if samples is None:
+                return {}, empty_summary
+            latest: dict[str, dict[str, Any]] = {}
+            if addresses:
+                normalized = {address.lower() for address in addresses}
+                placeholders = ",".join("?" for _ in normalized)
+                rows = connection.execute(
+                    f"""SELECT * FROM quote_samples WHERE lower(address) IN ({placeholders})
+                        ORDER BY sampled_at DESC,id DESC""",
+                    tuple(normalized),
+                ).fetchall()
+                for row in rows:
+                    record = dict(row)
+                    latest.setdefault(str(row["address"]).lower(), {
+                        "sampled_at": record["sampled_at"],
+                        "priority_reason": record["priority_reason"],
+                        "comparison_status": record["comparison_status"],
+                        "divergence_ratio": _number(record["divergence_ratio"]),
+                        "supply_status": record["supply_status"],
+                        "dexscreener": {
+                            "sampled_at": record.get("dex_sampled_at"),
+                            "status": record["dex_status"],
+                            "price": _number(record["dex_price"]),
+                            "market_cap": _number(record["dex_market_cap"]),
+                            "pair_address": record["dex_pair_address"],
+                            "liquidity": _number(record["dex_liquidity"]),
+                        },
+                        "geckoterminal": {
+                            "sampled_at": record.get("gecko_sampled_at"),
+                            "status": record["gecko_status"],
+                            "price": _number(record["gecko_price"]),
+                            "market_cap": _number(record["gecko_market_cap"]),
+                            "pool_address": record["gecko_pool_address"],
+                            "pool_reserve": _number(record["gecko_pool_reserve"]),
+                            "pool_matched": bool(record["gecko_pool_matched"]),
+                            "volume_m5": _number(record["gecko_volume_m5"]),
+                        },
+                        "jupiter": {
+                            "sampled_at": record.get("jupiter_sampled_at"),
+                            "status": record["jupiter_status"],
+                            "price": _number(record["jupiter_price"]),
+                            "market_cap": _number(record["jupiter_market_cap"]),
+                            "liquidity": _number(record["jupiter_liquidity"]),
+                            "block_id": record["jupiter_block_id"],
+                        },
+                    })
+
+            since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+            counts = connection.execute(
+                """SELECT COUNT(*) total,
+                   SUM(CASE WHEN comparison_status='divergent' THEN 1 ELSE 0 END) divergent,
+                   SUM(CASE WHEN gecko_pool_matched=0 AND gecko_status='success' THEN 1 ELSE 0 END) pool_mismatch,
+                   SUM(CASE WHEN dex_status IN ('missing','incomplete') THEN 1 ELSE 0 END)
+                   + SUM(CASE WHEN gecko_status IN ('missing','incomplete') THEN 1 ELSE 0 END)
+                   + SUM(CASE WHEN jupiter_status IN ('missing','incomplete') THEN 1 ELSE 0 END) missing_values
+                   FROM quote_samples WHERE sampled_at>=?""",
+                (since,),
+            ).fetchone()
+            calls: dict[str, int] = {}
+            failures: dict[str, int] = {}
+            if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_calls'"
+            ).fetchone():
+                for row in connection.execute(
+                    """SELECT provider,COUNT(*) count,
+                       SUM(CASE WHEN outcome!='success' THEN 1 ELSE 0 END) failures
+                       FROM provider_calls WHERE called_at>=? GROUP BY provider""",
+                    (since,),
+                ):
+                    calls[str(row["provider"])] = int(row["count"])
+                    failures[str(row["provider"])] = int(row["failures"] or 0)
+            backlog_row = connection.execute(
+                "SELECT value FROM audit_meta WHERE key='backlog'"
+            ).fetchone() if connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_meta'"
+            ).fetchone() else None
+            return latest, {
+                "available": True,
+                "samples_24h": int(counts["total"] or 0),
+                "divergent_24h": int(counts["divergent"] or 0),
+                "pool_mismatches_24h": int(counts["pool_mismatch"] or 0),
+                "missing_values_24h": int(counts["missing_values"] or 0),
+                "provider_calls_24h": calls,
+                "provider_failures_24h": failures,
+                "backlog": int(backlog_row["value"]) if backlog_row else 0,
+            }
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        return {}, empty_summary
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -157,6 +276,7 @@ def _row_item(
         except (IndexError, TypeError, ValueError):
             candidate_id = 0
         candidate = candidates.get(candidate_id, {})
+    quote_audit = (market_observations or {}).get(("quote_audit", str(row["address"]).strip().lower()))
     return {
         "id": int(row["id"]),
         "address": str(row["address"]),
@@ -167,6 +287,7 @@ def _row_item(
         "market_cap": current_market["market_cap"] if current_market else _number(payload.get("usd_market_cap") or payload.get("market_cap")),
         "volume_24h": current_market["volume_24h"] if current_market else _number(payload.get("volume_24h")),
         "market_observed_at": current_market["observed_at"] if current_market else None,
+        "quote_audit": quote_audit,
         "trigger_kind": str(row["trigger_kind"]),
         "trigger_level": _number(row["trigger_level"]),
         "mention_count": candidate.get("mention_count"),
@@ -231,6 +352,10 @@ class MemeDashboardStore:
                     """
                 ).fetchall()
                 market_observations = _current_market_observations(connection)
+                quote_audit, quote_audit_summary = _quote_audit_data(
+                    {str(row["address"]) for row in jobs if _chain(_json_object(row["payload_json"]).get("chain")) == "solana"}
+                )
+                market_observations.update({("quote_audit", address): data for address, data in quote_audit.items()})
         except (OSError, sqlite3.Error) as exc:
             return {
                 "available": False,
@@ -247,6 +372,7 @@ class MemeDashboardStore:
             "available": True,
             "generated_at": generated_at,
             "items": items,
+            "quote_audit_summary": quote_audit_summary,
             "last_error": None,
         }
 

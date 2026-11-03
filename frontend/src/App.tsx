@@ -3110,6 +3110,13 @@ function fmtMemeMarketCap(value: number | null): string {
   return `${(value / 10_000).toFixed(value >= 1_000_000 ? 0 : 1)} 万美元`;
 }
 
+function quoteAuditProviderStatus(status: string): string {
+  if (status === 'success') return '有报价';
+  if (status === 'incomplete') return '字段不完整';
+  if (status === 'failed') return '请求失败';
+  return '无报价';
+}
+
 function fmtMemeDuration(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-';
   const seconds = value / 1000;
@@ -3499,6 +3506,7 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
   const items = dashboard?.items || [];
   const generatedCount = items.filter((item) => item.title || item.content).length;
   const communityCount = items.filter((item) => item.trigger_kind === 'tg_burst').length;
+  const quoteSummary = dashboard?.quote_audit_summary;
 
   return (
     <section className="memeLayout">
@@ -3514,6 +3522,29 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
         <div>
           <span>社群热议触发</span>
           <strong>{communityCount}</strong>
+        </div>
+        <div>
+          <span>三源抽查 / 24 小时</span>
+          <strong>{quoteSummary?.available ? quoteSummary.samples_24h : '-'}</strong>
+        </div>
+        <div>
+          <span>报价分歧 / 待处理</span>
+          <strong>{quoteSummary?.available
+            ? String(quoteSummary.divergent_24h) + ' / ' + String(quoteSummary.backlog ?? 0)
+            : '-'}</strong>
+        </div>
+        <div>
+          <span>池不匹配 / 缺报价 / API失败</span>
+          <strong>{quoteSummary?.available
+            ? String(quoteSummary.pool_mismatches_24h) + ' / ' + String(quoteSummary.missing_values_24h) + ' / ' +
+              String(Object.values(quoteSummary.provider_failures_24h).reduce((sum, value) => sum + value, 0))
+            : '-'}</strong>
+        </div>
+        <div>
+          <span>上游请求 / 24 小时</span>
+          <strong>{quoteSummary?.available
+            ? String(Object.values(quoteSummary.provider_calls_24h).reduce((sum, value) => sum + value, 0))
+            : '-'}</strong>
         </div>
       </div>
 
@@ -3564,6 +3595,45 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
                   </strong>
                 </div>
               </div>
+
+              {item.chain === 'solana' && item.quote_audit && (
+                <div className={'memeQuoteAudit ' + item.quote_audit.comparison_status}>
+                  <div className="memeQuoteAuditHeader">
+                    <strong>三源影子抽查</strong>
+                    <span>
+                      {item.quote_audit.comparison_status === 'divergent'
+                        ? '报价分歧 ' + (item.quote_audit.divergence_ratio?.toFixed(1) ?? '-') + ' 倍'
+                        : item.quote_audit.comparison_status === 'aligned' ? '报价接近' : '数据不完整'}
+                      {Date.now() - Date.parse(item.quote_audit.sampled_at) > 6 * 60 * 60 * 1000 ? ' · 数据过期' : ''}
+                    </span>
+                    <time>{fmtTime(item.quote_audit.sampled_at)}</time>
+                  </div>
+                  <div className="memeQuoteAuditValues">
+                    <div>
+                      <span>Dexscreener</span>
+                      <strong>{fmtMemeMarketCap(item.quote_audit.dexscreener.market_cap)}</strong>
+                      <small>{quoteAuditProviderStatus(item.quote_audit.dexscreener.status)} · {item.quote_audit.dexscreener.status === 'success' ? 'MC / FDV' : ''}</small>
+                      <time>{item.quote_audit.dexscreener.sampled_at ? fmtTime(item.quote_audit.dexscreener.sampled_at) : '-'}</time>
+                    </div>
+                    <div>
+                      <span>GeckoTerminal</span>
+                      <strong>{fmtMemeMarketCap(item.quote_audit.geckoterminal.market_cap)}</strong>
+                      <small>{item.quote_audit.geckoterminal.status === 'success'
+                        ? 'FDV' + (item.quote_audit.geckoterminal.pool_matched ? ' · 同池' : ' · 其他池')
+                        : quoteAuditProviderStatus(item.quote_audit.geckoterminal.status)}</small>
+                      <time>{item.quote_audit.geckoterminal.sampled_at ? fmtTime(item.quote_audit.geckoterminal.sampled_at) : '-'}</time>
+                    </div>
+                    <div>
+                      <span>Jupiter 估算</span>
+                      <strong>{fmtMemeMarketCap(item.quote_audit.jupiter.market_cap)}</strong>
+                      <small>{item.quote_audit.jupiter.market_cap === null
+                        ? item.quote_audit.supply_status === 'success' ? '缺少报价' : '供应量不可用'
+                        : '价格 × 链上总供应量'}</small>
+                      <time>{item.quote_audit.jupiter.sampled_at ? fmtTime(item.quote_audit.jupiter.sampled_at) : '-'}</time>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="memeGeneratedText">
                 {item.title ? <h2>{item.title}</h2> : <h2>尚未生成标题</h2>}

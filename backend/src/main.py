@@ -578,6 +578,14 @@ def parse_args() -> argparse.Namespace:
     meme_scan.add_argument("--narrative-command")
     meme_scan.add_argument("--force-contract")
 
+    meme_quote_audit = meme_subparsers.add_parser(
+        "quote-audit",
+        help="Run the read-only Solana Meme quote comparison worker.",
+    )
+    meme_quote_audit.add_argument("--scanner-db")
+    meme_quote_audit.add_argument("--audit-db")
+    meme_quote_audit.add_argument("--once", action="store_true", help="Process one bounded quote-audit batch and exit.")
+
     meme_fomo_login = meme_subparsers.add_parser(
         "fomo-login",
         help="Open a one-shot, localhost-only FOMO browser login window.",
@@ -1995,6 +2003,10 @@ def meme_command(args: argparse.Namespace) -> int:
         from packages.meme_scanner import scanner
 
         return scanner.run(args)
+    if args.meme_action == "quote-audit":
+        from packages.meme_scanner import quote_audit
+
+        return quote_audit.run(args)
     if args.meme_action == "fomo-login":
         from packages.meme_scanner import fomo_login
 

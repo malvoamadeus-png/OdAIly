@@ -12,6 +12,8 @@
 - 普通代币首次进入 OKX `MIGRATED` 列表、或 Telegram 社群热议候选通过链/市值/成交量门槛并生成热议任务时，均立即建立 3 天市值跟踪窗口；不要求热议代币出现在 OKX 列表。BSC、Robinhood、Solana Pump.fun 和 Stonkfun 分别按 50 万、100 万、100 万、100 万美元首档开始观察；Pump.fun 与 Stonkfun 后续共用同一档位及跟踪规则。每次市值上破新档都刷新 3 天期限；首次发现或单次行情跨越多个档位时只处理最高档。
 - 仍在最近一次 OKX 列表中的代币直接使用本轮 Dexscreener 市场数据。滚出列表但仍在 3 天窗口内的代币以 Dexscreener 单币查询继续观察；市值低于本链第一门槛每 4 小时一次，达到门槛每 15 分钟一次。固定 CA hash 相位和单线程调度用于错峰请求。
 - 控制台卡片的当前市值和 24 小时成交量在同一 `chain + CA` 有 active 跟踪记录时，读取该记录最新一次成功的 Dexscreener 观察值；任务 payload、触发档位、审计材料和已生成正文仍保持入队时的不可变快照。没有 active 跟踪记录时，卡片回退显示任务快照。
+- `odaily-meme-quote-audit.service` 是只读影子观察 worker，只扫描 active Solana observations，不改变发现、触发、任务或发布状态。所有 active 币每 4 小时抽样；最近 100 条控制台任务涉及的币与距下一未消费档位 20% 内的币每 15 分钟抽样，控制台 CA 去重。每轮最多处理 50 个币，Jupiter 每批 5 个 mint 查询以缩小同轮报价时间差；GeckoTerminal 单 mint 池列表请求默认至少间隔 3 秒。GeckoTerminal 优先匹配 Dexscreener pool address，否则选择 USD reserve 最高的池并标记非同池；按池关系选择目标 mint 对应的 base/quote token USD 价格，`fdv_usd` 按 Meme `MC=FDV` 显示。Jupiter 价格乘 Solana RPC `getTokenSupply` 总供应量计算估算 MC，供应量缓存 24 小时。公共接口失败会按 provider 退避；缺失值不互相填补。
+- 行情审计样本、供应量缓存、provider 调用计数、异常价差和调度积压写入独立 `data/processed/meme_quote_audit.sqlite3`，保留 30 天；scanner 主 SQLite 只以 `mode=ro` 被外挂读取，审计 SQLite 只以 `mode=ro` 被控制台读取。控制台 Meme 卡片另列三源 MC、各源采样时间、Gecko 池匹配状态；主市值和触发档位不变。摘要展示 24 小时样本、价差分歧、池不匹配、缺报价数、API 调用/失败和积压。审计库不存在或不可读时不影响现有 Meme 卡片。
 - 3 天期限从首次发现或最近一次上破新档的时间计算；连续 3 天没有上破新档后状态改为 `expired`，清理下一次调度时间，即使重新出现在 OKX 最新列表也不重新激活。scanner 启动时会按持久化窗口锚点收紧仍 active 的历史记录，并按当前市值策略重算其调度周期；迁移前的历史 `observations` 标记为 `legacy_untracked`，不会回填跟踪窗口；观察和里程碑按 `chain + address` 隔离。
 - 社群热议要求 20 分钟内至少 5 次命中、至少 3 个不同真人发送者；不限制代币的 launchpad/platform。`0x...` EVM CA 先查询 Robinhood Chain，再以 BNB Chain（30 万美元）兜底；Solana Base58 CA 查询 Solana（50 万美元），其他链暂不触发。门槛按代币查询返回的链判断，不按来源社群名判断；launchpad/platform 只作为结果字段记录，不作为发现、入队、任务消费或播报门槛，未知平台值也继续进入叙事流程。
 - 普通里程碑使用独立的市值最高水位；热议入选时以当时市值建立跟踪基线，不为已经生成热议稿的当前水位重复生成普通里程碑稿。后续跟踪观察上破新档时，仍按普通里程碑成交量资格和幂等规则生成任务。
@@ -72,6 +74,8 @@ Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 ```text
 python backend/src/main.py meme scan --once
 python backend/src/main.py meme scan --send
+python backend/src/main.py meme quote-audit --once
+python backend/src/main.py meme quote-audit
 python backend/src/main.py meme fomo-login
 python backend/src/main.py meme bloomberg-read <Bloomberg文章URL> --confirm-authorized-use [--output <服务器上的txt路径>]
 python backend/src/main.py meme tg-watch --check
@@ -80,17 +84,19 @@ python backend/src/main.py meme tg-watch
 
 - `meme scan --once`：执行一次 OKX BSC、Robinhood、Solana Pump.fun/Stonkfun 发现并最多处理一个任务，默认 dry-run。
 - `meme scan --send`：常驻轮询并真实写入挂后台稿件，固定 `isPublish=false,isPush=false`。
+- `meme quote-audit --once`：处理一个有界三源行情审计批次；`meme quote-audit` 常驻后台调度，只写独立影子审计库。
 - `meme fomo-login`：仅在收到 FOMO 登录失效提醒后执行的一次性维护命令，不属于 systemd 服务。服务器上以 `xvfb-run -a -s "-screen 0 1440x900x24" /opt/OdAIly/.venv/bin/python backend/src/main.py meme fomo-login` 启动；它最多保持 `MEME_FOMO_LOGIN_TIMEOUT_SECONDS`（默认 900 秒），DevTools 只监听 `127.0.0.1:MEME_FOMO_LOGIN_CDP_PORT`（默认 9224），且只允许 Chrome DevTools 前端来源建立调试 WebSocket。若该 loopback 端口已被占用，命令会失败，不会接管或误认已有端点。命令会尝试识别并点击唯一的 FOMO Login、Google 登录和 Google 已登录账号选项；不能唯一识别时停止自动点击，操作者可从本机使用已配置的 `odaily-official` SSH 别名建立 `ssh -N -L 9224:127.0.0.1:9224 odaily-official` 本地转发后，在本机 Chrome 的 `chrome://inspect/#devices` 添加 `localhost:9224` 并附着目标，人工完成验证。DevTools 提供控制，不是图形远程桌面；验证码、新账号登录和 Google 风控仍需人工处理。完成登录后随即停止该一次性命令，不得复制、打印或提交 profile、Cookie 或 JWT。
 - `meme bloomberg-read <URL> --confirm-authorized-use`：仅处理一篇 `bloomberg.com/news/...` 文章；运行前操作者必须确认 Bloomberg 账户许可允许程序化读取和个人研究保存，否则命令在启动 Chromium 前退出。命令使用 Playwright 持久上下文复用 `MEME_FOMO_PROFILE_DIR` 中已有的 Meme FOMO 登录 profile 和共享浏览器锁，不新建登录 profile，也不复制 Cookie。命令会在服务器按次启动并关闭 Chromium，沿用 profile 中已有的 Google 登录态；不开放 DevTools 端口、不要求本地 Chrome 或本机端口转发。人工登录需要能操作该服务器浏览器的图形会话。完成 Bloomberg 登录并回到目标文章后，在命令终端按 Enter；程序只读取可见的 `ArticleBodyText_` 段落，保持段落顺序并保存为权限 `0600` 的纯文本，默认路径为 `data/exports/bloomberg/<文章slug>-<读取时间>.txt`，也可用 `--output` 指定服务器路径。终端只返回标题、作者、发布时间、栏目、规范链接、读取时间、状态和文件路径，不打印正文或摘要；不读取隐藏的 `__NEXT_DATA__`，不输出或保存 Cookie/JWT/HTML，正文完整性标记为 `unverified`。没有可见段落时返回 `article_body_not_visible` 且不创建正文文件；不会尝试移除访问限制。该命令是人工单篇研究工具，不接入自动 worker、SQLite 或审计材料。
 - Meme 速递内部保存的正文仍为纯文本；仅在组装推送请求时，将每个非空行转换为 HTML 段落并转义 `&`、`<`、`>`，与通用 `PushClient` 使用同一规则。空行会被删除。
 - 登录辅助的页面检查只允许 `fomo.family` 和 `accounts.google.com`，每个自动步骤在维护窗口内最多点击一次，避免重复打开 OAuth。2026-10-13 在官方服务器实测未登录临时窗口：Login 和 Continue with Google 均为唯一按钮，点击后进入 Google 登录页面；已有生产 profile 的 CA 材料查询成功。临时窗口未保存 Google 会话，因此本次未验证账号选择器及完整 OAuth 回跳；不能把前两步可点击或已登录 profile 可查询当作自动重新登录成功。此辅助只属于一次性维护命令，collector 认证失效时仍按原有重试与告警逻辑处理。
 - `meme tg-watch --check`：校验 Telegram 登录和白名单可见性后退出。
-- systemd unit：`deploy/odaily-meme-scanner.service`、`deploy/odaily-meme-tg-watcher.service`。
+- systemd unit：`deploy/odaily-meme-scanner.service`、`deploy/odaily-meme-tg-watcher.service`、`deploy/odaily-meme-quote-audit.service`。
 
 ## 配置
 
 - OKX：发现源固定为 `MEME_OKX_DISCOVERY_SOURCE=web_meme`，只通过匿名 MemePump 网页及其浏览器自然生成的动态请求头读取迁移列表；不支持官方签名 `tokenList` 回退。`MEME_OKX_WEB_TIMEOUT_SECONDS`、`MEME_OKX_WEB_SETTLE_MS`、`MEME_OKX_WEB_HEADLESS`、`MEME_OKX_WEB_PROXY` 控制网页运行，生产需要 Playwright Chromium 和 `xvfb-run`，默认有头模式。`MEME_BROWSER_LOCK_PATH` 由 OKX、FOMO 采集、一次性 FOMO 登录和单篇 Bloomberg 读取共用；FOMO 使用 `MEME_BROWSER_LOCK_TIMEOUT_SECONDS`（默认 90 秒），而定时 OKX 发现使用 `MEME_OKX_BROWSER_LOCK_TIMEOUT_SECONDS`（默认 1 秒）快速放弃。市场数据固定使用公开、无鉴权的 Dexscreener，`MEME_DEXSCREENER_TIMEOUT_SECONDS` 默认 `15`；BSC、Robinhood 和 Solana 都使用该适配器，不调用 GMGN 或 OKX 签名市场/详情接口。
 - 跟踪调度：`MEME_COMPLETED_SCAN_INTERVAL` 默认 `300` 秒；`MEME_WORKER_POLL_INTERVAL` 默认 `5` 秒，只轮询队列和 Telegram 候选，不触发未到期的 OKX 浏览器发现。无论 OKX 浏览器锁冲突、网页发现失败还是本轮 Dexscreener 批量请求失败，均消耗本次正常发现尝试并等到下一窗口，防止故障时 Chromium 高频拉起。Dexscreener 的列表外调度继续按 `MEME_TOKEN_INFO_HIGH_INTERVAL`（默认 900 秒，即 15 分钟）、`MEME_TOKEN_INFO_LOW_INTERVAL`（默认 14400 秒，即 4 小时）、`MEME_TRACKING_WINDOW_SECONDS`（默认 259200 秒，即 3 天）和 `MEME_TOKEN_INFO_MIN_GAP_SECONDS`（默认 3 秒）独立运行。新观察记录首次发现时建立 3 天窗口；每次观测到上破新市值档位都将持久化跟踪锚点和截止时间刷新为 3 天后，无论该档成交量资格是否通过。连续 3 天没有上破新档则过期且不重新激活。BSC 档位为 50 万、100 万、300 万、500 万、1000 万及之后每 1000 万至 1 亿美元；Robinhood、Solana Pump.fun 和 Stonkfun 从 100 万美元开始，后续同档。一次跨过多个档位只处理最高档。成交量/市值比例未达门槛会消耗当前档位；首次在任一档位达标后，将 `volume_qualified` 永久记为真，后续档位免检。
+- 行情影子审计配置：`MEME_QUOTE_AUDIT_ENABLED`（默认 `true`）、`MEME_QUOTE_AUDIT_DB_PATH`（默认 `data/processed/meme_quote_audit.sqlite3`）、`MEME_QUOTE_AUDIT_TIMEOUT_SECONDS`（默认 12 秒）、`MEME_QUOTE_AUDIT_LOOP_SECONDS`（默认 10 秒）、`MEME_QUOTE_AUDIT_BATCH_SIZE`（默认 50）、`MEME_QUOTE_AUDIT_BASE_INTERVAL_SECONDS`（默认 14400 秒）、`MEME_QUOTE_AUDIT_PRIORITY_INTERVAL_SECONDS`（默认 900 秒）、`MEME_QUOTE_AUDIT_DEXSCREENER_MIN_INTERVAL_SECONDS`（默认 1 秒）、`MEME_QUOTE_AUDIT_GECKO_MIN_INTERVAL_SECONDS`（默认 3 秒）、`MEME_QUOTE_AUDIT_JUPITER_MIN_INTERVAL_SECONDS`（默认 2.25 秒）、`MEME_QUOTE_AUDIT_SOLANA_RPC_MIN_INTERVAL_SECONDS`（默认 1 秒）；scanner 主库路径复用 `MEME_SCANNER_DB_PATH`。Jupiter 每批最多 5 个 mint。主 scanner 发布/触发不读取审计结果。
 - Telegram：`MEME_TELEGRAM_API_ID`、`MEME_TELEGRAM_API_HASH`、`MEME_TELEGRAM_WATCH_SESSION`。
 - Telegram 白名单：`data/config/meme_whitelist.txt`，格式参考 `meme_whitelist.example.txt`。
 - 屏蔽发送者：`data/config/meme_blocked_senders.txt`，格式参考 `meme_blocked_senders.example.txt`。

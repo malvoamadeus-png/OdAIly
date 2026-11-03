@@ -1838,6 +1838,16 @@ export type MemeDashboardItem = {
   market_cap: number | null;
   volume_24h: number | null;
   market_observed_at: string | null;
+  quote_audit?: {
+    sampled_at: string;
+    priority_reason: string;
+    comparison_status: 'aligned' | 'divergent' | 'incomplete' | string;
+    divergence_ratio: number | null;
+    supply_status: string;
+    dexscreener: { sampled_at: string | null; status: string; price: number | null; market_cap: number | null; pair_address: string | null; liquidity: number | null };
+    geckoterminal: { sampled_at: string | null; status: string; price: number | null; market_cap: number | null; pool_address: string | null; pool_reserve: number | null; pool_matched: boolean; volume_m5: number | null };
+    jupiter: { sampled_at: string | null; status: string; price: number | null; market_cap: number | null; liquidity: number | null; block_id: number | null };
+  } | null;
   trigger_kind: 'market_cap_milestone' | 'tg_burst' | 'manual_replay' | 'startup_seen' | string;
   trigger_level: number | null;
   mention_count: number | null;
@@ -1871,6 +1881,16 @@ export type MemeDashboard = {
   available: boolean;
   generated_at: string;
   items: MemeDashboardItem[];
+  quote_audit_summary?: {
+    available: boolean;
+    samples_24h: number;
+    divergent_24h: number;
+    pool_mismatches_24h: number;
+    missing_values_24h: number;
+    provider_calls_24h: Record<string, number>;
+    provider_failures_24h: Record<string, number>;
+    backlog: number | null;
+  };
   last_error: string | null;
 };
 
