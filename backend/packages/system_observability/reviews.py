@@ -683,12 +683,28 @@ class SystemReviewService:
                 if int(row["needs_review"] or 0) == 0 and int(row["has_odaily"] or 0) == 1:
                     continue
                 evidence = [dict(item) for item in conn.execute(
-                    "SELECT s.source,s.source_item_id,i.source_url,i.title,s.role,s.match_method,s.created_at "
+                    "SELECT s.source,s.source_item_id,i.id AS item_id,i.source_url,i.title,s.role,s.match_method,s.created_at "
                     "FROM newsflash_event_sources s JOIN newsflash_items i ON i.id=s.item_id "
                     "WHERE s.event_id=? ORDER BY s.created_at LIMIT 12", (row["event_id"],),
                 ).fetchall()]
                 event = dict(row)
                 competitor_count = int(event.get("competitor_source_count") or 0)
+                source_pairs = [
+                    (str(source.get("source") or ""), str(source.get("source_item_id") or ""))
+                    for source in evidence if source.get("source") != "odaily" and source.get("source_item_id")
+                ]
+                event_ms = timestamp_ms(event.get("first_published_at")) or int(datetime.now(UTC).timestamp() * 1000)
+                decisions = self.repository.information_store.decision_samples_for_sources(
+                    source_pairs, through_ms=event_ms,
+                )
+                source_keys = [source for source, _source_id in source_pairs]
+                config_changes = self.repository.information_store.configuration_changes_for_sources(
+                    source_keys, through_ms=event_ms,
+                )
+                official_publications = [
+                    {key: source.get(key) for key in ("source_item_id", "item_id", "source_url", "title", "created_at")}
+                    for source in evidence if source.get("source") == "odaily"
+                ]
                 task_evidence: list[dict[str, Any]] = []
                 if "tasks" in tables:
                     task_columns = {str(column["name"]) for column in conn.execute("PRAGMA table_info(tasks)")}
@@ -705,21 +721,26 @@ class SystemReviewService:
                                 + " WHERE t.source=? AND t.source_item_id=? ORDER BY t.id DESC LIMIT 1"
                             )
                             task = conn.execute(task_query, (source["source"], source["source_item_id"])).fetchone()
+                            source_key = (str(source["source"]), str(source["source_item_id"]))
+                            config_history = config_changes.get(str(source["source"]), [])
                             task_evidence.append({
                                 "source": source["source"],
                                 "source_item_id": source["source_item_id"],
+                                "configuration_history": config_history or None,
+                                "configuration_history_status": "observed_changes" if config_history else "unknown",
+                                "decision_samples": decisions.get(source_key, []),
                                 "task": dict(task) if task else None,
                             })
                 issues.append({"identity": {"event_id": event["event_id"]}, "category": "competitor_coverage_gap" if not event.get("has_odaily") else "event_needs_review",
                     "title": str(event.get("representative_title") or "竞品事件待复核"),
-                    "summary": "竞品事件需要逐条核对。已附来源原链接及精确来源ID对应的本地任务/投递证据；缺少关联时不据此断定漏闻或归责。",
+                    "summary": "竞品事件需要逐条核对。已附来源原链接、精确来源ID对应的公开稿映射、任务/投递与无候选样本，并附可取得的订阅变更；没有历史配置记录时保持未知。",
                     "severity": "medium", "certainty": "low", "expected": "检查订阅资格、采集、轻决定、写作、后台回执与公开关联证据",
                     "actual": f"first_source={event.get('first_source')} competitor_sources={competitor_count} has_odaily={event.get('has_odaily')} exact_task_links={sum(item['task'] is not None for item in task_evidence)}",
                     "scope": {"event_id": event["event_id"], "first_source": event.get("first_source")}, "affected_count": max(1, competitor_count),
-                    "evidence": [{"event_sources": evidence, "source_tasks": task_evidence}],
+                    "evidence": [{"event_sources": evidence, "official_publications": official_publications, "source_tasks": task_evidence}],
                     "counter_evidence": [{"metadata": event.get("metadata"), "has_odaily": event.get("has_odaily")}],
-                    "suggestion": "按原帖ID逐项核对当时订阅资格、任务终点、稿件、后台回执和公开稿关联；缺少历史证据时标为无法判断",
-                    "validation": "每个原始事件都能回查来源链接及精确任务；任务或发布证据缺失时保留明确缺口"})
+                    "suggestion": "按原帖ID逐项核对当时订阅变更、轻决定、任务终点、稿件、后台回执和公开稿关联；缺少历史证据时标为无法判断",
+                    "validation": "每个原始事件都能回查来源链接、可用配置变更、精确轻决定样本及任务；缺失部分明确标为未知"})
         return issues
 
     def _audit_findings(self) -> list[dict[str, Any]]:

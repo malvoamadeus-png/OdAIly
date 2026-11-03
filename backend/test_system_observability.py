@@ -470,7 +470,7 @@ def test_competitor_events_are_projected_from_the_active_main_database() -> None
         assert not any(spec.database_key == "competitor" for spec in TABLE_SPECS)
 
 
-def test_coverage_review_joins_source_links_and_exact_pipeline_receipts() -> None:
+def test_coverage_review_joins_source_links_decisions_config_changes_and_pipeline_receipts() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         main = root / "main.sqlite"
@@ -499,21 +499,82 @@ def test_coverage_review_joins_source_links_and_exact_pipeline_receipts() -> Non
                 );
             """)
             conn.execute("INSERT INTO newsflash_events VALUES(?,?,?,?,?,?,?,?,?,?)", (
-                "event-1", "竞品报道事件", "blockbeats", now, 1, 1, 0, 1, "{}", now,
+                "event-1", "竞品报道事件", "blockbeats", now, 2, 1, 1, 1, "{}", now,
             ))
             conn.execute("INSERT INTO newsflash_items VALUES(1,'blockbeats','item-1','https://source.test/1','原始标题',?)", (now,))
+            conn.execute("INSERT INTO newsflash_items VALUES(2,'odaily','flash-77','https://odaily.test/flash-77','已发布快讯',?)", (now,))
             conn.execute("INSERT INTO newsflash_event_sources VALUES('event-1',1,'blockbeats','item-1','primary','new_event',?)", (now,))
+            conn.execute("INSERT INTO newsflash_event_sources VALUES('event-1',2,'odaily','flash-77','covered','official_id',?)", (now,))
             conn.execute("INSERT INTO tasks VALUES(7,'blockbeats','item-1','publisher_failed',?)", (now,))
             conn.execute("INSERT INTO x_task_pipeline VALUES(7,'push_failed','{}','{}','HTTP timeout','提交标题','提交正文')")
         service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"), competitor_database_path=main)
+        information_store = service.repository.information_store
+        information_store.upsert_snapshot({
+            "item_id": "main:non_mainstream_media_sources:blockbeats", "business_key": "crypto_media",
+            "source": "non_mainstream_media", "source_id": "blockbeats", "title": "BlockBeats",
+            "stage": "覆盖配置", "status": "enabled", "result": "configuration_change",
+            "created_at_ms": timestamp_ms(now), "updated_at_ms": timestamp_ms(now),
+            "source_database": str(main), "source_table": "non_mainstream_media_sources",
+            "source_row_id": "1", "legacy_history": False,
+        }, None)
+        information_store.append_event(
+            item_id="main:non_mainstream_media_sources:blockbeats", event_id="config:blockbeats:1",
+            event_type="source_state_change", stage="覆盖配置", status="enabled", result="configuration_change",
+            happened_at_ms=timestamp_ms(now), summary="订阅配置已变更",
+            evidence={"payload": {"site_key": "blockbeats", "enabled": 1}},
+            details={"operation": "insert", "source_table": "non_mainstream_media_sources"},
+        )
+        with information_store.connect() as conn:
+            conn.execute(
+                "INSERT INTO system_information_decision_samples(sample_key,sample_date,sampled_at_ms,raw_expires_at_ms,item_id,business_key,source,source_id,stage,status,result,reason_summary,rule_version,evidence_ref,evidence_bytes) "
+                "VALUES('decision-1','2026-11-03',?,?,?,'crypto_media','blockbeats','item-1','判断','discarded','stopped','重复事件','rules-v3',NULL,0)",
+                (timestamp_ms(now), timestamp_ms(now) + 14 * 86_400_000, "task:blockbeats:item-1"),
+            )
 
         issues = service._coverage_gaps()
 
         assert len(issues) == 1
         linked = issues[0]["evidence"][0]
         assert linked["event_sources"][0]["source_url"] == "https://source.test/1"
+        assert linked["official_publications"][0]["source_item_id"] == "flash-77"
         assert linked["source_tasks"][0]["task"]["status"] == "publisher_failed"
         assert linked["source_tasks"][0]["task"]["push_result"] == "{}"
+        source = linked["source_tasks"][0]
+        assert source["configuration_history_status"] == "observed_changes"
+        assert source["configuration_history"][0]["evidence"]["payload"]["enabled"] == 1
+        assert source["decision_samples"][0]["sample_key"] == "decision-1"
+
+
+def test_coverage_review_marks_missing_configuration_history_unknown() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        main = root / "main.sqlite"
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(main) as conn:
+            conn.executescript("""
+                CREATE TABLE newsflash_events(
+                    event_id TEXT PRIMARY KEY, representative_title TEXT, first_source TEXT,
+                    first_published_at TEXT, source_count INTEGER, competitor_source_count INTEGER,
+                    has_odaily INTEGER, needs_review INTEGER, metadata TEXT, updated_at TEXT
+                );
+                CREATE TABLE newsflash_items(id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, source_url TEXT, title TEXT, created_at TEXT);
+                CREATE TABLE newsflash_event_sources(event_id TEXT, item_id INTEGER, source TEXT, source_item_id TEXT, role TEXT, match_method TEXT, created_at TEXT);
+                CREATE TABLE tasks(id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, status TEXT, updated_at TEXT);
+                CREATE TABLE x_task_pipeline(task_id INTEGER PRIMARY KEY, publisher_reason_code TEXT, publisher_output TEXT, push_result TEXT, last_error TEXT, final_title TEXT, final_content TEXT);
+            """)
+            conn.execute("INSERT INTO newsflash_events VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                "event-unknown", "待核对事件", "blockbeats", now, 1, 1, 0, 0, "{}", now,
+            ))
+            conn.execute("INSERT INTO newsflash_items VALUES(1,'blockbeats','item-unknown','https://source.test/unknown','原始标题',?)", (now,))
+            conn.execute("INSERT INTO newsflash_event_sources VALUES('event-unknown',1,'blockbeats','item-unknown','primary','new_event',?)", (now,))
+        service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"), competitor_database_path=main)
+
+        issue = service._coverage_gaps()[0]
+
+        source = issue["evidence"][0]["source_tasks"][0]
+        assert source["configuration_history_status"] == "unknown"
+        assert source["configuration_history"] is None
+        assert source["decision_samples"] == []
 
 
 def test_no_candidate_samples_are_stratified_capped_and_expire_raw_evidence() -> None:

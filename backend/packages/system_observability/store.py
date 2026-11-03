@@ -513,6 +513,65 @@ class SystemInformationStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def decision_samples_for_sources(
+        self, source_items: list[tuple[str, str]], *, through_ms: int, limit: int = 5,
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        pairs = list(dict.fromkeys((str(source), str(source_id)) for source, source_id in source_items))[:12]
+        if not pairs:
+            return {}
+        per_source_limit = max(1, min(10, limit))
+        pair_sql = ",".join("(?,?)" for _ in pairs)
+        params: list[Any] = [value for pair in pairs for value in pair]
+        params.append(through_ms)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT sample_key,item_id,source,source_id,sampled_at_ms,sample_date,stage,status,result,"
+                "reason_summary,rule_version,evidence_ref FROM system_information_decision_samples "
+                f"WHERE (source,source_id) IN ({pair_sql}) AND sampled_at_ms<=? "
+                "ORDER BY sampled_at_ms DESC,business_key,source,item_id",
+                params,
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {pair: [] for pair in pairs}
+        for row in rows:
+            pair = (str(row["source"]), str(row["source_id"]))
+            values = grouped.get(pair)
+            if values is None or len(values) >= per_source_limit:
+                continue
+            item = dict(row)
+            item["raw_evidence_available"] = bool(item.pop("evidence_ref"))
+            values.append(item)
+        return {pair: values for pair, values in grouped.items() if values}
+
+    def configuration_changes_for_sources(
+        self, source_keys: list[str], *, through_ms: int, limit_per_source: int = 20,
+    ) -> dict[str, list[dict[str, Any]]]:
+        keys = list(dict.fromkeys(str(key) for key in source_keys if key))[:12]
+        if not keys:
+            return {}
+        item_ids = [f"main:non_mainstream_media_sources:{key}" for key in keys]
+        placeholders = ",".join("?" for _ in item_ids)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT i.source_id,e.event_id,e.event_type,e.status,e.happened_at_ms,e.summary,e.reason,"
+                "e.evidence_ref,e.details_json FROM system_information_items i "
+                "JOIN system_information_events e ON e.item_id=i.item_id "
+                f"WHERE i.item_id IN ({placeholders}) AND e.event_type='source_state_change' "
+                "AND e.happened_at_ms<=? ORDER BY e.happened_at_ms DESC,e.event_id",
+                (*item_ids, through_ms),
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in keys}
+        for row in rows:
+            source_key = str(row["source_id"] or "")
+            values = grouped.get(source_key)
+            if values is None or len(values) >= max(1, min(20, limit_per_source)):
+                continue
+            item = dict(row)
+            evidence_ref = item.pop("evidence_ref")
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+            item["evidence"] = self.load_evidence(evidence_ref) if evidence_ref else None
+            values.append(item)
+        return {key: values for key, values in grouped.items() if values}
+
     def output_review_samples(self, *, now_ms: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
         now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
         sample_date = datetime.fromtimestamp(now / 1000, UTC).date().isoformat()
