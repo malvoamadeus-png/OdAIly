@@ -20,6 +20,37 @@ def _store(root: Path) -> SystemInformationStore:
     return store
 
 
+def test_detail_batches_evidence_lookup_and_decompresses_each_reference_once(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    evidence = {'task': {'content': 'large source material' * 1000}}
+    store.upsert_snapshot({
+        'item_id': 'news:batch', 'business_key': 'x', 'source': 'x', 'title': 'Batch',
+        'status': 'published', 'result': 'direct_publish', 'created_at_ms': now,
+        'updated_at_ms': now, 'source_database': 'fixture', 'source_table': 'tasks',
+        'source_row_id': 'batch', 'news_visible': True,
+    }, evidence)
+    for index in range(20):
+        store.append_event(item_id='news:batch', event_id=f'batch:{index}', event_type='stage',
+                           stage='writing', status='published', result='direct_publish',
+                           happened_at_ms=now, summary='Evidence', evidence=evidence)
+    connections = []
+    original = store.connect
+    def connect():
+        connections.append(True)
+        return original()
+    monkeypatch.setattr(store, 'connect', connect)
+    from unittest.mock import patch
+    import gzip
+    with patch('packages.system_observability.store.gzip.decompress', wraps=gzip.decompress) as decompress:
+        detail = store.detail('news:batch')
+    assert detail['evidence'] == evidence
+    assert all(event['evidence'] == evidence for event in detail['timeline'])
+    assert len(detail['timeline']) >= 20
+    assert len(connections) == 1
+    assert decompress.call_count == 1
+
+
 def test_news_view_hides_low_value_and_technical_rows_but_keeps_search_first_duplicates(tmp_path: Path) -> None:
     source = tmp_path / 'source.sqlite'
     _source_db(source)

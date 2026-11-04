@@ -29,6 +29,7 @@ from packages.x_processing.telegram import TelegramClient
 from .gmgn import GMGN, ensure_cli_ready, gmgn_subprocess_env
 from .browser_lock import BrowserLockTimeout, exclusive_browser
 from .dexscreener import DexScreenerClient
+from .market_verification import verify_market_cap
 from .narrative import generate_reader_text
 from .okx import OKXError
 from .okx_web import OKXMemeWebClient, solana_launchpad
@@ -784,6 +785,7 @@ class Store:
                 self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, next_attempt_at, id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_address ON jobs(address, id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_dashboard ON jobs(updated_at DESC, id DESC)")
         legacy_exists = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs_v1'"
         ).fetchone()
@@ -1792,6 +1794,27 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
             (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job["id"]),
         )
     from .grok_jobs import prepare as prepare_grok
+    verification = job_evidence.get('market_verification')
+    if token.chain == 'solana' and not (
+        isinstance(verification, dict) and verification.get('status') == 'passed'
+        and verification.get('address') == token.address
+        and verification.get('dexscreener_market_cap') == token.market_cap
+    ):
+        verification = verify_market_cap(token)
+        job_evidence['market_verification'] = verification
+        with store.conn:
+            store.conn.execute('UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?',
+                               (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job['id']))
+        if verification['status'] != 'passed':
+            suspect = verification['status'] == 'suspect'
+            reason = 'market_cap_suspect' if suspect else 'market_verification_unavailable'
+            audit = {'status': 'skipped' if suspect else 'error', 'decision_code': reason,
+                     'decision_reason': '市值存疑，验证源与 Dexscreener 偏差超过 15%，拒绝写作。' if suspect else '暂无有效验证市值，等待重试。',
+                     'market_verification': verification, 'reader_text': ''}
+            if suspect:
+                store.update_job(job['id'], 'discarded', reason=reason, narrative=audit)
+                return reason
+            return store.retry_job(job, reason, narrative=audit)
     grok_ready, grok_audit = prepare_grok(store, job, token)
     if not grok_ready:
         return "grok_pending"

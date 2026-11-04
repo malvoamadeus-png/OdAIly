@@ -626,46 +626,5 @@ def sample_batch(settings: Settings, store: AuditStore, client: QuoteAuditClient
 
 
 def run(args: Any | None = None) -> int:
-    settings = Settings.from_env()
-    if not settings.enabled:
-        print("[meme-quote-audit] disabled by MEME_QUOTE_AUDIT_ENABLED", file=sys.stderr)
-        return 0
-    if args is not None:
-        if getattr(args, "scanner_db", None):
-            settings = Settings(**{**settings.__dict__, "scanner_db": Path(args.scanner_db)})
-        if getattr(args, "audit_db", None):
-            settings = Settings(**{**settings.__dict__, "audit_db": Path(args.audit_db)})
-        if getattr(args, "once", False):
-            store = AuditStore(settings.audit_db)
-            try:
-                result = sample_batch(settings, store, QuoteAuditClient(
-                    settings.http_timeout, store,
-                    dexscreener_min_interval=settings.dexscreener_min_interval_seconds,
-                    gecko_min_interval=settings.gecko_min_interval_seconds,
-                    jupiter_min_interval=settings.jupiter_min_interval_seconds,
-                    solana_rpc_min_interval=settings.solana_rpc_min_interval_seconds,
-                ))
-                print(json.dumps(result, ensure_ascii=False))
-            finally:
-                store.close()
-            return 0
-    store = AuditStore(settings.audit_db)
-    client = QuoteAuditClient(
-        settings.http_timeout, store,
-        dexscreener_min_interval=settings.dexscreener_min_interval_seconds,
-        gecko_min_interval=settings.gecko_min_interval_seconds,
-        jupiter_min_interval=settings.jupiter_min_interval_seconds,
-        solana_rpc_min_interval=settings.solana_rpc_min_interval_seconds,
-    )
-    try:
-        while True:
-            started = time.monotonic()
-            try:
-                sample_batch(settings, store, client)
-            except Exception as exc:
-                print(f"[meme-quote-audit] scheduler error: {exc}", file=sys.stderr)
-            time.sleep(max(0.1, settings.loop_seconds - (time.monotonic() - started)))
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        store.close()
+    print("[meme-quote-audit] retired: market verification runs only before Meme writing", file=sys.stderr)
+    return 0

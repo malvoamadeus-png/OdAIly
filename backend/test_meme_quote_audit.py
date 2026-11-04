@@ -188,7 +188,7 @@ def test_audit_store_adds_retry_column_to_older_database(tmp_path: Path) -> None
     assert "retry_after" in columns
 
 
-def test_quote_audit_database_is_joined_into_console_cards(tmp_path: Path, monkeypatch) -> None:
+def test_legacy_quote_audit_database_is_not_read_by_console(tmp_path: Path, monkeypatch) -> None:
     scanner_db = tmp_path / "scanner.sqlite3"
     audit_db = tmp_path / "audit.sqlite3"
     address = "SoConsole"
@@ -230,9 +230,9 @@ def test_quote_audit_database_is_joined_into_console_cards(tmp_path: Path, monke
     dashboard = MemeDashboardStore(scanner_db).dashboard()
 
     item = dashboard["items"][0]
-    assert item["quote_audit"]["geckoterminal"]["market_cap"] == 1_010_000
-    assert item["quote_audit"]["jupiter"]["market_cap"] == 1_000_000
-    assert dashboard["quote_audit_summary"]["samples_24h"] == 1
+    assert "quote_audit" not in item
+    assert item["market_verification"] is None
+    assert "quote_audit_summary" not in dashboard
 
 
 def test_dashboard_remains_available_without_quote_audit_database(tmp_path: Path, monkeypatch) -> None:
@@ -251,4 +251,4 @@ def test_dashboard_remains_available_without_quote_audit_database(tmp_path: Path
     dashboard = MemeDashboardStore(scanner_db).dashboard()
 
     assert dashboard["available"] is True
-    assert dashboard["quote_audit_summary"]["available"] is False
+    assert "quote_audit_summary" not in dashboard

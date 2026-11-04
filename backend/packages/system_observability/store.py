@@ -297,9 +297,12 @@ class SystemInformationStore:
             row = conn.execute("SELECT path FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,)).fetchone()
         if not row:
             return None
-        path = Path(row["path"])
+        return self._read_evidence_file(row["path"], evidence_ref)
+
+    @staticmethod
+    def _read_evidence_file(path: str, evidence_ref: str) -> Any:
         try:
-            return json.loads(gzip.decompress(path.read_bytes()))
+            return json.loads(gzip.decompress(Path(path).read_bytes()))
         except (OSError, EOFError, json.JSONDecodeError):
             return {"unavailable": True, "evidence_ref": evidence_ref}
 
@@ -1258,12 +1261,23 @@ class SystemInformationStore:
                 "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=? OR item_id IN (SELECT item_id FROM system_information_items WHERE parent_item_id=?) ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,rowid",
                 (item_id, item_id),
             ).fetchall()
+            references = list({row['evidence_ref'] for row in [item, *events] if row['evidence_ref']})
+            paths: dict[str, str] = {}
+            for offset in range(0, len(references), 500):
+                batch = references[offset:offset + 500]
+                placeholders = ','.join('?' for _ in batch)
+                paths.update({row['evidence_ref']: row['path'] for row in conn.execute(
+                    f'SELECT evidence_ref,path FROM system_information_evidence WHERE evidence_ref IN ({placeholders})',
+                    batch,
+                )})
+        # Keep evidence caching within this request so retention changes remain visible.
+        evidence = {reference: self._read_evidence_file(path, reference) for reference, path in paths.items()}
         result = dict(item)
         result['duplicate_target'] = json.loads(result.pop('duplicate_json') or 'null')
-        result["evidence"] = self.load_evidence(result.get("evidence_ref"))
+        result["evidence"] = evidence.get(result.get("evidence_ref"))
         result["timeline"] = [dict(row) for row in events]
         for event in result["timeline"]:
-            event["evidence"] = self.load_evidence(event.get("evidence_ref"))
+            event["evidence"] = evidence.get(event.get("evidence_ref"))
             try:
                 event["details"] = json.loads(event.pop("details_json"))
             except json.JSONDecodeError:

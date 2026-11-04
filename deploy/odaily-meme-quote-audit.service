@@ -9,7 +9,7 @@ WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py meme quote-audit
-Restart=always
+Restart=no
 RestartSec=10
 
 [Install]

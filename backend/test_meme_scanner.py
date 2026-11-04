@@ -998,7 +998,9 @@ class MemeScannerTests(unittest.TestCase):
             store.set_meta("milestone_scan_at")
             current = token("0xccc", 600_000, 350_000)
             narrative = {"returncode": 0, "reader_text": "社区账号表示，这个梗出自一条公开发言。"}
-            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
+            with patch.object(scanner, "_ensure_gmgn_kol_profile", return_value={'kol_count': 1, 'checked_at': scanner.now_iso()}), patch(
+                'packages.meme_scanner.grok_jobs.prepare', return_value=(True, {'state': 'disabled'})
+            ), patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
                 scanner.scan_once(store, args(root))
             job = store.conn.execute("SELECT status, title, content FROM jobs WHERE address=?", (current.address,)).fetchone()
             self.assertEqual(job["status"], "publisher_pending")
@@ -1020,7 +1022,9 @@ class MemeScannerTests(unittest.TestCase):
             run_args = args(root)
             run_args.force_contract = current.address
             narrative = {"returncode": 0, "reader_text": "A usable source narrative."}
-            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
+            with patch.object(scanner, "_ensure_gmgn_kol_profile", return_value={'kol_count': 1, 'checked_at': scanner.now_iso()}), patch(
+                'packages.meme_scanner.grok_jobs.prepare', return_value=(True, {'state': 'disabled'})
+            ), patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
                 scanner.scan_once(store, run_args)
             job = store.conn.execute("SELECT trigger_kind, status, reason FROM jobs WHERE address=? ORDER BY id DESC", (current.address,)).fetchone()
             self.assertEqual((job["trigger_kind"], job["status"], job["reason"]), ("manual_replay", "publisher_pending", None))
@@ -1086,7 +1090,9 @@ class MemeScannerTests(unittest.TestCase):
                 "reader_text": "",
                 "transient_error": "narrative_command_failed",
             }
-            with patch.object(scanner, "collect_narrative", return_value=narrative):
+            with patch.object(scanner, "_ensure_gmgn_kol_profile", return_value={'kol_count': 1, 'checked_at': scanner.now_iso()}), patch(
+                'packages.meme_scanner.grok_jobs.prepare', return_value=(True, {'state': 'disabled'})
+            ), patch.object(scanner, "collect_narrative", return_value=narrative):
                 result = scanner.process_one(store, args(root))
             row = store.conn.execute(
                 "SELECT status, reason, attempts, next_attempt_at FROM jobs WHERE address=?",
@@ -1140,7 +1146,9 @@ class MemeScannerTests(unittest.TestCase):
             store.set_meta("milestone_scan_at")
             current = token("0xddd", 600_000, 350_000)
             narrative = {"returncode": 0, "reader_text": "这里不能写成官方币。"}
-            with patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
+            with patch.object(scanner, "_ensure_gmgn_kol_profile", return_value={'kol_count': 1, 'checked_at': scanner.now_iso()}), patch(
+                'packages.meme_scanner.grok_jobs.prepare', return_value=(True, {'state': 'disabled'})
+            ), patch.object(scanner, "fetch_completed_tokens", return_value=[current]), patch.object(scanner, "collect_narrative", return_value=narrative):
                 scanner.scan_once(store, args(root))
             job = store.conn.execute("SELECT status, reason FROM jobs WHERE address=?", (current.address,)).fetchone()
             self.assertEqual(job["status"], "publisher_pending")

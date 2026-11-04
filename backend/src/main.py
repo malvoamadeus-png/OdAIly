@@ -580,11 +580,11 @@ def parse_args() -> argparse.Namespace:
 
     meme_quote_audit = meme_subparsers.add_parser(
         "quote-audit",
-        help="Run the read-only Solana Meme quote comparison worker.",
+        help="Retired command; verification runs only before Meme writing.",
     )
     meme_quote_audit.add_argument("--scanner-db")
     meme_quote_audit.add_argument("--audit-db")
-    meme_quote_audit.add_argument("--once", action="store_true", help="Process one bounded quote-audit batch and exit.")
+    meme_quote_audit.add_argument("--once", action="store_true", help="Compatibility option for the retired command.")
 
     meme_fomo_login = meme_subparsers.add_parser(
         "fomo-login",

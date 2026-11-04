@@ -145,7 +145,9 @@ def test_daily_hot_publish_uses_shared_draft_and_does_not_touch_milestones(tmp_p
                            narrative_command=None, narrative_timeout=1, push_timeout=1, send=True)
     audit = {'state': 'failed', 'request_id': 'failed-test', 'result': None}
     narrative = {'status': 'success', 'reader_text': 'Launch 是发行平台。', 'primary_type': 'app_linked'}
-    with patch.object(grok_jobs, 'prepare', return_value=(True, audit)), \
+    with patch.object(scanner, '_ensure_gmgn_kol_profile', return_value={'kol_count': 1, 'checked_at': scanner.now_iso()}), \
+         patch.object(scanner, 'verify_market_cap', return_value={'status': 'passed'}), \
+         patch.object(grok_jobs, 'prepare', return_value=(True, audit)), \
          patch.object(scanner, 'collect_narrative', return_value=narrative), \
          patch.object(scanner, 'push_pending', return_value={'ok': True}) as push, \
          patch.object(scanner, 'LocalEditorPluginFeedWriter') as feed:

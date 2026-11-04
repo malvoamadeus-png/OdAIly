@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, Search } from 'lucide-react';
 import {
   getSystemInformationDetail,
@@ -228,7 +228,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
                   {typeof event.evidence?.raw_model_response === 'string' && <EvidenceText label="模型原始返回" value={event.evidence.raw_model_response} />}
                   {typeof event.evidence?.raw_model_response_excerpt === 'string' && <EvidenceText label="模型返回摘录" value={event.evidence.raw_model_response_excerpt} />}
                   {typeof event.details.response_archive_error === 'string' && <p className="systemInformationNotice">原始返回归档失败：{event.details.response_archive_error}</p>}
-                  {Boolean(event.details.input || event.details.rules) && <details className="systemInformationTechnical"><summary>本次输入与生效规则</summary><pre>{JSON.stringify({ input: event.details.input, rules: event.details.rules }, null, 2)}</pre></details>}
+                  {Boolean(event.details.input || event.details.rules) && <DeferredDetails className="systemInformationTechnical" label="本次输入与生效规则">{() => <pre>{JSON.stringify({ input: event.details.input, rules: event.details.rules }, null, 2)}</pre>}</DeferredDetails>}
                 </article>)}
               </section>
               {detail.evidence?.task && <section><h3>来源材料与稿件</h3>
@@ -238,7 +238,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
                 <EvidenceText label="写作输出" value={detail.evidence.pipeline?.writer_output} />
                 <EvidenceText label="实际投递回执" value={detail.evidence.pipeline?.push_result} />
               </section>}
-              <details className="systemInformationTechnical"><summary>技术记录</summary><pre>{JSON.stringify(detail.evidence, null, 2)}</pre></details>
+              <DeferredDetails key={detail.item_id} className="systemInformationTechnical" label="技术记录">{() => <pre>{JSON.stringify(detail.evidence, null, 2)}</pre>}</DeferredDetails>
               {onOpenWorkflow && <button className="secondaryButton" type="button" onClick={() => onOpenWorkflow(detail.item_id)}>查看实际路径</button>}
               {onOpenBusiness && VIEW_BY_BUSINESS[detail.business_key] && <button className="secondaryButton" type="button" onClick={() => onOpenBusiness(VIEW_BY_BUSINESS[detail.business_key])}>打开业务工作区 <ExternalLink size={15} /></button>}
             </>
@@ -250,9 +250,15 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
 }
 
 function EvidenceText({ label, value }: { label: string; value: unknown }) {
-  const text = typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2);
-  if (!text) return null;
-  return <details className="systemInformationEvidence"><summary>{label}</summary><pre>{text}</pre></details>;
+  if (value == null || value === '') return null;
+  return <DeferredDetails className="systemInformationEvidence" label={label}>{() => <pre>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre>}</DeferredDetails>;
+}
+
+function DeferredDetails({ label, className, children }: { label: string; className: string; children: () => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <details className={className} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary>{label}</summary>{open && children()}
+  </details>;
 }
 
 function resultLabel(result: string): string {

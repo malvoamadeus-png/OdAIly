@@ -1507,7 +1507,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._send_common_headers()
-        if self.path == '/console/hyperliquid-news/get':
+        if urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail'}:
             self.send_header('Access-Control-Max-Age', '600')
         self.end_headers()
 
@@ -1927,8 +1927,8 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any], *, no_store: bool = False) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
         compressed = False
-        hyperliquid = self.path == '/console/hyperliquid-news/get'
-        if hyperliquid and len(body) > 4096:
+        compressible = urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail'}
+        if compressible and len(body) > 4096:
             accepts = self.headers.get('Accept-Encoding', '')
             for encoding in accepts.split(','):
                 parts = [part.strip() for part in encoding.split(';')]
@@ -1946,7 +1946,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         self._send_common_headers()
         if no_store:
             self.send_header("Cache-Control", "no-store")
-        if hyperliquid:
+        if compressible:
             self.send_header('Vary', 'Accept-Encoding')
         if compressed:
             self.send_header('Content-Encoding', 'gzip')

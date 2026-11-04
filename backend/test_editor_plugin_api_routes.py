@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import gzip
 from http import HTTPStatus
 from http.client import HTTPConnection
 from threading import Thread
 from types import SimpleNamespace
+import pytest
 
 from packages.editor_plugin_api import (
     AuthenticatedEditor,
@@ -17,6 +19,54 @@ from packages.editor_plugin_api import (
 from packages.x_processing.worker import build_writer_prompt
 from packages.x_processing.models import PromptTemplateVersion
 from packages.x_capture.client import FXTwitterClient
+
+
+@pytest.mark.parametrize('method,path', [('POST', '/console/system-information'),
+    ('GET', '/console/meme/get?column=digest'), ('GET', '/console/meme/detail?id=1')])
+def test_information_http_compresses_details_and_caches_preflight(method, path):
+    class Service:
+        api_settings = SimpleNamespace(cors_allow_origin='*')
+        def authenticate_console_admin(self, authorization):
+            return AuthenticatedEditor(user_id='operator', email='operator@example.com', display_name='operator')
+        def execute_system_information(self, actor, payload):
+            return {'item': {'evidence': {'content': '完整来源材料' * 10000}}}
+        def get_meme_dashboard(self, actor, column='all'):
+            return self.execute_system_information(actor, {})
+        def get_meme_narrative_detail(self, actor, job_id):
+            return self.execute_system_information(actor, {})
+    server = EditorPluginApiServer(('127.0.0.1', 0), Service())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for encoding in ('gzip', 'gzip;q=0', ''):
+            connection = HTTPConnection(*server.server_address)
+            connection.request(method, path,
+                               json.dumps({'action': 'detail', 'item_id': 'news:1'}),
+                               {'Content-Type': 'application/json', 'Authorization': 'Bearer fixture',
+                                'Accept-Encoding': encoding})
+            response = connection.getresponse()
+            raw = response.read()
+            assert response.status == 200
+            assert response.getheader('Vary') == 'Accept-Encoding'
+            if encoding == 'gzip':
+                assert response.getheader('Content-Encoding') == 'gzip'
+                assert len(raw) < 2000
+                raw = gzip.decompress(raw)
+            else:
+                assert response.getheader('Content-Encoding') is None
+            assert json.loads(raw)['data']['item']['evidence']['content'] == '完整来源材料' * 10000
+            connection.close()
+        connection = HTTPConnection(*server.server_address)
+        connection.request('OPTIONS', path)
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 204
+        assert response.getheader('Access-Control-Max-Age') == '600'
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 class UnusedService:
