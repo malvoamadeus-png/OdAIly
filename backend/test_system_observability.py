@@ -1007,7 +1007,7 @@ def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -
         SourceAuditInstaller().install(source, (spec,))
         with sqlite3.connect(source) as conn:
             conn.execute(
-                "UPDATE odaily_observability_meta SET meta_value='2' "
+                "UPDATE odaily_observability_meta SET meta_value='3' "
                 "WHERE meta_key='source_audit_trigger_version:main'"
             )
             conn.execute("""
