@@ -16,6 +16,9 @@ from zoneinfo import ZoneInfo
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 from packages.x_processing.ai_client import extract_chat_completion_text, extract_response_text, parse_openai_response_payload
 from .store import SQLITE_BUSY_TIMEOUT_MS, SystemInformationStore, timestamp_ms
+from .error_policy import EXTERNAL_CATEGORIES, day_start_ms, expire_external_errors, external_error, failure_category
+
+CURRENT_ERROR_SCOPE = "NOT (julianday(last_seen_at)<julianday('now','+8 hours','start of day','-8 hours') AND odaily_external_error(scope_json,evidence_json,actual))"
 
 
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -210,6 +213,7 @@ class SystemReviewRepository:
             self.path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, factory=ClosingSQLiteConnection,
         )
         conn.row_factory = sqlite3.Row
+        conn.create_function('odaily_external_error', 3, lambda scope, evidence, actual: int(external_error({'scope': scope, 'evidence': evidence, 'status': 'failed', 'actual': actual})), deterministic=True)
         conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
@@ -263,7 +267,7 @@ class SystemReviewRepository:
     def pending_analysis(self, limit: int = 12) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM system_review_items WHERE analysis_status IN ('queued','failed','budget_paused') AND analysis_attempts<? ORDER BY last_seen_at,item_key LIMIT ?",
+                f"SELECT * FROM system_review_items WHERE {CURRENT_ERROR_SCOPE} AND analysis_status IN ('queued','failed','budget_paused') AND analysis_attempts<? ORDER BY last_seen_at,item_key LIMIT ?",
                 (MAX_ATTEMPTS, limit),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -329,7 +333,7 @@ class SystemReviewRepository:
     def list_items(self, payload: dict[str, Any]) -> dict[str, Any]:
         status = str(payload.get("status") or "pending")
         task_kind = str(payload.get("task_kind") or "all")
-        clauses: list[str] = []
+        clauses: list[str] = [CURRENT_ERROR_SCOPE]
         params: list[Any] = []
         if status != "all":
             clauses.append("status=?")
@@ -374,6 +378,8 @@ class SystemReviewRepository:
             if not row:
                 raise ValueError("巡检问题不存在")
             result = dict(row)
+            if (timestamp_ms(result.get('last_seen_at')) or 0) < day_start_ms() and external_error(result):
+                raise ValueError('外部错误明细已超过当天留存期，请查看每日错误次数统计')
             for source, target in (("scope_json", "scope"), ("evidence_json", "evidence"), ("counter_evidence_json", "counter_evidence")):
                 decoded = json.loads(result.pop(source) or "{}")
                 result[target] = self.expand_sample_references(decoded) if target in {"evidence", "counter_evidence"} else decoded
@@ -443,7 +449,7 @@ class SystemReviewRepository:
 
     def recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(
+            return [expire_external_errors(dict(row), timestamp_ms(row["completed_at"] or row["started_at"])) for row in conn.execute(
                 "SELECT run_key,task_kind,status,started_at,completed_at,items_created,error "
                 "FROM system_review_runs ORDER BY started_at DESC LIMIT ?", (max(1, min(50, limit)),)
             ).fetchall()]
@@ -959,10 +965,16 @@ class SystemReviewService:
             return re.sub(r"\b\d{3,}\b", "#", str(value or "unknown"))[:240]
 
         def add_failure(source: Any, stage: str, error_code: Any, error: Any, version: Any, row: dict[str, Any], *, evidence_level: str) -> None:
+            category = failure_category(error)
+            if category == 'expected_result':
+                return
+            occurred = timestamp_ms(row.get('finished_at') or row.get('updated_at') or row.get('started_at'))
+            if category in EXTERNAL_CATEGORIES and (occurred is None or occurred < day_start_ms()):
+                return
             message = error_signature(error)
             version_key = str(version or "unknown")[:160]
             key = (str(source or "unknown"), stage, str(error_code or "unknown"), message, version_key)
-            groups.setdefault(key, []).append({**row, "evidence_level": evidence_level, "error_signature": message, "rule_version": version_key})
+            groups.setdefault(key, []).append({**row, "evidence_level": evidence_level, "error_signature": message, "rule_version": version_key, "failure_category": category})
 
         with self._connect() as conn:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -992,6 +1004,8 @@ class SystemReviewService:
                 rows = conn.execute("SELECT t.id,t.source,t.source_item_id,t.status,t.updated_at,p.last_error,p.prompt_template_key,p.prompt_version_id FROM tasks t JOIN x_task_pipeline p ON p.task_id=t.id WHERE (t.status LIKE '%failed' OR p.last_error IS NOT NULL) ORDER BY t.updated_at DESC LIMIT 1500").fetchall()
                 for row in rows:
                     value = dict(row)
+                    if not value.get('last_error'):
+                        continue
                     version = f"{value.get('prompt_template_key') or 'unknown'}:{value.get('prompt_version_id') or 'unknown'}"
                     add_failure(value.get("source"), "current_status", "unknown", value.get("last_error") or value.get("status"), version, value, evidence_level="current_task_snapshot")
             if "x_capture_attempts" in tables:
@@ -1060,7 +1074,7 @@ class SystemReviewService:
             affected = len(subjects)
             recovered = len(recovered_subjects)
             failed = len({subject for subject, row in subjects.items() if subject not in recovered_subjects and subject not in stopped_subjects and (str(row.get("status") or "").endswith("failed") or row.get("error") or row.get("error_message") or row.get("last_error"))})
-            identity = {"source": source, "stage": stage, "error_code": error_code, "error_signature": message, "rule_version": version}
+            identity = {"source": source, "stage": stage, "error_code": error_code, "error_signature": message, "rule_version": version, 'failure_category': rows_in_cluster[0].get('failure_category')}
             issues.append({"identity": identity, "category": "failure_recovery_cluster", "title": f"{source} · {stage} 错误聚合",
                 "summary": f"影响对象 {affected} 个；观察到恢复 {recovered} 个；仍处失败状态 {failed} 个；停止 {len(stopped_subjects)} 个。",
                 "severity": "high" if affected >= 10 else "medium", "certainty": "medium",

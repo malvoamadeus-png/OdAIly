@@ -14,14 +14,18 @@ from typing import Any
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 from .registry import SOURCE_TO_BUSINESS
 from .store import SystemInformationStore, timestamp_ms
+from .news import duplicate_target, json_object, news_title, task_admission
+from .error_policy import failure_category
 
 
 STATUS_LABELS = {
+    'judging': ('价值判断中', 'processing'), 'deduping': ('查重中', 'processing'),
+    'writing': ('写作中', 'processing'), 'formatting': ('稿件整理中', 'processing'), 'publishing': ('投递中', 'processing'),
     "pending": ("已收集", "processing"), "judged": ("价值判断完成", "processing"),
-    "searched": ("查重完成", "processing"), "deduped": ("发现重复，停止写作", "stopped"),
+    "searched": ("查重完成", "processing"), "deduped": ("已通过查重及前置判断", "processing"),
     "duplicate": ("发现重复，停止写作", "stopped"), "discarded": ("判断后停止", "stopped"),
     "written": ("已生成草稿", "processing"), "formatted": ("已整理稿件", "processing"),
-    "publisher_pending": ("等待后台审核", "backoffice"), "ready_review": ("等待后台审核", "backoffice"),
+    "publisher_pending": ("等待投递", "processing"), "ready_review": ("挂后台", "backoffice"),
     "auto_published": ("已直发", "direct_publish"), "published": ("已发布", "direct_publish"),
 }
 
@@ -31,7 +35,7 @@ ADDITIONAL_TAIL_RECHECK_LIMIT = 25
 SOURCE_OUTBOX_RETENTION_MS = 24 * 60 * 60_000
 SOURCE_OUTBOX_CLEANUP_INTERVAL_MS = 5 * 60_000
 SOURCE_OUTBOX_CLEANUP_BATCH_SIZE = 5_000
-SOURCE_AUDIT_TRIGGER_VERSION = 4
+SOURCE_AUDIT_TRIGGER_VERSION = 5
 RETENTION_ONLY_DELETE_TABLES = frozenset({"x_capture_attempts"})
 NON_SEMANTIC_AUDIT_COLUMNS = frozenset({
     "updated_at", "last_seen_at", "last_polled_at", "last_checked_at", "heartbeat_at",
@@ -131,7 +135,7 @@ CONFIG_AUDIT_COLUMN_NAMES = frozenset({
 CONFIGURATION_TABLES = frozenset(spec.table for spec in TABLE_SPECS if spec.record_kind == "configuration")
 
 AUDIT_COLUMN_NAMES = frozenset({
-    "id", "source", "source_item_id", "event_id", "event_key", "identity_key",
+    "id", "source", "source_item_id", "event_id", "event_key", "identity_key", "check_id",
     "tweet_id", "task_id", "update_id", "attempt_id", "tx_hash", "fill_key",
     "trigger_key", "status", "state", "result", "decision", "stage", "kind",
     "type", "title", "name", "symbol", "address", "contract_address", "reason",
@@ -270,15 +274,17 @@ def _first(row: dict[str, Any], *names: str) -> Any:
 
 def _result(status: str, business_key: str, row: dict[str, Any]) -> str:
     value = status.casefold().replace("-", "_")
+    if failure_category(_first(row, 'last_error', 'error', 'reason')) == 'expected_result':
+        return 'stopped'
     if any(term in value for term in ("failed", "failure", "error", "exhausted")) or _first(row, "last_error", "error"):
         return "failed"
-    if value in {"publisher_pending", "ready_review", "pending_review", "backoffice", "pending_backend"}:
+    if value in {"ready_review", "pending_review", "backoffice", "pending_backend"}:
         return "backoffice"
     if value in {"auto_published", "published", "sent", "sent_success", "success", "succeeded"}:
         return "internal_complete" if business_key == "x_agent" else "direct_publish"
-    if value in {"ignored", "discarded", "duplicate", "deduped", "skipped", "ended", "exempt"}:
+    if value in {"ignored", "discarded", "duplicate", "skipped", "ended", "exempt"}:
         return "stopped"
-    if value in {"pending", "queued", "processing", "running", "retry", "waiting", "deferred"}:
+    if value in {"pending", "queued", "processing", "running", "retry", "waiting", "deferred", "deduped", "publisher_pending", 'judging', 'deduping', 'writing', 'formatting', 'publishing'}:
         return "processing"
     return "unknown"
 
@@ -327,24 +333,35 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         "task_id": int(row["task_id"]) if str(row.get("task_id") or "").isdigit() else None,
         "title": title, "summary": summary[:1200], "source_url": _first(row, "source_url", "post_url", "tx_url", "url", "official_url"),
         "stage": stage, "status": raw_status, "result": "configuration_change" if spec.record_kind == "configuration" else _result(raw_status, spec.business_key, row),
-        "failure_category": "program_or_unknown" if raw_status.casefold().endswith(("failed", "error")) else None,
+        "failure_category": failure_category(_first(row, 'last_error', 'error', 'error_message')) if _result(raw_status, spec.business_key, row) == 'failed' else None,
         "created_at_ms": created_ms, "updated_at_ms": updated_ms,
         "source_database": str(source_database), "source_table": spec.table,
         "source_row_id": str(row.get("id", row.get("__obs_rowid__"))),
         "legacy_history": created_ms is None or created_ms < started_at_ms,
         "reason": summary[:1200] or None, "error_code": str(_first(row, "error_code") or "unknown") if _first(row, "last_error", "error") else None,
         "search_extra": " ".join(str(value) for key, value in row.items() if key != "__obs_rowid__" and isinstance(value, (str, int, float))),
+        "news_visible": False,
     }
+    # Only actual draft/news outputs are standalone news; technical records remain diagnostic.
+    if spec.table == 'business_message_inbox' and _first(row, 'writer4_title', 'writer2_title', 'title'):
+        snapshot['news_visible'] = bool(_first(row, 'writer4_title', 'writer2_title') or raw_status in {'ready_review', 'published', 'sent'})
+    if spec.database_key == 'meme' and spec.table == 'jobs':
+        payload = json_object(row.get('payload_json') or row.get('payload'))
+        draft_title = _first(row, 'draft_title', 'title') or _first(payload, 'title', 'draft_title')
+        if draft_title and raw_status not in {'discarded', 'skipped', 'expired', 'filtered'}:
+            snapshot['title'] = news_title(draft_title)
+            snapshot['news_visible'] = True
+    snapshot['admission'] = 'accepted' if snapshot['news_visible'] else 'unassessed'
     return snapshot, {"recorded_scope": "source_table_snapshot", "row": row, "observed_at_ms": observed_at_ms}
 
 
 def _stage(status: str) -> str:
     value = status.casefold()
-    if "judge" in value:
+    if "judg" in value:
         return "判断"
     if "search" in value or "dedup" in value or "duplicate" in value:
         return "查重"
-    if "write" in value:
+    if value.startswith('writ'):
         return "写作"
     if "format" in value:
         return "稿件整理"
@@ -388,6 +405,7 @@ class MainTaskProjector:
 
     def run_once(self) -> dict[str, int]:
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        self._cleanup_dependency_errors(now_ms)
         started_at_ms = int(self.store.get_state("observability_started_at", str(now_ms)) or now_ms)
         last_id = int(self.store.get_state("main_tasks_watermark", "0") or 0)
         imported = changed = 0
@@ -397,12 +415,13 @@ class MainTaskProjector:
                 if "id" not in columns:
                     raise RuntimeError("主库缺少 tasks.id")
                 selected = [name for name in (
-                    "id", "source", "source_item_id", "source_url", "title", "content", "status", "created_at", "updated_at", "metadata",
+                    "id", "source", "source_item_id", "source_url", "title", "content", "status", "created_at", "updated_at", "metadata", "raw_payload",
                 ) if name in columns]
                 pipeline_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(x_task_pipeline)")}
                 pipeline_selected = [name for name in (
-                    "final_title", "final_content", "writer_output", "publisher_output", "publisher_reason_code", "last_error", "push_result",
+                    "news_type", "judge_output", "search_result", "draft_title", "final_title", "final_content", "writer_output", "publisher_output", "publisher_reason_code", "last_error", "push_result",
                     "judge_completed_at", "search_completed_at", "write_completed_at", "format_completed_at", "publisher_decided_at", "publish_completed_at",
+                    "updated_at",
                 ) if name in pipeline_columns]
                 if not (pipeline_selected and "task_id" in pipeline_columns):
                     pipeline_selected = []
@@ -420,6 +439,13 @@ class MainTaskProjector:
                 new_rows = select_rows("WHERE t.id>?", (last_id,), "ASC", self.batch_size)
                 tail_rows = select_rows("WHERE t.id<=?", (last_id or 2**63 - 1,), "DESC", min(self.batch_size, 300))
                 rows_by_id = {int(row["id"]): row for row in (*new_rows, *tail_rows)}
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='odaily_observability_outbox'").fetchone():
+                    audit_watermark = int(self.store.get_state('source_audit_main_watermark', '0') or 0)
+                    dirty = conn.execute("SELECT source_row_id FROM (SELECT source_row_id,table_name FROM odaily_observability_outbox WHERE seq>? ORDER BY seq LIMIT ?) WHERE table_name='tasks'", (audit_watermark, self.outbox_batch_size)).fetchall()
+                    dirty_ids = sorted({int(r[0]) for r in dirty if str(r[0]).isdigit()} - rows_by_id.keys())
+                    if dirty_ids:
+                        extra = select_rows('WHERE t.id IN (' + ','.join('?' for _ in dirty_ids) + ')', tuple(dirty_ids), 'ASC', len(dirty_ids))
+                        rows_by_id.update({int(r['id']): r for r in extra})
                 attempt_events: list[sqlite3.Row] = []
                 attempt_rows: dict[int, sqlite3.Row] = {}
                 attempt_event_watermark = int(self.store.get_state("main_attempt_events_watermark", "0") or 0)
@@ -458,7 +484,7 @@ class MainTaskProjector:
                     source = str(value.get("source") or "unknown")
                     status = str(value.get("status") or "unknown")
                     label, result = STATUS_LABELS.get(status, (status.replace("_", " "), "failed" if status.endswith("failed") else "unknown"))
-                    title = str(value.get("pipeline_final_title") or value.get("title") or "")
+                    title = news_title(value.get('pipeline_final_title'), value.get('pipeline_draft_title'), value.get('title'), value.get('content'))
                     writer_output = _decode(value.get("pipeline_writer_output"))
                     publisher_output = _decode(value.get("pipeline_publisher_output"))
                     reason = None
@@ -469,13 +495,17 @@ class MainTaskProjector:
                     error = value.get("pipeline_last_error")
                     summary = str(error or reason or label)
                     created_at_ms = timestamp_ms(value.get("created_at"))
-                    updated_at_ms = timestamp_ms(value.get("updated_at")) or max(
-                        (timestamp_ms(value.get(f"pipeline_{key}")) for key in (
+                    updated_at_ms = max(
+                        [stamp for stamp in [timestamp_ms(value.get('updated_at')), created_at_ms] if stamp is not None] +
+                        [timestamp_ms(value.get(f"pipeline_{key}")) for key in (
                             "judge_completed_at", "search_completed_at", "write_completed_at", "format_completed_at",
-                            "publisher_decided_at", "publish_completed_at",
-                        ) if timestamp_ms(value.get(f"pipeline_{key}")) is not None),
-                        default=created_at_ms,
+                            "publisher_decided_at", "publish_completed_at", "updated_at",
+                        ) if timestamp_ms(value.get(f"pipeline_{key}")) is not None],
+                        default=None,
                     )
+                    pipeline = {key.removeprefix('pipeline_'): value[key] for key in value if key.startswith('pipeline_')}
+                    admission = task_admission(status, pipeline, source)
+                    metadata = json_object(value.get('metadata'))
                     task_id = int(value["id"])
                     stage = _stage(status)
                     snapshot = {
@@ -489,6 +519,10 @@ class MainTaskProjector:
                         "source_database": str(self.source_database), "source_table": "tasks", "source_row_id": task_id,
                         "legacy_history": created_at_ms is None or created_at_ms < started_at_ms, "reason": str(reason or "")[:1200] or None,
                         "error_code": "unknown" if error else None,
+                        "admission": admission, "news_visible": admission in {'accepted', 'duplicate'} and source not in {'stock_market', 'gate_market'},
+                        "duplicate_target": duplicate_target(pipeline),
+                        'source_name': _first(metadata, 'effective_author_name', 'author_username', 'account_username', 'site_display_name', 'source_label') or source,
+                        'source_updated_at_ms': timestamp_ms(_first(metadata, 'source_updated_at', 'source_modified_at')),
                         "search_extra": " ".join(
                             [str(value.get(key) or "") for key in ("content", "metadata", "source_item_id", "source_url")]
                             + [str(value.get(key) or "") for key in ("pipeline_final_content", "pipeline_writer_output", "pipeline_publisher_output")]
@@ -591,6 +625,30 @@ class MainTaskProjector:
             self.store.set_state("main_tasks_last_error", f"{type(exc).__name__}: {exc}"[:1000])
             raise
 
+    def _cleanup_dependency_errors(self, now_ms: int) -> None:
+        if now_ms - int(self.store.get_state('dependency_cleanup_last_ms', '0') or 0) < 60_000:
+            return
+        from .error_retention import cleanup_dependency_errors, cleanup_observation_errors, dependency_error_totals
+        paths = {'main': self.source_database, **self.additional_databases}
+        for database_key, path in paths.items():
+            if not path.is_file():
+                continue
+            try:
+                cleanup_dependency_errors(path, tables=[spec.table for spec in self.table_specs if spec.database_key == database_key], database_key=database_key, now_ms=now_ms)
+                self.store.record_external_error_totals(database_key, dependency_error_totals(path))
+                self.store.set_state(f'dependency_cleanup_{database_key}_error', '')
+            except sqlite3.Error as exc:
+                self.store.set_state(f'dependency_cleanup_{database_key}_error', f'{type(exc).__name__}: {exc}'[:300])
+        cleanup_observation_errors(self.store, now_ms=now_ms)
+        from .business_retention import trim_archived_task_payloads
+        try:
+            trimmed = trim_archived_task_payloads(self.source_database, self.store, now_ms=now_ms, dry_run=False)
+            self.store.set_state('task_payload_retention_last_result', json.dumps(trimmed))
+            self.store.set_state('task_payload_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('task_payload_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        self.store.set_state('dependency_cleanup_last_ms', now_ms)
+
     def _project_additional(self, now_ms: int, started_at_ms: int) -> tuple[int, int]:
         last_sync = int(self.store.get_state("additional_projection_last_ms", "0") or 0)
         if now_ms - last_sync < ADDITIONAL_PROJECTION_INTERVAL_MS:
@@ -659,6 +717,7 @@ class MainTaskProjector:
                     for raw in rows:
                         row = dict(raw)
                         snapshot, evidence = _generic_snapshot(spec, path, row, now_ms, started_at_ms)
+                        self._link_to_news(conn, snapshot, row)
                         changed += int(self.store.upsert_snapshot(snapshot, evidence))
                         imported += 1
                     if new_rows:
@@ -696,55 +755,57 @@ class MainTaskProjector:
                 (watermark, self.outbox_batch_size),
             ).fetchall()
         entries: list[dict[str, Any]] = []
-        for event in rows:
-            spec = by_table.get(str(event["table_name"]))
-            if spec is None:
-                continue
-            if spec.table in RETENTION_ONLY_DELETE_TABLES and str(event["operation"]) == "delete":
-                continue
-            payload = _decode(event["payload_json"])
-            if not isinstance(payload, dict):
-                payload = {}
-            source_row = {**payload, "__obs_rowid__": event["source_row_id"]}
-            snapshot, _evidence = _generic_snapshot(spec, path, source_row, now_ms, 0)
-            snapshot["legacy_history"] = False
-            snapshot["updated_at_ms"] = timestamp_ms(
-                payload.get("updated_at") or payload.get("completed_at") or payload.get("last_seen_at")
-            ) or int(event["happened_at_ms"])
-            compact_evidence = {
-                "recorded_scope": "transactional_source_outbox",
-                "operation": str(event["operation"]),
-                "source_table": spec.table,
-                "source_row_id": str(event["source_row_id"]),
-                "payload": payload,
-            }
-            status = str(snapshot["status"])
-            result = str(snapshot["result"])
-            operation = str(event["operation"])
-            reason = _first(payload, "last_error", "error_message", "failure_reason", "status_reason", "reason")
-            config_fields = [f"{key}={value}" for key, value in payload.items() if key not in {"id", "created_at", "updated_at"} and value is not None]
-            summary = str(
-                reason or (
-                    "配置生效变更：" + " · ".join(config_fields) if spec.record_kind == "configuration"
-                    else
-                    f"{spec.source} 记录已删除" if operation == "delete"
-                    else f"{spec.source} {operation} 状态变更：{status}"
-                )
-            )[:1200]
-            entries.append({
-                "snapshot": snapshot,
-                "evidence": compact_evidence,
-                "skip_snapshot_if_present": spec.table == "tasks",
-                "event_id": f"source-audit:{database_key}:{event['event_id']}",
-                "stage": str(snapshot["stage"]),
-                "status": "deleted" if operation == "delete" else status,
-                "result": "unknown" if operation == "delete" else result,
-                "happened_at_ms": int(event["happened_at_ms"]),
-                "summary": summary,
-                "reason": str(reason)[:1200] if reason else None,
-                "error_code": str(_first(payload, "error_code") or "unknown") if reason else None,
-                "details": {"operation": operation, "source_table": spec.table, "source_row_id": str(event["source_row_id"])},
-            })
+        with self._read_path(path) as link_conn:
+            for event in rows:
+                spec = by_table.get(str(event["table_name"]))
+                if spec is None:
+                    continue
+                if spec.table in RETENTION_ONLY_DELETE_TABLES and str(event["operation"]) == "delete":
+                    continue
+                payload = _decode(event["payload_json"])
+                if not isinstance(payload, dict):
+                    payload = {}
+                source_row = {**payload, "__obs_rowid__": event["source_row_id"]}
+                snapshot, _evidence = _generic_snapshot(spec, path, source_row, now_ms, 0)
+                self._link_to_news(link_conn, snapshot, source_row)
+                snapshot["legacy_history"] = False
+                snapshot["updated_at_ms"] = timestamp_ms(
+                    payload.get("updated_at") or payload.get("completed_at") or payload.get("last_seen_at")
+                ) or int(event["happened_at_ms"])
+                compact_evidence = {
+                    "recorded_scope": "transactional_source_outbox",
+                    "operation": str(event["operation"]),
+                    "source_table": spec.table,
+                    "source_row_id": str(event["source_row_id"]),
+                    "payload": payload,
+                }
+                status = str(snapshot["status"])
+                result = str(snapshot["result"])
+                operation = str(event["operation"])
+                reason = _first(payload, "last_error", "error_message", "failure_reason", "status_reason", "reason")
+                config_fields = [f"{key}={value}" for key, value in payload.items() if key not in {"id", "created_at", "updated_at"} and value is not None]
+                summary = str(
+                    reason or (
+                        "配置生效变更：" + " · ".join(config_fields) if spec.record_kind == "configuration"
+                        else
+                        f"{spec.source} 记录已删除" if operation == "delete"
+                        else f"{spec.source} {operation} 状态变更：{status}"
+                    )
+                )[:1200]
+                entries.append({
+                    "snapshot": snapshot,
+                    "evidence": compact_evidence,
+                    "skip_snapshot_if_present": spec.table == "tasks",
+                    "event_id": f"source-audit:{database_key}:{event['event_id']}",
+                    "stage": str(snapshot["stage"]),
+                    "status": "deleted" if operation == "delete" else status,
+                    "result": "unknown" if operation == "delete" else result,
+                    "happened_at_ms": int(event["happened_at_ms"]),
+                    "summary": summary,
+                    "reason": str(reason)[:1200] if reason else None,
+                    "error_code": str(_first(payload, "error_code") or "unknown") if reason else None,
+                    "details": {"operation": operation, "source_table": spec.table, "source_row_id": str(event["source_row_id"])},
+                })
         imported = changed = 0
         if rows:
             last_seq = int(rows[-1]["seq"])
@@ -754,6 +815,32 @@ class MainTaskProjector:
             watermark = last_seq
         self._cleanup_source_outbox(database_key, path, watermark, now_ms)
         return imported, changed
+
+    @staticmethod
+    def _link_to_news(conn: sqlite3.Connection, snapshot: dict[str, Any], row: dict[str, Any]) -> None:
+        table = snapshot['source_table']
+        task_id = row.get('task_id')
+        if not task_id and table not in {'auditor_checks', 'fact_checks', 'fact_check_runs', 'newsflash_items'}:
+            return
+        tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if table == 'newsflash_items' and 'tasks' in tables:
+            task = conn.execute('SELECT id FROM tasks WHERE source=? AND source_item_id=? ORDER BY id LIMIT 2', (row.get('source'), row.get('source_item_id'))).fetchall()
+            if len(task) == 1:
+                task_id = task[0][0]
+        if table == 'fact_check_runs' and 'fact_checks' in tables:
+            check = conn.execute('SELECT source_item_id FROM fact_checks WHERE id=?', (row.get('check_id'),)).fetchone()
+            row = {**row, 'source_item_id': check[0] if check else None}
+        if table in {'auditor_checks', 'fact_checks', 'fact_check_runs'} and 'newsflash_production_metadata' in tables:
+            match = conn.execute('SELECT delivery_key FROM newsflash_production_metadata WHERE odaily_id=? AND id_match_status=\'matched\'', (row.get('source_item_id'),)).fetchone()
+            if match:
+                key = str(match[0])
+                if key.startswith('odaily-task-'):
+                    task_id = key.removeprefix('odaily-task-')
+        if task_id and 'tasks' in tables:
+            task = conn.execute('SELECT id,source,source_item_id FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if task:
+                snapshot['parent_item_id'] = f"task:{task['source']}:{task['source_item_id'] or task['id']}"
+                snapshot['news_visible'] = False
 
     def _cleanup_source_outbox(self, database_key: str, path: Path, watermark: int, now_ms: int) -> None:
         cleanup_state_key = f"source_audit_{database_key}_cleanup_last_ms"

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.storage import ClosingSQLiteConnection
+from .error_policy import day_start_ms, external_error, expire_external_errors, failure_category, error_messages, scrub_external_errors
 
 SQLITE_BUSY_TIMEOUT_MS = 60_000
 
@@ -220,6 +221,25 @@ class SystemInformationStore:
                 )
         if not self.get_state("observability_started_at"):
             self.set_state("observability_started_at", int(datetime.now(UTC).timestamp() * 1000))
+        with self.connect() as conn:
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(system_information_items)')}
+            for name, definition in (
+                ('news_visible', 'INTEGER NOT NULL DEFAULT 0'), ('admission', "TEXT NOT NULL DEFAULT 'unassessed'"),
+                ('parent_item_id', 'TEXT'), ('duplicate_json', 'TEXT'),
+                ('source_name', "TEXT NOT NULL DEFAULT ''"), ('source_updated_at_ms', 'INTEGER'),
+            ):
+                if name not in columns:
+                    conn.execute(f'ALTER TABLE system_information_items ADD COLUMN {name} {definition}')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_system_information_news_activity ON system_information_items(updated_at_ms DESC,item_id DESC) WHERE news_visible=1 AND parent_item_id IS NULL')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_system_information_parent ON system_information_items(parent_item_id)')
+            conn.execute('''CREATE TABLE IF NOT EXISTS system_information_external_error_daily (
+                database_key TEXT NOT NULL,error_date TEXT NOT NULL,source TEXT NOT NULL,stage TEXT NOT NULL,
+                category TEXT NOT NULL,occurrences INTEGER NOT NULL,
+                PRIMARY KEY(database_key,error_date,source,stage,category))''')
+            version = conn.execute("SELECT 1 FROM system_information_state WHERE state_key='news_projection_v1'").fetchone()
+            if version is None:
+                conn.execute("UPDATE system_information_state SET state_value='0' WHERE state_key='main_tasks_watermark' OR (state_key LIKE 'adapter_%_watermark')")
+                conn.execute("INSERT INTO system_information_state VALUES('news_projection_v1','1',?)", (int(datetime.now(UTC).timestamp()*1000),))
 
     def save_evidence(self, evidence: Any) -> str:
         safe = _safe_json(evidence)
@@ -772,12 +792,23 @@ class SystemInformationStore:
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,
     ) -> bool:
-        fingerprint = _fingerprint(snapshot)
+        operation_time = snapshot.get('updated_at_ms') or snapshot.get('created_at_ms')
+        material = expire_external_errors({'snapshot': snapshot, 'evidence': evidence}, operation_time)
+        snapshot, evidence = material['snapshot'], material['evidence']
+        messages = error_messages(evidence)
+        if messages and operation_time is not None and operation_time >= day_start_ms():
+            snapshot = {**snapshot, 'failure_category': failure_category(messages[0])}
+        fingerprint = _fingerprint({key: value for key, value in snapshot.items() if key != 'updated_at_ms'})
         item_id = str(snapshot["item_id"])
         previous = conn.execute(
             "SELECT fingerprint,title,summary,source_url,stage,status,result FROM system_information_items WHERE item_id=?", (item_id,),
         ).fetchone()
         if previous is not None and previous["fingerprint"] == fingerprint:
+            conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?),observed_at_ms=? WHERE item_id=? AND COALESCE(updated_at_ms,0)<?',
+                         (snapshot.get('updated_at_ms') or 0, observed, item_id, snapshot.get('updated_at_ms') or 0))
+            if snapshot.get('parent_item_id'):
+                conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?) WHERE item_id=?',
+                             (snapshot.get('updated_at_ms') or 0, snapshot['parent_item_id']))
             return False
         evidence_ref = None
         if evidence is not None:
@@ -794,7 +825,7 @@ class SystemInformationStore:
                 task_id=excluded.task_id,title=excluded.title,summary=excluded.summary,source_url=excluded.source_url,
                 stage=excluded.stage,status=excluded.status,result=excluded.result,
                 failure_category=excluded.failure_category,created_at_ms=excluded.created_at_ms,
-                updated_at_ms=excluded.updated_at_ms,observed_at_ms=excluded.observed_at_ms,
+                updated_at_ms=CASE WHEN updated_at_ms IS NULL THEN excluded.updated_at_ms WHEN excluded.updated_at_ms IS NULL THEN updated_at_ms ELSE MAX(updated_at_ms,excluded.updated_at_ms) END,observed_at_ms=excluded.observed_at_ms,
                 source_database=excluded.source_database,source_table=excluded.source_table,
                 source_row_id=excluded.source_row_id,evidence_ref=excluded.evidence_ref,
                 fingerprint=excluded.fingerprint""",
@@ -808,6 +839,12 @@ class SystemInformationStore:
             ),
         )
         conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
+        conn.execute('UPDATE system_information_items SET news_visible=?,admission=?,parent_item_id=?,duplicate_json=?,source_name=?,source_updated_at_ms=? WHERE item_id=?',
+                     (int(snapshot.get('news_visible', True)), snapshot.get('admission', 'unassessed'),
+                      snapshot.get('parent_item_id'), json.dumps(snapshot.get('duplicate_target'), ensure_ascii=False), snapshot.get('source_name') or '', snapshot.get('source_updated_at_ms'), item_id))
+        if snapshot.get('parent_item_id'):
+            conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?) WHERE item_id=?',
+                         (snapshot.get('updated_at_ms') or 0, snapshot['parent_item_id']))
         searchable = _searchable_text(
             tuple(snapshot.get(key) for key in ("title", "summary", "source", "source_id", "source_url")),
             _safe_json(evidence) if evidence is not None else None,
@@ -885,6 +922,14 @@ class SystemInformationStore:
         evidence_ref: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> bool:
+        expired_external = happened_at_ms is not None and happened_at_ms < day_start_ms() and external_error(
+            {'reason': reason, 'error_code': error_code, 'status': status, 'summary': summary, 'evidence': evidence})
+        material = expire_external_errors({'reason': reason, 'error_code': error_code, 'summary': summary,
+                                          'status': status, 'evidence': evidence, 'details': details}, happened_at_ms)
+        reason, error_code, summary = material['reason'], material['error_code'], material['summary']
+        evidence, details = material['evidence'], material['details']
+        if expired_external:
+            evidence_ref = None
         if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
             return False
         if evidence is not None:
@@ -903,6 +948,8 @@ class SystemInformationStore:
              summary[:1200], reason[:1200] if reason else None, error_code, evidence_ref,
              json.dumps(details or {}, ensure_ascii=False, separators=(",", ":"))),
         )
+        if cursor.rowcount and event_type == 'stage_attempt' and happened_at_ms is not None:
+            conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?) WHERE item_id=?', (happened_at_ms, item_id))
         return cursor.rowcount > 0
 
     def apply_source_audit_batch(
@@ -966,6 +1013,17 @@ class SystemInformationStore:
                 "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
                 (key, encoded, int(datetime.now(UTC).timestamp() * 1000)),
             )
+
+    def record_external_error_totals(self, database_key: str, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with self.connect() as conn:
+            conn.executemany('INSERT INTO system_information_external_error_daily VALUES(?,?,?,?,?,?) ON CONFLICT(database_key,error_date,source,stage,category) DO UPDATE SET occurrences=excluded.occurrences',
+                             ((database_key, row['error_date'], row['source'], row['stage'], row['category'], row['occurrences']) for row in rows))
+
+    def external_error_totals(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return [dict(row) for row in conn.execute('SELECT error_date,source,stage,category,SUM(occurrences) AS occurrences FROM system_information_external_error_daily GROUP BY error_date,source,stage,category ORDER BY error_date DESC,source,stage,category LIMIT 500')]
 
     def get_state(self, key: str, default: str = "") -> str:
         with self.connect() as conn:
@@ -1049,19 +1107,21 @@ class SystemInformationStore:
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
         limit = max(1, min(int(payload.get("limit") or 50), 100))
-        sort = "updated_at_ms" if payload.get("sort") == "activity" else "created_at_ms"
+        sort = "created_at_ms" if payload.get("sort") == "created" else "updated_at_ms"
         clauses: list[str] = []
         params: list[Any] = []
+        if payload.get('view') == 'news':
+            clauses.extend(['i.news_visible=1', 'i.parent_item_id IS NULL'])
         for key, column in (("business", "business_key"), ("source", "source"), ("stage", "stage"), ("status", "status"), ("result", "result"), ("failure_category", "failure_category")):
             value = str(payload.get(key) or "").strip()
             if value and value != "all":
                 if key == "status" and value in {"failed", "processing", "backoffice", "direct_publish", "normal_stop"}:
                     groups = {
                         "failed": "i.status LIKE '%failed' OR i.status IN ('failed','error','exhausted')",
-                        "processing": "i.status IN ('pending','judged','searched','written','formatted','queued','processing','running','retry')",
-                        "backoffice": "i.status IN ('publisher_pending','ready_review','pending_review','backoffice')",
+                        "processing": "i.status IN ('pending','judging','judged','deduping','deduped','searched','writing','written','formatting','formatted','publisher_pending','publishing','queued','processing','running','retry')",
+                        "backoffice": "i.status IN ('ready_review','pending_review','backoffice')",
                         "direct_publish": "i.status IN ('auto_published','published','sent','succeeded')",
-                        "normal_stop": "i.status IN ('discarded','duplicate','deduped','ignored','skipped','ended')",
+                        "normal_stop": "i.status IN ('discarded','duplicate','ignored','skipped','ended')",
                     }
                     clauses.append(f"({groups[value]})")
                 else:
@@ -1070,10 +1130,10 @@ class SystemInformationStore:
         since = timestamp_ms(payload.get("since"))
         until = timestamp_ms(payload.get("until"))
         if since is not None:
-            clauses.append("i.created_at_ms>=?")
+            clauses.append(f"i.{sort}>=?")
             params.append(since)
         if until is not None:
-            clauses.append("i.created_at_ms<?")
+            clauses.append(f"i.{sort}<?")
             params.append(until)
         keyword = str(payload.get("q") or "").strip().casefold()
         if keyword:
@@ -1110,7 +1170,7 @@ class SystemInformationStore:
                 rows = conn.execute(
                     f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
                         i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
-                        i.evidence_ref,i.legacy_history,e.path AS evidence_path
+                        i.evidence_ref,i.legacy_history,i.admission,i.duplicate_json,i.source_name,i.source_updated_at_ms,e.path AS evidence_path
                         FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref
                         {base_where}
                         ORDER BY i.{sort} DESC,i.item_id DESC""",
@@ -1126,9 +1186,10 @@ class SystemInformationStore:
                             evidence = json.loads(gzip.decompress(Path(row["evidence_path"]).read_bytes()))
                         except (OSError, EOFError, json.JSONDecodeError):
                             evidence = None
+                    visible = expire_external_errors({'item': dict(row), 'evidence': evidence}, row['updated_at_ms'])
                     searchable = _searchable_text(
-                        tuple(row[key] for key in ("title", "summary", "source", "source_id", "source_url")),
-                        evidence,
+                        tuple(visible['item'][key] for key in ("title", "summary", "source", "source_id", "source_url")),
+                        visible['evidence'],
                     )
                     if keyword not in searchable:
                         continue
@@ -1153,7 +1214,7 @@ class SystemInformationStore:
                 rows = conn.execute(
                     f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
                         i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
-                        i.evidence_ref,i.legacy_history
+                        i.evidence_ref,i.legacy_history,i.admission,i.duplicate_json,i.source_name,i.source_updated_at_ms
                         FROM system_information_items i{where}
                         ORDER BY i.{sort} DESC,i.item_id DESC LIMIT ?""",
                     [*params, limit + 1],
@@ -1161,6 +1222,12 @@ class SystemInformationStore:
                 items = [dict(row) for row in rows]
             more = len(items) > limit
             items = items[:limit]
+            for item in items:
+                item['duplicate_target'] = json.loads(item.pop('duplicate_json') or 'null')
+                cleaned = expire_external_errors(item, item.get('updated_at_ms'))
+                if cleaned is not item:
+                    item.clear()
+                    item.update(cleaned)
             next_cursor = None
             if more and items:
                 last = items[-1]
@@ -1181,10 +1248,11 @@ class SystemInformationStore:
             if item is None:
                 return None
             events = conn.execute(
-                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=? ORDER BY COALESCE(happened_at_ms,observed_at_ms),event_id",
-                (item_id,),
+                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=? OR item_id IN (SELECT item_id FROM system_information_items WHERE parent_item_id=?) ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,rowid",
+                (item_id, item_id),
             ).fetchall()
         result = dict(item)
+        result['duplicate_target'] = json.loads(result.pop('duplicate_json') or 'null')
         result["evidence"] = self.load_evidence(result.get("evidence_ref"))
         result["timeline"] = [dict(row) for row in events]
         for event in result["timeline"]:
@@ -1193,6 +1261,17 @@ class SystemInformationStore:
                 event["details"] = json.loads(event.pop("details_json"))
             except json.JSONDecodeError:
                 event["details"] = {}
+        expired_attempts = {
+            event['details'].get('attempt_id') for event in result['timeline']
+            if event.get('happened_at_ms') is not None and event['happened_at_ms'] < day_start_ms()
+            and external_error(event) and event['details'].get('attempt_id') is not None
+        }
+        result['timeline'] = [
+            event for event in result['timeline']
+            if not (event.get('happened_at_ms') is not None and event['happened_at_ms'] < day_start_ms()
+                    and (external_error(event) or event['details'].get('attempt_id') in expired_attempts))
+        ]
+        result = expire_external_errors(result, result.get('updated_at_ms'))
         return result
 
     def coverage(self) -> dict[str, Any]:

@@ -1245,6 +1245,10 @@ export type SystemInformationItem = {
   status: string;
   result: string;
   failure_category: string | null;
+  admission: string;
+  source_name: string;
+  source_updated_at_ms: number | null;
+  duplicate_target: { title?: string; target_title?: string; source_url?: string; target_id?: string; [key: string]: unknown } | null;
   created_at_ms: number | null;
   updated_at_ms: number | null;
   observed_at_ms: number;
@@ -1304,6 +1308,7 @@ export type SystemInformationRegistry = {
 };
 
 export async function listSystemInformation(filters: {
+  view?: 'news' | 'diagnostic';
   q?: string;
   business?: string;
   source?: string;
@@ -1361,6 +1366,7 @@ export type SystemHealthSnapshot = {
     schedules: Array<{ kind: string; job_id: string; description: string; trigger: string }>;
   }>;
   recent_briefs: SystemInformationItem[];
+  external_error_daily?: Array<{ error_date: string; source: string; stage: string; category: string; occurrences: number }>;
 };
 
 export async function getSystemHealth() {

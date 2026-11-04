@@ -52,6 +52,18 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
       </section>
 
       {mode === 'all' && <section className="systemHealthSection">
+        <header><h2>外部组件历史错误统计</h2><span>北京时间跨日后只保留分类次数</span></header>
+        <div className="systemHealthRows">
+          {snapshot?.external_error_daily?.map((row) => <article className="systemHealthAdapter" key={`${row.error_date}:${row.source}:${row.stage}:${row.category}`}>
+            <strong>{row.error_date} · {row.source} · {row.stage}</strong>
+            <span>{({ upstream_timeout: '上游超时', upstream_http: '上游接口错误', upstream_auth: '权限或额度', upstream_network: '上游网络错误' } as Record<string, string>)[row.category] || row.category}</span>
+            <span>{row.occurrences} 次</span>
+          </article>)}
+          {!loading && !snapshot?.external_error_daily?.length && <div className="emptyState">尚无已汇总的历史外部错误。</div>}
+        </div>
+      </section>}
+
+      {mode === 'all' && <section className="systemHealthSection">
         <header><h2>Worker 心跳</h2><span>{snapshot?.workers.length || 0} 个已登记运行实例</span></header>
         {snapshot?.review_worker && <article className="systemHealthAdapter">
           <strong>系统巡检 worker</strong>

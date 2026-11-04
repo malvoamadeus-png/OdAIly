@@ -20,8 +20,8 @@ def seed(store: SystemInformationStore, count: int = ROW_COUNT) -> None:
     item_sql = """INSERT INTO system_information_items(
         item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
         failure_category,created_at_ms,updated_at_ms,observed_at_ms,source_database,source_table,
-        source_row_id,evidence_ref,fingerprint,legacy_history
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        source_row_id,evidence_ref,fingerprint,legacy_history,news_visible,admission
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
     with store.connect() as conn:
         item_batch: list[tuple[object, ...]] = []
         term_batch: list[tuple[str, str]] = []
@@ -40,7 +40,7 @@ def seed(store: SystemInformationStore, count: int = ROW_COUNT) -> None:
             item_batch.append((
                 item_id, business, business, source_id, index, title, summary, source_url, "写作", status,
                 result, "program_or_unknown" if result == "failed" else None, created, created, created,
-                "offline-benchmark", "items", str(index), None, f"fingerprint-{index}", 0,
+                "offline-benchmark", "items", str(index), None, f"fingerprint-{index}", 0, int(business in {"x", "meme"}), "accepted",
             ))
             searchable = " ".join((title, summary, business, source_id, source_url))
             term_batch.extend((term, item_id) for term in _search_terms(searchable))
@@ -86,16 +86,16 @@ def main() -> None:
         seed(store)
         seed_seconds = time.perf_counter() - started
 
-        first_keyword_page = store.query({"q": "区块链", "limit": 100})
+        first_keyword_page = store.query({"view": "news", "q": "区块链", "limit": 100})
         next_cursor = first_keyword_page["next_cursor"]
         if next_cursor is None:
             raise RuntimeError("性能夹具未生成可跨越的关键词分页")
         queries = {
-            "first_page": lambda: store.query({"limit": 100}),
-            "keyword_first_page": lambda: store.query({"q": "区块链", "limit": 100}),
-            "keyword_next_page": lambda: store.query({"q": "区块链", "limit": 100, "cursor": next_cursor}),
-            "status_filter": lambda: store.query({"status": "direct_publish", "limit": 100}),
-            "deep_pagination": lambda: store.query({"limit": 100, "cursor": {"time": BASE_TIME_MS + 10_000, "id": "bench:010000"}}),
+            "first_page": lambda: store.query({"view": "news", "limit": 100}),
+            "keyword_first_page": lambda: store.query({"view": "news", "q": "区块链", "limit": 100}),
+            "keyword_next_page": lambda: store.query({"view": "news", "q": "区块链", "limit": 100, "cursor": next_cursor}),
+            "status_filter": lambda: store.query({"view": "news", "status": "direct_publish", "limit": 100}),
+            "deep_pagination": lambda: store.query({"view": "news", "limit": 100, "cursor": {"time": BASE_TIME_MS + 10_000, "id": "bench:010000"}}),
         }
         results = {name: measure(query) for name, query in queries.items()}
         passed = all(value["p95_ms"] <= 1000 for value in results.values())

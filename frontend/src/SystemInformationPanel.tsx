@@ -15,8 +15,9 @@ const PAGE_SIZE = 50;
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '处理中', judged: '处理中', searched: '处理中', written: '处理中', formatted: '处理中',
-  publisher_pending: '挂后台', ready_review: '挂后台', auto_published: '直发', published: '已发布',
-  discarded: '正常停止', deduped: '重复停止', duplicate: '重复停止', failed: '失败',
+  judging: '价值判断中', deduping: '查重中', writing: '写作中', formatting: '稿件整理中', publishing: '投递中',
+  publisher_pending: '等待投递', ready_review: '挂后台', auto_published: '直发', published: '已发布',
+  discarded: '正常停止', deduped: '已通过前置判断', duplicate: '重复停止', failed: '失败',
   enabled: '已启用', disabled: '已停用', configured: '已配置',
 };
 
@@ -47,6 +48,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
   const [since, setSince] = useState('');
   const [until, setUntil] = useState('');
   const [sort, setSort] = useState<'created' | 'activity'>('activity');
+  const [view, setView] = useState<'news' | 'diagnostic'>('news');
   const [cursor, setCursor] = useState<{ time: number | null; id: string } | null>(null);
   const [previousCursors, setPreviousCursors] = useState<Array<{ time: number | null; id: string } | null>>([]);
   const [loading, setLoading] = useState(true);
@@ -60,12 +62,12 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
     return registry.sources.filter((item) => (registry.registry.find((entry) => entry.key === item.business_key)?.key || '') === business);
   }, [business, registry]);
 
-  async function loadPage(nextCursor: { time: number | null; id: string } | null, nextSort = sort) {
+  async function loadPage(nextCursor: { time: number | null; id: string } | null, nextSort = sort, nextView = view) {
     setLoading(true);
     setError('');
     try {
       const data = await listSystemInformation({
-        q: query.trim(), business, source, stage, status, result, failure_category: failure,
+        view: nextView, q: query.trim(), business, source, stage, status, result, failure_category: failure,
         since: since ? new Date(since).toISOString() : '', until: until ? new Date(until).toISOString() : '',
         sort: nextSort, cursor: nextCursor, limit: PAGE_SIZE,
       });
@@ -127,6 +129,11 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
 
   return (
     <section className="systemInformationLayout">
+      <div className="systemInformationSort" role="group" aria-label="信息流视图">
+        {(['news', 'diagnostic'] as const).map((next) => <button type="button" key={next} className={view === next ? 'active' : ''} onClick={() => {
+          setView(next); setPreviousCursors([]); void loadPage(null, sort, next);
+        }}>{next === 'news' ? '新闻信息流' : '采集与处理诊断'}</button>)}
+      </div>
       <form className="systemInformationFilters" onSubmit={applyFilters}>
         <label className="systemInformationSearch">
           <span>关键词</span>
@@ -151,7 +158,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
           <option value="all">全部结果</option><option value="processing">处理中</option><option value="backoffice">挂后台</option><option value="direct_publish">直发</option><option value="stopped">正常停止</option><option value="failed">失败</option>
         </select></label>
         <label><span>故障类别</span><select value={failure} onChange={(event) => setFailure(event.target.value)}>
-          <option value="all">全部</option><option value="program_or_unknown">程序或未知</option>
+          <option value="all">全部</option><option value="local_storage">本地存储</option><option value="upstream_timeout">上游超时</option><option value="upstream_http">上游接口</option><option value="upstream_auth">上游权限或额度</option><option value="program_or_unknown">程序或未知</option>
         </select></label>
         <label><span>开始时间</span><input type="datetime-local" value={since} onChange={(event) => setSince(event.target.value)} /></label>
         <label><span>结束时间</span><input type="datetime-local" value={until} onChange={(event) => setUntil(event.target.value)} /></label>
@@ -167,7 +174,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
         <span>{page?.search_scope}</span>
         <div className="systemInformationSort" role="group" aria-label="排序方式">
           <button type="button" className={sort === 'created' ? 'active' : ''} onClick={() => changeSort('created')}><ArrowDownWideNarrow size={15} /> 创建时间</button>
-          <button type="button" className={sort === 'activity' ? 'active' : ''} onClick={() => changeSort('activity')}><ArrowUpWideNarrow size={15} /> 最近活动</button>
+          <button type="button" className={sort === 'activity' ? 'active' : ''} onClick={() => changeSort('activity')}><ArrowUpWideNarrow size={15} /> 最后处理时间</button>
         </div>
         <button className="iconButton" type="button" title="刷新列表" onClick={() => { setPreviousCursors([]); void loadPage(null); }}><RefreshCcw size={16} /></button>
       </div>
@@ -177,14 +184,15 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
           {page?.items.map((item) => (
             <button className={detail?.item_id === item.item_id ? 'systemInformationRow selected' : 'systemInformationRow'} type="button" key={item.item_id} onClick={() => void openDetail(item)}>
               <span className="systemInformationRowTop">
-                <strong>{item.title || item.source_id || item.item_id}</strong>
+                <strong>{item.title || '新闻标题待补充'}</strong>
                 <span className={`systemInformationResult result-${item.result}`}>{resultLabel(item.result)}</span>
               </span>
               <span className="systemInformationRowMeta">
-                <span>{businessLabels.get(item.business_key) || item.business_key}</span><span>{item.source}</span><span>{item.stage}</span>
-                <span>{STATUS_LABELS[item.status] || item.status}</span><time>{sort === 'activity' ? '活动 ' : '创建 '}{fmtDate(sort === 'activity' ? item.updated_at_ms : item.created_at_ms)}</time>
+                <span>{businessLabels.get(item.business_key) || item.business_key}</span><span>{item.source_name || item.source}</span><span>{item.stage}</span>
+                <span>{STATUS_LABELS[item.status] || item.status}</span><time>{sort === 'activity' ? '处理 ' : '采集 '}{fmtDate(sort === 'activity' ? item.updated_at_ms : item.created_at_ms)}</time>
               </span>
               <span className="systemInformationSummary">{item.summary || '当时未保存原因'}</span>
+              {item.admission === 'duplicate' && <span className="systemInformationSummary">重复：{item.duplicate_target?.title || item.duplicate_target?.target_title || '命中既有内容，详情查看关联'}</span>}
               {Boolean(item.legacy_history) && <span className="systemInformationLegacy">仅有当前状态</span>}
             </button>
           ))}
@@ -204,6 +212,12 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
                 {detail.source_url && <a className="iconButton" href={detail.source_url} target="_blank" rel="noreferrer" title="打开来源"><ExternalLink size={16} /></a>}
               </div>
               <div className="systemInformationOutcome"><strong>{resultLabel(detail.result)}</strong><span>{detail.stage} · {STATUS_LABELS[detail.status] || detail.status}</span><p>{detail.summary || '当时未保存原因'}</p></div>
+              <p className="systemInformationNotice">状态以本系统 API 的处理结果为准。外部组件具体错误仅保留当天，跨日只保留分类次数。</p>
+              <p className="systemInformationNotice">来源：{detail.source_name || detail.source} · 来源更新时间：{fmtDate(detail.source_updated_at_ms)} · 准入：{({ accepted: '通过', duplicate: '重复', rejected: '未通过', unassessed: '未评估' } as Record<string, string>)[detail.admission] || '未评估'}</p>
+              {detail.duplicate_target && <section><h3>重复命中对象</h3>
+                <p>{detail.duplicate_target.title || detail.duplicate_target.target_title || String(detail.duplicate_target.target_id || '已记录重复目标')}</p>
+                {detail.duplicate_target.source_url && <a href={detail.duplicate_target.source_url} target="_blank" rel="noreferrer">查看命中来源</a>}
+              </section>}
               {Boolean(detail.legacy_history) && <p className="systemInformationNotice">此历史记录只保留当前状态；早期尝试、当时未保存的理由和规则不能补造。</p>}
               <section><h3>处理时间线</h3>
                 {detail.timeline.map((event) => <article className="systemInformationEvent" key={event.event_id}>

@@ -459,7 +459,7 @@ def parse_args() -> argparse.Namespace:
 
     maintenance_cleanup = subparsers.add_parser(
         "maintenance-cleanup",
-        help="Clean old runtime logs and trim completed payload fields. Defaults to dry-run.",
+        help="Clean old runtime logs and editor feedback. Defaults to dry-run.",
     )
     maintenance_cleanup.add_argument("--execute", action="store_true", help="Actually delete/update rows. Omit for dry-run.")
     maintenance_cleanup.add_argument("--retention-days", type=int, default=7, help="Runtime log retention in days.")
@@ -468,7 +468,7 @@ def parse_args() -> argparse.Namespace:
         "--completed-field-retention-days",
         type=int,
         default=7,
-        help="Age in days before trimming payload fields from completed records.",
+        help="Compatibility option; verified business payload retention is managed by the information projector.",
     )
 
     search_cache_maintenance = subparsers.add_parser(

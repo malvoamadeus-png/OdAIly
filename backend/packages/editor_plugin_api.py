@@ -44,6 +44,8 @@ from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
 from packages.system_observability import MainTaskProjector, ProjectionWorker, SystemInformationStore
+from packages.system_observability.error_policy import expire_external_errors
+from packages.system_observability.store import timestamp_ms
 from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService, SystemReviewWorker
 from packages.system_observability.registry import BUSINESS_REGISTRY
 from packages.system_observability.runtime import system_observability_directory
@@ -586,7 +588,7 @@ class EditorPluginNewsGenService:
         del actor
         action = str(payload.get("action") or "list")
         if action == "list":
-            return self.system_information.query(payload)
+            return self.system_information.query({**payload, 'view': payload.get('view') or 'news'})
         if action == "detail":
             item_id = str(payload.get("item_id") or "").strip()
             if not item_id:
@@ -640,16 +642,20 @@ class EditorPluginNewsGenService:
         except Exception as exc:
             schedules = []
             coverage["schedule_read_error"] = type(exc).__name__
+        workers = [expire_external_errors(row, timestamp_ms(row.get("last_seen_at")), now_ms=now_ms) for row in workers]
+        review_last_seen = self.system_review_repository.get_state("worker_last_seen_at")
+        review_worker = expire_external_errors({
+            "last_seen_at": review_last_seen,
+            "last_error": self.system_review_repository.get_state("worker_last_error"),
+        }, timestamp_ms(review_last_seen), now_ms=now_ms)
         recent_briefs = self.system_information.query({"business": "scheduled_brief", "limit": 8})["items"]
         return {
             "generated_at_ms": now_ms,
             "coverage": coverage,
             "storage": self.system_information.storage_health(),
+            "external_error_daily": self.system_information.external_error_totals(),
             "workers": workers,
-            "review_worker": {
-                "last_seen_at": self.system_review_repository.get_state("worker_last_seen_at"),
-                "last_error": self.system_review_repository.get_state("worker_last_error"),
-            },
+            "review_worker": review_worker,
             "inspection_runs": self.system_review_repository.recent_runs(),
             "scheduled_tasks": schedules,
             "recent_briefs": recent_briefs,
