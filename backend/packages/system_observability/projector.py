@@ -371,12 +371,14 @@ class MainTaskProjector:
         store: SystemInformationStore,
         *,
         batch_size: int = 500,
+        outbox_batch_size: int = 2_000,
         additional_databases: dict[str, Path] | None = None,
         table_specs: tuple[TableSpec, ...] = TABLE_SPECS,
     ) -> None:
         self.source_database = source_database
         self.store = store
         self.batch_size = max(25, min(batch_size, 2000))
+        self.outbox_batch_size = max(25, min(outbox_batch_size, 5000))
         self.additional_databases = additional_databases or {}
         self.table_specs = table_specs
         self.audit_installer = SourceAuditInstaller()
@@ -691,7 +693,7 @@ class MainTaskProjector:
             rows = conn.execute(
                 "SELECT seq,event_id,table_name,source_row_id,operation,happened_at_ms,payload_json "
                 "FROM odaily_observability_outbox WHERE seq>? ORDER BY seq LIMIT ?",
-                (watermark, self.batch_size),
+                (watermark, self.outbox_batch_size),
             ).fetchall()
         entries: list[dict[str, Any]] = []
         for event in rows:

@@ -1099,6 +1099,43 @@ def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:
         ]) == 1
 
 
+def test_source_outbox_batch_size_is_independent_and_watermark_bounded() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);
+                INSERT INTO jobs VALUES(1,'candidate','queued',NULL,'2026-11-03T00:00:00Z');
+            """)
+        spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.executemany(
+                "UPDATE jobs SET status=?,updated_at=? WHERE id=1",
+                ((f"state-{index}", f"2026-11-03T00:00:{index:02d}Z") for index in range(1, 61)),
+            )
+            conn.execute("UPDATE odaily_observability_outbox SET happened_at_ms=1000+seq")
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(
+            source, store, batch_size=25, outbox_batch_size=50, table_specs=(spec,),
+        )
+
+        assert projector._project_source_outbox(
+            "meme", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        ) == (50, 1)
+        assert store.get_state("source_audit_meme_watermark") == "50"
+        assert projector._project_source_outbox(
+            "meme", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        ) == (10, 1)
+        assert store.get_state("source_audit_meme_watermark") == "60"
+        detail = store.detail("meme:jobs:1")
+        assert detail is not None and detail["status"] == "state-60"
+        assert len([event for event in detail["timeline"] if event["event_type"] == "source_state_change"]) == 60
+
+
 def test_source_outbox_cleanup_only_removes_projected_events_past_retention() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1122,7 +1159,8 @@ def test_source_outbox_cleanup_only_removes_projected_events_past_retention() ->
         store = SystemInformationStore(root / "system_information.sqlite")
         store.initialize()
         projector = MainTaskProjector(
-            source, store, batch_size=25, additional_databases={"meme": source}, table_specs=(spec,),
+            source, store, batch_size=25, outbox_batch_size=25,
+            additional_databases={"meme": source}, table_specs=(spec,),
         )
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         assert projector._project_source_outbox("meme", source, [spec], now_ms) == (25, 25)
