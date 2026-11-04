@@ -21,57 +21,60 @@ def _count(conn: sqlite3.Connection, schema: str, table: str) -> int:
 
 def _copy(source: Path, destination: Path) -> dict[str, int]:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(destination, timeout=30)
+    conn = sqlite3.connect(source, timeout=30)
     try:
         conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("ATTACH DATABASE ? AS target", (str(destination),))
         existing = [str(row[0]) for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            "SELECT name FROM target.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )]
         if existing:
             raise RuntimeError(f"Destination is not empty: {existing[:10]}")
         conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("ATTACH DATABASE ? AS origin", (str(source),))
-        tables = _tables(conn, "origin")
+        tables = _tables(conn, "main")
         if not tables:
             raise RuntimeError("No hl_news_* tables found in source")
         indexes = conn.execute(
-            "SELECT sql FROM origin.sqlite_master WHERE type='index' AND tbl_name GLOB 'hl_news_*' "
+            "SELECT sql FROM main.sqlite_master WHERE type='index' AND tbl_name GLOB 'hl_news_*' "
             "AND sql IS NOT NULL ORDER BY name"
         ).fetchall()
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN")
         for table in tables:
             row = conn.execute(
-                "SELECT sql FROM origin.sqlite_master WHERE type='table' AND name=?", (table,)
+                "SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()
             if row is None or not row[0]:
                 raise RuntimeError(f"Missing table definition: {table}")
-            conn.execute(str(row[0]))
+            table_sql = str(row[0]).replace(f"CREATE TABLE {table}", f"CREATE TABLE target.{table}", 1)
+            conn.execute(table_sql)
         copied: dict[str, int] = {}
         for table in tables:
             escaped = table.replace('"', '""')
-            conn.execute(f'INSERT INTO main."{escaped}" SELECT * FROM origin."{escaped}"')
+            conn.execute(f'INSERT INTO target."{escaped}" SELECT * FROM main."{escaped}"')
             copied[table] = int(conn.execute("SELECT changes()").fetchone()[0])
         has_sequence = conn.execute(
-            "SELECT 1 FROM origin.sqlite_master WHERE type='table' AND name='sqlite_sequence'"
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='sqlite_sequence'"
         ).fetchone()
         if has_sequence:
             for name, sequence in conn.execute(
-                "SELECT name,seq FROM origin.sqlite_sequence WHERE name GLOB 'hl_news_*'"
+                "SELECT name,seq FROM main.sqlite_sequence WHERE name GLOB 'hl_news_*'"
             ):
-                conn.execute("UPDATE main.sqlite_sequence SET seq=? WHERE name=?", (sequence, name))
+                conn.execute("UPDATE target.sqlite_sequence SET seq=? WHERE name=?", (sequence, name))
                 if conn.execute("SELECT changes()").fetchone()[0] == 0:
-                    conn.execute("INSERT INTO main.sqlite_sequence(name,seq) VALUES(?,?)", (name, sequence))
+                    conn.execute("INSERT INTO target.sqlite_sequence(name,seq) VALUES(?,?)", (name, sequence))
         for (sql,) in indexes:
-            conn.execute(str(sql))
+            index_sql = str(sql).replace("CREATE INDEX ", "CREATE INDEX target.", 1)
+            index_sql = index_sql.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX target.", 1)
+            conn.execute(index_sql)
         conn.commit()
         for table, expected in copied.items():
-            actual = _count(conn, "main", table)
+            actual = _count(conn, "target", table)
             if actual != expected:
                 raise RuntimeError(f"Row count mismatch for {table}: copied={expected} destination={actual}")
-        integrity = str(conn.execute("PRAGMA main.integrity_check").fetchone()[0])
+        integrity = str(conn.execute("PRAGMA target.integrity_check").fetchone()[0])
         if integrity != "ok":
             raise RuntimeError(f"Destination integrity check failed: {integrity}")
-        violations = conn.execute("PRAGMA main.foreign_key_check").fetchall()
+        violations = conn.execute("PRAGMA target.foreign_key_check").fetchall()
         if violations:
             raise RuntimeError(f"Foreign key violations: {len(violations)}")
         return copied
