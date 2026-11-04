@@ -46,9 +46,9 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
   const [failure, setFailure] = useState('all');
   const [since, setSince] = useState('');
   const [until, setUntil] = useState('');
-  const [sort, setSort] = useState<'created' | 'activity'>('created');
-  const [cursor, setCursor] = useState<{ time: number; id: string } | null>(null);
-  const [previousCursors, setPreviousCursors] = useState<Array<{ time: number; id: string } | null>>([]);
+  const [sort, setSort] = useState<'created' | 'activity'>('activity');
+  const [cursor, setCursor] = useState<{ time: number | null; id: string } | null>(null);
+  const [previousCursors, setPreviousCursors] = useState<Array<{ time: number | null; id: string } | null>>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState('');
@@ -60,7 +60,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
     return registry.sources.filter((item) => (registry.registry.find((entry) => entry.key === item.business_key)?.key || '') === business);
   }, [business, registry]);
 
-  async function loadPage(nextCursor: { time: number; id: string } | null, nextSort = sort) {
+  async function loadPage(nextCursor: { time: number | null; id: string } | null, nextSort = sort) {
     setLoading(true);
     setError('');
     try {
@@ -160,10 +160,10 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
 
       {error && <div className="notice error" role="alert">{error}</div>}
       <div className="systemInformationMeta">
-        <span>{loading ? '正在查询' : `${page?.total ?? 0} 条记录`}</span>
-        <span>索引 {page?.index.generated_at_ms ? fmtDate(page.index.generated_at_ms) : '初始化中'}</span>
-        <span>{page?.index.lag ? `主流程积压 ${page.index.lag} 条` : '主流程索引已追平'}</span>
-        {!page?.search_index_ready && <span>关键词索引初始化中</span>}
+        <span>{loading ? '正在查询' : page ? `${page.total} 条记录` : '读取失败'}</span>
+        <span>{loading ? '索引状态读取中' : page?.index.generated_at_ms ? `索引 ${fmtDate(page.index.generated_at_ms)}` : page ? '索引尚无成功记录' : '索引状态未知'}</span>
+        <span>{loading ? '积压状态读取中' : page ? page.index.lag ? `主流程积压 ${page.index.lag} 条` : '主流程索引已追平' : '积压状态未知'}</span>
+        {loading ? <span>关键词索引状态读取中</span> : page ? !page.search_index_ready && <span>关键词索引初始化中</span> : <span>关键词索引状态未知</span>}
         <span>{page?.search_scope}</span>
         <div className="systemInformationSort" role="group" aria-label="排序方式">
           <button type="button" className={sort === 'created' ? 'active' : ''} onClick={() => changeSort('created')}><ArrowDownWideNarrow size={15} /> 创建时间</button>
@@ -182,7 +182,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
               </span>
               <span className="systemInformationRowMeta">
                 <span>{businessLabels.get(item.business_key) || item.business_key}</span><span>{item.source}</span><span>{item.stage}</span>
-                <span>{STATUS_LABELS[item.status] || item.status}</span><time>{fmtDate(item.created_at_ms)}</time>
+                <span>{STATUS_LABELS[item.status] || item.status}</span><time>{sort === 'activity' ? '活动 ' : '创建 '}{fmtDate(sort === 'activity' ? item.updated_at_ms : item.created_at_ms)}</time>
               </span>
               <span className="systemInformationSummary">{item.summary || '当时未保存原因'}</span>
               {Boolean(item.legacy_history) && <span className="systemInformationLegacy">仅有当前状态</span>}

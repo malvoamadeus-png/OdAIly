@@ -25,6 +25,10 @@ STATUS_LABELS = {
     "auto_published": ("已直发", "direct_publish"), "published": ("已发布", "direct_publish"),
 }
 
+ADDITIONAL_PROJECTION_INTERVAL_MS = 15_000
+ADDITIONAL_TAIL_RECHECK_INTERVAL_MS = 5 * 60_000
+ADDITIONAL_TAIL_RECHECK_LIMIT = 25
+
 
 @dataclass(frozen=True, slots=True)
 class TableSpec:
@@ -551,8 +555,10 @@ class MainTaskProjector:
 
     def _project_additional(self, now_ms: int, started_at_ms: int) -> tuple[int, int]:
         last_sync = int(self.store.get_state("additional_projection_last_ms", "0") or 0)
-        if now_ms - last_sync < 15_000:
+        if now_ms - last_sync < ADDITIONAL_PROJECTION_INTERVAL_MS:
             return 0, 0
+        last_tail_check = int(self.store.get_state("additional_tail_recheck_last_ms", "0") or 0)
+        recheck_tails = now_ms - last_tail_check >= ADDITIONAL_TAIL_RECHECK_INTERVAL_MS
         imported = changed = 0
         specs_by_database: dict[str, list[TableSpec]] = {}
         for spec in self.table_specs:
@@ -605,9 +611,9 @@ class MainTaskProjector:
                         (watermark, min(self.batch_size, 50)),
                     ).fetchall()
                     tail_rows = conn.execute(
-                        f"SELECT rowid AS __obs_rowid__,* FROM {query_table} WHERE rowid<=? ORDER BY rowid DESC LIMIT 100",
-                        (watermark or 2**63 - 1,),
-                    ).fetchall()
+                        f"SELECT rowid AS __obs_rowid__,* FROM {query_table} WHERE rowid<=? ORDER BY rowid DESC LIMIT ?",
+                        (watermark or 2**63 - 1, ADDITIONAL_TAIL_RECHECK_LIMIT),
+                    ).fetchall() if recheck_tails else []
                     rows_by_id = {int(row["__obs_rowid__"]): row for row in (*new_rows, *tail_rows)}
                     rows = [rows_by_id[key] for key in sorted(rows_by_id)]
                     for raw in rows:
@@ -620,12 +626,15 @@ class MainTaskProjector:
                             f"{state_key}_watermark",
                             max(watermark, max(int(row["__obs_rowid__"]) for row in new_rows)),
                         )
-                    self.store.set_state(f"{state_key}_status", "ready")
-                    self.store.set_state(f"{state_key}_last_success", now_ms)
-                    self.store.set_state(f"{state_key}_last_error", "")
+                    if rows or self.store.get_state(f"{state_key}_status") != "ready":
+                        self.store.set_state(f"{state_key}_status", "ready")
+                        self.store.set_state(f"{state_key}_last_success", now_ms)
+                        self.store.set_state(f"{state_key}_last_error", "")
             except Exception as exc:
                 self.store.set_state(f"{state_key}_status", "error")
                 self.store.set_state(f"{state_key}_last_error", f"{type(exc).__name__}: {exc}"[:1000])
+        if recheck_tails:
+            self.store.set_state("additional_tail_recheck_last_ms", now_ms)
         self.store.set_state("additional_projection_last_ms", now_ms)
         return imported, changed
 

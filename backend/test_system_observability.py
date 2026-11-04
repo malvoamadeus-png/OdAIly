@@ -117,6 +117,33 @@ def test_observability_store_uses_wal_and_extended_busy_timeout() -> None:
             assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 60_000
 
 
+def test_coverage_groups_business_sources_with_covering_index() -> None:
+    with TemporaryDirectory() as directory:
+        store = SystemInformationStore(Path(directory) / "system_information.sqlite")
+        store.initialize()
+        for item_id, business, source in (
+            ("x:1", "x", "x"),
+            ("x:2", "x", "x"),
+            ("media:1", "crypto_media", "blockbeats"),
+        ):
+            store.upsert_snapshot(
+                {
+                    "item_id": item_id, "business_key": business, "source": source,
+                    "stage": "采集", "status": "pending", "result": "processing",
+                    "source_database": "fixture", "source_table": "items", "source_row_id": item_id,
+                },
+                None,
+            )
+
+        assert store.coverage()["sources"] == [
+            {"business_key": "crypto_media", "source": "blockbeats", "items": 1},
+            {"business_key": "x", "source": "x", "items": 2},
+        ]
+        with store.connect() as conn:
+            indexes = {row["name"] for row in conn.execute("PRAGMA index_list(system_information_items)")}
+        assert "idx_system_information_business_source" in indexes
+
+
 def test_search_cursor_and_evidence_redaction() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -887,6 +914,74 @@ def test_source_sqlite_outbox_preserves_intermediate_status_and_excludes_large_o
 
         projector.run_once()
         assert len([event for event in store.detail("meme:jobs:7")["timeline"] if event["event_type"] == "source_state_change"]) == 4
+
+
+def test_additional_projection_throttles_tail_checks_and_keeps_snapshot_recovery() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        _source_db(source)
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,content TEXT,updated_at TEXT)"
+            )
+            conn.execute("INSERT INTO jobs VALUES(1,'候选','pending',NULL,'旧正文','2026-11-03T00:00:00Z')")
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(
+            source, store, additional_databases={"main": source},
+            table_specs=(TableSpec("main", "jobs", "meme", "meme_scanner"),),
+        )
+        projector.run_once()
+        item_id = "main:jobs:1"
+        assert store.detail(item_id)["evidence"]["row"]["content"] == "旧正文"
+
+        store.set_state("additional_tail_recheck_last_ms", int(datetime.now(UTC).timestamp() * 1000))
+        store.set_state("additional_projection_last_ms", 0)
+        with sqlite3.connect(source) as conn:
+            conn.execute("UPDATE jobs SET content='尾部复核更新' WHERE id=1")
+        projector.run_once()
+
+        detail = store.detail(item_id)
+        assert detail["evidence"]["row"]["content"] == "旧正文"
+
+        store.set_state("additional_tail_recheck_last_ms", 0)
+        store.set_state("additional_projection_last_ms", 0)
+        projector.run_once()
+        assert store.detail(item_id)["evidence"]["row"]["content"] == "尾部复核更新"
+
+
+def test_activity_sort_uses_index_and_keeps_null_timestamps_on_later_pages() -> None:
+    with TemporaryDirectory() as directory:
+        store = SystemInformationStore(Path(directory) / "system_information.sqlite")
+        store.initialize()
+        base = {
+            "business_key": "crypto_media", "source": "competitor_event", "stage": "采集",
+            "status": "pending", "result": "processing", "source_database": "fixture",
+            "source_table": "items", "legacy_history": False,
+        }
+        for item_id, created, updated in (
+            ("old-source-event", 2_000, 2_000),
+            ("recent-competitor-event", None, 3_000),
+            ("unknown-time", None, None),
+        ):
+            store.upsert_snapshot(
+                {**base, "item_id": item_id, "source_row_id": item_id,
+                 "created_at_ms": created, "updated_at_ms": updated}, None,
+            )
+
+        first = store.query({"sort": "activity", "business": "crypto_media", "limit": 2})
+        second = store.query({"sort": "activity", "business": "crypto_media", "limit": 2, "cursor": first["next_cursor"]})
+        assert [item["item_id"] for item in first["items"]] == ["recent-competitor-event", "old-source-event"]
+        assert [item["item_id"] for item in second["items"]] == ["unknown-time"]
+        with store.connect() as conn:
+            plan = [row["detail"] for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT item_id,updated_at_ms FROM system_information_items "
+                "WHERE business_key='crypto_media' ORDER BY updated_at_ms DESC,item_id DESC LIMIT 51"
+            )]
+        assert any("idx_system_information_business_activity" in detail for detail in plan)
+        assert not any("TEMP B-TREE FOR ORDER BY" in detail for detail in plan)
 
 
 def test_configuration_outbox_records_effective_changes_without_polling_noise() -> None:

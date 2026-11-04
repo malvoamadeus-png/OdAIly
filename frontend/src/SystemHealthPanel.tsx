@@ -29,9 +29,9 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
     <section className="systemInformationLayout systemHealthLayout">
       {error && <div className="notice error" role="alert">{error}</div>}
       <div className="systemInformationMeta">
-        <span>{loading ? '正在读取' : `快照 ${formatTime(snapshot?.generated_at_ms)}`}</span>
-        <span>{projection?.last_success_ms ? `索引更新 ${formatTime(projection.last_success_ms)}` : '索引初始化中'}</span>
-        <span>{projection?.lag ? `待索引 ${projection.lag} 条` : '主流程索引已追平'}</span>
+        <span>{loading ? '正在读取' : snapshot ? `快照 ${formatTime(snapshot.generated_at_ms)}` : '读取失败'}</span>
+        <span>{loading ? '索引状态读取中' : projection?.last_success_ms ? `索引更新 ${formatTime(projection.last_success_ms)}` : projection ? '尚无成功索引记录' : '索引状态未知'}</span>
+        <span>{loading ? '积压状态读取中' : projection ? projection.lag ? `待索引 ${projection.lag} 条` : '主流程索引已追平' : '积压状态未知'}</span>
         <button className="iconButton" type="button" title="刷新运行状态" onClick={() => void load()}><RefreshCcw size={16} /></button>
       </div>
 
@@ -41,12 +41,12 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
       <section className="systemHealthSection">
         <header><h2>磁盘与证据留存</h2><span>扩容门槛：至少预留 10 GiB 或文件系统容量的 15%</span></header>
         <div className="systemStorageSummary">
-          <div><span>可用空间</span><strong className={storage?.space_ok ? 'healthState good' : 'healthState bad'}>{storage ? `${formatBytes(storage.filesystem_free_bytes)} / ${formatBytes(storage.filesystem_total_bytes)}` : '读取中'}</strong></div>
-          <div><span>最低余量</span><strong>{storage ? formatBytes(storage.required_free_bytes) : '未知'}</strong></div>
-          <div><span>信息流数据库</span><strong>{storage ? formatBytes(storage.database_bytes) : '未知'}</strong></div>
-          <div><span>压缩证据</span><strong>{storage ? formatBytes(storage.evidence_bytes) : '未知'}</strong></div>
-          <div><span>预计未来 30 天增长</span><strong>{!storage ? '未知' : estimatedGrowth == null ? '样本不足' : formatBytes(estimatedGrowth)}</strong></div>
-          <div><span>增长样本</span><strong>{storage ? `${storage.samples} 天` : '未知'}</strong></div>
+          <div><span>可用空间</span><strong className={storage ? storage.space_ok ? 'healthState good' : 'healthState bad' : ''}>{storage ? `${formatBytes(storage.filesystem_free_bytes)} / ${formatBytes(storage.filesystem_total_bytes)}` : loading ? '读取中' : '读取失败'}</strong></div>
+          <div><span>最低余量</span><strong>{storage ? formatBytes(storage.required_free_bytes) : loading ? '读取中' : '未知'}</strong></div>
+          <div><span>信息流数据库</span><strong>{storage ? formatBytes(storage.database_bytes) : loading ? '读取中' : '未知'}</strong></div>
+          <div><span>压缩证据</span><strong>{storage ? formatBytes(storage.evidence_bytes) : loading ? '读取中' : '未知'}</strong></div>
+          <div><span>预计未来 30 天增长</span><strong>{!storage ? loading ? '读取中' : '未知' : estimatedGrowth == null ? '样本不足' : formatBytes(estimatedGrowth)}</strong></div>
+          <div><span>增长样本</span><strong>{storage ? `${storage.samples} 天` : loading ? '读取中' : '未知'}</strong></div>
         </div>
         {storage && !storage.space_ok && <div className="notice error" role="status">可用空间低于当前安全余量门槛；请扩容后再执行大型回填或索引维护。</div>}
       </section>

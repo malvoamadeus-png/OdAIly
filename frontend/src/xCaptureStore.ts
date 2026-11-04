@@ -1256,7 +1256,7 @@ export type SystemInformationPage = {
   items: SystemInformationItem[];
   total: number;
   limit: number;
-  next_cursor: { time: number; id: string } | null;
+  next_cursor: { time: number | null; id: string } | null;
   index: { generated_at_ms: number | null; lag: number | null };
   search_scope: string;
   search_index_ready: boolean;
@@ -1314,7 +1314,7 @@ export async function listSystemInformation(filters: {
   since?: string;
   until?: string;
   sort?: 'created' | 'activity';
-  cursor?: { time: number; id: string } | null;
+  cursor?: { time: number | null; id: string } | null;
   limit?: number;
 } = {}): Promise<SystemInformationPage> {
   return consoleApiPost<SystemInformationPage>('/console/system-information', { action: 'list', ...filters });

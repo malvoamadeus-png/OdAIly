@@ -115,6 +115,10 @@ class SystemInformationStore:
                     ON system_information_items(updated_at_ms DESC, item_id DESC);
                 CREATE INDEX IF NOT EXISTS idx_system_information_business
                     ON system_information_items(business_key, created_at_ms DESC, item_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_information_business_source
+                    ON system_information_items(business_key, source);
+                CREATE INDEX IF NOT EXISTS idx_system_information_business_activity
+                    ON system_information_items(business_key, updated_at_ms DESC, item_id DESC);
                 CREATE INDEX IF NOT EXISTS idx_system_information_status
                     ON system_information_items(status, created_at_ms DESC, item_id DESC);
                 CREATE INDEX IF NOT EXISTS idx_system_information_source
@@ -1009,10 +1013,15 @@ class SystemInformationStore:
         base_params = list(params)
         cursor = payload.get("cursor")
         if isinstance(cursor, dict):
-            cursor_time = int(cursor.get("time") or 0)
             cursor_id = str(cursor.get("id") or "")
-            clauses.append(f"(COALESCE(i.{sort},0)<? OR (COALESCE(i.{sort},0)=? AND i.item_id<?))")
-            params.extend([cursor_time, cursor_time, cursor_id])
+            cursor_time = cursor.get("time")
+            if cursor_time is None:
+                clauses.append(f"(i.{sort} IS NULL AND i.item_id<?)")
+                params.append(cursor_id)
+            else:
+                cursor_time = int(cursor_time)
+                clauses.append(f"(i.{sort}<? OR (i.{sort}=? AND i.item_id<?) OR i.{sort} IS NULL)")
+                params.extend([cursor_time, cursor_time, cursor_id])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connect() as conn:
             if keyword:
@@ -1022,12 +1031,11 @@ class SystemInformationStore:
                         i.evidence_ref,i.legacy_history,e.path AS evidence_path
                         FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref
                         {base_where}
-                        ORDER BY COALESCE(i.{sort},0) DESC,i.item_id DESC""",
+                        ORDER BY i.{sort} DESC,i.item_id DESC""",
                     base_params,
                 ).fetchall()
                 total = 0
                 items = []
-                cursor_time = int(cursor.get("time") or 0) if isinstance(cursor, dict) else None
                 cursor_id = str(cursor.get("id") or "") if isinstance(cursor, dict) else ""
                 for row in rows:
                     evidence = None
@@ -1043,9 +1051,17 @@ class SystemInformationStore:
                     if keyword not in searchable:
                         continue
                     total += 1
-                    row_time = int(row[sort] or 0)
-                    if cursor_time is not None and not (row_time < cursor_time or (row_time == cursor_time and str(row["item_id"]) < cursor_id)):
-                        continue
+                    if isinstance(cursor, dict):
+                        cursor_time = cursor.get("time")
+                        row_time = row[sort]
+                        if cursor_time is None:
+                            if row_time is not None or str(row["item_id"]) >= cursor_id:
+                                continue
+                        elif row_time is not None:
+                            cursor_time = int(cursor_time)
+                            row_time = int(row_time)
+                            if not (row_time < cursor_time or (row_time == cursor_time and str(row["item_id"]) < cursor_id)):
+                                continue
                     if len(items) < limit + 1:
                         item = dict(row)
                         item.pop("evidence_path", None)
@@ -1057,7 +1073,7 @@ class SystemInformationStore:
                         i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
                         i.evidence_ref,i.legacy_history
                         FROM system_information_items i{where}
-                        ORDER BY COALESCE(i.{sort},0) DESC,i.item_id DESC LIMIT ?""",
+                        ORDER BY i.{sort} DESC,i.item_id DESC LIMIT ?""",
                     [*params, limit + 1],
                 ).fetchall()
                 items = [dict(row) for row in rows]
