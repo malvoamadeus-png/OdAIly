@@ -189,15 +189,19 @@ class SearchDecision:
     similarity: float
     candidate_id: int | None = None
     raw_ai_output: str | None = None
+    decision: str | None = None
+    new_facts: list[str] = field(default_factory=list)
 
     def to_result(self) -> dict[str, Any]:
         return {
             "is_duplicate": self.is_duplicate,
+            "decision": self.decision or ("duplicate" if self.is_duplicate else "new_event"),
             "duplicate_target_type": self.duplicate_target_type,
             "duplicate_target_id": self.duplicate_target_id,
             "reason": self.reason,
             "similarity": self.similarity,
             "candidate_id": self.candidate_id,
+            "new_facts": self.new_facts,
             "raw_ai_output": self.raw_ai_output,
         }
 
@@ -1008,6 +1012,34 @@ AI_REVIEW_SCHEMA = {
 }
 
 
+AI_BATCH_REVIEW_SCHEMA = {
+    "type": "json_schema",
+    "name": "search_event_classification",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["duplicate", "same_event_update", "new_event"],
+            },
+            "target_type": {
+                "type": "string",
+                "enum": ["odaily_published", "inflight_candidate", "recent_processed", "none"],
+            },
+            "target_id": {"type": "string"},
+            "new_facts": {"type": "array", "items": {"type": "string"}},
+            "reason": {
+                "type": "string",
+                "enum": ["same_event_no_new_facts", "same_event_new_facts", "different_event", "unrelated"],
+            },
+        },
+        "required": ["decision", "target_type", "target_id", "new_facts", "reason"],
+    },
+    "strict": True,
+}
+
+
 def build_ai_review_prompt(*, query: SearchDocument, match: SearchMatch) -> str:
     return (
         "duplicate_target_type may be recent_processed when the candidate was recently processed.\n"
@@ -1050,23 +1082,22 @@ def build_ai_batch_review_prompt(
             )
         )
     return (
-        "你是 Odaily 快讯搜索者。先识别新材料最值得单独报道的核心事实，再逐一检查全部候选是否已经明确披露该事实。\n"
-        "共享主体、背景事件、数字或高相似度都不足以判重；候选必须覆盖新材料的核心事实。\n"
-        "例如被盗金额与风险保护基金规模是不同事实；若新材料首次披露基金的具体资产构成或钱包地址，即使候选提到基金总额，也不是重复。\n"
-        "同一行动的购买数量、金额、均价、总持仓、浮盈等不同表述，若没有独立的新事实，仍属重复。\n"
-        "同一主体后来发生的新动作、新交易、正式修正或事件发生后的实质进展，不是重复。\n"
+        "你是 Odaily 快讯搜索者。一次性判断新材料应按哪种方式处理，不进行第二轮重要性判断。\n"
+        "decision=duplicate：与某候选是同一事件，且新材料没有候选未披露的明确事实。\n"
+        "decision=same_event_update：与某候选是同一持续事件，且新材料明确新增至少一项事实；只列出新增事实，不判断其重要性或是否值得发布。诉讼等持续事件中的新金额、正式听证日期、裁决或程序状态变化都属于可识别的新事实。\n"
+        "decision=new_event：与候选只是主体、议题或背景相同，实际发生的是另一件事；也用于没有足够证据证明属于同一事件的材料。\n"
+        "同一行动的数量、金额、均价、总持仓、浮盈等换算或改写，重复背景、同义转述不算新增事实。新增事实必须是新材料明确陈述且候选未披露的事实，不得推断或评价重要性。\n"
+        "例如被盗金额与风险保护基金规模不同；首次明确披露基金由5500枚BTC构成并分布在三个钱包，钱包构成或钱包地址就是新增事实。\n"
         "Hyperliquid 同一地址、合约或 Hyperbot 主页相同不代表事件相同；比较动作时间、方向、前后仓位和盈亏变化。\n"
         "Lookonchain 等账号已经披露同一次操作，即使本材料是直接监测数据，也属于重复；后续新的加减仓或独立盈亏变化应放行。\n"
-        "只要任意一个候选已经覆盖新材料的核心事实，就必须返回 is_duplicate=true，并原样返回该候选的类型和ID。\n"
-        "不能因为某一个候选缺少核心事实，就忽略其他候选已经披露它。\n"
-        "如果没有任何候选覆盖核心事实，返回 is_duplicate=false。只输出 JSON，不输出解释。\n\n"
+        "duplicate 和 same_event_update 必须填写最相关候选的 target_type、target_id；same_event_update 的 new_facts 只列明确新增事实。逐项比较全部候选：只要任意候选已披露某事实，就不能把它列为新增事实。duplicate 和 new_event 使用 none 与空 target_id，且 new_facts 必须为空。只输出 JSON。\n\n"
         "【新材料】\n"
         f"标题：{query.title or ''}\n"
         f"正文：{query.content}\n\n"
         + "\n\n".join(candidates)
         + "\n\n"
-        + 'JSON格式：{"is_duplicate":true|false,"duplicate_target_type":"odaily_published|inflight_candidate|recent_processed|none",'
-        '"duplicate_target_id":"string","reason":"same_event|same_topic_different_event|update_of_existing_event|unrelated"}'
+        + 'JSON格式：{"decision":"duplicate|same_event_update|new_event","target_type":"odaily_published|inflight_candidate|recent_processed|none",'
+        '"target_id":"string","new_facts":["明确新增事实"],"reason":"same_event_no_new_facts|same_event_new_facts|different_event|unrelated"}'
     )
 
 

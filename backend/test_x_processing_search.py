@@ -7,10 +7,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from packages.common.config import XProcessingSettings
-from packages.x_processing.models import TaskRecord
+from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.searcher import SearchDocument, SearchMatch, build_ai_review_prompt
 from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
-from packages.x_processing.worker import XProcessingWorker
+from packages.x_processing.worker import XProcessingWorker, build_structured_writer_prompt
 
 
 def _vector(similarity: float) -> list[float]:
@@ -43,19 +43,21 @@ class StrategyDuplicateAI:
         if "斥资3.7亿美元，Strategy上周增持4603枚比特币" in prompt:
             return json.dumps(
                 {
-                    "is_duplicate": True,
-                    "duplicate_target_type": "recent_processed",
-                    "duplicate_target_id": "29558",
-                    "reason": "same_event",
+                    "decision": "duplicate",
+                    "target_type": "recent_processed",
+                    "target_id": "29558",
+                    "new_facts": [],
+                    "reason": "same_event_no_new_facts",
                 },
                 ensure_ascii=False,
             )
         return json.dumps(
             {
-                "is_duplicate": False,
-                "duplicate_target_type": "none",
-                "duplicate_target_id": "",
-                "reason": "update_of_existing_event",
+                "decision": "new_event",
+                "target_type": "none",
+                "target_id": "",
+                "new_facts": [],
+                "reason": "different_event",
             },
             ensure_ascii=False,
         )
@@ -200,6 +202,7 @@ def test_search_blocks_strategy_purchase_when_duplicate_is_not_top_one(
         "candidate_id": 29558,
         "title": "斥资3.7亿美元，Strategy上周增持4603枚比特币",
         "source_url": None,
+        "content": "Strategy上周购买4603枚比特币，耗资约3.697亿美元，持仓达到84.505万枚。",
         "similarity": 0.639691,
     }
     assert len(ai_client.prompts) == 1
@@ -331,7 +334,7 @@ def test_search_reviews_medium_similarity_when_new_fact_is_fund_wallets(
     assert "钱包地址" in single_prompt
 
 
-def test_search_keeps_direct_duplicate_for_very_high_similarity(
+def test_search_ai_reviews_very_high_similarity_instead_of_directly_blocking(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -379,5 +382,163 @@ def test_search_keeps_direct_duplicate_for_very_high_similarity(
     result = worker.run_once()
 
     assert result.failed == 0
-    assert repository.get_task(query.id).status == "duplicate"
-    assert len(ai_client.prompts) == 0
+    assert repository.get_task(query.id).status == "deduped"
+    assert len(ai_client.prompts) == 1
+    search_result = repository.get_pipeline(query.id).search_result
+    assert search_result["decision"] == "new_event"
+
+
+def test_search_allows_same_event_update_with_explicit_new_facts_at_high_similarity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime.now(UTC)
+    database_path = tmp_path / "odaily.sqlite"
+    repository = SQLiteXProcessingRepository(database_path)
+    query = TaskRecord(
+        id=731765,
+        source="x",
+        source_item_id="bb-731765",
+        source_url="https://www.theblockbeats.info/flash/731765",
+        title="Justin Sun要求WLFI支付逾26万美元制裁费用，并确定听证日期",
+        content="Justin Sun要求WLFI支付逾26万美元制裁费用，法院已确定于11月18日举行听证。",
+        published_at=now,
+        status="judged",
+    )
+    _seed_task(database_path, query)
+    monkeypatch.setattr(
+        "packages.x_processing.worker._search_cache_path_for_repository",
+        lambda _repository: tmp_path / "searcher.sqlite",
+    )
+
+    class UpdateAI:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def generate_text(self, **kwargs: object) -> str:
+            self.prompts.append(str(kwargs["prompt"]))
+            return json.dumps(
+                {
+                    "decision": "same_event_update",
+                    "target_type": "odaily_published",
+                    "target_id": "520199",
+                    "new_facts": ["制裁费用逾26万美元", "听证日期确定为11月18日"],
+                    "reason": "same_event_new_facts",
+                },
+                ensure_ascii=False,
+            )
+
+    ai_client = UpdateAI()
+    worker = XProcessingWorker(
+        stage="search",
+        repository=repository,
+        settings=XProcessingSettings(search_batch_ai_review_threshold=0.60),
+        search_embedding_service=FakeEmbeddingService(
+            {("odaily_reference", "520199"): _vector(0.93)}
+        ),
+        search_ai_client=ai_client,
+    )
+    cache = worker._search_cache()
+    assert cache is not None
+    cache.upsert_document(
+        SearchDocument(
+            doc_type="odaily_reference",
+            doc_id="520199",
+            title="Justin Sun要求WLFI支付制裁费用",
+            content="Justin Sun要求WLFI承担制裁费用，法院正在安排相关诉讼程序。",
+            source="odaily",
+            published_at=now - timedelta(hours=1),
+        )
+    )
+
+    result = worker.run_once()
+
+    assert result.failed == 0
+    assert repository.get_task(query.id).status == "deduped"
+    search_result = repository.get_pipeline(query.id).search_result
+    assert search_result["decision"] == "same_event_update"
+    assert search_result["new_facts"] == ["制裁费用逾26万美元", "听证日期确定为11月18日"]
+    assert search_result["update_target"]["target_id"] == "520199"
+    assert search_result["update_target"]["content"] == "Justin Sun要求WLFI承担制裁费用，法院正在安排相关诉讼程序。"
+    assert "same_event_update" in ai_client.prompts[0] or "制裁费用" in ai_client.prompts[0]
+
+
+def test_search_duplicate_classification_requires_no_new_facts() -> None:
+    from packages.x_processing.searcher import SearchDocument, SearchMatch
+
+    query = SearchDocument(
+        doc_type="task",
+        doc_id="query",
+        title="Justin Sun要求WLFI支付制裁费用",
+        content="Justin Sun要求WLFI支付制裁费用。",
+        source="blockbeats",
+    )
+    match = SearchMatch(
+        document=SearchDocument(
+            doc_type="odaily_reference",
+            doc_id="520199",
+            title="Justin Sun要求WLFI支付制裁费用",
+            content="Justin Sun要求WLFI支付制裁费用。",
+            source="odaily",
+        ),
+        similarity=0.95,
+    )
+
+    class DuplicateAI:
+        def generate_text(self, **kwargs: object) -> str:
+            return json.dumps(
+                {
+                    "decision": "duplicate",
+                    "target_type": "odaily_published",
+                    "target_id": "520199",
+                    "new_facts": [],
+                    "reason": "same_event_no_new_facts",
+                }
+            )
+
+    worker = object.__new__(XProcessingWorker)
+    worker.settings = XProcessingSettings(search_batch_ai_review_threshold=0.60)
+    worker.search_ai_client = DuplicateAI()
+    worker._record_attempt_context = lambda **_kwargs: None
+    worker._record_attempt_response = lambda _output: None
+
+    decision = worker._decide_matches(query=query, matches=[(match, "odaily_published")])
+
+    assert decision is not None
+    assert decision.decision == "duplicate"
+    assert decision.is_duplicate is True
+    assert decision.new_facts == []
+
+
+def test_writer_prompt_receives_same_event_update_facts_and_prior_copy() -> None:
+    task = TaskRecord(
+        id=731766,
+        source="blockbeats",
+        source_item_id="bb-731766",
+        source_url="https://www.theblockbeats.info/flash/731766",
+        title="Justin Sun要求WLFI支付制裁费用",
+        content="法院确定于11月18日举行听证。",
+        status="deduped",
+    )
+    prompt = build_structured_writer_prompt(
+        task=task,
+        prompt=PromptTemplateVersion(
+            id=1,
+            template_key="mainstream_media_writer",
+            version_number=1,
+            content="撰写快讯。",
+        ),
+        known_subjects=[],
+        search_result={
+            "decision": "same_event_update",
+            "new_facts": ["听证日期确定为11月18日"],
+            "update_target": {
+                "title": "Justin Sun要求WLFI承担制裁费用",
+                "content": "Justin Sun要求WLFI承担相关制裁费用。",
+            },
+        },
+    )
+
+    assert "听证日期确定为11月18日" in prompt
+    assert "Justin Sun要求WLFI承担相关制裁费用。" in prompt
+    assert "本次稿件应以当前材料为准" in prompt

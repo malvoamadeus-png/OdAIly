@@ -82,7 +82,7 @@ from .prompt_rules import (
 )
 from .repository import XProcessingRepository
 from .searcher import (
-    AI_REVIEW_SCHEMA,
+    AI_BATCH_REVIEW_SCHEMA,
     CachedEmbeddingService,
     DashScopeEmbeddingClient,
     SearchCache,
@@ -90,10 +90,8 @@ from .searcher import (
     SearchDocument,
     SearchMatch,
     build_ai_batch_review_prompt,
-    exact_duplicate_decision,
     parse_ai_review_output,
     top_matches,
-    requires_fact_review,
 )
 from .telegram import TelegramClient, skipped_telegram_result
 from .title_trace import (
@@ -939,28 +937,12 @@ class XProcessingWorker:
         active_candidate_documents = self._load_active_candidate_documents(exclude_task_id=task.id)
         recent_processed_documents = self._load_recent_processed_documents(exclude_task_id=task.id)
         candidate_documents = active_candidate_documents + recent_processed_documents
-        decision = exact_duplicate_decision(
-            query=query,
-            documents=odaily_documents,
-            target_type="odaily_published",
-        )
+        decision = None
         query_vector: list[float] | None = None
         odaily_matches: list[SearchMatch] = []
         candidate_matches: list[SearchMatch] = []
         review_matches: list[tuple[SearchMatch, str]] = []
         non_duplicate_review: SearchDecision | None = None
-        if decision is None:
-            decision = exact_duplicate_decision(
-                query=query,
-                documents=active_candidate_documents,
-                target_type="inflight_candidate",
-            )
-        if decision is None:
-            decision = exact_duplicate_decision(
-                query=query,
-                documents=recent_processed_documents,
-                target_type="recent_processed",
-            )
         if decision is None:
             query_vector = self.search_embedding_service.embed_one(cache_key=f"task:{task.id}", text=query.embedding_text)
             odaily_matches = top_matches(
@@ -982,7 +964,7 @@ class XProcessingWorker:
                 matches=review_matches,
             )
             if batch_decision is not None:
-                if batch_decision.is_duplicate:
+                if batch_decision.decision == "duplicate":
                     decision = batch_decision
                 else:
                     non_duplicate_review = batch_decision
@@ -1024,10 +1006,14 @@ class XProcessingWorker:
             self.repository.complete_search_duplicate(task.id, result=result)
             return
         result = {
-            "is_duplicate": False,
-            "duplicate_target_type": "none",
-            "duplicate_target_id": None,
-            "reason": non_duplicate_review.reason if non_duplicate_review is not None else "no_match",
+            **(non_duplicate_review.to_result() if non_duplicate_review is not None else {
+                "is_duplicate": False,
+                "decision": "new_event",
+                "duplicate_target_type": "none",
+                "duplicate_target_id": None,
+                "reason": "no_match",
+                "new_facts": [],
+            }),
             **self._search_diagnostics(
                 started_at=started_at,
                 odaily_documents=odaily_documents,
@@ -1045,11 +1031,32 @@ class XProcessingWorker:
         if non_duplicate_review is not None:
             result["reviewed_by_ai"] = True
             result["review_similarity"] = non_duplicate_review.similarity
+            if non_duplicate_review.decision == "same_event_update":
+                result["update_target"] = self._duplicate_target_snapshot(
+                    decision=non_duplicate_review,
+                    documents_by_type={
+                        "odaily_published": odaily_documents,
+                        "inflight_candidate": active_candidate_documents,
+                        "recent_processed": recent_processed_documents,
+                    },
+                )
             if non_duplicate_review.raw_ai_output:
                 result["raw_ai_output"] = non_duplicate_review.raw_ai_output
         if self._event_tracking_cancelled(task.id):
             return
         candidate_id, archive_is_primary = self.repository.create_candidate_for_task(task, search_result=result)
+        if non_duplicate_review is not None and non_duplicate_review.decision == "same_event_update" and non_duplicate_review.candidate_id is not None:
+            try:
+                self.repository.link_task_to_candidate(
+                    task,
+                    candidate_id=non_duplicate_review.candidate_id,
+                    search_result=result,
+                )
+            except Exception as exc:
+                print(
+                    "[odaily] search update archive link failed "
+                    f"task_id={task.id} candidate_id={non_duplicate_review.candidate_id}: {exc}"
+                )
         self._mirror_active_candidate(task=task, candidate_id=candidate_id)
         if self._event_tracking_cancelled(task.id):
             return
@@ -1074,11 +1081,8 @@ class XProcessingWorker:
         if not matches:
             return None
         best_match = max(matches, key=lambda item: item[0].similarity)[0]
-        direct_duplicates = [
-            item for item in matches if item[0].similarity >= self.settings.search_duplicate_threshold
-            and not requires_fact_review(query, item[0].document)
-        ]
-        if direct_duplicates:
+        direct_duplicates = [item for item in matches if item[0].similarity >= self.settings.search_duplicate_threshold]
+        if direct_duplicates and self.search_ai_client is None:
             match, target_type = max(direct_duplicates, key=lambda item: item[0].similarity)
             return SearchDecision(
                 is_duplicate=True,
@@ -1087,26 +1091,36 @@ class XProcessingWorker:
                 reason="same_event",
                 similarity=match.similarity,
                 candidate_id=match.document.candidate_id,
+                decision="duplicate",
             )
-        if best_match.similarity < self.settings.search_batch_ai_review_threshold or self.search_ai_client is None:
+        review_threshold = min(
+            self.settings.search_batch_ai_review_threshold,
+            self.settings.search_duplicate_threshold,
+        )
+        if best_match.similarity < review_threshold or self.search_ai_client is None:
             return None
         review_prompt = build_ai_batch_review_prompt(query=query, matches=matches)
         self._record_attempt_context(
             input_evidence={"source": query.source, "source_item_id": query.doc_id, "candidate_count": len(matches)},
             rule_evidence={"rule": "search_ai_batch_review", "duplicate_threshold": self.settings.search_duplicate_threshold,
                            "review_threshold": self.settings.search_batch_ai_review_threshold, "prompt": review_prompt,
-                           "model": self.settings.search_ai_review_model, "schema": AI_REVIEW_SCHEMA},
+                           "model": self.settings.search_ai_review_model, "schema": AI_BATCH_REVIEW_SCHEMA},
         )
         raw_output = self.search_ai_client.generate_text(
             model=self.settings.search_ai_review_model,
             prompt=review_prompt,
-            text_format=AI_REVIEW_SCHEMA,
+            text_format=AI_BATCH_REVIEW_SCHEMA,
             reasoning_effort=self.settings.search_ai_review_reasoning_effort,
         )
         self._record_attempt_response(raw_output)
         payload = parse_ai_review_output(raw_output)
-        is_duplicate = bool(payload.get("is_duplicate"))
-        if not is_duplicate:
+        classification = str(payload.get("decision") or "")
+        new_facts = payload.get("new_facts")
+        if not isinstance(new_facts, list) or any(not isinstance(fact, str) or not fact.strip() for fact in new_facts):
+            raise ValueError("search AI new_facts must be a list of non-empty strings")
+        if classification == "new_event":
+            if new_facts or payload.get("target_type") != "none" or payload.get("target_id"):
+                raise ValueError("search AI new_event cannot include a target or new facts")
             return SearchDecision(
                 is_duplicate=False,
                 duplicate_target_type="none",
@@ -1114,9 +1128,12 @@ class XProcessingWorker:
                 reason=str(payload.get("reason") or "unrelated"),
                 similarity=best_match.similarity,
                 raw_ai_output=raw_output,
+                decision="new_event",
             )
-        requested_target_type = str(payload.get("duplicate_target_type") or "")
-        requested_target_id = str(payload.get("duplicate_target_id") or "")
+        if classification not in {"duplicate", "same_event_update"}:
+            raise ValueError("search AI returned an unknown event classification")
+        requested_target_type = str(payload.get("target_type") or "")
+        requested_target_id = str(payload.get("target_id") or "")
         selected = next(
             (
                 item
@@ -1129,16 +1146,22 @@ class XProcessingWorker:
             matching_ids = [item for item in matches if item[0].document.doc_id == requested_target_id]
             selected = matching_ids[0] if len(matching_ids) == 1 else None
         if selected is None:
-            raise ValueError("search AI duplicate target was not included in reviewed candidates")
+            raise ValueError("search AI target was not included in reviewed candidates")
         match, target_type = selected
+        if classification == "same_event_update" and not new_facts:
+            raise ValueError("search AI same_event_update requires at least one new fact")
+        if classification == "duplicate" and new_facts:
+            raise ValueError("search AI duplicate cannot include new facts")
         return SearchDecision(
-            is_duplicate=True,
+            is_duplicate=classification == "duplicate",
             duplicate_target_type=target_type,
             duplicate_target_id=match.document.doc_id,
             reason=str(payload.get("reason") or "unrelated"),
             similarity=match.similarity,
             candidate_id=match.document.candidate_id,
             raw_ai_output=raw_output,
+            decision=classification,
+            new_facts=[fact.strip() for fact in new_facts],
         )
 
     @staticmethod
@@ -1177,6 +1200,7 @@ class XProcessingWorker:
             "candidate_id": target.candidate_id if target is not None else decision.candidate_id,
             "title": target.title if target is not None else None,
             "source_url": target.source_url if target is not None else None,
+            "content": target.content if target is not None else None,
             "similarity": round(decision.similarity, 6),
         }
 
@@ -1225,6 +1249,7 @@ class XProcessingWorker:
             prompt=prompt,
             known_subjects=known_subjects,
             include_newsflash_priority=include_priority,
+            search_result=pipeline.search_result,
         )
         self._record_attempt_context(
             input_evidence={"source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url,
@@ -1968,6 +1993,7 @@ def build_structured_writer_prompt(
     prompt: PromptTemplateVersion,
     known_subjects: list[dict[str, str]],
     include_newsflash_priority: bool = False,
+    search_result: dict[str, Any] | None = None,
 ) -> str:
     subject_prompt = build_known_subject_prompt(known_subjects)
     subject_block = f"\n\n{subject_prompt}" if subject_prompt else ""
@@ -1983,6 +2009,16 @@ def build_structured_writer_prompt(
         "title_strategy_reason 只解释标题组织方式；不要输出事实抽取或风险分析。\n"
         "feature_mode_applied 表示是否实际采用特色写法，不等同于特色模式配置是否开启。"
     )
+    update_target = search_result.get("update_target") if isinstance(search_result, dict) else None
+    if isinstance(search_result, dict) and search_result.get("decision") == "same_event_update" and isinstance(update_target, dict):
+        base_prompt = (
+            f"{base_prompt}\n\n"
+            "【同一事件的新增事实】\n"
+            "本任务已由搜索者判定为同一持续事件的新进展。以下旧稿仅用于区分已披露信息；本次稿件应以当前材料为准，准确写出新增事实，不要把旧稿内容误写成新事实。\n"
+            f"新增事实：{json.dumps(search_result.get('new_facts') or [], ensure_ascii=False)}\n"
+            f"关联旧稿标题：{update_target.get('title') or ''}\n"
+            f"关联旧稿正文：{update_target.get('content') or ''}"
+        )
     if not include_newsflash_priority:
         return base_prompt
     return (

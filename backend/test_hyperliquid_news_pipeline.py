@@ -373,13 +373,15 @@ def test_shared_searcher_reviews_lookonchain_fact_and_releases_later_actions(tmp
         def generate_text(self,**kwargs):
             self.calls.append(kwargs['prompt'])
             assert 'Lookonchain' in kwargs['prompt']
-            return json.dumps({'is_duplicate':same_event,'duplicate_target_type':
+            return json.dumps({'decision':'duplicate' if same_event else 'new_event','target_type':
                 {'odaily_reference':'odaily_published','candidate':'inflight_candidate','recent_processed':'recent_processed'}[reference_type] if same_event else 'none',
-                'duplicate_target_id':'reference' if same_event else '',
-                'reason':'same_event' if same_event else 'update_of_existing_event'})
+                'target_id':'reference' if same_event else '',
+                'new_facts':[],
+                'reason':'same_event_no_new_facts' if same_event else 'different_event'})
     ai=AI()
     worker=XProcessingWorker(stage='search',repository=repo,settings=XProcessingSettings(),
         search_embedding_service=Embeddings(),search_ai_client=ai)
+    worker._hyperliquid_blocked=lambda _task: False
     document=SearchDocument(doc_type=reference_type,doc_id='reference',title='Lookonchain：某地址加仓STRK',
         content='Lookonchain报道：'+('该地址刚加仓至1000万美元STRK多单。' if same_event else '该地址昨日持有500万美元STRK多单。'),
         source='x',source_url=source_url(e),published_at=now,
