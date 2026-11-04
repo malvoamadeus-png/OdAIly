@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS system_review_analysis_attempts (
     raw_response_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_system_review_analysis_attempts_item ON system_review_analysis_attempts(item_key,id DESC);
+CREATE INDEX IF NOT EXISTS idx_system_review_analysis_response ON system_review_analysis_attempts(raw_response_ref);
 CREATE TABLE IF NOT EXISTS system_review_channel_observations (
     component TEXT NOT NULL,
     worker_id TEXT NOT NULL,

@@ -283,3 +283,31 @@ def test_expired_legacy_supplier_review_is_hidden_before_cleanup(tmp_path: Path)
     cleanup_observation_errors(repo.information_store)
     with repo.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM system_review_items').fetchone()[0] == 0
+
+
+def test_news_queries_and_retention_lookups_use_indexes_before_statistics(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    original_connect = store.connect
+    statements = []
+
+    def traced_connect():
+        conn = original_connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(store, 'connect', traced_connect)
+    assert store.query({'view': 'news'})['items'] == []
+    selects = [sql for sql in statements if 'FROM system_information_items i' in sql]
+    assert len(selects) == 2
+    with original_connect() as conn:
+        for sql in selects:
+            plan = ' '.join(str(row[3]) for row in conn.execute('EXPLAIN QUERY PLAN '+sql))
+            assert 'idx_system_information_news_activity' in plan
+            assert 'TEMP B-TREE' not in plan
+        for sql, expected in (
+            ("SELECT evidence_ref FROM system_information_items WHERE source_database='main' AND source_table='tasks' AND source_row_id='1'", 'idx_system_information_origin'),
+            ("UPDATE system_information_events SET evidence_ref='new' WHERE evidence_ref='old'", 'idx_system_information_events_evidence'),
+        ):
+            plan = ' '.join(str(row[3]) for row in conn.execute('EXPLAIN QUERY PLAN '+sql))
+            assert expected in plan
+            assert 'SCAN ' not in plan

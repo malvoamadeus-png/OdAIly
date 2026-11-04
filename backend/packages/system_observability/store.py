@@ -232,6 +232,10 @@ class SystemInformationStore:
                     conn.execute(f'ALTER TABLE system_information_items ADD COLUMN {name} {definition}')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_system_information_news_activity ON system_information_items(updated_at_ms DESC,item_id DESC) WHERE news_visible=1 AND parent_item_id IS NULL')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_system_information_parent ON system_information_items(parent_item_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_system_information_origin ON system_information_items(source_database,source_table,source_row_id)')
+            for table in ('system_information_items', 'system_information_events',
+                          'system_information_decision_samples', 'system_information_evidence_pins'):
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table}_evidence ON {table}(evidence_ref)')
             conn.execute('''CREATE TABLE IF NOT EXISTS system_information_external_error_daily (
                 database_key TEXT NOT NULL,error_date TEXT NOT NULL,source TEXT NOT NULL,stage TEXT NOT NULL,
                 category TEXT NOT NULL,occurrences INTEGER NOT NULL,
@@ -1165,6 +1169,9 @@ class SystemInformationStore:
                 clauses.append(f"(i.{sort}<? OR (i.{sort}=? AND i.item_id<?) OR i.{sort} IS NULL)")
                 params.extend([cursor_time, cursor_time, cursor_id])
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        # A new, mostly empty news index has no statistics yet. SQLite otherwise
+        # chooses parent_item_id=NULL and scans every technical row before sorting.
+        news_index = " INDEXED BY idx_system_information_news_activity" if payload.get('view') == 'news' else ""
         with self.connect() as conn:
             if keyword:
                 rows = conn.execute(
@@ -1210,12 +1217,12 @@ class SystemInformationStore:
                         item.pop("evidence_path", None)
                         items.append(item)
             else:
-                total = conn.execute(f"SELECT COUNT(*) FROM system_information_items i{base_where}", base_params).fetchone()[0]
+                total = conn.execute(f"SELECT COUNT(*) FROM system_information_items i{news_index}{base_where}", base_params).fetchone()[0]
                 rows = conn.execute(
                     f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
                         i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
                         i.evidence_ref,i.legacy_history,i.admission,i.duplicate_json,i.source_name,i.source_updated_at_ms
-                        FROM system_information_items i{where}
+                        FROM system_information_items i{news_index}{where}
                         ORDER BY i.{sort} DESC,i.item_id DESC LIMIT ?""",
                     [*params, limit + 1],
                 ).fetchall()
