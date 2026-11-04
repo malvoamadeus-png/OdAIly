@@ -2,6 +2,7 @@
 Description=OdAIly Hyperliquid approved-scenario news monitor
 After=network-online.target odaily-local-pipeline.service
 Wants=network-online.target
+RequiresMountsFor=/data/OdAIly/hyperliquid
 
 [Service]
 Type=simple

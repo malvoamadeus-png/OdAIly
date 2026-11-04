@@ -36,7 +36,7 @@
 
 ## 底层实现边界
 
-独立包 `backend/packages/hyperliquid_news/`；复用公开 HTTP client，不改变旧手工地址成交提醒。正式监测状态、成交历史、候选和投递记录使用 `ODAILY_HYPERLIQUID_SQLITE_PATH` 指定的独立 SQLite，默认 `data/runtime/hyperliquid.sqlite`；官方服务器配置到 `/data/OdAIly/hyperliquid/hyperliquid.sqlite`。任务和 Prompt 版本仍写入主 `odaily.sqlite`。控制台、写作 worker、投递器和信息流投影都读取同一 Hyperliquid 路径。测试仅使用临时库。网络采集不在事务内执行，成功响应才替换基线，失败不推断清仓。候选层只存结构化事实；由独立投递步骤创建任务，复用写作及强制挂后台分支。
+独立包 `backend/packages/hyperliquid_news/`；复用公开 HTTP client，不改变旧手工地址成交提醒。正式监测状态、成交历史、候选和投递记录使用 `ODAILY_HYPERLIQUID_SQLITE_PATH` 指定的独立 SQLite，默认 `data/runtime/hyperliquid.sqlite`；官方服务器配置到 `/data/OdAIly/hyperliquid/hyperliquid.sqlite`，相关 systemd 服务声明该数据盘挂载为启动依赖。任务和 Prompt 版本仍写入主 `odaily.sqlite`。控制台、写作 worker、投递器和信息流投影都读取同一 Hyperliquid 路径。测试仅使用临时库。网络采集不在事务内执行，成功响应才替换基线，失败不推断清仓。候选层只存结构化事实；由独立投递步骤创建任务，复用写作及强制挂后台分支。
 
 接口与能力核验、统计口径、命令、失败处理和实际限制在本文件后续章节同步维护。未通过公开接口核验的能力必须标明，不能宣称已实现全网监测或完整历史。
 

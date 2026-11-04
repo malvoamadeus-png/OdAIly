@@ -2,7 +2,7 @@
 Description=OdAIly editor plugin news generation API
 After=network-online.target
 Wants=network-online.target
-RequiresMountsFor=/data/OdAIly/system-observability
+RequiresMountsFor=/data/OdAIly/system-observability /data/OdAIly/hyperliquid
 
 [Service]
 Type=simple
