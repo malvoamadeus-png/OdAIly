@@ -991,6 +991,60 @@ def test_source_outbox_coalesces_snapshots_and_keeps_each_timeline_event() -> No
         assert [event["status"] for event in transitions] == ["processing", "failed", "retry"]
 
 
+def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.execute("""
+                CREATE TABLE x_capture_attempts(
+                    id INTEGER PRIMARY KEY,username_lower TEXT,status TEXT,source TEXT,
+                    candidate_count INTEGER,new_count INTEGER,saved_count INTEGER,error TEXT,
+                    started_at TEXT,finished_at TEXT
+                )
+            """)
+        spec = TableSpec("main", "x_capture_attempts", "x", "x_capture")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "UPDATE odaily_observability_meta SET meta_value='2' "
+                "WHERE meta_key='source_audit_trigger_version:main'"
+            )
+        SourceAuditInstaller().install(source, (spec,))
+
+        with sqlite3.connect(source) as conn:
+            triggers = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'odaily_obs_x_capture_attempts_%'"
+            )}
+            assert "odaily_obs_x_capture_attempts_delete" not in triggers
+            conn.execute("""
+                INSERT INTO x_capture_attempts VALUES(
+                    1,'account','success','fxtwitter',12,0,0,NULL,'2026-11-03T00:00:00Z','2026-11-03T00:00:01Z'
+                )
+            """)
+            insert_event = conn.execute(
+                "SELECT event_id,happened_at_ms,payload_json FROM odaily_observability_outbox"
+            ).fetchone()
+            conn.execute("DELETE FROM x_capture_attempts WHERE id=1")
+            assert conn.execute("SELECT COUNT(*) FROM odaily_observability_outbox").fetchone()[0] == 1
+            conn.execute(
+                "INSERT INTO odaily_observability_outbox(event_id,table_name,source_row_id,operation,happened_at_ms,payload_json) "
+                "VALUES('historical-retention-delete','x_capture_attempts','1','delete',?,?)",
+                (insert_event[1] + 1, insert_event[2]),
+            )
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(source, store, table_specs=(spec,))
+        assert projector._project_source_outbox(
+            "main", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        ) == (1, 1)
+        detail = store.detail("main:x_capture_attempts:1")
+        assert detail is not None
+        assert [event["event_type"] for event in detail["timeline"]] == ["legacy_snapshot", "source_state_change"]
+        assert store.get_state("source_audit_main_watermark") == "2"
+
+
 def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)

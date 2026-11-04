@@ -31,7 +31,8 @@ ADDITIONAL_TAIL_RECHECK_LIMIT = 25
 SOURCE_OUTBOX_RETENTION_MS = 24 * 60 * 60_000
 SOURCE_OUTBOX_CLEANUP_INTERVAL_MS = 5 * 60_000
 SOURCE_OUTBOX_CLEANUP_BATCH_SIZE = 5_000
-SOURCE_AUDIT_TRIGGER_VERSION = 2
+SOURCE_AUDIT_TRIGGER_VERSION = 3
+RETENTION_ONLY_DELETE_TABLES = frozenset({"x_capture_attempts"})
 NON_SEMANTIC_AUDIT_COLUMNS = frozenset({
     "updated_at", "last_seen_at", "last_polled_at", "last_checked_at", "heartbeat_at",
     "last_attempt_at", "last_success_at", "polled_at", "checked_at",
@@ -186,7 +187,10 @@ class SourceAuditInstaller:
             if current_version != str(SOURCE_AUDIT_TRIGGER_VERSION):
                 for table in tables:
                     prefix = "odaily_obs_" + re.sub(r"[^a-zA-Z0-9_]", "_", table)
-                    for operation in ("insert", "update", "delete"):
+                    operations = ("insert", "update") if table in RETENTION_ONLY_DELETE_TABLES else (
+                        "insert", "update", "delete",
+                    )
+                    for operation in operations:
                         conn.execute(f"DROP TRIGGER IF EXISTS {_quote_identifier(f'{prefix}_{operation}')}")
             for table in tables:
                 table_sql = _quote_identifier(table)
@@ -222,11 +226,14 @@ class SourceAuditInstaller:
                     "stock": ("poll_interval_seconds", "instrument_refresh_seconds"),
                 }.get(database_key, ())
                 prefix = "odaily_obs_" + re.sub(r"[^a-zA-Z0-9_]", "_", table)
-                for operation, reference, when in (
+                operation_specs = (
                     ("insert", "NEW", ""),
                     ("update", "NEW", f" WHEN {changed}"),
                     ("delete", "OLD", ""),
-                ):
+                )
+                if table in RETENTION_ONLY_DELETE_TABLES:
+                    operation_specs = operation_specs[:2]
+                for operation, reference, when in operation_specs:
                     trigger = _quote_identifier(f"{prefix}_{operation}")
                     pairs = old_pairs if reference == "OLD" else object_pairs
                     if table == "settings":
@@ -693,6 +700,8 @@ class MainTaskProjector:
         for event in rows:
             spec = by_table.get(str(event["table_name"]))
             if spec is None:
+                continue
+            if spec.table in RETENTION_ONLY_DELETE_TABLES and str(event["operation"]) == "delete":
                 continue
             payload = _decode(event["payload_json"])
             if not isinstance(payload, dict):
