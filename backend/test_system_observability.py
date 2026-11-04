@@ -1029,6 +1029,9 @@ def test_task_source_outbox_advances_existing_snapshot() -> None:
 
         detail = store.detail("task:x:tweet-1")
         assert detail is not None and detail["status"] == "auto_published"
+        assert detail["task_id"] == 1
+        assert detail["admission"] == "accepted"
+        assert detail["news_visible"] == 1
         transitions = [event for event in detail["timeline"] if event["event_type"] == "source_state_change"]
         assert [event["status"] for event in transitions] == ["auto_published"]
 
@@ -1045,6 +1048,42 @@ def test_task_source_outbox_advances_existing_snapshot() -> None:
             )
         projector._project_source_outbox("main", source, [spec], int(datetime.now(UTC).timestamp() * 1000))
         assert store.detail("task:x:tweet-1")["status"] == "auto_published"
+
+
+def test_duplicate_task_created_from_outbox_is_visible_in_news_view() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE tasks(
+                    id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,source_url TEXT,title TEXT,
+                    content TEXT,status TEXT,created_at TEXT,updated_at TEXT,metadata TEXT,raw_payload TEXT
+                );
+                INSERT INTO tasks VALUES(
+                    2,'blockbeats','375499','https://example.test/story','WLFI新进展','正文','pending',
+                    '2026-11-04T19:00:00+08:00','2026-11-04T19:00:00+08:00','{}','{}'
+                );
+            """)
+        spec = TableSpec("main", "tasks", "unmapped_source", "main_pipeline")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "UPDATE tasks SET status='duplicate',updated_at='2026-11-04T19:00:01+08:00' WHERE id=2"
+            )
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(source, store, table_specs=(spec,))
+        projector._project_source_outbox("main", source, [spec], int(datetime.now(UTC).timestamp() * 1000))
+
+        page = store.query({"view": "news"})
+        assert len(page["items"]) == 1
+        item = page["items"][0]
+        assert item["task_id"] == 2
+        assert item["business_key"] == "crypto_media"
+        assert item["status"] == "duplicate"
+        assert item["admission"] == "duplicate"
 
 
 def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -> None:

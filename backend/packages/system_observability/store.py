@@ -979,8 +979,42 @@ class SystemInformationStore:
                         continue
                 snapshots[item_id] = entry
             for entry in snapshots.values():
+                snapshot = entry["snapshot"]
+                item_id = str(snapshot["item_id"])
+                if entry.get("only_if_newer"):
+                    previous = conn.execute(
+                        "SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,),
+                    ).fetchone()
+                    if previous is not None:
+                        admission = str(snapshot.get("admission") or "unassessed")
+                        visible_sql = (
+                            "CASE WHEN ? IN ('accepted','duplicate') THEN 1 "
+                            "WHEN ?='rejected' THEN 0 ELSE news_visible END"
+                        )
+                        admission_sql = (
+                            "CASE WHEN ? IN ('accepted','duplicate','rejected') THEN ? ELSE admission END"
+                        )
+                        cursor = conn.execute(
+                            "UPDATE system_information_items SET "
+                            "business_key=CASE WHEN business_key='unmapped_source' THEN ? ELSE business_key END, "
+                            "task_id=COALESCE(task_id,?), "
+                            "title=CASE WHEN title='' THEN ? ELSE title END, "
+                            "source_url=COALESCE(source_url,?), stage=?,status=?,result=?,summary=?,failure_category=?, "
+                            "updated_at_ms=?,observed_at_ms=?, "
+                            f"news_visible={visible_sql},admission={admission_sql} WHERE item_id=?",
+                            (
+                                snapshot.get("business_key") or "unmapped_source", snapshot.get("task_id"),
+                                snapshot.get("title") or "", snapshot.get("source_url"),
+                                snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
+                                snapshot.get("result") or "unknown", snapshot.get("summary") or "",
+                                snapshot.get("failure_category"), snapshot.get("updated_at_ms"), observed,
+                                admission, admission, admission, admission, item_id,
+                            ),
+                        )
+                        changed += int(cursor.rowcount > 0)
+                        continue
                 changed += int(self._upsert_snapshot_in_connection(
-                    conn, entry["snapshot"], entry.get("evidence"), observed,
+                    conn, snapshot, entry.get("evidence"), observed,
                 ))
             for entry in entries:
                 snapshot = entry["snapshot"]

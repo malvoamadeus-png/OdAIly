@@ -63,7 +63,7 @@ TABLE_SPECS = (
     TableSpec("main", "whale_watch_addresses", "whale", "whale_watch", "configuration"),
     TableSpec("main", "whale_watch_hyperliquid_settings", "whale", "whale_watch_hyperliquid", "configuration"),
     TableSpec("main", "whale_watch_hyperliquid_addresses", "whale", "whale_watch_hyperliquid", "configuration"),
-    TableSpec("main", "hl_news_addresses", "hyperliquid_news", "hyperliquid_news", "configuration"),
+    TableSpec("hyperliquid", "hl_news_addresses", "hyperliquid_news", "hyperliquid_news", "configuration"),
     TableSpec("main", "prompt_templates", "x", "x_capture", "configuration"),
     TableSpec("main", "prompt_template_versions", "x", "x_capture", "configuration"),
     TableSpec("main", "publisher_settings", "x", "x_capture", "configuration"),
@@ -79,8 +79,8 @@ TABLE_SPECS = (
     TableSpec("main", "business_message_inbox", "business_news", "business_telegram"),
     TableSpec("main", "whale_watch_activities", "whale", "whale_watch"),
     TableSpec("main", "whale_watch_hyperliquid_activities", "whale", "whale_watch_hyperliquid"),
-    TableSpec("main", "hl_news_candidates", "hyperliquid_news", "hyperliquid_news"),
-    TableSpec("main", "hl_news_dispatch", "hyperliquid_news", "hyperliquid_news"),
+    TableSpec("hyperliquid", "hl_news_candidates", "hyperliquid_news", "hyperliquid_news"),
+    TableSpec("hyperliquid", "hl_news_dispatch", "hyperliquid_news", "hyperliquid_news"),
     TableSpec("main", "x_capture_attempts", "x", "x_capture"),
     TableSpec("main", "binance_square_attempts", "binance_square", "binance_square"),
     TableSpec("main", "auditor_checks", "post_publish_review", "text_audit"),
@@ -766,8 +766,25 @@ class MainTaskProjector:
                 if not isinstance(payload, dict):
                     payload = {}
                 source_row = {**payload, "__obs_rowid__": event["source_row_id"]}
+                if spec.table == "tasks" and str(event["source_row_id"]).isdigit():
+                    source_row["task_id"] = int(event["source_row_id"])
                 snapshot, _evidence = _generic_snapshot(spec, path, source_row, now_ms, 0)
-                self._link_to_news(link_conn, snapshot, source_row)
+                if spec.table == "tasks":
+                    task_status = str(snapshot["status"])
+                    label, result = STATUS_LABELS.get(
+                        task_status, (task_status.replace("_", " "), "failed" if task_status.endswith("failed") else "unknown"),
+                    )
+                    admission = task_admission(task_status, {}, snapshot["source"])
+                    snapshot.update({
+                        "business_key": SOURCE_TO_BUSINESS.get(snapshot["source"], "unmapped_source"),
+                        "task_id": int(event["source_row_id"]) if str(event["source_row_id"]).isdigit() else None,
+                        "stage": _stage(task_status), "status": task_status, "result": result,
+                        "summary": label, "admission": admission,
+                        "news_visible": admission in {"accepted", "duplicate"}
+                        and snapshot["source"] not in {"stock_market", "gate_market"},
+                    })
+                if spec.table != "tasks":
+                    self._link_to_news(link_conn, snapshot, source_row)
                 snapshot["legacy_history"] = False
                 snapshot["updated_at_ms"] = timestamp_ms(
                     payload.get("updated_at") or payload.get("completed_at") or payload.get("last_seen_at")
@@ -816,28 +833,35 @@ class MainTaskProjector:
         self._cleanup_source_outbox(database_key, path, watermark, now_ms)
         return imported, changed
 
-    @staticmethod
-    def _link_to_news(conn: sqlite3.Connection, snapshot: dict[str, Any], row: dict[str, Any]) -> None:
+    def _link_to_news(self, conn: sqlite3.Connection, snapshot: dict[str, Any], row: dict[str, Any]) -> None:
         table = snapshot['source_table']
         task_id = row.get('task_id')
         if not task_id and table not in {'auditor_checks', 'fact_checks', 'fact_check_runs', 'newsflash_items'}:
             return
-        tables = {str(r[0]) for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        databases = {str(r[1]): str(r[2]) for r in conn.execute('PRAGMA database_list')}
+        current_path = Path(databases.get('main', '')).resolve()
+        primary_path = self.source_database.resolve()
+        if current_path != primary_path and 'odaily_main' not in databases:
+            conn.execute('ATTACH DATABASE ? AS odaily_main', (str(primary_path),))
+            databases['odaily_main'] = str(primary_path)
+        primary_schema = 'odaily_main.' if current_path != primary_path else ''
+        tables = {str(r[0]) for r in conn.execute(
+            f"SELECT name FROM {primary_schema}sqlite_master WHERE type='table'")}
         if table == 'newsflash_items' and 'tasks' in tables:
-            task = conn.execute('SELECT id FROM tasks WHERE source=? AND source_item_id=? ORDER BY id LIMIT 2', (row.get('source'), row.get('source_item_id'))).fetchall()
+            task = conn.execute(f'SELECT id FROM {primary_schema}tasks WHERE source=? AND source_item_id=? ORDER BY id LIMIT 2', (row.get('source'), row.get('source_item_id'))).fetchall()
             if len(task) == 1:
                 task_id = task[0][0]
         if table == 'fact_check_runs' and 'fact_checks' in tables:
-            check = conn.execute('SELECT source_item_id FROM fact_checks WHERE id=?', (row.get('check_id'),)).fetchone()
+            check = conn.execute(f'SELECT source_item_id FROM {primary_schema}fact_checks WHERE id=?', (row.get('check_id'),)).fetchone()
             row = {**row, 'source_item_id': check[0] if check else None}
         if table in {'auditor_checks', 'fact_checks', 'fact_check_runs'} and 'newsflash_production_metadata' in tables:
-            match = conn.execute('SELECT delivery_key FROM newsflash_production_metadata WHERE odaily_id=? AND id_match_status=\'matched\'', (row.get('source_item_id'),)).fetchone()
+            match = conn.execute(f'SELECT delivery_key FROM {primary_schema}newsflash_production_metadata WHERE odaily_id=? AND id_match_status=\'matched\'', (row.get('source_item_id'),)).fetchone()
             if match:
                 key = str(match[0])
                 if key.startswith('odaily-task-'):
                     task_id = key.removeprefix('odaily-task-')
         if task_id and 'tasks' in tables:
-            task = conn.execute('SELECT id,source,source_item_id FROM tasks WHERE id=?', (task_id,)).fetchone()
+            task = conn.execute(f'SELECT id,source,source_item_id FROM {primary_schema}tasks WHERE id=?', (task_id,)).fetchone()
             if task:
                 snapshot['parent_item_id'] = f"task:{task['source']}:{task['source_item_id'] or task['id']}"
                 snapshot['news_visible'] = False
