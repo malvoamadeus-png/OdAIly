@@ -912,16 +912,22 @@ class SystemInformationStore:
         observed = int(datetime.now(UTC).timestamp() * 1000)
         changed = 0
         with self.connect() as conn:
+            snapshots: dict[str, dict[str, Any]] = {}
             for entry in entries:
                 snapshot = entry["snapshot"]
                 item_id = str(snapshot["item_id"])
-                upsert_snapshot = not entry.get("skip_snapshot_if_present") or conn.execute(
+                if entry.get("skip_snapshot_if_present") and conn.execute(
                     "SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,),
-                ).fetchone() is None
-                if upsert_snapshot:
-                    changed += int(self._upsert_snapshot_in_connection(
-                        conn, snapshot, entry.get("evidence"), observed,
-                    ))
+                ).fetchone() is not None:
+                    continue
+                snapshots[item_id] = entry
+            for entry in snapshots.values():
+                changed += int(self._upsert_snapshot_in_connection(
+                    conn, entry["snapshot"], entry.get("evidence"), observed,
+                ))
+            for entry in entries:
+                snapshot = entry["snapshot"]
+                item_id = str(snapshot["item_id"])
                 self._append_event_in_connection(
                     conn,
                     observed=observed,

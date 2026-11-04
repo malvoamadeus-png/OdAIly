@@ -31,6 +31,11 @@ ADDITIONAL_TAIL_RECHECK_LIMIT = 25
 SOURCE_OUTBOX_RETENTION_MS = 24 * 60 * 60_000
 SOURCE_OUTBOX_CLEANUP_INTERVAL_MS = 5 * 60_000
 SOURCE_OUTBOX_CLEANUP_BATCH_SIZE = 5_000
+SOURCE_AUDIT_TRIGGER_VERSION = 2
+NON_SEMANTIC_AUDIT_COLUMNS = frozenset({
+    "updated_at", "last_seen_at", "last_polled_at", "last_checked_at", "heartbeat_at",
+    "last_attempt_at", "last_success_at", "polled_at", "checked_at",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +172,22 @@ class SourceAuditInstaller:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_odaily_observability_outbox_time ON odaily_observability_outbox(happened_at_ms)")
             tables = sorted({spec.table for spec in specs if spec.table in AUDITED_TABLES})
             database_key = specs[0].database_key if specs else ""
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS odaily_observability_meta (
+                    meta_key TEXT PRIMARY KEY,
+                    meta_value TEXT NOT NULL
+                )
+            """)
+            version_key = f"source_audit_trigger_version:{database_key}"
+            version_row = conn.execute(
+                "SELECT meta_value FROM odaily_observability_meta WHERE meta_key=?", (version_key,),
+            ).fetchone()
+            current_version = str(version_row["meta_value"]) if version_row else ""
+            if current_version != str(SOURCE_AUDIT_TRIGGER_VERSION):
+                for table in tables:
+                    prefix = "odaily_obs_" + re.sub(r"[^a-zA-Z0-9_]", "_", table)
+                    for operation in ("insert", "update", "delete"):
+                        conn.execute(f"DROP TRIGGER IF EXISTS {_quote_identifier(f'{prefix}_{operation}')}")
             for table in tables:
                 table_sql = _quote_identifier(table)
                 exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
@@ -192,7 +213,10 @@ class SourceAuditInstaller:
                     for name in selected
                 )
                 old_pairs = object_pairs.replace("NEW.", "OLD.")
-                changed = " OR ".join(f"OLD.{_quote_identifier(name)} IS NOT NEW.{_quote_identifier(name)}" for name in selected)
+                semantic_columns = [name for name in selected if name.casefold() not in NON_SEMANTIC_AUDIT_COLUMNS]
+                changed = " OR ".join(
+                    f"OLD.{_quote_identifier(name)} IS NOT NEW.{_quote_identifier(name)}" for name in semantic_columns
+                ) or "0"
                 allowed_setting_keys = {
                     "gate": ("mode", "poll_interval_seconds"),
                     "stock": ("poll_interval_seconds", "instrument_refresh_seconds"),
@@ -223,6 +247,11 @@ class SourceAuditInstaller:
                         END
                     """)
                 installed += 1
+            conn.execute(
+                "INSERT INTO odaily_observability_meta(meta_key,meta_value) VALUES(?,?) "
+                "ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value",
+                (version_key, str(SOURCE_AUDIT_TRIGGER_VERSION)),
+            )
             conn.commit()
         return {"installed": installed, "skipped": skipped}
 
@@ -573,11 +602,12 @@ class MainTaskProjector:
                 self.store.set_state(f"adapter_{database_key}_audit_status", "unavailable")
                 continue
             try:
-                if self.store.get_state(f"{audit_state}_installed") != "1":
+                if self.store.get_state(f"{audit_state}_trigger_version") != str(SOURCE_AUDIT_TRIGGER_VERSION):
                     result = self.audit_installer.install(path, tuple(specs))
                     self.store.set_state(f"{audit_state}_tables", result["installed"])
                     self.store.set_state(f"{audit_state}_skipped", result["skipped"])
                     self.store.set_state(f"{audit_state}_installed", "1")
+                    self.store.set_state(f"{audit_state}_trigger_version", SOURCE_AUDIT_TRIGGER_VERSION)
                 self.store.set_state(f"adapter_{database_key}_audit_status", "ready")
                 self.store.set_state(f"adapter_{database_key}_audit_tables", self.store.get_state(f"{audit_state}_tables", "0"))
                 self.store.set_state(f"adapter_{database_key}_audit_skipped", self.store.get_state(f"{audit_state}_skipped", "0"))

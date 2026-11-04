@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import pytest
 
@@ -914,6 +915,80 @@ def test_source_sqlite_outbox_preserves_intermediate_status_and_excludes_large_o
 
         projector.run_once()
         assert len([event for event in store.detail("meme:jobs:7")["timeline"] if event["event_type"] == "source_state_change"]) == 4
+
+
+def test_source_outbox_ignores_updates_that_only_refresh_clock_fields() -> None:
+    with TemporaryDirectory() as directory:
+        source = Path(directory) / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,
+                    updated_at TEXT,last_seen_at TEXT
+                );
+                INSERT INTO jobs VALUES(1,'candidate','queued',NULL,'old','old');
+            """)
+        spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+        SourceAuditInstaller().install(source, (spec,))
+
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "UPDATE odaily_observability_meta SET meta_value='1' "
+                "WHERE meta_key='source_audit_trigger_version:meme'"
+            )
+        SourceAuditInstaller().install(source, (spec,))
+
+        with sqlite3.connect(source) as conn:
+            conn.execute("UPDATE jobs SET updated_at='new-time',last_seen_at='new-seen' WHERE id=1")
+            assert conn.execute("SELECT COUNT(*) FROM odaily_observability_outbox").fetchone()[0] == 0
+            conn.execute("UPDATE jobs SET status='processing',updated_at='state-change-time' WHERE id=1")
+            event = conn.execute(
+                "SELECT payload_json FROM odaily_observability_outbox ORDER BY seq DESC LIMIT 1"
+            ).fetchone()[0]
+
+        payload = json.loads(event)
+        assert payload["status"] == "processing"
+        assert payload["updated_at"] == "state-change-time"
+
+
+def test_source_outbox_coalesces_snapshots_and_keeps_each_timeline_event() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);
+                INSERT INTO jobs VALUES(7,'candidate','queued',NULL,'2026-11-03T00:00:00Z');
+            """)
+        spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.execute("UPDATE jobs SET status='processing',updated_at='2026-11-03T00:00:01Z' WHERE id=7")
+            conn.execute("UPDATE jobs SET status='failed',last_error='timeout',updated_at='2026-11-03T00:00:02Z' WHERE id=7")
+            conn.execute("UPDATE jobs SET status='retry',updated_at='2026-11-03T00:00:03Z' WHERE id=7")
+            conn.execute("UPDATE odaily_observability_outbox SET happened_at_ms=1000+seq")
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(source, store, table_specs=(spec,))
+        original_upsert = store._upsert_snapshot_in_connection
+        upserted_items: list[str] = []
+
+        def counted_upsert(conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int) -> bool:
+            upserted_items.append(str(snapshot["item_id"]))
+            return original_upsert(conn, snapshot, evidence, observed)
+
+        store._upsert_snapshot_in_connection = counted_upsert  # type: ignore[method-assign]
+        imported, changed = projector._project_source_outbox(
+            "meme", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        )
+
+        assert (imported, changed) == (3, 1)
+        assert upserted_items == ["meme:jobs:7"]
+        detail = store.detail("meme:jobs:7")
+        assert detail is not None and detail["status"] == "retry"
+        transitions = [event for event in detail["timeline"] if event["event_type"] == "source_state_change"]
+        assert [event["status"] for event in transitions] == ["processing", "failed", "retry"]
 
 
 def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:
