@@ -916,6 +916,91 @@ def test_source_sqlite_outbox_preserves_intermediate_status_and_excludes_large_o
         assert len([event for event in store.detail("meme:jobs:7")["timeline"] if event["event_type"] == "source_state_change"]) == 4
 
 
+def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT)"
+            )
+        spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.executemany(
+                "INSERT INTO jobs(id,title,status,last_error,updated_at) VALUES(?,?,?,NULL,?)",
+                ((index, f"candidate-{index}", "queued", "2026-11-03T00:00:00Z") for index in range(1, 101)),
+            )
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(source, store, additional_databases={"meme": source}, table_specs=(spec,))
+        original_connect = store.connect
+        connection_count = 0
+
+        def counted_connect() -> sqlite3.Connection:
+            nonlocal connection_count
+            connection_count += 1
+            return original_connect()
+
+        store.connect = counted_connect  # type: ignore[method-assign]
+        imported, changed = projector._project_source_outbox(
+            "meme", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        )
+        store.connect = original_connect  # type: ignore[method-assign]
+
+        assert imported == changed == 100
+        assert connection_count <= 5
+        assert store.get_state("source_audit_meme_watermark") == "100"
+        assert projector._project_source_outbox(
+            "meme", source, [spec], int(datetime.now(UTC).timestamp() * 1000),
+        ) == (0, 0)
+        assert len([
+            event for event in store.detail("meme:jobs:50")["timeline"]
+            if event["event_type"] == "source_state_change"
+        ]) == 1
+
+
+def test_source_outbox_cleanup_only_removes_projected_events_past_retention() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT)"
+            )
+        spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.executemany(
+                "INSERT INTO jobs(id,title,status,last_error,updated_at) VALUES(?,?,?,NULL,?)",
+                ((index, f"candidate-{index}", "queued", "2026-11-03T00:00:00Z") for index in range(1, 27)),
+            )
+            conn.execute(
+                "UPDATE odaily_observability_outbox SET happened_at_ms=? WHERE seq IN (1,2)",
+                (int(datetime.now(UTC).timestamp() * 1000) - 25 * 60 * 60 * 1000,),
+            )
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        projector = MainTaskProjector(
+            source, store, batch_size=25, additional_databases={"meme": source}, table_specs=(spec,),
+        )
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        assert projector._project_source_outbox("meme", source, [spec], now_ms) == (25, 25)
+
+        with sqlite3.connect(source) as conn:
+            remaining = conn.execute(
+                "SELECT seq FROM odaily_observability_outbox ORDER BY seq"
+            ).fetchall()
+        assert [row[0] for row in remaining] == list(range(3, 27))
+        assert len([
+            event for event in store.detail("meme:jobs:1")["timeline"]
+            if event["event_type"] == "source_state_change"
+        ]) == 1
+        assert store.detail("meme:jobs:26") is None
+
+
 def test_additional_projection_throttles_tail_checks_and_keeps_snapshot_recovery() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)

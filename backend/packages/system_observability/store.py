@@ -766,73 +766,78 @@ class SystemInformationStore:
 
     def upsert_snapshot(self, snapshot: dict[str, Any], evidence: Any) -> bool:
         observed = int(datetime.now(UTC).timestamp() * 1000)
+        with self.connect() as conn:
+            return self._upsert_snapshot_in_connection(conn, snapshot, evidence, observed)
+
+    def _upsert_snapshot_in_connection(
+        self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,
+    ) -> bool:
         fingerprint = _fingerprint(snapshot)
         item_id = str(snapshot["item_id"])
-        with self.connect() as conn:
-            previous = conn.execute(
-                "SELECT fingerprint,title,summary,source_url,stage,status,result FROM system_information_items WHERE item_id=?", (item_id,),
-            ).fetchone()
-            if previous is not None and previous["fingerprint"] == fingerprint:
-                return False
-            evidence_ref = None
-            if evidence is not None:
-                evidence_ref, evidence_path, evidence_size = self._write_evidence_file(evidence)
-                self._register_evidence(conn, evidence_ref, evidence_path, evidence_size)
-            conn.execute(
-                """INSERT INTO system_information_items(
-                    item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
-                    failure_category,created_at_ms,updated_at_ms,observed_at_ms,source_database,source_table,
-                    source_row_id,evidence_ref,fingerprint,legacy_history
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(item_id) DO UPDATE SET
-                    business_key=excluded.business_key,source=excluded.source,source_id=excluded.source_id,
-                    task_id=excluded.task_id,title=excluded.title,summary=excluded.summary,source_url=excluded.source_url,
-                    stage=excluded.stage,status=excluded.status,result=excluded.result,
-                    failure_category=excluded.failure_category,created_at_ms=excluded.created_at_ms,
-                    updated_at_ms=excluded.updated_at_ms,observed_at_ms=excluded.observed_at_ms,
-                    source_database=excluded.source_database,source_table=excluded.source_table,
-                    source_row_id=excluded.source_row_id,evidence_ref=excluded.evidence_ref,
-                    fingerprint=excluded.fingerprint""",
-                (
-                    item_id, snapshot["business_key"], snapshot["source"], snapshot.get("source_id"),
-                    snapshot.get("task_id"), snapshot.get("title") or "", snapshot.get("summary") or "",
-                    snapshot.get("source_url"), snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
-                    snapshot.get("result") or "unknown", snapshot.get("failure_category"), snapshot.get("created_at_ms"),
-                    snapshot.get("updated_at_ms"), observed, snapshot["source_database"], snapshot["source_table"],
-                    str(snapshot["source_row_id"]), evidence_ref, fingerprint, int(snapshot.get("legacy_history", True)),
-                ),
+        previous = conn.execute(
+            "SELECT fingerprint,title,summary,source_url,stage,status,result FROM system_information_items WHERE item_id=?", (item_id,),
+        ).fetchone()
+        if previous is not None and previous["fingerprint"] == fingerprint:
+            return False
+        evidence_ref = None
+        if evidence is not None:
+            evidence_ref, evidence_path, evidence_size = self._write_evidence_file(evidence)
+            self._register_evidence(conn, evidence_ref, evidence_path, evidence_size)
+        conn.execute(
+            """INSERT INTO system_information_items(
+                item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
+                failure_category,created_at_ms,updated_at_ms,observed_at_ms,source_database,source_table,
+                source_row_id,evidence_ref,fingerprint,legacy_history
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                business_key=excluded.business_key,source=excluded.source,source_id=excluded.source_id,
+                task_id=excluded.task_id,title=excluded.title,summary=excluded.summary,source_url=excluded.source_url,
+                stage=excluded.stage,status=excluded.status,result=excluded.result,
+                failure_category=excluded.failure_category,created_at_ms=excluded.created_at_ms,
+                updated_at_ms=excluded.updated_at_ms,observed_at_ms=excluded.observed_at_ms,
+                source_database=excluded.source_database,source_table=excluded.source_table,
+                source_row_id=excluded.source_row_id,evidence_ref=excluded.evidence_ref,
+                fingerprint=excluded.fingerprint""",
+            (
+                item_id, snapshot["business_key"], snapshot["source"], snapshot.get("source_id"),
+                snapshot.get("task_id"), snapshot.get("title") or "", snapshot.get("summary") or "",
+                snapshot.get("source_url"), snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
+                snapshot.get("result") or "unknown", snapshot.get("failure_category"), snapshot.get("created_at_ms"),
+                snapshot.get("updated_at_ms"), observed, snapshot["source_database"], snapshot["source_table"],
+                str(snapshot["source_row_id"]), evidence_ref, fingerprint, int(snapshot.get("legacy_history", True)),
+            ),
+        )
+        conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
+        searchable = _searchable_text(
+            tuple(snapshot.get(key) for key in ("title", "summary", "source", "source_id", "source_url")),
+            _safe_json(evidence) if evidence is not None else None,
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)",
+            ((term, item_id) for term in _search_terms(searchable)),
+        )
+        event_id = hashlib.sha256(f"{item_id}:{fingerprint}".encode()).hexdigest()
+        state_changed = previous is not None and any(
+            previous[key] != (snapshot.get(key) or ("" if key in {"title", "summary", "source_url"} else None))
+            for key in ("stage", "status", "result", "title", "summary", "source_url")
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO system_information_events(
+                event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
+                summary,reason,error_code,evidence_ref,details_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event_id, item_id, "legacy_snapshot" if previous is None else "observed_change" if state_changed else "artifact_update",
+                snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
+                snapshot.get("result") or "unknown", snapshot.get("updated_at_ms") or snapshot.get("created_at_ms"),
+                observed, snapshot.get("summary") or "", snapshot.get("reason"), snapshot.get("error_code"),
+                evidence_ref, json.dumps({
+                    "history_complete": previous is not None and not bool(snapshot.get("legacy_history")),
+                    "source_row_id": str(snapshot["source_row_id"]),
+                    "history_note": "历史初始状态不包含早期尝试；状态变化由常驻投影器轮询观察，轮询间隔内的中间尝试可能缺失。" if snapshot.get("legacy_history") else "状态变化由常驻投影器轮询观察；轮询间隔内的中间尝试可能缺失。",
+                }, ensure_ascii=False),
             )
-            conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
-            searchable = _searchable_text(
-                tuple(snapshot.get(key) for key in ("title", "summary", "source", "source_id", "source_url")),
-                _safe_json(evidence) if evidence is not None else None,
-            )
-            conn.executemany(
-                "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)",
-                ((term, item_id) for term in _search_terms(searchable)),
-            )
-            event_id = hashlib.sha256(f"{item_id}:{fingerprint}".encode()).hexdigest()
-            state_changed = previous is not None and any(
-                previous[key] != (snapshot.get(key) or ("" if key in {"title", "summary", "source_url"} else None))
-                for key in ("stage", "status", "result", "title", "summary", "source_url")
-            )
-            conn.execute(
-                """INSERT OR IGNORE INTO system_information_events(
-                    event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
-                    summary,reason,error_code,evidence_ref,details_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    event_id, item_id, "legacy_snapshot" if previous is None else "observed_change" if state_changed else "artifact_update",
-                    snapshot.get("stage") or "unknown", snapshot.get("status") or "unknown",
-                    snapshot.get("result") or "unknown", snapshot.get("updated_at_ms") or snapshot.get("created_at_ms"),
-                    observed, snapshot.get("summary") or "", snapshot.get("reason"), snapshot.get("error_code"),
-                    evidence_ref, json.dumps({
-                        "history_complete": previous is not None and not bool(snapshot.get("legacy_history")),
-                        "source_row_id": str(snapshot["source_row_id"]),
-                        "history_note": "历史初始状态不包含早期尝试；状态变化为投影轮询观察，间隔内变化可能缺失。" if snapshot.get("legacy_history") else "状态变化由常驻投影器轮询观察；轮询间隔内的中间尝试可能缺失。",
-                    }, ensure_ascii=False),
-                )
-            )
+        )
         return True
 
     def append_event(
@@ -854,25 +859,96 @@ class SystemInformationStore:
     ) -> bool:
         observed = int(datetime.now(UTC).timestamp() * 1000)
         with self.connect() as conn:
-            if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
-                return False
-            if evidence is not None:
-                evidence_ref, path, size = self._write_evidence_file(evidence)
-                self._register_evidence(conn, evidence_ref, path, size)
-            elif evidence_ref and conn.execute(
-                "SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,),
-            ).fetchone() is None:
-                evidence_ref = None
-            cursor = conn.execute(
-                """INSERT OR IGNORE INTO system_information_events(
-                    event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
-                    summary,reason,error_code,evidence_ref,details_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (event_id, item_id, event_type, stage, status, result, happened_at_ms, observed,
-                 summary[:1200], reason[:1200] if reason else None, error_code, evidence_ref,
-                 json.dumps(details or {}, ensure_ascii=False, separators=(",", ":"))),
+            return self._append_event_in_connection(
+                conn, observed=observed, item_id=item_id, event_id=event_id, event_type=event_type,
+                stage=stage, status=status, result=result, happened_at_ms=happened_at_ms,
+                summary=summary, reason=reason, error_code=error_code, evidence=evidence,
+                evidence_ref=evidence_ref, details=details,
             )
+
+    def _append_event_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        observed: int,
+        item_id: str,
+        event_id: str,
+        event_type: str,
+        stage: str,
+        status: str,
+        result: str,
+        happened_at_ms: int | None,
+        summary: str,
+        reason: str | None = None,
+        error_code: str | None = None,
+        evidence: Any = None,
+        evidence_ref: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
+            return False
+        if evidence is not None:
+            evidence_ref, path, size = self._write_evidence_file(evidence)
+            self._register_evidence(conn, evidence_ref, path, size)
+        elif evidence_ref and conn.execute(
+            "SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,),
+        ).fetchone() is None:
+            evidence_ref = None
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO system_information_events(
+                event_id,item_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,
+                summary,reason,error_code,evidence_ref,details_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, item_id, event_type, stage, status, result, happened_at_ms, observed,
+             summary[:1200], reason[:1200] if reason else None, error_code, evidence_ref,
+             json.dumps(details or {}, ensure_ascii=False, separators=(",", ":"))),
+        )
         return cursor.rowcount > 0
+
+    def apply_source_audit_batch(
+        self, entries: list[dict[str, Any]], *, watermark_key: str, watermark: int,
+    ) -> tuple[int, int]:
+        """Commit a source-event batch and its resume cursor as one destination transaction."""
+        observed = int(datetime.now(UTC).timestamp() * 1000)
+        changed = 0
+        with self.connect() as conn:
+            for entry in entries:
+                snapshot = entry["snapshot"]
+                item_id = str(snapshot["item_id"])
+                upsert_snapshot = not entry.get("skip_snapshot_if_present") or conn.execute(
+                    "SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,),
+                ).fetchone() is None
+                if upsert_snapshot:
+                    changed += int(self._upsert_snapshot_in_connection(
+                        conn, snapshot, entry.get("evidence"), observed,
+                    ))
+                self._append_event_in_connection(
+                    conn,
+                    observed=observed,
+                    item_id=item_id,
+                    event_id=str(entry["event_id"]),
+                    event_type="source_state_change",
+                    stage=str(entry["stage"]),
+                    status=str(entry["status"]),
+                    result=str(entry["result"]),
+                    happened_at_ms=int(entry["happened_at_ms"]),
+                    summary=str(entry["summary"]),
+                    reason=entry.get("reason"),
+                    error_code=entry.get("error_code"),
+                    evidence=entry.get("evidence"),
+                    details=entry.get("details"),
+                )
+            state_row = conn.execute(
+                "SELECT state_value FROM system_information_state WHERE state_key=?", (watermark_key,),
+            ).fetchone()
+            encoded_watermark = str(watermark)
+            if state_row is None or str(state_row["state_value"]) != encoded_watermark:
+                conn.execute(
+                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                    (watermark_key, encoded_watermark, observed),
+                )
+        return len(entries), changed
 
     def set_state(self, key: str, value: Any) -> None:
         encoded = str(value)

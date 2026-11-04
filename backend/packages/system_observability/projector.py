@@ -28,6 +28,9 @@ STATUS_LABELS = {
 ADDITIONAL_PROJECTION_INTERVAL_MS = 15_000
 ADDITIONAL_TAIL_RECHECK_INTERVAL_MS = 5 * 60_000
 ADDITIONAL_TAIL_RECHECK_LIMIT = 25
+SOURCE_OUTBOX_RETENTION_MS = 24 * 60 * 60_000
+SOURCE_OUTBOX_CLEANUP_INTERVAL_MS = 5 * 60_000
+SOURCE_OUTBOX_CLEANUP_BATCH_SIZE = 5_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +584,7 @@ class MainTaskProjector:
                 if int(self.store.get_state(f"{audit_state}_skipped", "0") or 0):
                     self.store.set_state(f"adapter_{database_key}_audit_status", "partial")
                 outbox_read, outbox_changed = self._project_source_outbox(database_key, path, specs, now_ms)
+                self.store.set_state(f"{audit_state}_last_error", "")
                 imported += outbox_read
                 changed += outbox_changed
             except Exception as exc:
@@ -643,7 +647,6 @@ class MainTaskProjector:
     ) -> tuple[int, int]:
         watermark_key = f"source_audit_{database_key}_watermark"
         watermark = int(self.store.get_state(watermark_key, "0") or 0)
-        imported = changed = 0
         by_table = {spec.table: spec for spec in specs}
         with self._read_path(path) as conn:
             exists = conn.execute(
@@ -656,6 +659,7 @@ class MainTaskProjector:
                 "FROM odaily_observability_outbox WHERE seq>? ORDER BY seq LIMIT ?",
                 (watermark, self.batch_size),
             ).fetchall()
+        entries: list[dict[str, Any]] = []
         for event in rows:
             spec = by_table.get(str(event["table_name"]))
             if spec is None:
@@ -676,8 +680,6 @@ class MainTaskProjector:
                 "source_row_id": str(event["source_row_id"]),
                 "payload": payload,
             }
-            if spec.table != "tasks" or not self.store.has_item(str(snapshot["item_id"])):
-                changed += int(self.store.upsert_snapshot(snapshot, compact_evidence))
             status = str(snapshot["status"])
             result = str(snapshot["result"])
             operation = str(event["operation"])
@@ -691,32 +693,52 @@ class MainTaskProjector:
                     else f"{spec.source} {operation} 状态变更：{status}"
                 )
             )[:1200]
-            self.store.append_event(
-                item_id=str(snapshot["item_id"]),
-                event_id=f"source-audit:{database_key}:{event['event_id']}",
-                event_type="source_state_change",
-                stage=str(snapshot["stage"]),
-                status="deleted" if operation == "delete" else status,
-                result="unknown" if operation == "delete" else result,
-                happened_at_ms=int(event["happened_at_ms"]),
-                summary=summary,
-                reason=str(reason)[:1200] if reason else None,
-                error_code=str(_first(payload, "error_code") or "unknown") if reason else None,
-                evidence=compact_evidence,
-                details={"operation": operation, "source_table": spec.table, "source_row_id": str(event["source_row_id"])},
-            )
-            imported += 1
+            entries.append({
+                "snapshot": snapshot,
+                "evidence": compact_evidence,
+                "skip_snapshot_if_present": spec.table == "tasks",
+                "event_id": f"source-audit:{database_key}:{event['event_id']}",
+                "stage": str(snapshot["stage"]),
+                "status": "deleted" if operation == "delete" else status,
+                "result": "unknown" if operation == "delete" else result,
+                "happened_at_ms": int(event["happened_at_ms"]),
+                "summary": summary,
+                "reason": str(reason)[:1200] if reason else None,
+                "error_code": str(_first(payload, "error_code") or "unknown") if reason else None,
+                "details": {"operation": operation, "source_table": spec.table, "source_row_id": str(event["source_row_id"])},
+            })
+        imported = changed = 0
         if rows:
             last_seq = int(rows[-1]["seq"])
-            self.store.set_state(watermark_key, last_seq)
-            source_cutoff = now_ms - 24 * 60 * 60 * 1000
-            with sqlite3.connect(path, timeout=15, factory=ClosingSQLiteConnection) as conn:
-                conn.execute("PRAGMA busy_timeout=15000")
-                conn.execute(
-                    "DELETE FROM odaily_observability_outbox WHERE seq<=? AND happened_at_ms<?",
-                    (last_seq, source_cutoff),
-                )
+            imported, changed = self.store.apply_source_audit_batch(
+                entries, watermark_key=watermark_key, watermark=last_seq,
+            )
+            watermark = last_seq
+        self._cleanup_source_outbox(database_key, path, watermark, now_ms)
         return imported, changed
+
+    def _cleanup_source_outbox(self, database_key: str, path: Path, watermark: int, now_ms: int) -> None:
+        cleanup_state_key = f"source_audit_{database_key}_cleanup_last_ms"
+        last_cleanup = int(self.store.get_state(cleanup_state_key, "0") or 0)
+        if now_ms - last_cleanup < SOURCE_OUTBOX_CLEANUP_INTERVAL_MS:
+            return
+        self.store.set_state(cleanup_state_key, now_ms)
+        source_cutoff = now_ms - SOURCE_OUTBOX_RETENTION_MS
+        with self._read_path(path) as conn:
+            eligible = conn.execute(
+                "SELECT 1 FROM odaily_observability_outbox WHERE seq<=? AND happened_at_ms<? LIMIT 1",
+                (watermark, source_cutoff),
+            ).fetchone()
+        if not eligible:
+            return
+        with sqlite3.connect(path, timeout=2, factory=ClosingSQLiteConnection) as conn:
+            conn.execute("PRAGMA busy_timeout=2000")
+            conn.execute(
+                "DELETE FROM odaily_observability_outbox WHERE seq IN ("
+                "SELECT seq FROM odaily_observability_outbox WHERE seq<=? AND happened_at_ms<? "
+                "ORDER BY seq LIMIT ?)",
+                (watermark, source_cutoff, SOURCE_OUTBOX_CLEANUP_BATCH_SIZE),
+            )
 
     @staticmethod
     def _read_path(path: Path) -> sqlite3.Connection:
