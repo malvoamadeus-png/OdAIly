@@ -795,7 +795,7 @@ class MainTaskProjector:
                 entries.append({
                     "snapshot": snapshot,
                     "evidence": compact_evidence,
-                    "skip_snapshot_if_present": spec.table == "tasks",
+                    "only_if_newer": spec.table == "tasks",
                     "event_id": f"source-audit:{database_key}:{event['event_id']}",
                     "stage": str(snapshot["stage"]),
                     "status": "deleted" if operation == "delete" else status,

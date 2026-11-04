@@ -991,6 +991,62 @@ def test_source_outbox_coalesces_snapshots_and_keeps_each_timeline_event() -> No
         assert [event["status"] for event in transitions] == ["processing", "failed", "retry"]
 
 
+def test_task_source_outbox_advances_existing_snapshot() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source.sqlite"
+        with sqlite3.connect(source) as conn:
+            conn.executescript("""
+                CREATE TABLE tasks(
+                    id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,source_url TEXT,title TEXT,
+                    content TEXT,status TEXT,created_at TEXT,updated_at TEXT,metadata TEXT,raw_payload TEXT
+                );
+                INSERT INTO tasks VALUES(
+                    1,'x','tweet-1',NULL,'source title','source content','writing',
+                    '2026-11-04T17:00:00+08:00','2026-11-04T17:00:01+08:00','{}','{}'
+                );
+            """)
+        spec = TableSpec("main", "tasks", "unmapped_source", "main_pipeline")
+        SourceAuditInstaller().install(source, (spec,))
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "UPDATE tasks SET status='auto_published',updated_at='2026-11-04T17:00:02+08:00' WHERE id=1"
+            )
+
+        store = SystemInformationStore(root / "system_information.sqlite")
+        store.initialize()
+        snapshot = {
+            "item_id": "task:x:tweet-1", "business_key": "x", "source": "x", "source_id": "tweet-1",
+            "task_id": 1, "title": "source title", "summary": "写作中", "source_url": None,
+            "stage": "写作", "status": "writing", "result": "processing", "created_at_ms": 1793782800000,
+            "updated_at_ms": 1793782801000, "source_database": str(source), "source_table": "tasks",
+            "source_row_id": "1", "legacy_history": False,
+        }
+        store.upsert_snapshot(snapshot, {"recorded_scope": "test"})
+
+        projector = MainTaskProjector(source, store, table_specs=(spec,))
+        projector._project_source_outbox("main", source, [spec], int(datetime.now(UTC).timestamp() * 1000))
+
+        detail = store.detail("task:x:tweet-1")
+        assert detail is not None and detail["status"] == "auto_published"
+        transitions = [event for event in detail["timeline"] if event["event_type"] == "source_state_change"]
+        assert [event["status"] for event in transitions] == ["auto_published"]
+
+        with sqlite3.connect(source) as conn:
+            conn.execute(
+                "INSERT INTO odaily_observability_outbox "
+                "(event_id,table_name,source_row_id,operation,happened_at_ms,payload_json) "
+                "VALUES('stale-task-event','tasks','1','update',1,?)",
+                (json.dumps({
+                    "id": 1, "source": "x", "source_item_id": "tweet-1", "title": "source title",
+                    "content": "source content", "status": "writing",
+                    "updated_at": "2026-11-04T17:00:01+08:00",
+                }),),
+            )
+        projector._project_source_outbox("main", source, [spec], int(datetime.now(UTC).timestamp() * 1000))
+        assert store.detail("task:x:tweet-1")["status"] == "auto_published"
+
+
 def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)

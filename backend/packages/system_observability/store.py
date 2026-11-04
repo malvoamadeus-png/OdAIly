@@ -970,10 +970,13 @@ class SystemInformationStore:
             for entry in entries:
                 snapshot = entry["snapshot"]
                 item_id = str(snapshot["item_id"])
-                if entry.get("skip_snapshot_if_present") and conn.execute(
-                    "SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,),
-                ).fetchone() is not None:
-                    continue
+                if entry.get("only_if_newer"):
+                    previous = conn.execute(
+                        "SELECT updated_at_ms FROM system_information_items WHERE item_id=?", (item_id,),
+                    ).fetchone()
+                    incoming_time = snapshot.get("updated_at_ms") or 0
+                    if previous is not None and incoming_time < (previous["updated_at_ms"] or 0):
+                        continue
                 snapshots[item_id] = entry
             for entry in snapshots.values():
                 changed += int(self._upsert_snapshot_in_connection(
