@@ -34,7 +34,7 @@ export type NewsflashRow = {
   is_contribution: boolean;
   contributor_person_key: string | null;
   contributor_name: string | null;
-  contribution_type: 'regular' | 'night' | 'ppp';
+  contribution_type: 'regular' | 'night' | 'ppp' | 'late_different_info';
   first_source_override: string | null;
   quality_override: QualityOverride;
   source_snapshot_at: string | null;

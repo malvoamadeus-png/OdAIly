@@ -34,7 +34,7 @@ TEXT_REVIEW_LABELS = {
     "failed": "执行失败",
     "skipped": "无需审查",
 }
-CONTRIBUTION_TYPES = {"regular", "night", "ppp"}
+CONTRIBUTION_TYPES = {"regular", "night", "ppp", "late_different_info"}
 CONTRIBUTION_SCORE_CAP = 5.0
 CONTRIBUTION_HIGH_VIEW_BONUS = 0.5
 PUBLISHER_KINDS = {"human", "human_unmapped", "odaily_ai", "other_ai", "pending_ai"}
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS newsflash_operation_facts (
     attribution_checked_at text,
     created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (contribution_type IN ('regular','night','ppp')),
+    CHECK (contribution_type IN ('regular','night','ppp','late_different_info')),
     CHECK (publisher_kind IS NULL OR publisher_kind IN ('human','human_unmapped','odaily_ai','other_ai','pending_ai'))
 );
 CREATE INDEX IF NOT EXISTS idx_newsflash_operation_operator
@@ -333,6 +333,45 @@ class NewsflashOperationsRepository:
                 conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN quality_override text NOT NULL DEFAULT 'none'")
             if "first_source_override" not in fact_columns:
                 conn.execute("ALTER TABLE newsflash_operation_facts ADD COLUMN first_source_override text")
+            fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts)").fetchall()}
+            fact_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='newsflash_operation_facts'"
+            ).fetchone()["sql"]
+            if "late_different_info" not in fact_sql:
+                conn.execute("ALTER TABLE newsflash_operation_facts RENAME TO newsflash_operation_facts_old")
+                conn.execute(
+                    """CREATE TABLE newsflash_operation_facts (
+                        source_item_id text PRIMARY KEY,
+                        operator_raw text,
+                        publisher_kind text,
+                        publisher_person_key text REFERENCES newsflash_roster(person_key) ON DELETE SET NULL,
+                        publisher_locked integer NOT NULL DEFAULT 0,
+                        view_count integer,
+                        is_pushed integer,
+                        pushed_at text,
+                        is_contribution integer NOT NULL DEFAULT 0,
+                        contributor_person_key text REFERENCES newsflash_roster(person_key) ON DELETE SET NULL,
+                        contribution_type text NOT NULL DEFAULT 'regular',
+                        first_source_override text,
+                        quality_override text NOT NULL DEFAULT 'none',
+                        source_snapshot_at text,
+                        attribution_checked_at text,
+                        created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        CHECK (contribution_type IN ('regular','night','ppp','late_different_info')),
+                        CHECK (publisher_kind IS NULL OR publisher_kind IN ('human','human_unmapped','odaily_ai','other_ai','pending_ai'))
+                    )"""
+                )
+                copy_columns = [row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts_old)").fetchall()]
+                quoted_columns = ",".join(f'"{column}"' for column in copy_columns)
+                conn.execute(
+                    f"INSERT INTO newsflash_operation_facts ({quoted_columns}) "
+                    f"SELECT {quoted_columns} FROM newsflash_operation_facts_old"
+                )
+                conn.execute("DROP TABLE newsflash_operation_facts_old")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_newsflash_operation_operator ON newsflash_operation_facts(publisher_person_key, publisher_kind, updated_at DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_newsflash_operation_contribution ON newsflash_operation_facts(is_contribution, contributor_person_key, updated_at DESC)")
+                fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(newsflash_operation_facts)").fetchall()}
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS newsflash_event_exclusions("
                 "source text NOT NULL,source_item_id text NOT NULL,title text,matched_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,"
@@ -1779,7 +1818,8 @@ class NewsflashOperationsRepository:
                 exclusion_reasons.append("regular_source")
                 exclusion_reason_labels.append("常规信源")
             first_publication, first_sources = self._quality_first_publication(conn, source_item_id)
-            if first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources:
+            if (row["contribution_type"] != "late_different_info"
+                    and first_publication.get("status") == "ready" and first_sources and "odaily" not in first_sources):
                 exclusion_reasons.append("competitor_first")
                 exclusion_reason_labels.append("竞品先发")
             score = self._contribution_score(
