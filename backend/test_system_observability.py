@@ -1010,6 +1010,15 @@ def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -
                 "UPDATE odaily_observability_meta SET meta_value='2' "
                 "WHERE meta_key='source_audit_trigger_version:main'"
             )
+            conn.execute("""
+                CREATE TRIGGER odaily_obs_x_capture_attempts_delete
+                AFTER DELETE ON x_capture_attempts
+                BEGIN
+                    INSERT INTO odaily_observability_outbox(
+                        event_id,table_name,source_row_id,operation,happened_at_ms,payload_json
+                    ) VALUES('old-delete-trigger', 'x_capture_attempts', CAST(OLD.rowid AS TEXT), 'delete', 1, '{}');
+                END
+            """)
         SourceAuditInstaller().install(source, (spec,))
 
         with sqlite3.connect(source) as conn:

@@ -187,10 +187,7 @@ class SourceAuditInstaller:
             if current_version != str(SOURCE_AUDIT_TRIGGER_VERSION):
                 for table in tables:
                     prefix = "odaily_obs_" + re.sub(r"[^a-zA-Z0-9_]", "_", table)
-                    operations = ("insert", "update") if table in RETENTION_ONLY_DELETE_TABLES else (
-                        "insert", "update", "delete",
-                    )
-                    for operation in operations:
+                    for operation in ("insert", "update", "delete"):
                         conn.execute(f"DROP TRIGGER IF EXISTS {_quote_identifier(f'{prefix}_{operation}')}")
             for table in tables:
                 table_sql = _quote_identifier(table)
