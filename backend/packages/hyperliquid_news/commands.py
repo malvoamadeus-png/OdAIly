@@ -4,17 +4,18 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.paths import get_paths
-from packages.common.storage import load_storage_settings
+from packages.common.storage import load_hyperliquid_storage_path, load_storage_settings
 from .store import NewsStore, encode
 
 
 def run_command(args: Any) -> int:
-    path = load_storage_settings().sqlite_path
+    path = load_hyperliquid_storage_path()
+    pipeline_path = load_storage_settings().sqlite_path
     store = NewsStore(path)
     action = args.hyperliquid_action
     if action == 'init':
         from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
-        repo = SQLiteXProcessingRepository(path)
+        repo = SQLiteXProcessingRepository(pipeline_path)
         repo.init_schema()
         repo.seed_prompt_templates(root_dir=get_paths().root_dir)
         store.initialize()
@@ -86,7 +87,7 @@ def run_command(args: Any) -> int:
         from .service import NewsMonitor
         normal_monitor = NewsMonitor(store=store, client=client, addresses_per_pass=2,
                                      leaderboard_seeds=0, markets_per_discovery=1)
-        dispatcher = EventDispatcher(store)
+        dispatcher = EventDispatcher(store, pipeline_database_path=pipeline_path)
         while True:
             cycle_started = time.monotonic()
             cycle_ms = int(time.time() * 1000)
@@ -142,7 +143,7 @@ def run_command(args: Any) -> int:
                 break
             time.sleep(30)
     elif action == 'activate-prompt':
-        print(encode(activate_writer_prompt(path, get_paths().root_dir, template_key=args.template_key)))
+        print(encode(activate_writer_prompt(pipeline_path, get_paths().root_dir, template_key=args.template_key)))
     elif action == 'preview':
         from packages.common.config import load_x_processing_settings
         from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
@@ -152,7 +153,7 @@ def run_command(args: Any) -> int:
         from .eligibility import news_eligibility
         if not 1 <= len(args.task_ids) <= 10:
             raise ValueError('Preview requires 1..10 task IDs')
-        repo = SQLiteXProcessingRepository(path)
+        repo = SQLiteXProcessingRepository(pipeline_path)
         tasks = [repo.get_task(task_id) for task_id in args.task_ids]
         if any(task.source != HYPERLIQUID_SOURCE for task in tasks):
             raise ValueError('Only Hyperliquid tasks support this preview')
@@ -197,10 +198,11 @@ def run_command(args: Any) -> int:
         print(encode(report))
     elif action == 'dispatch':
         from .dispatch import EventDispatcher
-        print(encode(EventDispatcher(store).dispatch(limit=args.limit, event_keys=args.event_keys)))
+        print(encode(EventDispatcher(store, pipeline_database_path=pipeline_path).dispatch(
+            limit=args.limit, event_keys=args.event_keys)))
     elif action == 'status':
         from .dashboard import dashboard
-        print(encode(dashboard(store, page=args.page)))
+        print(encode(dashboard(store, pipeline_database_path=pipeline_path, page=args.page)))
     return 0
 
 

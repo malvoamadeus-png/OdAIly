@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
@@ -22,7 +23,9 @@ KIND_LABELS = {
 }
 
 
-def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, scenario: str | None = None, dataset: str = 'live', view: str = 'scenarios', address_query: str = '', address_status: str = 'all') -> dict[str, Any]:
+def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, page: int = 0,
+              page_size: int | None = None, scenario: str | None = None, dataset: str = 'live',
+              view: str = 'scenarios', address_query: str = '', address_status: str = 'all') -> dict[str, Any]:
     if page < 0:
         raise ValueError('Invalid page')
     if dataset not in ('live', 'test'):
@@ -42,6 +45,11 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
                 'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
     with connect_sqlite(store.path) as conn:
+        separate_pipeline_database = (pipeline_database_path is not None and
+                                      pipeline_database_path.resolve() != store.path.resolve())
+        if separate_pipeline_database:
+            conn.execute('ATTACH DATABASE ? AS odaily_main', (str(pipeline_database_path.resolve()),))
+        pipeline_prefix = 'odaily_main.' if separate_pipeline_database else ''
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'hl_news_candidates' not in tables:
             return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
@@ -54,7 +62,8 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
         timeline = view == 'timeline'
         candidate_alias = 'e' if timeline else 'c'
         joined = f'''LEFT JOIN hl_news_dispatch d ON d.event_key={candidate_alias}.event_key
-                     LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id''' if dispatch else ''
+                     LEFT JOIN {pipeline_prefix}tasks t ON t.id=d.task_id
+                     LEFT JOIN {pipeline_prefix}x_task_pipeline p ON p.task_id=t.id''' if dispatch else ''
         if timeline:
             columns = '''d.status AS dispatch_status,d.task_id,t.status AS task_status,
                          p.draft_title,p.draft_content,p.final_title,p.final_content,
@@ -88,9 +97,10 @@ def dashboard(store: NewsStore, *, page: int = 0, page_size: int | None = None, 
                          p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,
                          p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,
                          v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code''' if dispatch else 'NULL AS task_id'
-            joined = '''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
-                        LEFT JOIN tasks t ON t.id=d.task_id LEFT JOIN x_task_pipeline p ON p.task_id=t.id
-                        LEFT JOIN prompt_template_versions v ON v.id=p.prompt_version_id''' if dispatch else ''
+            joined = f'''LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
+                        LEFT JOIN {pipeline_prefix}tasks t ON t.id=d.task_id
+                        LEFT JOIN {pipeline_prefix}x_task_pipeline p ON p.task_id=t.id
+                        LEFT JOIN {pipeline_prefix}prompt_template_versions v ON v.id=p.prompt_version_id''' if dispatch else ''
             rows = conn.execute(f'''SELECT c.payload,{columns} FROM {candidate_source} c {joined} WHERE {condition}
                         ORDER BY c.observed_ms DESC,c.event_key LIMIT ? OFFSET ?''',
                         (page_size+1 if view == 'scenarios' else 0, page*page_size)).fetchall()

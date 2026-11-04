@@ -322,10 +322,11 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
     else:
         source_value = spec.source
         business_key = spec.business_key
+    source_database_key = "main" if spec.database_key == "hyperliquid" else spec.database_key
     item_id = (
         f"task:{source_value}:{source_id or row.get('__obs_rowid__')}"
         if spec.table == "tasks"
-        else f"{spec.database_key}:{spec.table}:{source_id or row.get('__obs_rowid__')}"
+        else f"{source_database_key}:{spec.table}:{source_id or row.get('__obs_rowid__')}"
     )
     snapshot = {
         "item_id": item_id,

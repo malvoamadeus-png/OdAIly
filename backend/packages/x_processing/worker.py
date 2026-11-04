@@ -688,10 +688,11 @@ class XProcessingWorker:
             print(f"[odaily] x-processing heartbeat failed stage={self.stage}: {exc}")
 
     def _hyperliquid_blocked(self, task: TaskRecord) -> bool:
-        if task.source != HYPERLIQUID_SOURCE or not getattr(self.repository, 'path', None):
+        if task.source != HYPERLIQUID_SOURCE:
             return False
+        from packages.common.storage import load_hyperliquid_storage_path
         from packages.hyperliquid_news.store import NewsStore
-        blocked = NewsStore(self.repository.path).event_blocked(task.raw_payload)
+        blocked = NewsStore(load_hyperliquid_storage_path()).event_blocked(task.raw_payload)
         if blocked:
             self.repository.fail_task(task.id, stage=self.stage, error='hyperliquid_address_blocked', status='discarded')
         return blocked
@@ -1199,9 +1200,9 @@ class XProcessingWorker:
         if self._hyperliquid_blocked(task):
             return
         if task.source == HYPERLIQUID_SOURCE:
+            from packages.common.storage import load_hyperliquid_storage_path
             from packages.hyperliquid_news.store import NewsStore
-            if getattr(self.repository, 'path', None):
-                task = replace(task, raw_payload=NewsStore(self.repository.path).with_address_notes(task.raw_payload))
+            task = replace(task, raw_payload=NewsStore(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload))
         pipeline = self.repository.get_pipeline(task.id)
         template_key = None
         metadata_template_key = task.metadata.get("writer_template_key")
@@ -1296,8 +1297,9 @@ class XProcessingWorker:
             draft = parse_draft_output(f"{pipeline.draft_title}\n\n{pipeline.draft_content}")
             if task.source == HYPERLIQUID_SOURCE:
                 from packages.hyperliquid_news.copy import format_news
+                from packages.common.storage import load_hyperliquid_storage_path
                 from packages.hyperliquid_news.store import NewsStore
-                event = NewsStore(self.repository.path).with_address_notes(task.raw_payload) if getattr(self.repository, 'path', None) else task.raw_payload
+                event = NewsStore(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload)
                 final = format_news(draft, event)
             else:
                 final = format_brief(

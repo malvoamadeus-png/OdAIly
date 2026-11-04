@@ -484,7 +484,7 @@ def parse_args() -> argparse.Namespace:
     )
     storage_backup = subparsers.add_parser(
         "storage-backup",
-        help="Create and integrity-check an online backup of the active SQLite primary database.",
+        help="Create and integrity-check online backups of the active SQLite databases.",
     )
     storage_backup.add_argument("--destination", type=Path, required=True)
     storage_import = subparsers.add_parser(
@@ -1898,13 +1898,19 @@ def storage_backup_command(args: argparse.Namespace) -> int:
     from dataclasses import asdict
 
     from packages.common.sqlite_backup import create_sqlite_backup
-    from packages.common.storage import load_storage_settings
+    from packages.common.storage import load_hyperliquid_storage_path, load_storage_settings
 
     settings = load_storage_settings()
     if settings.backend != "sqlite":
         raise ValueError("storage-backup requires ODAILY_STORAGE_BACKEND=sqlite")
-    manifest = create_sqlite_backup(settings.sqlite_path, args.destination.expanduser().resolve())
-    print(json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
+    destination = args.destination.expanduser().resolve()
+    primary_manifest = create_sqlite_backup(settings.sqlite_path, destination)
+    hyperliquid_destination = destination.with_name(
+        f"{destination.stem}-hyperliquid{destination.suffix}"
+    )
+    hyperliquid_manifest = create_sqlite_backup(load_hyperliquid_storage_path(), hyperliquid_destination)
+    print(json.dumps({"primary": asdict(primary_manifest), "hyperliquid": asdict(hyperliquid_manifest)},
+                     ensure_ascii=False, indent=2))
     return 0
 
 

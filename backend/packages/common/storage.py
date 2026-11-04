@@ -39,6 +39,12 @@ def load_storage_settings() -> StorageSettings:
     return StorageSettings(backend=backend, epoch=epoch, sqlite_path=sqlite_path)
 
 
+def load_hyperliquid_storage_path() -> Path:
+    load_dotenv()
+    default_path = get_paths().runtime_dir / "hyperliquid.sqlite"
+    return Path(os.getenv("ODAILY_HYPERLIQUID_SQLITE_PATH") or default_path).expanduser().resolve()
+
+
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback like sqlite3.Connection, then release the file handle."""
 

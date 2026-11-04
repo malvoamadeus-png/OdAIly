@@ -45,9 +45,11 @@ def fingerprint(event: dict[str, Any]) -> str:
 
 
 class EventDispatcher:
-    def __init__(self, store: NewsStore, *, pipeline_client: LocalPipelineClient | None = None) -> None:
+    def __init__(self, store: NewsStore, *, pipeline_client: LocalPipelineClient | None = None,
+                 pipeline_database_path: Path | None = None) -> None:
         self.store = store
         self.pipeline_client = pipeline_client or LocalPipelineClient()
+        self.pipeline_database_path = (pipeline_database_path or store.path).resolve()
 
     def dispatch(self, *, limit: int = 3, event_keys: list[str] | None = None) -> list[dict[str, Any]]:
         if not 1 <= limit <= 100:
@@ -103,6 +105,10 @@ class EventDispatcher:
         now = datetime.now(UTC).isoformat()
         signature = fingerprint(event)
         with connect_sqlite(self.store.path) as conn:
+            separate_pipeline_database = self.pipeline_database_path != self.store.path.resolve()
+            if separate_pipeline_database:
+                conn.execute('ATTACH DATABASE ? AS odaily_main', (str(self.pipeline_database_path),))
+            pipeline_prefix = 'odaily_main.' if separate_pipeline_database else ''
             conn.execute('BEGIN IMMEDIATE')
             if self.store.event_blocked(event, conn=conn):
                 conn.execute('INSERT OR IGNORE INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
@@ -113,8 +119,12 @@ class EventDispatcher:
             if not production_allowed(event, json.loads(policy_row[0]) if policy_row else None):
                 return {'event_key': event['key'], 'task_id': None, 'status': 'direction_disabled'}
             existing = conn.execute('SELECT * FROM hl_news_dispatch WHERE event_key=?', (event['key'],)).fetchone()
-            if existing and news_eligibility(event)['eligible']:
-                return {'event_key': event['key'], 'task_id': existing['task_id'], 'status': existing['status']}
+            if existing and news_eligibility(event)['eligible'] and existing['task_id'] is not None:
+                task_exists = conn.execute(
+                    f'SELECT 1 FROM {pipeline_prefix}tasks WHERE id=?', (existing['task_id'],)
+                ).fetchone()
+                if task_exists:
+                    return {'event_key': event['key'], 'task_id': existing['task_id'], 'status': existing['status']}
             if not news_eligibility(event)['eligible']:
                 if existing:
                     conn.execute('UPDATE hl_news_dispatch SET status=?,error=?,updated_at=? WHERE event_key=?',
@@ -123,9 +133,13 @@ class EventDispatcher:
                 conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
                              (event['key'], signature, None, 'no_change_evidence', 'baseline_without_change', now, now))
                 return {'event_key': event['key'], 'task_id': None, 'status': 'no_change_evidence'}
-            duplicate = conn.execute('SELECT task_id FROM hl_news_dispatch WHERE signature=? AND status!=?',
-                                     (signature, 'duplicate')).fetchone()
-            if duplicate:
+            duplicate = conn.execute('SELECT task_id FROM hl_news_dispatch WHERE signature=? AND status!=? '
+                                     'AND event_key!=? AND task_id IS NOT NULL',
+                                     (signature, 'duplicate', event['key'])).fetchone()
+            duplicate_task = (conn.execute(
+                f'SELECT 1 FROM {pipeline_prefix}tasks WHERE id=?', (duplicate['task_id'],)
+            ).fetchone() if duplicate else None)
+            if duplicate and duplicate_task:
                 conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
                              (event['key'], signature, duplicate['task_id'], 'duplicate', None, now, now))
                 return {'event_key': event['key'], 'task_id': duplicate['task_id'], 'status': 'duplicate'}
@@ -134,15 +148,17 @@ class EventDispatcher:
                         'production_direction': event['evidence'].get('production_direction')}
             url = source_url(event)
             search_title, search_content = search_material(event)
-            conn.execute('''INSERT OR IGNORE INTO tasks(source,source_item_id,source_url,title,content,
+            conn.execute(f'''INSERT OR IGNORE INTO {pipeline_prefix}tasks(source,source_item_id,source_url,title,content,
                 published_at,raw_payload,metadata,status,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?, 'judged',?,?)''',
                 (HYPERLIQUID_SOURCE, event['key'], url, search_title, search_content,
                  datetime.fromtimestamp(event['observed_ms']/1000, UTC).isoformat(), encode(event), encode(metadata), now, now))
-            task_id = conn.execute('SELECT id FROM tasks WHERE source=? AND source_item_id=?',
+            task_id = conn.execute(f'SELECT id FROM {pipeline_prefix}tasks WHERE source=? AND source_item_id=?',
                                    (HYPERLIQUID_SOURCE, event['key'])).fetchone()['id']
-            conn.execute('INSERT OR IGNORE INTO x_task_pipeline(task_id,news_type) VALUES(?,?)',
+            conn.execute(f'INSERT OR IGNORE INTO {pipeline_prefix}x_task_pipeline(task_id,news_type) VALUES(?,?)',
                          (task_id, 'onchain'))
-            conn.execute('INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)',
+            conn.execute('''INSERT INTO hl_news_dispatch VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(event_key) DO UPDATE SET signature=excluded.signature,task_id=excluded.task_id,
+                status=excluded.status,error=NULL,updated_at=excluded.updated_at''',
                          (event['key'], signature, task_id, 'created', None, now, now))
         return {'event_key': event['key'], 'task_id': task_id, 'status': 'created'}

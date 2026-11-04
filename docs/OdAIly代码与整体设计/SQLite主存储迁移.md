@@ -81,7 +81,7 @@ SQLite 在线备份示例：
 python -m src.main storage-backup --destination /var/backups/odaily/odaily-YYYYMMDD.sqlite
 ```
 
-命令使用 SQLite backup API，能够包含已提交的 WAL 数据，并生成 `.manifest.json`。回切 Supabase 不依赖该备份；它用于 SQLite 自身故障恢复和迁移审计。
+命令分别使用 SQLite backup API 备份主库和 `ODAILY_HYPERLIQUID_SQLITE_PATH` 指定的 Hyperliquid 库，能够包含已提交的 WAL 数据，并各自生成 `.manifest.json`。Hyperliquid 备份文件在目标文件名中追加 `-hyperliquid`。回切 Supabase 不依赖这些备份；它们用于 SQLite 自身故障恢复和迁移审计。
 # 运行时代码边界补充
 
 - 迁移后的包入口不导出 `Postgres*Repository`，也不在常驻导入路径加载 `packages.common.postgres`。

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator
 
 from packages.common.config import DEFAULT_DEEPSEEK_FAST_MODEL, XProcessingSettings, load_x_processing_settings
 from packages.common.console_auth import create_console_auth_repository
-from packages.common.storage import connect_sqlite_readonly, load_storage_settings
+from packages.common.storage import connect_sqlite_readonly, load_hyperliquid_storage_path, load_storage_settings
 from packages.console_data_api import ConsoleDataApi
 from packages.common.editor_plugin_auth import (
     EditorPluginGenerationLogInput,
@@ -421,6 +421,7 @@ class EditorPluginNewsGenService:
                 self.system_information,
                 additional_databases={
                     "main": storage_settings.sqlite_path,
+                    "hyperliquid": load_hyperliquid_storage_path(),
                     "hot": self.hottopic.path,
                     "meme": self.meme_dashboard_store.path,
                     "gate": self.gate_market_store.path,
@@ -952,30 +953,31 @@ class EditorPluginNewsGenService:
 
     def get_hyperliquid_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
-        from packages.common.storage import load_storage_settings
         from packages.hyperliquid_news.dashboard import dashboard
         from packages.hyperliquid_news.store import NewsStore
-        return dashboard(NewsStore(load_storage_settings().sqlite_path), page=int(payload.get('page', 0)),
+        storage = load_storage_settings()
+        return dashboard(NewsStore(load_hyperliquid_storage_path()), pipeline_database_path=storage.sqlite_path,
+                         page=int(payload.get('page', 0)),
                          scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
                          view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
                          address_status=payload.get('address_status', 'all'))
 
     def save_hyperliquid_address_block(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
-        from packages.common.storage import load_storage_settings
+        from packages.common.storage import load_hyperliquid_storage_path
         from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_storage_settings().sqlite_path).save_address_block(
+        return NewsStore(load_hyperliquid_storage_path()).save_address_block(
             payload.get('address'), payload.get('blocked'), updated_by=actor.email)
 
     def save_hyperliquid_address_note(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
-        from packages.common.storage import load_storage_settings
+        from packages.common.storage import load_hyperliquid_storage_path
         from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_storage_settings().sqlite_path).save_address_note(
+        return NewsStore(load_hyperliquid_storage_path()).save_address_note(
             payload.get('address'), payload.get('note'), updated_by=actor.email)
 
     def add_hyperliquid_address(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
-        from packages.common.storage import load_storage_settings
+        from packages.common.storage import load_hyperliquid_storage_path
         from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_storage_settings().sqlite_path).add_manual_address(
+        return NewsStore(load_hyperliquid_storage_path()).add_manual_address(
             payload.get('address'), now_ms=int(datetime.now(UTC).timestamp() * 1000), updated_by=actor.email)
 
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
