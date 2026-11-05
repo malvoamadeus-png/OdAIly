@@ -783,6 +783,7 @@ def run_worker_command(args: argparse.Namespace) -> int:
                 replace_existing=True,
                 max_instances=1,
                 coalesce=True,
+                misfire_grace_time=10,
             )
     descriptions = [
         f"{task_id}:{schedule.description}"
