@@ -471,7 +471,7 @@ export type XAgentInvestmentLead = {
   subject: string;
   driverLogic: string;
   conditions: string;
-  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional' }>;
+  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional'; assessment?: { impact: 'high' | 'medium' | 'low' | 'unknown'; confidence: 'high' | 'medium' | 'low' | 'unknown'; expectation_change: string; market_acceptance: string; key_uncertainty: string; reconsider_if: string } }>;
   replay?: { label?: string; sourcePostedAt?: string; importedAt?: string };
   sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
   firstSeenAt: string;
@@ -2342,6 +2342,7 @@ export async function listXAgentInvestmentLeads({
   query = '',
   account = '',
   unlocatedOnly = false,
+  impact = '',
   offset = 0,
   limit = 50,
 }: {
@@ -2349,6 +2350,7 @@ export async function listXAgentInvestmentLeads({
   query?: string;
   account?: string;
   unlocatedOnly?: boolean;
+  impact?: string;
   offset?: number;
   limit?: number;
 }): Promise<XAgentPage<XAgentInvestmentLead>> {
@@ -2357,6 +2359,7 @@ export async function listXAgentInvestmentLeads({
     query,
     account,
     unlocated_only: unlocatedOnly,
+    impact,
     offset,
     limit,
   });

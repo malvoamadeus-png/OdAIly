@@ -33,7 +33,7 @@ RETENTION = timedelta(days=30)
 # Legacy results stay in storage but are not presented as passing the new gate.
 VISIBLE_LEAD_SQL = (
     "EXISTS(SELECT 1 FROM investment_lead_revisions quality_revision "
-    f"WHERE quality_revision.lead_id=l.id AND quality_revision.prompt_version='{DERIVE_PROMPT_VERSION}')"
+    f"WHERE quality_revision.lead_id=l.id AND quality_revision.prompt_version IN ('investment_leads_derive_v4','{DERIVE_PROMPT_VERSION}'))"
 )
 
 
@@ -1383,6 +1383,7 @@ class InvestmentLeadService:
         query: str = "",
         account: str = "",
         unlocated_only: bool = False,
+        impact: str = "",
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -1394,6 +1395,14 @@ class InvestmentLeadService:
         params: list[Any] = [cutoff]
         if unlocated_only:
             clauses.append("l.status='unlocated'")
+        if impact:
+            if impact not in {"high", "medium", "low", "unknown"}:
+                raise ValueError("不支持的预期影响筛选")
+            if impact == "unknown":
+                clauses.append("EXISTS(SELECT 1 FROM json_each(l.assets_json) a WHERE COALESCE(json_extract(a.value, '$.assessment.impact'), 'unknown')='unknown')")
+            else:
+                clauses.append("EXISTS(SELECT 1 FROM json_each(l.assets_json) a WHERE json_extract(a.value, '$.assessment.impact')=?)")
+                params.append(impact)
         if query.strip():
             clauses.append("(LOWER(l.subject || ' ' || l.driver_logic || ' ' || l.conditions || ' ' || l.assets_json) LIKE ?)")
             params.append(f"%{query.strip().lower()}%")

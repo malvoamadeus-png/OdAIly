@@ -363,6 +363,8 @@ function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; o
   </div>;
 }
 
+const investmentLevel = (value?: string): string => ({ high: '强', medium: '中', low: '弱', unknown: '待判断' }[value || 'unknown'] || '待判断');
+
 function InvestmentLeadDetail({
   detail,
   loading,
@@ -378,6 +380,13 @@ function InvestmentLeadDetail({
   return (
     <div className="xAgentInvestmentDetail">
       {detail.conditions && <p><strong>条件：</strong>{detail.conditions}</p>}
+      {detail.assets.map((asset) => asset.assessment && <section key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
+        <p>预期影响：{investmentLevel(asset.assessment.impact)} · 判断把握：{investmentLevel(asset.assessment.confidence)}</p>
+        {asset.assessment.expectation_change && <p><strong>可能改变的预期：</strong>{asset.assessment.expectation_change}</p>}
+        {asset.assessment.market_acceptance && <p><strong>市场为何可能接受或忽略：</strong>{asset.assessment.market_acceptance}</p>}
+        {asset.assessment.key_uncertainty && <p><strong>关键未知：</strong>{asset.assessment.key_uncertainty}</p>}
+        {asset.assessment.reconsider_if && <p><strong>重新判断的条件：</strong>{asset.assessment.reconsider_if}</p>}
+      </section>)}
       {detail.sourceClaims.length > 0 && <section><h3>原文与推导</h3>{detail.sourceClaims.map((claim, index) => (
         <p key={`${claim.material_id}:${index}`}><span className={claim.kind === 'post' ? 'xAgentClaimSource' : 'xAgentClaimInference'}>{claim.kind === 'post' ? '原帖' : '推导'}</span>{claim.text}</p>
       ))}</section>}
@@ -473,6 +482,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [investmentWindow, setInvestmentWindow] = useState<'24h' | '7d' | '30d'>('7d');
   const [investmentQuery, setInvestmentQuery] = useState('');
   const [investmentAccount, setInvestmentAccount] = useState('');
+  const [investmentImpact, setInvestmentImpact] = useState('');
   const [investmentOffset, setInvestmentOffset] = useState(0);
   const [investmentReload, setInvestmentReload] = useState(0);
   const [investmentSelectedId, setInvestmentSelectedId] = useState<string | null>(null);
@@ -650,6 +660,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           window: investmentWindow,
           query: investmentQuery.trim(),
           account: investmentAccount.trim(),
+          impact: investmentImpact,
           offset: investmentOffset,
           limit: PAGE_SIZE,
         }),
@@ -667,7 +678,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       });
     }, 200);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentOffset, investmentReload]);
+  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentImpact, investmentOffset, investmentReload]);
 
   useEffect(() => {
     if (tab !== 'investment_leads' || !investmentSelectedId) {
@@ -1084,6 +1095,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         <div className="xAgentFilters xAgentResultFilters xAgentInvestmentFilters">
           <label><Search size={16} /><input value={investmentQuery} onChange={(event) => { setInvestmentQuery(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="搜索驱动、标的或行业" /></label>
           <input value={investmentAccount} onChange={(event) => { setInvestmentAccount(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="账号筛选，如 @username" aria-label="账号筛选" />
+          <select value={investmentImpact} onChange={(event) => { setInvestmentImpact(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} aria-label="预期影响筛选"><option value="">全部影响</option><option value="high">影响强</option><option value="medium">影响中</option><option value="low">影响弱</option><option value="unknown">影响待判断</option></select>
           <select value={investmentWindow} onChange={(event) => { setInvestmentWindow(event.target.value as '24h' | '7d' | '30d'); setInvestmentOffset(0); setInvestmentSelectedId(null); }}>{INVESTMENT_WINDOW_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
         </div>
         <div className="xAgentInvestmentList">
@@ -1094,7 +1106,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               <button className="xAgentInvestmentCardButton" type="button" aria-expanded={selected} onClick={() => setInvestmentSelectedId((current) => current === item.id ? null : item.id)}>
                 <span className="xAgentInvestmentCardHeading"><strong>{item.subject}</strong><span>{item.status === 'unlocated' ? '标的待定位' : `${item.assets.length} 个标的`}</span><time>{formatTime(item.lastSubstantiveAt)}</time></span>
                 <span className="xAgentInvestmentLogic">{item.driverLogic}</span>
-                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}{asset.driver_type && ` · ${asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}`}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}{asset.driver_type && ` · ${asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}`} · 预期影响{investmentLevel(asset.assessment?.impact)} · 把握{investmentLevel(asset.assessment?.confidence)}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
                 {item.replay?.label && <span className="xAgentInvestmentMeta">{item.replay.label} · 原帖 {formatTime(item.replay.sourcePostedAt)} · 分析更新 {formatTime(item.replay.importedAt)}</span>}
                 <span className="xAgentInvestmentMeta">来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}</span>
               </button>
