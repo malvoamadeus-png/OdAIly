@@ -33,7 +33,9 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
         started = datetime.now(UTC).isoformat()
         # Commit before HTTP: after a crash do not resubmit an uncertain delivery.
         with store.conn:
-            store.conn.execute('INSERT INTO meme_grok_jobs VALUES (?,?,?,?,NULL,NULL)',
+            store.conn.execute('''INSERT INTO meme_grok_jobs(
+                trigger_key, request_id, started_at, state, result_json, error
+            ) VALUES (?, ?, ?, ?, NULL, NULL)''',
                                (key, request_id, started, 'pending'))
         try:
             credentials = Path(os.getenv('GROK_ROUTINE_CREDENTIALS_FILE') or

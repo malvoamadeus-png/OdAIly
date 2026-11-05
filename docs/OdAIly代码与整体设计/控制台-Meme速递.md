@@ -34,7 +34,7 @@
 
 `daily_hot_chains`保存初始化，`daily_hot_scans`保存最近7天扫描结果，`daily_hot_seen`永久保存入选身份。`jobs.trigger_kind=daily_hot`复用任务及挂后台链路，不写入Meme速递观察/里程碑账本。两个栏目独立去重。首次达标后没有可用叙事也不重新产生候选，普通暂时错误沿用队列重试。
 
-Grok请求用 `meme_grok_jobs` 按任务trigger_key保存；回调校验与接收复用API服务。等待期间任务为 `retry_wait/reason=grok_pending`，不消耗普通重试次数，不阻塞候选扫描或其他写作。提交前先持久化请求，重启不重复投递不确定的请求。明确失败/超时后以其他材料降级，不补改已写稿。
+Grok请求用 `meme_grok_jobs` 按任务trigger_key保存；插入显式列名，兼容观测系统为表增加的本地计数列。回调校验与接收复用API服务。等待期间任务为 `retry_wait/reason=grok_pending`，不消耗普通重试次数，不阻塞候选扫描或其他写作。提交前先持久化请求，重启不重复投递不确定的请求。明确失败/超时后以其他材料降级，不补改已写稿。
 
 运行配置：`GROK_ROUTINE_CREDENTIALS_FILE`默认 `data/config/grok.txt`，私有文件权限600；Webhook URL优先 `GROK_ROUTINE_WEBHOOK_URL`，其次凭证文件url；`GROK_CALLBACK_BASE_URL`默认既有公网回调入口；`MEME_HOT_GMGN_REQUEST_INTERVAL`默认35秒。GMGN沿用CLI私有认证。扫描线程与现有scanner同服务运行；`meme scan --once`也执行到期的热门扫描。上游失败记录扫描诊断，下一小时重试。
 
