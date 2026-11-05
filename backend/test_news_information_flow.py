@@ -86,6 +86,28 @@ def test_source_text_retention_protects_audits_and_keeps_drafts(tmp_path: Path) 
         assert conn.execute('SELECT final_content FROM x_task_pipeline WHERE task_id=1').fetchone()[0]
 
 
+def test_source_retention_only_blocks_matching_fact_review(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_source_text
+    source = tmp_path / 'source.sqlite'
+    _source_db(source)
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            ALTER TABLE tasks ADD COLUMN raw_payload TEXT DEFAULT '{}';
+            UPDATE tasks SET status='published',updated_at='2024-01-01' WHERE id IN (1,2);
+            CREATE TABLE fact_checks(source_item_id TEXT,status TEXT,published_at TEXT);
+            INSERT INTO fact_checks VALUES('news-1','processing','2024-01-01');
+            CREATE TABLE newsflash_production_metadata(delivery_key TEXT,odaily_id TEXT);
+            INSERT INTO newsflash_production_metadata VALUES('odaily-task-1','news-1');
+        """)
+    store = _store(tmp_path)
+    result = trim_source_text(source, store, now_ms=int(datetime.now(UTC).timestamp() * 1000))
+    assert result['audit_busy'] == 1
+    assert result['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT content FROM tasks WHERE id=1').fetchone()[0]
+        assert conn.execute('SELECT content FROM tasks WHERE id=2').fetchone()[0] == ''
+
+
 def test_task_evidence_retention_preserves_draft_and_source_link(tmp_path: Path) -> None:
     store = _store(tmp_path)
     source = tmp_path / 'source.sqlite'

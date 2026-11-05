@@ -27,17 +27,28 @@ def trim_source_text(source: Path, store: Any, *, now_ms: int, limit: int = 100)
         if not {'id', 'source', 'source_url', 'status', 'updated_at', 'content', 'raw_payload', 'metadata'} <= columns:
             return {'scanned': 0, 'cleared': 0, 'audit_busy': 0}
         conn.execute('BEGIN IMMEDIATE')
-        if 'fact_checks' in tables and conn.execute("SELECT 1 FROM fact_checks WHERE status IN ('pending','processing') LIMIT 1").fetchone():
+        active_audits = 'fact_checks' in tables and conn.execute("SELECT 1 FROM fact_checks WHERE status IN ('pending','processing') LIMIT 1").fetchone()
+        can_match_audits = {'newsflash_production_metadata', 'x_task_pipeline'} <= tables
+        if active_audits and not can_match_audits:
             conn.rollback()
             return {'scanned': 0, 'cleared': 0, 'audit_busy': 1}
         rows = conn.execute(
             "SELECT id,source,source_url,status,content,raw_payload,metadata,(julianday(updated_at)-2440587.5)*86400000 AS age_ms "
             "FROM tasks WHERE id>? ORDER BY id LIMIT ?", (cursor, max(1, min(limit, 500))),
         ).fetchall()
-        cleared = 0
+        cleared = protected = 0
         for row in rows:
             if (row['status'] not in TERMINAL_STATUSES or row['source'] not in SOURCE_TEXT_TYPES or not row['source_url']
                     or row['age_ms'] is None or row['age_ms'] >= cutoff or (not row['content'] and row['raw_payload'] in ('', '{}', 'null'))):
+                continue
+            if active_audits and conn.execute(
+                "SELECT 1 FROM fact_checks f WHERE f.status IN ('pending','processing') AND ("
+                "f.source_item_id IN (SELECT odaily_id FROM newsflash_production_metadata WHERE delivery_key=? AND odaily_id IS NOT NULL) "
+                "OR EXISTS (SELECT 1 FROM x_task_pipeline p WHERE p.task_id=? AND p.publish_completed_at IS NOT NULL "
+                "AND abs((julianday(p.publish_completed_at)-julianday(f.published_at))*86400)<=300)) LIMIT 1",
+                (f"odaily-task-{row['id']}", row['id']),
+            ).fetchone():
+                protected += 1
                 continue
             try:
                 metadata = json.loads(row['metadata'] or '{}')
@@ -51,7 +62,7 @@ def trim_source_text(source: Path, store: Any, *, now_ms: int, limit: int = 100)
                                     (json.dumps(metadata, ensure_ascii=False, separators=(',', ':')), row['id'], row['content'], row['raw_payload'], row['metadata'])).rowcount
         conn.commit()
     store.set_state('source_text_retention_cursor', int(rows[-1]['id']) if rows else 0)
-    return {'scanned': len(rows), 'cleared': cleared, 'audit_busy': 0}
+    return {'scanned': len(rows), 'cleared': cleared, 'audit_busy': protected}
 
 
 def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
