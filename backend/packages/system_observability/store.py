@@ -811,16 +811,31 @@ class SystemInformationStore:
             removed = 0
             for event in rows:
                 event_time = event['happened_at_ms'] or event['observed_at_ms']
-                if event_time >= cutoff or event['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change'}:
+                if event_time >= cutoff or event['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change', 'stage_attempt'}:
                     continue
                 item = conn.execute(
                     "SELECT source_table,status,result FROM system_information_items WHERE item_id=?",
                     (event['item_id'],),
                 ).fetchone()
-                if not item or item['source_table'] != 'tasks' or item['status'] not in {
-                    'discarded', 'duplicate', 'auto_published', 'published', 'notified',
-                }:
+                if not item:
                     continue
+                terminal = {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}
+                technical_terminal = {'succeeded', 'success', 'completed', 'finished', 'skipped', 'sent'}
+                if not ((item['source_table'] == 'tasks' and item['status'] in terminal)
+                        or (item['source_table'] in {'local_pipeline_jobs', 'x_capture_attempts', 'binance_square_attempts'}
+                            and item['status'] in technical_terminal)):
+                    continue
+                if event['event_type'] == 'stage_attempt':
+                    info = conn.execute('SELECT stage,details_json FROM system_information_events WHERE rowid=?', (event['rowid'],)).fetchone()
+                    try:
+                        details = json.loads(info['details_json'] or '{}')
+                    except (ValueError, TypeError):
+                        continue
+                    if info['stage'] == '写作' and details.get('event_type') == 'response_received':
+                        details.pop('input', None)
+                        details.pop('rules', None)
+                        conn.execute('UPDATE system_information_events SET details_json=? WHERE rowid=?', (json.dumps(details, ensure_ascii=False, separators=(',', ':')), event['rowid']))
+                        continue
                 removed += conn.execute("DELETE FROM system_information_events WHERE rowid=?", (event['rowid'],)).rowcount
             next_cursor = int(rows[-1]['rowid']) if rows else 0
             conn.execute(
@@ -829,6 +844,80 @@ class SystemInformationStore:
                 (str(next_cursor), now),
             )
         return {'scanned': len(rows), 'removed': removed}
+
+    def trim_task_evidence(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 100) -> dict[str, int]:
+        """Strip expired source text and search details from completed task snapshots."""
+        now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+        cursor = int(self.get_state('task_evidence_retention_cursor', '0') or 0)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT rowid,* FROM system_information_items WHERE rowid>? ORDER BY rowid LIMIT ?",
+                (cursor, max(1, min(limit, 500))),
+            ).fetchall()
+            changed = 0
+            for row in rows:
+                if row['source_table'] == 'newsflash_items' and row['source'] != 'odaily' and source_database is not None and row['evidence_ref'] and row['source_url']:
+                    from packages.common.storage import connect_sqlite_readonly
+                    with connect_sqlite_readonly(source_database, timeout_seconds=2) as source:
+                        original = source.execute('SELECT content,raw_payload FROM newsflash_items WHERE id=?', (row['source_row_id'],)).fetchone()
+                    if original and original['content'] == '' and original['raw_payload'] == '{}':
+                        evidence_row = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (row['evidence_ref'],)).fetchone()
+                        evidence = self._read_evidence_file(evidence_row['path'], row['evidence_ref']) if evidence_row else None
+                        if isinstance(evidence, dict) and isinstance(evidence.get('row'), dict):
+                            source_row = dict(evidence['row'])
+                            if any(key in source_row for key in ('content', 'raw_payload', 'metadata')):
+                                for key in ('content', 'raw_payload', 'metadata'):
+                                    source_row.pop(key, None)
+                                evidence['row'] = source_row
+                                ref, path, size = self._write_evidence_file(evidence)
+                                self._register_evidence(conn, ref, path, size)
+                                conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
+                                conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
+                                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
+                                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
+                                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
+                                changed += 1
+                    continue
+                if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}:
+                    continue
+                stamp = row['updated_at_ms'] or row['created_at_ms']
+                if stamp is None or stamp >= now - 3 * 86_400_000 or not row['evidence_ref']:
+                    continue
+                if conn.execute("SELECT 1 FROM system_information_items WHERE parent_item_id=? AND result IN ('processing','unknown','backoffice') LIMIT 1", (row['item_id'],)).fetchone():
+                    continue
+                evidence_row = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (row['evidence_ref'],)).fetchone()
+                if not evidence_row:
+                    continue
+                evidence = self._read_evidence_file(evidence_row['path'], row['evidence_ref'])
+                if not isinstance(evidence, dict) or not isinstance(evidence.get('task'), dict):
+                    continue
+                task = dict(evidence['task'])
+                pipeline = dict(evidence.get('pipeline') or {})
+                prior = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+                for key in ('pipeline_search_result', 'pipeline_judge_output', 'pipeline_publisher_output', 'pipeline_push_result'):
+                    task.pop(key, None)
+                for key in ('search_result', 'judge_output', 'publisher_output', 'push_result'):
+                    pipeline.pop(key, None)
+                if stamp < now - 30 * 86_400_000 and row['source_url'] and source_database is not None:
+                    from packages.common.storage import connect_sqlite_readonly
+                    with connect_sqlite_readonly(source_database, timeout_seconds=2) as source:
+                        original = source.execute('SELECT content,raw_payload FROM tasks WHERE id=?', (row['source_row_id'],)).fetchone()
+                    if original and original['content'] == '' and original['raw_payload'] == '{}':
+                        for key in ('content', 'raw_payload', 'metadata'):
+                            task.pop(key, None)
+                evidence = {**evidence, 'task': task, 'pipeline': pipeline}
+                if json.dumps(evidence, ensure_ascii=False, sort_keys=True) == prior:
+                    continue
+                ref, path, size = self._write_evidence_file(evidence)
+                self._register_evidence(conn, ref, path, size)
+                conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
+                conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
+                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
+                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
+                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
+                changed += 1
+            conn.execute("INSERT INTO system_information_state VALUES('task_evidence_retention_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid'] if rows else 0), now))
+        return {'scanned': len(rows), 'changed': changed}
 
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,

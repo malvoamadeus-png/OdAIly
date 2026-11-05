@@ -265,8 +265,12 @@ def cleanup_observation_errors(store: Any, *, now_ms: int | None = None, limit: 
                 for attempt in conn.execute('SELECT raw_response_ref FROM system_review_analysis_attempts WHERE item_key=?', (key,)).fetchall():
                     replace_ref(attempt[0], force=True)
                 conn.execute('DELETE FROM system_review_analysis_attempts WHERE item_key=?', (key,))
-                conn.execute('DELETE FROM system_review_decisions WHERE item_key=?', (key,))
-                conn.execute('DELETE FROM system_review_items WHERE item_key=?', (key,))
+                has_decision = conn.execute("SELECT 1 FROM system_review_decisions WHERE item_key=? AND decision IN ('accepted','rejected') LIMIT 1", (key,)).fetchone()
+                if has_decision:
+                    conn.execute("UPDATE system_review_items SET title='外部依赖问题',summary='',scope_json='{}',evidence_json='[]',counter_evidence_json='[]',expected='',actual='',suggestion='',validation='',analysis_error=NULL WHERE item_key=?", (key,))
+                else:
+                    conn.execute('DELETE FROM system_review_decisions WHERE item_key=?', (key,))
+                    conn.execute('DELETE FROM system_review_items WHERE item_key=?', (key,))
                 changed += 1
             conn.execute('INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms',
                          (key_state, json.dumps({'day': cutoff, 'cursor': int(cards[-1]['__rowid__']) if cards else after}), now_ms or int(datetime.now(UTC).timestamp()*1000)))

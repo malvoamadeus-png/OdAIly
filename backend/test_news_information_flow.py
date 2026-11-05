@@ -29,13 +29,15 @@ def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: P
             'source_table': 'tasks', 'legacy_history': False}
     for item, status, result in [('done', 'published', 'direct_publish'), ('active', 'ready_review', 'backoffice')]:
         store.upsert_snapshot({**base, 'item_id': item, 'source_row_id': item, 'status': status, 'result': result}, None)
-    store.append_event(item_id='done', event_id='model', event_type='stage_attempt', stage='write',
+    store.append_event(item_id='done', event_id='model', event_type='stage_attempt', stage='写作',
                        status='succeeded', result='internal_complete', happened_at_ms=old,
-                       summary='模型返回', evidence={'raw_model_response': '完整初稿'})
+                       summary='模型返回', evidence={'raw_model_response': '完整初稿'},
+                       details={'event_type': 'response_received', 'input': {'content': '原文'}, 'rules': {'prompt': '规则'}})
     result = store.prune_task_status_events(now_ms=now)
     assert result['removed'] == 1
     assert [event['event_id'] for event in store.detail('done')['timeline']] == ['model']
     assert store.detail('done')['timeline'][0]['evidence']['raw_model_response'] == '完整初稿'
+    assert 'input' not in store.detail('done')['timeline'][0]['details']
     assert store.detail('active')['timeline']
 
 
@@ -59,6 +61,121 @@ def test_search_detail_retention_keeps_target_and_active_tasks(tmp_path: Path) -
         active = json.loads(conn.execute('SELECT search_result FROM x_task_pipeline WHERE task_id=2').fetchone()[0])
     assert completed == {'decision': 'duplicate', 'is_duplicate': True, 'duplicate_target': {'target_id': '7', 'title': '目标'}}
     assert active == detail
+
+
+def test_source_text_retention_protects_audits_and_keeps_drafts(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_source_text
+    source = tmp_path / 'source.sqlite'
+    _source_db(source)
+    with sqlite3.connect(source) as conn:
+        conn.execute("ALTER TABLE tasks ADD COLUMN raw_payload TEXT DEFAULT '{}'")
+        conn.execute("UPDATE tasks SET status='auto_published',updated_at='2024-03-02',raw_payload='{\"source\":\"raw\"}' WHERE id=1")
+        conn.execute("UPDATE tasks SET status='publisher_pending',updated_at='2024-03-02' WHERE id=2")
+        conn.execute('CREATE TABLE fact_checks(status TEXT)')
+        conn.execute("INSERT INTO fact_checks VALUES('processing')")
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    assert trim_source_text(source, store, now_ms=now)['audit_busy'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT content FROM tasks WHERE id=1').fetchone()[0]
+        conn.execute("UPDATE fact_checks SET status='passed'")
+    assert trim_source_text(source, store, now_ms=now)['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT content,raw_payload,source_url FROM tasks WHERE id=1').fetchone() == ('', '{}', 'https://x.example/1')
+        assert conn.execute('SELECT content FROM tasks WHERE id=2').fetchone()[0]
+        assert conn.execute('SELECT final_content FROM x_task_pipeline WHERE task_id=1').fetchone()[0]
+
+
+def test_task_evidence_retention_preserves_draft_and_source_link(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE tasks(id INTEGER PRIMARY KEY,content TEXT,raw_payload TEXT)')
+        conn.execute("INSERT INTO tasks VALUES(1,'','{}')")
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    old = now - 31 * 86_400_000
+    snapshot = {'item_id': 'old', 'business_key': 'x', 'source': 'x', 'source_id': '1', 'title': '标题',
+                'status': 'published', 'result': 'direct_publish', 'source_url': 'https://example.com/1',
+                'created_at_ms': old, 'updated_at_ms': old, 'source_database': 'fixture',
+                'source_table': 'tasks', 'source_row_id': '1'}
+    evidence = {'task': {'content': '源原文', 'raw_payload': '源数据', 'metadata': '上下文',
+                         'pipeline_search_result': '查重详情'},
+                'pipeline': {'final_content': '定稿正文', 'writer_output': '完整初稿', 'search_result': '查重详情'}}
+    store.upsert_snapshot(snapshot, evidence)
+    assert store.trim_task_evidence(source_database=source, now_ms=now)['changed'] == 1
+    detail = store.detail('old')
+    assert detail['source_url'] == 'https://example.com/1'
+    assert detail['evidence']['task'] == {}
+    assert detail['evidence']['pipeline'] == {'final_content': '定稿正文', 'writer_output': '完整初稿'}
+    assert store.query({'q': '源原文'})['total'] == 0
+    assert store.query({'q': '定稿正文'})['total'] == 1
+
+
+def test_candidate_retention_keeps_live_candidates_and_links(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_candidate_details
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT);
+            CREATE TABLE search_event_candidates(id INTEGER PRIMARY KEY,created_at TEXT,expires_at TEXT,content TEXT,primary_task_id INTEGER);
+            CREATE TABLE search_event_sources(id INTEGER PRIMARY KEY,candidate_id INTEGER,task_id INTEGER,content TEXT,metadata TEXT,source_url TEXT);
+            INSERT INTO tasks VALUES(1,'published'),(2,'writing');
+            INSERT INTO search_event_candidates VALUES(1,'2024-01-01','2024-01-02','原文',1),(2,'2024-01-01','2024-01-02','活动原文',2);
+            INSERT INTO search_event_sources VALUES(1,1,1,'原文','{"search_result":{"details":"比较"},"source":"x"}','https://example.com');
+            INSERT INTO search_event_sources VALUES(2,2,2,'活动原文','{"search_result":{"details":"比较"}}','https://example.com/2');
+        """)
+    result = trim_candidate_details(source, _store(tmp_path), now_ms=int(datetime.now(UTC).timestamp() * 1000))
+    assert result['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT content FROM search_event_candidates WHERE id=1').fetchone()[0] == ''
+        assert conn.execute('SELECT content,metadata,source_url FROM search_event_sources WHERE id=1').fetchone() == ('', '{"source":"x"}', 'https://example.com')
+        assert conn.execute('SELECT content FROM search_event_candidates WHERE id=2').fetchone()[0] == '活动原文'
+
+
+def test_attempt_retention_preserves_writer_response_and_unprojected_events(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_attempt_details
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            INSERT INTO tasks VALUES(1,'published','2024-01-01'),(2,'writing','2024-01-01');
+            INSERT INTO x_processing_attempts VALUES(1,1,'write','succeeded','{"text":"原文"}','{"prompt":"规则"}',NULL,'writer-ref','初稿');
+            INSERT INTO x_processing_attempts VALUES(2,1,'search','succeeded','{"text":"原文"}','{"prompt":"规则"}',NULL,'search-ref','查重');
+            INSERT INTO x_processing_attempts VALUES(3,1,'search','succeeded','{"text":"原文"}','{}',NULL,'unprojected','查重');
+            INSERT INTO x_processing_attempts VALUES(4,2,'write','running','{"text":"活动"}','{}',NULL,'active','初稿');
+            INSERT INTO x_processing_attempt_events VALUES(1,1,1,NULL,'writer-ref','初稿'),(2,1,2,NULL,'search-ref','查重'),(99,1,3,NULL,'unprojected','查重');
+        """)
+    store = _store(tmp_path)
+    store.set_state('main_attempt_events_watermark', 2)
+    result = trim_attempt_details(source, store, now_ms=int(datetime.now(UTC).timestamp() * 1000))
+    assert result['cleared'] == 2
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT input_json,rule_json,response_ref FROM x_processing_attempts WHERE id=1').fetchone() == ('{}', '{}', 'writer-ref')
+        assert conn.execute('SELECT input_json,response_ref FROM x_processing_attempts WHERE id=2').fetchone() == ('{}', None)
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=3').fetchone()[0] == 'unprojected'
+        assert conn.execute('SELECT input_json FROM x_processing_attempts WHERE id=4').fetchone()[0] != '{}'
+
+
+def test_competitor_retention_keeps_odaily_and_recent_events(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_competitor_text
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE newsflash_items(id INTEGER PRIMARY KEY,source TEXT,source_url TEXT,content TEXT,raw_payload TEXT,updated_at TEXT);
+            CREATE TABLE newsflash_events(event_id TEXT PRIMARY KEY,updated_at TEXT);
+            CREATE TABLE newsflash_event_sources(item_id INTEGER,event_id TEXT);
+            INSERT INTO newsflash_items VALUES(1,'blockbeats','https://example.com','旧原文','{"text":"旧"}','2024-01-01'),(2,'odaily','https://example.com/2','已发布正文','{}','2024-01-01'),(3,'panews','https://example.com/3','关联新事件','{}','2024-01-01');
+            INSERT INTO newsflash_events VALUES('old','2024-01-01'),('recent','2099-01-01');
+            INSERT INTO newsflash_event_sources VALUES(1,'old'),(3,'recent');
+        """)
+    result = trim_competitor_text(source, _store(tmp_path), now_ms=int(datetime.now(UTC).timestamp() * 1000))
+    assert result['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT content,raw_payload,source_url FROM newsflash_items WHERE id=1').fetchone() == ('', '{}', 'https://example.com')
+        assert conn.execute('SELECT content FROM newsflash_items WHERE id=2').fetchone()[0] == '已发布正文'
+        assert conn.execute('SELECT content FROM newsflash_items WHERE id=3').fetchone()[0] == '关联新事件'
 
 
 def test_detail_batches_evidence_lookup_and_decompresses_each_reference_once(tmp_path, monkeypatch):
@@ -276,8 +393,11 @@ def test_payload_cleanup_requires_verified_archive_and_preserves_decisions(tmp_p
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp()*1000)
     assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=False) == {'cleared': 0, 'protected': 1}
-    MainTaskProjector(source, store).run_once()
+    from unittest.mock import patch
+    with patch('packages.system_observability.business_retention.trim_source_text', return_value={'scanned': 0, 'cleared': 0, 'audit_busy': 0}):
+        MainTaskProjector(source, store).run_once()
     assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=True)['cleared'] == 1
+    store.set_state('task_payload_retention_cursor', 0)
     assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=False)['cleared'] == 1
     with sqlite3.connect(source) as conn:
         assert conn.execute('SELECT raw_payload FROM tasks WHERE id=1').fetchone()[0] == '{}'
@@ -355,6 +475,20 @@ def test_expired_legacy_supplier_review_is_hidden_before_cleanup(tmp_path: Path)
     cleanup_observation_errors(repo.information_store)
     with repo.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM system_review_items').fetchone()[0] == 0
+
+
+def test_external_error_cleanup_keeps_human_decision(tmp_path: Path) -> None:
+    from packages.system_observability.reviews import SystemReviewRepository
+    repo = SystemReviewRepository(tmp_path / 'reviews.sqlite')
+    key = repo.upsert_issue({'task_kind': 'F', 'category': 'failure_recovery_cluster', 'title': '旧错误',
+                             'actual': 'HTTP 503', 'evidence': [{'error_message': 'HTTP 503', 'status': 'failed'}]})
+    repo.decide(key, 'accepted', 'editor', '认可')
+    with repo.connect() as conn:
+        conn.execute("UPDATE system_review_items SET last_seen_at='2020-01-01' WHERE item_key=?", (key,))
+    cleanup_observation_errors(repo.information_store)
+    with repo.connect() as conn:
+        assert conn.execute('SELECT status,actual,evidence_json FROM system_review_items WHERE item_key=?', (key,)).fetchone()[:] == ('accepted', '', '[]')
+        assert conn.execute('SELECT decision,note FROM system_review_decisions WHERE item_key=?', (key,)).fetchone()[:] == ('accepted', '认可')
 
 
 def test_news_queries_and_retention_lookups_use_indexes_before_statistics(tmp_path: Path, monkeypatch) -> None:

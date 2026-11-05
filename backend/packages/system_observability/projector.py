@@ -641,19 +641,40 @@ class MainTaskProjector:
             except sqlite3.Error as exc:
                 self.store.set_state(f'dependency_cleanup_{database_key}_error', f'{type(exc).__name__}: {exc}'[:300])
         cleanup_observation_errors(self.store, now_ms=now_ms)
-        from .business_retention import trim_archived_task_payloads, trim_search_details
-        try:
-            trimmed = trim_archived_task_payloads(self.source_database, self.store, now_ms=now_ms, dry_run=False)
-            self.store.set_state('task_payload_retention_last_result', json.dumps(trimmed))
-            self.store.set_state('task_payload_retention_error', '')
-        except sqlite3.Error as exc:
-            self.store.set_state('task_payload_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        from .business_retention import trim_search_details, trim_source_text, trim_candidate_details, trim_competitor_text, trim_attempt_details
         try:
             trimmed_search = trim_search_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('search_detail_retention_last_result', json.dumps(trimmed_search))
             self.store.set_state('search_detail_retention_error', '')
         except sqlite3.Error as exc:
             self.store.set_state('search_detail_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            source_text = trim_source_text(self.source_database, self.store, now_ms=now_ms)
+            self.store.set_state('source_text_retention_last_result', json.dumps(source_text))
+            self.store.set_state('source_text_retention_error', '')
+            evidence = self.store.trim_task_evidence(source_database=self.source_database, now_ms=now_ms)
+            self.store.set_state('task_evidence_retention_last_result', json.dumps(evidence))
+            self.store.set_state('task_evidence_retention_error', '')
+        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.store.set_state('source_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            candidates = trim_candidate_details(self.source_database, self.store, now_ms=now_ms)
+            self.store.set_state('candidate_retention_last_result', json.dumps(candidates))
+            self.store.set_state('candidate_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('candidate_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            competitors = trim_competitor_text(self.source_database, self.store, now_ms=now_ms)
+            self.store.set_state('competitor_text_retention_last_result', json.dumps(competitors))
+            self.store.set_state('competitor_text_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('competitor_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            attempts = trim_attempt_details(self.source_database, self.store, now_ms=now_ms)
+            self.store.set_state('attempt_retention_last_result', json.dumps(attempts))
+            self.store.set_state('attempt_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('attempt_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
             removed = self.store.prune_task_status_events(now_ms=now_ms)
             self.store.set_state('status_retention_last_result', json.dumps(removed))
