@@ -1,0 +1,59 @@
+/* Investment grades express expected impact, not the direction of a trade. */
+.xAgentInvestmentAssets {
+  display: grid;
+  gap: 8px;
+}
+
+.xAgentInvestmentAssets > .investmentAsset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid #e3eae7;
+  border-radius: 7px;
+  background: #f8faf9;
+  color: #34434c;
+  font-size: 13px;
+}
+
+.investmentAssetName {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-right: 4px;
+}
+.investmentAssetName strong { color: #23333c; font-size: 14px; }
+.investmentTicker { color: #687982; font-size: 12px; }
+.investmentAssetTag, .investmentConfidence, .investmentImpact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.investmentAssetTag { background: #edf1f1; color: #50636b; }
+.investmentConfidence { background: #edf1f5; color: #526575; }
+.investmentImpact { border: 1px solid transparent; }
+.investmentImpact strong, .investmentConfidence strong { font-size: 13px; }
+.investmentImpact--high { border-color: #e4b8ac; background: #fff0ea; color: #983c28; }
+.investmentImpact--medium { border-color: #ead59d; background: #fff8e5; color: #805b0a; }
+.investmentImpact--low { border-color: #cdded6; background: #edf6f1; color: #426b58; }
+.investmentImpact--unknown { border-color: #d9e0e5; background: #f0f3f5; color: #5d6b75; }
+
+.xAgentInvestmentDetail .investmentAssessment {
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #dce7e1;
+  border-radius: 8px;
+  background: #fff;
+}
+.xAgentInvestmentDetail .investmentAssessment > p {
+  display: block;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.xAgentInvestmentDetail .investmentAssessment > p strong { color: #34434c; }

@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { ChartLine, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, Flame, Plus, Power, RefreshCcw, Rocket, Search, TrendingUp, X } from 'lucide-react';
 import { HotTopicPanel } from './HotTopicPanel';
+import './investment-leads.css';
 import { AutoNewsflashPanel } from './AutoNewsflashPanel';
 import {
   addXAgentAccount,
@@ -380,7 +381,7 @@ function InvestmentLeadDetail({
   return (
     <div className="xAgentInvestmentDetail">
       {detail.conditions && <p><strong>条件：</strong>{detail.conditions}</p>}
-      {detail.assets.map((asset) => asset.assessment && <section key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
+      {detail.assets.map((asset) => asset.assessment && <section className="investmentAssessment" key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
         <p>预期影响：{investmentLevel(asset.assessment.impact)} · 判断把握：{investmentLevel(asset.assessment.confidence)}</p>
         {asset.assessment.expectation_change && <p><strong>可能改变的预期：</strong>{asset.assessment.expectation_change}</p>}
         {asset.assessment.market_acceptance && <p><strong>市场为何可能接受或忽略：</strong>{asset.assessment.market_acceptance}</p>}
@@ -1106,7 +1107,13 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               <button className="xAgentInvestmentCardButton" type="button" aria-expanded={selected} onClick={() => setInvestmentSelectedId((current) => current === item.id ? null : item.id)}>
                 <span className="xAgentInvestmentCardHeading"><strong>{item.subject}</strong><span>{item.status === 'unlocated' ? '标的待定位' : `${item.assets.length} 个标的`}</span><time>{formatTime(item.lastSubstantiveAt)}</time></span>
                 <span className="xAgentInvestmentLogic">{item.driverLogic}</span>
-                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span key={`${asset.name}:${asset.ticker}`}><strong>{asset.name}</strong>{asset.ticker && ` (${asset.ticker})`} · {asset.direction}{asset.driver_type && ` · ${asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}`} · 预期影响{investmentLevel(asset.assessment?.impact)} · 把握{investmentLevel(asset.assessment?.confidence)}</span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span className="investmentAsset" key={`${asset.name}:${asset.ticker}`}>
+                  <span className="investmentAssetName"><strong>{asset.name}</strong>{asset.ticker && <span className="investmentTicker">{asset.ticker}</span>}</span>
+                  <span className="investmentAssetTag">{asset.direction}</span>
+                  {asset.driver_type && <span className="investmentAssetTag">{asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}</span>}
+                  <span className={`investmentImpact investmentImpact--${asset.assessment?.impact || 'unknown'}`}><span>预期影响</span><strong>{investmentLevel(asset.assessment?.impact)}</strong></span>
+                  <span className="investmentConfidence"><span>判断把握</span><strong>{investmentLevel(asset.assessment?.confidence)}</strong></span>
+                </span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
                 {item.replay?.label && <span className="xAgentInvestmentMeta">{item.replay.label} · 原帖 {formatTime(item.replay.sourcePostedAt)} · 分析更新 {formatTime(item.replay.importedAt)}</span>}
                 <span className="xAgentInvestmentMeta">来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}</span>
               </button>
