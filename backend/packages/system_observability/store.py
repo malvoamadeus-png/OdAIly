@@ -57,8 +57,34 @@ def _search_terms(text: str) -> set[str]:
 
 def _searchable_text(fields: tuple[Any, ...], evidence: Any) -> str:
     parts = [str(value) for value in fields if value not in (None, "")]
-    if evidence is not None:
-        parts.append(json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), default=str))
+    text_keys = {'title', 'content', 'text', 'draft_title', 'draft_content', 'final_title', 'final_content',
+                 'writer4_title', 'writer4_content', 'writer2_title', 'writer2_content', 'source_url',
+                 'source_name', 'source_id', 'account_username', 'author_username', 'username',
+                 'site_display_name', 'project_name', 'symbol', 'ticker'}
+    skip_keys = {'raw_payload', 'context_chain', 'context_raw_layers', 'input', 'input_json', 'rules', 'rule_json', 'search_result',
+                 'judge_output', 'publisher_output', 'push_result', 'details_json'}
+
+    def collect(value: Any, key: str = '') -> None:
+        key = key.removeprefix('pipeline_')
+        if key in skip_keys:
+            return
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                collect(child, str(child_key))
+        elif isinstance(value, list):
+            for child in value:
+                collect(child, key)
+        elif isinstance(value, str):
+            if key in {'writer_output', 'raw_output', 'metadata'}:
+                try:
+                    collect(json.loads(value), key)
+                except (TypeError, ValueError):
+                    if key == 'raw_output':
+                        parts.append(value)
+            elif key in text_keys:
+                parts.append(value)
+
+    collect(evidence)
     return " ".join(parts).casefold()
 
 
@@ -918,6 +944,28 @@ class SystemInformationStore:
                 changed += 1
             conn.execute("INSERT INTO system_information_state VALUES('task_evidence_retention_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid'] if rows else 0), now))
         return {'scanned': len(rows), 'changed': changed}
+
+    def compact_search_index(self, *, now_ms: int | None = None, limit: int = 25) -> dict[str, int]:
+        now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+        if self.get_state('readable_search_reindex_done') == '1':
+            return {'scanned': 0, 'done': 1}
+        cursor = int(self.get_state('readable_search_reindex_cursor', '0') or 0)
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows = conn.execute(
+                'SELECT i.rowid,i.item_id,i.title,i.summary,i.source,i.source_id,i.source_url,i.evidence_ref,e.path '
+                'FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref '
+                'WHERE i.rowid>? ORDER BY i.rowid LIMIT ?', (cursor, max(1, min(limit, 100))),
+            ).fetchall()
+            for row in rows:
+                evidence = self._read_evidence_file(row['path'], row['evidence_ref']) if row['path'] else None
+                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
+                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
+                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES(?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
+            key = 'readable_search_reindex_cursor' if rows else 'readable_search_reindex_done'
+            value = str(rows[-1]['rowid']) if rows else '1'
+            conn.execute('INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms', (key, value, now))
+        return {'scanned': len(rows), 'done': int(not rows)}
 
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,

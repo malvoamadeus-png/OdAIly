@@ -661,6 +661,12 @@ class MainTaskProjector:
         except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
             self.store.set_state('task_evidence_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
+            reindex = self.store.compact_search_index(now_ms=now_ms)
+            self.store.set_state('readable_search_reindex_last_result', json.dumps(reindex))
+            self.store.set_state('readable_search_reindex_error', '')
+        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.store.set_state('readable_search_reindex_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
             candidates = trim_candidate_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('candidate_retention_last_result', json.dumps(candidates))
             self.store.set_state('candidate_retention_error', '')

@@ -41,6 +41,27 @@ def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: P
     assert store.detail('active')['timeline']
 
 
+def test_readable_search_index_rebuild_keeps_article_text_and_excludes_technical_json(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    snapshot = {'item_id': 'searchable', 'business_key': 'x', 'source': 'x', 'source_id': '1',
+                'title': '新闻标题', 'summary': '已完成', 'status': 'published', 'result': 'direct_publish',
+                'source_database': 'fixture', 'source_table': 'tasks', 'source_row_id': '1'}
+    evidence = {'task': {'content': '来源正文', 'raw_payload': '{"private_technical":"技术长串"}'},
+                'pipeline': {'writer_output': json.dumps({'raw_output': json.dumps({'title': '初稿标题', 'content': '初稿正文'})}),
+                             'final_content': '定稿正文', 'search_result': '比较细节'}}
+    store.upsert_snapshot(snapshot, evidence)
+    assert store.query({'q': '来源正文'})['total'] == 1
+    assert store.query({'q': '初稿正文'})['total'] == 1
+    assert store.query({'q': '定稿正文'})['total'] == 1
+    assert store.query({'q': '技术长串'})['total'] == 0
+    with store.connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO system_information_search VALUES('技术','searchable')")
+    assert store.compact_search_index()['scanned'] == 1
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 FROM system_information_search WHERE term='技术' AND item_id='searchable'").fetchone() is None
+    assert store.compact_search_index()['done'] == 1
+
+
 def test_search_detail_retention_keeps_target_and_active_tasks(tmp_path: Path) -> None:
     from packages.system_observability.business_retention import trim_search_details
     source = tmp_path / 'source.sqlite'
