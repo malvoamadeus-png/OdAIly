@@ -83,7 +83,7 @@ def normalize_display_numbers(text: str) -> str:
 
     text = amount_pattern.sub(normalize_amount, text)
     quantity_pattern = re.compile(
-        r'(?P<amount>[\d,]+(?:\.\d{3,})?)(?P<space>\s*)(?P<coin>BTC|ETH)\b')
+        r'(?P<amount>[\d,]+(?:\.\d{3,})?)(?P<space>\s*)(?P<unit>枚?\s*)(?P<coin>BTC|ETH)\b')
 
     def normalize_quantity(match: re.Match[str]) -> str:
         quantity = number(match.group('amount').replace(',', ''))
@@ -91,7 +91,7 @@ def normalize_display_numbers(text: str) -> str:
             return match.group(0)
         rounded = quantity.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         rendered = f'{rounded:,.2f}'.rstrip('0').rstrip('.')
-        return f'{rendered}{match.group("space")}{match.group("coin")}'
+        return f'{rendered}{match.group("space")}{match.group("unit")}{match.group("coin")}'
 
     text = quantity_pattern.sub(normalize_quantity, text)
     percent_pattern = re.compile(qualifier + r'\s*(?P<sign>[-−]?)(?P<percent>[\d,]+(?:\.\d+)?)\s*[%％]')
@@ -121,6 +121,31 @@ def normalize_reader_terms(text: str) -> str:
                   '持仓价值', text)
     text = re.sub(r'按标记价\s*[\d,.]+\s*美元(?:计算|折算)?[，,]?\s*', '', text)
     text = text.replace('仓位估值', '持仓价值')
+    liquidation_price_pattern = re.compile(
+        r'(?P<label>清算(?:价|价格))'
+        r'(?P<separator>\s*(?:(?:大约|约)(?:为)?|为|是|[:：])?\s*)'
+        r'(?P<price>[\d,]+(?:\.\d+)?)\s*(?P<unit>美元)')
+
+    def normalize_liquidation_price(match: re.Match[str]) -> str:
+        price = number(match.group('price').replace(',', ''))
+        if abs(price) >= 100:
+            rendered = f'{price.quantize(Decimal("1"), rounding=ROUND_HALF_UP):.0f}'
+        elif abs(price) >= 1:
+            rendered = f'{price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):.2f}'.rstrip('0').rstrip('.')
+        else:
+            precision = max(0, 3 - abs(price).adjusted()) if price else 0
+            quantum = Decimal('1').scaleb(-precision)
+            rounded = price.quantize(quantum, rounding=ROUND_HALF_UP)
+            rendered = f'{rounded:.{precision}f}'
+            if '.' in rendered:
+                rendered = rendered.rstrip('0').rstrip('.')
+        changed = number(rendered) != price
+        separator = match.group('separator')
+        if changed:
+            separator = '' if re.search(r'大约|约', separator) else '约'
+        return f'{match.group("label")}{separator}{rendered}{match.group("unit")}'
+
+    text = liquidation_price_pattern.sub(normalize_liquidation_price, text)
     price_pattern = re.compile(
         r'(?P<label>加权成交价|成交均价|平均执行价|执行均价|执行价)'
         r'(?P<separator>\s*(?:约?为|[:：])?\s*)'
