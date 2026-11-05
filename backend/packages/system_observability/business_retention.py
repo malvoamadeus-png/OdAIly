@@ -38,7 +38,7 @@ def trim_source_text(source: Path, store: Any, *, now_ms: int, limit: int = 100)
         ).fetchall()
         cleared = protected = 0
         for row in rows:
-            if (row['status'] not in TERMINAL_STATUSES or row['source'] not in SOURCE_TEXT_TYPES or not row['source_url']
+            if (row['status'] not in TERMINAL_STATUSES or row['source'] not in SOURCE_TEXT_TYPES
                     or row['age_ms'] is None or row['age_ms'] >= cutoff or (not row['content'] and row['raw_payload'] in ('', '{}', 'null'))):
                 continue
             if active_audits and conn.execute(
@@ -154,7 +154,7 @@ def trim_competitor_text(source: Path, store: Any, *, now_ms: int, limit: int = 
         ).fetchall()
         cleared = 0
         for row in rows:
-            if (row['source'] == 'odaily' or not row['source_url'] or row['age_ms'] is None or row['age_ms'] >= cutoff
+            if (row['source'] == 'odaily' or row['age_ms'] is None or row['age_ms'] >= cutoff
                     or (not row['content'] and row['raw_payload'] in ('', '{}', 'null'))):
                 continue
             if conn.execute("SELECT 1 FROM newsflash_event_sources s JOIN newsflash_events e ON e.event_id=s.event_id WHERE s.item_id=? AND (e.updated_at IS NULL OR (julianday(e.updated_at)-2440587.5)*86400000>=?) LIMIT 1", (row['id'], cutoff)).fetchone():

@@ -856,7 +856,7 @@ class SystemInformationStore:
             ).fetchall()
             changed = 0
             for row in rows:
-                if row['source_table'] == 'newsflash_items' and row['source'] != 'odaily' and source_database is not None and row['evidence_ref'] and row['source_url']:
+                if row['source_table'] == 'newsflash_items' and row['source'] != 'odaily' and source_database is not None and row['evidence_ref']:
                     from packages.common.storage import connect_sqlite_readonly
                     with connect_sqlite_readonly(source_database, timeout_seconds=2) as source:
                         original = source.execute('SELECT content,raw_payload FROM newsflash_items WHERE id=?', (row['source_row_id'],)).fetchone()
@@ -898,7 +898,7 @@ class SystemInformationStore:
                     task.pop(key, None)
                 for key in ('search_result', 'judge_output', 'publisher_output', 'push_result'):
                     pipeline.pop(key, None)
-                if stamp < now - 30 * 86_400_000 and row['source_url'] and source_database is not None:
+                if stamp < now - 30 * 86_400_000 and source_database is not None:
                     from packages.common.storage import connect_sqlite_readonly
                     with connect_sqlite_readonly(source_database, timeout_seconds=2) as source:
                         original = source.execute('SELECT content,raw_payload FROM tasks WHERE id=?', (row['source_row_id'],)).fetchone()

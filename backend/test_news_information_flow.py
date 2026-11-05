@@ -69,6 +69,7 @@ def test_source_text_retention_protects_audits_and_keeps_drafts(tmp_path: Path) 
     _source_db(source)
     with sqlite3.connect(source) as conn:
         conn.execute("ALTER TABLE tasks ADD COLUMN raw_payload TEXT DEFAULT '{}'")
+        conn.execute("INSERT INTO tasks(id,source,source_item_id,source_url,title,content,status,created_at,updated_at,metadata,raw_payload) VALUES(4,'x','no-link',NULL,'无链接','旧原文','discarded','2024-01-01','2024-01-01','{}','{}')")
         conn.execute("UPDATE tasks SET status='auto_published',updated_at='2024-03-02',raw_payload='{\"source\":\"raw\"}' WHERE id=1")
         conn.execute("UPDATE tasks SET status='publisher_pending',updated_at='2024-03-02' WHERE id=2")
         conn.execute('CREATE TABLE fact_checks(status TEXT)')
@@ -79,10 +80,11 @@ def test_source_text_retention_protects_audits_and_keeps_drafts(tmp_path: Path) 
     with sqlite3.connect(source) as conn:
         assert conn.execute('SELECT content FROM tasks WHERE id=1').fetchone()[0]
         conn.execute("UPDATE fact_checks SET status='passed'")
-    assert trim_source_text(source, store, now_ms=now)['cleared'] == 1
+    assert trim_source_text(source, store, now_ms=now)['cleared'] == 2
     with sqlite3.connect(source) as conn:
         assert conn.execute('SELECT content,raw_payload,source_url FROM tasks WHERE id=1').fetchone() == ('', '{}', 'https://x.example/1')
         assert conn.execute('SELECT content FROM tasks WHERE id=2').fetchone()[0]
+        assert conn.execute('SELECT content,source_url FROM tasks WHERE id=4').fetchone() == ('', None)
         assert conn.execute('SELECT final_content FROM x_task_pipeline WHERE task_id=1').fetchone()[0]
 
 
