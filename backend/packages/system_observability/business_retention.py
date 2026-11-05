@@ -2,12 +2,55 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 from typing import Any
 
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 
 TERMINAL_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified')
+
+
+def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
+    """Retain duplicate identities while dropping old completed-task comparison details."""
+    cutoff = now_ms - 3 * 86_400_000
+    cursor = int(store.get_state('search_detail_retention_cursor', '0') or 0)
+    keep = {'decision', 'is_duplicate', 'duplicate', 'duplicate_target_type', 'duplicate_target_id', 'target_type', 'target_id'}
+    target_keep = {'target_type', 'target_id', 'title', 'target_title', 'source_url', 'candidate_id'}
+    with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
+        conn.row_factory = sqlite3.Row
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {'tasks', 'x_task_pipeline'} <= tables:
+            return {'scanned': 0, 'cleared': 0}
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(x_task_pipeline)')}
+        if 'search_result' not in columns:
+            return {'scanned': 0, 'cleared': 0}
+        marks = ','.join('?' for _ in TERMINAL_STATUSES)
+        rows = conn.execute(
+            f"SELECT p.task_id,p.search_result FROM x_task_pipeline p JOIN tasks t ON t.id=p.task_id "
+            f"WHERE p.task_id>? AND t.status IN ({marks}) AND (julianday(t.updated_at)-2440587.5)*86400000<? "
+            "ORDER BY p.task_id LIMIT ?", (cursor, *TERMINAL_STATUSES, cutoff, max(1, min(limit, 500))),
+        ).fetchall()
+        cleared = 0
+        for row in rows:
+            try:
+                value = json.loads(row['search_result'] or '{}')
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(value, dict):
+                continue
+            retained = {key: value[key] for key in keep if key in value}
+            target = value.get('duplicate_target')
+            if isinstance(target, dict):
+                retained['duplicate_target'] = {key: target[key] for key in target_keep if key in target}
+            if retained == value:
+                continue
+            result = json.dumps(retained, ensure_ascii=False, separators=(',', ':'))
+            cleared += conn.execute('UPDATE x_task_pipeline SET search_result=? WHERE task_id=? AND search_result=?',
+                                    (result, row['task_id'], row['search_result'])).rowcount
+        conn.commit()
+    store.set_state('search_detail_retention_cursor', int(rows[-1]['task_id']) if rows else 0)
+    return {'scanned': len(rows), 'cleared': cleared}
 
 
 def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain_days: int = 30,

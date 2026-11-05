@@ -39,6 +39,28 @@ def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: P
     assert store.detail('active')['timeline']
 
 
+def test_search_detail_retention_keeps_target_and_active_tasks(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_search_details
+    source = tmp_path / 'source.sqlite'
+    _source_db(source)
+    detail = {'is_duplicate': True, 'decision': 'duplicate', 'duplicate_target': {
+        'target_id': '7', 'title': '目标', 'content': '重复正文'}, 'observed_matches': ['候选详情']}
+    with sqlite3.connect(source) as conn:
+        conn.execute('ALTER TABLE x_task_pipeline ADD COLUMN search_result TEXT')
+        conn.execute("UPDATE tasks SET status='duplicate',updated_at='2024-03-02' WHERE id=1")
+        conn.execute("UPDATE tasks SET status='publisher_pending',updated_at='2024-03-02' WHERE id=2")
+        conn.execute('UPDATE x_task_pipeline SET search_result=? WHERE task_id=1', (json.dumps(detail),))
+        conn.execute('INSERT INTO x_task_pipeline(task_id,search_result) VALUES(2,?)', (json.dumps(detail),))
+    store = _store(tmp_path)
+    result = trim_search_details(source, store, now_ms=int(datetime.now(UTC).timestamp() * 1000))
+    assert result['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        completed = json.loads(conn.execute('SELECT search_result FROM x_task_pipeline WHERE task_id=1').fetchone()[0])
+        active = json.loads(conn.execute('SELECT search_result FROM x_task_pipeline WHERE task_id=2').fetchone()[0])
+    assert completed == {'decision': 'duplicate', 'is_duplicate': True, 'duplicate_target': {'target_id': '7', 'title': '目标'}}
+    assert active == detail
+
+
 def test_detail_batches_evidence_lookup_and_decompresses_each_reference_once(tmp_path, monkeypatch):
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp() * 1000)

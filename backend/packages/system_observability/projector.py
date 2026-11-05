@@ -641,13 +641,19 @@ class MainTaskProjector:
             except sqlite3.Error as exc:
                 self.store.set_state(f'dependency_cleanup_{database_key}_error', f'{type(exc).__name__}: {exc}'[:300])
         cleanup_observation_errors(self.store, now_ms=now_ms)
-        from .business_retention import trim_archived_task_payloads
+        from .business_retention import trim_archived_task_payloads, trim_search_details
         try:
             trimmed = trim_archived_task_payloads(self.source_database, self.store, now_ms=now_ms, dry_run=False)
             self.store.set_state('task_payload_retention_last_result', json.dumps(trimmed))
             self.store.set_state('task_payload_retention_error', '')
         except sqlite3.Error as exc:
             self.store.set_state('task_payload_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            trimmed_search = trim_search_details(self.source_database, self.store, now_ms=now_ms)
+            self.store.set_state('search_detail_retention_last_result', json.dumps(trimmed_search))
+            self.store.set_state('search_detail_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('search_detail_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
             removed = self.store.prune_task_status_events(now_ms=now_ms)
             self.store.set_state('status_retention_last_result', json.dumps(removed))
