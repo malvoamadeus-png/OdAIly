@@ -27,7 +27,6 @@ from .models import (
 )
 from .repository import (
     CRYPTO_SEARCH_FIRST_SOURCES,
-    DEFAULT_FEATURE_MODE_TEXT,
     EVENT_TRACKING_SOURCE,
     LEGACY_SKIP_SOURCES,
     LEGACY_SKIP_UNFINISHED_STATUSES,
@@ -40,6 +39,8 @@ from .repository import (
     _row_to_publisher_channel,
     _row_to_publisher_settings,
     _row_to_task,
+    _append_prompt_text,
+    _default_feature_mode_text,
 )
 from .searcher import SearchDocument, content_hash
 
@@ -149,7 +150,7 @@ class SQLiteXProcessingRepository:
                 content = (root_dir / relative_path).read_text(encoding="utf-8")
                 conn.execute(
                     "INSERT INTO prompt_templates(template_key, display_name, feature_mode_enabled, feature_mode_text) VALUES (?, ?, ?, ?) ON CONFLICT(template_key) DO UPDATE SET display_name=excluded.display_name, feature_mode_text=CASE WHEN prompt_templates.feature_mode_text='' THEN excluded.feature_mode_text ELSE prompt_templates.feature_mode_text END, updated_at=CURRENT_TIMESTAMP",
-                    (key, name, int(PROMPT_FEATURE_MODE_DEFAULTS.get(key, False)), DEFAULT_FEATURE_MODE_TEXT),
+                    (key, name, int(PROMPT_FEATURE_MODE_DEFAULTS.get(key, False)), _default_feature_mode_text(key)),
                 )
                 active = conn.execute("SELECT active_version_id FROM prompt_templates WHERE template_key=?", (key,)).fetchone()
                 if active and active["active_version_id"]:
@@ -352,6 +353,69 @@ class SQLiteXProcessingRepository:
         if new_row is None:  # pragma: no cover - guarded by the active row and transaction above.
             raise ValueError(f"active prompt not found after migration: {template_key}")
         return _row_to_prompt(_record(new_row)), True
+
+    def publish_prompt_policy(
+        self,
+        *,
+        template_key: str,
+        prompt_appendix: str,
+        feature_mode_appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool, bool]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT v.*, t.feature_mode_enabled, t.feature_mode_text "
+                "FROM prompt_templates t "
+                "JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=? AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"active prompt not found: {template_key}")
+
+            active_prompt = _row_to_prompt(_record(row))
+            updated_content = _append_prompt_text(active_prompt.content, prompt_appendix)
+            updated_feature_text = _append_prompt_text(active_prompt.feature_mode_text, feature_mode_appendix)
+            prompt_changed = updated_content != active_prompt.content
+            feature_mode_changed = updated_feature_text != active_prompt.feature_mode_text
+            timestamp = _iso()
+
+            if prompt_changed:
+                latest = conn.execute(
+                    "SELECT COALESCE(MAX(version_number), 0) AS version_number "
+                    "FROM prompt_template_versions WHERE template_key=?",
+                    (template_key,),
+                ).fetchone()
+                version_number = int(latest["version_number"]) + 1
+                cursor = conn.execute(
+                    "INSERT INTO prompt_template_versions "
+                    "(template_key, version_number, content, note, created_at, published_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (template_key, version_number, updated_content, note, timestamp, timestamp),
+                )
+                conn.execute(
+                    "UPDATE prompt_templates SET active_version_id=?, feature_mode_text=?, updated_at=? "
+                    "WHERE template_key=?",
+                    (int(cursor.lastrowid), updated_feature_text, timestamp, template_key),
+                )
+            elif feature_mode_changed:
+                conn.execute(
+                    "UPDATE prompt_templates SET feature_mode_text=?, updated_at=? WHERE template_key=?",
+                    (updated_feature_text, timestamp, template_key),
+                )
+
+            updated = conn.execute(
+                "SELECT v.*, t.feature_mode_enabled, t.feature_mode_text "
+                "FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=? AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+            conn.commit()
+
+        if updated is None:  # pragma: no cover - guarded by the active row and transaction above.
+            raise ValueError(f"active prompt not found after policy publish: {template_key}")
+        return _row_to_prompt(_record(updated)), prompt_changed, feature_mode_changed
 
     def get_publisher_settings(self):
         with self._connect() as conn:

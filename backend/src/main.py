@@ -245,6 +245,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     subparsers.add_parser(
+        "x-process-publish-chain-title-policy",
+        help="Publish chain operation subject retention and position feature-mode threshold rules.",
+    )
+
+    subparsers.add_parser(
         "publisher-init-config",
         help="Create the default local publisher rule config if it does not exist.",
     )
@@ -1288,6 +1293,30 @@ def x_process_publish_prompt_version_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def x_process_publish_chain_title_policy_command(args: argparse.Namespace) -> int:
+    from packages.x_processing.repository import (
+        CHAIN_ONCHAIN_TITLE_POLICY,
+        CHAIN_POSITION_FEATURE_MODE_RULES,
+        create_x_processing_repository,
+    )
+
+    repository = create_x_processing_repository(None)
+    version, prompt_changed, feature_mode_changed = repository.publish_prompt_policy(
+        template_key="x_onchain_writer",
+        prompt_appendix=CHAIN_ONCHAIN_TITLE_POLICY,
+        feature_mode_appendix=CHAIN_POSITION_FEATURE_MODE_RULES,
+        note="retain chain operator in every title and gate position feature headlines at $10M",
+    )
+    print(
+        "[odaily] chain title policy published "
+        f"template_key={version.template_key} version_id={version.id} "
+        f"version_number={version.version_number} "
+        f"prompt_changed={str(prompt_changed).lower()} "
+        f"feature_mode_changed={str(feature_mode_changed).lower()}"
+    )
+    return 0
+
+
 def publisher_init_config_command(args: argparse.Namespace) -> int:
     saved = save_publisher_rule_config(load_publisher_rule_config(), updated_by="system")
     print(f"[odaily] publisher config initialized updated_at={saved.updated_at}")
@@ -2172,6 +2201,8 @@ def main() -> int:
             return x_process_init_db_command(args)
         if args.command == "x-process-publish-prompt-version":
             return x_process_publish_prompt_version_command(args)
+        if args.command == "x-process-publish-chain-title-policy":
+            return x_process_publish_chain_title_policy_command(args)
         if args.command == "publisher-init-config":
             return publisher_init_config_command(args)
         if args.command == "x-process-worker":

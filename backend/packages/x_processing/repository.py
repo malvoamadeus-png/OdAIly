@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -185,6 +185,40 @@ DEFAULT_FEATURE_MODE_TEXT = """【标题风格】
 【可选的表达优化】
 如果标题前后两个分句出现相同核心名词，可在不改变事实含义的前提下考虑改用更自然的动词或表达，避免重复。例如前句已使用“空头持仓”，后句可考虑使用“做空 BTC、ETH”。该规则不是强制要求，只有在改写自然且术语含义保持准确时才采用。"""
 
+CHAIN_OPERATION_TITLE_RULES = """【链上操作标题的主体要求】
+以下要求适用于标准模式和特色模式，也适用于金额、结果或主体特征前置的标题：
+- 描述链上操作或持仓开平仓时，标题必须明确写出实际操作主体，并使用原文或结构化事实支持的名称、地址标签或地址。
+- 只能确认是地址执行操作时，写“某地址”或材料中的具体地址；不得省略操作主体，也不得仅凭地址推断“交易员”“巨鲸”等身份。"""
+
+CHAIN_POSITION_FEATURE_MODE_RULES = """【单笔链上仓位操作的特色模式门槛】
+- 单笔仓位价值以持仓价值或名义敞口判断，不以保证金或杠杆倍数判断。
+- 仓位价值低于1000万美元时，不得实际采用特色模式；标题按“操作主体 + 操作行为”组织，再补充数量、资产、方向、杠杆、时间及仓位价值等信息，并将 feature_mode_applied 设为 false。
+- 仓位价值达到1000万美元时，才允许特色模式前置金额、结果或主体特征；是否采用仍取决于能否让标题更清楚。无论采用与否，操作主体都必须保留。
+- 材料没有提供仓位价值时，不得用保证金、杠杆倍数或交易数量自行替代门槛判断。"""
+
+CHAIN_ONCHAIN_TITLE_POLICY = f"""{CHAIN_OPERATION_TITLE_RULES}
+
+【单笔链上仓位操作的特色模式适用条件】
+仅当特色模式开启、材料明确提供单笔仓位价值且该价值达到1000万美元时，才允许实际采用特色模式前置金额、结果或主体特征。门槛按持仓价值或名义敞口判断，不按保证金或杠杆倍数判断；低于门槛或仓位价值缺失时，使用“操作主体 + 操作行为”的直接标题，并将 feature_mode_applied 设为 false。"""
+
+
+def _append_prompt_text(current: str, appendix: str) -> str:
+    normalized_appendix = appendix.strip()
+    if not normalized_appendix or normalized_appendix in current:
+        return current
+    separator = "\n\n" if current and not current.endswith("\n") else "\n" if current else ""
+    return f"{current}{separator}{normalized_appendix}"
+
+
+def _default_feature_mode_text(template_key: str) -> str:
+    if template_key != "x_onchain_writer":
+        return DEFAULT_FEATURE_MODE_TEXT
+    return _append_prompt_text(
+        _append_prompt_text(DEFAULT_FEATURE_MODE_TEXT, CHAIN_OPERATION_TITLE_RULES),
+        CHAIN_POSITION_FEATURE_MODE_RULES,
+    )
+
+
 PUBLISHER_SETTINGS_DEFAULT = {
     "singleton_key": "global",
     "enabled": True,
@@ -221,6 +255,14 @@ class XProcessingRepository(Protocol):
         appendix: str,
         note: str,
     ) -> tuple[PromptTemplateVersion, bool]: ...
+    def publish_prompt_policy(
+        self,
+        *,
+        template_key: str,
+        prompt_appendix: str,
+        feature_mode_appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool, bool]: ...
     def complete_judge(
         self,
         task_id: int,
@@ -509,7 +551,7 @@ class PostgresXProcessingRepository:
                         feature_mode_text = COALESCE(NULLIF(prompt_templates.feature_mode_text, ''), EXCLUDED.feature_mode_text),
                         updated_at = now()
                     """,
-                    (template_key, display_name, feature_mode_enabled, DEFAULT_FEATURE_MODE_TEXT),
+                    (template_key, display_name, feature_mode_enabled, _default_feature_mode_text(template_key)),
                 )
                 existing = conn.execute(
                     "SELECT active_version_id FROM prompt_templates WHERE template_key = %s",
@@ -1346,7 +1388,7 @@ class InMemoryXProcessingRepository:
                 version_number=1,
                 content=f"prompt {key}",
                 feature_mode_enabled=PROMPT_FEATURE_MODE_DEFAULTS.get(key, False),
-                feature_mode_text=DEFAULT_FEATURE_MODE_TEXT,
+                feature_mode_text=_default_feature_mode_text(key),
             )
             for index, key in enumerate({*PROMPT_KEY_BY_NEWS_TYPE.values(), *PROMPT_SEEDS.keys()}, start=1)
         }
@@ -1453,6 +1495,35 @@ class InMemoryXProcessingRepository:
         )
         self.prompts[template_key] = migrated
         return migrated, True
+
+    def publish_prompt_policy(
+        self,
+        *,
+        template_key: str,
+        prompt_appendix: str,
+        feature_mode_appendix: str,
+        note: str,
+    ) -> tuple[PromptTemplateVersion, bool, bool]:
+        current = self.prompts[template_key]
+        updated_content = _append_prompt_text(current.content, prompt_appendix)
+        updated_feature_text = _append_prompt_text(current.feature_mode_text, feature_mode_appendix)
+        prompt_changed = updated_content != current.content
+        feature_mode_changed = updated_feature_text != current.feature_mode_text
+        if prompt_changed:
+            current = replace(
+                current,
+                id=max(prompt.id for prompt in self.prompts.values()) + 1,
+                version_number=current.version_number + 1,
+                content=updated_content,
+                feature_mode_text=updated_feature_text,
+                note=note,
+                created_at=utc_now(),
+                published_at=utc_now(),
+            )
+        elif feature_mode_changed:
+            current = replace(current, feature_mode_text=updated_feature_text)
+        self.prompts[template_key] = current
+        return current, prompt_changed, feature_mode_changed
 
     def get_publisher_settings(self) -> PublisherSettingsRecord:
         return self.publisher_settings
