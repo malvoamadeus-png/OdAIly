@@ -652,11 +652,14 @@ class MainTaskProjector:
             source_text = trim_source_text(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('source_text_retention_last_result', json.dumps(source_text))
             self.store.set_state('source_text_retention_error', '')
+        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.store.set_state('source_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
             evidence = self.store.trim_task_evidence(source_database=self.source_database, now_ms=now_ms)
             self.store.set_state('task_evidence_retention_last_result', json.dumps(evidence))
             self.store.set_state('task_evidence_retention_error', '')
         except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
-            self.store.set_state('source_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+            self.store.set_state('task_evidence_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
             candidates = trim_candidate_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('candidate_retention_last_result', json.dumps(candidates))
