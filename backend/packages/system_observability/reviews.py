@@ -1262,11 +1262,11 @@ class SystemReviewWorker:
             self.service.repository.start_run(run_key, "storage_retention")
             try:
                 self.service.information_store.storage_health(sample=True)
-                compacted = self.service.information_store.cleanup_expired_evidence(dry_run=False, limit=200)
+                self.service.information_store.expire_decision_samples()
                 orphaned = self.service.information_store.prune_orphan_evidence(dry_run=False, limit=500)
-                self.service.repository.finish_run(run_key, status="completed", items_created=compacted["compacted"] + orphaned["files"])
+                self.service.repository.finish_run(run_key, status="completed", items_created=orphaned["files"])
                 self.service.repository.set_state("last_storage_maintenance_date", now.date().isoformat())
-                results["storage_retention"] = {"compacted": compacted["compacted"], "orphaned": orphaned["files"]}
+                results["storage_retention"] = {"orphaned": orphaned["files"]}
             except Exception as exc:
                 self.service.repository.finish_run(run_key, status="failed", error=f"{type(exc).__name__}: {exc}")
                 raise

@@ -10,7 +10,7 @@ from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_read
 TERMINAL_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified')
 
 
-def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain_days: int = 3,
+def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain_days: int = 30,
                                 limit: int = 100, dry_run: bool = True) -> dict[str, int]:
     """Keep titles, text, source identity, metadata and all pipeline decisions searchable."""
     cutoff = now_ms - max(1, retain_days) * 86_400_000

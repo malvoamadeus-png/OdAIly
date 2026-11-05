@@ -796,6 +796,40 @@ class SystemInformationStore:
         with self.connect() as conn:
             return self._upsert_snapshot_in_connection(conn, snapshot, evidence, observed)
 
+    def prune_task_status_events(self, *, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
+        """Remove old status observations in bounded batches, preserving attempt evidence."""
+        now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+        cutoff = now - 3 * 86_400_000
+        with self.connect() as conn:
+            row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
+            cursor = int(row[0]) if row else 0
+            rows = conn.execute(
+                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id "
+                "FROM system_information_events WHERE rowid>? ORDER BY rowid LIMIT ?",
+                (cursor, max(1, min(limit, 5000))),
+            ).fetchall()
+            removed = 0
+            for event in rows:
+                event_time = event['happened_at_ms'] or event['observed_at_ms']
+                if event_time >= cutoff or event['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change'}:
+                    continue
+                item = conn.execute(
+                    "SELECT source_table,status,result FROM system_information_items WHERE item_id=?",
+                    (event['item_id'],),
+                ).fetchone()
+                if not item or item['source_table'] != 'tasks' or item['status'] not in {
+                    'discarded', 'duplicate', 'auto_published', 'published', 'notified',
+                }:
+                    continue
+                removed += conn.execute("DELETE FROM system_information_events WHERE rowid=?", (event['rowid'],)).rowcount
+            next_cursor = int(rows[-1]['rowid']) if rows else 0
+            conn.execute(
+                "INSERT INTO system_information_state VALUES('status_retention_cursor',?,?) "
+                "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                (str(next_cursor), now),
+            )
+        return {'scanned': len(rows), 'removed': removed}
+
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,
     ) -> bool:

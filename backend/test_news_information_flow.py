@@ -20,6 +20,25 @@ def _store(root: Path) -> SystemInformationStore:
     return store
 
 
+def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    old = now - 4 * 86_400_000
+    base = {'business_key': 'x', 'source': 'x', 'title': '稿件', 'stage': 'publish',
+            'created_at_ms': old, 'updated_at_ms': old, 'source_database': 'fixture',
+            'source_table': 'tasks', 'legacy_history': False}
+    for item, status, result in [('done', 'published', 'direct_publish'), ('active', 'ready_review', 'backoffice')]:
+        store.upsert_snapshot({**base, 'item_id': item, 'source_row_id': item, 'status': status, 'result': result}, None)
+    store.append_event(item_id='done', event_id='model', event_type='stage_attempt', stage='write',
+                       status='succeeded', result='internal_complete', happened_at_ms=old,
+                       summary='模型返回', evidence={'raw_model_response': '完整初稿'})
+    result = store.prune_task_status_events(now_ms=now)
+    assert result['removed'] == 1
+    assert [event['event_id'] for event in store.detail('done')['timeline']] == ['model']
+    assert store.detail('done')['timeline'][0]['evidence']['raw_model_response'] == '完整初稿'
+    assert store.detail('active')['timeline']
+
+
 def test_detail_batches_evidence_lookup_and_decompresses_each_reference_once(tmp_path, monkeypatch):
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp() * 1000)
@@ -223,7 +242,7 @@ def test_dependency_counters_count_retries_transactionally_without_counting_copi
     assert sum(row['occurrences'] for row in dependency_error_totals(path)) == 2
 
 
-def test_three_day_payload_cleanup_requires_verified_archive_and_preserves_decisions(tmp_path: Path) -> None:
+def test_payload_cleanup_requires_verified_archive_and_preserves_decisions(tmp_path: Path) -> None:
     from packages.system_observability.business_retention import trim_archived_task_payloads
     source = tmp_path / 'source.sqlite'
     _source_db(source)
@@ -234,10 +253,10 @@ def test_three_day_payload_cleanup_requires_verified_archive_and_preserves_decis
         conn.execute("UPDATE tasks SET raw_payload='failed-payload',status='write_failed' WHERE id=3")
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp()*1000)
-    assert trim_archived_task_payloads(source, store, now_ms=now, dry_run=False) == {'cleared': 0, 'protected': 1}
+    assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=False) == {'cleared': 0, 'protected': 1}
     MainTaskProjector(source, store).run_once()
-    assert trim_archived_task_payloads(source, store, now_ms=now, dry_run=True)['cleared'] == 1
-    assert trim_archived_task_payloads(source, store, now_ms=now, dry_run=False)['cleared'] == 1
+    assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=True)['cleared'] == 1
+    assert trim_archived_task_payloads(source, store, now_ms=now, retain_days=3, dry_run=False)['cleared'] == 1
     with sqlite3.connect(source) as conn:
         assert conn.execute('SELECT raw_payload FROM tasks WHERE id=1').fetchone()[0] == '{}'
         assert conn.execute('SELECT raw_payload FROM tasks WHERE id=2').fetchone()[0] == 'pending-payload'

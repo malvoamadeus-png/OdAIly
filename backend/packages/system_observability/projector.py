@@ -648,6 +648,12 @@ class MainTaskProjector:
             self.store.set_state('task_payload_retention_error', '')
         except sqlite3.Error as exc:
             self.store.set_state('task_payload_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        try:
+            removed = self.store.prune_task_status_events(now_ms=now_ms)
+            self.store.set_state('status_retention_last_result', json.dumps(removed))
+            self.store.set_state('status_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('status_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         self.store.set_state('dependency_cleanup_last_ms', now_ms)
 
     def _project_additional(self, now_ms: int, started_at_ms: int) -> tuple[int, int]:
