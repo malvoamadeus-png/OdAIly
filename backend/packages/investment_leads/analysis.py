@@ -12,7 +12,7 @@ from typing import Any, Callable
 SCAN_PROMPT_VERSION = "investment_leads_scan_v4"
 DERIVE_PROMPT_VERSION = "investment_leads_derive_v5"
 IDENTITY_SEARCH_PROMPT_VERSION = "investment_leads_identity_search_v1"
-MAX_SCAN_BATCH = 20
+MAX_SCAN_BATCH = 10
 MAX_SEGMENT_CHARS = 4_800
 
 
@@ -56,7 +56,7 @@ class InvestmentLeadAnalyzer:
             or os.getenv("OPENAI_BASE_URL") or ""
         ).rstrip("/")
         self.api_key = api_key or self._default_api_key(self.base_url)
-        self.timeout = timeout or _env_float("X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS", 90.0, 5.0, 300.0)
+        self.timeout = timeout or _env_float("X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS", 180.0, 5.0, 300.0)
         self.max_output_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS", 5000, 512, 12000)
         self._post_json = post_json or self._http_post_json
         if not self.base_url or not self.api_key:
@@ -561,10 +561,10 @@ def _parse_object(content: str) -> dict[str, Any]:
     fence = chr(96) * 3
     if text.startswith(fence):
         text = re.sub(r"^" + re.escape(fence) + r"(?:json)?\s*|\s*" + re.escape(fence) + r"$", "", text, flags=re.IGNORECASE)
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
+    start = text.find("{")
+    if start < 0:
         raise ValueError("模型响应不含 JSON")
-    parsed = json.loads(match.group(0))
+    parsed, _ = json.JSONDecoder().raw_decode(text, start)
     if not isinstance(parsed, dict):
         raise ValueError("模型响应必须是 JSON 对象")
     return parsed

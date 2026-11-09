@@ -29,7 +29,7 @@
 
 ### 第一阶段：扫描
 
-Prompt 版本为 `investment_leads_scan_v4`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 20 个文本段和默认 24,000 序列化字符打包。批次未满时最多等待 60 秒。模型为每段给出分类、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选。
+Prompt 版本为 `investment_leads_scan_v4`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 10 个文本段和默认 24,000 序列化字符打包。批次未满时最多等待 60 秒。模型为每段给出分类、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选。模型响应中缺少材料判定时按普通失败重试，不会直接把单次漏项置为最终失败。
 
 扫描要求企业、行业、市场或协议层面的实质变化，且能初步延伸到具体资产的盈利、供需、资金流、估值或风险溢价。个人订阅、个人额度或封号、查询功能暂不可用、例行审计、无商业传导的一般技术研究直接排除。重要性按相关资产的相对经济影响或重估意义判断，不设统一金额门槛。可组合材料仍保留于内部，不能把所有新闻都当作可组合材料。
 
@@ -96,7 +96,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 | `failed` | 达到三次自动尝试上限，保留错误供人工重试 |
 | `expired` | 任务超过 30 天保留期限 |
 
-模型请求成功但响应未包含某材料的判定会标为失败，避免把缺失结果当成无候选。Worker 心跳及模型路由错误写入 `investment_leads_meta`；任务错误保存在各队列行。任务租约为 30 分钟；重启后过期租约回收，未耗尽次数的任务重新排队。失败任务可按阶段和数量有界重试，单次最多 500 项。
+模型请求成功但响应未包含某材料的判定会按 15 分钟间隔自动重试，达到三次上限后才标为失败，避免把缺失结果当成无候选。Worker 心跳及模型路由错误写入 `investment_leads_meta`；任务错误保存在各队列行。任务租约为 60 分钟；重启后按租约到期回收，未耗尽次数的任务重新排队。失败任务可按阶段和数量有界重试，单次最多 500 项。
 
 扫描领取查询必须读取任务的 `attempts`，领取时数据库计数和内存任务计数同时递增。2026-10-30 修复了查询漏取该字段导致 `KeyError`、领取事务回滚、全部任务停留在待扫描的问题。既有待扫描任务由修复后的 Worker 正常领取，无需清空或重建队列。
 
@@ -108,7 +108,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 每小时维护时，30 天未处理任务标记为过期；30 天未再观察、且没有线索来源引用的材料和事件可清理。线索引用的正文摘录、来源 URL、账号观察关系和修订长期保留。采集起点、Worker 最近心跳、扫描/推导/补充/身份搜索积压、失败、预算暂停、材料不完整和各类用量通过控制台状态接口读取。
 
-独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。它只打开共享 HotTopic SQLite，不调用 FXTwitter。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`；默认 10 秒轮询。控制台管理员 API 为：
+独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。它只打开共享 HotTopic SQLite，不调用 FXTwitter；该连接使用 WAL 和 60 秒 SQLite busy timeout。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、每日输入 token 上限为 `30000000`、模型请求超时为 180 秒、扫描批次材料数为 10；默认 10 秒轮询。控制台管理员 API 为：
 
 - `/console/x-agent/investment-leads`：列表、时间窗口、关键词、账号和待定位筛选，服务端分页。
 - `/console/x-agent/investment-leads/detail`：原帖/推导、来源材料、补充读取、身份搜索、线索修订。
@@ -135,12 +135,12 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 - `X_AGENT_OPENAI_BASE_URL` / `X_AGENT_OPENAI_API_KEY`：可选专用兼容 API 路由与凭据；为空时沿用现有 X Agent / ODAILY LLM 配置。
 - `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：文本分析主模型和回退模型，默认 `gpt-6-luna`。
-- `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：单次模型或 Web Search 超时，默认 `90` 秒，范围 `5–300`。
+- `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：单次模型或 Web Search 超时，默认 `180` 秒，范围 `5–300`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS`：单次文本模型输出上限，默认 `5000`。
-- `X_AGENT_INVESTMENT_LEADS_BATCH_SIZE`：扫描批次材料数，默认 `20`，范围 `1–20`。
+- `X_AGENT_INVESTMENT_LEADS_BATCH_SIZE`：扫描批次材料数，默认 `10`，范围 `1–20`。
 - `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量批次等待上限，默认 `60` 秒，范围 `0–300`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：序列化请求字符预算，默认 `24000`，范围 `8000–300000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 预算，默认 `1000000`；设为 `0` 会暂停全部文本分析。
+- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 预算，默认 `30000000`；设为 `0` 会暂停全部文本分析。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS`：每日推导请求预算，默认 `2000`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS`：每日公网外链读取次数，默认 `100`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS`：每日身份 Web Search 请求数，默认 `50`。

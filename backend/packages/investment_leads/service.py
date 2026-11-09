@@ -27,7 +27,7 @@ from .analysis import (
 from .schema import ensure_schema
 
 MAX_ATTEMPTS = 3
-LEASE = timedelta(minutes=30)
+LEASE = timedelta(minutes=60)
 RETRY_DELAY = timedelta(minutes=15)
 RETENTION = timedelta(days=30)
 # Legacy results stay in storage but are not presented as passing the new gate.
@@ -63,9 +63,9 @@ def _json(value: Any) -> str:
 
 def _open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30.0)
+    connection = sqlite3.connect(path, timeout=60.0)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=30000")
+    connection.execute("PRAGMA busy_timeout=60000")
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA synchronous=FULL")
@@ -333,9 +333,9 @@ class InvestmentLeadService:
         self.db = connection or _open_database(database_path)
         if not reader_only:
             ensure_schema(self.db, capture_started_at=_iso())
-        self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 20, 1, 20)
+        self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 60, 0, 300)
-        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 1_000_000, 0, 100_000_000)
+        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 30_000_000, 0, 100_000_000)
         self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
         self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
         self.daily_identity_searches = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS", 50, 0, 10_000)
@@ -383,25 +383,29 @@ class InvestmentLeadService:
         with self.db:
             self.db.execute(
                 "UPDATE investment_lead_tasks SET status='failed',lease_until=NULL,last_error=COALESCE(last_error,'任务租约过期'),"
-                "completed_at=?,updated_at=? WHERE status='processing' AND attempts>=? AND updated_at<?",
-                (now, now, MAX_ATTEMPTS, cutoff),
+                "completed_at=?,updated_at=? WHERE status='processing' AND attempts>=? AND "
+                "((lease_until IS NOT NULL AND lease_until<=?) OR (lease_until IS NULL AND updated_at<?))",
+                (now, now, MAX_ATTEMPTS, now, cutoff),
             )
             self.db.execute(
                 "UPDATE investment_lead_tasks SET status='pending',lease_until=NULL,"
                 "last_error=COALESCE(last_error,'任务租约过期，已重新排队'),updated_at=? "
-                "WHERE status='processing' AND attempts<? AND updated_at<?",
-                (now, MAX_ATTEMPTS, cutoff),
+                "WHERE status='processing' AND attempts<? AND "
+                "((lease_until IS NOT NULL AND lease_until<=?) OR (lease_until IS NULL AND updated_at<?))",
+                (now, MAX_ATTEMPTS, now, cutoff),
             )
             self.db.execute(
                 "UPDATE investment_lead_identity_searches SET status='failed',lease_until=NULL,last_error=COALESCE(last_error,'任务租约过期'),"
-                "completed_at=?,updated_at=? WHERE status='processing' AND attempts>=? AND updated_at<?",
-                (now, now, MAX_ATTEMPTS, cutoff),
+                "completed_at=?,updated_at=? WHERE status='processing' AND attempts>=? AND "
+                "((lease_until IS NOT NULL AND lease_until<=?) OR (lease_until IS NULL AND updated_at<?))",
+                (now, now, MAX_ATTEMPTS, now, cutoff),
             )
             self.db.execute(
                 "UPDATE investment_lead_identity_searches SET status='pending',lease_until=NULL,"
                 "last_error=COALESCE(last_error,'任务租约过期，已重新排队'),updated_at=? "
-                "WHERE status='processing' AND attempts<? AND updated_at<?",
-                (now, MAX_ATTEMPTS, cutoff),
+                "WHERE status='processing' AND attempts<? AND "
+                "((lease_until IS NOT NULL AND lease_until<=?) OR (lease_until IS NULL AND updated_at<?))",
+                (now, MAX_ATTEMPTS, now, cutoff),
             )
 
     def _resume_budget_paused(self, now: str) -> None:
@@ -559,7 +563,7 @@ class InvestmentLeadService:
             for job in claimed:
                 result = results.get((str(job["material_id"]), str(job["content_hash"])))
                 if result is None:
-                    self._complete_scan_no_output(job, output, now)
+                    self._fail_batch([job], "模型未返回该材料的判定", now)
                 elif not self._eligible(job["material_id"], job["content_hash"]):
                     self._mark_ignored(job["id"], now)
                 else:
@@ -629,14 +633,6 @@ class InvestmentLeadService:
                         ") VALUES(?,?, 'supplement', 'investment_leads_supplement_v1', 'pending', ?, ?)",
                         (job["material_id"], job["content_hash"], now, now),
                     )
-
-    def _complete_scan_no_output(self, job: dict[str, Any], output: ModelOutput, now: str) -> None:
-        with self.db:
-            self.db.execute(
-                "UPDATE investment_lead_tasks SET status='failed',lease_until=NULL,last_error='模型未返回该材料的判定',"
-                "actual_model=?,fallback_reason=?,input_tokens=?,output_tokens=?,completed_at=?,updated_at=? WHERE id=?",
-                (output.actual_model, output.fallback_reason, output.input_tokens, output.output_tokens, now, now, job["id"]),
-            )
 
     def _process_one_supplement(self, now: str) -> int:
         with self.db:

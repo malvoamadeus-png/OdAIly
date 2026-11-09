@@ -10,6 +10,9 @@ EnvironmentFile=-/opt/OdAIly/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=X_AGENT_MODEL=gpt-6-luna
 Environment=X_AGENT_FALLBACK_MODEL=gpt-6-luna
+Environment=X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS=30000000
+Environment=X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS=180
+Environment=X_AGENT_INVESTMENT_LEADS_BATCH_SIZE=10
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py x-agent-investment-leads-worker
 Restart=always
 RestartSec=10
