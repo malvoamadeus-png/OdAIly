@@ -601,6 +601,8 @@ export type XAgentProjectPromotionDetailItem = {
   lastMentionedAt: string | null;
 };
 
+export type AccountMonitorGroup = 'high' | 'low';
+
 export type Account = {
   id: number;
   username: string;
@@ -610,6 +612,7 @@ export type Account = {
   profile_url: string | null;
   enabled: boolean;
   is_ai_source: boolean;
+  monitor_group: AccountMonitorGroup;
   interval_seconds: number | null;
   seeded_at: string | null;
   last_polled_at: string | null;
@@ -981,6 +984,7 @@ export type AccountPatch = {
   interval_seconds?: number | null;
   enabled?: boolean;
   is_ai_source?: boolean;
+  monitor_group?: AccountMonitorGroup;
 };
 
 export type NonMainstreamSourcePatch = {
@@ -995,6 +999,7 @@ type AccountCreateInput = {
   interval_seconds: number | null;
   enabled: boolean;
   is_ai_source?: boolean;
+  monitor_group: AccountMonitorGroup;
 };
 
 type WhaleWatchAddressCreateInput = {
@@ -2597,6 +2602,7 @@ export async function listAccounts(): Promise<Account[]> {
         'profile_url',
         'enabled',
         'is_ai_source',
+        'monitor_group',
         'interval_seconds',
         'seeded_at',
         'last_polled_at',
@@ -2652,6 +2658,7 @@ export async function createAccount(input: AccountCreateInput): Promise<Account>
         profile_url: `https://x.com/${username}`,
         enabled: input.enabled,
         is_ai_source: Boolean(input.is_ai_source),
+        monitor_group: input.monitor_group,
         interval_seconds: input.interval_seconds,
         updated_at: nowIso(),
       },
@@ -2681,6 +2688,9 @@ export async function updateAccount(accountId: number, patch: AccountPatch): Pro
   }
   if ('is_ai_source' in patch && patch.is_ai_source !== undefined) {
     payload.is_ai_source = patch.is_ai_source;
+  }
+  if ('monitor_group' in patch && patch.monitor_group !== undefined) {
+    payload.monitor_group = patch.monitor_group;
   }
 
   const { data, error } = await localApi().from('x_capture_accounts').update(payload).eq('id', accountId).select('*').single();

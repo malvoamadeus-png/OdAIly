@@ -2,6 +2,7 @@
 import type { Session } from './localApiClient';
 import {
   Activity,
+  ArrowLeftRight,
   Ban,
   ClipboardCheck,
   ChevronDown,
@@ -93,6 +94,7 @@ import {
   updateWhaleWatchHyperliquidAddress,
   updateWhaleWatchHyperliquidSettings,
   type Account,
+  type AccountMonitorGroup,
   type AccountPatch,
   type BinanceSquareAccount,
   type BinanceSquareAccountPatch,
@@ -979,6 +981,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     display_name: '',
     write_name: '',
     interval_seconds: '',
+    monitor_group: 'high' as AccountMonitorGroup,
     is_ai_source: false,
   });
   const [newBinanceSquareUrl, setNewBinanceSquareUrl] = useState('');
@@ -1022,6 +1025,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const stockMarketRequestRef = useRef(false);
 
   const enabledCount = useMemo(() => accounts.filter((account) => account.enabled).length, [accounts]);
+  const highFrequencyAccounts = useMemo(
+    () => accounts.filter((account) => (account.monitor_group || 'high') === 'high'),
+    [accounts],
+  );
+  const lowFrequencyAccounts = useMemo(
+    () => accounts.filter((account) => account.monitor_group === 'low'),
+    [accounts],
+  );
   const enabledBinanceSquareCount = useMemo(
     () => binanceSquareAccounts.filter((account) => account.enabled).length,
     [binanceSquareAccounts],
@@ -1497,10 +1508,11 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       interval_seconds: newAccount.interval_seconds ? Number(newAccount.interval_seconds) : null,
       enabled: true,
       is_ai_source: newAccount.is_ai_source,
+      monitor_group: newAccount.monitor_group,
     };
     try {
       await createAccount(body);
-      setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '', is_ai_source: false });
+      setNewAccount({ username_or_url: '', display_name: '', write_name: '', interval_seconds: '', monitor_group: 'high', is_ai_source: false });
       setMessage('X 账号已保存');
       await loadAll();
     } catch (err) {
@@ -2199,7 +2211,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                 <h2>X 规则</h2>
                 <span>{loading ? '加载中' : `${accounts.length} 个 X 账号`}</span>
               </div>
-              <form className="addAccount" onSubmit={addAccount}>
+              <form className="addAccount xCaptureAddAccount" onSubmit={addAccount}>
                 <input
                   placeholder="@username 或 x.com/username"
                   value={newAccount.username_or_url}
@@ -2223,6 +2235,14 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                   value={newAccount.interval_seconds}
                   onChange={(event) => setNewAccount({ ...newAccount, interval_seconds: event.target.value })}
                 />
+                <select
+                  aria-label="监控分区"
+                  value={newAccount.monitor_group}
+                  onChange={(event) => setNewAccount({ ...newAccount, monitor_group: event.target.value as AccountMonitorGroup })}
+                >
+                  <option value="high">高频区</option>
+                  <option value="low">低频区</option>
+                </select>
                 <label className="inlineToggle">
                   <input
                     type="checkbox"
@@ -2236,16 +2256,33 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                 </button>
               </form>
 
-              <div className="accountList">
-                {!loading && accounts.length === 0 && <div className="emptyState">暂无 X 账号，先添加一个账号。</div>}
-                {accounts.map((account) => (
-                  <AccountRow
-                    key={account.id}
-                    account={account}
-                    settings={settings}
-                    onPatch={patchAccount}
-                    onDelete={deleteAccount}
-                  />
+              <div className="xCaptureAccountGroups">
+                {[
+                  { key: 'high' as const, title: '高频区', items: highFrequencyAccounts },
+                  { key: 'low' as const, title: '低频区', items: lowFrequencyAccounts },
+                ].map((group) => (
+                  <section className="xCaptureAccountGroup" key={group.key}>
+                    <div className="xCaptureAccountGroupHeader">
+                      <h3>{group.title}</h3>
+                      <span>{group.items.length} 个账号</span>
+                    </div>
+                    <div className="accountList xCaptureAccountRows">
+                      {group.items.map((account) => (
+                        <AccountRow
+                          key={account.id}
+                          account={account}
+                          settings={settings}
+                          onPatch={patchAccount}
+                          onDelete={deleteAccount}
+                        />
+                      ))}
+                      {!loading && group.items.length === 0 && (accounts.length > 0 || group.key === 'high') && (
+                        <div className="emptyState compact">
+                          {accounts.length === 0 ? '暂无 X 账号，先添加一个账号。' : '暂无账号'}
+                        </div>
+                      )}
+                    </div>
+                  </section>
                 ))}
               </div>
             </section>
@@ -5145,6 +5182,15 @@ function AccountRow({
           title={account.is_ai_source ? '取消 AI信源标记' : '标记为 AI信源'}
         >
           AI
+        </button>
+        <button
+          className="iconButton"
+          type="button"
+          onClick={() => onPatch(account, { monitor_group: account.monitor_group === 'low' ? 'high' : 'low' })}
+          title={`移至${account.monitor_group === 'low' ? '高频区' : '低频区'}`}
+          aria-label={`移至${account.monitor_group === 'low' ? '高频区' : '低频区'}`}
+        >
+          <ArrowLeftRight size={17} />
         </button>
         <button
           className="iconButton"

@@ -1,0 +1,61 @@
+.xCaptureAddAccount {
+  grid-template-columns: minmax(170px, 1.4fr) minmax(110px, .9fr) minmax(110px, .9fr) 92px 102px 86px 108px;
+}
+
+.xCaptureAddAccount select {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #d8dee4;
+  border-radius: 5px;
+  background: #fff;
+  color: #27343c;
+  font: inherit;
+}
+
+.xCaptureAccountGroups {
+  display: grid;
+  gap: 18px;
+}
+
+.xCaptureAccountGroup {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.xCaptureAccountGroupHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid #e3e8eb;
+}
+
+.xCaptureAccountGroupHeader h3 {
+  margin: 0;
+  color: #263640;
+  font-size: 15px;
+}
+
+.xCaptureAccountGroupHeader span {
+  color: #68757e;
+  font-size: 12px;
+}
+
+.xCaptureAccountRows .accountRow {
+  grid-template-columns: minmax(170px, 1.3fr) minmax(100px, .85fr) minmax(120px, 1fr) 96px 92px 158px;
+}
+
+@media (max-width: 1120px) {
+  .xCaptureAddAccount {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1050px) {
+  .xCaptureAddAccount,
+  .xCaptureAccountRows .accountRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -13,6 +13,8 @@
 
 worker 启动时加载配置。运行中不再保留专门的数据库监听连接，而是按固定窗口轮询重载配置，默认最多 5 分钟生效一次，不需要重启服务。
 
+`x_capture_accounts.monitor_group` 仅用于控制台把账号展示在高频区或低频区，不进入 worker 配置，不影响抓取频率、顺序或任务处理。
+
 其中 `x_capture_accounts` 里的 `写作名` 用于后续 X 写作链路的发言人名称标准化：
 
 - 收集者-X 继续抓取并保留真实 `author_display_name`、`author_username`
