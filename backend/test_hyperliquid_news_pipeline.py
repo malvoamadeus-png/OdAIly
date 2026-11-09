@@ -113,7 +113,7 @@ def test_account_profit_copy_removes_disclaimer_adds_title_subject_and_uses_fres
     assert result.content.endswith(f'地址：{A}；总盈亏：盈利约2,867万美元')
 
 
-def test_account_title_normalization_does_not_create_duplicate_body():
+def test_account_title_and_body_are_not_rewritten_for_text_repetition():
     event = {
         'addresses': [A],
         'kinds': ['highlighted_address_action'],
@@ -138,7 +138,11 @@ def test_account_title_normalization_does_not_create_duplicate_body():
     normalized = normalize_account_copy(parsed.draft, event)
 
     assert normalized.title == '合约账户累计收益约2.15亿美元，某地址减少约302 万美元ETH空单'
+    assert normalized.content == '总盈利约2.15亿美元，某地址减少约302万美元ETH空单'
     assert parse_draft_output(f'{normalized.title}\n\n{normalized.content}') == normalized
+    repeated = DraftBrief(title='总盈利约2.15亿美元，某地址减少约302万美元ETH空单',
+                          content='总盈利约2.15亿美元，某地址减少约302万美元ETH空单')
+    assert parse_draft_output(f'{repeated.title}\n\n{repeated.content}') == repeated
 
 
 def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_enabled():

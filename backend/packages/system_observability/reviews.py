@@ -27,6 +27,8 @@ DAILY_TOKEN_LIMIT = 1_000_000
 MAX_ATTEMPTS = 3
 FAILURE_HISTORY_DAYS = 7
 PERSISTENT_FAILURE_MIN_DAYS = 3
+# Historical failures from this removed check are no longer active pipeline incidents.
+RETIRED_FAILURE_SIGNATURES = frozenset({"writer output repeats title in content"})
 MAX_PROCESSING_ATTEMPT_ROWS = 50_000
 MAX_CAPTURE_ATTEMPT_ROWS = 20_000
 
@@ -993,6 +995,8 @@ class SystemReviewService:
             return max(0, latest_id - limit)
 
         def add_failure(source: Any, stage: str, error_code: Any, error: Any, version: Any, row: dict[str, Any], *, evidence_level: str) -> None:
+            if str(error or "") in RETIRED_FAILURE_SIGNATURES:
+                return
             category = failure_category(error)
             if not is_actionable_internal_failure(error):
                 return
@@ -1145,7 +1149,6 @@ class SystemReviewService:
             first_seen_at = datetime.fromtimestamp(first_seen / 1000, UTC).isoformat()
             identity = {"failure_category": category, "error_signature": message}
             issue_title = {
-                "writer output repeats title in content": "写作校验持续失败：标题重复在正文",
                 "writer output feature mode fields are invalid": "写作校验持续失败：特色模式字段无效",
                 "active prompt not found: msx_notice_writer": "写作配置持续失败：MSX 活动 Prompt 缺失",
                 "writer output contains unsupported title_strategy": "写作校验持续失败：标题策略不受支持",

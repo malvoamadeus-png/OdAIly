@@ -1477,7 +1477,7 @@ def test_rule_execution_checks_existing_onchain_opener_hyperliquid_backend_and_f
         assert "样本时间" in hyperliquid["actual"]
 
 
-def test_failure_clusters_only_report_multiday_internal_errors_and_count_recovery() -> None:
+def test_failure_clusters_ignore_retired_title_repeat_validation() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         main = root / "main.sqlite"
@@ -1529,12 +1529,8 @@ def test_failure_clusters_only_report_multiday_internal_errors_and_count_recover
 
         service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"))
         issues = service._failure_clusters()
-        processing = next(item for item in issues if item["category"] == "persistent_internal_failure")
 
-        assert len(issues) == 1
-        assert processing["title"] == "写作校验持续失败：标题重复在正文"
-        assert processing["affected_count"] == 4
-        assert "3 个自然日" in processing["summary"]
-        assert "当前仍有 2 个对象未恢复" in processing["summary"]
-        assert len(processing["counter_evidence"]) == 2
-        assert any(item.get("current_status") == "auto_published" for item in processing["counter_evidence"])
+        assert not any(
+            item["identity"].get("error_signature") == "writer output repeats title in content"
+            for item in issues
+        )

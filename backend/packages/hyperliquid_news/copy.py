@@ -273,16 +273,6 @@ def _account_total_sample(history: dict[str, Any], *, as_of_ms: Any = None) -> d
     return candidates[0] if candidates and as_of_ms is None else None
 
 
-def _ensure_account_title_subject(title: str) -> str:
-    if '地址' in title:
-        return title
-    match = re.match(r'^(总(?:盈利|亏损)(?:约|超|超过)?[\d,.]+(?:万美元|亿美元))(.*)$', title)
-    if not match:
-        return title
-    remainder = re.sub(r'^[，,]\s*', '', match.group(2))
-    return f'{match.group(1)}，某地址{remainder}'
-
-
 def _account_action_detail(event: dict[str, Any]) -> str | None:
     """Build an amount-bound action phrase when the model omitted it."""
     evidence = event.get('evidence', {})
@@ -356,7 +346,6 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         _validate_action_chronology(draft, event)
         return draft
     title = draft.title.strip()
-    original_title = title
     evidence = event['evidence']
     all_time = evidence.get('history', {}).get('official_account_performance', {}).get('windows', {}).get('allTime')
     threshold = number(evidence.get('threshold_rules', {}).get('account_profit', '20000000'))
@@ -365,19 +354,12 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
     if account and re.match(prefix, title):
         if not all_time or number(all_time['pnl']) < threshold:
             raise ValueError('Cumulative account title requires qualifying official allTime evidence')
-        title = re.sub(prefix, '总盈利', title, count=1)
     if account and title.startswith('总盈利') and (not all_time or number(all_time['pnl']) < threshold):
         raise ValueError('Total profit title requires qualifying official allTime evidence')
-    if account and title.startswith('总盈利'):
-        title = _ensure_account_title_subject(title)
     if 'historical_loss' in labels and re.match(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', title):
         loss = evidence.get('history', {}).get('official_account_loss', {})
         if number(loss.get('windows', {}).get('allTime', {}).get('pnl', '0')) > -number(evidence.get('threshold_rules', {}).get('historical_loss', '20000000')):
             raise ValueError('Total loss title requires qualifying perpetual allTime evidence')
-        title = re.sub(r'^(?:(?:合约)?账户)?(?:累计|总)亏损', '总亏损', title, count=1)
-    if 'historical_loss' in labels and title.startswith('总亏损'):
-        title = _ensure_account_title_subject(title)
-    title = title.replace('的地址', '地址')
     content = re.sub(r'^(据\s*Odaily\s*监测[，,]\s*)?该地址',
                      lambda match: (match.group(1) or '') + '某地址', draft.content.strip(), count=1)
     if 'historical_loss' in labels:
@@ -398,10 +380,6 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         coin = str(event.get('coin', '')).rsplit(':', 1)[-1]
         if not re.search(r'清仓|空仓|已无.*仓位', content):
             content = content.rstrip('。！？') + f'。其已无{coin}仓位。'
-    if (account and '地址' in original_title
-            and re.sub(r'\s+', '', title) == re.sub(r'\s+', '', content)):
-        # Prefix normalization must not turn a distinct model headline into a duplicate body.
-        title = original_title
     _validate_action_chronology(DraftBrief(title=title, content=content), event)
     return DraftBrief(title=title, content=content)
 
