@@ -27,6 +27,8 @@ DAILY_TOKEN_LIMIT = 1_000_000
 MAX_ATTEMPTS = 3
 FAILURE_HISTORY_DAYS = 7
 PERSISTENT_FAILURE_MIN_DAYS = 3
+MAX_PROCESSING_ATTEMPT_ROWS = 50_000
+MAX_CAPTURE_ATTEMPT_ROWS = 20_000
 
 
 def is_actionable_internal_failure(message: Any) -> bool:
@@ -986,6 +988,10 @@ class SystemReviewService:
         def error_signature(value: Any) -> str:
             return re.sub(r"\b\d{3,}\b", "#", str(value or "unknown"))[:240]
 
+        def latest_id_floor(conn: sqlite3.Connection, table: str, limit: int) -> int:
+            latest_id = int(conn.execute(f"SELECT COALESCE(MAX(id),0) FROM {table}").fetchone()[0] or 0)
+            return max(0, latest_id - limit)
+
         def add_failure(source: Any, stage: str, error_code: Any, error: Any, version: Any, row: dict[str, Any], *, evidence_level: str) -> None:
             category = failure_category(error)
             if not is_actionable_internal_failure(error):
@@ -1012,14 +1018,16 @@ class SystemReviewService:
         with self._connect() as conn:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "x_processing_attempts" in tables:
+                attempt_id_floor = latest_id_floor(conn, "x_processing_attempts", MAX_PROCESSING_ATTEMPT_ROWS)
                 attempt_rows = conn.execute(
                     "SELECT a.id,a.task_id,a.stage,a.attempt_no,a.executor,a.status,a.error_code,a.error_message,"
                     "a.started_at,a.finished_at,a.rule_json,t.source,t.status AS task_status,"
                     "p.prompt_template_key,p.prompt_version_id "
                     "FROM x_processing_attempts a JOIN tasks t ON t.id=a.task_id "
                     "LEFT JOIN x_task_pipeline p ON p.task_id=t.id "
-                    f"WHERE julianday(a.started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') "
-                    "AND a.status IN ('failed','succeeded') ORDER BY a.id DESC LIMIT 50000"
+                    f"WHERE a.id>? AND julianday(a.started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') "
+                    "AND a.status IN ('failed','succeeded') ORDER BY a.id DESC LIMIT ?",
+                    (attempt_id_floor, MAX_PROCESSING_ATTEMPT_ROWS),
                 ).fetchall()
                 for row in attempt_rows:
                     value = dict(row)
@@ -1037,7 +1045,7 @@ class SystemReviewService:
                 rows = conn.execute(
                     "SELECT t.id AS task_id,t.source,t.source_item_id,t.status,t.updated_at,p.last_error,p.prompt_template_key,p.prompt_version_id "
                     "FROM tasks t JOIN x_task_pipeline p ON p.task_id=t.id "
-                    "WHERE t.status LIKE '%failed' AND p.last_error IS NOT NULL "
+                    "WHERE t.status IN ('judge_failed','search_failed','write_failed','format_failed','publisher_failed') AND p.last_error IS NOT NULL "
                     f"AND julianday(t.updated_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY t.updated_at DESC LIMIT 10000"
                 ).fetchall()
                 for row in rows:
@@ -1047,9 +1055,11 @@ class SystemReviewService:
                     version = f"{value.get('prompt_template_key') or 'unknown'}:{value.get('prompt_version_id') or 'unknown'}"
                     add_failure(value.get("source"), "current_status", "unknown", value.get("last_error") or value.get("status"), version, value, evidence_level="current_task_snapshot")
             if "x_capture_attempts" in tables:
+                capture_id_floor = latest_id_floor(conn, "x_capture_attempts", MAX_CAPTURE_ATTEMPT_ROWS)
                 rows = conn.execute(
                     "SELECT id,account_id,username_lower,status,source,error,started_at,finished_at,candidate_count,new_count,saved_count "
-                    f"FROM x_capture_attempts WHERE julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT 20000"
+                    f"FROM x_capture_attempts WHERE id>? AND julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT ?",
+                    (capture_id_floor, MAX_CAPTURE_ATTEMPT_ROWS),
                 ).fetchall()
                 for row in rows:
                     value = dict(row)
@@ -1059,9 +1069,11 @@ class SystemReviewService:
                     elif str(value.get("status") or "").casefold() in {"failed", "error"}:
                         add_failure(f"x_capture:{value.get('source') or 'unknown'}", "capture", "unknown", value.get("error") or value.get("status"), "capture_attempt", value, evidence_level="per_source_attempt")
             if "binance_square_attempts" in tables:
+                square_id_floor = latest_id_floor(conn, "binance_square_attempts", MAX_CAPTURE_ATTEMPT_ROWS)
                 rows = conn.execute(
                     "SELECT id,account_id,slug_lower,status,error,started_at,finished_at,candidate_count,new_count,saved_count "
-                    f"FROM binance_square_attempts WHERE julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT 20000"
+                    f"FROM binance_square_attempts WHERE id>? AND julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT ?",
+                    (square_id_floor, MAX_CAPTURE_ATTEMPT_ROWS),
                 ).fetchall()
                 for row in rows:
                     value = dict(row)
