@@ -411,17 +411,17 @@ class InvestmentLeadService:
     def _resume_budget_paused(self, now: str) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE investment_lead_tasks SET status='pending',updated_at=? "
+                "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
                 "WHERE status='budget_paused' AND stage IN ('scan','supplement') AND substr(updated_at,1,10)<?",
                 (now, _utc_date()),
             )
             self.db.execute(
-                "UPDATE investment_lead_tasks SET status='pending',updated_at=? "
+                "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
                 "WHERE status='budget_paused' AND stage='derive' AND substr(updated_at,1,10)<?",
                 (now, _utc_date()),
             )
             self.db.execute(
-                "UPDATE investment_lead_identity_searches SET status='pending',updated_at=? "
+                "UPDATE investment_lead_identity_searches SET status='pending',attempts=0,updated_at=? "
                 "WHERE status='budget_paused' AND substr(updated_at,1,10)<?",
                 (now, _utc_date()),
             )
