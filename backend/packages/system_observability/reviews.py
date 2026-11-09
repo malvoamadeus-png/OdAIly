@@ -961,7 +961,7 @@ class SystemReviewService:
             if value["source"] == "hyperliquid_news" and not is_preview and str(value.get("status") or "").casefold() in {"published", "auto_published"}:
                 violations.append("新闻场景稿件已直发；该场景要求强制进入后台审核")
             if value["source"] == "hyperliquid_news" and not is_preview and final_content:
-                if not final_content.startswith(ODAILY_PREFIX + " " + HL_PREFIX):
+                if not final_content.startswith(ODAILY_PREFIX + HL_PREFIX):
                     violations.append("定稿缺少 Hyperliquid 稿件规定的 Odaily 固定刊头")
                 if normalize_display_numbers(final_title) != final_title or normalize_display_numbers(final_content) != final_content:
                     violations.append("定稿仍含可由现有金额/比例格式化规则规范的数字")

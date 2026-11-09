@@ -1459,6 +1459,10 @@ def test_rule_execution_checks_existing_onchain_opener_hyperliquid_backend_and_f
                 json.dumps({"mode": "preview_only"}), "{}", now,
             ))
             conn.execute("INSERT INTO x_task_pipeline VALUES(3,'hyperliquid_writer',9,'预览','样本时间：2026-11-03','预览','样本时间：2026-11-03')")
+            conn.execute("INSERT INTO tasks VALUES(4,'hyperliquid_news','hl-valid','https://hl.test/valid','正常稿件','ready_review',?,?,?)", (
+                "{}", "{}", now,
+            ))
+            conn.execute("INSERT INTO x_task_pipeline VALUES(4,'hyperliquid_writer',9,'正常稿件','正文','正常稿件','Odaily星球日报讯 据Odaily监测，某地址增持 1 枚 BTC 多单。\\n地址：0x1234')")
 
         service = SystemReviewService(database, SystemReviewRepository(root / "review.sqlite"))
         issues = service._rule_conflicts()
