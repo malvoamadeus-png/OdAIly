@@ -69,6 +69,39 @@ def test_information_http_compresses_details_and_caches_preflight(method, path):
         thread.join()
 
 
+def test_ai_text_self_upgrade_console_route_dispatches_authenticated_actions():
+    class Service:
+        api_settings = SimpleNamespace(cors_allow_origin="*")
+
+        def authenticate_console_admin(self, _authorization):
+            return AuthenticatedEditor(user_id="operator", email="operator@example.com", display_name="operator")
+
+        def execute_ai_text_self_upgrade(self, actor, payload):
+            return {"actor": actor.email, "action": payload.get("action"), "case_key": payload.get("case_key")}
+
+    server = EditorPluginApiServer(("127.0.0.1", 0), Service())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection(*server.server_address)
+        connection.request(
+            "POST", "/console/ai-text-self-upgrade",
+            json.dumps({"action": "detail", "case_key": "fixture-case"}),
+            {"Content-Type": "application/json", "Authorization": "Bearer fixture"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 200
+        assert payload["data"] == {
+            "actor": "operator@example.com", "action": "detail", "case_key": "fixture-case",
+        }
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 class UnusedService:
     api_settings = SimpleNamespace(cors_allow_origin="*")
 

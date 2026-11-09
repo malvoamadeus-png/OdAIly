@@ -29,6 +29,11 @@ from packages.common.editor_plugin_auth import (
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
 from packages.business_news.repository import BusinessNewsRepository
+from packages.ai_text_self_upgrade import (
+    AITextSelfUpgradeRepository,
+    AITextSelfUpgradeService,
+    AITextSelfUpgradeWorker,
+)
 from packages.competitor_monitor.blockbeats_key_config import (
     BlockbeatsKeySaveRequest,
     load_blockbeats_key_config,
@@ -441,6 +446,9 @@ class EditorPluginNewsGenService:
             local_pipeline_database_path=self.paths.runtime_dir / "local_pipeline.sqlite",
         )
         self.system_review_worker = SystemReviewWorker(self.system_review_service)
+        self.ai_text_self_upgrade_repository = AITextSelfUpgradeRepository(
+            self.system_observability_dir / "ai_text_self_upgrade.sqlite"
+        )
 
         self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
@@ -458,11 +466,18 @@ class EditorPluginNewsGenService:
         )
 
         self.search_ai_client = self._build_search_ai_client()
+        self.ai_text_self_upgrade_service = AITextSelfUpgradeService(
+            storage_settings.sqlite_path,
+            self.ai_text_self_upgrade_repository,
+            self.search_ai_client,
+        )
+        self.ai_text_self_upgrade_worker = AITextSelfUpgradeWorker(self.ai_text_self_upgrade_service)
         self.embedding_service = self._build_embedding_service()
         self.feed_syncer.start()
         self.pipeline_timing_snapshots.start()
         self.system_information_projector.start()
         self.system_review_worker.start()
+        self.ai_text_self_upgrade_worker.start()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
         api_key = self.x_settings.search_ai_review_openai_api_key or self.x_settings.openai_api_key
@@ -512,6 +527,7 @@ class EditorPluginNewsGenService:
     def close(self) -> None:
         self.system_information_projector.stop()
         self.system_review_worker.stop()
+        self.ai_text_self_upgrade_worker.stop()
         self.pipeline_timing_snapshots.stop()
         self.feed_syncer.stop()
         self.hottopic.close()
@@ -680,6 +696,27 @@ class EditorPluginNewsGenService:
             except ValueError as exc:
                 raise EditorPluginApiError(str(exc)) from exc
         raise EditorPluginApiError("不支持的系统巡检操作")
+
+    def execute_ai_text_self_upgrade(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "list")
+        try:
+            if action == "list":
+                return self.ai_text_self_upgrade_repository.list_items(payload)
+            case_key = str(payload.get("case_key") or "").strip()
+            if not case_key:
+                raise EditorPluginApiError("case_key 不能为空")
+            if action == "detail":
+                return {"item": self.ai_text_self_upgrade_repository.detail(case_key)}
+            if action == "decide":
+                return {"item": self.ai_text_self_upgrade_repository.decide(
+                    case_key,
+                    decision=str(payload.get("decision") or ""),
+                    actor=actor.email,
+                    note=str(payload.get("note") or ""),
+                )}
+            raise EditorPluginApiError("不支持的AI文本自我升级操作")
+        except ValueError as exc:
+            raise EditorPluginApiError(str(exc)) from exc
 
     def get_business_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
@@ -1483,6 +1520,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/ai-review",
         "/console/system-information",
         "/console/system-review",
+        "/console/ai-text-self-upgrade",
         "/console/business-news/get",
         "/console/business-news/groups/save",
         "/console/hottopic/dashboard",
@@ -1743,6 +1781,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/system-review":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_system_review(actor, self._read_json())})
+                    return
+                if self.path == "/console/ai-text-self-upgrade":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.execute_ai_text_self_upgrade(actor, self._read_json())})
                     return
                 if self.path == "/console/business-news/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_business_news(actor, self._read_json())})

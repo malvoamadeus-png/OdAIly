@@ -1458,6 +1458,82 @@ export async function decideSystemReviewItem(itemKey: string, decision: 'accepte
   return result.item;
 }
 
+export type AITextSelfUpgradeItem = {
+  case_key: string;
+  source_item_id: string;
+  content_hash: string;
+  audit_prompt_version: string | null;
+  audit_model: string | null;
+  audited_title: string | null;
+  audited_content: string;
+  audit_result: { summary?: string; issues?: Array<Record<string, unknown>> };
+  published_at: string | null;
+  source_url: string | null;
+  source_title: string | null;
+  source_content: string;
+  task_id: number;
+  writer_model: string | null;
+  prompt_template_key: string | null;
+  prompt_version_id: number | null;
+  draft_title: string | null;
+  draft_content: string | null;
+  final_title: string | null;
+  final_content: string | null;
+  analysis_status: 'pending' | 'processing' | 'completed' | 'failed';
+  analysis_model: string | null;
+  verdict: 'writer1_error' | 'auditor_false_positive' | null;
+  confidence: 'low' | 'medium' | 'high' | null;
+  rationale: string | null;
+  evidence: Array<{ location: string; quote: string; explanation: string }>;
+  analysis_error: string | null;
+  attempt_count: number;
+  human_decision: 'pending' | 'accepted' | 'rejected' | 'ignored';
+  decision_by: string | null;
+  decision_note: string | null;
+  decided_at: string | null;
+  created_at: string;
+  decisions?: Array<{ decision: string; actor: string; note: string; decided_at: string }>;
+};
+
+export type AITextSelfUpgradePage = {
+  items: AITextSelfUpgradeItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  accepted_count: number;
+  latest_run: {
+    run_key: string;
+    status: string;
+    started_at: string;
+    completed_at: string | null;
+    cases_found: number;
+    cases_completed: number;
+    cases_failed: number;
+    cases_unlinked: number;
+    error: string | null;
+  } | null;
+};
+
+export async function listAITextSelfUpgradeItems(filters: { status?: string; offset?: number; limit?: number } = {}) {
+  return consoleApiPost<AITextSelfUpgradePage>('/console/ai-text-self-upgrade', { action: 'list', ...filters });
+}
+
+export async function getAITextSelfUpgradeItem(caseKey: string) {
+  const result = await consoleApiPost<{ item: AITextSelfUpgradeItem }>('/console/ai-text-self-upgrade', { action: 'detail', case_key: caseKey });
+  return result.item;
+}
+
+export async function decideAITextSelfUpgradeItem(
+  caseKey: string,
+  decision: 'accepted' | 'rejected' | 'ignored',
+  note: string,
+) {
+  const result = await consoleApiPost<{ item: AITextSelfUpgradeItem }>('/console/ai-text-self-upgrade', {
+    action: 'decide', case_key: caseKey, decision, note,
+  });
+  return result.item;
+}
+
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {
   const {
     data: { subscription },
