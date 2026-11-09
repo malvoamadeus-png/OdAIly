@@ -356,6 +356,7 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         _validate_action_chronology(draft, event)
         return draft
     title = draft.title.strip()
+    original_title = title
     evidence = event['evidence']
     all_time = evidence.get('history', {}).get('official_account_performance', {}).get('windows', {}).get('allTime')
     threshold = number(evidence.get('threshold_rules', {}).get('account_profit', '20000000'))
@@ -397,6 +398,10 @@ def normalize_account_copy(draft: DraftBrief, event: dict[str, Any]) -> DraftBri
         coin = str(event.get('coin', '')).rsplit(':', 1)[-1]
         if not re.search(r'清仓|空仓|已无.*仓位', content):
             content = content.rstrip('。！？') + f'。其已无{coin}仓位。'
+    if (account and '地址' in original_title
+            and re.sub(r'\s+', '', title) == re.sub(r'\s+', '', content)):
+        # Prefix normalization must not turn a distinct model headline into a duplicate body.
+        title = original_title
     _validate_action_chronology(DraftBrief(title=title, content=content), event)
     return DraftBrief(title=title, content=content)
 

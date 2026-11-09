@@ -7,7 +7,7 @@ from decimal import Decimal as D
 
 from packages.common.config import XProcessingSettings
 from packages.common.storage import connect_sqlite
-from packages.hyperliquid_news.copy import format_news, source_url
+from packages.hyperliquid_news.copy import format_news, normalize_account_copy, source_url
 from packages.hyperliquid_news.dashboard import dashboard
 from packages.hyperliquid_news.detector import evaluate_address
 from packages.hyperliquid_news.dispatch import EventDispatcher
@@ -18,6 +18,8 @@ from packages.publisher.push_client import PushResult
 from packages.x_processing.models import DraftBrief, HYPERLIQUID_SOURCE, PipelineRecord, TaskRecord
 from packages.x_processing.repository import InMemoryXProcessingRepository
 from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
+from packages.x_processing.formatter import parse_draft_output
+from packages.x_processing.title_trace import parse_structured_writer_output
 from packages.x_processing.worker import XProcessingWorker
 
 A = '0x'+'1'*40
@@ -109,6 +111,34 @@ def test_account_profit_copy_removes_disclaimer_adds_title_subject_and_uses_fres
     assert result.title == '总盈利约2,867万美元，某地址平仓BTC空单后加仓约835万美元'
     assert '官方口径含浮盈亏' not in result.content
     assert result.content.endswith(f'地址：{A}；总盈亏：盈利约2,867万美元')
+
+
+def test_account_title_normalization_does_not_create_duplicate_body():
+    event = {
+        'addresses': [A],
+        'kinds': ['highlighted_address_action'],
+        'evidence': {
+            'highlights': ['official_account_high_profit'],
+            'threshold_rules': {'account_profit': '20000000'},
+            'history': {'official_account_performance': {'windows': {
+                'allTime': {'pnl': '215000000'},
+            }}},
+        },
+    }
+    model_output = json.dumps({
+        'title': '合约账户累计收益约2.15亿美元，某地址减少约302 万美元ETH空单',
+        'content': '总盈利约2.15亿美元，某地址减少约302万美元ETH空单',
+    }, ensure_ascii=False)
+
+    parsed = parse_structured_writer_output(
+        model_output,
+        known_subjects=[],
+        feature_mode_enabled=False,
+    )
+    normalized = normalize_account_copy(parsed.draft, event)
+
+    assert normalized.title == '合约账户累计收益约2.15亿美元，某地址减少约302 万美元ETH空单'
+    assert parse_draft_output(f'{normalized.title}\n\n{normalized.content}') == normalized
 
 
 def test_hyperliquid_bypasses_judge_search_and_forces_backend_even_if_profiles_enabled():
