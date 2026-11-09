@@ -64,7 +64,7 @@ BUSINESS_REGISTRY: tuple[dict[str, object], ...] = (
         {"key": "topic", "label": "热点追踪", "steps": ["发现和合并相关帖子", "按热点规则持续跟踪进展", "生成热点摘要并保留来源证据", "内部研究完成为正常终点"]},
         {"key": "auto_newsflash", "label": "热点自动快讯", "steps": ["筛选热点事件", "组织官方账号与进展材料", "生成候选稿并保存投递/后台结果"]},
         {"key": "sentiment", "label": "市场情绪", "steps": ["收集样本", "完成情绪分析", "保存内部研究结果，不视为漏发"]},
-        {"key": "promotion", "label": "项目推介", "steps": ["收集项目材料", "评估并生成推介结果", "保存证据和人工处理状态"]},
+        {"key": "promotion", "label": "按头操作", "steps": ["收集帖子", "分别判断直接推介与有明确获利来源的操作建议", "保存两类判断和原帖证据"]},
         {"key": "investment", "label": "投资线索", "steps": ["发现候选帖子", "关联后续材料并检查证据", "完成组合分析或明确等待", "保存线索结论和来源链"]},
     ]},
     {"key": "editor_plugin", "label": "编辑插件辅助", "kind": "editor_assist", "sources": ["editor_plugin"], "entry": "编辑器生成请求", "scenarios": [

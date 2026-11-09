@@ -27,6 +27,7 @@ import {
   type XAgentInvestmentLead,
   type XAgentInvestmentLeadDetail,
   type XAgentInvestmentLeadsStatus,
+  type XAgentOperationAdvice,
   type XAgentPage,
   type XAgentProjectPromotionDetailItem,
   type XAgentProjectPromotionItem,
@@ -293,12 +294,28 @@ function ProjectDetail({
         <article className="xAgentPostItem" key={item.id}>
           <div className="xAgentPostMeta"><strong>@{item.account}</strong><time>{formatTime(item.lastMentionedAt)}</time>{item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer" title="打开原帖" aria-label={`打开 ${item.account} 的原帖`}><ExternalLink size={15} /></a>}</div>
           <p>{item.sourceText}</p>
-          {item.logic && <footer><span>{item.logic}</span></footer>}
+          {(item.directPromotions ?? []).length > 0 && <div className="xAgentSignalStack">{item.directPromotions?.map((promotion, index) => <div className="xAgentSignal" key={`direct-${index}`}><strong>直接推介 · {promotion.stance}</strong><span>{promotion.logic}</span></div>)}</div>}
+          {(item.operationAdvices ?? []).length > 0 && <div className="xAgentSignalStack">{item.operationAdvices?.map((advice, index) => <OperationAdviceFields advice={advice} key={`operation-${index}`} />)}</div>}
+          {(item.legacyLogic || item.logic) && <div className="xAgentLegacySignal"><strong>历史项目观察</strong><span>{item.legacyLogic || item.logic}</span></div>}
         </article>
       ))}
       <PageControls offset={offset} total={detail.total} disabled={loading} onChange={onOffsetChange} />
     </div>
   );
+}
+
+function OperationAdviceFields({ advice }: { advice: XAgentOperationAdvice }) {
+  const fields: Array<[string, string]> = [
+    ['操作', advice.action],
+    ['路径', advice.route],
+    ['获利来源', advice.profitSource],
+    ['作者声称收益', advice.claimedReturn],
+    ['费用', advice.fees],
+    ['限制', advice.constraints],
+    ['风险', advice.risks],
+    ['有效时段', advice.validUntil],
+  ];
+  return <div className="xAgentSignal"><strong>操作建议</strong>{fields.filter(([, value]) => value).map(([label, value]) => <span key={label}><em>{label}</em>{value}</span>)}</div>;
 }
 
 function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; onChanged: () => void }) {
@@ -643,7 +660,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         setProjectTotal(page.total);
         setProjectError('');
       }).catch((cause) => {
-        if (active) setProjectError(cause instanceof Error ? cause.message : '无法读取项目推介');
+        if (active) setProjectError(cause instanceof Error ? cause.message : '无法读取按头操作');
       }).finally(() => {
         if (active) setProjectLoading(false);
       });
@@ -948,7 +965,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           ['auto_newsflash', '热点自动快讯'],
           ['accounts', '账号目录'],
           ['market_sentiment', '市场情绪'],
-          ['project_promotion', '项目推介'],
+          ['project_promotion', '按头操作'],
           ['investment_leads', '投资线索'],
         ] as Array<[XAgentTab, string]>).map(([key, label]) => (
           <button key={key} className={tab === key ? 'active' : ''} type="button" role="tab" aria-selected={tab === key} onClick={() => selectTab(key)}>{label}</button>
@@ -966,7 +983,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         <Metric label="账号" value={dashboard.accounts.total} />
         <Metric label="热点话题" value={dashboard.accounts.hotTopicEnabled} />
         <Metric label="情绪订阅账号" value={dashboard.accounts.marketSentimentEnabled} onClick={() => openSubscribedAccounts('market_sentiment')} />
-        <Metric label="推介订阅账号" value={dashboard.accounts.projectPromotionEnabled} onClick={() => openSubscribedAccounts('project_promotion')} />
+        <Metric label="按头操作订阅账号" value={dashboard.accounts.projectPromotionEnabled} onClick={() => openSubscribedAccounts('project_promotion')} />
         <Metric label="投资线索订阅账号" value={dashboard.accounts.investmentLeadsEnabled} onClick={() => openSubscribedAccounts('investment_leads')} />
         <Metric label="待处理" value={dashboard.jobs.pending} />
         <Metric label="失败" value={dashboard.jobs.failed + dashboard.accounts.errors} warning={dashboard.jobs.failed + dashboard.accounts.errors > 0} />
@@ -993,7 +1010,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               ['all', '全部'],
               ['hot_topic', '热点话题'],
               ['market_sentiment', '市场情绪'],
-              ['project_promotion', '项目推介'],
+              ['project_promotion', '按头操作'],
               ['investment_leads', '投资线索'],
             ] as Array<['all' | XAgentAccountModule, string]>).map(([value, label]) => <button key={value} className={accountModule === value ? 'active' : ''} type="button" onClick={() => { setAccountModule(value); setAccountOffset(0); }}>{label}</button>)}
           </div>
@@ -1009,13 +1026,13 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <span>当前页 {accounts.length.toLocaleString()} 个账号</span>
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('hotTopicEnabled', true)}><Flame size={15} /> 开启热点</button>
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('marketSentimentEnabled', true)}><TrendingUp size={15} /> 开启情绪</button>
-          <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('projectPromotionEnabled', true)}><Rocket size={15} /> 开启推介</button>
+          <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('projectPromotionEnabled', true)}><Rocket size={15} /> 开启按头操作</button>
           <button className="secondaryButton compact" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription('investmentLeadsEnabled', true)}><ChartLine size={15} /> 开启投资线索</button>
-          {accountModule !== 'all' && <button className="secondaryButton compact danger" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription(MODULE_FIELD[accountModule], false)}><Power size={15} /> 关闭本页{accountModule === 'hot_topic' ? '热点' : accountModule === 'market_sentiment' ? '情绪' : accountModule === 'project_promotion' ? '推介' : '投资线索'}订阅</button>}
+          {accountModule !== 'all' && <button className="secondaryButton compact danger" type="button" disabled={batchDisabled} onClick={() => void applyBatchSubscription(MODULE_FIELD[accountModule], false)}><Power size={15} /> 关闭本页{accountModule === 'hot_topic' ? '热点' : accountModule === 'market_sentiment' ? '情绪' : accountModule === 'project_promotion' ? '按头操作' : '投资线索'}订阅</button>}
         </div>
         {accountsError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {accountsError}</div>}
         <div className="xAgentTableWrap" role="table">
-          <div className="xAgentAccountHead" role="row"><span>账号</span><span title="累计去重收录的发言条数，不随短期原帖清理减少">收录发言</span><span title="包含该账号的不同永久热点话题数">热点包含数</span><span>热点话题</span><span>市场情绪</span><span>项目推介</span><span>投资线索</span><span>最近采集</span><span>最近分析</span></div>
+          <div className="xAgentAccountHead" role="row"><span>账号</span><span title="累计去重收录的发言条数，不随短期原帖清理减少">收录发言</span><span title="包含该账号的不同永久热点话题数">热点包含数</span><span>热点话题</span><span>市场情绪</span><span>按头操作</span><span>投资线索</span><span>最近采集</span><span>最近分析</span></div>
           {!accountsLoading && accounts.length === 0 && <div className="emptyState">没有匹配的账号。</div>}
           {accounts.map((account) => {
             const accountError = combineErrors(account);
@@ -1025,7 +1042,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               <span>{account.cumulativeHotTopicCount?.toLocaleString() ?? '-'}</span>
               <AccountSubscriptionToggle account={account} field="hotTopicEnabled" label="热点话题" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'hotTopicEnabled'))} onChange={saveSubscriptionChange} />
               <AccountSubscriptionToggle account={account} field="marketSentimentEnabled" label="市场情绪" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'marketSentimentEnabled'))} onChange={saveSubscriptionChange} />
-              <AccountSubscriptionToggle account={account} field="projectPromotionEnabled" label="项目推介" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'projectPromotionEnabled'))} onChange={saveSubscriptionChange} />
+              <AccountSubscriptionToggle account={account} field="projectPromotionEnabled" label="按头操作" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'projectPromotionEnabled'))} onChange={saveSubscriptionChange} />
               <AccountSubscriptionToggle account={account} field="investmentLeadsEnabled" label="投资线索" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'investmentLeadsEnabled'))} onChange={saveSubscriptionChange} />
               <span>{formatTime(account.lastSuccessAt || account.lastPolledAt)}</span>
               <span>{formatTime(account.lastAnalyzedAt)}</span>
@@ -1059,19 +1076,22 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       </section>}
 
       {tab === 'project_promotion' && <section className="xAgentTableSection">
-        <div className="sectionHeader"><div><h2>项目推介</h2><span>项目与账号表达的逻辑</span></div><span>{projectLoading ? '加载中' : `${projectTotal.toLocaleString()} 个项目`}</span></div>
+        <div className="sectionHeader"><div><h2>按头操作</h2><span>分别判断直接推介，以及有明确获利来源的操作建议</span></div><span>{projectLoading ? '加载中' : `${projectTotal.toLocaleString()} 个项目`}</span></div>
         <div className="xAgentFilters xAgentResultFilters">
           <label><Search size={16} /><input value={projectQuery} onChange={(event) => { setProjectQuery(event.target.value); setProjectOffset(0); setProjectSelectedKey(null); }} placeholder="搜索项目或代币" /></label>
           <select value={projectWindow} onChange={(event) => { setProjectWindow(event.target.value); setProjectOffset(0); setProjectSelectedKey(null); }}>{PROJECT_WINDOW_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
         </div>
         {projectError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {projectError}</div>}
         <div className="xAgentTableWrap" role="table">
-          <div className="xAgentProjectHead" role="row"><span>项目</span><span>链 / 合约</span><span>逻辑</span><span>最近提及</span></div>
+          <div className="xAgentProjectHead" role="row"><span>项目</span><span>链 / 合约</span><span>直接推介</span><span>操作建议</span><span>最近提及</span></div>
           {!projectLoading && projectItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前窗口暂无运行时观察。</span><div className="inlineActions"><button className="secondaryButton compact" type="button" onClick={() => { setProjectWindow('7d'); setProjectOffset(0); setProjectSelectedKey(null); }}>查看近 7 天</button><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('project_promotion')}>查看 {dashboard?.accounts.projectPromotionEnabled ?? 0} 个订阅账号</button></div></div>}
           {projectItems.map((item) => <div key={item.identityKey} className="xAgentResultGroup">
             <div className={projectSelectedKey === item.identityKey ? 'xAgentProjectRow active' : 'xAgentProjectRow'} role="row">
               <button className="xAgentDetailTrigger" type="button" aria-expanded={projectSelectedKey === item.identityKey} onClick={() => toggleProjectDetail(item.identityKey)}><ChevronDown size={16} className={projectSelectedKey === item.identityKey ? 'rotated' : ''} /><span><strong>{item.projectName}</strong>{item.ticker && <small>{item.ticker}</small>}</span></button>
-              <span className="xAgentContract" title={item.contractAddress || ''}>{[item.chainName, item.contractAddress].filter(Boolean).join(' · ') || '-'}</span><span className="xAgentReason">{item.logic || '-'}</span><span>{formatTime(item.lastMentionedAt)}</span>
+              <span className="xAgentContract" title={item.contractAddress || ''}>{[item.chainName, item.contractAddress].filter(Boolean).join(' · ') || '-'}</span>
+              {item.directPromotion ? <span className="xAgentSignalSummary"><strong>{item.directPromotion.stance}</strong>{item.directPromotion.logic}</span> : (item.legacyLogic || item.logic) ? <span className="xAgentLegacySignal"><strong>历史项目观察</strong>{item.legacyLogic || item.logic}</span> : <span className="xAgentSignalEmpty">-</span>}
+              {item.operationAdvice ? <span className="xAgentSignalSummary"><strong>{item.operationAdvice.action}</strong><small>获利来源：{item.operationAdvice.profitSource}</small></span> : <span className="xAgentSignalEmpty">-</span>}
+              <span>{formatTime(item.lastMentionedAt)}</span>
             </div>
             {projectSelectedKey === item.identityKey && <ProjectDetail detail={projectDetail} loading={projectDetailLoading} error={projectDetailError} offset={projectDetailOffset} onOffsetChange={setProjectDetailOffset} />}
           </div>)}

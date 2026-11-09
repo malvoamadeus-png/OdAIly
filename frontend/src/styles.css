@@ -267,8 +267,8 @@ button.xAgentMetric {
 
 .xAgentProjectHead,
 .xAgentProjectRow {
-  grid-template-columns: 180px 180px minmax(0, 1fr) 124px;
-  min-width: 0;
+  grid-template-columns: 170px 150px minmax(200px, 1.1fr) minmax(260px, 1.4fr) 124px;
+  min-width: 980px;
 }
 
 .xAgentAccountHead,
@@ -597,6 +597,62 @@ button.xAgentMetric {
 .xAgentContract {
   color: #68757e;
   font-size: 12px;
+}
+
+.xAgentSignalSummary,
+.xAgentSignal {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: #53616a;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.xAgentSignalSummary strong,
+.xAgentSignal > strong,
+.xAgentLegacySignal > strong {
+  color: #263b3a;
+  font-size: 12px;
+}
+
+.xAgentSignalSummary small {
+  color: #53616a;
+  font-size: 12px;
+}
+
+.xAgentSignalEmpty {
+  color: #87939a;
+}
+
+.xAgentSignalStack {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.xAgentSignal {
+  padding-left: 10px;
+  border-left: 2px solid #82b9a7;
+}
+
+.xAgentSignal > span {
+  display: block;
+}
+
+.xAgentSignal em {
+  margin-right: 6px;
+  color: #738087;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.xAgentLegacySignal {
+  display: grid;
+  gap: 4px;
+  color: #6c777e;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .xAgentPostList,

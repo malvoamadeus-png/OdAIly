@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS x_agent_project_observations (
   official_url TEXT NOT NULL DEFAULT '',
   logic TEXT NOT NULL,
   logic_hash TEXT NOT NULL,
+  direct_promotion_json TEXT,
+  operation_advice_json TEXT,
   account_lower TEXT NOT NULL,
   source_tweet_id TEXT NOT NULL,
   source_url TEXT NOT NULL,
@@ -453,6 +455,12 @@ class HotTopicService:
                 if name not in columns:
                     self.db.execute(f"ALTER TABLE hottopic_accounts ADD COLUMN {name} {definition}")
             self.db.executescript(X_AGENT_SCHEMA)
+            project_columns = {
+                row["name"] for row in self.db.execute("PRAGMA table_info(x_agent_project_observations)").fetchall()
+            }
+            for name in ("direct_promotion_json", "operation_advice_json"):
+                if name not in project_columns:
+                    self.db.execute(f"ALTER TABLE x_agent_project_observations ADD COLUMN {name} TEXT")
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS hottopic_migrations(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL)"
             )
@@ -1490,20 +1498,28 @@ class HotTopicService:
         posted_at = str(source.get("created_at_iso") or at)
         for item in result.items:
             identity = self._project_identity(item, tweet_id)
-            logic_hash = hashlib.sha256(" ".join(str(item["logic"]).lower().split()).encode("utf-8")).hexdigest()
+            direct_json = json.dumps(item["direct_promotion"], ensure_ascii=False, sort_keys=True) if item.get("direct_promotion") else None
+            operation_json = json.dumps(item["operation_advice"], ensure_ascii=False, sort_keys=True) if item.get("operation_advice") else None
+            identity_payload = json.dumps(
+                {"logic": " ".join(str(item["logic"]).lower().split()), "direct": direct_json, "operation": operation_json},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            logic_hash = hashlib.sha256(identity_payload.encode("utf-8")).hexdigest()
             self.db.execute(
                 "INSERT INTO x_agent_project_observations("
-                "identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,logic_hash,account_lower,"
+                "identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,logic_hash,direct_promotion_json,operation_advice_json,account_lower,"
                 "source_tweet_id,source_url,source_text,first_mentioned_at,last_mentioned_at,actual_model,fallback_reason,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(identity_key,account_lower,logic_hash) DO UPDATE SET "
                 "project_name=excluded.project_name,ticker=excluded.ticker,chain_name=excluded.chain_name,"
                 "contract_address=excluded.contract_address,official_url=excluded.official_url,logic=excluded.logic,"
+                "direct_promotion_json=excluded.direct_promotion_json,operation_advice_json=excluded.operation_advice_json,"
                 "source_tweet_id=excluded.source_tweet_id,source_url=excluded.source_url,source_text=excluded.source_text,"
                 "last_mentioned_at=excluded.last_mentioned_at,actual_model=excluded.actual_model,fallback_reason=excluded.fallback_reason,updated_at=excluded.updated_at",
                 (
                     identity, item["project_name"], item["ticker"], item["chain"], item["contract_address"], item["official_url"],
-                    item["logic"], logic_hash, account, tweet_id, source_url, source_text, posted_at, posted_at,
+                    item["logic"], logic_hash, direct_json, operation_json, account, tweet_id, source_url, source_text, posted_at, posted_at,
                     result.actual_model, result.fallback_reason, at, at,
                 ),
             )
@@ -1717,13 +1733,18 @@ class HotTopicService:
         cutoff = self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)})
         safe_offset, safe_limit = self._page(offset, limit)
         params: list[Any] = [cutoff]
-        where = ""
+        conditions: list[str] = []
         if query.strip():
-            where = " WHERE LOWER(project_name || ' ' || ticker || ' ' || logic) LIKE ?"
+            conditions.append(
+                "LOWER(project_name || ' ' || ticker || ' ' || COALESCE(legacy_logic,'') || ' ' || "
+                "COALESCE(direct_promotion_json,'') || ' ' || COALESCE(operation_advice_json,'')) LIKE ?"
+            )
             params.append(f"%{query.strip().lower()}%")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         cte = self._project_identity_cte() + """
             , filtered AS (
-              SELECT id,merged_identity_key AS identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,account_lower,last_mentioned_at
+              SELECT id,merged_identity_key AS identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,
+                direct_promotion_json,operation_advice_json,account_lower,last_mentioned_at
               FROM identified WHERE last_mentioned_at>=?
             ), grouped AS (
               SELECT identity_key,COUNT(*) AS source_count,COUNT(DISTINCT account_lower) AS account_count,
@@ -1732,24 +1753,68 @@ class HotTopicService:
             ), latest AS (
               SELECT *,ROW_NUMBER() OVER (PARTITION BY identity_key ORDER BY last_mentioned_at DESC,id DESC) AS row_number
               FROM filtered
+            ), direct_latest AS (
+              SELECT *,ROW_NUMBER() OVER (PARTITION BY identity_key ORDER BY last_mentioned_at DESC,id DESC) AS row_number
+              FROM filtered WHERE direct_promotion_json IS NOT NULL
+            ), operation_latest AS (
+              SELECT *,ROW_NUMBER() OVER (PARTITION BY identity_key ORDER BY last_mentioned_at DESC,id DESC) AS row_number
+              FROM filtered WHERE operation_advice_json IS NOT NULL
+            ), legacy_latest AS (
+              SELECT *,ROW_NUMBER() OVER (PARTITION BY identity_key ORDER BY last_mentioned_at DESC,id DESC) AS row_number
+              FROM filtered WHERE direct_promotion_json IS NULL AND operation_advice_json IS NULL
             ), result_rows AS (
-              SELECT l.identity_key,l.project_name,l.ticker,l.chain_name,COALESCE(NULLIF(l.contract_address,''),g.contract_address) AS contract_address,l.official_url,l.logic,
+              SELECT l.identity_key,l.project_name,l.ticker,l.chain_name,COALESCE(NULLIF(l.contract_address,''),g.contract_address) AS contract_address,
+                l.official_url,l.logic,d.direct_promotion_json,o.operation_advice_json,h.logic AS legacy_logic,
                 g.account_count,g.source_count,g.last_mentioned_at
               FROM grouped g JOIN latest l ON l.identity_key=g.identity_key AND l.row_number=1
+              LEFT JOIN direct_latest d ON d.identity_key=g.identity_key AND d.row_number=1
+              LEFT JOIN operation_latest o ON o.identity_key=g.identity_key AND o.row_number=1
+              LEFT JOIN legacy_latest h ON h.identity_key=g.identity_key AND h.row_number=1
             )
         """
         total = int(self.db.execute(f"{cte} SELECT COUNT(*) FROM result_rows{where}", params).fetchone()[0])
         rows = self.db.execute(
-            f"{cte} SELECT identity_key,project_name,ticker,chain_name,contract_address,official_url,logic,account_count,source_count,last_mentioned_at "
+            f"{cte} SELECT identity_key,project_name,ticker,chain_name,contract_address,official_url,direct_promotion_json,operation_advice_json,legacy_logic,last_mentioned_at "
             f"FROM result_rows{where} ORDER BY last_mentioned_at DESC LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
         return {"items": [{
             "identityKey": row["identity_key"], "projectName": row["project_name"], "ticker": row["ticker"],
             "chainName": row["chain_name"], "contractAddress": row["contract_address"], "officialUrl": row["official_url"],
-            "logic": row["logic"],
+            "directPromotion": self._project_json_object(row["direct_promotion_json"]),
+            "operationAdvice": self._project_operation_advice(row["operation_advice_json"]),
+            "legacyLogic": row["legacy_logic"],
+            "logic": row["legacy_logic"],
             "lastMentionedAt": row["last_mentioned_at"],
         } for row in rows], "total": total}
+
+    @staticmethod
+    def _project_json_object(value: str | None) -> dict[str, Any] | None:
+        if not value:
+            return None
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _project_operation_advice(value: str | None) -> dict[str, str] | None:
+        parsed = HotTopicService._project_json_object(value)
+        return HotTopicService._format_project_operation_advice(parsed) if parsed is not None else None
+
+    @staticmethod
+    def _format_project_operation_advice(value: dict[str, Any]) -> dict[str, str]:
+        return {
+            "action": str(value.get("action") or ""),
+            "route": str(value.get("route") or ""),
+            "profitSource": str(value.get("profit_source") or ""),
+            "claimedReturn": str(value.get("claimed_return") or ""),
+            "fees": str(value.get("fees") or ""),
+            "constraints": str(value.get("constraints") or ""),
+            "risks": str(value.get("risks") or ""),
+            "validUntil": str(value.get("valid_until") or ""),
+        }
 
     @staticmethod
     def _project_identity_cte() -> str:
@@ -1800,20 +1865,34 @@ class HotTopicService:
               UNION
               SELECT DISTINCT merged_identity_key FROM identified WHERE 'tweet:' || source_tweet_id=?
             ), filtered AS (
-              SELECT i.id,i.account_lower,i.source_url,i.source_text,i.source_tweet_id,i.logic,i.last_mentioned_at,i.actual_model,i.fallback_reason
+              SELECT i.id,i.account_lower,i.source_url,i.source_text,i.source_tweet_id,i.logic,i.direct_promotion_json,
+                i.operation_advice_json,i.last_mentioned_at,i.actual_model,i.fallback_reason
               FROM identified i JOIN selected_groups g ON g.merged_identity_key=i.merged_identity_key
               WHERE i.last_mentioned_at>=?
-            ), logic_groups AS (
+            ), legacy_groups AS (
               SELECT source_tweet_id,group_concat(logic,'；') AS logic
-              FROM (SELECT DISTINCT source_tweet_id,logic FROM filtered)
+              FROM (SELECT DISTINCT source_tweet_id,logic FROM filtered
+                WHERE direct_promotion_json IS NULL AND operation_advice_json IS NULL)
+              GROUP BY source_tweet_id
+            ), direct_groups AS (
+              SELECT source_tweet_id,group_concat(direct_promotion_json) AS direct_promotions
+              FROM (SELECT DISTINCT source_tweet_id,direct_promotion_json FROM filtered WHERE direct_promotion_json IS NOT NULL)
+              GROUP BY source_tweet_id
+            ), operation_groups AS (
+              SELECT source_tweet_id,group_concat(operation_advice_json) AS operation_advices
+              FROM (SELECT DISTINCT source_tweet_id,operation_advice_json FROM filtered WHERE operation_advice_json IS NOT NULL)
               GROUP BY source_tweet_id
             ), latest AS (
               SELECT *,ROW_NUMBER() OVER (PARTITION BY source_tweet_id ORDER BY last_mentioned_at DESC,id DESC) AS row_number
               FROM filtered
             ), result_rows AS (
-              SELECT l.id,l.account_lower,l.source_url,l.source_text,l.source_tweet_id,g.logic,l.last_mentioned_at,
+              SELECT l.id,l.account_lower,l.source_url,l.source_text,l.source_tweet_id,h.logic,
+                d.direct_promotions,o.operation_advices,l.last_mentioned_at,
                 l.actual_model,l.fallback_reason
-              FROM latest l JOIN logic_groups g ON g.source_tweet_id=l.source_tweet_id
+              FROM latest l
+              LEFT JOIN legacy_groups h ON h.source_tweet_id=l.source_tweet_id
+              LEFT JOIN direct_groups d ON d.source_tweet_id=l.source_tweet_id
+              LEFT JOIN operation_groups o ON o.source_tweet_id=l.source_tweet_id
               WHERE l.row_number=1
             )
         """
@@ -1822,16 +1901,32 @@ class HotTopicService:
             (identity_key, identity_key, identity_key, cutoff),
         ).fetchone()[0])
         rows = self.db.execute(
-            f"{cte} SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,last_mentioned_at,actual_model,fallback_reason "
+            f"{cte} SELECT id,account_lower,source_url,source_text,source_tweet_id,logic,direct_promotions,operation_advices,last_mentioned_at,actual_model,fallback_reason "
             "FROM result_rows ORDER BY last_mentioned_at DESC,id DESC LIMIT ? OFFSET ?",
             (identity_key, identity_key, identity_key, cutoff, safe_limit, safe_offset),
         ).fetchall()
         return {"items": [{
             "id": row["id"], "account": row["account_lower"], "sourceUrl": row["source_url"],
-            "sourceText": row["source_text"], "sourceTweetId": row["source_tweet_id"], "logic": row["logic"],
+            "sourceText": row["source_text"], "sourceTweetId": row["source_tweet_id"], "legacyLogic": row["logic"],
+            "logic": row["logic"],
+            "directPromotions": self._project_json_array(row["direct_promotions"]),
+            "operationAdvices": [
+                self._format_project_operation_advice(item)
+                for item in self._project_json_array(row["operation_advices"])
+            ],
             "lastMentionedAt": row["last_mentioned_at"], "actualModel": row["actual_model"],
             "fallbackReason": row["fallback_reason"],
         } for row in rows], "total": total}
+
+    @staticmethod
+    def _project_json_array(value: str | None) -> list[dict[str, Any]]:
+        if not value:
+            return []
+        try:
+            parsed = json.loads(f"[{value}]")
+        except (TypeError, ValueError):
+            return []
+        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
 
     @_serialized
     def _refresh_hot_topic_counts(self) -> None:

@@ -549,6 +549,22 @@ export type XAgentMarketSentimentHistory = {
   items: XAgentMarketSentimentSnapshot[];
 };
 
+export type XAgentDirectPromotion = {
+  stance: '看多' | '建议关注' | '建议买入';
+  logic: string;
+};
+
+export type XAgentOperationAdvice = {
+  action: string;
+  route: string;
+  profitSource: string;
+  claimedReturn: string;
+  fees: string;
+  constraints: string;
+  risks: string;
+  validUntil: string;
+};
+
 export type XAgentProjectPromotionItem = {
   identityKey: string;
   projectName: string;
@@ -556,7 +572,10 @@ export type XAgentProjectPromotionItem = {
   chainName: string | null;
   contractAddress: string | null;
   officialUrl: string | null;
-  logic: string | null;
+  directPromotion: XAgentDirectPromotion | null;
+  operationAdvice: XAgentOperationAdvice | null;
+  legacyLogic: string | null;
+  logic?: string | null;
   lastMentionedAt: string | null;
 };
 
@@ -575,7 +594,10 @@ export type XAgentProjectPromotionDetailItem = {
   account: string;
   sourceUrl: string | null;
   sourceText: string;
-  logic: string | null;
+  legacyLogic: string | null;
+  directPromotions?: XAgentDirectPromotion[];
+  operationAdvices?: XAgentOperationAdvice[];
+  logic?: string | null;
   lastMentionedAt: string | null;
 };
 

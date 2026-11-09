@@ -17,19 +17,24 @@ MARKET_SIGNALS = re.compile(
     r"bullish|bearish|option|futures|perp)\b|看多|看空|仓位|买入|卖出|美股|纳指|标普|联储|利率)",
     re.IGNORECASE,
 )
-# Project promotion is Crypto-only. Generic AI/product words such as
-# "token", "launch", "protocol", and "contract" are not enough to spend a
-# model request.
+# Generic AI/product words such as "token", "launch", "protocol", and
+# "contract" are not enough to spend a model request.
 PROJECT_CRYPTO_SIGNALS = re.compile(
     r"(?:0x[a-fA-F0-9]{8,}|\b(?:airdrop|tge|fdv|tvl|degen|tokenomics|launchpad|staking|"
     r"mainnet|testnet|onchain|blockchain|web3|crypto|defi|dex|cex|memecoin|meme\s*coin|"
     r"smart\s*contract|liquidity\s*pool|solana|ethereum|arbitrum|optimism|polygon|"
-    r"avalanche|aptos|sui|cosmos|\bton\b|\bbsc\b|bnb\s+chain|base\s+(?:chain|network))\b|"
+    r"avalanche|aptos|sui|cosmos|elysium|hyperevm|hype(?:-?evm)?|hyperliquid|"
+    r"\bton\b|\bbsc\b|bnb\s+chain|base\s+(?:chain|network))\b|"
     r"空投|链上|新币|土狗|发射盘|合约地址|智能合约|代币经济)",
     re.IGNORECASE,
 )
 PROJECT_TICKER = re.compile(r"\$[A-Za-z][A-Za-z0-9_]{1,14}")
 PROJECT_TOKEN_REFERENCE = re.compile(r"(?:\btoken\b|代币)", re.IGNORECASE)
+PROJECT_OPERATION_SIGNALS = re.compile(
+    r"(?:套利|价差|跨链|资金费率|费率套利|利差|做市|流动性挖矿|挖矿收益|收益率|年化|"
+    r"arbitrage|spread|funding\s*rate|cross[- ]chain|bridge|yield|basis\s+trade)",
+    re.IGNORECASE,
+)
 PROJECT_LOGIC_ATTRIBUTION = re.compile(
     r"^(?:(?:该)?作者|账号|发帖者)(?:认为|称|表示|指出|提及|提到|看好|判断|觉得|认为值得关注)[，,:：\s]*",
     re.IGNORECASE,
@@ -62,6 +67,7 @@ def is_relevant(module: str, text: str) -> bool:
         return bool(
             PROJECT_CRYPTO_SIGNALS.search(text)
             or (PROJECT_TICKER.search(text) and PROJECT_TOKEN_REFERENCE.search(text))
+            or (PROJECT_OPERATION_SIGNALS.search(text) and PROJECT_TICKER.search(text))
         )
     raise ValueError(f"unsupported X Agent module: {module}")
 
@@ -176,7 +182,7 @@ class XAgentAnalyzer:
         if module == "market_sentiment":
             rules = (
                 "你是严格的信息抽取器。只抽取作者明确表达态度的主流二级市场观点。允许大盘、主流中心化交易所交易的 Crypto、"
-                "美股个股、指数、ETF；链上新币、Meme、degen、项目推介不属于这里。纯价格变化、新闻转发、无明确态度的内容返回空 items。"
+                "美股个股、指数、ETF；链上新币、Meme、degen、按头操作不属于这里。纯价格变化、新闻转发、无明确态度的内容返回空 items。"
                 "不要把涨跌自动理解为狂热或恐慌。只可根据 author_text 判断被跟踪账号的态度。"
             )
             shape = {
@@ -192,11 +198,12 @@ class XAgentAnalyzer:
             }
         elif module == "project_promotion":
             rules = (
-                "你是严格的信息抽取器。只抽取链上新项目、degen 或低流动性项目中，作者给出可理解逻辑、理由或看法的内容。"
-                "允许项目研究、推荐、持仓披露和项目介绍；纯新闻、转发、抽奖、口号、没有项目主体或没有逻辑时返回空 items。"
-                "不要把 BTC、ETH 等主流资产的一般行情讨论当作项目推介，也不要猜测合约、链或官网。只可根据 author_text "
-                "判断被跟踪账号的项目观点。logic 必须是可以直接展示的、简洁的事实或推介逻辑句，不要写“作者认为”、“作者称”、"
-                "“账号表示”或任何归因开头。例如写“马斯克关注了该 Meme 代币的发行者”，而不是“作者认为马斯克关注了该发行者”。"
+                "你是严格的信息抽取器。对每条帖子分别判断两个维度；两个维度互不替代，可以只命中一个、同时命中或都不命中。"
+                "直接推介：只在作者明确看多、建议买入或建议关注某个具体 Crypto 项目/代币，并给出理由时填写。看空、建议卖出、纯项目介绍、教程、持仓披露、新闻转发、抽奖、口号或只提到项目不算直接推介。"
+                "操作建议：必须同时具备 (1) 可执行的具体交易/操作路径，(2) 作者明确说出的经济获利来源，例如价差、资金费率、奖励、利息或收益覆盖成本。两项缺一不可。纯教程、单纯买入/跨链入口、没有获利理由的路径、只有事后盈利陈述都不算。"
+                "操作建议的利润来源必须直接来自 author_text；不要把教程中的操作步骤推成套利，也不要自行推算价差、费用后的净收益或确定性。作者声称的收益、费用、锁定/赎回限制、风险和时效分别记录；原文没写就填空字符串，不得补造。不得把作者自报收益说成已核实结果。"
+                "不要把 BTC、ETH 等主流资产的一般行情讨论当作按头操作，也不要猜测合约、链、平台或官网。只根据 author_text 判断；被引用内容不作为作者观点。"
+                "direct_promotion.logic 应简洁说明作者的方向、推荐和理由；operation_advice.action、route 和 profit_source 必须具体且忠于原文。不要使用“作者认为”“作者称”等归因前缀，详情会另行标注为作者主张。"
             )
             shape = {
                 "items": [
@@ -206,7 +213,20 @@ class XAgentAnalyzer:
                         "chain": "可空",
                         "contract_address": "可空，只填原帖明确地址",
                         "official_url": "可空，只填原帖明确官网",
-                        "logic": "不超过120字，作者为何提及/推介",
+                        "direct_promotion": {
+                            "stance": "看多|建议关注|建议买入",
+                            "logic": "明确方向、推荐和理由；不命中时为 null",
+                        },
+                        "operation_advice": {
+                            "action": "具体要执行的交易/操作；不命中时为 null",
+                            "route": "明确步骤、资产与场所之间的路径",
+                            "profit_source": "原文明说的获利来源，缺少时不得命中",
+                            "claimed_return": "作者声称的收益/价差原文数据，可空",
+                            "fees": "原文明说的费用，可空",
+                            "constraints": "锁定、赎回、跨回等限制，可空",
+                            "risks": "原文明说的风险，可空",
+                            "valid_until": "原文明说的有效时段或过期点，可空",
+                        },
                     }
                 ]
             }
@@ -265,12 +285,33 @@ def _validate_items(module: str, payload: dict[str, Any]) -> list[dict[str, Any]
             result.append({"scope": scope, "instrument_name": name or ticker, "ticker": ticker, "sentiment": sentiment, "reason": reason[:300]})
         elif module == "project_promotion":
             name = str(raw.get("project_name") or "").strip()
-            logic = _project_logic_without_attribution(str(raw.get("logic") or ""))
-            if not name or len(logic) < 4:
+            direct_raw = raw.get("direct_promotion")
+            direct: dict[str, str] | None = None
+            if isinstance(direct_raw, dict):
+                stance = str(direct_raw.get("stance") or "").strip()
+                logic = _project_logic_without_attribution(str(direct_raw.get("logic") or ""))
+                if stance in {"看多", "建议关注", "建议买入"} and len(logic) >= 4:
+                    direct = {"stance": stance, "logic": logic[:500]}
+
+            operation_raw = raw.get("operation_advice")
+            operation: dict[str, str] | None = None
+            if isinstance(operation_raw, dict):
+                operation = {
+                    key: str(operation_raw.get(key) or "").strip()[:500]
+                    for key in (
+                        "action", "route", "profit_source", "claimed_return", "fees",
+                        "constraints", "risks", "valid_until",
+                    )
+                }
+                if not all(len(operation[key]) >= 4 for key in ("action", "route", "profit_source")):
+                    operation = None
+
+            if not name or (direct is None and operation is None):
                 continue
             url = str(raw.get("official_url") or "").strip()
             if url and not re.match(r"https?://", url, re.IGNORECASE):
                 url = ""
+            logic = direct["logic"] if direct else f"{operation['action']}；利润来源：{operation['profit_source']}"
             result.append({
                 "project_name": name[:160],
                 "ticker": str(raw.get("ticker") or "").strip().lstrip("$").upper()[:32],
@@ -278,6 +319,8 @@ def _validate_items(module: str, payload: dict[str, Any]) -> list[dict[str, Any]
                 "contract_address": str(raw.get("contract_address") or "").strip()[:180],
                 "official_url": url[:500],
                 "logic": logic[:500],
+                "direct_promotion": direct,
+                "operation_advice": operation,
             })
     return result
 

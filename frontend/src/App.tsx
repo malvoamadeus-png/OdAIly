@@ -1942,7 +1942,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'meme'
         ? `${memeDashboard?.items.length || 0} 条记录 · ${memeColumn === 'daily_hot' ? '每小时扫描 · 首次达标 · 100万美元起' : '市值里程碑与社群热议'} · 只读`
       : view === 'x_agent'
-        ? '热点话题、热点自动快讯、市场情绪与项目推介的独立工作区'
+        ? '热点话题、热点自动快讯、市场情绪与按头操作的独立工作区'
       : view === 'publisher'
         ? `常规${publisherRules.regular.enabled ? '已开启' : '已关闭'} · ${enabledRegularRuleCount} 条启用规则 · AI信源暂未启用`
       : view === 'jin10'
