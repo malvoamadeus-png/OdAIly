@@ -11,7 +11,11 @@ import './systemInformation.css';
 
 const TASK_LABELS: Record<string, string> = {
   channel_outage: '渠道中断', missed_coverage: '漏闻复盘', output_audit: '产出与审核复盘',
-  rule_conflict: '规则冲突与执行', failure_recovery: '故障与恢复汇总',
+  rule_conflict: '规则冲突与执行', failure_recovery: '持续故障',
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  persistent_internal_failure: '内部可修故障',
 };
 
 export default function SystemReviewPanel({ refreshToken = 0 }: { refreshToken?: number }) {
@@ -83,7 +87,7 @@ export default function SystemReviewPanel({ refreshToken = 0 }: { refreshToken?:
             className={selected?.item_key === item.item_key ? 'systemInformationRow selected' : 'systemInformationRow'}
             type="button" key={item.item_key} onClick={() => void openItem(item)}>
             <span className="systemInformationRowTop"><strong>{item.title}</strong><span className={`systemInformationResult result-${item.severity}`}>{severityLabel(item.severity)}</span></span>
-            <span className="systemInformationRowMeta"><span>{TASK_LABELS[item.task_kind] || item.task_kind}</span><span>{item.category}</span><span>{item.recovered_at ? '运行已恢复' : '仍在观察'}</span><time>{formatDate(item.last_seen_at)}</time></span>
+            <span className="systemInformationRowMeta"><span>{TASK_LABELS[item.task_kind] || item.task_kind}</span><span>{CATEGORY_LABELS[item.category] || item.category}</span><span>{item.recovered_at ? '运行已恢复' : item.task_kind === 'failure_recovery' ? '持续发生' : '仍在观察'}</span><time>{formatDate(item.last_seen_at)}</time></span>
             <span className="systemInformationSummary">{item.summary || analysisLabel(item.analysis_status)}</span>
           </button>)}
           {!loading && !page?.items.length && <div className="emptyState">当前筛选没有巡检问题。</div>}

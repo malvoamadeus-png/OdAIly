@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 from packages.x_processing.ai_client import extract_chat_completion_text, extract_response_text, parse_openai_response_payload
 from .store import SQLITE_BUSY_TIMEOUT_MS, SystemInformationStore, timestamp_ms
-from .error_policy import EXTERNAL_CATEGORIES, day_start_ms, expire_external_errors, external_error, failure_category
+from .error_policy import day_start_ms, expire_external_errors, external_error, failure_category
 
 CURRENT_ERROR_SCOPE = "NOT (julianday(last_seen_at)<julianday('now','+8 hours','start of day','-8 hours') AND odaily_external_error(scope_json,evidence_json,actual))"
 
@@ -25,6 +25,23 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 DAILY_CALL_LIMIT = 100
 DAILY_TOKEN_LIMIT = 1_000_000
 MAX_ATTEMPTS = 3
+FAILURE_HISTORY_DAYS = 7
+PERSISTENT_FAILURE_MIN_DAYS = 3
+
+
+def is_actionable_internal_failure(message: Any) -> bool:
+    category = failure_category(message)
+    if category == "local_storage":
+        return True
+    if category != "program_or_unknown":
+        return False
+    text = str(message or "").casefold()
+    return any(term in text for term in (
+        "writer output", "active prompt not found", "output validation", "schema validation",
+        "unsupported", "invalid field", "invalid json", "missing required", "traceback",
+        "attributeerror", "keyerror", "typeerror", "valueerror", "nameerror", "runtimeerror",
+        "assertionerror", "operationalerror", "importerror", "modulenotfounderror", "jsondecodeerror",
+    ))
 
 REVIEW_SCHEMA = """
 CREATE TABLE IF NOT EXISTS system_review_items (
@@ -221,6 +238,7 @@ class SystemReviewRepository:
     def upsert_issue(self, issue: dict[str, Any]) -> str:
         key = str(issue.get("item_key") or f"{issue['task_kind']}:{issue['category']}:{_digest(issue.get('identity') or issue['title'])[:24]}")
         now = _now()
+        first_seen = str(issue.get("first_seen_at") or now)
         evidence_hash = _digest({
             "identity": issue.get("identity"),
             "scope": issue.get("scope"),
@@ -247,13 +265,14 @@ class SystemReviewRepository:
                         counter_evidence_json=excluded.counter_evidence_json,certainty=excluded.certainty,
                         suggestion=excluded.suggestion,validation=excluded.validation,last_seen_at=excluded.last_seen_at,
                         affected_count=excluded.affected_count,
+                        first_seen_at=CASE WHEN system_review_items.recovered_at IS NOT NULL THEN excluded.first_seen_at ELSE system_review_items.first_seen_at END,
                         status=CASE WHEN system_review_items.evidence_hash<>excluded.evidence_hash OR system_review_items.recovered_at IS NOT NULL THEN 'pending' ELSE system_review_items.status END,
                         decision_by=CASE WHEN system_review_items.evidence_hash<>excluded.evidence_hash OR system_review_items.recovered_at IS NOT NULL THEN NULL ELSE system_review_items.decision_by END,
                         decision_note=CASE WHEN system_review_items.evidence_hash<>excluded.evidence_hash OR system_review_items.recovered_at IS NOT NULL THEN NULL ELSE system_review_items.decision_note END,
                         analysis_attempts=CASE WHEN system_review_items.evidence_hash<>excluded.evidence_hash THEN 0 ELSE system_review_items.analysis_attempts END,
                         evidence_hash=excluded.evidence_hash,recovered_at=NULL,
                         analysis_status=CASE WHEN system_review_items.evidence_hash<>excluded.evidence_hash OR system_review_items.recovered_at IS NOT NULL THEN 'queued' ELSE system_review_items.analysis_status END""",
-                (*values[:14], now, now, values[14], values[15]),
+                (*values[:14], first_seen, now, values[14], values[15]),
             )
         return key
 
@@ -268,7 +287,7 @@ class SystemReviewRepository:
     def pending_analysis(self, limit: int = 12) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM system_review_items WHERE {CURRENT_ERROR_SCOPE} AND analysis_status IN ('queued','failed','budget_paused') AND analysis_attempts<? ORDER BY last_seen_at,item_key LIMIT ?",
+                f"SELECT * FROM system_review_items WHERE {CURRENT_ERROR_SCOPE} AND (task_kind!='failure_recovery' OR (category='persistent_internal_failure' AND recovered_at IS NULL)) AND analysis_status IN ('queued','failed','budget_paused') AND analysis_attempts<? ORDER BY last_seen_at,item_key LIMIT ?",
                 (MAX_ATTEMPTS, limit),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -336,6 +355,8 @@ class SystemReviewRepository:
         task_kind = str(payload.get("task_kind") or "all")
         clauses: list[str] = [CURRENT_ERROR_SCOPE]
         params: list[Any] = []
+        if status == "pending":
+            clauses.append("(task_kind!='failure_recovery' OR (category='persistent_internal_failure' AND recovered_at IS NULL))")
         if status != "all":
             clauses.append("status=?")
             params.append(status)
@@ -957,7 +978,7 @@ class SystemReviewService:
         return issues
 
     def _failure_clusters(self) -> list[dict[str, Any]]:
-        groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         successful_attempts: dict[tuple[int, str], int] = {}
         capture_successes: dict[str, list[int]] = {}
         binance_successes: dict[str, list[int]] = {}
@@ -967,15 +988,26 @@ class SystemReviewService:
 
         def add_failure(source: Any, stage: str, error_code: Any, error: Any, version: Any, row: dict[str, Any], *, evidence_level: str) -> None:
             category = failure_category(error)
-            if category == 'expected_result':
+            if not is_actionable_internal_failure(error):
                 return
             occurred = timestamp_ms(row.get('finished_at') or row.get('updated_at') or row.get('started_at'))
-            if category in EXTERNAL_CATEGORIES and (occurred is None or occurred < day_start_ms()):
+            if occurred is None:
                 return
             message = error_signature(error)
             version_key = str(version or "unknown")[:160]
-            key = (str(source or "unknown"), stage, str(error_code or "unknown"), message, version_key)
-            groups.setdefault(key, []).append({**row, "evidence_level": evidence_level, "error_signature": message, "rule_version": version_key, "failure_category": category})
+            key = (str(category or "program_or_unknown"), message)
+            groups.setdefault(key, []).append({
+                **row,
+                "source": str(source or "unknown"),
+                "stage": stage,
+                "error_code": str(error_code or "unknown"),
+                "evidence_level": evidence_level,
+                "error_signature": message,
+                "rule_version": version_key,
+                "failure_category": category,
+                "occurred_at_ms": occurred,
+                "failure_day": datetime.fromtimestamp(occurred / 1000, UTC).astimezone(BEIJING).date().isoformat(),
+            })
 
         with self._connect() as conn:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -986,8 +1018,8 @@ class SystemReviewService:
                     "p.prompt_template_key,p.prompt_version_id "
                     "FROM x_processing_attempts a JOIN tasks t ON t.id=a.task_id "
                     "LEFT JOIN x_task_pipeline p ON p.task_id=t.id "
-                    "WHERE julianday(a.started_at)>=julianday('now','-1 day') "
-                    "AND a.status IN ('failed','stopped','succeeded') ORDER BY a.id DESC LIMIT 5000"
+                    f"WHERE julianday(a.started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') "
+                    "AND a.status IN ('failed','succeeded') ORDER BY a.id DESC LIMIT 50000"
                 ).fetchall()
                 for row in attempt_rows:
                     value = dict(row)
@@ -1002,7 +1034,12 @@ class SystemReviewService:
                         version = f"{value['prompt_template_key']}:{version or 'unknown'}"
                     add_failure(value.get("source"), stage, value.get("error_code"), value.get("error_message"), version, value, evidence_level="per_stage_attempt")
             if "tasks" in tables and "x_task_pipeline" in tables:
-                rows = conn.execute("SELECT t.id,t.source,t.source_item_id,t.status,t.updated_at,p.last_error,p.prompt_template_key,p.prompt_version_id FROM tasks t JOIN x_task_pipeline p ON p.task_id=t.id WHERE (t.status LIKE '%failed' OR p.last_error IS NOT NULL) ORDER BY t.updated_at DESC LIMIT 1500").fetchall()
+                rows = conn.execute(
+                    "SELECT t.id AS task_id,t.source,t.source_item_id,t.status,t.updated_at,p.last_error,p.prompt_template_key,p.prompt_version_id "
+                    "FROM tasks t JOIN x_task_pipeline p ON p.task_id=t.id "
+                    "WHERE t.status LIKE '%failed' AND p.last_error IS NOT NULL "
+                    f"AND julianday(t.updated_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY t.updated_at DESC LIMIT 10000"
+                ).fetchall()
                 for row in rows:
                     value = dict(row)
                     if not value.get('last_error'):
@@ -1012,80 +1049,120 @@ class SystemReviewService:
             if "x_capture_attempts" in tables:
                 rows = conn.execute(
                     "SELECT id,account_id,username_lower,status,source,error,started_at,finished_at,candidate_count,new_count,saved_count "
-                    "FROM x_capture_attempts WHERE julianday(started_at)>=julianday('now','-1 day') ORDER BY id DESC LIMIT 2000"
+                    f"FROM x_capture_attempts WHERE julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT 20000"
                 ).fetchall()
                 for row in rows:
                     value = dict(row)
                     account = str(value.get("account_id") or value.get("username_lower") or "unknown")
                     if str(value.get("status") or "").casefold() in {"success", "ok", "completed"}:
                         capture_successes.setdefault(account, []).append(timestamp_ms(value.get("finished_at")) or 0)
-                    else:
+                    elif str(value.get("status") or "").casefold() in {"failed", "error"}:
                         add_failure(f"x_capture:{value.get('source') or 'unknown'}", "capture", "unknown", value.get("error") or value.get("status"), "capture_attempt", value, evidence_level="per_source_attempt")
             if "binance_square_attempts" in tables:
                 rows = conn.execute(
                     "SELECT id,account_id,slug_lower,status,error,started_at,finished_at,candidate_count,new_count,saved_count "
-                    "FROM binance_square_attempts WHERE julianday(started_at)>=julianday('now','-1 day') ORDER BY id DESC LIMIT 2000"
+                    f"FROM binance_square_attempts WHERE julianday(started_at)>=julianday('now','-{FAILURE_HISTORY_DAYS} day') ORDER BY id DESC LIMIT 20000"
                 ).fetchall()
                 for row in rows:
                     value = dict(row)
                     account = str(value.get("account_id") or value.get("slug_lower") or "unknown")
                     if str(value.get("status") or "").casefold() in {"success", "ok", "completed"}:
                         binance_successes.setdefault(account, []).append(timestamp_ms(value.get("finished_at")) or 0)
-                    else:
+                    elif str(value.get("status") or "").casefold() in {"failed", "error"}:
                         add_failure("binance_square", "capture", "unknown", value.get("error") or value.get("status"), "capture_attempt", value, evidence_level="per_account_attempt")
-        if self.local_pipeline_database_path and self.local_pipeline_database_path.exists():
-            try:
-                with self._connect_path(self.local_pipeline_database_path) as conn:
-                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_pipeline_jobs'").fetchone():
-                        for row in conn.execute("SELECT id,source,status,attempts,last_error,updated_at FROM local_pipeline_jobs WHERE last_error IS NOT NULL ORDER BY updated_at DESC LIMIT 1000"):
-                            value = dict(row)
-                            add_failure(value.get("source"), "local_pipeline", "unknown", value.get("last_error"), "current_snapshot", value, evidence_level="latest_job_state_only")
-            except sqlite3.Error:
-                pass
         issues: list[dict[str, Any]] = []
-        for (source, stage, error_code, message, version), rows_in_cluster in groups.items():
+        for (category, message), rows_in_cluster in groups.items():
             subjects: dict[str, dict[str, Any]] = {}
+            latest_failure_at: dict[str, int] = {}
+            latest_failed_attempt: dict[tuple[int, str], int] = {}
+            capture_failure_at: dict[str, int] = {}
             recovered_subjects: set[str] = set()
-            stopped_subjects: set[str] = set()
             recovery_evidence: list[dict[str, Any]] = []
             for row in rows_in_cluster:
-                subject_id = str(row.get("task_id") or row.get("account_id") or row.get("username_lower") or row.get("slug_lower") or row.get("id"))
-                subjects.setdefault(subject_id, row)
-                if row.get("status") == "stopped":
-                    stopped_subjects.add(subject_id)
+                task_id = row.get("task_id")
+                account_id = row.get("account_id") or row.get("username_lower") or row.get("slug_lower")
+                source = str(row.get("source") or "unknown")
+                subject_id = f"task:{task_id}" if task_id is not None else f"account:{source}:{account_id}" if account_id is not None else f"row:{source}:{row.get('id')}"
+                occurred = int(row["occurred_at_ms"])
+                if subject_id not in subjects or occurred > latest_failure_at[subject_id]:
+                    subjects[subject_id] = row
+                    latest_failure_at[subject_id] = occurred
+                if task_id is not None:
+                    task_stage = (int(task_id), str(row.get("stage") or "unknown"))
+                    latest_failed_attempt[task_stage] = max(latest_failed_attempt.get(task_stage, 0), int(row.get("attempt_no") or 0))
+                elif account_id is not None:
+                    capture_failure_at[subject_id] = max(capture_failure_at.get(subject_id, 0), occurred)
+
+            for subject_id, row in subjects.items():
                 task_id = row.get("task_id")
                 if task_id is not None:
-                    success_attempt_no = successful_attempts.get((int(task_id), str(row.get("stage") or "unknown")), 0)
-                    if success_attempt_no > int(row.get("attempt_no") or 0):
+                    stage = str(row.get("stage") or "unknown")
+                    failed_attempt = latest_failed_attempt.get((int(task_id), stage), 0)
+                    success_attempt = successful_attempts.get((int(task_id), stage), 0)
+                    if success_attempt > failed_attempt:
                         recovered_subjects.add(subject_id)
-                        recovery_evidence.append({"subject_id": subject_id, "recovered_by_attempt_no": success_attempt_no, "stage": row.get("stage")})
-                elif row.get("account_id") is not None or row.get("username_lower"):
-                    account = str(row.get("account_id") or row.get("username_lower"))
+                        recovery_evidence.append({"subject_id": subject_id, "recovered_by_attempt_no": success_attempt, "stage": stage})
+                elif row.get("account_id") is not None or row.get("username_lower") or row.get("slug_lower"):
+                    account = str(row.get("account_id") or row.get("username_lower") or row.get("slug_lower"))
+                    source = str(row.get("source") or "")
                     successful = capture_successes.get(account, []) if source.startswith("x_capture:") else binance_successes.get(account, [])
-                    failed_at = timestamp_ms(row.get("finished_at")) or timestamp_ms(row.get("started_at")) or 0
+                    failed_at = capture_failure_at.get(subject_id, latest_failure_at[subject_id])
                     if any(success_at > failed_at for success_at in successful):
                         recovered_subjects.add(subject_id)
                         recovery_evidence.append({"subject_id": subject_id, "recovered_after_ms": failed_at, "source": source})
-                elif row.get("evidence_level") == "current_task_snapshot" and not str(row.get("status") or "").endswith("failed"):
-                    recovered_subjects.add(subject_id)
-                    recovery_evidence.append({"subject_id": subject_id, "current_status": row.get("status")})
-                elif row.get("evidence_level") == "latest_job_state_only" and str(row.get("status") or "").casefold() in {"succeeded", "success", "completed"}:
-                    recovered_subjects.add(subject_id)
-                    recovery_evidence.append({"subject_id": subject_id, "current_status": row.get("status"), "history_note": "只保存最新状态，无法回放此前每次重试"})
+
             affected = len(subjects)
             recovered = len(recovered_subjects)
-            failed = len({subject for subject, row in subjects.items() if subject not in recovered_subjects and subject not in stopped_subjects and (str(row.get("status") or "").endswith("failed") or row.get("error") or row.get("error_message") or row.get("last_error"))})
-            identity = {"source": source, "stage": stage, "error_code": error_code, "error_signature": message, "rule_version": version, 'failure_category': rows_in_cluster[0].get('failure_category')}
-            issues.append({"identity": identity, "category": "failure_recovery_cluster", "title": f"{source} · {stage} 错误聚合",
-                "summary": f"影响对象 {affected} 个；观察到恢复 {recovered} 个；仍处失败状态 {failed} 个；停止 {len(stopped_subjects)} 个。",
-                "severity": "high" if affected >= 10 else "medium", "certainty": "medium",
-                "expected": "按上游、错误、阶段和可取回的规则版本聚合逐次失败，并区分恢复、仍失败与正常停止",
-                "actual": f"错误码={error_code}；错误摘要={message}；版本={version}；记录级别={','.join(sorted({str(row['evidence_level']) for row in rows_in_cluster}))}",
-                "scope": identity, "affected_count": affected,
-                "evidence": rows_in_cluster[:30], "counter_evidence": recovery_evidence[:30],
-                "suggestion": "按原始失败记录和后续成功记录核对恢复路径；只保留最新状态的业务不得推断未保存的重试历史",
-                "validation": "核对各对象、错误码、阶段、规则版本、恢复时间及仍失败数量与留存记录一致"})
-        return issues
+            failed = affected - recovered
+            failure_days = sorted({str(row["failure_day"]) for row in rows_in_cluster})
+            if len(failure_days) < PERSISTENT_FAILURE_MIN_DAYS or failed == 0:
+                continue
+
+            sources = sorted({str(row.get("source") or "unknown") for row in rows_in_cluster})
+            stages = sorted({str(row.get("stage") or "unknown") for row in rows_in_cluster})
+            versions = sorted({str(row.get("rule_version") or "unknown") for row in rows_in_cluster})
+            first_seen = min(int(row["occurred_at_ms"]) for row in rows_in_cluster)
+            first_seen_at = datetime.fromtimestamp(first_seen / 1000, UTC).isoformat()
+            identity = {"failure_category": category, "error_signature": message}
+            issue_title = {
+                "writer output repeats title in content": "写作校验持续失败：标题重复在正文",
+                "writer output feature mode fields are invalid": "写作校验持续失败：特色模式字段无效",
+                "active prompt not found: msx_notice_writer": "写作配置持续失败：MSX 活动 Prompt 缺失",
+                "writer output contains unsupported title_strategy": "写作校验持续失败：标题策略不受支持",
+                "database is locked": "本地数据库持续写入锁冲突",
+            }.get(message, f"内部故障持续出现：{message[:120]}")
+            source_labels = {
+                "x": "X", "panews": "PANews", "jinse": "金十", "blockbeats": "律动",
+                "msx": "MSX", "non_mainstream_media": "非主流媒体", "hyperliquid_news": "Hyperliquid",
+                "ai_source": "AI 信源", "binance_square": "币安广场",
+            }
+            display_sources = [source_labels.get(source, source) for source in sources]
+            source_detail = "、".join(display_sources[:8]) + (f" 等 {len(sources)} 个来源" if len(sources) > 8 else "")
+            evidence_by_subject = sorted(subjects.values(), key=lambda row: int(row["occurred_at_ms"]), reverse=True)
+            evidence = [{
+                **row,
+                "latest_failure_day": row["failure_day"],
+                "source": row.get("source"),
+                "stage": row.get("stage"),
+            } for row in evidence_by_subject[:30]]
+            issues.append({
+                "identity": identity,
+                "category": "persistent_internal_failure",
+                "title": issue_title,
+                "summary": f"过去 {FAILURE_HISTORY_DAYS} 天在 {len(failure_days)} 个自然日反复出现；涉及 {affected} 个唯一任务/账号，当前仍有 {failed} 个对象未恢复。覆盖来源：{source_detail}。",
+                "severity": "high" if failed >= 10 else "medium",
+                "certainty": "high",
+                "expected": "系统巡检只将可由内部修复、跨日反复出现且仍未恢复的故障作为持续问题展示。",
+                "actual": f"近 {FAILURE_HISTORY_DAYS} 天出现日期：{', '.join(failure_days)}；来源：{source_detail}；阶段：{'、'.join(stages)}；规则版本：{'、'.join(versions[:8])}{' 等' if len(versions) > 8 else ''}；根因：{message}",
+                "scope": identity,
+                "affected_count": affected,
+                "first_seen_at": first_seen_at,
+                "evidence": evidence,
+                "counter_evidence": recovery_evidence[:30],
+                "suggestion": "检查上述来源和阶段的共同校验或流程配置，修复同一根因后观察后续处理是否恢复。",
+                "validation": "修复后连续 3 天不再出现该根因，并确认受影响任务恢复或已明确停止。",
+            })
+        return sorted(issues, key=lambda issue: (-int(issue["affected_count"]), str(issue["title"])))
 
     def analyze_pending(self, limit: int = 12) -> dict[str, int]:
         analyzed = failed = deferred = 0

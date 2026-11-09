@@ -1473,13 +1473,13 @@ def test_rule_execution_checks_existing_onchain_opener_hyperliquid_backend_and_f
         assert "样本时间" in hyperliquid["actual"]
 
 
-def test_failure_clusters_include_capture_attempts_and_count_later_success_as_recovery() -> None:
+def test_failure_clusters_only_report_multiday_internal_errors_and_count_recovery() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         main = root / "main.sqlite"
         now = datetime.now(UTC)
-        earlier = (now - timedelta(minutes=4)).isoformat()
-        latest = (now - timedelta(minutes=1)).isoformat()
+        failure_times = [(now - timedelta(days=day)).isoformat() for day in (3, 2, 1)]
+        recovered_at = (now - timedelta(days=3) + timedelta(minutes=1)).isoformat()
         with sqlite3.connect(main) as conn:
             conn.executescript("""
                 CREATE TABLE tasks(id INTEGER PRIMARY KEY,source TEXT,source_item_id TEXT,status TEXT,updated_at TEXT);
@@ -1497,26 +1497,36 @@ def test_failure_clusters_include_capture_attempts_and_count_later_success_as_re
                     started_at TEXT,finished_at TEXT,candidate_count INTEGER,new_count INTEGER,saved_count INTEGER
                 );
             """)
-            conn.executemany("INSERT INTO tasks VALUES(?,?,?,?,?)", [(1, "x", "x-1", "written", latest), (2, "x", "x-2", "write_failed", earlier)])
-            conn.executemany("INSERT INTO x_task_pipeline VALUES(?,?,?,?)", [(1, None, "x_onchain_writer", 4), (2, "failed", "x_onchain_writer", 4)])
+            conn.executemany("INSERT INTO tasks VALUES(?,?,?,?,?)", [
+                (1, "x", "x-1", "written", recovered_at),
+                (2, "x", "x-2", "write_failed", failure_times[1]),
+                (3, "panews", "panews-3", "write_failed", failure_times[2]),
+            ])
+            conn.executemany("INSERT INTO x_task_pipeline VALUES(?,?,?,?)", [
+                (1, None, "x_onchain_writer", 4),
+                (2, "writer output repeats title in content", "x_onchain_writer", 4),
+                (3, "writer output repeats title in content", "x_regular_writer", 40),
+            ])
             conn.executemany("INSERT INTO x_processing_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
-                (1, 1, "write", 1, "model", "failed", "E500", "HTTP 500", earlier, earlier, '{"prompt_version_id":4}'),
-                (2, 1, "write", 2, "model", "succeeded", None, None, latest, latest, '{"prompt_version_id":4}'),
-                (3, 2, "write", 1, "model", "failed", "E500", "HTTP 500", earlier, earlier, '{"prompt_version_id":4}'),
+                (1, 1, "write", 1, "model", "failed", "EVALIDATION", "writer output repeats title in content", failure_times[0], failure_times[0], '{"prompt_version_id":4}'),
+                (2, 1, "write", 2, "model", "succeeded", None, None, recovered_at, recovered_at, '{"prompt_version_id":4}'),
+                (3, 2, "write", 1, "model", "failed", "EVALIDATION", "writer output repeats title in content", failure_times[1], failure_times[1], '{"prompt_version_id":4}'),
             ])
             conn.executemany("INSERT INTO x_capture_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
-                (1, 10, "account_a", "failed", "fxtwitter", "HTTP 503", earlier, earlier, 0, 0, 0),
-                (2, 10, "account_a", "success", "fxtwitter", None, latest, latest, 2, 2, 2),
+                (1, 10, "account_a", "failed", "fxtwitter", "invalid profile JSON", failure_times[0], failure_times[0], 0, 0, 0),
+                (2, 10, "account_a", "failed", "fxtwitter", "invalid profile JSON", failure_times[1], failure_times[1], 0, 0, 0),
+                (3, 10, "account_a", "failed", "fxtwitter", "invalid profile JSON", failure_times[2], failure_times[2], 0, 0, 0),
+                (4, 10, "account_a", "success", "fxtwitter", None, now.isoformat(), now.isoformat(), 2, 2, 2),
             ])
-            conn.execute("INSERT INTO binance_square_attempts VALUES(1,20,'square_a','failed','HTTP 429',?,?,0,0,0)", (earlier, earlier))
+            conn.execute("INSERT INTO binance_square_attempts VALUES(1,20,'square_a','failed','HTTP 429',?,?,0,0,0)", (failure_times[2], failure_times[2]))
 
         service = SystemReviewService(main, SystemReviewRepository(root / "review.sqlite"))
         issues = service._failure_clusters()
-        processing = next(item for item in issues if item["scope"]["source"] == "x" and item["scope"]["stage"] == "write")
-        capture = next(item for item in issues if item["scope"]["source"].startswith("x_capture:"))
-        square = next(item for item in issues if item["scope"]["source"] == "binance_square")
+        processing = next(item for item in issues if item["category"] == "persistent_internal_failure")
 
-        assert "恢复 1 个" in processing["summary"]
-        assert "仍处失败状态 1 个" in processing["summary"]
-        assert "恢复 1 个" in capture["summary"]
-        assert "恢复 0 个" in square["summary"]
+        assert len(issues) == 1
+        assert processing["title"] == "写作校验持续失败：标题重复在正文"
+        assert processing["affected_count"] == 3
+        assert "3 个自然日" in processing["summary"]
+        assert "当前仍有 2 个对象未恢复" in processing["summary"]
+        assert len(processing["counter_evidence"]) == 1

@@ -79,6 +79,7 @@ def parse_draft_output(value: str) -> DraftBrief:
         content_lines = content_lines[1:]
     content = "\n".join(content_lines).strip()
     content = re.sub(r"^正文[:：]\s*", "", content)
+    content = _remove_repeated_title_prefix(title, content)
     _reject_contaminated_output(title=title, content=content)
     if not title or not content:
         raise ValueError("writer output must contain title and content")
@@ -124,6 +125,46 @@ def _line_repeats_title(title: str, line: str) -> bool:
         return False
     suffix = compact_line[len(compact_title) :]
     return bool(suffix and suffix[0] in _TITLE_REPEAT_BOUNDARIES)
+
+
+def _remove_repeated_title_prefix(title: str, content: str) -> str:
+    lines = content.splitlines()
+    if not lines:
+        return content
+
+    first_line = lines[0]
+    fixed_prefix = ""
+    for prefix in (ODAILY_PREFIX, "Odaily星球日报讯"):
+        if first_line.startswith(prefix):
+            fixed_prefix = ODAILY_PREFIX
+            first_line = first_line[len(prefix):].lstrip()
+            break
+
+    candidate = first_line.lstrip("「」《》【】[]()（）\"'“”‘’*# 　")
+    compact_title = _compact_title_like(title)
+    if not _line_repeats_title(title, candidate) or not compact_title:
+        return content
+
+    position = 0
+    for character in compact_title:
+        while position < len(candidate) and candidate[position].isspace():
+            position += 1
+        if position >= len(candidate) or candidate[position] != character:
+            return content
+        position += 1
+    while position < len(candidate) and candidate[position].isspace():
+        position += 1
+    if position < len(candidate) and candidate[position] in _TITLE_REPEAT_BOUNDARIES:
+        position += 1
+    while position < len(candidate) and candidate[position].isspace():
+        position += 1
+
+    remaining = candidate[position:]
+    if remaining:
+        lines[0] = f"{fixed_prefix}{remaining}"
+    else:
+        lines.pop(0)
+    return "\n".join(lines).strip()
 
 
 def _compact_title_like(value: str) -> str:
@@ -214,6 +255,9 @@ def format_brief(
     title = _restore_fixed_account_names(_normalize_numeric_asset_spaces(title))
     prefix, content_body = _split_existing_prefix(draft.content)
     content = _apply_common_replacements(content_body)
+    content = _remove_repeated_title_prefix(title, content)
+    if not content.strip():
+        raise ValueError("writer output must contain title and content")
     content = _normalize_content_spaces(content)
     content = _restore_msx_notice_prefix(content)
     content = _restore_fixed_account_names(_normalize_numeric_asset_spaces(content))
