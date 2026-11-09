@@ -84,6 +84,8 @@ HANKYUNG_PREMIUM_LIST_URL = "https://www.hankyung.com/premium9/0100001"
 HANKYUNG_TIMEZONE = timezone(timedelta(hours=9))
 BUSINESS_INSIDER_BASE_URL = "https://www.businessinsider.com"
 BUSINESS_INSIDER_LATEST_URL = "https://www.businessinsider.com/latest"
+TREASURY_BASE_URL = "https://home.treasury.gov"
+TREASURY_PRESS_RELEASES_URL = f"{TREASURY_BASE_URL}/news/press-releases"
 WSJ_BASE_URL = "https://www.wsj.com"
 BLOOMBERG_BASE_URL = "https://www.bloomberg.com"
 BLOOMBERG_NEWS_RSS_URL = "https://www.bloomberg.com/feeds/news.rss"
@@ -256,6 +258,15 @@ SITE_REGISTRY: dict[str, SiteDefinition] = {
         pipeline_mode="write_flow",
         source_group=SOURCE_GROUP_MIXED_SOURCE,
     ),
+    "treasury_press_releases": SiteDefinition(
+        site_key="treasury_press_releases",
+        display_name="U.S. Treasury",
+        homepage_url=TREASURY_BASE_URL,
+        list_url=TREASURY_PRESS_RELEASES_URL,
+        capture_method="html_request",
+        pipeline_mode="write_flow",
+        source_group=SOURCE_GROUP_MIXED_SOURCE,
+    ),
     "ft_crypto": SiteDefinition(
         site_key="ft_crypto",
         display_name="FT Crypto",
@@ -383,6 +394,9 @@ def fetch_discovered_pages(
     if site.site_key == "businessinsider_latest":
         html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         return discover_businessinsider_pages(html, base_url=site.homepage_url)
+    if site.site_key == "treasury_press_releases":
+        html = fetch_html(site.list_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        return discover_treasury_press_release_pages(html, base_url=site.homepage_url)
     if site.site_key == "tether_news":
         try:
             payload = fetch_json(
@@ -515,6 +529,9 @@ def fetch_article(
     elif site.site_key == "businessinsider_latest":
         html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
         article = parse_businessinsider_article(html, page_url=page.detail_url, source_item_id=page.source_item_id)
+    elif site.site_key == "treasury_press_releases":
+        html = fetch_html(page.detail_url, timeout_seconds=timeout_seconds, max_attempts=max_attempts, backoff_seconds=backoff_seconds)
+        article = parse_treasury_press_release(html, page_url=page.detail_url, source_item_id=page.source_item_id)
     elif site.site_key == "tether_news":
         slug = pick_tether_post_slug(page.detail_url)
         try:
@@ -1180,6 +1197,43 @@ def discover_businessinsider_pages(html: str, *, base_url: str = BUSINESS_INSIDE
                 source_item_id=detail_url,
                 detail_url=detail_url,
                 title=title,
+            )
+        )
+    return results
+
+
+def discover_treasury_press_release_pages(
+    html: str,
+    *,
+    base_url: str = TREASURY_BASE_URL,
+) -> list[DiscoveredPage]:
+    soup = BeautifulSoup(html, "html.parser")
+    listing = soup.select_one("[data-news-list][data-news-category='press-releases']")
+    if listing is None:
+        return []
+
+    results: list[DiscoveredPage] = []
+    seen: set[str] = set()
+    for anchor in listing.select("h3.featured-stories__headline a[href]"):
+        detail_url = normalize_url(urljoin(base_url, str(anchor.get("href") or "")))
+        if not is_treasury_press_release_url(detail_url) or detail_url in seen:
+            continue
+        title = clean_inline_text(anchor.get_text(" ", strip=True))
+        if not title:
+            continue
+        seen.add(detail_url)
+        row = anchor.find_parent("div")
+        time_node = row.select_one("time[datetime]") if row else None
+        published_at_raw = str(time_node.get("datetime") or "").strip() if time_node else ""
+        if not published_at_raw and time_node:
+            published_at_raw = clean_inline_text(time_node.get_text(" ", strip=True))
+        results.append(
+            DiscoveredPage(
+                source_item_id=detail_url,
+                detail_url=detail_url,
+                title=title,
+                published_at=parse_published_at(published_at_raw),
+                published_at_raw=published_at_raw or None,
             )
         )
     return results
@@ -2013,6 +2067,78 @@ def parse_businessinsider_article(html: str, *, page_url: str, source_item_id: s
         categories=categories,
         excerpt=excerpt,
         content_format="businessinsider_article",
+        raw_payload={"page_url": page_url, "canonical_url": canonical},
+        metadata=metadata,
+    )
+
+
+def parse_treasury_press_release(html: str, *, page_url: str, source_item_id: str) -> ParsedArticle:
+    soup = BeautifulSoup(html, "html.parser")
+    structured = find_structured_content(soup)
+    published_at_raw = (
+        structured.get("datePublished")
+        or structured.get("dateCreated")
+        or select_meta_content(soup, "property", "article:published_time")
+        or select_attr(soup, ".field--name-field-news-publication-date time[datetime], time[datetime]", "datetime")
+    )
+    canonical = normalize_url(
+        str(
+            structured.get("url")
+            or select_attr(soup, "link[rel='canonical']", "href")
+            or select_meta_content(soup, "property", "og:url")
+            or page_url
+        )
+    )
+    title = clean_inline_text(
+        str(
+            structured.get("headline")
+            or structured.get("name")
+            or select_text(soup, ".uswds-page-title")
+            or select_meta_content(soup, "property", "og:title")
+            or select_meta_content(soup, "name", "twitter:title")
+            or pick_heading_text(soup)
+            or canonical
+        )
+    )
+    body_node = soup.select_one(".field--name-field-news-body")
+    body = clean_body_text(
+        str(structured.get("articleBody") or "")
+        or (extract_body_from_node(body_node) if body_node else "")
+        or extract_body_text(soup)
+    )
+    if not body:
+        raise ValueError(f"article body is empty for {page_url}")
+    author_names = normalize_string_list(structured.get("author"), field_name="name")
+    if not author_names:
+        author = (
+            select_meta_content(soup, "name", "author")
+            or select_text(soup, ".field--name-field-news-author")
+        )
+        author_names = normalize_string_list(author)
+    excerpt = clean_inline_text(
+        str(
+            structured.get("description")
+            or select_meta_content(soup, "property", "og:description")
+            or select_meta_content(soup, "name", "description")
+            or body[:240]
+        )
+    )
+    metadata = {
+        "canonical_url": canonical,
+        "published_at_raw": published_at_raw,
+        "structured_type": structured.get("@type"),
+    }
+    return ParsedArticle(
+        source_item_id=source_item_id,
+        canonical_url=canonical,
+        title=title,
+        content=body,
+        published_at=parse_published_at(published_at_raw),
+        author_names=author_names,
+        tags=normalize_keywords(structured.get("keywords")),
+        categories=normalize_string_list(structured.get("articleSection")),
+        excerpt=excerpt,
+        content_format="treasury_press_release",
         raw_payload={"page_url": page_url, "canonical_url": canonical},
         metadata=metadata,
     )
@@ -3005,6 +3131,16 @@ def is_businessinsider_article_url(url: str) -> bool:
     if path in {"", "/latest"}:
         return False
     return bool(re.search(r"-\d{4}-\d{1,2}$", path))
+
+
+def is_treasury_press_release_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() != "home.treasury.gov":
+        return False
+    parts = [part.lower() for part in parsed.path.split("/") if part]
+    if len(parts) != 3 or parts[:2] != ["news", "press-releases"]:
+        return False
+    return parts[2] not in {"statements-remarks", "readouts", "testimonies"}
 
 
 def is_news_bitcoin_article_url(url: str) -> bool:

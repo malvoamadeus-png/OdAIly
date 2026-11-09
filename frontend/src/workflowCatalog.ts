@@ -497,7 +497,7 @@ export const workflowGroups: WorkflowGroup[] = [
         id: 'mixed_collect',
         name: '混合信源收集',
         kind: 'collector',
-        description: '当前首站为 Business Insider Latest，收集器先发现列表并抓取正文。',
+        description: 'Business Insider Latest 与 U.S. Treasury Press Releases 先发现列表并抓取正文。',
         usesAi: false,
         output: '准备一篇待分流原文。',
         compactLabel: 'collect',
