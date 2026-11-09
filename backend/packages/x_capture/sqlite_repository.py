@@ -92,6 +92,7 @@ class SQLiteXCaptureRepository:
                     profile_url text,
                     enabled integer NOT NULL DEFAULT 1,
                     is_ai_source integer NOT NULL DEFAULT 0,
+                    monitor_group text NOT NULL DEFAULT 'high',
                     interval_seconds integer,
                     seeded_at text,
                     last_polled_at text,
@@ -166,6 +167,21 @@ class SQLiteXCaptureRepository:
                 WHERE status = 'success' AND new_count = 0 AND saved_count = 0;
                 """
             )
+            account_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(x_capture_accounts)")}
+            if "monitor_group" not in account_columns:
+                conn.execute("ALTER TABLE x_capture_accounts ADD COLUMN monitor_group text NOT NULL DEFAULT 'high'")
+                conn.execute(
+                    """
+                    UPDATE x_capture_accounts
+                    SET monitor_group = CASE
+                        WHEN COALESCE(
+                            interval_seconds,
+                            (SELECT global_interval_seconds FROM x_capture_settings WHERE singleton_key='global')
+                        ) = 300 THEN 'low'
+                        ELSE 'high'
+                    END
+                    """
+                )
             conn.commit()
 
     def notify_config_changed(self) -> None:
