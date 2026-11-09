@@ -1108,6 +1108,14 @@ class SystemReviewService:
             for subject_id, row in subjects.items():
                 task_id = row.get("task_id")
                 if task_id is not None:
+                    task_status = row.get("task_status")
+                    if task_status is None and str(row.get("stage") or "") == "current_status":
+                        task_status = row.get("status")
+                    normalized_task_status = str(task_status or "").casefold()
+                    if normalized_task_status and not (normalized_task_status == "failed" or normalized_task_status.endswith("_failed")):
+                        recovered_subjects.add(subject_id)
+                        recovery_evidence.append({"subject_id": subject_id, "current_status": normalized_task_status})
+                        continue
                     stage = str(row.get("stage") or "unknown")
                     failed_attempt = latest_failed_attempt.get((int(task_id), stage), 0)
                     success_attempt = successful_attempts.get((int(task_id), stage), 0)

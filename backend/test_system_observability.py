@@ -1501,16 +1501,19 @@ def test_failure_clusters_only_report_multiday_internal_errors_and_count_recover
                 (1, "x", "x-1", "written", recovered_at),
                 (2, "x", "x-2", "write_failed", failure_times[1]),
                 (3, "panews", "panews-3", "write_failed", failure_times[2]),
+                (4, "x", "x-4", "auto_published", failure_times[2]),
             ])
             conn.executemany("INSERT INTO x_task_pipeline VALUES(?,?,?,?)", [
                 (1, None, "x_onchain_writer", 4),
                 (2, "writer output repeats title in content", "x_onchain_writer", 4),
                 (3, "writer output repeats title in content", "x_regular_writer", 40),
+                (4, "writer output repeats title in content", "x_onchain_writer", 4),
             ])
             conn.executemany("INSERT INTO x_processing_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
                 (1, 1, "write", 1, "model", "failed", "EVALIDATION", "writer output repeats title in content", failure_times[0], failure_times[0], '{"prompt_version_id":4}'),
                 (2, 1, "write", 2, "model", "succeeded", None, None, recovered_at, recovered_at, '{"prompt_version_id":4}'),
                 (3, 2, "write", 1, "model", "failed", "EVALIDATION", "writer output repeats title in content", failure_times[1], failure_times[1], '{"prompt_version_id":4}'),
+                (4, 4, "write", 1, "model", "failed", "EVALIDATION", "writer output repeats title in content", failure_times[2], failure_times[2], '{"prompt_version_id":4}'),
             ])
             conn.executemany("INSERT INTO x_capture_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
                 (1, 10, "account_a", "failed", "fxtwitter", "invalid profile JSON", failure_times[0], failure_times[0], 0, 0, 0),
@@ -1526,7 +1529,8 @@ def test_failure_clusters_only_report_multiday_internal_errors_and_count_recover
 
         assert len(issues) == 1
         assert processing["title"] == "写作校验持续失败：标题重复在正文"
-        assert processing["affected_count"] == 3
+        assert processing["affected_count"] == 4
         assert "3 个自然日" in processing["summary"]
         assert "当前仍有 2 个对象未恢复" in processing["summary"]
-        assert len(processing["counter_evidence"]) == 1
+        assert len(processing["counter_evidence"]) == 2
+        assert any(item.get("current_status") == "auto_published" for item in processing["counter_evidence"])
