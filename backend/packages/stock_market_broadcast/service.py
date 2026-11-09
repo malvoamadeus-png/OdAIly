@@ -90,7 +90,7 @@ class StockMarketBroadcastService:
         for instrument in instruments:
             quote = quotes.get(instrument.symbol)
             if quote is None:
-                errors[instrument.symbol] = "Binance ticker missing or stale"
+                errors[instrument.symbol] = "Binance ticker unavailable"
                 continue
             age = now - quote.observed_at
             if age > self.settings.quote_max_age_seconds or age < -15:

@@ -86,7 +86,7 @@ def test_binance_24_hour_tickers_are_read_in_one_batch(monkeypatch) -> None:
             return [
                 {
                     "symbol": "AAPLUSDT",
-                    "closeTime": (now - 10) * 1000,
+                    "closeTime": (now - 100) * 1000,
                     "lastPrice": "123.45",
                     "priceChangePercent": "4.25",
                 },
@@ -117,7 +117,7 @@ def test_binance_24_hour_tickers_are_read_in_one_batch(monkeypatch) -> None:
     assert session.calls[0][0] == "https://fapi.binance.com/fapi/v1/ticker/24hr"
     assert quotes["AAPLUSDT"].price == Decimal("123.45")
     assert quotes["AAPLUSDT"].change_24h == Decimal("4.25")
-    assert quotes["AAPLUSDT"].observed_at == now - 10
+    assert quotes["AAPLUSDT"].observed_at == now
     assert "OLDUSDT" not in quotes
 
 

@@ -113,7 +113,8 @@ class BinanceStockMarketClient:
         if not isinstance(payload, list):
             raise RuntimeError("Binance 24hr ticker returned an invalid response")
         wanted = {item.symbol for item in instruments}
-        now_ms = int(time.time() * 1000)
+        # closeTime is the symbol's last trade time, not this snapshot's fetch time.
+        observed_at = int(time.time())
         quotes: dict[str, StockQuote] = {}
         for item in payload:
             if not isinstance(item, dict):
@@ -122,13 +123,9 @@ class BinanceStockMarketClient:
             if symbol not in wanted:
                 continue
             try:
-                close_time = int(item.get("closeTime") or 0)
                 price = _decimal(item.get("lastPrice"))
                 change = _decimal(item.get("priceChangePercent"))
             except (TypeError, ValueError):
-                continue
-            age_ms = now_ms - close_time
-            if close_time <= 0 or age_ms > 90_000 or age_ms < -15_000:
                 continue
             if price <= 0:
                 continue
@@ -136,6 +133,6 @@ class BinanceStockMarketClient:
                 symbol=symbol,
                 price=price,
                 change_24h=change,
-                observed_at=close_time // 1000,
+                observed_at=observed_at,
             )
         return quotes
