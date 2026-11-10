@@ -143,10 +143,17 @@ export function StockMarketPanel({
                 <p>{event.content}</p>
                 {event.headline && (
                   <small>
-                    {event.headline.status === 'generated'
-                      ? `识别概念：${event.headline.concepts.map((concept) => `${concept.label}（${concept.members.map(({ symbol, confidence }) => `${symbol} ${Math.round(confidence * 100)}%`).join('、')}）`).join('；')}`
-                      : `标题兜底：${headlineFallbackLabel(event.headline.fallback_reason)}`}
-                    {!!event.headline.unclassified_symbols.length && `；未归类：${event.headline.unclassified_symbols.join('、')}`}
+                    {[
+                      event.headline.concepts.length > 0
+                        ? `识别概念：${event.headline.concepts.map((concept) => `${concept.label}（${concept.members.map(({ symbol, confidence }) => `${symbol} ${Math.round(confidence * 100)}%`).join('、')}）`).join('；')}`
+                        : '',
+                      event.headline.status === 'fallback'
+                        ? `标题兜底：${headlineFallbackLabel(event.headline.fallback_reason)}`
+                        : '',
+                      event.headline.unclassified_symbols.length > 0
+                        ? `未归类：${event.headline.unclassified_symbols.join('、')}`
+                        : '',
+                    ].filter(Boolean).join('；')}
                   </small>
                 )}
                 {event.error && <small className="stockMarketRowError">{event.error}</small>}

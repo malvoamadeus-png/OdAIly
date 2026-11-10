@@ -59,7 +59,8 @@ _FORBIDDEN_TITLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MIN_CONFIDENCE = 0.8
-_MIN_CLASSIFIED_SHARE = 0.7
+_MIN_CLASSIFIED_SHARE = 0.5
+_MIN_CLASSIFIED_COUNT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +231,7 @@ class StockThemeClassifier:
             moves=moves,
             direction=direction,
             broad=broad,
+            fallback_title=fallback_title,
         )
         if generated is None:
             return self._fallback(fallback_title, symbols, reason or "invalid_response")
@@ -285,6 +287,7 @@ class StockThemeClassifier:
         moves: dict[str, Decimal],
         direction: Direction,
         broad: bool,
+        fallback_title: str,
     ) -> tuple[HeadlineGeneration | None, str | None]:
         try:
             payload: Any = json.loads(raw)
@@ -362,14 +365,24 @@ class StockThemeClassifier:
             return None, "invalid_response"
 
         covered = len(classified) / len(requested_set) if requested_set else 0
-        if covered < _MIN_CLASSIFIED_SHARE or not concepts:
-            return None, "classification_below_threshold"
-
         concepts.sort(key=lambda concept: (
             -len(concept.symbols),
             -sum(moves[symbol] for symbol in concept.symbols) / len(concept.symbols),
             concept.label.casefold(),
         ))
+        remaining = tuple(sorted(low_confidence | unclassified))
+        if (
+            len(classified) < _MIN_CLASSIFIED_COUNT
+            or covered <= _MIN_CLASSIFIED_SHARE
+            or not concepts
+        ):
+            return HeadlineGeneration(
+                fallback_title,
+                tuple(concepts),
+                remaining,
+                "classification_below_threshold",
+            ), "classification_below_threshold"
+
         if len(concepts) == 1:
             trend = ("普涨" if direction == "up" else "普跌") if broad else (
                 "多只上涨" if direction == "up" else "多只下跌"
@@ -390,5 +403,4 @@ class StockThemeClassifier:
         ):
             return None, "title_validation_failed"
 
-        remaining = tuple(sorted(low_confidence | unclassified))
         return HeadlineGeneration(title, tuple(concepts), remaining), None
