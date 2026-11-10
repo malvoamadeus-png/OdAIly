@@ -445,6 +445,7 @@ class EditorPluginNewsGenService:
             evidence_database_path=storage_settings.sqlite_path,
             local_pipeline_database_path=self.paths.runtime_dir / "local_pipeline.sqlite",
         )
+        self.system_review_enabled = os.getenv("SYSTEM_REVIEW_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         self.system_review_worker = SystemReviewWorker(self.system_review_service)
         self.ai_text_self_upgrade_repository = AITextSelfUpgradeRepository(
             self.system_observability_dir / "ai_text_self_upgrade.sqlite"
@@ -476,7 +477,10 @@ class EditorPluginNewsGenService:
         self.feed_syncer.start()
         self.pipeline_timing_snapshots.start()
         self.system_information_projector.start()
-        self.system_review_worker.start()
+        if self.system_review_enabled:
+            self.system_review_worker.start()
+        else:
+            print("[odaily] system review worker disabled")
         self.ai_text_self_upgrade_worker.start()
 
     def _build_search_ai_client(self) -> TextGenerationClient:
@@ -660,11 +664,15 @@ class EditorPluginNewsGenService:
             schedules = []
             coverage["schedule_read_error"] = type(exc).__name__
         workers = [expire_external_errors(row, timestamp_ms(row.get("last_seen_at")), now_ms=now_ms) for row in workers]
-        review_last_seen = self.system_review_repository.get_state("worker_last_seen_at")
-        review_worker = expire_external_errors({
-            "last_seen_at": review_last_seen,
-            "last_error": self.system_review_repository.get_state("worker_last_error"),
-        }, timestamp_ms(review_last_seen), now_ms=now_ms)
+        if self.system_review_enabled:
+            review_last_seen = self.system_review_repository.get_state("worker_last_seen_at")
+            review_worker = expire_external_errors({
+                "enabled": True,
+                "last_seen_at": review_last_seen,
+                "last_error": self.system_review_repository.get_state("worker_last_error"),
+            }, timestamp_ms(review_last_seen), now_ms=now_ms)
+        else:
+            review_worker = {"enabled": False, "last_seen_at": None, "last_error": None}
         recent_briefs = self.system_information.query({"business": "scheduled_brief", "limit": 8})["items"]
         return {
             "generated_at_ms": now_ms,

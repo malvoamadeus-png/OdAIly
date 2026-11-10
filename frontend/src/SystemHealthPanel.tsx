@@ -67,8 +67,8 @@ export default function SystemHealthPanel({ mode = 'all', refreshToken = 0, onOp
         <header><h2>Worker 心跳</h2><span>{snapshot?.workers.length || 0} 个已登记运行实例</span></header>
         {snapshot?.review_worker && <article className="systemHealthAdapter">
           <strong>系统巡检 worker</strong>
-          <span>{snapshot.review_worker.last_seen_at ? `最近活动 ${formatTime(Date.parse(snapshot.review_worker.last_seen_at))}` : '等待首次运行'}</span>
-          {snapshot.review_worker.last_error && <span className="healthState bad">{snapshot.review_worker.last_error}</span>}
+          <span>{!snapshot.review_worker.enabled ? '已停用' : snapshot.review_worker.last_seen_at ? `最近活动 ${formatTime(Date.parse(snapshot.review_worker.last_seen_at))}` : '等待首次运行'}</span>
+          {snapshot.review_worker.enabled && snapshot.review_worker.last_error && <span className="healthState bad">{snapshot.review_worker.last_error}</span>}
         </article>}
         <div className="systemHealthRows">
           {snapshot?.workers.map((worker) => <article className="systemHealthRow" key={`${worker.component}:${worker.worker_id}`}>

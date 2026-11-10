@@ -1386,7 +1386,7 @@ export type SystemHealthSnapshot = {
     schedule_read_error?: string;
   };
   workers: Array<{ component: string; worker_id: string; status: string; last_seen_at: string; last_success_at: string | null; last_error: string | null; metadata: string }>;
-  review_worker: { last_seen_at: string | null; last_error: string | null };
+  review_worker: { enabled: boolean; last_seen_at: string | null; last_error: string | null };
   inspection_runs: Array<{ run_key: string; task_kind: string; status: string; started_at: string; completed_at: string | null; items_created: number; error: string | null }>;
   scheduled_tasks: Array<{
     task_id: string; name: string; kinds: string[]; config: string | null;
