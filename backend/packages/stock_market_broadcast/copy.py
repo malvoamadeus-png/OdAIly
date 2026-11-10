@@ -7,7 +7,6 @@ from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief
 
 from .models import AlertMember, Direction, Market, StockInstrument, Tier, Window
-from .theme_classifier import ThemeClassification
 
 
 WINDOW_LABELS: dict[Window, str] = {"1h": "1小时", "24h": "24小时"}
@@ -43,7 +42,6 @@ def _format_alert(title: str, content: str) -> tuple[str, str]:
 def render_digest(
     *, market: Market, direction: Direction, members: tuple[AlertMember, ...],
     breadth: dict[Window, dict[str, Any]],
-    theme: ThemeClassification | None = None,
 ) -> tuple[str, str]:
     verb = "上涨" if direction == "up" else "下跌"
     prefix = MARKET_ATTRIBUTION[market]
@@ -54,34 +52,27 @@ def render_digest(
 
     common: Window | None = next((window for window in ("24h", "1h") if all(window in member.changes for member in members)), None)
     window_label = WINDOW_LABELS[common] if common else ""
-    if theme is not None and market == "us":
-        themed = [member for member in members if member.instrument.asset_name in theme.symbols]
-        if len(themed) / len(members) >= 0.7:
-            others = [member for member in members if member.instrument.asset_name not in theme.symbols]
-            movement = "集体上涨" if direction == "up" else "集体下跌"
-            theme_name = f"{theme.label}相关美股合约"
-            title = f"{theme_name}{window_label}{movement}"
-            details = "；".join(_member_text(member, direction, common) for member in themed[:5])
-            body_trend = "整体走强" if direction == "up" else "整体走弱"
-            lead = f"{theme.label}相关标的{window_label}{body_trend}"
-            content = f"{MARKET_ATTRIBUTION[market]}{lead}，{details}"
-            if others:
-                other_details = "；".join(_member_text(member, direction, common) for member in others[:5])
-                other_direction = "下跌" if direction == "down" else "上涨"
-                content += f"；另有其他美股合约{other_direction}：{other_details}"
-            return _format_alert(title, content + "。")
-
     stats = breadth.get(common, {}) if common else {}
     broad = stats.get("broad", False)
-    market_name = MARKET_LABELS[market] + "相关合约"
-    if broad:
-        trend = "普涨" if direction == "up" else "普跌"
-        title = f"{market_name}{window_label}{trend}"
-        lead = f"多只{market_name}{window_label}{trend}"
+    if market == "us":
+        if broad:
+            trend = "普涨" if direction == "up" else "普跌"
+            title = f"多只美股{trend}"
+            lead = f"多只美股{window_label}{trend}"
+        else:
+            trend = "上涨" if direction == "up" else "下跌"
+            title = f"多只美股{trend}"
+            lead = f"多只美股{window_label}{trend}"
     else:
-        move = ("涨幅" if direction == "up" else "跌幅") + "扩大"
-        title = f"{market_name}{window_label}{move}"
-        lead = f"多只{market_name}{window_label}{move}"
+        market_name = MARKET_LABELS[market] + "相关合约"
+        if broad:
+            trend = "普涨" if direction == "up" else "普跌"
+            title = f"{market_name}{window_label}{trend}"
+            lead = f"多只{market_name}{window_label}{trend}"
+        else:
+            move = ("涨幅" if direction == "up" else "跌幅") + "扩大"
+            title = f"{market_name}{window_label}{move}"
+            lead = f"多只{market_name}{window_label}{move}"
     details = "；".join(_member_text(member, direction, common) for member in members[:5])
     return _format_alert(title, f"{prefix}{lead}，{details}。")
 

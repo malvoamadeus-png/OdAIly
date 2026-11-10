@@ -119,3 +119,5 @@ class StockAlert:
     members: tuple[AlertMember, ...]
     title: str
     content: str
+    broad: bool = False
+    headline_diagnostics: dict[str, object] | None = None

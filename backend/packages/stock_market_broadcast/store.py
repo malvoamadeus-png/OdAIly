@@ -280,6 +280,8 @@ class StockMarketStore:
                     "changes": {window: str(change) for window, change in member.changes.items()},
                     "current_price": str(member.current_price), "observed_at": _iso(member.observed_at),
                 } for member in alert.members]}
+                if alert.headline_diagnostics is not None:
+                    details["headline"] = alert.headline_diagnostics
                 cursor = conn.execute(
                     """
                     INSERT OR IGNORE INTO trigger_events(
@@ -375,7 +377,8 @@ class StockMarketStore:
         ]
         recent_events = [
             {
-                "members": json.loads(row["details_json"]).get("members", []),
+                "members": details.get("members", []),
+                "headline": details.get("headline"),
                 "id": int(row["id"]),
                 "symbol": str(row["symbol"]),
                 "market": str(row["market"]),
@@ -392,6 +395,7 @@ class StockMarketStore:
                 "created_at": _iso(int(row["created_at"])),
             }
             for row in events
+            for details in [json.loads(row["details_json"])]
         ]
         last_cycle_at = int(settings.get("last_cycle_at", "0") or 0)
         last_discovery_at = int(settings.get("last_discovery_at", "0") or 0)

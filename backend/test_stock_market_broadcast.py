@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from decimal import Decimal
@@ -7,13 +8,14 @@ from pathlib import Path
 
 from packages.publisher import PushResult
 from packages.stock_market_broadcast.client import BinanceStockMarketClient, discover_stock_instruments
-from packages.stock_market_broadcast.copy import render_alert
+from packages.stock_market_broadcast.copy import render_alert, render_digest
 from packages.stock_market_broadcast.aggregation import advance_broadcast
-from packages.stock_market_broadcast.models import BroadcastState, StockInstrument, StockQuote
+from packages.stock_market_broadcast.models import AlertMember, BroadcastState, StockAlert, StockInstrument, StockQuote
 from packages.stock_market_broadcast.service import StockMarketBroadcastService
 from packages.stock_market_broadcast.settings import StockMarketSettings
 from packages.stock_market_broadcast.state_machine import PRICE_LOCK_SECONDS
 from packages.stock_market_broadcast.store import StockMarketStore
+from packages.stock_market_broadcast.theme_classifier import StockThemeClassifier, load_instrument_knowledge
 
 
 def _exchange_symbol(
@@ -32,6 +34,298 @@ def _exchange_symbol(
         "underlyingSubType": subtype or ["STOCK"],
         "pricePrecision": 4,
     }
+
+
+class _FakeTextGenerationClient:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def generate_text(self, **kwargs: object) -> str:
+        self.calls.append(kwargs)
+        return self.response
+
+
+class _FailingTextGenerationClient:
+    def generate_text(self, **_kwargs: object) -> str:
+        raise TimeoutError("model request timed out")
+
+
+def _member(symbol: str, change: str) -> AlertMember:
+    instrument = StockInstrument(f"{symbol}USDT", "us", 2)
+    return AlertMember(
+        instrument=instrument,
+        changes={"24h": Decimal(change)},
+        current_price=Decimal("100"),
+        observed_at=1_700_000_000,
+    )
+
+
+def test_instrument_knowledge_covers_current_us_symbols_and_marks_unknown_profiles() -> None:
+    knowledge = load_instrument_knowledge()
+
+    assert len(knowledge) == 176
+    assert knowledge["MU"].company_name == "Micron Technology"
+    assert {"DRAM", "NAND", "存储芯片"} <= set(knowledge["MU"].business_tags)
+    assert knowledge["INTC"].verified is True
+    assert knowledge["DRAM"].verified is False
+    assert knowledge["DRAM"].business_tags == ()
+
+
+def test_headline_generation_uses_business_knowledge_and_generates_single_concept_title() -> None:
+    response = json.dumps({
+        "title": "存储芯片概念美股普涨",
+        "concepts": [{"label": "存储芯片", "members": [
+            {"symbol": "WDC", "confidence": 0.96},
+            {"symbol": "MU", "confidence": 0.96},
+            {"symbol": "SNDK", "confidence": 0.96},
+        ]}],
+        "unclassified_symbols": [],
+    })
+    client = _FakeTextGenerationClient(response)
+    classifier = StockThemeClassifier(client=client, model="test-model")
+
+    result = classifier.generate_title(
+        members=(_member("WDC", "11.2"), _member("MU", "10.6"), _member("SNDK", "10.4")),
+        direction="up",
+        broad=True,
+        fallback_title="多只美股普涨",
+    )
+
+    assert result.title == "存储芯片概念美股普涨"
+    assert result.diagnostics() == {
+        "status": "generated",
+        "concepts": [{"label": "存储芯片", "members": [
+            {"symbol": "WDC", "confidence": 0.96},
+            {"symbol": "MU", "confidence": 0.96},
+            {"symbol": "SNDK", "confidence": 0.96},
+        ]}],
+        "unclassified_symbols": [],
+    }
+    prompt = str(client.calls[0]["prompt"])
+    assert '"business_tags":["硬盘","数据存储","存储设备"]' in prompt
+    assert '"knowledge_verified":true' in prompt
+
+
+def test_headline_generation_lists_multiple_concepts_in_deterministic_rank_order() -> None:
+    response = json.dumps({
+        "title": "美股多类股票上涨，包括半导体设备概念、消费电子概念",
+        "concepts": [
+            {"label": "消费电子", "members": [{"symbol": "AAPL", "confidence": 0.94}]},
+            {"label": "半导体设备", "members": [{"symbol": "AMAT", "confidence": 0.91}]},
+        ],
+        "unclassified_symbols": [],
+    })
+    classifier = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(_member("AAPL", "6"), _member("AMAT", "9")),
+        direction="up",
+        broad=False,
+        fallback_title="多只美股上涨",
+    )
+
+    assert result.title == "美股多类股票上涨，包括半导体设备概念、消费电子概念"
+    assert [concept.label for concept in result.concepts] == ["半导体设备", "消费电子"]
+
+
+def test_unverified_symbol_cannot_be_classified_from_its_code_alone() -> None:
+    response = json.dumps({
+        "title": "CPU架构概念美股普涨",
+        "concepts": [{"label": "CPU架构", "members": [{"symbol": "ARM", "confidence": 0.99}]}],
+        "unclassified_symbols": ["DRAM"],
+    })
+    client = _FakeTextGenerationClient(response)
+    classifier = StockThemeClassifier(client=client, model="test-model")
+
+    result = classifier.generate_title(
+        members=(_member("ARM", "9.8"), _member("DRAM", "9.4")),
+        direction="up",
+        broad=True,
+        fallback_title="多只美股普涨",
+    )
+
+    assert result.title == "多只美股普涨"
+    assert result.fallback_reason == "classification_below_threshold"
+    assert result.unclassified_symbols == ("ARM", "DRAM")
+    prompt = str(client.calls[0]["prompt"])
+    assert '"symbol":"DRAM","company_name":null,"business_tags":[],"knowledge_verified":false' in prompt
+
+
+def test_unverified_symbols_without_any_profile_use_generic_title_without_model_call() -> None:
+    client = _FakeTextGenerationClient("should not be requested")
+    classifier = StockThemeClassifier(client=client, model="test-model")
+
+    result = classifier.generate_title(
+        members=(_member("DRAM", "9.4"), _member("BBX", "8.2")),
+        direction="up",
+        broad=True,
+        fallback_title="多只美股普涨",
+    )
+
+    assert result.title == "多只美股普涨"
+    assert result.fallback_reason == "knowledge_missing"
+    assert result.unclassified_symbols == ("BBX", "DRAM")
+    assert client.calls == []
+
+
+def test_model_cannot_assign_unverified_symbol_to_a_concept() -> None:
+    response = json.dumps({
+        "title": "存储芯片概念美股普涨",
+        "concepts": [{
+            "label": "存储芯片",
+            "members": [
+                {"symbol": "MU", "confidence": 0.99},
+                {"symbol": "DRAM", "confidence": 0.99},
+            ],
+        }],
+        "unclassified_symbols": ["WDC", "SNDK"],
+    })
+    classifier = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(_member("MU", "10"), _member("DRAM", "9"), _member("WDC", "8"), _member("SNDK", "7")),
+        direction="up",
+        broad=True,
+        fallback_title="多只美股普涨",
+    )
+
+    assert result.title == "多只美股普涨"
+    assert result.fallback_reason == "invalid_response"
+    assert result.unclassified_symbols == ("DRAM", "MU", "SNDK", "WDC")
+
+
+def test_three_concepts_are_allowed_and_four_are_rejected() -> None:
+    members = (_member("AAPL", "9"), _member("AMAT", "8"), _member("AMD", "7"))
+    concepts = [
+        {"label": "消费电子", "members": [{"symbol": "AAPL", "confidence": 0.9}]},
+        {"label": "半导体设备", "members": [{"symbol": "AMAT", "confidence": 0.9}]},
+        {"label": "芯片设计", "members": [{"symbol": "AMD", "confidence": 0.9}]},
+    ]
+    valid_response = json.dumps({
+        "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
+        "concepts": concepts,
+        "unclassified_symbols": [],
+    })
+    valid = StockThemeClassifier(
+        client=_FakeTextGenerationClient(valid_response), model="test-model",
+    ).generate_title(
+        members=members, direction="up", broad=True, fallback_title="多只美股普涨",
+    )
+    assert valid.title == "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念"
+
+    invalid_response = json.dumps({
+        "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
+        "concepts": concepts + [{"label": "电脑", "members": [{"symbol": "AAPL", "confidence": 0.9}]}],
+        "unclassified_symbols": [],
+    })
+    invalid = StockThemeClassifier(
+        client=_FakeTextGenerationClient(invalid_response), model="test-model",
+    ).generate_title(
+        members=members, direction="up", broad=True, fallback_title="多只美股普涨",
+    )
+    assert invalid.title == "多只美股普涨"
+    assert invalid.fallback_reason == "invalid_response"
+
+
+def test_low_confidence_members_are_excluded_from_concept_coverage() -> None:
+    response = json.dumps({
+        "title": "半导体概念美股普涨",
+        "concepts": [{"label": "半导体", "members": [
+            {"symbol": "AMD", "confidence": 0.95},
+            {"symbol": "NVDA", "confidence": 0.79},
+            {"symbol": "INTC", "confidence": 0.95},
+            {"symbol": "MU", "confidence": 0.95},
+        ]}],
+        "unclassified_symbols": ["NVDA"],
+    })
+    result = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    ).generate_title(
+        members=(
+            _member("AMD", "9"), _member("NVDA", "8"),
+            _member("INTC", "7"), _member("MU", "6"),
+        ),
+        direction="up", broad=True, fallback_title="多只美股普涨",
+    )
+
+    assert result.title == "半导体概念美股普涨"
+    assert result.unclassified_symbols == ("NVDA",)
+    assert result.concepts[0].symbols == ("AMD", "INTC", "MU")
+
+
+def test_invalid_or_wrong_direction_title_falls_back_without_blocking() -> None:
+    response = json.dumps({
+        "title": "美股相关合约24小时普涨",
+        "concepts": [{"label": "半导体", "members": [
+            {"symbol": "AMD", "confidence": 0.95},
+            {"symbol": "NVDA", "confidence": 0.95},
+        ]}],
+        "unclassified_symbols": [],
+    })
+    classifier = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(_member("AMD", "-10"), _member("NVDA", "-11")),
+        direction="down",
+        broad=True,
+        fallback_title="多只美股普跌",
+    )
+
+    assert result.title == "多只美股普跌"
+    assert result.fallback_reason == "title_validation_failed"
+
+
+def test_model_request_failure_falls_back_without_blocking() -> None:
+    classifier = StockThemeClassifier(
+        client=_FailingTextGenerationClient(), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(_member("AMD", "-10"), _member("NVDA", "-11")),
+        direction="down",
+        broad=True,
+        fallback_title="多只美股普跌",
+    )
+
+    assert result.title == "多只美股普跌"
+    assert result.fallback_reason == "model_error"
+
+
+def test_stock_market_event_exposes_headline_diagnostics(tmp_path: Path) -> None:
+    store = StockMarketStore(tmp_path / "headline.sqlite")
+    store.initialize()
+    member = _member("MU", "10.6")
+    diagnostics = {
+        "status": "generated",
+        "concepts": [{"label": "存储芯片", "members": [{"symbol": "MU", "confidence": 0.95}]}],
+        "unclassified_symbols": [],
+    }
+    alert = StockAlert(
+        event_key="headline:test",
+        market="us",
+        tier="live",
+        direction="up",
+        members=(member,),
+        title="存储芯片概念美股普涨",
+        content="据 MSX.COM 数据，MU 24 小时上涨10.6%，现报100 USDT。",
+        broad=True,
+        headline_diagnostics=diagnostics,
+    )
+
+    claimed = store.record_cycle(
+        quotes={}, changes_1h={}, state=BroadcastState(), alerts=[alert], errors={},
+        now=1_700_000_000, startup_baseline=False,
+    )
+
+    assert len(claimed) == 1
+    assert store.dashboard()["recent_events"][0]["headline"] == diagnostics
 
 
 def test_discovery_includes_stock_markets_but_filters_leveraged_etfs() -> None:
@@ -131,7 +425,7 @@ def test_copy_uses_market_attribution_and_asset_name() -> None:
         change_pct=Decimal("-10.24"),
         current_price=Decimal("67800"),
     )
-    assert content == "Odaily星球日报讯 据 Gate 数据，005930 24 小时下跌10.2%，现报67800 USDT。"
+    assert content == "Odaily星球日报讯 据 Gate 数据，005930 24 小时下跌 10.2%，现报 67800 USDT。"
 
     instrument = StockInstrument("600000USDT", "cn", 2)
     _title, content = render_alert(
@@ -154,7 +448,23 @@ def test_copy_uses_market_attribution_and_asset_name() -> None:
         current_price=Decimal("36.85"),
     )
     assert title == "SMCI 24小时上涨14.0%"
-    assert content == "Odaily星球日报讯 据 MSX.COM 数据，SMCI 24 小时上涨14.0%，现报36.85 USDT。"
+    assert content == "Odaily星球日报讯 据 MSX.COM 数据，SMCI 24 小时上涨 14.0%，现报 36.85 USDT。"
+
+
+def test_us_digest_headlines_omit_window_and_contract_language() -> None:
+    members = (_member("AMD", "11"), _member("NVDA", "10"))
+
+    broad_title, _ = render_digest(
+        market="us", direction="up", members=members, breadth={"24h": {"broad": True}},
+    )
+    narrow_title, _ = render_digest(
+        market="us", direction="down", members=members, breadth={"24h": {"broad": False}},
+    )
+
+    assert broad_title == "多只美股普涨"
+    assert narrow_title == "多只美股下跌"
+    assert all("合约" not in title and "相关" not in title for title in (broad_title, narrow_title))
+    assert all("小时" not in title and "24h" not in title for title in (broad_title, narrow_title))
 
 
 class _FakePushClient:
@@ -244,8 +554,8 @@ def test_service_calculates_one_hour_change_and_dispatches_tiers(tmp_path: Path)
     assert result["alert_count"] == 1
     assert {call["is_publish"] for call in push.calls} == {False}
     assert all(call["is_push"] is False for call in push.calls)
-    assert any("1小时上涨6.0%" in str(call["content"]) for call in push.calls)
-    assert any("24小时上涨11.0%" in str(call["content"]) for call in push.calls)
+    assert any("1 小时上涨 6.0%" in str(call["content"]) for call in push.calls)
+    assert any("24 小时上涨 11.0%" in str(call["content"]) for call in push.calls)
     dashboard = store.dashboard()
     assert Decimal(dashboard["contracts"][0]["change_1h"]) == Decimal("6")
     assert {event["status"] for event in dashboard["recent_events"]} == {"backend_created"}
@@ -450,7 +760,7 @@ def test_falling_prices_repeat_only_at_five_percent_lower_price():
     assert replay.hold(1800, {"AAAUSDT": ("89", "-15")}) == []
     replay.tick({"AAAUSDT": ("85.5", "-15")})
     alerts = replay.hold(180, {"AAAUSDT": ("85.5", "-15")})
-    assert len(alerts) == 1 and "下跌15.0%" in alerts[0].content
+    assert len(alerts) == 1 and "下跌 15.0%" in alerts[0].content
 
 
 def test_expired_lock_rebases_silently_instead_of_resending_current_move():

@@ -2090,6 +2090,15 @@ export type StockMarketEvent = {
     current_price: string;
     observed_at: string;
   }[];
+  headline?: {
+    status: 'generated' | 'fallback';
+    concepts: {
+      label: string;
+      members: { symbol: string; confidence: number }[];
+    }[];
+    unclassified_symbols: string[];
+    fallback_reason?: string;
+  } | null;
   id: number;
   symbol: string;
   market: StockMarketContract['market'];

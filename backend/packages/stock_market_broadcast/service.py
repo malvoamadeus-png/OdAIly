@@ -10,7 +10,6 @@ from packages.publisher import PushClient, PushResult
 
 from .aggregation import advance_broadcast
 from .client import BinanceStockMarketClient
-from .copy import render_digest
 from .models import StockInstrument, StockQuote, Window
 from .settings import StockMarketSettings
 from .store import StockMarketStore
@@ -120,23 +119,35 @@ class StockMarketBroadcastService:
         )
         classified_alerts = []
         for alert in alerts:
-            if self.theme_classifier is None or alert.market != "us" or len(alert.members) < 2:
+            if alert.market != "us" or len(alert.members) < 2:
                 classified_alerts.append(alert)
                 continue
-            theme = self.theme_classifier.classify(
-                tuple(member.instrument.asset_name for member in alert.members)
-            )
-            if theme is None:
-                classified_alerts.append(alert)
+            if self.theme_classifier is None:
+                diagnostics = {
+                    "status": "fallback",
+                    "concepts": [],
+                    "unclassified_symbols": sorted(
+                        member.instrument.asset_name for member in alert.members
+                    ),
+                    "fallback_reason": (
+                        "classifier_disabled"
+                        if not self.settings.theme_classification_enabled
+                        else "classifier_unavailable"
+                    ),
+                }
+                classified_alerts.append(replace(alert, headline_diagnostics=diagnostics))
                 continue
-            title, content = render_digest(
-                market=alert.market,
-                direction=alert.direction,
+            headline = self.theme_classifier.generate_title(
                 members=alert.members,
-                breadth={},
-                theme=theme,
+                direction=alert.direction,
+                broad=alert.broad,
+                fallback_title=alert.title,
             )
-            classified_alerts.append(replace(alert, title=title, content=content))
+            classified_alerts.append(replace(
+                alert,
+                title=headline.title,
+                headline_diagnostics=headline.diagnostics(),
+            ))
         alerts = classified_alerts
         baseline_cycle = bool(valid_quotes) and baseline_count == len(valid_quotes)
         claimed = self.store.record_cycle(

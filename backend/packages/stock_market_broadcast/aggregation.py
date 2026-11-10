@@ -143,13 +143,17 @@ def advance_broadcast(
             if not members:
                 continue
             ordered = tuple(sorted(members, key=lambda member: (-abs(member.change_pct), member.instrument.symbol)))
+            breadth = _breadth(instruments, quotes, changes, group.market, group.direction)
+            common = next((window for window in ("24h", "1h") if all(window in member.changes for member in ordered)), None)
+            broad = bool(breadth.get(common, {}).get("broad", False)) if common else False
             title, content = render_digest(
                 market=group.market, direction=group.direction, members=ordered,
-                breadth=_breadth(instruments, quotes, changes, group.market, group.direction),
+                breadth=breadth,
             )
             alerts.append(StockAlert(
                 event_key=f"digest:{key}:{group.due_at}:{tier}", market=group.market,
                 tier=tier, direction=group.direction, members=ordered, title=title, content=content,
+                broad=broad,
             ))
             for member in ordered:
                 previous_lock = state.assets[member.instrument.symbol].locks[group.direction]

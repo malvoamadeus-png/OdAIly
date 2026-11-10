@@ -51,6 +51,17 @@ function eventStatusLabel(status: string): string {
   return '已消耗，结果待确认';
 }
 
+function headlineFallbackLabel(reason: string | undefined): string {
+  if (reason === 'classifier_disabled') return '主题标题生成已关闭';
+  if (reason === 'classifier_unavailable') return '主题模型不可用';
+  if (reason === 'model_error') return '主题模型请求失败';
+  if (reason === 'classification_below_threshold') return '已识别标的不足';
+  if (reason === 'title_validation_failed') return '标题未通过格式校验';
+  if (reason === 'invalid_response') return '模型返回格式无效';
+  if (reason === 'knowledge_missing') return '缺少标的资料';
+  return '未形成可靠概念';
+}
+
 export function StockMarketPanel({
   dashboard,
   loading,
@@ -130,6 +141,14 @@ export function StockMarketPanel({
                   <b className={changeClass(event.change_percent)}>{percentLabel(event.change_percent)}</b>
                 </div>
                 <p>{event.content}</p>
+                {event.headline && (
+                  <small>
+                    {event.headline.status === 'generated'
+                      ? `识别概念：${event.headline.concepts.map((concept) => `${concept.label}（${concept.members.map(({ symbol, confidence }) => `${symbol} ${Math.round(confidence * 100)}%`).join('、')}）`).join('；')}`
+                      : `标题兜底：${headlineFallbackLabel(event.headline.fallback_reason)}`}
+                    {!!event.headline.unclassified_symbols.length && `；未归类：${event.headline.unclassified_symbols.join('、')}`}
+                  </small>
+                )}
                 {event.error && <small className="stockMarketRowError">{event.error}</small>}
               </article>
             ))}
