@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from packages.auditor.repository import calculate_content_hash
+from packages.fact_auditor.prompts import POLICY_VERSION
 from packages.ai_text_self_upgrade import (
     AITextSelfUpgradeRepository,
     AITextSelfUpgradeService,
@@ -29,8 +30,8 @@ class FakeAIClient:
         output = self.outputs.pop(0) if self.outputs else json.dumps({
             "verdict": "writer1_error",
             "confidence": "high",
-            "rationale": "正文存在明确语法错误。",
-            "evidence": [{"location": "audited_text", "quote": "项目公布融资。", "explanation": "审核原文包含该句。"}],
+            "rationale": "事实审核者指出的内容与原始材料冲突，且草稿已有该表述。",
+            "evidence": [{"location": "published_text", "quote": "项目公布融资。", "explanation": "已发布稿件包含该主张。"}],
         }, ensure_ascii=False)
         if isinstance(output, Exception):
             raise output
@@ -41,10 +42,15 @@ def _create_primary_database(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript(
             """
-            CREATE TABLE auditor_checks (
-                id INTEGER PRIMARY KEY, source_item_id TEXT, source_url TEXT, title TEXT, content TEXT,
-                content_hash TEXT, published_at TEXT, prompt_version TEXT, status TEXT, model TEXT,
-                audit_result TEXT, alerted_at TEXT
+            CREATE TABLE fact_checks (
+                id INTEGER PRIMARY KEY, source_item_id TEXT, content_hash TEXT, policy_version TEXT,
+                title TEXT, content TEXT, source_url TEXT, source_locator TEXT, published_at TEXT,
+                status TEXT, model TEXT, reason TEXT, summary TEXT, original_text TEXT,
+                original_url TEXT, result_json TEXT
+            );
+            CREATE TABLE fact_check_runs (
+                id INTEGER PRIMARY KEY, check_id INTEGER, status TEXT, summary TEXT,
+                result_json TEXT, completed_at TEXT
             );
             CREATE TABLE newsflash_production_metadata (
                 delivery_key TEXT PRIMARY KEY, odaily_id TEXT, id_match_status TEXT
@@ -63,17 +69,23 @@ def _create_primary_database(path: Path) -> None:
         )
 
 
-def _insert_candidate(path: Path, *, alerted_at: datetime, mapped: bool = True,
+def _insert_candidate(path: Path, *, flagged_at: datetime, mapped: bool = True,
                       published_content: str = "项目公布融资。") -> None:
     title = "项目公布融资"
     digest = calculate_content_hash(title, published_content)
     with sqlite3.connect(path) as conn:
         conn.execute(
-            "INSERT INTO auditor_checks VALUES(1,'news-7','https://source.example/news','项目公布融资',?,?,?,?,'flagged','gpt-6-luna',?,?)",
-            (published_content, digest, alerted_at.isoformat(), "auditor_zh_quality_v11",
-             json.dumps({"summary": "有问题", "issues": [{"type": "grammar", "location": "content",
-             "original": "项目公布融资。", "suggested": "项目公布了融资。", "reason": "缺少必要成分。"}]}, ensure_ascii=False),
-             alerted_at.isoformat()),
+            "INSERT INTO fact_checks VALUES(1,'news-7',?,?, '项目公布融资',?,'https://source.example/news','https://source.example/news',?,'flagged','gpt-6-luna','与原文金额不符','融资金额表述有误',?,'https://source.example/news',?)",
+            (digest, POLICY_VERSION, published_content, flagged_at.isoformat(), "项目方今日公布融资消息。", json.dumps({
+                "status": "flagged", "summary": "融资金额表述有误", "questions": [],
+                "stages": {"comparison": {"result": {"status": "flagged", "summary": "金额与原文不符",
+                    "issues": [{"original": "项目公布融资。", "reason": "金额表述与来源材料冲突。",
+                                "evidence": "项目方今日公布融资消息。"}]}}},
+            }, ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT INTO fact_check_runs VALUES(1,1,'flagged','融资金额表述有误',?,?)",
+            (json.dumps({"status": "flagged"}, ensure_ascii=False), flagged_at.isoformat()),
         )
         conn.execute(
             "INSERT INTO newsflash_production_metadata VALUES('odaily-task-9','news-7',?)",
@@ -84,7 +96,7 @@ def _insert_candidate(path: Path, *, alerted_at: datetime, mapped: bool = True,
         )
         conn.execute(
             "INSERT INTO x_task_pipeline VALUES(9,'gpt-6-luna','{}','x_regular_writer',4,'项目公布融资','项目公布融资。',?,?,?,?)",
-            (title, published_content, alerted_at.isoformat(), alerted_at.isoformat()),
+            (title, published_content, flagged_at.isoformat(), flagged_at.isoformat()),
         )
 
 
@@ -100,9 +112,9 @@ def test_discovery_requires_new_flag_exact_publication_link_and_matching_version
         primary = root / "main.sqlite"
         _create_primary_database(primary)
         repository = AITextSelfUpgradeRepository(root / "review.sqlite")
-        enabled_at = datetime.fromisoformat(repository.enabled_at())
-        alert_time = enabled_at + timedelta(seconds=1)
-        _insert_candidate(primary, alerted_at=alert_time)
+        enabled_at = datetime.fromisoformat(repository.fact_enabled_at())
+        flag_time = enabled_at + timedelta(seconds=1)
+        _insert_candidate(primary, flagged_at=flag_time)
         service = AITextSelfUpgradeService(primary, repository, FakeAIClient())
 
         cases, unlinked = service._discover_cases()
@@ -139,8 +151,8 @@ def test_discovery_does_not_backfill_pre_activation_audits() -> None:
         primary = root / "main.sqlite"
         _create_primary_database(primary)
         repository = AITextSelfUpgradeRepository(root / "review.sqlite")
-        before_enabled = datetime.fromisoformat(repository.enabled_at()) - timedelta(seconds=1)
-        _insert_candidate(primary, alerted_at=before_enabled)
+        before_enabled = datetime.fromisoformat(repository.fact_enabled_at()) - timedelta(seconds=1)
+        _insert_candidate(primary, flagged_at=before_enabled)
         service = AITextSelfUpgradeService(primary, repository, FakeAIClient())
 
         assert service._discover_cases() == ([], 0)
@@ -180,8 +192,8 @@ def test_batch_uses_gpt6luna_and_records_decisions_as_history() -> None:
         _create_primary_database(primary)
         client = FakeAIClient()
         repository = AITextSelfUpgradeRepository(root / "review.sqlite")
-        enabled_at = datetime.fromisoformat(repository.enabled_at())
-        _insert_candidate(primary, alerted_at=enabled_at + timedelta(seconds=2))
+        enabled_at = datetime.fromisoformat(repository.fact_enabled_at())
+        _insert_candidate(primary, flagged_at=enabled_at + timedelta(seconds=2))
         service = AITextSelfUpgradeService(primary, repository, client)
         worker = AITextSelfUpgradeWorker(service)
 
@@ -213,8 +225,8 @@ def test_failed_case_is_retried_in_the_next_four_hour_slot() -> None:
         _create_primary_database(primary)
         client = FakeAIClient([RuntimeError("upstream timeout")])
         repository = AITextSelfUpgradeRepository(root / "review.sqlite")
-        enabled_at = datetime.fromisoformat(repository.enabled_at())
-        _insert_candidate(primary, alerted_at=enabled_at + timedelta(seconds=3))
+        enabled_at = datetime.fromisoformat(repository.fact_enabled_at())
+        _insert_candidate(primary, flagged_at=enabled_at + timedelta(seconds=3))
         service = AITextSelfUpgradeService(primary, repository, client)
         worker = AITextSelfUpgradeWorker(service)
 
@@ -225,21 +237,21 @@ def test_failed_case_is_retried_in_the_next_four_hour_slot() -> None:
         assert failed["attempt_count"] == 1
 
         client.outputs.append(json.dumps({
-            "verdict": "auditor_false_positive", "confidence": "medium", "rationale": "审核问题不成立。",
-            "evidence": [{"location": "audited_text", "quote": "项目公布融资。", "explanation": "该句表达明确。"}],
+            "verdict": "fact_auditor_error", "confidence": "medium", "rationale": "原始材料支持稿件主张，事实疑点没有证据。",
+            "evidence": [{"location": "published_text", "quote": "项目公布融资。", "explanation": "已发布主张可在原文中核对。"}],
         }, ensure_ascii=False))
         second = first + timedelta(hours=4)
         assert worker.run_due(now=second)["cases_completed"] == 1
         completed = repository.detail(failed["case_key"])
         assert completed["analysis_status"] == "completed"
         assert completed["attempt_count"] == 2
-        assert completed["verdict"] == "auditor_false_positive"
+        assert completed["verdict"] == "fact_auditor_error"
 
 
 def test_parser_rejects_evidence_not_found_in_snapshot() -> None:
     raw = json.dumps({
         "verdict": "writer1_error", "confidence": "high", "rationale": "有问题。",
-        "evidence": [{"location": "audited_text", "quote": "不存在的原句", "explanation": "引用证据。"}],
+        "evidence": [{"location": "published_text", "quote": "不存在的原句", "explanation": "引用证据。"}],
     }, ensure_ascii=False)
     case = {"audited_title": "标题", "audited_content": "正文", "source_title": "", "source_content": "",
             "draft_title": "", "draft_content": ""}

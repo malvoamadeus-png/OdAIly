@@ -1465,8 +1465,33 @@ export async function decideSystemReviewItem(itemKey: string, decision: 'accepte
 
 export type AITextSelfUpgradeItem = {
   case_key: string;
+  source_type: 'fact_auditor';
   source_item_id: string;
   content_hash: string;
+  fact_check_id: number;
+  fact_policy_version: string | null;
+  fact_model: string | null;
+  fact_status: string | null;
+  fact_reason: string;
+  fact_summary: string;
+  fact_result: {
+    status?: string;
+    summary?: string;
+    reason?: string;
+    questions?: Array<Record<string, unknown>>;
+    stages?: Record<string, {
+      status?: string;
+      summary?: string;
+      issues?: Array<Record<string, unknown>>;
+      questions?: Array<Record<string, unknown>>;
+      suggestions?: Array<Record<string, unknown>>;
+      findings?: Array<Record<string, unknown>>;
+      sources?: string[];
+    }>;
+  };
+  fact_original_text: string;
+  fact_original_url: string;
+  fact_completed_at: string | null;
   audit_prompt_version: string | null;
   audit_model: string | null;
   audited_title: string | null;
@@ -1486,7 +1511,7 @@ export type AITextSelfUpgradeItem = {
   final_content: string | null;
   analysis_status: 'pending' | 'processing' | 'completed' | 'failed';
   analysis_model: string | null;
-  verdict: 'writer1_error' | 'auditor_false_positive' | null;
+  verdict: 'writer1_error' | 'fact_auditor_error' | 'inconclusive' | null;
   confidence: 'low' | 'medium' | 'high' | null;
   rationale: string | null;
   evidence: Array<{ location: string; quote: string; explanation: string }>;

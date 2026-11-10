@@ -14,11 +14,13 @@ const DECISION_LABELS: Record<string, string> = {
   pending: '待审', accepted: '已接受', rejected: '已驳回', ignored: '已忽略',
 };
 const VERDICT_LABELS: Record<string, string> = {
-  writer1_error: '编写者1稿件存在问题',
-  auditor_false_positive: '文本审核者意见不成立',
+  writer1_error: '事实审核者正确，Writer1稿件有误',
+  fact_auditor_error: 'Writer1稿件成立，事实审核者有误',
+  inconclusive: '现有证据无法定论',
 };
 const EVIDENCE_LABELS: Record<string, string> = {
-  audited_text: '已审核稿件', writer_draft: '编写者1草稿', source_material: '写作素材',
+  published_text: '已发布稿件', writer_draft: '编写者1草稿',
+  source_material: '原始素材', fact_auditor_record: '事实审核记录',
 };
 
 export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshToken?: number }) {
@@ -107,7 +109,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 <span>{item.analysis_status === 'completed' ? VERDICT_LABELS[item.verdict || ''] || '已完成' : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
               </span>
-              <span className="aiTextUpgradeSummary">{item.audit_result.summary || issueSummary(item)}</span>
+              <span className="aiTextUpgradeSummary">{item.fact_summary || item.fact_reason || '事实审核者标记待复核问题'}</span>
             </button>
           ))}
           {!loading && !page?.items.length && <div className="aiTextUpgradeEmpty">当前筛选没有案例。</div>}
@@ -141,24 +143,49 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
             )}
 
             <section className="aiTextUpgradeSection">
-              <h3>文本审核者意见</h3>
-              <p>{selected.audit_result.summary || '未提供摘要'}</p>
-              {(selected.audit_result.issues || []).map((issue, index) => (
+              <h3>事实审核者意见</h3>
+              <p>{selected.fact_summary || selected.fact_reason || '未提供摘要'}</p>
+              {(selected.fact_result.stages?.comparison?.issues || []).map((issue, index) => (
                 <article className="aiTextUpgradeIssue" key={index}>
-                  <div><span>{String(issue.location || '') === 'title' ? '标题' : '正文'}</span><span>{String(issue.type || '问题')}</span></div>
+                  <div><span>快讯原句</span><span>事实疑点</span></div>
                   <p><strong>原文</strong>{String(issue.original || '')}</p>
-                  {issue.suggested ? <p><strong>建议</strong>{String(issue.suggested)}</p> : null}
                   <p><strong>理由</strong>{String(issue.reason || '')}</p>
-                  {issue.evidence ? <p><strong>依据</strong>{String(issue.evidence)}</p> : null}
+                  {issue.evidence ? <p><strong>原文依据</strong>{String(issue.evidence)}</p> : null}
                 </article>
               ))}
-              <small>审核版本 {selected.audit_prompt_version || '未知'} · {selected.audit_model || '未知模型'}</small>
+              {(selected.fact_result.questions || selected.fact_result.stages?.comparison?.questions || []).map((question, index) => (
+                <article className="aiTextUpgradeIssue" key={`question-${index}`}>
+                  <div><span>待核问题</span><span>{String(question.kind || '事实疑点')}</span></div>
+                  <p><strong>稿件主张</strong>{String(question.claim || '')}</p>
+                  <p><strong>问题</strong>{String(question.question || '')}</p>
+                  {question.source_evidence ? <p><strong>素材依据</strong>{String(question.source_evidence)}</p> : null}
+                </article>
+              ))}
+              {(selected.fact_result.stages?.external?.findings || []).map((finding, index) => (
+                <article className="aiTextUpgradeIssue" key={`finding-${index}`}>
+                  <div><span>外部核查</span><span>{String(finding.verdict || 'unverified')}</span></div>
+                  <p><strong>主张</strong>{String(finding.claim || '')}</p>
+                  <p><strong>判断</strong>{String(finding.reason || '')}</p>
+                  {Array.isArray(finding.evidence) ? finding.evidence.map((evidence, evidenceIndex) => {
+                    const entry = evidence as Record<string, unknown>;
+                    const href = safeExternalUrl(entry.url);
+                    return <p key={`evidence-${evidenceIndex}`}><strong>证据</strong>{String(entry.quote || '')}{href ? <> · <a href={href} target="_blank" rel="noreferrer">来源</a></> : null}</p>;
+                  }) : null}
+                </article>
+              ))}
+              <small>事实审核版本 {selected.fact_policy_version || '未知'} · {selected.fact_model || '未知模型'} · {selected.fact_status || '未知状态'}</small>
             </section>
 
             <TextBlock title="已审核稿件" titleText={selected.audited_title} content={selected.audited_content} />
             <details className="aiTextUpgradeSection aiTextUpgradeSource">
+              <summary>事实审核者核对的原文</summary>
+              <div>{selected.fact_original_url && <a href={safeExternalUrl(selected.fact_original_url) || undefined} target="_blank" rel="noreferrer">打开事实核查原文 <ExternalLink size={13} /></a>}
+                <pre>{selected.fact_original_text || '事实审核者未保存可用原文'}</pre>
+              </div>
+            </details>
+            <details className="aiTextUpgradeSection aiTextUpgradeSource">
               <summary>编写者1写作素材</summary>
-              <div>{selected.source_url && <a href={selected.source_url} target="_blank" rel="noreferrer">打开原始信源 <ExternalLink size={13} /></a>}
+              <div>{selected.source_url && <a href={safeExternalUrl(selected.source_url) || undefined} target="_blank" rel="noreferrer">打开原始信源 <ExternalLink size={13} /></a>}
                 <p className="aiTextUpgradeSourceTitle">{selected.source_title || '无素材标题'}</p>
                 <pre>{selected.source_content || '无写作素材正文'}</pre>
               </div>
@@ -191,13 +218,8 @@ function TextBlock({ title, titleText, content }: { title: string; titleText: st
   return <section className="aiTextUpgradeSection"><h3>{title}</h3>{titleText && <strong className="aiTextUpgradeTextTitle">{titleText}</strong>}<pre>{content || '无正文'}</pre></section>;
 }
 
-function issueSummary(item: AITextSelfUpgradeItem): string {
-  const first = item.audit_result.issues?.[0];
-  return String(first?.reason || first?.original || '文本审核者标记待复核问题');
-}
-
 function analysisLabel(status: string): string {
-  return ({ pending: '等待自我审核', processing: '自我审核中', failed: '自我审核失败' } as Record<string, string>)[status] || status;
+  return ({ pending: '等待自我辩论', processing: '自我辩论中', failed: '自我辩论失败' } as Record<string, string>)[status] || status;
 }
 
 function confidenceLabel(value: string | null): string {
@@ -209,4 +231,14 @@ function formatDate(value: string | null): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '时间未知';
   return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function safeExternalUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
 }
