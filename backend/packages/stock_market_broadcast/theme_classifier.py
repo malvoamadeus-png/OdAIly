@@ -59,8 +59,6 @@ _FORBIDDEN_TITLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MIN_CONFIDENCE = 0.8
-_MIN_CLASSIFIED_SHARE = 0.5
-_MIN_CLASSIFIED_COUNT = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +210,12 @@ class StockThemeClassifier:
             str(item["symbol"]) for item in inputs if item["knowledge_verified"]
         }
 
-        prompt = self._prompt(inputs, direction=direction, broad=broad)
+        prompt = self._prompt(
+            inputs,
+            direction=direction,
+            broad=broad,
+            fallback_title=fallback_title,
+        )
         try:
             raw = self.client.generate_text(
                 model=self.model,
@@ -238,7 +241,13 @@ class StockThemeClassifier:
         return generated
 
     @staticmethod
-    def _prompt(inputs: list[dict[str, Any]], *, direction: Direction, broad: bool) -> str:
+    def _prompt(
+        inputs: list[dict[str, Any]],
+        *,
+        direction: Direction,
+        broad: bool,
+        fallback_title: str,
+    ) -> str:
         movement = "上涨" if direction == "up" else "下跌"
         broad_word = "普涨" if direction == "up" else "普跌"
         narrow_word = "上涨" if direction == "up" else "下跌"
@@ -249,19 +258,22 @@ class StockThemeClassifier:
             "可综合、合并或区分标签所表达的业务概念。\n"
             "只使用 knowledge_verified=true 的公司名和业务标签。其他标的不得凭代码、常识猜公司或行业，"
             "放入 unclassified_symbols。概念标签用简短名词，不含“概念”二字；每个标的最多归入一个概念。"
+            "同一投资概念的股票必须归入同一组，不要把相近业务拆成多个单只概念。"
             "为每个标的分别输出0到1的confidence；置信度低于0.8的标的不得支持标题分类，放入未归类列表。"
-            "最多输出3类。\n"
+            "最多输出3类。只有至少一个概念组包含两只或以上标的，才能使用概念标题；其他概念组允许只有一只标的。"
+            "如果所有概念组都只有一只标的，title必须严格使用给定的独立标的兜底标题。\n"
             f"本组方向：{movement}。市场广度：{breadth}。"
             "只有广度达标才能在标题写“普涨”或“普跌”；未达标必须写“上涨”或“下跌”。"
             "不允许使用“合约”“相关”，不写1小时或24小时。标题只能严格使用以下形式："
             f"单类且广度达标：{{概念}}概念美股{broad_word}；"
-            f"单类且广度未达标：{{概念}}概念美股多只{narrow_word}；"
+            f"单类且广度未达标：{{概念}}概念美股{narrow_word}；"
             f"多类且广度达标：美股多类股票{broad_word}，包括{{概念1}}概念、{{概念2}}概念；"
             f"多类且广度未达标：美股多类股票{narrow_word}，包括{{概念1}}概念、{{概念2}}概念。"
             "多类标题最多列3类，按组内标的数量从多到少，再按组内平均绝对涨幅从大到小。"
             "concepts必须给出标题所列概念，并逐一列出组内代码及该代码的confidence；"
             "unclassified_symbols列出所有未核实或置信度低于0.8的代码。"
             "标题必须与concepts的数量、排序、方向和广度状态完全一致。只返回约定JSON，不要解释。\n"
+            f"独立标的兜底标题：{fallback_title}\n"
             f"标的资料：{json.dumps(inputs, ensure_ascii=False, separators=(',', ':'))}"
         )
 
@@ -364,28 +376,23 @@ class StockThemeClassifier:
         if classified | low_confidence | unclassified != requested_set:
             return None, "invalid_response"
 
-        covered = len(classified) / len(requested_set) if requested_set else 0
         concepts.sort(key=lambda concept: (
             -len(concept.symbols),
             -sum(moves[symbol] for symbol in concept.symbols) / len(concept.symbols),
             concept.label.casefold(),
         ))
         remaining = tuple(sorted(low_confidence | unclassified))
-        if (
-            len(classified) < _MIN_CLASSIFIED_COUNT
-            or covered <= _MIN_CLASSIFIED_SHARE
-            or not concepts
-        ):
+        if not any(len(concept.symbols) >= 2 for concept in concepts):
             return HeadlineGeneration(
                 fallback_title,
                 tuple(concepts),
                 remaining,
-                "classification_below_threshold",
-            ), "classification_below_threshold"
+                "no_repeated_concept",
+            ), "no_repeated_concept"
 
         if len(concepts) == 1:
             trend = ("普涨" if direction == "up" else "普跌") if broad else (
-                "多只上涨" if direction == "up" else "多只下跌"
+                "上涨" if direction == "up" else "下跌"
             )
             expected_title = f"{concepts[0].label}概念美股{trend}"
         else:
@@ -401,6 +408,11 @@ class StockThemeClassifier:
             or len(title) > 60
             or _FORBIDDEN_TITLE_PATTERN.search(title)
         ):
-            return None, "title_validation_failed"
+            return HeadlineGeneration(
+                fallback_title,
+                tuple(concepts),
+                remaining,
+                "title_validation_failed",
+            ), "title_validation_failed"
 
         return HeadlineGeneration(title, tuple(concepts), remaining), None

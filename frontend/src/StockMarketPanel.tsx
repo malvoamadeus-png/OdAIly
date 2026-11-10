@@ -56,6 +56,7 @@ function headlineFallbackLabel(reason: string | undefined): string {
   if (reason === 'classifier_unavailable') return '主题模型不可用';
   if (reason === 'model_error') return '主题模型请求失败';
   if (reason === 'classification_below_threshold') return '已识别标的不足';
+  if (reason === 'no_repeated_concept') return '未形成重复概念组';
   if (reason === 'title_validation_failed') return '标题未通过格式校验';
   if (reason === 'invalid_response') return '模型返回格式无效';
   if (reason === 'knowledge_missing') return '缺少标的资料';

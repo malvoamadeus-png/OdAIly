@@ -68,6 +68,14 @@ def test_instrument_knowledge_covers_current_us_symbols_and_marks_unknown_profil
     assert knowledge["MU"].company_name == "Micron Technology"
     assert {"DRAM", "NAND", "存储芯片"} <= set(knowledge["MU"].business_tags)
     assert knowledge["INTC"].verified is True
+    assert knowledge["BMNR"].business_tags[0] == "加密财库"
+    assert knowledge["BNC"].company_name == "BNB Standard Corporation"
+    assert {"加密财库", "BNB储备", "BNB Chain"} <= set(knowledge["BNC"].business_tags)
+    assert knowledge["BNC"].verified is True
+    assert knowledge["CYPH"].company_name == "Cypherpunk Technologies"
+    assert {"加密财库", "ZEC财库", "Zcash"} <= set(knowledge["CYPH"].business_tags)
+    assert knowledge["CYPH"].verified is True
+    assert {"加密财库", "比特币"} <= set(knowledge["MSTR"].business_tags)
     assert knowledge["DRAM"].verified is False
     assert knowledge["DRAM"].business_tags == ()
 
@@ -89,7 +97,7 @@ def test_headline_generation_uses_business_knowledge_and_generates_single_concep
         members=(_member("WDC", "11.2"), _member("MU", "10.6"), _member("SNDK", "10.4")),
         direction="up",
         broad=True,
-        fallback_title="多只美股普涨",
+        fallback_title="多只美股上涨，WDC上涨11%、MU上涨11%",
     )
 
     assert result.title == "存储芯片概念美股普涨"
@@ -109,9 +117,12 @@ def test_headline_generation_uses_business_knowledge_and_generates_single_concep
 
 def test_headline_generation_lists_multiple_concepts_in_deterministic_rank_order() -> None:
     response = json.dumps({
-        "title": "美股多类股票上涨，包括半导体设备概念、消费电子概念",
+        "title": "美股多类股票上涨，包括消费电子概念、半导体设备概念",
         "concepts": [
-            {"label": "消费电子", "members": [{"symbol": "AAPL", "confidence": 0.94}]},
+            {"label": "消费电子", "members": [
+                {"symbol": "AAPL", "confidence": 0.94},
+                {"symbol": "GOOGL", "confidence": 0.92},
+            ]},
             {"label": "半导体设备", "members": [{"symbol": "AMAT", "confidence": 0.91}]},
         ],
         "unclassified_symbols": [],
@@ -121,14 +132,100 @@ def test_headline_generation_lists_multiple_concepts_in_deterministic_rank_order
     )
 
     result = classifier.generate_title(
-        members=(_member("AAPL", "6"), _member("AMAT", "9")),
+        members=(_member("AAPL", "6"), _member("GOOGL", "5"), _member("AMAT", "9")),
         direction="up",
         broad=False,
-        fallback_title="多只美股上涨",
+        fallback_title="多只美股上涨，AMAT上涨9%、AAPL上涨6%",
     )
 
-    assert result.title == "美股多类股票上涨，包括半导体设备概念、消费电子概念"
-    assert [concept.label for concept in result.concepts] == ["半导体设备", "消费电子"]
+    assert result.title == "美股多类股票上涨，包括消费电子概念、半导体设备概念"
+    assert [concept.label for concept in result.concepts] == ["消费电子", "半导体设备"]
+
+
+def test_repeated_concept_with_singleton_group_does_not_require_majority_coverage() -> None:
+    response = json.dumps({
+        "title": "美股多类股票下跌，包括消费科技概念、芯片设计概念",
+        "concepts": [
+            {"label": "芯片设计", "members": [{"symbol": "AMD", "confidence": 0.95}]},
+            {"label": "消费科技", "members": [
+                {"symbol": "AAPL", "confidence": 0.96},
+                {"symbol": "GOOGL", "confidence": 0.94},
+            ]},
+        ],
+        "unclassified_symbols": ["DRAM", "BBX", "BOT"],
+    })
+    classifier = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(
+            _member("AAPL", "-12"), _member("GOOGL", "-11"), _member("AMD", "-10"),
+            _member("DRAM", "-9"), _member("BBX", "-8"), _member("BOT", "-7"),
+        ),
+        direction="down",
+        broad=False,
+        fallback_title="多只美股下跌，AAPL下跌12%、GOOGL下跌11%",
+    )
+
+    assert result.title == "美股多类股票下跌，包括消费科技概念、芯片设计概念"
+    assert [concept.label for concept in result.concepts] == ["消费科技", "芯片设计"]
+    assert result.unclassified_symbols == ("BBX", "BOT", "DRAM")
+
+
+def test_all_singleton_concepts_use_top_two_stock_title() -> None:
+    response = json.dumps({
+        "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
+        "concepts": [
+            {"label": "消费电子", "members": [{"symbol": "AAPL", "confidence": 0.95}]},
+            {"label": "半导体设备", "members": [{"symbol": "AMAT", "confidence": 0.96}]},
+            {"label": "芯片设计", "members": [{"symbol": "AMD", "confidence": 0.94}]},
+        ],
+        "unclassified_symbols": [],
+    })
+    classifier = StockThemeClassifier(
+        client=_FakeTextGenerationClient(response), model="test-model",
+    )
+
+    result = classifier.generate_title(
+        members=(_member("AMAT", "9"), _member("AMD", "7"), _member("AAPL", "6")),
+        direction="up",
+        broad=True,
+        fallback_title="多只美股上涨，AMAT上涨9%、AMD上涨7%",
+    )
+
+    assert result.title == "多只美股上涨，AMAT上涨9%、AMD上涨7%"
+    assert result.fallback_reason == "no_repeated_concept"
+    assert [concept.label for concept in result.concepts] == ["半导体设备", "芯片设计", "消费电子"]
+    assert result.unclassified_symbols == ()
+
+
+def test_two_rare_earth_stocks_and_cyph_form_two_concept_title() -> None:
+    response = json.dumps({
+        "title": "美股多类股票下跌，包括稀土概念、ZEC财库概念",
+        "concepts": [
+            {"label": "ZEC财库", "members": [{"symbol": "CYPH", "confidence": 0.93}]},
+            {"label": "稀土", "members": [
+                {"symbol": "USAR", "confidence": 0.96},
+                {"symbol": "CRML", "confidence": 0.95},
+            ]},
+        ],
+        "unclassified_symbols": [],
+    })
+    client = _FakeTextGenerationClient(response)
+    classifier = StockThemeClassifier(client=client, model="test-model")
+
+    result = classifier.generate_title(
+        members=(_member("CYPH", "-20.26"), _member("USAR", "-9.5"), _member("CRML", "-5.5")),
+        direction="down",
+        broad=False,
+        fallback_title="多只美股下跌，CYPH下跌20%、USAR下跌10%",
+    )
+
+    assert result.title == "美股多类股票下跌，包括稀土概念、ZEC财库概念"
+    assert [concept.label for concept in result.concepts] == ["稀土", "ZEC财库"]
+    prompt = str(client.calls[0]["prompt"])
+    assert '"symbol":"CYPH","company_name":"Cypherpunk Technologies","business_tags":["加密财库","ZEC财库","Zcash"],"knowledge_verified":true' in prompt
 
 
 def test_unverified_symbol_cannot_be_classified_from_its_code_alone() -> None:
@@ -144,12 +241,13 @@ def test_unverified_symbol_cannot_be_classified_from_its_code_alone() -> None:
         members=(_member("ARM", "9.8"), _member("DRAM", "9.4")),
         direction="up",
         broad=True,
-        fallback_title="多只美股普涨",
+        fallback_title="多只美股上涨，ARM上涨10%、DRAM上涨9%",
     )
 
-    assert result.title == "多只美股普涨"
-    assert result.fallback_reason == "classification_below_threshold"
-    assert result.unclassified_symbols == ("ARM", "DRAM")
+    assert result.title == "多只美股上涨，ARM上涨10%、DRAM上涨9%"
+    assert result.fallback_reason == "no_repeated_concept"
+    assert result.concepts[0].symbols == ("ARM",)
+    assert result.unclassified_symbols == ("DRAM",)
     prompt = str(client.calls[0]["prompt"])
     assert '"symbol":"DRAM","company_name":null,"business_tags":[],"knowledge_verified":false' in prompt
 
@@ -162,10 +260,10 @@ def test_unverified_symbols_without_any_profile_use_generic_title_without_model_
         members=(_member("DRAM", "9.4"), _member("BBX", "8.2")),
         direction="up",
         broad=True,
-        fallback_title="多只美股普涨",
+        fallback_title="多只美股上涨，DRAM上涨9%、BBX上涨8%",
     )
 
-    assert result.title == "多只美股普涨"
+    assert result.title == "多只美股上涨，DRAM上涨9%、BBX上涨8%"
     assert result.fallback_reason == "knowledge_missing"
     assert result.unclassified_symbols == ("BBX", "DRAM")
     assert client.calls == []
@@ -191,44 +289,52 @@ def test_model_cannot_assign_unverified_symbol_to_a_concept() -> None:
         members=(_member("MU", "10"), _member("DRAM", "9"), _member("WDC", "8"), _member("SNDK", "7")),
         direction="up",
         broad=True,
-        fallback_title="多只美股普涨",
+        fallback_title="多只美股上涨，MU上涨10%、DRAM上涨9%",
     )
 
-    assert result.title == "多只美股普涨"
+    assert result.title == "多只美股上涨，MU上涨10%、DRAM上涨9%"
     assert result.fallback_reason == "invalid_response"
     assert result.unclassified_symbols == ("DRAM", "MU", "SNDK", "WDC")
 
 
 def test_three_concepts_are_allowed_and_four_are_rejected() -> None:
-    members = (_member("AAPL", "9"), _member("AMAT", "8"), _member("AMD", "7"))
+    members = (
+        _member("AAPL", "9"), _member("GOOGL", "8"), _member("AMAT", "7"),
+        _member("AMD", "6"), _member("CRM", "5"),
+    )
     concepts = [
-        {"label": "消费电子", "members": [{"symbol": "AAPL", "confidence": 0.9}]},
+        {"label": "消费电子", "members": [
+            {"symbol": "AAPL", "confidence": 0.9},
+            {"symbol": "GOOGL", "confidence": 0.9},
+        ]},
         {"label": "半导体设备", "members": [{"symbol": "AMAT", "confidence": 0.9}]},
         {"label": "芯片设计", "members": [{"symbol": "AMD", "confidence": 0.9}]},
     ]
     valid_response = json.dumps({
         "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
         "concepts": concepts,
-        "unclassified_symbols": [],
+        "unclassified_symbols": ["CRM"],
     })
     valid = StockThemeClassifier(
         client=_FakeTextGenerationClient(valid_response), model="test-model",
     ).generate_title(
-        members=members, direction="up", broad=True, fallback_title="多只美股普涨",
+        members=members, direction="up", broad=True,
+        fallback_title="多只美股上涨，AAPL上涨9%、GOOGL上涨8%",
     )
     assert valid.title == "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念"
 
     invalid_response = json.dumps({
         "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
-        "concepts": concepts + [{"label": "电脑", "members": [{"symbol": "AAPL", "confidence": 0.9}]}],
+        "concepts": concepts + [{"label": "云软件", "members": [{"symbol": "CRM", "confidence": 0.9}]}],
         "unclassified_symbols": [],
     })
     invalid = StockThemeClassifier(
         client=_FakeTextGenerationClient(invalid_response), model="test-model",
     ).generate_title(
-        members=members, direction="up", broad=True, fallback_title="多只美股普涨",
+        members=members, direction="up", broad=True,
+        fallback_title="多只美股上涨，AAPL上涨9%、GOOGL上涨8%",
     )
-    assert invalid.title == "多只美股普涨"
+    assert invalid.title == "多只美股上涨，AAPL上涨9%、GOOGL上涨8%"
     assert invalid.fallback_reason == "invalid_response"
 
 
@@ -250,7 +356,8 @@ def test_low_confidence_members_are_excluded_from_concept_coverage() -> None:
             _member("AMD", "9"), _member("NVDA", "8"),
             _member("INTC", "7"), _member("MU", "6"),
         ),
-        direction="up", broad=True, fallback_title="多只美股普涨",
+        direction="up", broad=True,
+        fallback_title="多只美股上涨，AMD上涨9%、NVDA上涨8%",
     )
 
     assert result.title == "半导体概念美股普涨"
@@ -275,10 +382,10 @@ def test_invalid_or_wrong_direction_title_falls_back_without_blocking() -> None:
         members=(_member("AMD", "-10"), _member("NVDA", "-11")),
         direction="down",
         broad=True,
-        fallback_title="多只美股普跌",
+        fallback_title="多只美股下跌，NVDA下跌11%、AMD下跌10%",
     )
 
-    assert result.title == "多只美股普跌"
+    assert result.title == "多只美股下跌，NVDA下跌11%、AMD下跌10%"
     assert result.fallback_reason == "title_validation_failed"
 
 
@@ -291,10 +398,10 @@ def test_model_request_failure_falls_back_without_blocking() -> None:
         members=(_member("AMD", "-10"), _member("NVDA", "-11")),
         direction="down",
         broad=True,
-        fallback_title="多只美股普跌",
+        fallback_title="多只美股下跌，NVDA下跌11%、AMD下跌10%",
     )
 
-    assert result.title == "多只美股普跌"
+    assert result.title == "多只美股下跌，NVDA下跌11%、AMD下跌10%"
     assert result.fallback_reason == "model_error"
 
 
@@ -452,19 +559,36 @@ def test_copy_uses_market_attribution_and_asset_name() -> None:
 
 
 def test_us_digest_headlines_omit_window_and_contract_language() -> None:
-    members = (_member("AMD", "11"), _member("NVDA", "10"))
+    up_members = (_member("AMD", "11"), _member("NVDA", "10"))
+    down_members = (_member("AMD", "-11"), _member("NVDA", "-10"))
 
     broad_title, _ = render_digest(
-        market="us", direction="up", members=members, breadth={"24h": {"broad": True}},
+        market="us", direction="up", members=up_members, breadth={"24h": {"broad": True}},
     )
     narrow_title, _ = render_digest(
-        market="us", direction="down", members=members, breadth={"24h": {"broad": False}},
+        market="us", direction="down", members=down_members, breadth={"24h": {"broad": False}},
     )
 
-    assert broad_title == "多只美股普涨"
-    assert narrow_title == "多只美股下跌"
+    assert broad_title == "多只美股上涨，AMD上涨11%、NVDA上涨10%"
+    assert narrow_title == "多只美股下跌，AMD下跌11%、NVDA下跌10%"
     assert all("合约" not in title and "相关" not in title for title in (broad_title, narrow_title))
     assert all("小时" not in title and "24h" not in title for title in (broad_title, narrow_title))
+
+
+def test_us_digest_titles_round_to_integer_and_body_includes_all_members() -> None:
+    members = (
+        _member("CYPH", "-20.26"), _member("USAR", "-9.5"),
+        _member("CRML", "-8"), _member("AMD", "-7"),
+        _member("MU", "-6"), _member("AAPL", "-5"),
+    )
+
+    title, content = render_digest(
+        market="us", direction="down", members=members, breadth={"24h": {"broad": True}},
+    )
+
+    assert title == "多只美股下跌，CYPH下跌20%、USAR下跌10%"
+    assert content.count("现报") == len(members)
+    assert all(name in content for name in ("CYPH", "USAR", "CRML", "AMD", "MU", "苹果"))
 
 
 class _FakePushClient:
@@ -683,7 +807,7 @@ class _Replay:
         return alerts
 
 
-def test_many_contracts_merge_by_market_direction_and_tier_with_five_representatives():
+def test_many_contracts_merge_by_market_direction_and_tier_and_include_every_member():
     instruments = [StockInstrument(f"A{i}USDT", "us", 2) for i in range(40)]
     replay = _Replay(instruments)
     baseline = {item.symbol: ("100", "0") for item in instruments}
@@ -694,8 +818,8 @@ def test_many_contracts_merge_by_market_direction_and_tier_with_five_representat
     assert len(alerts) == 2
     assert {alert.tier: len(alert.members) for alert in alerts} == {"live": 30, "backend": 10}
     assert all("普涨" in alert.content for alert in alerts)
-    assert all(alert.content.count("现报") == 5 for alert in alerts)
-    assert "A0USDT" not in alerts[1].content
+    assert {alert.tier: alert.content.count("现报") for alert in alerts} == {"live": 30, "backend": 10}
+    assert "A0 " in alerts[1].content
     assert replay.hold(3600, values) == []
 
 

@@ -21,6 +21,10 @@ def percent_text(value: Decimal) -> str:
     return str(abs(value).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
+def percent_integer_text(value: Decimal) -> str:
+    return str(abs(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def _member_text(member: AlertMember, direction: Direction, common_window: Window | None) -> str:
     verb = "上涨" if direction == "up" else "下跌"
     ordered = [member.primary_window] + [window for window in member.changes if window != member.primary_window]
@@ -34,9 +38,9 @@ def _member_text(member: AlertMember, direction: Direction, common_window: Windo
     return f"{member.instrument.display_name} {'、'.join(parts)}，现报{price_text} USDT"
 
 
-def _format_alert(title: str, content: str) -> tuple[str, str]:
+def _format_alert(title: str, content: str, *, preserve_title: bool = False) -> tuple[str, str]:
     formatted = format_brief(DraftBrief(title=title, content=content))
-    return formatted.title, formatted.content
+    return (title if preserve_title else formatted.title), formatted.content
 
 
 def render_digest(
@@ -55,13 +59,17 @@ def render_digest(
     stats = breadth.get(common, {}) if common else {}
     broad = stats.get("broad", False)
     if market == "us":
+        title_members = members[:2]
+        title_changes = "、".join(
+            f"{member.instrument.asset_name}{verb}{percent_integer_text(member.change_pct)}%"
+            for member in title_members
+        )
+        title = f"多只美股{verb}，{title_changes}"
         if broad:
             trend = "普涨" if direction == "up" else "普跌"
-            title = f"多只美股{trend}"
             lead = f"多只美股{window_label}{trend}"
         else:
             trend = "上涨" if direction == "up" else "下跌"
-            title = f"多只美股{trend}"
             lead = f"多只美股{window_label}{trend}"
     else:
         market_name = MARKET_LABELS[market] + "相关合约"
@@ -73,8 +81,8 @@ def render_digest(
             move = ("涨幅" if direction == "up" else "跌幅") + "扩大"
             title = f"{market_name}{window_label}{move}"
             lead = f"多只{market_name}{window_label}{move}"
-    details = "；".join(_member_text(member, direction, common) for member in members[:5])
-    return _format_alert(title, f"{prefix}{lead}，{details}。")
+    details = "；".join(_member_text(member, direction, common) for member in members)
+    return _format_alert(title, f"{prefix}{lead}，{details}。", preserve_title=market == "us")
 
 
 def render_alert(
