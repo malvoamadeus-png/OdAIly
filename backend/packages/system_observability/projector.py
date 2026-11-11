@@ -104,6 +104,17 @@ TABLE_SPECS = (
     TableSpec("queue", "local_pipeline_jobs", "unmapped_source", "local_pipeline"),
 )
 
+
+def table_specs_for_business_path(*, separate: bool) -> tuple[TableSpec, ...]:
+    """Keep the existing source identity when the business inbox moves."""
+    if not separate:
+        return TABLE_SPECS
+    return tuple(
+        TableSpec("business", spec.table, spec.business_key, spec.source, spec.record_kind)
+        if spec.table == "business_message_inbox" else spec
+        for spec in TABLE_SPECS
+    )
+
 AUDITED_TABLES = frozenset({
     "x_capture_settings", "x_capture_accounts", "binance_square_settings", "binance_square_accounts",
     "jin10_settings", "non_mainstream_media_settings", "non_mainstream_media_sources",
@@ -322,7 +333,7 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
     else:
         source_value = spec.source
         business_key = spec.business_key
-    source_database_key = "main" if spec.database_key == "hyperliquid" else spec.database_key
+    source_database_key = "main" if spec.database_key == "hyperliquid" or spec.table == "business_message_inbox" else spec.database_key
     item_id = (
         f"task:{source_value}:{source_id or row.get('__obs_rowid__')}"
         if spec.table == "tasks"

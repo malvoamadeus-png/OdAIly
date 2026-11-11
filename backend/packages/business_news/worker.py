@@ -13,13 +13,13 @@ import requests
 from dotenv import load_dotenv
 
 from packages.common.config import DEFAULT_GPT_WRITER_MODEL, load_x_processing_settings
-from packages.common.storage import load_storage_settings
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import PushClient
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 
 from .repository import BusinessNewsRepository
+from .storage import business_news_path
 
 
 BUSINESS_NEWS_JSON_SCHEMA = {
@@ -393,7 +393,7 @@ def build_business_telegram_worker() -> BusinessTelegramWorker:
     settings = load_x_processing_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OpenAI-compatible API key is required for Business Writer4")
-    repository = BusinessNewsRepository(load_storage_settings().sqlite_path)
+    repository = BusinessNewsRepository(business_news_path())
     ai_client = OpenAIResponsesClient(
         api_key=settings.openai_api_key,
         base_url=str(settings.openai_base_url),

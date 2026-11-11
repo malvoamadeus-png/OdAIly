@@ -119,10 +119,10 @@ def test_short_and_non_text_messages_are_filtered_before_ai(tmp_path: Path) -> N
     dashboard = repository.list_dashboard({})
 
     assert [(item["status"], item["raw_text"]) for item in dashboard["items"]] == [
-        ("skipped_non_text", None),
         ("pending", "123456789012345"),
         ("filtered_short", None),
     ]
+    assert repository.last_update_id() == 4
     assert len(repository.claim_pending(4)) == 1
 
 

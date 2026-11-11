@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from packages.common.storage import connect_sqlite, load_storage_settings
+from packages.common.storage import connect_sqlite, connect_sqlite_readonly, load_storage_settings
 
 from .models import AuditorTask
 from .repository import calculate_content_hash
@@ -58,9 +58,7 @@ class SQLiteAuditorRepository:
         self.init_schema()
         now = datetime.now(UTC)
         cutoff = _iso(now - timedelta(minutes=lookback_minutes))
-        lock_until = _iso(now + timedelta(seconds=lock_seconds))
-        with connect_sqlite(self.path) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with connect_sqlite_readonly(self.path) as conn:
             candidates = conn.execute(
                 "SELECT source_item_id, source_url, title, content, published_at, metadata "
                 "FROM odaily_reference_items WHERE content <> '' AND published_at IS NOT NULL "
@@ -68,43 +66,59 @@ class SQLiteAuditorRepository:
                 "ORDER BY julianday(published_at), source_item_id",
                 (cutoff, _iso(now)),
             ).fetchall()
-            selected = None
-            content_hash = ""
             for row in candidates:
                 content_hash = calculate_content_hash(row["title"], row["content"])
                 existing = conn.execute(
                     "SELECT id, status, locked_until FROM auditor_checks WHERE source_item_id=? AND content_hash=? AND prompt_version=?",
                     (row["source_item_id"], content_hash, prompt_version),
                 ).fetchone()
-                if existing is None or (
+                if existing is not None and not (
                     existing["status"] in {"pending", "processing", "failed"}
                     and (not existing["locked_until"] or existing["locked_until"] < _iso(now))
                 ):
-                    selected = row
-                    break
-            if selected is None:
-                conn.commit()
-                return None
-            metadata = selected["metadata"] or "{}"
-            conn.execute(
-                """INSERT INTO auditor_checks
-                (source_item_id,source_url,title,content,content_hash,published_at,prompt_version,status,locked_by,locked_until,attempt_count,metadata)
-                VALUES (?,?,?,?,?,?,?,'processing',?,?,1,?)
-                ON CONFLICT(source_item_id,content_hash,prompt_version) DO UPDATE SET
-                source_url=excluded.source_url,title=excluded.title,content=excluded.content,published_at=excluded.published_at,
-                status='processing',locked_by=excluded.locked_by,locked_until=excluded.locked_until,
-                attempt_count=auditor_checks.attempt_count+1,last_error=NULL,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP""",
-                (selected["source_item_id"], selected["source_url"], selected["title"], selected["content"], content_hash,
-                 selected["published_at"], prompt_version, worker_id, lock_until, metadata),
-            )
-            check = conn.execute(
-                "SELECT id FROM auditor_checks WHERE source_item_id=? AND content_hash=? AND prompt_version=?",
-                (selected["source_item_id"], content_hash, prompt_version),
-            ).fetchone()
-            conn.commit()
-        return AuditorTask(id=int(check["id"]), source_item_id=str(selected["source_item_id"]), source_url=selected["source_url"],
-                           title=selected["title"], content=str(selected["content"]), content_hash=content_hash,
-                           published_at=_dt(selected["published_at"]), metadata=json.loads(metadata))
+                    continue
+                # The potentially large candidate scan and content hashing need no
+                # write lock. Recheck both the source and lease after acquiring it.
+                with connect_sqlite(self.path) as writer:
+                    writer.execute("BEGIN IMMEDIATE")
+                    claim_now = datetime.now(UTC)
+                    lock_until = _iso(claim_now + timedelta(seconds=lock_seconds))
+                    current = writer.execute(
+                        "SELECT source_item_id, source_url, title, content, published_at, metadata "
+                        "FROM odaily_reference_items WHERE source_item_id=?", (row["source_item_id"],),
+                    ).fetchone()
+                    if current is None or tuple(current) != tuple(row):
+                        continue
+                    existing = writer.execute(
+                        "SELECT id, status, locked_until FROM auditor_checks WHERE source_item_id=? AND content_hash=? AND prompt_version=?",
+                        (row["source_item_id"], content_hash, prompt_version),
+                    ).fetchone()
+                    if existing is not None and not (
+                        existing["status"] in {"pending", "processing", "failed"}
+                        and (not existing["locked_until"] or existing["locked_until"] < _iso(claim_now))
+                    ):
+                        continue
+                    metadata = row["metadata"] or "{}"
+                    writer.execute(
+                        """INSERT INTO auditor_checks
+                        (source_item_id,source_url,title,content,content_hash,published_at,prompt_version,status,locked_by,locked_until,attempt_count,metadata)
+                        VALUES (?,?,?,?,?,?,?,'processing',?,?,1,?)
+                        ON CONFLICT(source_item_id,content_hash,prompt_version) DO UPDATE SET
+                        source_url=excluded.source_url,title=excluded.title,content=excluded.content,published_at=excluded.published_at,
+                        status='processing',locked_by=excluded.locked_by,locked_until=excluded.locked_until,
+                        attempt_count=auditor_checks.attempt_count+1,last_error=NULL,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP""",
+                        (row["source_item_id"], row["source_url"], row["title"], row["content"], content_hash,
+                         row["published_at"], prompt_version, worker_id, lock_until, metadata),
+                    )
+                    check = writer.execute(
+                        "SELECT id FROM auditor_checks WHERE source_item_id=? AND content_hash=? AND prompt_version=?",
+                        (row["source_item_id"], content_hash, prompt_version),
+                    ).fetchone()
+                    writer.commit()
+                return AuditorTask(id=int(check["id"]), source_item_id=str(row["source_item_id"]), source_url=row["source_url"],
+                                   title=row["title"], content=str(row["content"]), content_hash=content_hash,
+                                   published_at=_dt(row["published_at"]), metadata=json.loads(metadata))
+        return None
 
     def complete_passed(self, task: AuditorTask, *, model: str, prompt_version: str, raw_output: str, result: dict[str, Any]) -> None:
         self._complete(task, "passed", model, prompt_version, raw_output, result, None, {})

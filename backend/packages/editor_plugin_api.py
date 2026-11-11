@@ -29,6 +29,7 @@ from packages.common.editor_plugin_auth import (
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
 from packages.business_news.repository import BusinessNewsRepository
+from packages.business_news.storage import business_news_path
 from packages.ai_text_self_upgrade import (
     AITextSelfUpgradeRepository,
     AITextSelfUpgradeService,
@@ -49,6 +50,7 @@ from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
 from packages.system_observability import MainTaskProjector, ProjectionWorker, SystemInformationStore
+from packages.system_observability.projector import table_specs_for_business_path
 from packages.system_observability.error_policy import expire_external_errors
 from packages.system_observability.store import timestamp_ms
 from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService, SystemReviewWorker
@@ -395,7 +397,8 @@ class EditorPluginNewsGenService:
         self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         storage_settings = load_storage_settings()
         self.console_data = ConsoleDataApi(storage_settings.sqlite_path)
-        self.business_news = BusinessNewsRepository(storage_settings.sqlite_path)
+        business_database = business_news_path()
+        self.business_news = BusinessNewsRepository(business_database)
         self.failure_diagnostics = FailureDiagnosticsStore(
             storage_settings.sqlite_path,
             self.paths.runtime_dir / "local_pipeline.sqlite",
@@ -432,7 +435,9 @@ class EditorPluginNewsGenService:
                     "gate": self.gate_market_store.path,
                     "stock": self.stock_market_store.path,
                     "queue": self.paths.runtime_dir / "local_pipeline.sqlite",
+                    **({"business": business_database} if business_database != storage_settings.sqlite_path else {}),
                 },
+                table_specs=table_specs_for_business_path(separate=business_database != storage_settings.sqlite_path),
             ),
             interval_seconds=5,
         )
