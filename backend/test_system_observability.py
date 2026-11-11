@@ -1149,6 +1149,11 @@ def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -
         detail = store.detail("main:x_capture_attempts:1")
         assert detail is not None
         assert [event["event_type"] for event in detail["timeline"]] == ["legacy_snapshot", "source_state_change"]
+        source_event = next(event for event in detail['timeline'] if event['event_type'] == 'source_state_change')
+        assert source_event['evidence']['recorded_scope'] == 'transactional_source_outbox'
+        assert source_event['evidence']['payload']['status'] == 'success'
+        assert source_event['evidence_ref'] is None
+        assert '_inline_evidence' not in source_event['details']
         assert store.get_state("source_audit_main_watermark") == "2"
 
 
@@ -1196,6 +1201,27 @@ def test_capture_tail_rechecks_do_not_recreate_unchanged_attempt_evidence(tmp_pa
     before = len(list(store.evidence_dir.glob('*/*.json.gz')))
     assert projector._project_additional(now + 301_000, now - 86_400_000) == (2, 0)
     assert len(list(store.evidence_dir.glob('*/*.json.gz'))) == before
+
+
+def test_inline_capture_evidence_preserves_large_and_failed_records(tmp_path: Path) -> None:
+    store = SystemInformationStore(tmp_path / 'information.sqlite')
+    store.initialize()
+    base = {'item_id':'attempt','business_key':'x','source':'x_capture','source_id':'1','source_name':'alice',
+            'title':'采集','status':'success','result':'direct_publish','source_database':'source',
+            'source_table':'x_capture_attempts','source_row_id':'1'}
+    entries = []
+    for event_id, status, reason, evidence in [('success','success',None,{'payload':{'message':'ok'}}),
+                                                ('failed','failed','database is locked',{'payload':{'error':'database is locked'}}),
+                                                ('large','success',None,{'payload':{'message':'x'*9000}})]:
+        entries.append({'snapshot':base,'event_id':event_id,'stage':'采集','status':status,'result':'failed' if reason else 'direct_publish',
+                        'happened_at_ms':int(datetime.now(UTC).timestamp()*1000),'summary':'采集', 'reason':reason,
+                        'error_code':'locked' if reason else None,'evidence':evidence,'details':{'source_table':'x_capture_attempts'}})
+    store.apply_source_audit_batch(entries, watermark_key='watermark', watermark=3)
+    events = {event['event_id']:event for event in store.detail('attempt')['timeline']}
+    assert events['success']['evidence'] == {'payload':{'message':'ok'}}
+    assert events['success']['evidence_ref'] is None
+    assert events['failed']['evidence_ref'] and events['large']['evidence_ref']
+    assert events['large']['evidence']['payload']['message'] == 'x'*9000
 
 
 def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:

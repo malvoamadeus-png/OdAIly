@@ -1209,6 +1209,7 @@ class SystemInformationStore:
         evidence: Any = None,
         evidence_ref: str | None = None,
         details: dict[str, Any] | None = None,
+        inline_small_evidence: bool = False,
     ) -> bool:
         expired_external = happened_at_ms is not None and happened_at_ms < day_start_ms() and external_error(
             {'reason': reason, 'error_code': error_code, 'status': status, 'summary': summary, 'evidence': evidence})
@@ -1220,6 +1221,12 @@ class SystemInformationStore:
             evidence_ref = None
         if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
             return False
+        if evidence is not None and inline_small_evidence:
+            safe_evidence = _safe_json(evidence)
+            serialized = json.dumps(safe_evidence, ensure_ascii=False, separators=(',', ':'), default=str)
+            if len(serialized.encode('utf-8')) <= 8192:
+                details = {**(details or {}), '_inline_evidence': safe_evidence}
+                evidence = None
         if evidence is not None:
             evidence_ref, path, size = self._write_evidence_file(conn, evidence)
         elif evidence_ref and not self._touch_evidence(conn, evidence_ref):
@@ -1312,6 +1319,9 @@ class SystemInformationStore:
                     error_code=entry.get("error_code"),
                     evidence=entry.get("evidence"),
                     details=entry.get("details"),
+                    inline_small_evidence=(snapshot.get('source_table') in {'x_capture_attempts', 'binance_square_attempts'}
+                                           and entry.get('status') in {'success', 'succeeded'}
+                                           and not entry.get('reason') and not entry.get('error_code')),
                 )
             state_row = conn.execute(
                 "SELECT state_value FROM system_information_state WHERE state_key=?", (watermark_key,),
@@ -1597,6 +1607,8 @@ class SystemInformationStore:
                 event["details"] = json.loads(event.pop("details_json"))
             except json.JSONDecodeError:
                 event["details"] = {}
+            if isinstance(event['details'], dict) and '_inline_evidence' in event['details']:
+                event['evidence'] = event['details'].pop('_inline_evidence')
         expired_attempts = {
             event['details'].get('attempt_id') for event in result['timeline']
             if event.get('happened_at_ms') is not None and event['happened_at_ms'] < day_start_ms()
