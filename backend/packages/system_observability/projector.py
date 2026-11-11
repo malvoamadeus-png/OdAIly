@@ -317,6 +317,12 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
     source_id = str(_first(row, "source_item_id", "event_key", "event_id", "tweet_id", "tx_hash", "fill_key", "trigger_key", "identity_key", "update_id", "username_lower", "slug_lower", "site_key", "template_key", "rule_key", "channel_key", "key", "id", "__obs_rowid__") or "")
     created_value = _first(row, "created_at", "received_at", "queued_at", "observed_at", "at", "posted_at", "published_at", "fill_time", "first_seen_ms", "created_ms")
     updated_value = _first(row, "updated_at", "completed_at", "last_mentioned_at", "last_seen_at", "sent_at", "telegram_sent_at")
+    if spec.table in {'x_capture_attempts', 'binance_square_attempts'}:
+        # Attempts belong to individual rows, not to the account being polled.
+        # Grouping them by username makes tail rechecks alternate old snapshots.
+        source_id = str(_first(row, 'id', '__obs_rowid__') or '')
+        created_value = _first(row, 'started_at', 'created_at')
+        updated_value = _first(row, 'finished_at', 'updated_at')
     created_ms = timestamp_ms(created_value)
     updated_ms = timestamp_ms(updated_value) or created_ms
     stage = "覆盖配置" if spec.record_kind == "configuration" else str(_first(row, "stage", "current_stage") or {

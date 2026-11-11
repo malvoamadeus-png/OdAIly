@@ -1152,6 +1152,49 @@ def test_x_capture_attempt_retention_deletes_do_not_create_or_project_events() -
         assert store.get_state("source_audit_main_watermark") == "2"
 
 
+def test_capture_attempts_from_same_account_have_distinct_stable_identity(tmp_path: Path) -> None:
+    from packages.system_observability.projector import _generic_snapshot
+    spec = next(spec for spec in TABLE_SPECS if spec.table == 'x_capture_attempts')
+    base = {'username_lower': 'same-account', 'status': 'success', 'source': 'fxtwitter',
+            'started_at': '2026-11-11T12:00:00+00:00', 'finished_at': '2026-11-11T12:00:01+00:00'}
+    first, _ = _generic_snapshot(spec, Path('/main.sqlite'), {**base, 'id': 11, '__obs_rowid__': 11}, 1, 0)
+    second, _ = _generic_snapshot(spec, Path('/main.sqlite'), {**base, 'id': 12, '__obs_rowid__': 12}, 1, 0)
+    outbox, _ = _generic_snapshot(spec, Path('/main.sqlite'), {**base, '__obs_rowid__': '11'}, 1, 0)
+    assert first['item_id'] == outbox['item_id'] == 'main:x_capture_attempts:11'
+    assert second['item_id'] == 'main:x_capture_attempts:12'
+    assert first['created_at_ms'] == timestamp_ms(base['started_at'])
+    assert first['updated_at_ms'] == timestamp_ms(base['finished_at'])
+    store = SystemInformationStore(tmp_path / 'information.sqlite')
+    store.initialize()
+    for n in range(5):
+        for item_id in (11, 12):
+            snapshot, evidence = _generic_snapshot(spec, Path('/main.sqlite'), {**base, 'id': item_id, '__obs_rowid__': item_id}, n * 1000, 0)
+            assert store.upsert_snapshot(snapshot, evidence) is (n == 0)
+    assert len(list(store.evidence_dir.glob('*/*.json.gz'))) == 2
+    square = next(spec for spec in TABLE_SPECS if spec.table == 'binance_square_attempts')
+    square_snapshot, _ = _generic_snapshot(square, Path('/main.sqlite'), {'id': 21, 'slug_lower': 'same-account', 'status': 'success'}, 1, 0)
+    assert square_snapshot['item_id'] == 'main:binance_square_attempts:21'
+
+
+def test_capture_tail_rechecks_do_not_recreate_unchanged_attempt_evidence(tmp_path: Path) -> None:
+    source = tmp_path / 'main.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE x_capture_attempts(id INTEGER PRIMARY KEY,username_lower TEXT,status TEXT,started_at TEXT,finished_at TEXT)')
+        conn.executemany('INSERT INTO x_capture_attempts VALUES(?,?,?,?,?)', [
+            (1,'same-account','success','2026-11-11T12:00:00Z','2026-11-11T12:00:01Z'),
+            (2,'same-account','success','2026-11-11T12:05:00Z','2026-11-11T12:05:01Z'),
+        ])
+    store = SystemInformationStore(tmp_path / 'information.sqlite')
+    store.initialize()
+    spec = next(spec for spec in TABLE_SPECS if spec.table == 'x_capture_attempts')
+    projector = MainTaskProjector(source, store, additional_databases={'main': source}, table_specs=(spec,))
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    assert projector._project_additional(now, now - 86_400_000) == (2, 2)
+    before = len(list(store.evidence_dir.glob('*/*.json.gz')))
+    assert projector._project_additional(now + 301_000, now - 86_400_000) == (2, 0)
+    assert len(list(store.evidence_dir.glob('*/*.json.gz'))) == before
+
+
 def test_source_outbox_batch_uses_bounded_observability_transactions() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
