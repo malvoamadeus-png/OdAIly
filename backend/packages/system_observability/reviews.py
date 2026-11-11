@@ -1363,10 +1363,11 @@ class SystemReviewWorker:
             try:
                 self.service.information_store.storage_health(sample=True)
                 self.service.information_store.expire_decision_samples()
-                orphaned = self.service.information_store.prune_orphan_evidence(dry_run=False, limit=500)
-                self.service.repository.finish_run(run_key, status="completed", items_created=orphaned["files"])
+                # Source databases can still reference an observation file. Do
+                # not delete based on observation-database references alone.
+                self.service.repository.finish_run(run_key, status="completed", items_created=0)
                 self.service.repository.set_state("last_storage_maintenance_date", now.date().isoformat())
-                results["storage_retention"] = {"orphaned": orphaned["files"]}
+                results["storage_retention"] = {"orphaned": 0}
             except Exception as exc:
                 self.service.repository.finish_run(run_key, status="failed", error=f"{type(exc).__name__}: {exc}")
                 raise

@@ -3,9 +3,11 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -189,6 +191,10 @@ class SystemInformationStore:
                     byte_size INTEGER NOT NULL,
                     created_at_ms INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS system_information_expired_evidence_candidates (
+                    evidence_ref TEXT PRIMARY KEY,
+                    eligible_at_ms INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS system_information_evidence_pins (
                     pin_key TEXT PRIMARY KEY,
                     evidence_ref TEXT NOT NULL REFERENCES system_information_evidence(evidence_ref),
@@ -272,21 +278,14 @@ class SystemInformationStore:
                 conn.execute("INSERT INTO system_information_state VALUES('news_projection_v1','1',?)", (int(datetime.now(UTC).timestamp()*1000),))
 
     def save_evidence(self, evidence: Any) -> str:
-        safe = _safe_json(evidence)
-        payload = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest()
-        directory = self.evidence_dir / digest[:2]
-        path = directory / f"{digest}.json.gz"
-        if not path.exists():
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path.write_bytes(gzip.compress(payload, compresslevel=6, mtime=0))
-            path.chmod(0o600)
         with self.connect() as conn:
-            self._register_evidence(conn, digest, path, len(payload))
+            digest, _path, _size = self._write_evidence_file(conn, evidence)
         return digest
 
     def pin_evidence(self, evidence_ref: str, pin_key: str) -> None:
         with self.connect() as conn:
+            if not self._touch_evidence(conn, evidence_ref):
+                raise sqlite3.IntegrityError("Cannot pin missing evidence")
             conn.execute(
                 "INSERT INTO system_information_evidence_pins(pin_key,evidence_ref,pinned_at_ms) VALUES(?,?,?) "
                 "ON CONFLICT(pin_key) DO UPDATE SET evidence_ref=excluded.evidence_ref,pinned_at_ms=excluded.pinned_at_ms",
@@ -300,21 +299,59 @@ class SystemInformationStore:
     @staticmethod
     def _register_evidence(conn: sqlite3.Connection, digest: str, path: Path, size: int) -> None:
         conn.execute(
-            "INSERT OR IGNORE INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES (?,?,?,?)",
+            "INSERT INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES (?,?,?,?) "
+            "ON CONFLICT(evidence_ref) DO UPDATE SET created_at_ms=MAX(created_at_ms,excluded.created_at_ms)",
             (digest, str(path), size, int(datetime.now(UTC).timestamp() * 1000)),
         )
 
-    def _write_evidence_file(self, evidence: Any) -> tuple[str, Path, int]:
+    @staticmethod
+    def _touch_evidence(conn: sqlite3.Connection, evidence_ref: str) -> bool:
+        now = int(datetime.now(UTC).timestamp() * 1000)
+        return bool(conn.execute(
+            "UPDATE system_information_evidence SET created_at_ms=MAX(created_at_ms,?) WHERE evidence_ref=?",
+            (now, evidence_ref),
+        ).rowcount)
+
+    def _write_evidence_file(self, conn: sqlite3.Connection, evidence: Any) -> tuple[str, Path, int]:
         safe = _safe_json(evidence)
         payload = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
         digest = hashlib.sha256(payload).hexdigest()
         directory = self.evidence_dir / digest[:2]
         path = directory / f"{digest}.json.gz"
+        compressed = gzip.compress(payload, compresslevel=6, mtime=0)
+        # Registration acquires the SQLite write lock before touching the file;
+        # cleanup uses the same lock, so it cannot unlink a concurrently reused file.
+        self._register_evidence(conn, digest, path, len(payload))
         if not path.exists():
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path.write_bytes(gzip.compress(payload, compresslevel=6, mtime=0))
-            path.chmod(0o600)
+            fd, temp_name = tempfile.mkstemp(prefix=".evidence-", dir=directory)
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(compressed)
+                os.replace(temp_name, path)
+            finally:
+                Path(temp_name).unlink(missing_ok=True)
         return digest, path, len(payload)
+
+    def _unlink_if_unregistered(self, path: Path) -> bool:
+        """Serialize file deletion with writers which register before writing."""
+        ref = path.name.removesuffix(".json.gz")
+        expected = self.evidence_dir / ref[:2] / f"{ref}.json.gz"
+        if not re.fullmatch(r"[0-9a-f]{64}", ref) or path != expected:
+            return False
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (ref,)).fetchone():
+                return False
+            for table, column in (("system_information_items", "evidence_ref"), ("system_information_events", "evidence_ref"),
+                                  ("system_information_decision_samples", "evidence_ref"), ("system_information_evidence_pins", "evidence_ref"),
+                                  ("system_review_analysis_attempts", "raw_response_ref")):
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    if conn.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (ref,)).fetchone():
+                        return False
+            existed = path.exists()
+            path.unlink(missing_ok=True)
+            return existed
 
     def load_evidence(self, evidence_ref: str | None) -> Any:
         if not evidence_ref:
@@ -409,8 +446,7 @@ class SystemInformationStore:
                     compacted += 1
                     compacted_bytes += max(0, int(row["byte_size"]) - compact_size)
                     continue
-                compact_ref, compact_path, compact_size = self._write_evidence_file(compact_payload)
-                self._register_evidence(conn, compact_ref, compact_path, compact_size)
+                compact_ref, compact_path, compact_size = self._write_evidence_file(conn, compact_payload)
                 conn.execute("UPDATE system_information_items SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
                 conn.execute("UPDATE system_information_decision_samples SET evidence_ref=? WHERE evidence_ref=?", (compact_ref, ref))
@@ -464,7 +500,7 @@ class SystemInformationStore:
                         orphaned_bytes += int(row["byte_size"])
             conn.commit()
         for path in delete_after_commit:
-            path.unlink(missing_ok=True)
+            self._unlink_if_unregistered(path)
         return {"compacted": compacted, "compacted_bytes": compacted_bytes, "protected": protected,
                 "orphaned": orphaned, "orphaned_bytes": orphaned_bytes, "dry_run": int(dry_run)}
 
@@ -743,42 +779,32 @@ class SystemInformationStore:
         return None
 
     def prune_orphan_evidence(self, *, limit: int = 500, dry_run: bool = True) -> dict[str, int]:
+        if not dry_run:
+            raise RuntimeError('Evidence deletion requires a verified source and retention provenance')
         with self.connect() as conn:
-            referenced = {
-                str(row[0]) for row in conn.execute(
-                    "SELECT evidence_ref FROM system_information_items WHERE evidence_ref IS NOT NULL "
-                    "UNION SELECT evidence_ref FROM system_information_events WHERE evidence_ref IS NOT NULL "
-                    "UNION SELECT evidence_ref FROM system_information_decision_samples WHERE evidence_ref IS NOT NULL"
-                )
-            }
-            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_analysis_attempts'").fetchone():
-                referenced.update(str(row[0]) for row in conn.execute(
-                    "SELECT raw_response_ref FROM system_review_analysis_attempts WHERE raw_response_ref IS NOT NULL"
-                ))
-            referenced.update(str(row[0]) for row in conn.execute(
-                "SELECT evidence_ref FROM system_information_evidence_pins"
-            ))
-            registered = conn.execute("SELECT evidence_ref,path,byte_size FROM system_information_evidence").fetchall()
-            candidates: dict[str, tuple[Path, int]] = {}
-            for row in registered:
-                ref = str(row["evidence_ref"])
-                if ref not in referenced:
-                    candidates[ref] = (Path(row["path"]), int(row["byte_size"]))
-            for path in self.evidence_dir.glob("[0-9a-f][0-9a-f]/*.json.gz"):
-                ref = path.name.removesuffix(".json.gz")
-                if ref not in referenced and ref not in candidates:
-                    try:
-                        size = len(gzip.decompress(path.read_bytes()))
-                    except (OSError, EOFError):
-                        size = path.stat().st_size
-                    candidates[ref] = (path, size)
-            candidates = dict(list(candidates.items())[:max(1, min(5000, limit))])
-            if not dry_run:
-                conn.executemany("DELETE FROM system_information_evidence WHERE evidence_ref=?", ((ref,) for ref in candidates))
-                conn.commit()
-                for path, _size in candidates.values():
-                    path.unlink(missing_ok=True)
-        return {"files": len(candidates), "bytes": sum(size for _path, size in candidates.values()), "dry_run": int(dry_run)}
+            rows = conn.execute("SELECT evidence_ref,path,byte_size FROM system_information_evidence ORDER BY rowid LIMIT ?",
+                                (max(1, min(5000, limit)),)).fetchall()
+        removed = removed_bytes = 0
+        for row in rows:
+            ref, path = str(row['evidence_ref']), Path(row['path'])
+            expected = self.evidence_dir / ref[:2] / f"{ref}.json.gz"
+            if not re.fullmatch(r"[0-9a-f]{64}", ref) or path != expected:
+                continue
+            with self.connect() as conn:
+                conn.execute("BEGIN")
+                current = conn.execute("SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (ref,)).fetchone()
+                if not current:
+                    continue
+                references = (("system_information_items", "evidence_ref"), ("system_information_events", "evidence_ref"),
+                              ("system_information_decision_samples", "evidence_ref"), ("system_information_evidence_pins", "evidence_ref"),
+                              ("system_review_analysis_attempts", "raw_response_ref"))
+                if any(conn.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (ref,)).fetchone()
+                       for table, column in references
+                       if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()):
+                    continue
+                removed += 1
+                removed_bytes += int(row['byte_size'])
+        return {"files": removed, "bytes": removed_bytes, "dry_run": int(dry_run)}
 
     def storage_health(self, *, sample: bool = False, now_ms: int | None = None) -> dict[str, Any]:
         now = now_ms or int(datetime.now(UTC).timestamp() * 1000)
@@ -825,12 +851,12 @@ class SystemInformationStore:
     def prune_task_status_events(self, *, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
         """Remove old status observations in bounded batches, preserving attempt evidence."""
         now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-        cutoff = now - 3 * 86_400_000
+        cutoff = now - 7 * 86_400_000
         with self.connect() as conn:
             row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
             cursor = int(row[0]) if row else 0
             rows = conn.execute(
-                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id "
+                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id,status,result,error_code "
                 "FROM system_information_events WHERE rowid>? ORDER BY rowid LIMIT ?",
                 (cursor, max(1, min(limit, 5000))),
             ).fetchall()
@@ -838,6 +864,11 @@ class SystemInformationStore:
             for event in rows:
                 event_time = event['happened_at_ms'] or event['observed_at_ms']
                 if event_time >= cutoff or event['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change', 'stage_attempt'}:
+                    continue
+                # Stage evidence needs the source attempt's outcome, not just the
+                # current task status. Keep it until that check is available.
+                if (event['event_type'] == 'stage_attempt' or event['result'] == 'failed' or event['error_code']
+                        or 'fail' in str(event['status'] or '').lower() or 'error' in str(event['status'] or '').lower()):
                     continue
                 item = conn.execute(
                     "SELECT source_table,status,result FROM system_information_items WHERE item_id=?",
@@ -851,17 +882,6 @@ class SystemInformationStore:
                         or (item['source_table'] in {'local_pipeline_jobs', 'x_capture_attempts', 'binance_square_attempts'}
                             and item['status'] in technical_terminal)):
                     continue
-                if event['event_type'] == 'stage_attempt':
-                    info = conn.execute('SELECT stage,details_json FROM system_information_events WHERE rowid=?', (event['rowid'],)).fetchone()
-                    try:
-                        details = json.loads(info['details_json'] or '{}')
-                    except (ValueError, TypeError):
-                        continue
-                    if info['stage'] == '写作' and details.get('event_type') == 'response_received':
-                        details.pop('input', None)
-                        details.pop('rules', None)
-                        conn.execute('UPDATE system_information_events SET details_json=? WHERE rowid=?', (json.dumps(details, ensure_ascii=False, separators=(',', ':')), event['rowid']))
-                        continue
                 removed += conn.execute("DELETE FROM system_information_events WHERE rowid=?", (event['rowid'],)).rowcount
             next_cursor = int(rows[-1]['rowid']) if rows else 0
             conn.execute(
@@ -895,8 +915,7 @@ class SystemInformationStore:
                                 for key in ('content', 'raw_payload', 'metadata'):
                                     source_row.pop(key, None)
                                 evidence['row'] = source_row
-                                ref, path, size = self._write_evidence_file(evidence)
-                                self._register_evidence(conn, ref, path, size)
+                                ref, path, size = self._write_evidence_file(conn, evidence)
                                 conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
                                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
                                 conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
@@ -907,10 +926,27 @@ class SystemInformationStore:
                 if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}:
                     continue
                 stamp = row['updated_at_ms'] or row['created_at_ms']
-                if stamp is None or stamp >= now - 3 * 86_400_000 or not row['evidence_ref']:
+                if stamp is None or stamp >= now - 7 * 86_400_000 or not row['evidence_ref']:
                     continue
                 if conn.execute("SELECT 1 FROM system_information_items WHERE parent_item_id=? AND result IN ('processing','unknown','backoffice') LIMIT 1", (row['item_id'],)).fetchone():
                     continue
+                if source_database is None:
+                    continue
+                from packages.common.storage import connect_sqlite_readonly
+                from .business_retention import TERMINAL_STATUSES, _active_audits, _audit_protects
+                with connect_sqlite_readonly(source_database, timeout_seconds=2) as source:
+                    tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    task_columns = {r['name'] for r in source.execute('PRAGMA table_info(tasks)')}
+                    if not {'id', 'status', 'updated_at'} <= task_columns:
+                        continue
+                    original_task = source.execute("SELECT status,(julianday(updated_at)-2440587.5)*86400000 AS updated_ms FROM tasks WHERE id=?", (row['source_row_id'],)).fetchone()
+                    audits = _active_audits(source, tables)
+                    if (not original_task or original_task['status'] not in TERMINAL_STATUSES or original_task['updated_ms'] is None
+                            or original_task['updated_ms'] >= now - 7 * 86_400_000 or audits is None
+                            or _audit_protects(source, audits, row['source_row_id'])):
+                        continue
+                    if 'x_processing_attempts' in tables and source.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (row['source_row_id'],)).fetchone():
+                        continue
                 evidence_row = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (row['evidence_ref'],)).fetchone()
                 if not evidence_row:
                     continue
@@ -934,8 +970,7 @@ class SystemInformationStore:
                 evidence = {**evidence, 'task': task, 'pipeline': pipeline}
                 if json.dumps(evidence, ensure_ascii=False, sort_keys=True) == prior:
                     continue
-                ref, path, size = self._write_evidence_file(evidence)
-                self._register_evidence(conn, ref, path, size)
+                ref, path, size = self._write_evidence_file(conn, evidence)
                 conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
                 conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
@@ -990,8 +1025,7 @@ class SystemInformationStore:
             return False
         evidence_ref = None
         if evidence is not None:
-            evidence_ref, evidence_path, evidence_size = self._write_evidence_file(evidence)
-            self._register_evidence(conn, evidence_ref, evidence_path, evidence_size)
+            evidence_ref, evidence_path, evidence_size = self._write_evidence_file(conn, evidence)
         conn.execute(
             """INSERT INTO system_information_items(
                 item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
@@ -1111,11 +1145,8 @@ class SystemInformationStore:
         if conn.execute("SELECT 1 FROM system_information_items WHERE item_id=?", (item_id,)).fetchone() is None:
             return False
         if evidence is not None:
-            evidence_ref, path, size = self._write_evidence_file(evidence)
-            self._register_evidence(conn, evidence_ref, path, size)
-        elif evidence_ref and conn.execute(
-            "SELECT 1 FROM system_information_evidence WHERE evidence_ref=?", (evidence_ref,),
-        ).fetchone() is None:
+            evidence_ref, path, size = self._write_evidence_file(conn, evidence)
+        elif evidence_ref and not self._touch_evidence(conn, evidence_ref):
             evidence_ref = None
         cursor = conn.execute(
             """INSERT OR IGNORE INTO system_information_events(

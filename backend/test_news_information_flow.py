@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -34,10 +35,10 @@ def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: P
                        summary='模型返回', evidence={'raw_model_response': '完整初稿'},
                        details={'event_type': 'response_received', 'input': {'content': '原文'}, 'rules': {'prompt': '规则'}})
     result = store.prune_task_status_events(now_ms=now)
-    assert result['removed'] == 1
-    assert [event['event_id'] for event in store.detail('done')['timeline']] == ['model']
-    assert store.detail('done')['timeline'][0]['evidence']['raw_model_response'] == '完整初稿'
-    assert 'input' not in store.detail('done')['timeline'][0]['details']
+    assert result['removed'] == 0
+    model = next(event for event in store.detail('done')['timeline'] if event['event_id'] == 'model')
+    assert model['evidence']['raw_model_response'] == '完整初稿'
+    assert model['details']['input']['content'] == '原文'
     assert store.detail('active')['timeline']
 
 
@@ -135,8 +136,8 @@ def test_task_evidence_retention_preserves_draft_and_source_link(tmp_path: Path)
     store = _store(tmp_path)
     source = tmp_path / 'source.sqlite'
     with sqlite3.connect(source) as conn:
-        conn.execute('CREATE TABLE tasks(id INTEGER PRIMARY KEY,content TEXT,raw_payload TEXT)')
-        conn.execute("INSERT INTO tasks VALUES(1,'','{}')")
+        conn.execute('CREATE TABLE tasks(id INTEGER PRIMARY KEY,content TEXT,raw_payload TEXT,status TEXT,updated_at TEXT)')
+        conn.execute("INSERT INTO tasks VALUES(1,'','{}','published','2024-01-01')")
     now = int(datetime.now(UTC).timestamp() * 1000)
     old = now - 31 * 86_400_000
     snapshot = {'item_id': 'old', 'business_key': 'x', 'source': 'x', 'source_id': '1', 'title': '标题',
@@ -177,7 +178,7 @@ def test_candidate_retention_keeps_live_candidates_and_links(tmp_path: Path) -> 
         assert conn.execute('SELECT content FROM search_event_candidates WHERE id=2').fetchone()[0] == '活动原文'
 
 
-def test_attempt_retention_preserves_writer_response_and_unprojected_events(tmp_path: Path) -> None:
+def test_attempt_retention_removes_old_writer_response_but_preserves_unprojected_events(tmp_path: Path) -> None:
     from packages.system_observability.business_retention import trim_attempt_details
     source = tmp_path / 'source.sqlite'
     with sqlite3.connect(source) as conn:
@@ -197,7 +198,7 @@ def test_attempt_retention_preserves_writer_response_and_unprojected_events(tmp_
     result = trim_attempt_details(source, store, now_ms=int(datetime.now(UTC).timestamp() * 1000))
     assert result['cleared'] == 2
     with sqlite3.connect(source) as conn:
-        assert conn.execute('SELECT input_json,rule_json,response_ref FROM x_processing_attempts WHERE id=1').fetchone() == ('{}', '{}', 'writer-ref')
+        assert conn.execute('SELECT input_json,rule_json,response_ref FROM x_processing_attempts WHERE id=1').fetchone() == ('{}', '{}', None)
         assert conn.execute('SELECT input_json,response_ref FROM x_processing_attempts WHERE id=2').fetchone() == ('{}', None)
         assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=3').fetchone()[0] == 'unprojected'
         assert conn.execute('SELECT input_json FROM x_processing_attempts WHERE id=4').fetchone()[0] != '{}'
@@ -387,7 +388,7 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
                            result='unknown', happened_at_ms=old, summary='响应', evidence={'raw_model_response': 'privatefailureword'}, details={'attempt_id': 7})
         store.append_event(item_id='news:1', event_id='failure', event_type='stage_attempt', stage='写作', status='failed',
                            result='failed', happened_at_ms=old, summary='失败', reason='HTTP 503 privatefailureword', details={'attempt_id': 7})
-    # The API already hides expired material before the bounded physical sweep finishes.
+    # The API hides expired material before the bounded physical sweep finishes.
     assert store.query({'q': 'privatefailureword'})['total'] == 0
     assert 'privatefailureword' not in json.dumps(store.detail('news:1'))
     cleanup_observation_errors(store, now_ms=now)
@@ -562,3 +563,302 @@ def test_news_queries_and_retention_lookups_use_indexes_before_statistics(tmp_pa
             plan = ' '.join(str(row[3]) for row in conn.execute('EXPLAIN QUERY PLAN '+sql))
             assert expected in plan
             assert 'SCAN ' not in plan
+
+
+def test_successful_completed_attempt_raw_response_expires_after_seven_days(tmp_path: Path) -> None:
+    from datetime import timedelta
+    from packages.system_observability.business_retention import trim_attempt_details
+    source = tmp_path / 'source.sqlite'
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=8)).isoformat()
+    recent = (now - timedelta(days=4)).isoformat()
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+        """)
+        conn.executemany('INSERT INTO tasks VALUES(?,?,?)', [(1,'published',old),(2,'published',old),(3,'writing',old),
+                                                             (4,'published',recent),(5,'published',old)])
+        conn.executemany('INSERT INTO x_processing_attempts VALUES(?,?,?,?,?,?,?,?,?)', [
+            (1,1,'write','succeeded','{}','{}',None,'success-ref','草稿'),
+            (2,2,'write','failed','{}','{}',None,'failure-ref','故障'),
+            (3,3,'write','running','{}','{}',None,'active-ref','运行中'),
+            (4,4,'write','succeeded','{}','{}',None,'recent-ref','未到期'),
+            (5,5,'write','succeeded','{}','{}',None,'retry-success-ref','故障上下文'),
+            (6,5,'search','failed','{}','{}',None,'retry-failed-ref','故障'),
+        ])
+        conn.executemany('INSERT INTO x_processing_attempt_events VALUES(?,?,?,?,?,?)', [
+            (1,1,1,None,'success-ref','草稿'),(2,2,2,None,'failure-ref','故障'),(3,3,3,None,'active-ref','运行中')])
+    store = _store(tmp_path)
+    store.set_state('main_attempt_events_watermark', 3)
+    trim_attempt_details(source, store, now_ms=int(now.timestamp()*1000))
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=1').fetchone()[0] is None
+        assert conn.execute('SELECT response_ref FROM x_processing_attempt_events WHERE id=1').fetchone()[0] is None
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=2').fetchone()[0] == 'failure-ref'
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=3').fetchone()[0] == 'active-ref'
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=4').fetchone()[0] == 'recent-ref'
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts WHERE id=5').fetchone()[0] == 'retry-success-ref'
+
+
+def test_attempt_retention_waits_for_active_audits(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_attempt_details
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE fact_checks(id INTEGER PRIMARY KEY,status TEXT);
+            INSERT INTO tasks VALUES(1,'published','2024-01-01');
+            INSERT INTO x_processing_attempts VALUES(1,1,'write','succeeded','{}','{}',NULL,'keep-ref','响应');
+            INSERT INTO fact_checks VALUES(1,'processing');
+        """)
+    assert trim_attempt_details(source, _store(tmp_path), now_ms=int(datetime.now(UTC).timestamp()*1000))['cleared'] == 0
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts').fetchone()[0] == 'keep-ref'
+
+
+def test_attempt_retention_does_not_wait_for_main_writer_when_no_candidates(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_attempt_details
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            INSERT INTO tasks VALUES(1,'published','2024-01-01');
+            INSERT INTO x_processing_attempts VALUES(1,1,'write','failed','{}','{}',NULL,'fault-ref','故障');
+        """)
+    store = _store(tmp_path)
+    with sqlite3.connect(source) as writer:
+        writer.execute('BEGIN IMMEDIATE')
+        result = trim_attempt_details(source, store, now_ms=int(datetime.now(UTC).timestamp()*1000))
+        assert result == {'scanned': 1, 'cleared': 0}
+
+
+def test_attempt_retention_only_waits_for_matching_audit_when_identity_is_known(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_attempt_details
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE fact_checks(id INTEGER PRIMARY KEY,status TEXT,source_item_id TEXT);
+            CREATE TABLE newsflash_production_metadata(delivery_key TEXT PRIMARY KEY,odaily_id TEXT,id_match_status TEXT);
+            INSERT INTO tasks VALUES(1,'published','2024-01-01'),(2,'published','2024-01-01'),(3,'published','2024-01-01');
+            INSERT INTO x_processing_attempts VALUES(1,1,'write','succeeded','{}','{}',NULL,'protected','x'),(2,2,'write','succeeded','{}','{}',NULL,'eligible','x'),(3,3,'write','succeeded','{}','{}',NULL,'unknown','x');
+            INSERT INTO fact_checks VALUES(1,'processing','article-1');
+            INSERT INTO newsflash_production_metadata VALUES('odaily-task-1','article-1','matched'),('odaily-task-2','article-2','matched');
+        """)
+    result = trim_attempt_details(source, _store(tmp_path), now_ms=int(datetime.now(UTC).timestamp()*1000))
+    assert result['cleared'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts ORDER BY id').fetchall() == [('protected',), (None,), ('unknown',)]
+
+
+def test_completed_attempt_events_drop_payloads_only_for_verified_success(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_completed_attempt_events
+    source = tmp_path / 'source.sqlite'
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=8)).isoformat()
+    recent = (now - timedelta(days=4)).isoformat()
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,status TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER);
+        """)
+        conn.executemany('INSERT INTO tasks VALUES(?,?,?)', [(1,'published',old),(2,'published',old),(3,'published',recent)])
+        conn.executemany('INSERT INTO x_processing_attempts VALUES(?,?,?)', [(1,1,'succeeded'),(2,2,'failed'),(3,3,'succeeded')])
+        conn.executemany('INSERT INTO x_processing_attempt_events VALUES(?,?,?)', [(1,1,1),(2,2,2),(3,3,3)])
+    store = _store(tmp_path)
+    store.set_state('main_attempt_events_watermark', 3)
+    for item_id in (1, 2, 3):
+        key = f'task:{item_id}'
+        store.upsert_snapshot({'item_id': key, 'business_key':'x','source':'x','title':'稿件',
+                               'status':'published','result':'direct_publish','source_database':str(source),
+                               'source_table':'tasks','source_row_id':str(item_id),
+                               'updated_at_ms':int((now - timedelta(days=8)).timestamp()*1000)}, None)
+        store.append_event(item_id=key,event_id=f'stage-attempt:{item_id}',event_type='stage_attempt',stage='写作',
+                           status='running',result='unknown',happened_at_ms=int((now - timedelta(days=8)).timestamp()*1000),
+                           summary='返回',evidence={'raw_model_response':f'payload-{item_id}'},
+                           details={'attempt_id':item_id,'input':{'x':'prompt'},'rules':{'version':1}})
+    result = trim_completed_attempt_events(source, store, now_ms=int(now.timestamp()*1000))
+    assert result['cleared'] == 1
+    with store.connect() as conn:
+        events = conn.execute("SELECT event_id,evidence_ref,details_json FROM system_information_events WHERE event_type='stage_attempt' ORDER BY event_id").fetchall()
+    assert events[0]['evidence_ref'] is None
+    assert 'input' not in json.loads(events[0]['details_json'])
+    assert events[1]['evidence_ref'] and events[2]['evidence_ref']
+
+
+def test_evidence_reclaim_preserves_shared_and_review_references(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import reclaim_completed_attempt_evidence
+    source = tmp_path / 'source.sqlite'
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp()*1000)
+    refs = [store.save_evidence({'raw_model_response': f'unique-{n}'}) for n in range(5)]
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE x_processing_attempts(response_ref TEXT); CREATE TABLE x_processing_attempt_events(response_ref TEXT);')
+        conn.execute('INSERT INTO x_processing_attempts VALUES(?)', (refs[0],))
+    store.pin_evidence(refs[1], 'keep')
+    with store.connect() as conn:
+        conn.execute('CREATE TABLE system_review_items(scope_json TEXT,evidence_json TEXT,counter_evidence_json TEXT)')
+        conn.execute('INSERT INTO system_review_items VALUES(?,?,?)', ('{}', json.dumps({'evidence_ref': refs[2]}), '[]'))
+        conn.executemany('INSERT INTO system_information_expired_evidence_candidates VALUES(?,?)', [(ref, now) for ref in refs])
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=? WHERE evidence_ref<>?', (now - 8*86_400_000, refs[3]))
+    result = reclaim_completed_attempt_evidence(source, store, now_ms=now, limit=10)
+    assert result['removed'] == 1
+    assert all(store.load_evidence(ref) is not None for ref in refs[:4])
+    assert store.load_evidence(refs[4]) is None
+
+
+def test_evidence_reclaim_fails_closed_without_source(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import reclaim_completed_attempt_evidence
+    import pytest
+    store = _store(tmp_path)
+    ref = store.save_evidence({'raw_model_response': 'retained'})
+    with store.connect() as conn:
+        conn.execute('INSERT INTO system_information_expired_evidence_candidates VALUES(?,0)', (ref,))
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=0 WHERE evidence_ref=?', (ref,))
+    with pytest.raises(sqlite3.OperationalError):
+        reclaim_completed_attempt_evidence(tmp_path / 'missing.sqlite', store, now_ms=int(datetime.now(UTC).timestamp()*1000))
+    assert store.load_evidence(ref) is not None
+
+
+def test_evidence_reclaim_serializes_concurrent_reuse(tmp_path: Path, monkeypatch) -> None:
+    from packages.system_observability.business_retention import reclaim_completed_attempt_evidence
+    import threading
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE x_processing_attempts(response_ref TEXT); CREATE TABLE x_processing_attempt_events(response_ref TEXT);')
+    store = _store(tmp_path)
+    payload = {'raw_model_response': 'shared'}
+    ref = store.save_evidence(payload)
+    path = store.evidence_dir / ref[:2] / f'{ref}.json.gz'
+    now = int(datetime.now(UTC).timestamp()*1000)
+    with store.connect() as conn:
+        conn.execute('INSERT INTO system_information_expired_evidence_candidates VALUES(?,?)', (ref, now))
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=0 WHERE evidence_ref=?', (ref,))
+    reached = threading.Event()
+    proceed = threading.Event()
+    failures = []
+    original_unlink = Path.unlink
+
+    def blocking_unlink(target, *args, **kwargs):
+        if target == path:
+            reached.set()
+            if not proceed.wait(5):
+                raise TimeoutError('writer did not start')
+        return original_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', blocking_unlink)
+    def cleaner():
+        try:
+            reclaim_completed_attempt_evidence(source, store, now_ms=now)
+        except Exception as exc:
+            failures.append(exc)
+    def writer():
+        try:
+            proceed.set()
+            assert store.save_evidence(payload) == ref
+        except Exception as exc:
+            failures.append(exc)
+    first = threading.Thread(target=cleaner)
+    first.start()
+    assert reached.wait(5)
+    second = threading.Thread(target=writer)
+    second.start()
+    first.join(10)
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive() and not failures
+    assert store.load_evidence(ref) == payload
+
+
+def test_evidence_reclaim_recovers_if_unlink_succeeds_but_transaction_fails(tmp_path: Path, monkeypatch) -> None:
+    from packages.system_observability.business_retention import reclaim_completed_attempt_evidence
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE x_processing_attempts(response_ref TEXT); CREATE TABLE x_processing_attempt_events(response_ref TEXT);')
+    store = _store(tmp_path)
+    payload = {'raw_model_response': '可恢复'}
+    ref = store.save_evidence(payload)
+    path = store.evidence_dir / ref[:2] / f'{ref}.json.gz'
+    now = int(datetime.now(UTC).timestamp()*1000)
+    with store.connect() as conn:
+        conn.execute('INSERT INTO system_information_expired_evidence_candidates VALUES(?,?)', (ref, now))
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=0 WHERE evidence_ref=?', (ref,))
+    original_unlink = Path.unlink
+    def interrupted(target, *args, **kwargs):
+        result = original_unlink(target, *args, **kwargs)
+        if target == path:
+            raise OSError('interrupted after unlink')
+        return result
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, 'unlink', interrupted)
+        with pytest.raises(OSError, match='interrupted'):
+            reclaim_completed_attempt_evidence(source, store, now_ms=now)
+    assert store.save_evidence(payload) == ref
+    assert reclaim_completed_attempt_evidence(source, store, now_ms=int(datetime.now(UTC).timestamp()*1000))['removed'] == 0
+    assert store.load_evidence(ref) == payload
+
+
+def test_seven_day_retention_releases_source_timeline_and_file_in_order(tmp_path: Path) -> None:
+    from packages.system_observability.business_retention import trim_attempt_details, trim_completed_attempt_events, reclaim_completed_attempt_evidence
+    source = tmp_path / 'source.sqlite'
+    store = _store(tmp_path)
+    now = datetime.now(UTC)
+    now_ms = int(now.timestamp()*1000)
+    old = now - timedelta(days=8)
+    reference = store.save_evidence({'raw_model_response': '到期普通返回'})
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(id INTEGER PRIMARY KEY,task_id INTEGER,stage TEXT,status TEXT,input_json TEXT,rule_json TEXT,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+            CREATE TABLE x_processing_attempt_events(id INTEGER PRIMARY KEY,task_id INTEGER,attempt_id INTEGER,response_gzip BLOB,response_ref TEXT,response_excerpt TEXT);
+        """)
+        conn.execute('INSERT INTO tasks VALUES(?,?,?)', (1, 'published', old.isoformat()))
+        conn.execute("INSERT INTO x_processing_attempts VALUES(1,1,'write','succeeded',?,?,NULL,?,?)", ('{"prompt":"x"}', '{}', reference, '摘录'))
+        conn.execute('INSERT INTO x_processing_attempt_events VALUES(1,1,1,NULL,?,?)', (reference, '摘录'))
+    store.upsert_snapshot({'item_id':'task:1','business_key':'x','source':'x','title':'定稿标题','status':'published',
+                           'result':'direct_publish','source_database':str(source),'source_table':'tasks','source_row_id':'1',
+                           'updated_at_ms':int(old.timestamp()*1000)}, None)
+    store.append_event(item_id='task:1',event_id='stage-attempt:1',event_type='stage_attempt',stage='写作',status='running',
+                       result='unknown',happened_at_ms=int(old.timestamp()*1000),summary='模型返回',evidence_ref=reference,
+                       details={'attempt_id':1,'input':{'prompt':'x'},'rules':{}})
+    with store.connect() as conn:
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=? WHERE evidence_ref=?', (int(old.timestamp()*1000), reference))
+    store.set_state('main_attempt_events_watermark', 1)
+    assert trim_attempt_details(source, store, now_ms=now_ms)['cleared'] == 1
+    assert trim_completed_attempt_events(source, store, now_ms=now_ms)['cleared'] == 1
+    assert reclaim_completed_attempt_evidence(source, store, now_ms=now_ms)['removed'] == 1
+    with sqlite3.connect(source) as conn:
+        assert conn.execute('SELECT response_ref FROM x_processing_attempts').fetchone()[0] is None
+    detail = store.detail('task:1')
+    assert detail['title'] == '定稿标题'
+    assert any(event['event_id'] == 'stage-attempt:1' for event in detail['timeline'])
+    assert store.load_evidence(reference) is None
+
+
+def test_completed_evidence_maintenance_is_opt_in(tmp_path: Path, monkeypatch) -> None:
+    from packages.system_observability import business_retention, error_retention
+    store = _store(tmp_path)
+    calls = []
+    for name in ('trim_search_details', 'trim_source_text', 'trim_candidate_details', 'trim_competitor_text'):
+        monkeypatch.setattr(business_retention, name, lambda *args, **kwargs: {})
+    for name in ('trim_attempt_details', 'trim_completed_attempt_events', 'reclaim_completed_attempt_evidence'):
+        monkeypatch.setattr(business_retention, name, lambda *args, _name=name, **kwargs: calls.append(_name) or {})
+    monkeypatch.setattr(error_retention, 'cleanup_observation_errors', lambda *args, **kwargs: {})
+    monkeypatch.setattr(store, 'trim_task_evidence', lambda **kwargs: {})
+    monkeypatch.setattr(store, 'compact_search_index', lambda **kwargs: {})
+    monkeypatch.setattr(store, 'prune_task_status_events', lambda **kwargs: {})
+    projector = MainTaskProjector(tmp_path / 'missing.sqlite', store, table_specs=())
+    monkeypatch.delenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', raising=False)
+    projector._cleanup_dependency_errors(1_000_000)
+    assert calls == []
+    monkeypatch.setenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '1')
+    projector._cleanup_dependency_errors(1_060_000)
+    assert calls == ['trim_attempt_details', 'trim_completed_attempt_events', 'reclaim_completed_attempt_evidence']

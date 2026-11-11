@@ -181,8 +181,7 @@ def cleanup_observation_errors(store: Any, *, now_ms: int | None = None, limit: 
             if payload is None or (not force and not external_error(payload)):
                 return
             cleaned = {} if force else scrub_external_errors(payload)
-            new_ref, new_path, size = store._write_evidence_file(cleaned)
-            store._register_evidence(conn, new_ref, new_path, size)
+            new_ref, new_path, size = store._write_evidence_file(conn, cleaned)
             for table, field in (('system_information_items', 'evidence_ref'), ('system_information_events', 'evidence_ref'),
                                  ('system_information_decision_samples', 'evidence_ref'), ('system_review_analysis_attempts', 'raw_response_ref'),
                                  ('system_information_evidence_pins', 'evidence_ref')):
@@ -275,5 +274,5 @@ def cleanup_observation_errors(store: Any, *, now_ms: int | None = None, limit: 
             conn.execute('INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms',
                          (key_state, json.dumps({'day': cutoff, 'cursor': int(cards[-1]['__rowid__']) if cards else after}), now_ms or int(datetime.now(UTC).timestamp()*1000)))
     for path in delete_files:
-        path.unlink(missing_ok=True)
+        store._unlink_if_unregistered(path)
     return {'cleared': changed}

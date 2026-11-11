@@ -272,12 +272,14 @@ def test_pinned_attempt_evidence_survives_orphan_pruning_until_projection() -> N
         reference = store.save_evidence({"raw_model_response": "可重放的模型返回"})
         store.pin_evidence(reference, "x-attempt-response:1:1")
 
-        assert store.prune_orphan_evidence(dry_run=False)["files"] == 0
+        assert store.prune_orphan_evidence(dry_run=True)["files"] == 0
         assert store.load_evidence(reference)["raw_model_response"] == "可重放的模型返回"
 
         store.unpin_evidence("x-attempt-response:1:1")
-        assert store.prune_orphan_evidence(dry_run=False)["files"] == 1
-        assert store.load_evidence(reference) is None
+        assert store.prune_orphan_evidence(dry_run=True)["files"] == 1
+        with pytest.raises(RuntimeError, match='provenance'):
+            store.prune_orphan_evidence(dry_run=False)
+        assert store.load_evidence(reference)["raw_model_response"] == "可重放的模型返回"
 
 
 def test_evidence_retention_compacts_only_closed_records_and_prunes_with_dry_run() -> None:
@@ -319,8 +321,9 @@ def test_evidence_retention_compacts_only_closed_records_and_prunes_with_dry_run
         orphan_preview = store.prune_orphan_evidence(dry_run=True)
         assert orphan_preview["files"] == 1
         assert orphan_path.exists()
-        assert store.prune_orphan_evidence(dry_run=False)["files"] == 1
-        assert not orphan_path.exists()
+        with pytest.raises(RuntimeError, match='provenance'):
+            store.prune_orphan_evidence(dry_run=False)
+        assert orphan_path.exists()
 
 
 def test_storage_health_reports_margin_and_growth_sample_count() -> None:
@@ -1534,3 +1537,13 @@ def test_failure_clusters_ignore_retired_title_repeat_validation() -> None:
             item["identity"].get("error_signature") == "writer output repeats title in content"
             for item in issues
         )
+
+
+def test_orphan_cleanup_requires_source_provenance(tmp_path) -> None:
+    store = SystemInformationStore(tmp_path / "information.sqlite")
+    store.initialize()
+    payload = {"raw_model_response": "复用证据的并发测试"}
+    reference = store.save_evidence(payload)
+    with pytest.raises(RuntimeError, match='provenance'):
+        store.prune_orphan_evidence(dry_run=False)
+    assert store.load_evidence(reference) == payload

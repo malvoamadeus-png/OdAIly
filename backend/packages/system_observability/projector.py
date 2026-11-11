@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -652,7 +653,7 @@ class MainTaskProjector:
             except sqlite3.Error as exc:
                 self.store.set_state(f'dependency_cleanup_{database_key}_error', f'{type(exc).__name__}: {exc}'[:300])
         cleanup_observation_errors(self.store, now_ms=now_ms)
-        from .business_retention import trim_search_details, trim_source_text, trim_candidate_details, trim_competitor_text, trim_attempt_details
+        from .business_retention import trim_search_details, trim_source_text, trim_candidate_details, trim_competitor_text, trim_attempt_details, trim_completed_attempt_events, reclaim_completed_attempt_evidence
         try:
             trimmed_search = trim_search_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('search_detail_retention_last_result', json.dumps(trimmed_search))
@@ -689,12 +690,16 @@ class MainTaskProjector:
             self.store.set_state('competitor_text_retention_error', '')
         except sqlite3.Error as exc:
             self.store.set_state('competitor_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
-        try:
-            attempts = trim_attempt_details(self.source_database, self.store, now_ms=now_ms)
-            self.store.set_state('attempt_retention_last_result', json.dumps(attempts))
-            self.store.set_state('attempt_retention_error', '')
-        except sqlite3.Error as exc:
-            self.store.set_state('attempt_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        if os.getenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
+            for key, cleanup in (('attempt_retention', trim_attempt_details),
+                                 ('attempt_event_retention', trim_completed_attempt_events),
+                                 ('attempt_evidence_reclaim', reclaim_completed_attempt_evidence)):
+                try:
+                    result = cleanup(self.source_database, self.store, now_ms=now_ms)
+                    self.store.set_state(f'{key}_last_result', json.dumps(result))
+                    self.store.set_state(f'{key}_error', '')
+                except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+                    self.store.set_state(f'{key}_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
             removed = self.store.prune_task_status_events(now_ms=now_ms)
             self.store.set_state('status_retention_last_result', json.dumps(removed))
