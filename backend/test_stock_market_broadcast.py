@@ -65,6 +65,15 @@ def test_instrument_knowledge_covers_current_us_symbols_and_marks_unknown_profil
     knowledge = load_instrument_knowledge()
 
     assert len(knowledge) == 176
+    assert knowledge["AGPU"].company_name == "Axe Compute Inc."
+    assert {"计算服务", "财库管理"} <= set(knowledge["AGPU"].business_tags)
+    assert knowledge["AGPU"].verified is True
+    assert knowledge["BOT"].company_name == "RoboStrategy, Inc."
+    assert {"机器人产业投资", "Physical AI", "机器人公司投资"} <= set(knowledge["BOT"].business_tags)
+    assert knowledge["BOT"].verified is True
+    assert knowledge["FWDI"].company_name == "Forward Industries, Inc."
+    assert {"加密财库", "Solana", "SOL财库策略"} <= set(knowledge["FWDI"].business_tags)
+    assert knowledge["FWDI"].verified is True
     assert knowledge["MU"].company_name == "Micron Technology"
     assert {"DRAM", "NAND", "存储芯片"} <= set(knowledge["MU"].business_tags)
     assert knowledge["INTC"].verified is True
@@ -76,8 +85,16 @@ def test_instrument_knowledge_covers_current_us_symbols_and_marks_unknown_profil
     assert {"加密财库", "ZEC财库", "Zcash"} <= set(knowledge["CYPH"].business_tags)
     assert knowledge["CYPH"].verified is True
     assert {"加密财库", "比特币"} <= set(knowledge["MSTR"].business_tags)
-    assert knowledge["DRAM"].verified is False
-    assert knowledge["DRAM"].business_tags == ()
+    assert knowledge["DRAM"].company_name == "Roundhill Memory ETF"
+    assert {"存储ETF", "存储芯片", "DRAM", "NAND", "HBM"} <= set(knowledge["DRAM"].business_tags)
+    assert knowledge["DRAM"].verified is True
+    assert knowledge["ZCSH"].company_name == "Zcash ETF"
+    assert {"Zcash ETF", "Zcash", "加密资产敞口"} <= set(knowledge["ZCSH"].business_tags)
+    assert knowledge["ZCSH"].verified is True
+    assert {
+        symbol for symbol, profile in knowledge.items()
+        if not profile.verified or not profile.business_tags
+    } == {"BBX", "LYTE", "QNTX", "USDEX"}
 
 
 def test_headline_generation_uses_business_knowledge_and_generates_single_concept_title() -> None:
@@ -232,24 +249,24 @@ def test_unverified_symbol_cannot_be_classified_from_its_code_alone() -> None:
     response = json.dumps({
         "title": "CPU架构概念美股普涨",
         "concepts": [{"label": "CPU架构", "members": [{"symbol": "ARM", "confidence": 0.99}]}],
-        "unclassified_symbols": ["DRAM"],
+        "unclassified_symbols": ["BBX"],
     })
     client = _FakeTextGenerationClient(response)
     classifier = StockThemeClassifier(client=client, model="test-model")
 
     result = classifier.generate_title(
-        members=(_member("ARM", "9.8"), _member("DRAM", "9.4")),
+        members=(_member("ARM", "9.8"), _member("BBX", "9.4")),
         direction="up",
         broad=True,
-        fallback_title="多只美股上涨，ARM上涨10%、DRAM上涨9%",
+        fallback_title="多只美股上涨，ARM上涨10%、BBX上涨9%",
     )
 
-    assert result.title == "多只美股上涨，ARM上涨10%、DRAM上涨9%"
+    assert result.title == "多只美股上涨，ARM上涨10%、BBX上涨9%"
     assert result.fallback_reason == "no_repeated_concept"
     assert result.concepts[0].symbols == ("ARM",)
-    assert result.unclassified_symbols == ("DRAM",)
+    assert result.unclassified_symbols == ("BBX",)
     prompt = str(client.calls[0]["prompt"])
-    assert '"symbol":"DRAM","company_name":null,"business_tags":[],"knowledge_verified":false' in prompt
+    assert '"symbol":"BBX","company_name":null,"business_tags":[],"knowledge_verified":false' in prompt
 
 
 def test_unverified_symbols_without_any_profile_use_generic_title_without_model_call() -> None:
@@ -257,15 +274,15 @@ def test_unverified_symbols_without_any_profile_use_generic_title_without_model_
     classifier = StockThemeClassifier(client=client, model="test-model")
 
     result = classifier.generate_title(
-        members=(_member("DRAM", "9.4"), _member("BBX", "8.2")),
+        members=(_member("BBX", "9.4"), _member("LYTE", "8.2")),
         direction="up",
         broad=True,
-        fallback_title="多只美股上涨，DRAM上涨9%、BBX上涨8%",
+        fallback_title="多只美股上涨，BBX上涨9%、LYTE上涨8%",
     )
 
-    assert result.title == "多只美股上涨，DRAM上涨9%、BBX上涨8%"
+    assert result.title == "多只美股上涨，BBX上涨9%、LYTE上涨8%"
     assert result.fallback_reason == "knowledge_missing"
-    assert result.unclassified_symbols == ("BBX", "DRAM")
+    assert result.unclassified_symbols == ("BBX", "LYTE")
     assert client.calls == []
 
 
@@ -276,7 +293,7 @@ def test_model_cannot_assign_unverified_symbol_to_a_concept() -> None:
             "label": "存储芯片",
             "members": [
                 {"symbol": "MU", "confidence": 0.99},
-                {"symbol": "DRAM", "confidence": 0.99},
+                {"symbol": "BBX", "confidence": 0.99},
             ],
         }],
         "unclassified_symbols": ["WDC", "SNDK"],
@@ -286,15 +303,15 @@ def test_model_cannot_assign_unverified_symbol_to_a_concept() -> None:
     )
 
     result = classifier.generate_title(
-        members=(_member("MU", "10"), _member("DRAM", "9"), _member("WDC", "8"), _member("SNDK", "7")),
+        members=(_member("MU", "10"), _member("BBX", "9"), _member("WDC", "8"), _member("SNDK", "7")),
         direction="up",
         broad=True,
-        fallback_title="多只美股上涨，MU上涨10%、DRAM上涨9%",
+        fallback_title="多只美股上涨，MU上涨10%、BBX上涨9%",
     )
 
-    assert result.title == "多只美股上涨，MU上涨10%、DRAM上涨9%"
+    assert result.title == "多只美股上涨，MU上涨10%、BBX上涨9%"
     assert result.fallback_reason == "invalid_response"
-    assert result.unclassified_symbols == ("DRAM", "MU", "SNDK", "WDC")
+    assert result.unclassified_symbols == ("BBX", "MU", "SNDK", "WDC")
 
 
 def test_three_concepts_are_allowed_and_four_are_rejected() -> None:
