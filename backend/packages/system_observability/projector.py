@@ -709,7 +709,7 @@ class MainTaskProjector:
                 except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
                     self.store.set_state(f'{key}_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
-            removed = self.store.prune_task_status_events(now_ms=now_ms)
+            removed = self.store.prune_task_status_events(source_database=self.source_database, now_ms=now_ms)
             self.store.set_state('status_retention_last_result', json.dumps(removed))
             self.store.set_state('status_retention_error', '')
         except sqlite3.Error as exc:

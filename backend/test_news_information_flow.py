@@ -921,3 +921,25 @@ def test_capture_evidence_retention_batches_resume_without_skipping(tmp_path: Pa
     with store.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM system_information_expired_evidence_candidates').fetchone()[0] == 7
     assert first['removed'] + second['removed'] == 8
+
+
+def test_status_retention_preserves_completed_task_with_failed_attempt(tmp_path: Path) -> None:
+    source = tmp_path / 'main.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
+            CREATE TABLE x_processing_attempts(task_id INTEGER,status TEXT);
+            INSERT INTO tasks VALUES(1,'published','2024-01-01'),(2,'published','2024-01-01');
+            INSERT INTO x_processing_attempts VALUES(1,'failed'),(2,'succeeded');
+        """)
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp()*1000)
+    old = now - 8*86_400_000
+    for task_id in (1, 2):
+        store.upsert_snapshot({'item_id':f'task:{task_id}','business_key':'x','source':'x','source_id':str(task_id),
+                               'title':'稿件','status':'published','result':'direct_publish','source_database':str(source),
+                               'source_table':'tasks','source_row_id':str(task_id),'updated_at_ms':old}, None)
+    store.prune_task_status_events(source_database=source, now_ms=now)
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM system_information_events WHERE item_id='task:1'").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM system_information_events WHERE item_id='task:2'").fetchone()[0] == 0

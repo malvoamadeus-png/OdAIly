@@ -8,7 +8,9 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 import zlib
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -849,19 +851,40 @@ class SystemInformationStore:
         with self.connect() as conn:
             return self._upsert_snapshot_in_connection(conn, snapshot, evidence, observed)
 
-    def prune_task_status_events(self, *, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
+    def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
         """Remove old status observations in bounded batches, preserving attempt evidence."""
         now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
         cutoff = now - 7 * 86_400_000
-        with self.connect() as conn:
+        with ExitStack() as cleanup, self.connect() as conn:
             conn.execute('PRAGMA busy_timeout=2000')
             row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
             cursor = int(row[0]) if row else 0
             rows = conn.execute(
-                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id,status,result,error_code,evidence_ref "
-                "FROM system_information_events WHERE rowid>? ORDER BY rowid LIMIT ?",
+                "SELECT e.rowid,e.event_id,e.event_type,e.happened_at_ms,e.observed_at_ms,e.item_id,e.status,e.result,e.error_code,e.evidence_ref,i.source_table AS candidate_source_table "
+                "FROM system_information_events e LEFT JOIN system_information_items i ON i.item_id=e.item_id WHERE e.rowid>? ORDER BY e.rowid LIMIT ?",
                 (cursor, max(1, min(limit, 5000))),
             ).fetchall()
+            # Task evidence is protected by source tasks and active audits. The
+            # writer uses the same lock order (main database, then information).
+            needs_main = any(row['candidate_source_table'] == 'tasks' and (row['happened_at_ms'] or row['observed_at_ms']) < cutoff for row in rows)
+            main = None
+            audit_tables = set()
+            active_audits = None
+            if needs_main and source_database is not None:
+                from .business_retention import _active_audits
+                try:
+                    main = cleanup.enter_context(sqlite3.connect(source_database.resolve().as_uri() + '?mode=rw', uri=True, timeout=2, factory=ClosingSQLiteConnection))
+                    main.row_factory = sqlite3.Row
+                    main.execute('BEGIN IMMEDIATE')
+                    deadline = time.monotonic() + 1.0
+                    main.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+                    audit_tables = {r[0] for r in main.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if {'tasks', 'x_processing_attempts'} <= audit_tables:
+                        active_audits = _active_audits(main, audit_tables)
+                except sqlite3.Error:
+                    if main is not None:
+                        main.close()
+                    main = None
             conn.execute('BEGIN IMMEDIATE')
             removed = queued = scanned = 0
             next_cursor = cursor
@@ -883,7 +906,7 @@ class SystemInformationStore:
                         or 'fail' in str(event['status'] or '').lower() or 'error' in str(event['status'] or '').lower()):
                     continue
                 item = conn.execute(
-                    "SELECT source_table,source_id,source_name,status,result FROM system_information_items WHERE item_id=?",
+                    "SELECT source_table,source_row_id,source_id,source_name,status,result FROM system_information_items WHERE item_id=?",
                     (event['item_id'],),
                 ).fetchone()
                 if not item:
@@ -894,6 +917,15 @@ class SystemInformationStore:
                         or (item['source_table'] in {'local_pipeline_jobs', 'x_capture_attempts', 'binance_square_attempts'}
                             and item['status'] in technical_terminal)):
                     continue
+                if item['source_table'] == 'tasks':
+                    if main is None or active_audits is None:
+                        continue
+                    from .business_retention import _audit_protects
+                    task = main.execute("SELECT status,(julianday(updated_at)-2440587.5)*86400000 AS updated_ms FROM tasks WHERE id=?", (item['source_row_id'],)).fetchone()
+                    if (not task or task['status'] not in terminal or task['updated_ms'] is None or task['updated_ms'] >= cutoff
+                            or _audit_protects(main, active_audits, item['source_row_id'])
+                            or main.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (item['source_row_id'],)).fetchone()):
+                        continue
                 if item['source_table'] in {'x_capture_attempts', 'binance_square_attempts'}:
                     identity = str(item['source_name'] or '')
                     if not identity and item['source_id'] and not str(item['source_id']).isdigit():
