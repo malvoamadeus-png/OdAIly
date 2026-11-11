@@ -179,7 +179,7 @@ class LocalPipelineQueue:
             conn.commit()
             return self._row_to_job(row)
 
-    def requeue_stale_running_jobs(self, *, stale_before: datetime) -> int:
+    def requeue_stale_running_jobs(self, *, stale_before: datetime, exclude_worker_id: str | None = None) -> int:
         now = encode_dt()
         cutoff = encode_dt(stale_before)
         with self._connect() as conn:
@@ -199,8 +199,9 @@ class LocalPipelineQueue:
                   AND storage_epoch = ?
                   AND locked_at IS NOT NULL
                   AND locked_at < ?
+                  AND (? IS NULL OR locked_by IS NULL OR locked_by <> ?)
                 """,
-                (self.max_attempts, now, now, self.storage_epoch, cutoff),
+                (self.max_attempts, now, now, self.storage_epoch, cutoff, exclude_worker_id, exclude_worker_id),
             )
             return int(cursor.rowcount or 0)
 

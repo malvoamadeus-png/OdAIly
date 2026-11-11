@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +72,7 @@ class LocalPipelineService:
         self._worker_thread: threading.Thread | None = None
         self._worker_restart_count = 0
         self._last_worker_error: str | None = None
+        self._last_stale_recovery = 0.0
 
     def start(self) -> None:
         if hasattr(self.processor, "init_remote_schema"):
@@ -151,6 +153,15 @@ class LocalPipelineService:
             self._wake_event.clear()
 
     def _run_worker_once(self) -> None:
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_stale_recovery >= 60:
+            recovered = self.queue.requeue_stale_running_jobs(
+                stale_before=datetime.now(UTC) - timedelta(minutes=30),
+                exclude_worker_id=self.processor.worker_id,
+            )
+            self._last_stale_recovery = now_monotonic
+            if recovered:
+                print(f"[odaily] local pipeline recovered abandoned jobs count={recovered}")
         job = self.queue.claim_next(worker_id=self.processor.worker_id)
         if job is None:
             self._safe_record_heartbeat(success=True, error=None, metadata={"idle": True, "queue": self._safe_queue_stats()})
