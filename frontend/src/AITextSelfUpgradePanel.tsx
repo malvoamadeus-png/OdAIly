@@ -14,13 +14,17 @@ const DECISION_LABELS: Record<string, string> = {
   pending: '待审', accepted: '已接受', rejected: '已驳回', ignored: '已忽略',
 };
 const VERDICT_LABELS: Record<string, string> = {
-  writer1_error: '事实审核者正确，Writer1稿件有误',
-  fact_auditor_error: 'Writer1稿件成立，事实审核者有误',
+  writer1_error: '审核者意见成立，Writer1稿件有误',
+  auditor_false_positive: '审核者意见不成立',
+  fact_auditor_error: '事实审查者意见不成立',
   inconclusive: '现有证据无法定论',
 };
 const EVIDENCE_LABELS: Record<string, string> = {
   published_text: '已发布稿件', writer_draft: '编写者1草稿',
-  source_material: '原始素材', fact_auditor_record: '事实审核记录',
+  source_material: '原始素材', reviewer_record: '审核意见记录',
+};
+const REVIEWER_LABELS: Record<string, string> = {
+  text_auditor: '文本审查者', fact_auditor: '事实审查者',
 };
 
 export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshToken?: number }) {
@@ -109,7 +113,9 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 <span>{item.analysis_status === 'completed' ? VERDICT_LABELS[item.verdict || ''] || '已完成' : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
               </span>
-              <span className="aiTextUpgradeSummary">{item.fact_summary || item.fact_reason || '事实审核者标记待复核问题'}</span>
+              <span className="aiTextUpgradeSummary">{item.source_type === 'text_auditor'
+                ? item.audit_result.summary || '文本审查者标记待复核问题'
+                : item.fact_summary || item.fact_reason || '事实审查者标记待复核问题'}</span>
             </button>
           ))}
           {!loading && !page?.items.length && <div className="aiTextUpgradeEmpty">当前筛选没有案例。</div>}
@@ -123,12 +129,12 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
         <aside className="aiTextUpgradeDetail">
           {!selected ? <div className="aiTextUpgradeEmpty">选择一条案例查看稿件和审核意见。</div> : <>
             <header className="aiTextUpgradeDetailHeader">
-              <div><span>{formatDate(selected.published_at || selected.created_at)} · {DECISION_LABELS[selected.human_decision]}</span><h2>{selected.audited_title || '无标题'}</h2></div>
+              <div><span>{REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {DECISION_LABELS[selected.human_decision]}</span><h2>{selected.audited_title || '无标题'}</h2></div>
               <a href={auditedUrl} target="_blank" rel="noreferrer" title="打开已发布快讯"><ExternalLink size={16} /></a>
             </header>
             {selected.analysis_status === 'completed' ? (
               <section className="aiTextUpgradeVerdict">
-                <div><strong>{VERDICT_LABELS[selected.verdict || ''] || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'}</span></div>
+                <div><strong>{VERDICT_LABELS[selected.verdict || ''] || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'} · {selected.analysis_prompt_version || '未知Prompt版本'}</span></div>
                 <p>{selected.rationale}</p>
                 {selected.evidence.map((item, index) => <blockquote key={`${item.location}-${index}`}>
                   <span>{EVIDENCE_LABELS[item.location] || item.location}</span>
@@ -142,8 +148,20 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
               </div>
             )}
 
-            <section className="aiTextUpgradeSection">
-              <h3>事实审核者意见</h3>
+            {selected.source_type === 'text_auditor' ? <section className="aiTextUpgradeSection">
+              <h3>文本审查者意见</h3>
+              <p>{selected.audit_result.summary || '文本审查者标记了待复核问题。'}</p>
+              {(selected.audit_result.issues || []).map((issue, index) => (
+                <article className="aiTextUpgradeIssue" key={index}>
+                  <div><span>{String(issue.type || '文本问题')}</span><span>{String(issue.location || '正文')}</span></div>
+                  <p><strong>原文</strong>{String(issue.original || '')}</p>
+                  <p><strong>建议</strong>{String(issue.suggested || '')}</p>
+                  <p><strong>理由</strong>{String(issue.reason || '')}</p>
+                </article>
+              ))}
+              <small>文本审核版本 {selected.audit_prompt_version || '未知'} · {selected.audit_model || '未知模型'}</small>
+            </section> : <section className="aiTextUpgradeSection">
+              <h3>事实审查者意见</h3>
               <p>{selected.fact_summary || selected.fact_reason || '未提供摘要'}</p>
               {(selected.fact_result.stages?.comparison?.issues || []).map((issue, index) => (
                 <article className="aiTextUpgradeIssue" key={index}>
@@ -174,15 +192,15 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 </article>
               ))}
               <small>事实审核版本 {selected.fact_policy_version || '未知'} · {selected.fact_model || '未知模型'} · {selected.fact_status || '未知状态'}</small>
-            </section>
+            </section>}
 
             <TextBlock title="已审核稿件" titleText={selected.audited_title} content={selected.audited_content} />
-            <details className="aiTextUpgradeSection aiTextUpgradeSource">
-              <summary>事实审核者核对的原文</summary>
+            {selected.source_type === 'fact_auditor' ? <details className="aiTextUpgradeSection aiTextUpgradeSource">
+              <summary>事实审查者核对的原文</summary>
               <div>{selected.fact_original_url && <a href={safeExternalUrl(selected.fact_original_url) || undefined} target="_blank" rel="noreferrer">打开事实核查原文 <ExternalLink size={13} /></a>}
                 <pre>{selected.fact_original_text || '事实审核者未保存可用原文'}</pre>
               </div>
-            </details>
+            </details> : null}
             <details className="aiTextUpgradeSection aiTextUpgradeSource">
               <summary>编写者1写作素材</summary>
               <div>{selected.source_url && <a href={safeExternalUrl(selected.source_url) || undefined} target="_blank" rel="noreferrer">打开原始信源 <ExternalLink size={13} /></a>}

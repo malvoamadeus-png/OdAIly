@@ -121,6 +121,13 @@ def parse_args() -> argparse.Namespace:
     local_pipeline.add_argument("--host", default="127.0.0.1", help="Bind host. Defaults to 127.0.0.1.")
     local_pipeline.add_argument("--port", type=int, default=8776, help="Bind port. Defaults to 8776.")
 
+    self_upgrade_replay = subparsers.add_parser(
+        "ai-text-self-upgrade-replay",
+        help="Replay text and fact review cases inside an explicit ISO 8601 time window.",
+    )
+    self_upgrade_replay.add_argument("--since", required=True, help="Inclusive reviewer completion timestamp.")
+    self_upgrade_replay.add_argument("--until", required=True, help="Exclusive reviewer completion timestamp.")
+
     local_pipeline_skip = subparsers.add_parser(
         "local-pipeline-skip-legacy",
         help="Mark pre-cutover unfinished DB tasks as legacy_skipped.",
@@ -1018,6 +1025,51 @@ def local_pipeline_server_command(args: argparse.Namespace) -> int:
         port=args.port,
     )
     return 0
+
+
+def ai_text_self_upgrade_replay_command(args: argparse.Namespace) -> int:
+    from packages.ai_text_self_upgrade import AITextSelfUpgradeRepository, AITextSelfUpgradeService
+    from packages.common.storage import load_storage_settings
+    from packages.editor_plugin_api import load_editor_plugin_api_settings
+    from packages.system_observability.runtime import system_observability_directory
+    from packages.x_processing.ai_client import OpenAIResponsesClient
+
+    since = datetime.fromisoformat(args.since)
+    until = datetime.fromisoformat(args.until)
+    if since.tzinfo is None or until.tzinfo is None or since >= until:
+        raise ValueError("--since 和 --until 必须是有效且带时区的 ISO 8601 时间，且 since 早于 until")
+
+    x_settings = load_x_processing_settings()
+    api_settings = load_editor_plugin_api_settings()
+    api_key = x_settings.search_ai_review_openai_api_key or x_settings.openai_api_key
+    if not api_key:
+        raise RuntimeError("Missing search AI review OpenAI API key")
+    client = OpenAIResponsesClient(
+        api_key=api_key,
+        base_url=str(x_settings.search_ai_review_openai_base_url or x_settings.openai_base_url),
+        api_style=x_settings.search_ai_review_openai_api_style or x_settings.openai_api_style,
+        timeout_seconds=api_settings.generation_timeout_seconds,
+        max_attempts=x_settings.retry.max_attempts,
+        backoff_seconds=x_settings.retry.backoff_seconds,
+        omit_reasoning_effort=x_settings.search_ai_review_omit_reasoning_effort,
+        omit_response_format=x_settings.search_ai_review_omit_response_format,
+        chat_response_format_mode=x_settings.search_ai_review_chat_response_format_mode,
+        append_json_schema_to_prompt=x_settings.search_ai_review_append_json_schema_to_prompt,
+    )
+    storage = load_storage_settings()
+    paths = get_paths()
+    observability_dir = system_observability_directory(paths.runtime_dir)
+    repository = AITextSelfUpgradeRepository(
+        observability_dir / "ai_text_self_upgrade.sqlite",
+        recover_inflight=False,
+    )
+    service = AITextSelfUpgradeService(storage.sqlite_path, repository, client)
+    run_key = f"replay:{since.isoformat()}:{until.isoformat()}:{datetime.now(UTC).isoformat()}"
+    if not repository.start_run(run_key):
+        raise RuntimeError("这个时间窗口的回放批次已经执行过")
+    result = service.run_batch(run_key=run_key, since=since.isoformat(), until=until.isoformat())
+    print(json.dumps({"run_key": run_key, **result}, ensure_ascii=False, indent=2))
+    return 1 if result["cases_failed"] else 0
 
 
 def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
@@ -2161,6 +2213,8 @@ def main() -> int:
             return editor_plugin_local_feed_status_command(args)
         if args.command == "local-pipeline-server":
             return local_pipeline_server_command(args)
+        if args.command == "ai-text-self-upgrade-replay":
+            return ai_text_self_upgrade_replay_command(args)
         if args.command == "local-pipeline-skip-legacy":
             return local_pipeline_skip_legacy_command(args)
         if args.command == "local-pipeline-exhaust":

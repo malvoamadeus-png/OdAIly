@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_items (
     final_content TEXT,
     analysis_status TEXT NOT NULL DEFAULT 'pending' CHECK(analysis_status IN ('pending','processing','completed','failed')),
     analysis_model TEXT,
+    analysis_prompt_version TEXT,
     verdict TEXT CHECK(verdict IS NULL OR verdict IN ('writer1_error','auditor_false_positive')),
     confidence TEXT CHECK(confidence IS NULL OR confidence IN ('low','medium','high')),
     rationale TEXT,
@@ -115,23 +116,22 @@ def _item(row: sqlite3.Row) -> dict[str, Any]:
         ("evidence_json", "evidence", []),
     ):
         result[target] = _decode(result.pop(source), default)
-    if result.get("source_type") == "fact_auditor":
-        if result.get("verdict") == "auditor_false_positive":
-            result["verdict"] = "fact_auditor_error"
-        elif result.get("verdict") is None and result.get("analysis_status") == "completed":
-            result["verdict"] = "inconclusive"
+    if result.get("source_type") == "fact_auditor" and result.get("verdict") == "auditor_false_positive":
+        result["verdict"] = "fact_auditor_error"
+    if result.get("verdict") is None and result.get("analysis_status") == "completed":
+        result["verdict"] = "inconclusive"
     return result
 
 
 class AITextSelfUpgradeRepository:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, recover_inflight: bool = True) -> None:
         self.path = path
-        self.initialize()
+        self.initialize(recover_inflight=recover_inflight)
 
     def connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path)
 
-    def initialize(self) -> None:
+    def initialize(self, *, recover_inflight: bool = True) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA_SQL)
             columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(ai_text_self_upgrade_items)")}
@@ -147,6 +147,7 @@ class AITextSelfUpgradeRepository:
                 "fact_original_text": "TEXT NOT NULL DEFAULT ''",
                 "fact_original_url": "TEXT NOT NULL DEFAULT ''",
                 "fact_completed_at": "TEXT",
+                "analysis_prompt_version": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -156,26 +157,31 @@ class AITextSelfUpgradeRepository:
                 "ON ai_text_self_upgrade_items(source_type,analysis_status,created_at,id)"
             )
             conn.execute(
-                "INSERT OR IGNORE INTO ai_text_self_upgrade_state(state_key,state_value,updated_at) VALUES('fact_enabled_at',?,?)",
+                "INSERT OR IGNORE INTO ai_text_self_upgrade_state(state_key,state_value,updated_at) "
+                "VALUES('enabled_at',COALESCE((SELECT state_value FROM ai_text_self_upgrade_state WHERE state_key='fact_enabled_at'),?),?)",
                 (_now(), _now()),
             )
-            conn.execute(
-                "UPDATE ai_text_self_upgrade_items SET analysis_status='failed',analysis_error=COALESCE(analysis_error,'服务重启时原分析未完成'),updated_at=? WHERE analysis_status='processing'",
-                (_now(),),
-            )
-            conn.execute(
-                "UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=?,error=COALESCE(error,'服务重启时原批次未完成') WHERE status='running'",
-                (_now(),),
-            )
+            if recover_inflight:
+                conn.execute(
+                    "UPDATE ai_text_self_upgrade_items SET analysis_status='failed',analysis_error=COALESCE(analysis_error,'服务重启时原分析未完成'),updated_at=? WHERE analysis_status='processing'",
+                    (_now(),),
+                )
+                conn.execute(
+                    "UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=?,error=COALESCE(error,'服务重启时原批次未完成') WHERE status='running'",
+                    (_now(),),
+                )
 
-    def fact_enabled_at(self) -> str:
+    def enabled_at(self) -> str:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT state_value FROM ai_text_self_upgrade_state WHERE state_key='fact_enabled_at'"
+                "SELECT state_value FROM ai_text_self_upgrade_state WHERE state_key='enabled_at'"
             ).fetchone()
         if row is None:
-            raise RuntimeError("事实审核自我辩论启用时间未初始化")
+            raise RuntimeError("AI文本自我审核启用时间未初始化")
         return str(row["state_value"])
+
+    def fact_enabled_at(self) -> str:
+        return self.enabled_at()
 
     def case_exists(self, case_key: str) -> bool:
         with self.connect() as conn:
@@ -256,16 +262,24 @@ class AITextSelfUpgradeRepository:
                 (since, since, max(1, min(50, limit))),
             ).fetchall()]
 
-    def claim_next(self, *, excluded_case_keys: set[str] | None = None) -> dict[str, Any] | None:
+    def claim_next(
+        self,
+        *,
+        excluded_case_keys: set[str] | None = None,
+        included_case_keys: set[str] | None = None,
+    ) -> dict[str, Any] | None:
         excluded = sorted(excluded_case_keys or ())
+        included = sorted(included_case_keys or ())
+        if included_case_keys is not None and not included:
+            return None
         exclusion_sql = f" AND case_key NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
+        inclusion_sql = f" AND case_key IN ({','.join('?' for _ in included)})" if included_case_keys is not None else ""
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT * FROM ai_text_self_upgrade_items WHERE source_type='fact_auditor' "
-                "AND analysis_status IN ('pending','failed') "
-                + exclusion_sql + " ORDER BY created_at,id LIMIT 1",
-                excluded,
+                "SELECT * FROM ai_text_self_upgrade_items WHERE analysis_status IN ('pending','failed') "
+                + inclusion_sql + exclusion_sql + " ORDER BY created_at,id LIMIT 1",
+                [*included, *excluded],
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -280,16 +294,20 @@ class AITextSelfUpgradeRepository:
             conn.commit()
         return _item(claimed)
 
-    def complete_analysis(self, case_key: str, *, model: str, result: dict[str, Any]) -> None:
-        stored_verdict = {
-            "fact_auditor_error": "auditor_false_positive",
-            "inconclusive": None,
-        }.get(result["verdict"], result["verdict"])
+    def complete_analysis(
+        self,
+        case_key: str,
+        *,
+        model: str,
+        prompt_version: str,
+        result: dict[str, Any],
+    ) -> None:
+        stored_verdict = None if result["verdict"] == "inconclusive" else result["verdict"]
         with self.connect() as conn:
             conn.execute(
-                """UPDATE ai_text_self_upgrade_items SET analysis_status='completed',analysis_model=?,verdict=?,
+                """UPDATE ai_text_self_upgrade_items SET analysis_status='completed',analysis_model=?,analysis_prompt_version=?,verdict=?,
                     confidence=?,rationale=?,evidence_json=?,analysis_error=NULL,updated_at=? WHERE case_key=?""",
-                (model, stored_verdict, result["confidence"], result["rationale"], _json(result["evidence"]),
+                (model, prompt_version, stored_verdict, result["confidence"], result["rationale"], _json(result["evidence"]),
                  _now(), case_key),
             )
 
@@ -309,8 +327,7 @@ class AITextSelfUpgradeRepository:
                 raise ValueError("不支持的案例状态")
             clauses.append("human_decision=?")
             params.append(status)
-        clauses.insert(0, "source_type='fact_auditor'")
-        where = " WHERE " + " AND ".join(clauses)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         limit = max(1, min(100, int(payload.get("limit") or 30)))
         offset = max(0, int(payload.get("offset") or 0))
         with self.connect() as conn:
@@ -323,9 +340,9 @@ class AITextSelfUpgradeRepository:
                 [*params, limit, offset],
             ).fetchall()
             accepted_count = int(conn.execute(
-                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE source_type='fact_auditor' AND human_decision='accepted'"
+                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE human_decision='accepted'"
             ).fetchone()[0])
-        runs = self.recent_runs(limit=1, since=self.fact_enabled_at())
+        runs = self.recent_runs(limit=1, since=self.enabled_at())
         return {
             "items": [_item(row) for row in rows],
             "total": total,
@@ -338,7 +355,7 @@ class AITextSelfUpgradeRepository:
     def detail(self, case_key: str) -> dict[str, Any]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM ai_text_self_upgrade_items WHERE case_key=? AND source_type='fact_auditor'", (case_key,)
+                "SELECT * FROM ai_text_self_upgrade_items WHERE case_key=?", (case_key,)
             ).fetchone()
             if row is None:
                 raise ValueError("自我审核案例不存在")
@@ -356,7 +373,7 @@ class AITextSelfUpgradeRepository:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if not conn.execute(
-                "SELECT 1 FROM ai_text_self_upgrade_items WHERE case_key=? AND source_type='fact_auditor'", (case_key,)
+                "SELECT 1 FROM ai_text_self_upgrade_items WHERE case_key=?", (case_key,)
             ).fetchone():
                 raise ValueError("自我审核案例不存在")
             conn.execute(
