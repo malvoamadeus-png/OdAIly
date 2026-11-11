@@ -221,6 +221,18 @@ class AITextSelfUpgradeService:
                 ]
                 if len(metadata_matches) == 1:
                     matches = metadata_matches
+                else:
+                    source_body_matches = [
+                        task for task in task_rows
+                        if row["audit_source_url"]
+                        and str(task["task_source_url"] or "") == str(row["audit_source_url"])
+                        and task["metadata_title"]
+                        and str(task["metadata_title"]) == str(task["final_title"] or "")
+                        and _published_body_signature(str(task["final_content"] or ""))
+                        == _published_body_signature(audited_content)
+                    ]
+                    if len(source_body_matches) == 1:
+                        matches = source_body_matches
             if len(matches) != 1:
                 unlinked += 1
                 continue
