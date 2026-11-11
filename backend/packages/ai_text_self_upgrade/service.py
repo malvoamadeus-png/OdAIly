@@ -8,7 +8,9 @@ from typing import Any
 
 from packages.auditor.repository import calculate_content_hash
 from packages.common.storage import connect_sqlite_readonly
+from packages.common.text import normalize_multiline_text
 from packages.x_processing.ai_client import TextGenerationClient
+from packages.x_processing.formatter import ODAILY_PREFIX, _normalize_content_spaces
 
 from .prompts import MODEL, OUTPUT_SCHEMA, PROMPT_VERSION, build_prompt, parse_output
 from .repository import AITextSelfUpgradeRepository
@@ -54,6 +56,15 @@ def _fact_review_brief(value: Any) -> dict[str, Any]:
         "questions": result.get("questions") or [],
         "stages": brief_stages,
     }
+
+
+def _published_body_signature(value: str) -> str:
+    body = normalize_multiline_text(value).strip()
+    if body.startswith(ODAILY_PREFIX):
+        body = body.removeprefix(ODAILY_PREFIX)
+    elif body.startswith("Odaily星球日报讯"):
+        body = body.removeprefix("Odaily星球日报讯").lstrip()
+    return _normalize_content_spaces(body)
 
 
 class AITextSelfUpgradeService:
@@ -165,7 +176,7 @@ class AITextSelfUpgradeService:
                     """SELECT p.task_id,p.writer_model,p.prompt_template_key,p.prompt_version_id,
                         p.draft_title,p.draft_content,p.final_title,p.final_content,p.write_completed_at,
                         p.publish_completed_at,t.source_url AS task_source_url,t.title AS source_title,
-                        t.content AS source_content,m.odaily_id,m.id_match_status
+                        t.content AS source_content,m.title AS metadata_title,m.odaily_id,m.id_match_status
                     FROM x_task_pipeline p JOIN tasks t ON t.id=p.task_id
                     LEFT JOIN newsflash_production_metadata m ON m.delivery_key='odaily-task-' || p.task_id
                     WHERE p.writer_model IS NOT NULL AND p.write_completed_at IS NOT NULL
@@ -190,11 +201,21 @@ class AITextSelfUpgradeService:
                 continue
             matches = tasks_by_hash.get(digest, [])
             id_matches = [
-                task for task in matches
+                task for task in task_rows
                 if task["id_match_status"] == "matched" and str(task["odaily_id"] or "") == str(row["source_item_id"])
             ]
             if len(id_matches) == 1:
                 matches = id_matches
+            else:
+                metadata_matches = [
+                    task for task in task_rows
+                    if str(task["metadata_title"] or "") == audited_title
+                    and str(task["final_title"] or "") == audited_title
+                    and _published_body_signature(str(task["final_content"] or ""))
+                    == _published_body_signature(audited_content)
+                ]
+                if len(metadata_matches) == 1:
+                    matches = metadata_matches
             if len(matches) != 1:
                 unlinked += 1
                 continue
