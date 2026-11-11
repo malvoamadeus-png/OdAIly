@@ -201,6 +201,9 @@ def test_account_cleanup_job_preserves_permanent_evidence(service: HotTopicServi
             "INSERT INTO memberships VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             ("membership:permanent", "claim:0", "topic:permanent", None, "primary", "new_fact", 1.0, "test", "test", now, None),
         )
+        service.aggregator.connection.execute(
+            "INSERT INTO topic_evidence(topic_id,claim_id) VALUES(?,?)", ("topic:permanent", "claim:1"),
+        )
 
     with service.db:
         service.db.execute(
@@ -212,10 +215,7 @@ def test_account_cleanup_job_preserves_permanent_evidence(service: HotTopicServi
 
     service.process_account_cleanup_jobs()
 
-    assert service.aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 1
-    assert service.aggregator.connection.execute(
-        "SELECT content_item_id FROM content_items"
-    ).fetchone()[0] == "content:0"
+    assert {row[0] for row in service.aggregator.connection.execute("SELECT content_item_id FROM content_items")} == {"content:0", "content:1"}
     assert service.db.execute("SELECT COUNT(*) FROM hottopic_account_cleanup").fetchone()[0] == 0
 
 

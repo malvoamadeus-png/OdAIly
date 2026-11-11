@@ -198,6 +198,28 @@ def test_transient_pruning_removes_topic_pair_reviews_before_topics(tmp_path: Pa
         aggregator.close()
 
 
+def test_transient_pruning_preserves_permanent_topic_evidence(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / 'topics.sqlite')
+    old = datetime(2026, 9, 25, tzinfo=UTC)
+    timestamp = old.isoformat()
+    try:
+        with aggregator.connection as conn:
+            for number in range(2):
+                conn.execute('INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                             (f'content:{number}', f'tweet:{number}', 'alice', 'alice', 'original', 'text', 'text', timestamp,
+                              f'https://example.com/{number}', '{}', '{}', '{}', f'fingerprint:{number}'))
+                conn.execute('INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                             (f'claim:{number}', f'content:{number}', 'text', 'statement', '[]', '', '', '', 1.0, 1.0, timestamp))
+            conn.execute("INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,seed_expires_at,matching_status,visibility,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                         ('topic:permanent', 'title', 'subject', '[]', 'event', timestamp, timestamp, timestamp, 'active', 'visible', 'permanent'))
+            conn.execute('INSERT INTO topic_evidence VALUES(?,?)', ('topic:permanent', 'claim:0'))
+        aggregator.prune_transient_state(old + timedelta(days=4))
+        assert [row[0] for row in aggregator.connection.execute('SELECT content_item_id FROM content_items')] == ['content:0']
+        assert aggregator.connection.execute('SELECT claim_id FROM topic_evidence').fetchone()[0] == 'claim:0'
+    finally:
+        aggregator.close()
+
+
 def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatch) -> None:
     monkeypatch.delenv("HOTTOPIC_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "upstream-key")

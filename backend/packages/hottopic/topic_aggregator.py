@@ -760,9 +760,10 @@ class TopicAggregator:
                     "WHERE cl.content_item_id=ci.content_item_id "
                     "AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
                     "AND NOT EXISTS ("
-                    "SELECT 1 FROM claims cl JOIN topic_evidence te ON te.claim_id=cl.claim_id "
-                    "JOIN topics t ON t.topic_id=te.topic_id "
-                    "WHERE cl.content_item_id=ci.content_item_id AND t.retention_tier='permanent')",
+                    "SELECT 1 FROM claims cl INDEXED BY idx_claim_item "
+                    "CROSS JOIN topic_evidence te INDEXED BY idx_topic_evidence_claim CROSS JOIN topics t "
+                    "WHERE cl.content_item_id=ci.content_item_id AND te.claim_id=cl.claim_id "
+                    "AND t.topic_id=te.topic_id AND t.retention_tier='permanent')",
                     (cutoff,),
                 )
             ]
