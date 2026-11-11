@@ -873,7 +873,8 @@ class SystemInformationStore:
             if needs_main and source_database is not None:
                 from .business_retention import _active_audits
                 try:
-                    main = cleanup.enter_context(sqlite3.connect(source_database.resolve().as_uri() + '?mode=rw', uri=True, timeout=2, factory=ClosingSQLiteConnection))
+                    main = sqlite3.connect(source_database.resolve().as_uri() + '?mode=rw', uri=True, timeout=2, factory=ClosingSQLiteConnection)
+                    cleanup.callback(main.close)
                     main.row_factory = sqlite3.Row
                     main.execute('BEGIN IMMEDIATE')
                     deadline = time.monotonic() + 1.0
