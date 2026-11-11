@@ -215,6 +215,39 @@ def test_claim_lease_dedup_and_content_change_invalidate_old_result(repository):
     assert old["check"]["content"] == CONTENT
 
 
+def test_due_check_query_matches_original_with_current_and_obsolete_versions(repository):
+    from packages.fact_auditor.repository import POLICY_VERSION, claim_candidate_sql, current_join
+    now = datetime.now(UTC)
+    with connect_sqlite(repository.path) as conn:
+        for number in range(1, 7):
+            published = (now - timedelta(minutes=number)).isoformat()
+            conn.execute('INSERT INTO odaily_reference_items(source_item_id,title,content,published_at) VALUES(?,?,?,?)',
+                         (str(number), '标题', f'正文{number}', published))
+            status = ['pending', 'failed', 'processing', 'passed', 'failed', 'pending'][number - 1]
+            due = (now - timedelta(minutes=1) if number != 5 else now + timedelta(hours=1)).isoformat()
+            content = '旧版本' if number == 6 else f'正文{number}'
+            conn.execute('INSERT INTO fact_checks(source_item_id,content_hash,policy_version,title,content,published_at,status,attempts,next_attempt_at,locked_until) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                         (str(number), f'hash{number}', POLICY_VERSION, '标题', content, published, status, 1, due, due))
+        original = f"""SELECT fc.* FROM odaily_reference_items r {current_join()}
+            WHERE fc.attempts<? AND (fc.status='pending' OR (fc.status='failed' AND julianday(fc.next_attempt_at)<=julianday(?))
+            OR (fc.status='processing' AND julianday(fc.locked_until)<julianday(?)))
+            ORDER BY CASE WHEN fc.status='pending' THEN 0 ELSE 1 END, julianday(fc.published_at) DESC LIMIT 1"""
+        args = (3, now.isoformat(), now.isoformat())
+        plan = [row[3] for row in conn.execute('EXPLAIN QUERY PLAN ' + claim_candidate_sql(), args)]
+        assert any('idx_fact_checks_due' in line for line in plan)
+        assert not any(line == 'SCAN r' for line in plan)
+        selected = []
+        for _ in range(4):
+            before = conn.execute(original, args).fetchone()
+            after = conn.execute(claim_candidate_sql(), args).fetchone()
+            assert (before['id'] if before else None) == (after['id'] if after else None)
+            if after is None:
+                break
+            selected.append(after['source_item_id'])
+            conn.execute("UPDATE fact_checks SET status='passed' WHERE id=?", (after['id'],))
+        assert selected == ['1', '2', '3']
+
+
 def test_policy_change_creates_new_review_and_retains_old_history(repository, monkeypatch):
     from packages.fact_auditor import repository as module
     add_reference(repository)

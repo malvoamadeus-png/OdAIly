@@ -42,10 +42,26 @@ def locator_sql(alias: str = "r") -> str:
             f"json_extract({alias}.raw_payload,'$.sourceUrl') END,''),{alias}.source_url,'')")
 
 
-def current_join() -> str:
-    return f"""LEFT JOIN fact_checks fc ON fc.id=(SELECT c.id FROM fact_checks c
+def current_check_id_sql() -> str:
+    return f"""(SELECT c.id FROM fact_checks c
         WHERE c.source_item_id=r.source_item_id AND c.title IS r.title AND c.content=r.content
         AND c.source_locator={locator_sql()} AND c.policy_version='{POLICY_VERSION}' ORDER BY c.id DESC LIMIT 1)"""
+
+
+def current_join() -> str:
+    return f"LEFT JOIN fact_checks fc ON fc.id={current_check_id_sql()}"
+
+
+def claim_candidate_sql() -> str:
+    # Start from the small set of eligible review states instead of scanning
+    # every published article while the main SQLite write lock is held.
+    return f"""SELECT fc.* FROM fact_checks fc INDEXED BY idx_fact_checks_due
+        CROSS JOIN odaily_reference_items r
+        WHERE fc.status IN ('pending','failed','processing') AND r.source_item_id=fc.source_item_id
+          AND fc.id={current_check_id_sql()} AND fc.attempts<?
+          AND (fc.status='pending' OR (fc.status='failed' AND julianday(fc.next_attempt_at)<=julianday(?))
+            OR (fc.status='processing' AND julianday(fc.locked_until)<julianday(?)))
+        ORDER BY CASE WHEN fc.status='pending' THEN 0 ELSE 1 END, julianday(fc.published_at) DESC LIMIT 1"""
 
 
 def summary_from_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -93,12 +109,7 @@ class FactReviewRepository:
                     (source_item_id,content_hash,policy_version,title,content,source_url,source_locator,published_at)
                     VALUES(?,?,?,?,?,?,?,?)""", (row["source_item_id"], digest, POLICY_VERSION, row["title"], row["content"], row["source_url"], row["source_locator"], row["published_at"]))
             # Ignore obsolete pending/failed versions once the published copy changes.
-            selected = conn.execute(f"""SELECT fc.* FROM odaily_reference_items r {current_join()}
-                WHERE fc.attempts<?
-                  AND (fc.status='pending' OR (fc.status='failed' AND julianday(fc.next_attempt_at)<=julianday(?))
-                    OR (fc.status='processing' AND julianday(fc.locked_until)<julianday(?)))
-                ORDER BY CASE WHEN fc.status='pending' THEN 0 ELSE 1 END, julianday(fc.published_at) DESC LIMIT 1""",
-                (max_attempts, now_iso, now_iso)).fetchone()
+            selected = conn.execute(claim_candidate_sql(), (max_attempts, now_iso, now_iso)).fetchone()
             if selected is None:
                 conn.commit()
                 return None
