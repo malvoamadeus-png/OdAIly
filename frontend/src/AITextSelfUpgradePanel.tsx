@@ -237,7 +237,7 @@ function TextBlock({ title, titleText, content }: { title: string; titleText: st
 }
 
 function analysisLabel(status: string): string {
-  return ({ pending: '等待自我辩论', processing: '自我辩论中', failed: '自我辩论失败' } as Record<string, string>)[status] || status;
+  return ({ pending: '等待第三方审核', processing: '第三方审核中', failed: '第三方审核失败' } as Record<string, string>)[status] || status;
 }
 
 function confidenceLabel(value: string | null): string {

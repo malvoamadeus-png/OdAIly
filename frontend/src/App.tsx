@@ -1860,7 +1860,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'ai_review'
         ? 'AI Review'
       : view === 'ai_text_self_upgrade'
-        ? 'AI自我辩论'
+        ? 'AI文本自我升级'
       : view === 'dedupe'
         ? 'AI Duplicate Check'
       : view === 'timing'
@@ -1904,7 +1904,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'system_review'
         ? '系统巡检问题'
       : view === 'ai_text_self_upgrade'
-        ? 'AI自我辩论'
+        ? 'AI文本自我升级'
       : view === 'dedupe'
         ? 'AI查重'
       : view === 'timing'
@@ -2062,7 +2062,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           <div className="navGroup"><span className="navGroupTitle">AI质量中心</span>
             <NavButton active={view === 'ai_review'} onClick={() => switchView('ai_review')} icon={<ClipboardCheck size={18} />}>信源扩展建议</NavButton>
             <NavButton active={view === 'system_review'} onClick={() => switchView('system_review')} icon={<ClipboardCheck size={18} />}>系统巡检问题</NavButton>
-            <NavButton active={view === 'ai_text_self_upgrade'} onClick={() => switchView('ai_text_self_upgrade')} icon={<ClipboardCheck size={18} />}>AI自我辩论</NavButton>
+            <NavButton active={view === 'ai_text_self_upgrade'} onClick={() => switchView('ai_text_self_upgrade')} icon={<ClipboardCheck size={18} />}>AI文本自我升级</NavButton>
           </div>
         </nav>
       </aside>

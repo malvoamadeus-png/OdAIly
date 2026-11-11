@@ -195,11 +195,16 @@ class AITextSelfUpgradeService:
         for row in trigger_rows:
             audited_title = str(row["audited_title"] or "")
             audited_content = str(row["audited_content"] or "")
-            digest = calculate_content_hash(audited_title, audited_content)
-            if row["content_hash"] and str(row["content_hash"]) != digest:
+            content_digest = calculate_content_hash(audited_title, audited_content)
+            reviewer_hash = str(row["content_hash"] or content_digest)
+            if (
+                row["source_type"] == "text_auditor"
+                and row["content_hash"]
+                and reviewer_hash != content_digest
+            ):
                 unlinked += 1
                 continue
-            matches = tasks_by_hash.get(digest, [])
+            matches = tasks_by_hash.get(content_digest, [])
             id_matches = [
                 task for task in task_rows
                 if task["id_match_status"] == "matched" and str(task["odaily_id"] or "") == str(row["source_item_id"])
@@ -225,7 +230,7 @@ class AITextSelfUpgradeService:
                 continue
             source_type = str(row["source_type"])
             source_item_id = str(row["source_item_id"])
-            key = case_key(source_type, source_item_id, digest)
+            key = case_key(source_type, source_item_id, reviewer_hash)
             case = {
                 "source_type": source_type,
                 "case_key": key,
@@ -241,7 +246,7 @@ class AITextSelfUpgradeService:
                 "fact_original_url": row["fact_original_url"] or "",
                 "fact_completed_at": row["fact_completed_at"],
                 "source_item_id": source_item_id,
-                "content_hash": digest,
+                "content_hash": reviewer_hash,
                 "audit_prompt_version": row["audit_prompt_version"],
                 "audit_model": row["audit_model"],
                 "audited_title": audited_title,
