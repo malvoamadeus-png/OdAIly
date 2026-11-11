@@ -6,6 +6,8 @@
 
 MSX 不复用非主流媒体收集者的 HTML 站点注册表，但复用同一主库、任务表、查重、判断、编写、格式化和发布链路。
 
+`ODAILY_MSX_NOTICE_SQLITE_PATH` 可指定单独的采集状态库，保存已见公告和轮询状态；未配置时沿用主库。独立库必须先由迁移命令准备并通过完整性校验，文件缺失、表结构不符或没有迁移标记时启动失败，不会静默建立空基线。主任务和 worker 心跳仍写主库，本地流水线作业仍写其队列库。
+
 ## 接口与链接
 
 - 列表：`POST https://api9528mystks.mystonks.org/api/v2/stat-msg/page`
@@ -43,3 +45,5 @@ python backend/src/main.py msx-notice-worker
 ```
 
 `msx-notices` 仍保留为只读 API 调试命令；生产持续收集使用 `msx-notice-worker` 和 `deploy/odaily-msx-notice.service`。
+
+迁移时先停止 MSX worker 并确保它不再写入，运行 `PYTHONPATH=backend python -m packages.msx_notice_storage --source <主库> --destination <新库> --worker-stopped`。迁移器拒绝覆盖目标、未知字段和触发器，在一致快照下复制并逐行校验基线及已见记录；完成后为 worker 配置 `ODAILY_MSX_NOTICE_SQLITE_PATH` 并启动。主库旧状态表不再更新；若新库接收过数据，不能直接切回旧表而忽略新记录。

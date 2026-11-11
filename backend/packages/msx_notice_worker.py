@@ -9,6 +9,7 @@ from pathlib import Path
 from packages.common.storage import connect_sqlite, load_storage_settings
 from packages.local_pipeline import LocalPipelineClient
 from packages.msx_notice import MSXNotice, MSXNoticeClient
+from packages.msx_notice_storage import capture_path
 from packages.x_processing.sqlite_repository import SQLITE_SCHEMA_SQL, _json
 
 
@@ -36,6 +37,7 @@ class MSXNoticeWorker:
         self,
         *,
         database_path: Path | None = None,
+        state_database_path: Path | None = None,
         client: MSXNoticeClient | None = None,
         pipeline_client: LocalPipelineClient | None = None,
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
@@ -46,6 +48,7 @@ class MSXNoticeWorker:
         if not 1 <= page_size <= 100:
             raise ValueError("page_size must be between 1 and 100")
         self.database_path = database_path or load_storage_settings().sqlite_path
+        self.state_database_path = capture_path(self.database_path, str(state_database_path) if state_database_path else None)
         self.client = client or MSXNoticeClient()
         self.pipeline_client = pipeline_client
         self.interval_seconds = interval_seconds
@@ -56,9 +59,11 @@ class MSXNoticeWorker:
 
     def init_schema(self) -> None:
         with connect_sqlite(self.database_path) as conn:
-            conn.executescript(
-                SQLITE_SCHEMA_SQL
-                + """
+            conn.executescript(SQLITE_SCHEMA_SQL)
+            conn.commit()
+        if self.state_database_path == self.database_path:
+            with connect_sqlite(self.state_database_path) as conn:
+                conn.executescript("""
                 CREATE TABLE IF NOT EXISTS msx_notice_state(
                     singleton_key text PRIMARY KEY CHECK(singleton_key = 'global'),
                     seeded_at text,
@@ -72,10 +77,9 @@ class MSXNoticeWorker:
                     seeded integer NOT NULL DEFAULT 0,
                     created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
-                """
-            )
-            conn.execute("INSERT OR IGNORE INTO msx_notice_state(singleton_key) VALUES ('global')")
-            conn.commit()
+                """)
+                conn.execute("INSERT OR IGNORE INTO msx_notice_state(singleton_key) VALUES ('global')")
+                conn.commit()
 
     def run_once(self) -> MSXNoticeRunStats:
         try:
@@ -157,12 +161,12 @@ class MSXNoticeWorker:
         return f"{MSX_SOURCE}:{notice.id}"
 
     def _is_unseeded(self) -> bool:
-        with connect_sqlite(self.database_path) as conn:
+        with connect_sqlite(self.state_database_path) as conn:
             row = conn.execute("SELECT seeded_at FROM msx_notice_state WHERE singleton_key='global'").fetchone()
         return not row or not row["seeded_at"]
 
     def _seed(self, notices: list[MSXNotice]) -> None:
-        with connect_sqlite(self.database_path) as conn:
+        with connect_sqlite(self.state_database_path) as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO msx_notice_seen_items(source_item_id, seeded) VALUES (?, 1)",
                 ((self.source_item_id(notice),) for notice in notices),
@@ -177,7 +181,7 @@ class MSXNoticeWorker:
         if not ids:
             return set()
         placeholders = ",".join("?" for _ in ids)
-        with connect_sqlite(self.database_path) as conn:
+        with connect_sqlite(self.state_database_path) as conn:
             rows = conn.execute(
                 f"SELECT source_item_id FROM msx_notice_seen_items WHERE source_item_id IN ({placeholders})",
                 ids,
@@ -226,7 +230,7 @@ class MSXNoticeWorker:
         return int(row["id"])
 
     def _mark_seen(self, source_item_id: str, *, seeded: bool) -> bool:
-        with connect_sqlite(self.database_path) as conn:
+        with connect_sqlite(self.state_database_path) as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO msx_notice_seen_items(source_item_id, seeded) VALUES (?, ?)",
                 (source_item_id, int(seeded)),
@@ -235,7 +239,7 @@ class MSXNoticeWorker:
         return cur.rowcount > 0
 
     def _record_state(self, *, success: bool, error: str | None = None) -> None:
-        with connect_sqlite(self.database_path) as conn:
+        with connect_sqlite(self.state_database_path) as conn:
             conn.execute(
                 """
                 UPDATE msx_notice_state

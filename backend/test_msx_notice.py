@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from packages.msx_notice import MSXNotice
 from packages.msx_notice_worker import MSXNoticeWorker
+from packages.msx_notice_storage import capture_path, migrate_msx_capture
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
 from packages.x_processing.worker import (
     build_writer_prompt,
@@ -108,6 +112,67 @@ class FakePipelineClient:
 
     def submit_job(self, **payload) -> None:
         self.jobs.append(payload)
+
+
+def test_msx_capture_migration_preserves_baseline_and_independent_writes(tmp_path: Path) -> None:
+    source, destination = tmp_path / 'main.sqlite', tmp_path / 'msx.sqlite'
+    worker = MSXNoticeWorker(database_path=source, client=FakeNoticeClient([]))
+    worker._seed([make_notice(115, 'old')])
+    counts = migrate_msx_capture(source, destination)
+    assert counts == {'msx_notice_state': 1, 'msx_notice_seen_items': 1}
+    migrated = MSXNoticeWorker(database_path=source, state_database_path=destination, client=FakeNoticeClient([]))
+    assert not migrated._is_unseeded()
+    assert migrated._unseen([make_notice(115, 'old'), make_notice(118, 'new')]) == {'msx:118'}
+    with sqlite3.connect(source) as main:
+        main.execute('BEGIN IMMEDIATE')
+        assert migrated._mark_seen('msx:118', seeded=False)
+    with sqlite3.connect(source) as main, sqlite3.connect(destination) as state:
+        assert main.execute('SELECT COUNT(*) FROM msx_notice_seen_items').fetchone()[0] == 1
+        assert state.execute('SELECT COUNT(*) FROM msx_notice_seen_items').fetchone()[0] == 2
+
+
+def test_msx_capture_migration_refuses_existing_or_unverified_destination(tmp_path: Path) -> None:
+    source, destination = tmp_path / 'main.sqlite', tmp_path / 'msx.sqlite'
+    MSXNoticeWorker(database_path=source, client=FakeNoticeClient([]))
+    destination.write_bytes(b'keep')
+    with pytest.raises(FileExistsError):
+        migrate_msx_capture(source, destination)
+    assert destination.read_bytes() == b'keep'
+    with pytest.raises(RuntimeError):
+        capture_path(source, str(destination))
+
+
+def test_msx_capture_migration_rejects_unknown_trigger(tmp_path: Path) -> None:
+    source, destination = tmp_path / 'main.sqlite', tmp_path / 'msx.sqlite'
+    MSXNoticeWorker(database_path=source, client=FakeNoticeClient([]))
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TRIGGER extra AFTER INSERT ON msx_notice_seen_items BEGIN SELECT 1; END')
+    with pytest.raises(RuntimeError, match='trigger'):
+        migrate_msx_capture(source, destination)
+    assert not destination.exists()
+
+
+def test_msx_separate_state_retry_keeps_one_task_and_queue_job(tmp_path: Path, monkeypatch) -> None:
+    from packages.local_pipeline.queue import LocalPipelineQueue
+    source, destination = tmp_path / 'main.sqlite', tmp_path / 'msx.sqlite'
+    old, new = make_notice(115, 'old'), make_notice(118, 'new')
+    worker = MSXNoticeWorker(database_path=source, client=FakeNoticeClient([]))
+    worker._seed([old])
+    migrate_msx_capture(source, destination)
+    queue = LocalPipelineQueue(tmp_path / 'queue.sqlite', storage_epoch='test')
+    class Pipeline:
+        def submit_job(self, **payload):
+            queue.enqueue(**payload)
+    client = FakeNoticeClient([old, new], {118: {'content': '公告正文', 'content_html': '', 'links': []}})
+    migrated = MSXNoticeWorker(database_path=source, state_database_path=destination, client=client, pipeline_client=Pipeline())
+    mark_seen = migrated._mark_seen
+    monkeypatch.setattr(migrated, '_mark_seen', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('interrupted')))
+    assert migrated.run_once().status == 'parse_failed'
+    monkeypatch.setattr(migrated, '_mark_seen', mark_seen)
+    assert migrated.run_once().new_count == 1
+    with sqlite3.connect(source) as main, sqlite3.connect(queue.path) as queue_db:
+        assert main.execute("SELECT COUNT(*) FROM tasks WHERE source='msx' AND source_item_id='msx:118'").fetchone()[0] == 1
+        assert queue_db.execute("SELECT COUNT(*) FROM local_pipeline_jobs WHERE source='msx' AND source_item_id='msx:118'").fetchone()[0] == 1
 
 
 def make_notice(notice_id: int, title: str) -> MSXNotice:
