@@ -356,7 +356,8 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
                         (f'%{ref}%', f'%{ref}%', f'%{ref}%')).fetchone():
                     continue
                 try:
-                    allocated = path.stat().st_blocks * 512
+                    stat = path.stat()
+                    allocated = stat.st_blocks * 512 if stat.st_nlink == 1 else 0
                 except FileNotFoundError:
                     allocated = 0
                 path.unlink(missing_ok=True)
@@ -364,6 +365,9 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
                 obs.execute('DELETE FROM system_information_expired_evidence_candidates WHERE evidence_ref=?', (ref,))
                 removed += 1
                 total_bytes += allocated
+            for key, amount in (('attempt_evidence_reclaim_total_files', removed), ('attempt_evidence_reclaim_total_allocated_bytes', total_bytes)):
+                if amount:
+                    obs.execute("INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=CAST(system_information_state.state_value AS INTEGER)+CAST(excluded.state_value AS INTEGER),updated_at_ms=excluded.updated_at_ms", (key, str(amount), now_ms))
             obs.execute("INSERT INTO system_information_state VALUES('attempt_evidence_reclaim_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid']), now_ms))
         main.rollback()
     return {'scanned': len(rows), 'removed': removed, 'bytes': total_bytes}

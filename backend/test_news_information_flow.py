@@ -714,6 +714,7 @@ def test_evidence_reclaim_preserves_shared_and_review_references(tmp_path: Path)
     assert result['removed'] == 1
     assert all(store.load_evidence(ref) is not None for ref in refs[:4])
     assert store.load_evidence(refs[4]) is None
+    assert store.get_state('attempt_evidence_reclaim_total_files') == '1'
 
 
 def test_evidence_reclaim_fails_closed_without_source(tmp_path: Path) -> None:
@@ -862,3 +863,61 @@ def test_completed_evidence_maintenance_is_opt_in(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '1')
     projector._cleanup_dependency_errors(1_060_000)
     assert calls == ['trim_attempt_details', 'trim_completed_attempt_events', 'reclaim_completed_attempt_evidence']
+
+
+def test_capture_evidence_retention_preserves_identity_and_faults(tmp_path: Path, monkeypatch) -> None:
+    from packages.system_observability.business_retention import reclaim_completed_attempt_evidence
+    monkeypatch.setenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '1')
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.executescript('CREATE TABLE x_processing_attempts(response_ref TEXT); CREATE TABLE x_processing_attempt_events(response_ref TEXT);')
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp()*1000)
+    old = now - 8 * 86_400_000
+    base = {'business_key':'x','source':'x_capture','title':'采集','status':'success','result':'direct_publish',
+            'source_database':str(source),'source_table':'x_capture_attempts','created_at_ms':old,'updated_at_ms':old}
+    store.upsert_snapshot({**base,'item_id':'known','source_id':'1','source_row_id':'1','source_name':'alice'}, None)
+    store.upsert_snapshot({**base,'item_id':'unknown','source_id':'2','source_row_id':'2'}, None)
+    row = {'id':1,'username_lower':'alice','status':'success','started_at':'2024-01-01T00:00:00Z',
+           'finished_at':'2024-01-01T00:00:01Z','error':None}
+    for event_id, item_id, evidence in [('ordinary','known',{'recorded_scope':'source_table_snapshot','row':row}),
+                                       ('fault','known',{'recorded_scope':'source_table_snapshot','row':{**row,'error':'database is locked'}}),
+                                       ('oversized','known',{'recorded_scope':'source_table_snapshot','row':{**row,'metadata':'x' * (257*1024)}}),
+                                       ('corrupted','known',{'recorded_scope':'source_table_snapshot','row':{**row,'id':3}}),
+                                       ('identity-missing','unknown',{'recorded_scope':'source_table_snapshot','row':{**row,'id':2}})]:
+        store.append_event(item_id=item_id,event_id=event_id,event_type='observed_change',stage='采集',status='success',
+                           result='direct_publish',happened_at_ms=old,summary='成功',evidence=evidence)
+    with store.connect() as conn:
+        refs = {r['event_id']:r['evidence_ref'] for r in conn.execute("SELECT event_id,evidence_ref FROM system_information_events WHERE event_id IN ('ordinary','fault','corrupted','identity-missing')")}
+        conn.execute('UPDATE system_information_evidence SET created_at_ms=?', (old,))
+    (store.evidence_dir / refs['corrupted'][:2] / f"{refs['corrupted']}.json.gz").write_bytes(b'not a gzip file')
+    store.prune_task_status_events(now_ms=now)
+    with store.connect() as conn:
+        remaining = {r[0] for r in conn.execute('SELECT event_id FROM system_information_events')}
+    assert 'ordinary' not in remaining and {'fault','oversized','corrupted','identity-missing'} <= remaining
+    assert reclaim_completed_attempt_evidence(source, store, now_ms=now)['removed'] == 1
+    assert store.load_evidence(refs['ordinary']) is None
+    assert store.load_evidence(refs['fault']) is not None
+    assert store.detail('known')['source_name'] == 'alice'
+
+
+def test_capture_evidence_retention_batches_resume_without_skipping(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '1')
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp()*1000)
+    old = now - 8 * 86_400_000
+    store.upsert_snapshot({'item_id':'capture','business_key':'x','source':'x_capture','source_id':'alice','source_name':'alice',
+                           'title':'采集','status':'success','result':'direct_publish','source_database':'source',
+                           'source_table':'x_capture_attempts','source_row_id':'1','updated_at_ms':old}, None)
+    for n in range(7):
+        payload = {'recorded_scope':'source_table_snapshot','row':{'id':n+1,'username_lower':'alice','status':'success',
+                   'started_at':'2024-01-01T00:00:00Z','finished_at':'2024-01-01T00:00:01Z','error':None}}
+        store.append_event(item_id='capture',event_id=f'capture-{n}',event_type='observed_change',stage='采集',
+                           status='success',result='direct_publish',happened_at_ms=old,summary='成功',evidence=payload)
+    first = store.prune_task_status_events(now_ms=now)
+    with store.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM system_information_expired_evidence_candidates').fetchone()[0] == 5
+    second = store.prune_task_status_events(now_ms=now)
+    with store.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM system_information_expired_evidence_candidates').fetchone()[0] == 7
+    assert first['removed'] + second['removed'] == 8

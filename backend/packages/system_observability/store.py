@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -853,15 +854,26 @@ class SystemInformationStore:
         now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
         cutoff = now - 7 * 86_400_000
         with self.connect() as conn:
+            conn.execute('PRAGMA busy_timeout=2000')
             row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
             cursor = int(row[0]) if row else 0
             rows = conn.execute(
-                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id,status,result,error_code "
+                "SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id,status,result,error_code,evidence_ref "
                 "FROM system_information_events WHERE rowid>? ORDER BY rowid LIMIT ?",
                 (cursor, max(1, min(limit, 5000))),
             ).fetchall()
-            removed = 0
-            for event in rows:
+            conn.execute('BEGIN IMMEDIATE')
+            removed = queued = scanned = 0
+            next_cursor = cursor
+            for candidate in rows:
+                scanned += 1
+                next_cursor = int(candidate['rowid'])
+                candidate_time = candidate['happened_at_ms'] or candidate['observed_at_ms']
+                if candidate_time >= cutoff or candidate['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change', 'stage_attempt'}:
+                    continue
+                event = conn.execute("SELECT rowid,event_id,event_type,happened_at_ms,observed_at_ms,item_id,status,result,error_code,evidence_ref FROM system_information_events WHERE rowid=? AND event_id=?", (candidate['rowid'], candidate['event_id'])).fetchone()
+                if event is None:
+                    continue
                 event_time = event['happened_at_ms'] or event['observed_at_ms']
                 if event_time >= cutoff or event['event_type'] not in {'legacy_snapshot', 'observed_change', 'artifact_update', 'source_state_change', 'stage_attempt'}:
                     continue
@@ -871,7 +883,7 @@ class SystemInformationStore:
                         or 'fail' in str(event['status'] or '').lower() or 'error' in str(event['status'] or '').lower()):
                     continue
                 item = conn.execute(
-                    "SELECT source_table,status,result FROM system_information_items WHERE item_id=?",
+                    "SELECT source_table,source_id,source_name,status,result FROM system_information_items WHERE item_id=?",
                     (event['item_id'],),
                 ).fetchone()
                 if not item:
@@ -882,14 +894,45 @@ class SystemInformationStore:
                         or (item['source_table'] in {'local_pipeline_jobs', 'x_capture_attempts', 'binance_square_attempts'}
                             and item['status'] in technical_terminal)):
                     continue
+                if item['source_table'] in {'x_capture_attempts', 'binance_square_attempts'}:
+                    identity = str(item['source_name'] or '')
+                    if not identity and item['source_id'] and not str(item['source_id']).isdigit():
+                        identity = str(item['source_id'])
+                    if not identity or event['status'] not in {'success', 'succeeded'}:
+                        continue
+                    if event['evidence_ref']:
+                        evidence_row = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (event['evidence_ref'],)).fetchone()
+                        evidence = None
+                        if evidence_row:
+                            try:
+                                with gzip.open(evidence_row['path'], 'rb') as file:
+                                    payload = file.read(256 * 1024 + 1)
+                                if len(payload) <= 256 * 1024:
+                                    evidence = json.loads(payload)
+                            except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError, zlib.error):
+                                pass
+                        source_row = evidence.get('row') if isinstance(evidence, dict) and evidence.get('recorded_scope') == 'source_table_snapshot' else None
+                        identity_key = 'username_lower' if item['source_table'] == 'x_capture_attempts' else 'slug_lower'
+                        if (not isinstance(source_row, dict) or not {'id', 'status', 'started_at', 'finished_at', 'error', identity_key} <= source_row.keys()
+                                or str(source_row[identity_key]).casefold() != identity.casefold()
+                                or source_row['status'] not in {'success', 'succeeded'} or source_row['error']
+                                or timestamp_ms(source_row['finished_at']) is None or timestamp_ms(source_row['finished_at']) >= cutoff
+                                or error_messages(evidence)):
+                            continue
+                        if os.getenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
+                            conn.execute('INSERT OR IGNORE INTO system_information_expired_evidence_candidates(evidence_ref,eligible_at_ms) VALUES(?,?)', (event['evidence_ref'], now))
+                            queued += 1
                 removed += conn.execute("DELETE FROM system_information_events WHERE rowid=?", (event['rowid'],)).rowcount
-            next_cursor = int(rows[-1]['rowid']) if rows else 0
+                if queued >= 5:
+                    break
+            if not rows:
+                next_cursor = 0
             conn.execute(
                 "INSERT INTO system_information_state VALUES('status_retention_cursor',?,?) "
                 "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
                 (str(next_cursor), now),
             )
-        return {'scanned': len(rows), 'removed': removed}
+        return {'scanned': scanned, 'removed': removed}
 
     def trim_task_evidence(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 100) -> dict[str, int]:
         """Strip expired source text and search details from completed task snapshots."""
@@ -1051,9 +1094,9 @@ class SystemInformationStore:
             ),
         )
         conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
-        conn.execute('UPDATE system_information_items SET news_visible=?,admission=?,parent_item_id=?,duplicate_json=?,source_name=?,source_updated_at_ms=? WHERE item_id=?',
+        conn.execute("UPDATE system_information_items SET news_visible=?,admission=?,parent_item_id=?,duplicate_json=?,source_name=CASE WHEN ?='' AND source_table IN ('x_capture_attempts','binance_square_attempts') THEN source_name ELSE ? END,source_updated_at_ms=? WHERE item_id=?",
                      (int(snapshot.get('news_visible', True)), snapshot.get('admission', 'unassessed'),
-                      snapshot.get('parent_item_id'), json.dumps(snapshot.get('duplicate_target'), ensure_ascii=False), snapshot.get('source_name') or '', snapshot.get('source_updated_at_ms'), item_id))
+                      snapshot.get('parent_item_id'), json.dumps(snapshot.get('duplicate_target'), ensure_ascii=False), snapshot.get('source_name') or '', snapshot.get('source_name') or '', snapshot.get('source_updated_at_ms'), item_id))
         if snapshot.get('parent_item_id'):
             conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?) WHERE item_id=?',
                          (snapshot.get('updated_at_ms') or 0, snapshot['parent_item_id']))

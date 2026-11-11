@@ -1171,6 +1171,9 @@ def test_capture_attempts_from_same_account_have_distinct_stable_identity(tmp_pa
             snapshot, evidence = _generic_snapshot(spec, Path('/main.sqlite'), {**base, 'id': item_id, '__obs_rowid__': item_id}, n * 1000, 0)
             assert store.upsert_snapshot(snapshot, evidence) is (n == 0)
     assert len(list(store.evidence_dir.glob('*/*.json.gz'))) == 2
+    partial, partial_evidence = _generic_snapshot(spec, Path('/main.sqlite'), {'id': 11, '__obs_rowid__': 11, 'status': 'success'}, 9_000, 0)
+    store.upsert_snapshot(partial, partial_evidence)
+    assert store.detail('main:x_capture_attempts:11')['source_name'] == 'same-account'
     square = next(spec for spec in TABLE_SPECS if spec.table == 'binance_square_attempts')
     square_snapshot, _ = _generic_snapshot(square, Path('/main.sqlite'), {'id': 21, 'slug_lower': 'same-account', 'status': 'success'}, 1, 0)
     assert square_snapshot['item_id'] == 'main:binance_square_attempts:21'

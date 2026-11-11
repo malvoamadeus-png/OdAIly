@@ -361,6 +361,8 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         "search_extra": " ".join(str(value) for key, value in row.items() if key != "__obs_rowid__" and isinstance(value, (str, int, float))),
         "news_visible": False,
     }
+    if spec.table in {'x_capture_attempts', 'binance_square_attempts'}:
+        snapshot['source_name'] = str(_first(row, 'username_lower', 'slug_lower') or '')
     # Only actual draft/news outputs are standalone news; technical records remain diagnostic.
     if spec.table == 'business_message_inbox' and _first(row, 'writer4_title', 'writer2_title', 'title'):
         snapshot['news_visible'] = bool(_first(row, 'writer4_title', 'writer2_title') or raw_status in {'ready_review', 'published', 'sent'})
