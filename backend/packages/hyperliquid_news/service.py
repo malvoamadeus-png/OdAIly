@@ -8,6 +8,7 @@ from .client import NewsClient, address_key
 from .discovery import enrichment_reasons, leaderboard_candidates, trade_candidates
 from .detector import evaluate_address, evaluate_divergence
 from .history import fill_key, summarize
+from .compact_history import extend_compact, summarize_compact
 from .market_cap import CoinGeckoMarketCaps
 from .models import Position, Rules, number
 from .store import NewsStore
@@ -42,6 +43,7 @@ class NewsMonitor:
                                   'discovery_sources': [], 'discovery_rejected': 0, 'address_limit': self.address_limit,
                                   'coverage': 'bounded_discovery_and_address_polling', 'attribute_queries': 0}
         universe = self.store.metadata('account_market_universe', {})
+        history_floor = self.store.metadata('compact_history_reset_start_ms', 0)
         if not universe or now_ms - int(universe.get('observed_ms', 0)) >= 3600000:
             dexs = self.client.dex_names()
             markets = {}
@@ -72,7 +74,7 @@ class NewsMonitor:
                 if cap.get('provider_updated_ms') is not None:
                     markets[coin]['market_cap_provider_updated_ms'] = int(cap['provider_updated_ms'])
         self._discover(now_ms, markets, result)
-        for row in self.store.addresses(self.addresses_per_pass):
+        for row in self.store.addresses(self.addresses_per_pass, normal_schedule=True):
             address = row['address']
             if self.store.blocked(address):
                 continue
@@ -93,21 +95,26 @@ class NewsMonitor:
                         if p.coin in positions:
                             raise ValueError('Duplicate market position')
                         positions[p.coin] = p
-                start_ms = max(0, now_ms - self.history_window_ms)
-                cached = self.store.fills(address, start_ms, now_ms)
+                start_ms = max(0, now_ms - self.history_window_ms, int(history_floor))
+                boundary = self.store.compact_boundary(address)
+                cached_start = boundary + 1 if boundary is not None else start_ms
+                cached = self.store.fills(address, cached_start, now_ms)
                 pending_key = 'normal_pending_fills:' + address
                 pending = self.store.metadata(pending_key, {})
                 # Unfinished initial backfill resumes at its inclusive page boundary.
                 if pending:
                     request_start = max(start_ms, int(pending['coverage']['next_start_ms']))
                 elif old and old['coverage'].get('coverage') == 'not_queried_no_eligibility':
-                    request_start = start_ms
+                    cursor = old['state'].get('history_last_queried_ms')
+                    request_start = max(start_ms, int(cursor) - 60000) if cursor is not None else start_ms
                 elif old and not old['coverage']['pagination_complete']:
                     request_start = max(start_ms, old['coverage']['next_start_ms'])
                 elif old:
-                    request_start = max(start_ms, old['state']['observed_ms'] - 60000)
+                    request_start = max(start_ms, int(old['state'].get('history_last_queried_ms') or old['state']['observed_ms']) - 60000)
                 else:
                     request_start = start_ms
+                if boundary is not None:
+                    request_start = max(request_start, boundary + 1)
                 sources = json.loads(row['sources'])
                 reasons = enrichment_reasons(positions, sources, markets, self.rules)
                 official_windows = {s['window']: {'pnl': s['pnl'], 'rank': s['rank'], 'side': s['side'],
@@ -124,14 +131,34 @@ class NewsMonitor:
                 fetched = list({fill_key(f): f for f in pending.get('fills', []) + fetched}.values())
                 if not coverage.get('pagination_complete', True):
                     self.store.save_global(pending_key, {'fills': fetched, 'coverage': coverage}, [])
-                    self.store.record_error(address, now_ms, 'incomplete_history: baseline preserved')
+                    self.store.record_error(address, now_ms, 'incomplete_history: baseline preserved', normal_schedule=True)
                     result.setdefault('incomplete_history', []).append(address)
                     continue
-                known = {fill_key(f) for f in cached}
+                if boundary is not None and any(int(f['time']) <= boundary for f in fetched):
+                    raise ValueError('Late fill at or before compacted history boundary')
+                dedup_start = min([request_start] + [int(f['time']) for f in fetched])
+                known = (self.store.monitor_fill_keys(address, 'normal', dedup_start, now_ms)
+                         if old and old['state'].get('separate_fill_dedup') else {fill_key(f) for f in cached})
                 new_fills = [f for f in fetched if old and fill_key(f) not in known
                              and int(f['time']) >= old['state'].get('monitoring_since_ms', old['state']['observed_ms'])]
                 all_fills = list({fill_key(f): f for f in cached + fetched}.values())
-                history = summarize(all_fills, start_ms=start_ms, end_ms=now_ms)
+                archive = None
+                if boundary is not None:
+                    cutoffs: dict[str, int] = {}
+                    for fill in new_fills:
+                        coin, stamp = str(fill['coin']), int(fill['time'])
+                        cutoffs[coin] = min(cutoffs.get(coin, stamp), stamp)
+                    cuts = [start_ms, now_ms + 1]
+                    for cutoff in cutoffs.values():
+                        for window in (self.history_window_ms, 30 * 86400000):
+                            start = max(0, cutoff - window)
+                            cuts.extend((start, max(start, cutoff - 1) + 1))
+                    archive = self.store.compact_history(address, min(cuts), cuts=cuts, aggregate_rounds=True)
+                    if not archive or archive[0] != boundary:
+                        raise ValueError('Compacted history changed during observation')
+                compact = extend_compact(archive[1], all_fills, copy_data=False) if archive else None
+                history = (summarize_compact(compact, start_ms=start_ms, end_ms=now_ms) if compact
+                           else summarize(all_fills, start_ms=start_ms, end_ms=now_ms))
                 history['api_coverage'] = coverage
                 history['enrichment_reasons'] = reasons
                 if official_windows:
@@ -139,7 +166,7 @@ class NewsMonitor:
                         'source': 'hyperliquid_public_leaderboard', 'windows': official_windows,
                         'pnl_scope': 'official_leaderboard_not_assumed_realized'}
                 history_before_actions = self._history_before_actions(
-                    all_fills, new_fills, history)
+                    all_fills, new_fills, history, compact=compact)
                 events, state = evaluate_address(
                     address=address, observed_ms=now_ms, first_seen_ms=row['first_seen_ms'], positions=positions,
                     previous=old['state'] if old else None, markets=markets, history=history,
@@ -158,6 +185,11 @@ class NewsMonitor:
                     except Exception as exc:
                         result.setdefault('supplemental_failures', {})[f'portfolio:{address}'] = str(exc)
                 state['snapshot_times'] = snapshot_times
+                state['separate_fill_dedup'] = True
+                state['history_last_queried_ms'] = (now_ms if reasons or pending else
+                    (old['state'].get('history_last_queried_ms', old['state']['observed_ms'])
+                     if old and old['coverage'].get('coverage') != 'not_queried_no_eligibility' else
+                     (old['state'].get('history_last_queried_ms') if old else None)))
                 state['monitoring_since_ms'] = old['state'].get('monitoring_since_ms', old['state']['observed_ms']) if old else now_ms
                 for event in events:
                     event.evidence['previous_snapshot_ms'] = old['state']['observed_ms'] if old else now_ms
@@ -165,13 +197,21 @@ class NewsMonitor:
                     event.evidence['snapshot_times'] = snapshot_times
                 self.store.commit_observation(address=address, now_ms=now_ms, state=state, history=history,
                                               coverage=coverage, fills=fetched, candidates=events,
-                                              state_table='hl_news_normal_state')
+                                              state_table='hl_news_normal_state', check_compact_boundary=True,
+                                              expected_compact_through=boundary)
                 if pending:
                     self.store.save_global(pending_key, {}, [])
+                if self.store.metadata('compact_history_enabled', False):
+                    try:
+                        compacted = self.store.compact_fills(address, cutoff_ms=now_ms)
+                        if compacted.get('fills'):
+                            result['compacted_fills'] = result.get('compacted_fills', 0) + compacted['fills']
+                    except Exception as exc:
+                        result.setdefault('compaction_failed', {})[address] = str(exc)
                 result['processed'] += 1
                 result['candidates'] += len(events)
             except Exception as exc:
-                self.store.record_error(address, now_ms, str(exc))
+                self.store.record_error(address, now_ms, str(exc), normal_schedule=True)
                 result['failed'][address] = str(exc)
         # Compare successful snapshots within the freshness window. Failed or
         # expired participants cannot reset an existing divergence baseline.
@@ -202,7 +242,7 @@ class NewsMonitor:
         return result
 
     def _history_before_actions(self, fills: list[dict[str, Any]], new_fills: list[dict[str, Any]],
-                                current_history: dict[str, Any]) -> dict[str, dict[str, Any]]:
+                                current_history: dict[str, Any], *, compact: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         cutoffs: dict[str, int] = {}
         for fill in new_fills:
             coin = str(fill['coin'])
@@ -211,12 +251,14 @@ class NewsMonitor:
         for coin, cutoff in cutoffs.items():
             start = max(0, cutoff - self.history_window_ms)
             prior_fills = [fill for fill in fills if start <= int(fill['time']) < cutoff]
-            prior = summarize(prior_fills, start_ms=start, end_ms=max(start, cutoff - 1),
-                              coverage='pre_action_history')
+            prior = (summarize_compact(compact, start_ms=start, end_ms=max(start, cutoff - 1), coverage='pre_action_history')
+                     if compact else summarize(prior_fills, start_ms=start, end_ms=max(start, cutoff - 1),
+                                               coverage='pre_action_history'))
             month_start = max(0, cutoff - 30 * 86400000)
             month_fills = [fill for fill in fills if month_start <= int(fill['time']) < cutoff]
-            month = summarize(month_fills, start_ms=month_start, end_ms=max(month_start, cutoff - 1),
-                              coverage='pre_action_30d')
+            month = (summarize_compact(compact, start_ms=month_start, end_ms=max(month_start, cutoff - 1), coverage='pre_action_30d')
+                     if compact else summarize(month_fills, start_ms=month_start, end_ms=max(month_start, cutoff - 1),
+                                               coverage='pre_action_30d'))
             for asset_coin, asset in prior.get('assets', {}).items():
                 month_asset = month.get('assets', {}).get(asset_coin, {})
                 asset.update(

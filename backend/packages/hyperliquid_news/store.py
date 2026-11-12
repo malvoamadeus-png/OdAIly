@@ -82,12 +82,28 @@ class NewsStore:
                     address TEXT NOT NULL, fill_key TEXT NOT NULL, time_ms INTEGER NOT NULL,
                     payload TEXT NOT NULL, PRIMARY KEY(address, fill_key));
                 CREATE INDEX IF NOT EXISTS hl_news_fills_time ON hl_news_fills(address,time_ms);
+                CREATE TABLE IF NOT EXISTS hl_news_monitor_fill_keys (
+                    monitor TEXT NOT NULL,address TEXT NOT NULL,fill_key TEXT NOT NULL,time_ms INTEGER NOT NULL,
+                    PRIMARY KEY(monitor,address,fill_key));
+                CREATE INDEX IF NOT EXISTS hl_news_monitor_fill_keys_time ON hl_news_monitor_fill_keys(monitor,address,time_ms);
+                CREATE TABLE IF NOT EXISTS hl_news_compact_history (
+                    address TEXT PRIMARY KEY, through_ms INTEGER NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS hl_news_compact_work (
+                    address TEXT PRIMARY KEY, through_ms INTEGER NOT NULL, payload TEXT NOT NULL,
+                    source_count INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS hl_news_compact_segments (
+                    address TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,
+                    payload TEXT NOT NULL, summary TEXT NOT NULL, PRIMARY KEY(address,start_ms));
+                CREATE INDEX IF NOT EXISTS hl_news_compact_segments_end
+                    ON hl_news_compact_segments(address,end_ms);
                 CREATE TABLE IF NOT EXISTS hl_news_state (
                     address TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     state TEXT NOT NULL, history TEXT NOT NULL, coverage TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS hl_news_normal_state (
                     address TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     state TEXT NOT NULL, history TEXT NOT NULL, coverage TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS hl_news_normal_schedule (
+                    address TEXT PRIMARY KEY, last_polled_ms INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS hl_news_candidates (
                     event_key TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
                     coin TEXT NOT NULL, payload TEXT NOT NULL);
@@ -217,8 +233,14 @@ class NewsStore:
         self.schedule_account(address, now_ms=now_ms)
         return {'address': address, 'created': created, 'already_manual': has_manual_source}
 
-    def addresses(self, limit: int) -> list[dict[str, Any]]:
+    def addresses(self, limit: int, *, normal_schedule: bool = False) -> list[dict[str, Any]]:
         with connect_sqlite(self.path) as conn:
+            if normal_schedule:
+                return [dict(r) for r in conn.execute('''SELECT a.* FROM hl_news_addresses a
+                    LEFT JOIN hl_news_normal_schedule s ON s.address=a.address
+                    WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b
+                        WHERE b.key='address_block:' || a.address AND json_extract(b.payload,'$.blocked')=1)
+                    ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT ?''', (limit,))]
             return [dict(r) for r in conn.execute(f'SELECT * FROM hl_news_addresses WHERE {BLOCK_FILTER} ORDER BY last_polled_ms,address LIMIT ?', (limit,))]
 
     @staticmethod
@@ -241,9 +263,182 @@ class NewsStore:
                 'SELECT payload FROM hl_news_fills WHERE address=? AND time_ms BETWEEN ? AND ? ORDER BY time_ms,fill_key',
                 (address, start_ms, end_ms))]
 
+    def monitor_fill_keys(self, address: str, monitor: str, start_ms: int, end_ms: int) -> set[str]:
+        with connect_sqlite(self.path) as conn:
+            return {row['fill_key'] for row in conn.execute(
+                'SELECT fill_key FROM hl_news_monitor_fill_keys WHERE monitor=? AND address=? AND time_ms BETWEEN ? AND ?',
+                (monitor, address, start_ms, end_ms))}
+
+    def compact_boundary(self, address: str) -> int | None:
+        with connect_sqlite(self.path) as conn:
+            row = conn.execute('SELECT through_ms FROM hl_news_compact_history WHERE address=?', (address,)).fetchone()
+        return int(row['through_ms']) if row else None
+
+    def compact_history(self, address: str, start_ms: int = 0, *, cuts: list[int] | None = None,
+                        aggregate_rounds: bool = False) -> tuple[int, dict[str, Any]] | None:
+        with connect_sqlite(self.path) as conn:
+            row = conn.execute('SELECT through_ms,payload FROM hl_news_compact_history WHERE address=?',
+                               (address,)).fetchone()
+            if not row:
+                return None
+            segments = conn.execute('SELECT start_ms,end_ms,summary FROM hl_news_compact_segments WHERE address=? AND end_ms>=? ORDER BY start_ms',
+                                    (address, start_ms)).fetchall()
+            payloads = []
+            for segment in segments:
+                split = (not aggregate_rounds or cuts is None or
+                         any(segment['start_ms'] < cut <= segment['end_ms'] for cut in cuts))
+                if split:
+                    payloads.append(conn.execute('SELECT payload FROM hl_news_compact_segments WHERE address=? AND start_ms=?',
+                                                 (address, segment['start_ms'])).fetchone()['payload'])
+                else:
+                    payloads.append(segment['summary'])
+        carry = json.loads(row['payload'])
+        data = {'version': 1, 'assets': {}}
+        for payload in payloads:
+            for coin, asset in json.loads(payload)['assets'].items():
+                target = data['assets'].setdefault(coin, {'moments': [], 'episodes': [], 'gaps': []})
+                for field in ('moments', 'episodes', 'gaps'):
+                    target[field].extend(asset[field])
+                target.setdefault('round_summaries', []).extend(asset.get('round_summaries', []))
+        for coin, asset in carry['assets'].items():
+            target = data['assets'].setdefault(coin, {'moments': [], 'episodes': [], 'gaps': []})
+            if not target['moments'] or target['moments'][-1]['time_ms'] != asset['moments'][-1]['time_ms']:
+                target['moments'].extend(asset['moments'])
+            target['episodes'].extend(asset['episodes'])
+            target['expected'] = asset['expected']
+            target['ordering_expected'] = asset['ordering_expected']
+        return int(row['through_ms']), data
+
+    def compact_fills(self, address: str, *, cutoff_ms: int, batch_size: int = 5000) -> dict[str, Any]:
+        """Compact only behind both monitors' persisted history cursors."""
+        from .compact_history import extend_compact, summarize_segment, verify_compact_history
+        if batch_size < 1:
+            raise ValueError('Invalid compact batch size')
+        with connect_sqlite(self.path) as conn:
+            conn.execute('BEGIN')
+            data_version = conn.execute('PRAGMA data_version').fetchone()[0]
+
+            def lock_unchanged() -> bool:
+                conn.execute('BEGIN IMMEDIATE')
+                if conn.execute('PRAGMA data_version').fetchone()[0] != data_version:
+                    conn.rollback()
+                    return False
+                return True
+            normal = conn.execute('SELECT state,coverage FROM hl_news_normal_state WHERE address=?',
+                                  (address,)).fetchone()
+            cursors = []
+            if normal:
+                state, coverage = json.loads(normal['state']), json.loads(normal['coverage'])
+                cursor = (state.get('observed_ms') if coverage.get('coverage') == 'not_queried_no_eligibility'
+                          else state.get('history_last_queried_ms', state.get('observed_ms')))
+                if not coverage.get('pagination_complete', True):
+                    return {'fills': 0, 'reason': 'normal_history_incomplete'}
+                if cursor is not None:
+                    cursors.append(int(cursor))
+            account = conn.execute('SELECT state,coverage FROM hl_news_state WHERE address=?', (address,)).fetchone()
+            if account:
+                account_state = json.loads(account['state'])
+                account_coverage = json.loads(account['coverage'])
+                account_cursor = account_state.get('account_history_checked_ms')
+                if account_cursor is None or not account_coverage.get('pagination_complete', True):
+                    return {'fills': 0, 'reason': 'account_history_incomplete'}
+                cursors.append(int(account_cursor))
+            if not cursors:
+                return {'fills': 0, 'reason': 'history_cursor_missing'}
+            cutoff_ms = min(cutoff_ms, min(cursors) - 60000)
+            for prefix in ('normal_pending_fills:', 'account_pending_fills:'):
+                pending = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?', (prefix + address,)).fetchone()
+                if pending and json.loads(pending['payload']):
+                    return {'fills': 0, 'reason': 'pending_history'}
+            saved = conn.execute('SELECT through_ms,payload FROM hl_news_compact_history WHERE address=?',
+                                 (address,)).fetchone()
+            work = None if saved else conn.execute('SELECT * FROM hl_news_compact_work WHERE address=?',
+                                                   (address,)).fetchone()
+            checkpoint = saved or work
+            through_ms = int(checkpoint['through_ms']) if checkpoint else -1
+            data = json.loads(checkpoint['payload']) if checkpoint else {'version': 1, 'assets': {}}
+            if saved:
+                old = conn.execute('SELECT fill_key FROM hl_news_fills WHERE address=? AND time_ms<=? LIMIT ?',
+                                   (address, through_ms, batch_size)).fetchall()
+                if old:
+                    conn.commit()
+                    if not lock_unchanged():
+                        return {'fills': 0, 'phase': 'retry', 'reason': 'concurrent_write'}
+                    conn.executemany('DELETE FROM hl_news_fills WHERE address=? AND fill_key=?',
+                                     [(address, row['fill_key']) for row in old])
+                    return {'fills': len(old), 'phase': 'cleanup', 'through_ms': through_ms}
+            rows = conn.execute('''SELECT fill_key,time_ms,payload FROM hl_news_fills
+                WHERE address=? AND time_ms>? AND time_ms<? ORDER BY time_ms,fill_key LIMIT ?''',
+                (address, through_ms, cutoff_ms, batch_size + 1)).fetchall()
+            if len(rows) > batch_size:
+                boundary = rows[-1]['time_ms']
+                rows = [row for row in rows if row['time_ms'] < boundary]
+                if not rows:
+                    raise ValueError('Compaction batch is saturated at one timestamp')
+            if not rows:
+                if work:
+                    if through_ms >= cutoff_ms:
+                        return {'fills': 0, 'reason': 'cursor_behind_work'}
+                    source_count = conn.execute('SELECT count(*) FROM hl_news_fills WHERE address=? AND time_ms<=?',
+                                                (address, through_ms)).fetchone()[0]
+                    conn.commit()
+                    if not lock_unchanged():
+                        return {'fills': 0, 'phase': 'retry', 'reason': 'concurrent_write'}
+                    if source_count != work['source_count']:
+                        conn.execute('DELETE FROM hl_news_compact_segments WHERE address=?', (address,))
+                        conn.execute('DELETE FROM hl_news_compact_work WHERE address=?', (address,))
+                        return {'fills': 0, 'phase': 'rebuild', 'reason': 'source_fills_changed'}
+                    conn.execute('INSERT INTO hl_news_compact_history VALUES(?,?,?)',
+                                 (address, through_ms, work['payload']))
+                    conn.execute('DELETE FROM hl_news_compact_work WHERE address=?', (address,))
+                    return {'fills': 0, 'phase': 'activated', 'through_ms': through_ms}
+                return {'fills': 0, 'through_ms': through_ms}
+            conn.commit()
+            fills = [json.loads(row['payload']) for row in rows]
+            updated = extend_compact(data, fills)
+            new_through = int(rows[-1]['time_ms'])
+            # Validate the full batch independently. Cross-batch positions are
+            # checked by extend_compact against the persisted per-asset carry.
+            batch_only = extend_compact({'version': 1, 'assets': {}}, fills)
+            verify_compact_history(fills, batch_only, [(int(rows[0]['time_ms']), new_through)])
+            segment = {'version': 1, 'assets': {}}
+            carry = {'version': 1, 'assets': {}}
+            for coin, asset in updated['assets'].items():
+                old = data['assets'].get(coin)
+                old_moments = len(old['moments']) if old else 0
+                old_gaps = len(old['gaps']) if old else 0
+                episodes = asset['episodes']
+                active = episodes[-1:] if episodes and episodes[-1]['end_ms'] is None and episodes[-1]['continuous'] else []
+                finished = episodes[:-1] if active else episodes
+                new_moments = asset['moments'][old_moments:]
+                if new_moments or finished:
+                    segment['assets'][coin] = {'moments': new_moments, 'episodes': finished,
+                                               'gaps': asset['gaps'][old_gaps:]}
+                carry['assets'][coin] = {'moments': asset['moments'][-1:], 'episodes': active, 'gaps': [],
+                                         'expected': asset['expected'], 'ordering_expected': asset['ordering_expected']}
+            segment_payload = encode(segment)
+            summary_payload = encode(summarize_segment(segment))
+            carry_payload = encode(carry)
+            if not lock_unchanged():
+                return {'fills': 0, 'phase': 'retry', 'reason': 'concurrent_write'}
+            conn.execute('INSERT INTO hl_news_compact_segments(address,start_ms,end_ms,payload,summary) VALUES(?,?,?,?,?)',
+                         (address, int(rows[0]['time_ms']), new_through, segment_payload, summary_payload))
+            if saved:
+                conn.execute('UPDATE hl_news_compact_history SET through_ms=?,payload=? WHERE address=?',
+                             (new_through, carry_payload, address))
+                conn.executemany('DELETE FROM hl_news_fills WHERE address=? AND fill_key=?',
+                                 [(address, row['fill_key']) for row in rows])
+            else:
+                conn.execute('''INSERT INTO hl_news_compact_work VALUES(?,?,?,?)
+                    ON CONFLICT(address) DO UPDATE SET through_ms=excluded.through_ms,
+                        payload=excluded.payload,source_count=excluded.source_count''',
+                    (address, new_through, carry_payload, (int(work['source_count']) if work else 0) + len(rows)))
+            return {'fills': len(rows), 'phase': 'incremental' if saved else 'building', 'through_ms': new_through}
+
     def commit_observation(self, *, address: str, now_ms: int, state: dict[str, Any], history: dict[str, Any],
                            coverage: dict[str, Any], fills: list[dict[str, Any]], candidates: list[Candidate],
-                           state_table: str = 'hl_news_state') -> None:
+                           state_table: str = 'hl_news_state', check_compact_boundary: bool = False,
+                           expected_compact_through: int | None = None) -> None:
         state_table = self._state_table(state_table)
         # The evidence, event deduplication and next baseline advance atomically.
         with connect_sqlite(self.path) as conn:
@@ -253,9 +448,23 @@ class NewsStore:
             old = conn.execute(f'SELECT observed_ms FROM {state_table} WHERE address=?', (address,)).fetchone()
             if old and old['observed_ms'] >= now_ms:
                 raise ValueError('Observation must advance monotonically')
+            archive = conn.execute('SELECT through_ms FROM hl_news_compact_history WHERE address=?', (address,)).fetchone()
+            actual_through = int(archive['through_ms']) if archive else None
+            if check_compact_boundary and actual_through != expected_compact_through:
+                raise ValueError('Compacted history changed during observation')
+            if archive and any(int(fill['time']) <= int(archive['through_ms']) for fill in fills):
+                raise ValueError('Late fill at or before compacted history boundary')
             for fill in fills:
                 conn.execute('INSERT OR IGNORE INTO hl_news_fills VALUES(?,?,?,?)',
                              (address, fill_key(fill), int(fill['time']), encode(fill)))
+            if state.get('separate_fill_dedup'):
+                monitor = 'normal' if state_table == 'hl_news_normal_state' else 'account'
+                conn.executemany('INSERT OR IGNORE INTO hl_news_monitor_fill_keys VALUES(?,?,?,?)',
+                                 [(monitor, address, fill_key(fill), int(fill['time'])) for fill in fills])
+                cursor = state.get('history_last_queried_ms' if monitor == 'normal' else 'account_history_checked_ms')
+                if cursor is not None:
+                    conn.execute('DELETE FROM hl_news_monitor_fill_keys WHERE monitor=? AND address=? AND time_ms<?',
+                                 (monitor, address, int(cursor) - 60000))
             for event in candidates:
                 if self.event_blocked(asdict(event), conn=conn):
                     continue
@@ -265,10 +474,16 @@ class NewsStore:
                 observed_ms=excluded.observed_ms,state=excluded.state,history=excluded.history,coverage=excluded.coverage''',
                          (address, now_ms, encode(state), encode(history), encode(coverage)))
             conn.execute('UPDATE hl_news_addresses SET last_polled_ms=?,error=NULL WHERE address=?', (now_ms, address))
+            if state_table == 'hl_news_normal_state':
+                conn.execute('''INSERT INTO hl_news_normal_schedule VALUES(?,?)
+                    ON CONFLICT(address) DO UPDATE SET last_polled_ms=excluded.last_polled_ms''', (address, now_ms))
 
-    def record_error(self, address: str, now_ms: int, error: str) -> None:
+    def record_error(self, address: str, now_ms: int, error: str, *, normal_schedule: bool = False) -> None:
         with connect_sqlite(self.path) as conn:
             conn.execute('UPDATE hl_news_addresses SET last_polled_ms=?,error=? WHERE address=?', (now_ms, error[:2000], address))
+            if normal_schedule:
+                conn.execute('''INSERT INTO hl_news_normal_schedule VALUES(?,?)
+                    ON CONFLICT(address) DO UPDATE SET last_polled_ms=excluded.last_polled_ms''', (address, now_ms))
 
     def metadata(self, key: str, default: Any) -> Any:
         with connect_sqlite(self.path) as conn:

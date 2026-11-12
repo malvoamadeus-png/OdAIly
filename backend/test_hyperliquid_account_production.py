@@ -343,6 +343,7 @@ def test_enable_loss_is_idempotent_and_preserves_profit_cutoff(tmp_path, monkeyp
     from packages.hyperliquid_news import commands
     store, client, monitor = setup(tmp_path)
     monkeypatch.setattr(commands, 'load_storage_settings', lambda: SimpleNamespace(sqlite_path=store.path))
+    monkeypatch.setattr(commands, 'load_hyperliquid_storage_path', lambda: store.path)
     args = SimpleNamespace(hyperliquid_action='enable-account-loss')
     commands.run_command(args)
     first = store.metadata('production_account_profit', {})

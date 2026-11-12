@@ -86,6 +86,8 @@ def test_normal_monitor_preserves_baseline_until_fill_pagination_finishes(tmp_pa
     from packages.hyperliquid_news.store import NewsStore
     from test_hyperliquid_news import FakeClient
     store = NewsStore(tmp_path/'offline.sqlite')
+    store.initialize()
+    store.save_global('compact_history_enabled', True, [])
     client = FakeClient()
     monitor = NewsMonitor(store=store, client=client, leaderboard_seeds=0, addresses_per_pass=1)
     monitor.run_once(now_ms=100000)
@@ -105,6 +107,7 @@ def test_normal_monitor_preserves_baseline_until_fill_pagination_finishes(tmp_pa
             'pagination_complete': True, 'next_start_ms': start_ms, 'coverage': 'retained_api_history'}
     client.history = complete
     monitor.run_once(now_ms=220000)
+    assert store.compact_history(A) is None
     assert len(store.fills(A, 100000, 220000)) == 2
     assert store.load(A, state_table='hl_news_normal_state')['state']['observed_ms'] == 220000
 

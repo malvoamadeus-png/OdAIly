@@ -286,8 +286,11 @@ class AccountProfitMonitor:
                          fill_count=len(fetched), next_start_ms=coverage.get('next_start_ms'),
                          elapsed_ms=int((time.monotonic() - address_started) * 1000))
                     continue
-                known = {fill_key(f) for f in self.store.fills(address,
-                    min([since] + [int(f['time']) for f in fetched]), observed)}
+                dedup_start = min([since] + [int(f['time']) for f in fetched])
+                known = (self.store.monitor_fill_keys(address, 'account', dedup_start, observed)
+                    if baseline and baseline['state'].get('separate_fill_dedup') else
+                    {fill_key(f) for f in self.store.fills(address,
+                        dedup_start, observed)})
                 new_fills = [f for f in fetched if baseline and fill_key(f) not in known
                     and int(f['time']) >= baseline['state'].get('account_monitoring_since_ms', started)]
                 history = event_history(performance, coverage)
@@ -323,6 +326,7 @@ class AccountProfitMonitor:
                     _log('account_monitor.address_stage_completed', address=address, stage=stage,
                          candidate_count=len(selected), elapsed_ms=int((time.monotonic() - stage_started) * 1000))
                 state['account_history_checked_ms'] = history_end_ms if query_history or not baseline else history_checked
+                state['separate_fill_dedup'] = True
                 state['snapshot_times'] = snapshot_times
                 for e in selected:
                     e.evidence['snapshot_times'] = snapshot_times
