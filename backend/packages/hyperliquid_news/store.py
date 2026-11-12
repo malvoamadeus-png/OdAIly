@@ -337,7 +337,8 @@ class NewsStore:
                     cursors.append(int(cursor))
             account = conn.execute('SELECT state,coverage FROM hl_news_state WHERE address=?', (address,)).fetchone()
             pool = conn.execute('SELECT qualified FROM hl_news_account_pool WHERE address=?', (address,)).fetchone()
-            if account and (not pool or pool['qualified']):
+            account_active = not pool or bool(pool['qualified'])
+            if account and account_active:
                 account_state = json.loads(account['state'])
                 account_coverage = json.loads(account['coverage'])
                 account_cursor = account_state.get('account_history_checked_ms')
@@ -348,6 +349,8 @@ class NewsStore:
                 return {'fills': 0, 'reason': 'history_cursor_missing'}
             cutoff_ms = min(cutoff_ms, min(cursors) - 60000)
             for prefix in ('normal_pending_fills:', 'account_pending_fills:'):
+                if prefix == 'account_pending_fills:' and not account_active:
+                    continue
                 pending = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?', (prefix + address,)).fetchone()
                 if pending and json.loads(pending['payload']):
                     return {'fills': 0, 'reason': 'pending_history'}

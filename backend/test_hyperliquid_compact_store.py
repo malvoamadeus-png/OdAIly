@@ -207,6 +207,7 @@ def test_inactive_account_baseline_does_not_block_normal_compaction(tmp_path):
         coverage={'pagination_complete': True}, fills=[], candidates=[])
     store.update_account_schedule(ADDRESS, now_ms=200000, tier='unqualified',
                                   interval_ms=100000, qualified=False)
+    store.save_global('account_pending_fills:' + ADDRESS, {'fills': [1]}, [])
     assert store.compact_fills(ADDRESS, cutoff_ms=500000)['phase'] == 'building'
 
 
