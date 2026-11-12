@@ -199,7 +199,8 @@ def normalize_handle(value: str) -> str:
 def open_worker_database(path: Path) -> sqlite3.Connection:
     """Open a long-lived WAL connection; common.connect_sqlite closes on `with`."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+    from packages.common.storage import MonitoredPersistentSQLiteConnection
+    connection = sqlite3.connect(path, timeout=30.0, check_same_thread=False, factory=MonitoredPersistentSQLiteConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA journal_mode=WAL")

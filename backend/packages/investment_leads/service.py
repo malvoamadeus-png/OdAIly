@@ -63,7 +63,8 @@ def _json(value: Any) -> str:
 
 def _open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=60.0)
+    from packages.common.storage import MonitoredPersistentSQLiteConnection
+    connection = sqlite3.connect(path, timeout=60.0, factory=MonitoredPersistentSQLiteConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=60000")
     connection.execute("PRAGMA journal_mode=WAL")

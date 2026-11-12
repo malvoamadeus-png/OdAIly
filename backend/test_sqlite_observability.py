@@ -39,3 +39,25 @@ def test_long_transaction_and_normal_commit(monkeypatch, tmp_path, capsys):
     assert len([e for e in records if e["event"] == "long_transaction"]) == 1
     assert records[-1]["outcome"] == "commit"
     assert "private" not in json.dumps(records)
+
+
+def test_investment_connection_observes_lock_and_stays_open(tmp_path, capsys):
+    from packages.investment_leads.service import _open_database
+    path = tmp_path / "investment.sqlite"
+    holder = _open_database(path)
+    waiter = _open_database(path)
+    try:
+        holder.execute("CREATE TABLE sample (value TEXT)")
+        holder.commit()
+        waiter.execute("PRAGMA busy_timeout=5")
+        holder.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError):
+            waiter.execute("INSERT INTO sample VALUES (?)", ("sensitive",))
+        assert any(e["event"] == "locked" and e["operation"] == "INSERT" for e in events(capsys))
+        holder.rollback()
+        with waiter:
+            waiter.execute("INSERT INTO sample VALUES (?)", ("x",))
+        assert waiter.execute("SELECT count(*) FROM sample").fetchone()[0] == 1
+    finally:
+        holder.close()
+        waiter.close()

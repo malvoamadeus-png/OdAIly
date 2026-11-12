@@ -70,6 +70,15 @@ class MonitoredSQLiteCursor(sqlite3.Cursor):
     def executescript(self, sql: str, /) -> sqlite3.Cursor:
         return self.connection._monitored_call(super().executescript, sql)  # type: ignore[attr-defined]
 
+    def fetchone(self) -> Any:
+        return self.connection._monitored_call(lambda _sql: super(MonitoredSQLiteCursor, self).fetchone(), "FETCH")  # type: ignore[attr-defined]
+
+    def fetchall(self) -> list[Any]:
+        return self.connection._monitored_call(lambda _sql: super(MonitoredSQLiteCursor, self).fetchall(), "FETCH")  # type: ignore[attr-defined]
+
+    def fetchmany(self, size: int = 0) -> list[Any]:
+        return self.connection._monitored_call(lambda _sql: super(MonitoredSQLiteCursor, self).fetchmany(size or self.arraysize), "FETCH")  # type: ignore[attr-defined]
+
 
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback like sqlite3.Connection, then release the file handle."""
@@ -109,7 +118,7 @@ class ClosingSQLiteConnection(sqlite3.Connection):
             locked = code is not None and (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
             if locked or duration >= _SQLITE_SLOW_SECONDS:
                 token = (sql.lstrip().split(None, 1) or [""])[0].upper()
-                kind = token if token in {"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN", "COMMIT", "ROLLBACK", "PRAGMA", "CREATE", "ALTER", "DROP", "WITH"} else "OTHER"
+                kind = token if token in {"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN", "COMMIT", "ROLLBACK", "PRAGMA", "CREATE", "ALTER", "DROP", "WITH", "FETCH"} else "OTHER"
                 self._log("locked" if locked else "slow_statement", duration_ms=round(duration * 1000),
                           location=_sqlite_location(), operation=kind,
                           error_code=code, error_name=getattr(error, "sqlite_errorname", None))
@@ -117,23 +126,23 @@ class ClosingSQLiteConnection(sqlite3.Connection):
                 self._transaction_started = time.monotonic()
                 self._transaction_location = _sqlite_location()
             elif was_transaction and not self.in_transaction:
-                self._finish_transaction("ended")
+                self._finish_transaction("commit" if sql == "COMMIT" else "ended")
 
     def cursor(self, factory: Any = None) -> sqlite3.Cursor:
         return super().cursor(factory or MonitoredSQLiteCursor)
 
     def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
-        return self._monitored_call(super().execute, sql, parameters)
+        return self.cursor().execute(sql, parameters)
 
     def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
-        return self._monitored_call(super().executemany, sql, parameters)
+        return self.cursor().executemany(sql, parameters)
 
     def executescript(self, sql: str, /) -> sqlite3.Cursor:
-        return self._monitored_call(super().executescript, sql)
+        return self.cursor().executescript(sql)
 
     def commit(self) -> None:
         try:
-            super().commit()
+            self._monitored_call(lambda _sql: super(ClosingSQLiteConnection, self).commit(), "COMMIT")
         finally:
             if not self.in_transaction:
                 self._finish_transaction("commit")
@@ -155,6 +164,17 @@ class ClosingSQLiteConnection(sqlite3.Connection):
     def close(self) -> None:
         self._finish_transaction("close")
         super().close()
+
+
+class MonitoredPersistentSQLiteConnection(ClosingSQLiteConnection):
+    """Observe connections whose context manager must not close them."""
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return bool(sqlite3.Connection.__exit__(self, exc_type, exc_value, traceback))
+        finally:
+            if not self.in_transaction:
+                self._finish_transaction("context_exit")
 
 
 def connect_sqlite(path: Path, *, timeout_seconds: float = 30.0) -> sqlite3.Connection:

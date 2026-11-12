@@ -580,7 +580,8 @@ class TopicAggregator:
         # The live dashboard reads the state from separate connections, while
         # shutdown and test harnesses may close the service from a supervisor
         # thread. SQLite remains serialized by the aggregator transaction.
-        self.connection = sqlite3.connect(self.database, timeout=30.0, check_same_thread=False)
+        from packages.common.storage import MonitoredPersistentSQLiteConnection
+        self.connection = sqlite3.connect(self.database, timeout=30.0, check_same_thread=False, factory=MonitoredPersistentSQLiteConnection)
         self.connection.row_factory = sqlite3.Row
         # This connection shares the worker SQLite file with the account
         # directory. Match its lock wait and WAL settings so a short console
