@@ -198,6 +198,18 @@ def test_account_history_can_compact_before_normal_baseline_exists(tmp_path):
     assert store.compact_boundary(ADDRESS) == 100000
 
 
+def test_inactive_account_baseline_does_not_block_normal_compaction(tmp_path):
+    store = setup_store(tmp_path, [fill(1, 100000, '0', '1', 'B')])
+    store.discover(ADDRESS, source={'kind': 'test'}, now_ms=1)
+    store.schedule_account(ADDRESS, now_ms=1)
+    store.commit_observation(address=ADDRESS, now_ms=200000,
+        state={'account_history_checked_ms': 100000}, history={},
+        coverage={'pagination_complete': True}, fills=[], candidates=[])
+    store.update_account_schedule(ADDRESS, now_ms=200000, tier='unqualified',
+                                  interval_ms=100000, qualified=False)
+    assert store.compact_fills(ADDRESS, cutoff_ms=500000)['phase'] == 'building'
+
+
 def test_normal_monitor_can_start_after_account_history_was_compacted(tmp_path):
     from packages.hyperliquid_news.service import NewsMonitor
     from test_hyperliquid_news import FakeClient

@@ -336,7 +336,8 @@ class NewsStore:
                 if cursor is not None:
                     cursors.append(int(cursor))
             account = conn.execute('SELECT state,coverage FROM hl_news_state WHERE address=?', (address,)).fetchone()
-            if account:
+            pool = conn.execute('SELECT qualified FROM hl_news_account_pool WHERE address=?', (address,)).fetchone()
+            if account and (not pool or pool['qualified']):
                 account_state = json.loads(account['state'])
                 account_coverage = json.loads(account['coverage'])
                 account_cursor = account_state.get('account_history_checked_ms')
