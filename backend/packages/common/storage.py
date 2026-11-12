@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sqlite3
+import sys
+import time
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -45,14 +47,114 @@ def load_hyperliquid_storage_path() -> Path:
     return Path(os.getenv("ODAILY_HYPERLIQUID_SQLITE_PATH") or default_path).expanduser().resolve()
 
 
+_SQLITE_SLOW_SECONDS = 1.0
+_SQLITE_TRANSACTION_SECONDS = 2.0
+
+
+def _sqlite_location() -> str:
+    frame = sys._getframe(1)
+    while frame and frame.f_code.co_filename == __file__:
+        frame = frame.f_back
+    if frame is None:
+        return "unknown"
+    return f"{frame.f_code.co_filename}:{frame.f_lineno}:{frame.f_code.co_name}"
+
+
+class MonitoredSQLiteCursor(sqlite3.Cursor):
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self.connection._monitored_call(super().execute, sql, parameters)  # type: ignore[attr-defined]
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        return self.connection._monitored_call(super().executemany, sql, parameters)  # type: ignore[attr-defined]
+
+    def executescript(self, sql: str, /) -> sqlite3.Cursor:
+        return self.connection._monitored_call(super().executescript, sql)  # type: ignore[attr-defined]
+
+
 class ClosingSQLiteConnection(sqlite3.Connection):
     """Commit/rollback like sqlite3.Connection, then release the file handle."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._monitor_db = Path(str(args[0]).split("?", 1)[0]).name if args else "unknown"
+        self._transaction_started: float | None = None
+        self._transaction_location = "unknown"
+
+    def _log(self, event: str, **fields: Any) -> None:
+        try:
+            print("[sqlite-observe] " + json.dumps({"event": event, "db": self._monitor_db,
+                  "pid": os.getpid(), **fields}, ensure_ascii=False, separators=(",", ":")), file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+    def _finish_transaction(self, outcome: str) -> None:
+        if self._transaction_started is not None:
+            duration = time.monotonic() - self._transaction_started
+            if duration >= _SQLITE_TRANSACTION_SECONDS:
+                self._log("long_transaction", duration_ms=round(duration * 1000), location=self._transaction_location, outcome=outcome)
+        self._transaction_started = None
+
+    def _monitored_call(self, operation: Any, sql: str, *args: Any) -> Any:
+        started = time.monotonic()
+        was_transaction = self.in_transaction
+        error = None
+        try:
+            return operation(sql, *args)
+        except sqlite3.Error as exc:
+            error = exc
+            raise
+        finally:
+            duration = time.monotonic() - started
+            code = getattr(error, "sqlite_errorcode", None)
+            locked = code is not None and (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            if locked or duration >= _SQLITE_SLOW_SECONDS:
+                token = (sql.lstrip().split(None, 1) or [""])[0].upper()
+                kind = token if token in {"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN", "COMMIT", "ROLLBACK", "PRAGMA", "CREATE", "ALTER", "DROP", "WITH"} else "OTHER"
+                self._log("locked" if locked else "slow_statement", duration_ms=round(duration * 1000),
+                          location=_sqlite_location(), operation=kind,
+                          error_code=code, error_name=getattr(error, "sqlite_errorname", None))
+            if not was_transaction and self.in_transaction:
+                self._transaction_started = time.monotonic()
+                self._transaction_location = _sqlite_location()
+            elif was_transaction and not self.in_transaction:
+                self._finish_transaction("ended")
+
+    def cursor(self, factory: Any = None) -> sqlite3.Cursor:
+        return super().cursor(factory or MonitoredSQLiteCursor)
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self._monitored_call(super().execute, sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        return self._monitored_call(super().executemany, sql, parameters)
+
+    def executescript(self, sql: str, /) -> sqlite3.Cursor:
+        return self._monitored_call(super().executescript, sql)
+
+    def commit(self) -> None:
+        try:
+            super().commit()
+        finally:
+            if not self.in_transaction:
+                self._finish_transaction("commit")
+
+    def rollback(self) -> None:
+        try:
+            super().rollback()
+        finally:
+            if not self.in_transaction:
+                self._finish_transaction("rollback")
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         try:
             return bool(super().__exit__(exc_type, exc_value, traceback))
         finally:
+            self._finish_transaction("context_exit")
             self.close()
+
+    def close(self) -> None:
+        self._finish_transaction("close")
+        super().close()
 
 
 def connect_sqlite(path: Path, *, timeout_seconds: float = 30.0) -> sqlite3.Connection:
