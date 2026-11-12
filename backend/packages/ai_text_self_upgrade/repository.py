@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_text_self_upgrade_decision_history
 ON ai_text_self_upgrade_decisions(case_key,id DESC);
+CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_key TEXT NOT NULL REFERENCES ai_text_self_upgrade_items(case_key),
+    decision TEXT NOT NULL CHECK(decision IN ('reviewer_correct','writer_correct','ignored')),
+    actor TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    decided_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_state (
     state_key TEXT PRIMARY KEY,
     state_value TEXT NOT NULL,
@@ -136,6 +144,7 @@ class AITextSelfUpgradeRepository:
             conn.executescript(SCHEMA_SQL)
             columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(ai_text_self_upgrade_items)")}
             migrations = {
+                "human_resolution": "TEXT",
                 "source_type": "TEXT NOT NULL DEFAULT 'text_auditor'",
                 "fact_check_id": "INTEGER",
                 "fact_policy_version": "TEXT",
@@ -323,10 +332,15 @@ class AITextSelfUpgradeRepository:
         clauses: list[str] = []
         params: list[Any] = []
         if status != "all":
-            if status not in {"pending", "accepted", "rejected", "ignored"}:
+            if status not in {"pending", "reviewer_correct", "writer_correct", "ignored", "legacy"}:
                 raise ValueError("不支持的案例状态")
-            clauses.append("human_decision=?")
-            params.append(status)
+            if status == "legacy":
+                clauses.append("human_resolution IS NULL AND human_decision IN ('accepted','rejected','ignored')")
+            elif status == "pending":
+                clauses.append("human_resolution IS NULL AND human_decision='pending'")
+            else:
+                clauses.append("human_resolution=?")
+                params.append(status)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         limit = max(1, min(100, int(payload.get("limit") or 30)))
         offset = max(0, int(payload.get("offset") or 0))
@@ -336,11 +350,11 @@ class AITextSelfUpgradeRepository:
             ).fetchone()[0])
             rows = conn.execute(
                 f"SELECT * FROM ai_text_self_upgrade_items{where} "
-                "ORDER BY CASE WHEN human_decision='pending' THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT ? OFFSET ?",
+                "ORDER BY CASE WHEN human_resolution IS NULL AND human_decision='pending' THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
-            accepted_count = int(conn.execute(
-                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE human_decision='accepted'"
+            confirmed_count = int(conn.execute(
+                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE human_resolution IN ('reviewer_correct','writer_correct')"
             ).fetchone()[0])
         runs = self.recent_runs(limit=1, since=self.enabled_at())
         return {
@@ -348,7 +362,7 @@ class AITextSelfUpgradeRepository:
             "total": total,
             "offset": offset,
             "limit": limit,
-            "accepted_count": accepted_count,
+            "confirmed_count": confirmed_count,
             "latest_run": runs[0] if runs else None,
         }
 
@@ -361,13 +375,14 @@ class AITextSelfUpgradeRepository:
                 raise ValueError("自我审核案例不存在")
             result = _item(row)
             result["decisions"] = [dict(decision) for decision in conn.execute(
-                "SELECT decision,actor,note,decided_at FROM ai_text_self_upgrade_decisions WHERE case_key=? ORDER BY id",
-                (case_key,),
+                "SELECT decision,actor,note,decided_at,1 AS legacy FROM ai_text_self_upgrade_decisions WHERE case_key=? "
+                "UNION ALL SELECT decision,actor,note,decided_at,0 AS legacy FROM ai_text_self_upgrade_resolutions WHERE case_key=? ORDER BY decided_at",
+                (case_key, case_key),
             ).fetchall()]
             return result
 
     def decide(self, case_key: str, *, decision: str, actor: str, note: str = "") -> dict[str, Any]:
-        if decision not in {"accepted", "rejected", "ignored"}:
+        if decision not in {"reviewer_correct", "writer_correct", "ignored"}:
             raise ValueError("不支持的人工决定")
         stamp = _now()
         with self.connect() as conn:
@@ -377,11 +392,11 @@ class AITextSelfUpgradeRepository:
             ).fetchone():
                 raise ValueError("自我审核案例不存在")
             conn.execute(
-                "UPDATE ai_text_self_upgrade_items SET human_decision=?,decision_by=?,decision_note=?,decided_at=?,updated_at=? WHERE case_key=?",
+                "UPDATE ai_text_self_upgrade_items SET human_resolution=?,decision_by=?,decision_note=?,decided_at=?,updated_at=? WHERE case_key=?",
                 (decision, actor[:200], note[:2000], stamp, stamp, case_key),
             )
             conn.execute(
-                "INSERT INTO ai_text_self_upgrade_decisions(case_key,decision,actor,note,decided_at) VALUES(?,?,?,?,?)",
+                "INSERT INTO ai_text_self_upgrade_resolutions(case_key,decision,actor,note,decided_at) VALUES(?,?,?,?,?)",
                 (case_key, decision, actor[:200], note[:2000], stamp),
             )
         return self.detail(case_key)

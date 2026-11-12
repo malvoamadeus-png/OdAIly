@@ -53,7 +53,7 @@ def _create_primary_database(path: Path) -> None:
                 result_json TEXT, completed_at TEXT
             );
             CREATE TABLE newsflash_production_metadata (
-                delivery_key TEXT PRIMARY KEY, odaily_id TEXT, id_match_status TEXT
+                delivery_key TEXT PRIMARY KEY, odaily_id TEXT, id_match_status TEXT, title TEXT
             );
             CREATE TABLE tasks (
                 id INTEGER PRIMARY KEY, source TEXT, source_item_id TEXT, source_url TEXT,
@@ -88,7 +88,7 @@ def _insert_candidate(path: Path, *, flagged_at: datetime, mapped: bool = True,
             (json.dumps({"status": "flagged"}, ensure_ascii=False), flagged_at.isoformat()),
         )
         conn.execute(
-            "INSERT INTO newsflash_production_metadata VALUES('odaily-task-9','news-7',?)",
+            "INSERT INTO newsflash_production_metadata VALUES('odaily-task-9','news-7',?,'项目公布融资')",
             ("matched" if mapped else "ambiguous",),
         )
         conn.execute(
@@ -127,22 +127,22 @@ def test_discovery_requires_new_flag_exact_publication_link_and_matching_version
         with sqlite3.connect(primary) as conn:
             conn.execute("UPDATE newsflash_production_metadata SET id_match_status='ambiguous'")
         cases, unlinked = service._discover_cases()
-        assert cases == []
-        assert unlinked == 1
+        assert len(cases) == 1
+        assert unlinked == 0
 
         with sqlite3.connect(primary) as conn:
             conn.execute("UPDATE newsflash_production_metadata SET id_match_status='matched'")
             conn.execute("UPDATE x_task_pipeline SET final_content='编辑改过的版本。'")
         cases, unlinked = service._discover_cases()
-        assert cases == []
-        assert unlinked == 1
+        assert len(cases) == 1
+        assert unlinked == 0
 
         with sqlite3.connect(primary) as conn:
             conn.execute("UPDATE x_task_pipeline SET final_content='项目公布融资。'")
             conn.execute("UPDATE newsflash_production_metadata SET delivery_key='odaily-task-9unexpected'")
         cases, unlinked = service._discover_cases()
-        assert cases == []
-        assert unlinked == 1
+        assert len(cases) == 1
+        assert unlinked == 0
 
 
 def test_discovery_does_not_backfill_pre_activation_audits() -> None:
@@ -207,14 +207,19 @@ def test_batch_uses_gpt6luna_and_records_decisions_as_history() -> None:
         assert item["evidence"][0]["quote"] == "项目公布融资。"
         key = item["case_key"]
 
-        repository.decide(key, decision="accepted", actor="editor@example.com", note="同意")
-        assert repository.list_items({"status": "accepted"})["accepted_count"] == 1
-        repository.decide(key, decision="rejected", actor="editor@example.com", note="复核后不认同")
+        with repository.connect() as conn:
+            conn.execute("UPDATE ai_text_self_upgrade_items SET human_decision='accepted' WHERE case_key=?", (key,))
+            conn.execute("INSERT INTO ai_text_self_upgrade_decisions(case_key,decision,actor,note,decided_at) VALUES(?,?,?,?,?)", (key, "accepted", "editor@example.com", "旧决定", "2026-01-01"))
+        assert repository.list_items({"status": "legacy"})["total"] == 1
+        repository.decide(key, decision="reviewer_correct", actor="editor@example.com", note="同意")
+        assert repository.list_items({"status": "reviewer_correct"})["confirmed_count"] == 1
+        repository.decide(key, decision="writer_correct", actor="editor@example.com", note="复核后不认同")
         repository.decide(key, decision="ignored", actor="editor@example.com", note="特殊例外")
         detail = repository.detail(key)
-        assert detail["human_decision"] == "ignored"
-        assert [decision["decision"] for decision in detail["decisions"]] == ["accepted", "rejected", "ignored"]
-        assert repository.list_items({"status": "accepted"})["total"] == 0
+        assert detail["human_resolution"] == "ignored"
+        assert [decision["decision"] for decision in detail["decisions"]] == ["accepted", "reviewer_correct", "writer_correct", "ignored"]
+        assert detail["decisions"][0]["legacy"] == 1
+        assert repository.list_items({"status": "reviewer_correct"})["confirmed_count"] == 0
         assert repository.list_items({"status": "ignored"})["total"] == 1
 
 

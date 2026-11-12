@@ -143,13 +143,13 @@ class FactReviewEngine:
                 result["stages"]["external"] = {"result": {"status": "not_needed", "summary": "没有需要外部搜索的具体疑点", "findings": []}}
             if source_flagged or contradicted:
                 status = "flagged"
-            elif external_unverified or original.get("status") != "available":
+            elif external_unverified or original.get("status") != "available" or original.get("chain_status") in {"partial", "unknown"}:
                 status = "unverifiable"
             else:
                 status = "passed"
             summaries = [result["stages"]["comparison"]["result"].get("summary", "")]
             if unique:
                 summaries.append(result["stages"]["external"]["result"].get("summary", ""))
-            return {**result, "status": status, "summary": "；".join(x for x in summaries if x), "incomplete": external_unverified or original.get("status") != "available"}
+            return {**result, "status": status, "summary": "；".join(x for x in summaries if x), "incomplete": external_unverified or original.get("status") != "available" or original.get("chain_status") in {"partial", "unknown"}}
         except Exception as exc:
             return {**result, "status": "failed", "summary": "事实审查执行失败，未作通过判断", "error": str(exc)[:1000]}

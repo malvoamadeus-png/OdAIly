@@ -104,8 +104,30 @@ def fetch_original(url: str) -> str:
 
 def resolve_original(path, task: dict[str, Any], linked: dict[str, Any] | None) -> dict[str, str]:
     if linked and str(linked.get("content") or "").strip():
-        return {"status": "available", "text": str(linked["content"])[:50000],
-                "url": str(linked.get("source_url") or ""), "origin": "generation_material"}
+        text = str(linked["content"])
+        chain_status = "not_applicable"
+        if linked.get("source") == "x":
+            try:
+                metadata = json.loads(linked.get("metadata") or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            chain = metadata.get("context_chain")
+            chain_status = str(metadata.get("context_chain_status") or ("unknown" if chain else "complete"))
+            parts = [f"【引用/回复链采集状态】{chain_status}\n【本次播报（最新帖）】\n" +
+                f"作者：{metadata.get('author_username') or metadata.get('author_display_name') or '未知'}；"
+                f"时间：{metadata.get('created_at') or '未知'}；链接：{linked.get('source_url') or '未知'}\n" + text]
+            if isinstance(chain, list):
+                for item in chain:
+                    if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+                        continue
+                    parts.append("【引用/回复前序帖】\n" +
+                        f"关系：{item.get('relation') or '前序'}；作者：{item.get('author_username') or '未知'}；"
+                        f"时间：{item.get('created_at') or '未知'}；链接：{item.get('url') or item.get('id') or '未知'}\n" + str(item["text"]))
+            text = "\n\n".join(parts)
+        return {"status": "available", "text": text[:50000],
+                "url": str(linked.get("source_url") or ""), "origin": "generation_material", "chain_status": chain_status}
     url = str(task.get("source_locator") or "").strip()
     host = (urlparse(url).hostname or "").lower()
     if not url or host == "odaily.news" or host.endswith(".odaily.news"):

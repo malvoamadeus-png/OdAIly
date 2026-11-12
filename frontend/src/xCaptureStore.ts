@@ -1519,11 +1519,12 @@ export type AITextSelfUpgradeItem = {
   analysis_error: string | null;
   attempt_count: number;
   human_decision: 'pending' | 'accepted' | 'rejected' | 'ignored';
+  human_resolution: 'reviewer_correct' | 'writer_correct' | 'ignored' | null;
   decision_by: string | null;
   decision_note: string | null;
   decided_at: string | null;
   created_at: string;
-  decisions?: Array<{ decision: string; actor: string; note: string; decided_at: string }>;
+  decisions?: Array<{ decision: string; actor: string; note: string; decided_at: string; legacy: number }>;
 };
 
 export type AITextSelfUpgradePage = {
@@ -1531,7 +1532,7 @@ export type AITextSelfUpgradePage = {
   total: number;
   offset: number;
   limit: number;
-  accepted_count: number;
+  confirmed_count: number;
   latest_run: {
     run_key: string;
     status: string;
@@ -1556,7 +1557,7 @@ export async function getAITextSelfUpgradeItem(caseKey: string) {
 
 export async function decideAITextSelfUpgradeItem(
   caseKey: string,
-  decision: 'accepted' | 'rejected' | 'ignored',
+  decision: 'reviewer_correct' | 'writer_correct' | 'ignored',
   note: string,
 ) {
   const result = await consoleApiPost<{ item: AITextSelfUpgradeItem }>('/console/ai-text-self-upgrade', {

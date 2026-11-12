@@ -9,7 +9,8 @@ import pytest
 from packages.common.storage import connect_sqlite
 from packages.fact_auditor.ai import FactReviewAI
 from packages.fact_auditor.engine import FactReviewEngine
-from packages.fact_auditor.original import validate_public_url
+from packages.fact_auditor.original import resolve_original, validate_public_url
+from packages.fact_auditor.prompts import comparison_prompt
 from packages.fact_auditor.repository import FactReviewRepository
 from packages.fact_auditor.settings import FactAuditorSettings
 from packages.fact_auditor.worker import FactAuditorWorker
@@ -38,6 +39,27 @@ CONTENT = "Vlad 卖出90%股票"
 ORIGINAL = "Vlad sold 90% of Class A shares, retaining his Class B shares."
 QUESTION = {"claim": CONTENT, "question": "90%的分母及股票类别是什么？", "kind": "missing_scope",
             "source_evidence": "90%", "reason": "重大减持未明确分母，可能把某类股写成全部权益"}
+
+
+def test_linked_x_material_includes_ordered_context_and_prompt_boundaries():
+    linked = {"source": "x", "content": "No UI support on day one.", "source_url": "https://x.com/a/status/1",
+              "metadata": json.dumps({"context_chain_status": "complete", "context_chain": [
+                  {"relation": "quote", "author_username": "b", "created_at": "2026-11-01", "url": "https://x.com/b/status/2", "text": "Elysium launched."},
+                  {"relation": "reply", "author_username": "c", "url": "https://x.com/c/status/3", "text": "Earlier background."}]})}
+    original = resolve_original(None, {}, linked)
+    assert original["text"].index("No UI support") < original["text"].index("Elysium launched") < original["text"].index("Earlier background")
+    assert "https://x.com/b/status/2" in original["text"]
+    prompt = comparison_prompt("Elysium上线", "", original["text"])
+    assert "前序帖可以确认最新帖省略的同一事件主体" in prompt
+    assert "不能把旧状态或其他事件当成最新事实" in prompt
+    assert "原文建议怀疑遭入侵时迁移" in prompt
+
+
+def test_partial_context_does_not_produce_a_pass():
+    result = FactReviewEngine(FakeAI()).review(title="项目上线", content="项目上线",
+        original_loader=lambda: {"status": "available", "text": "No UI support.", "url": "", "chain_status": "partial"})
+    assert result["status"] == "unverifiable"
+    assert result["incomplete"] is True
 
 
 def review(ai, *, original=ORIGINAL, content=CONTENT):

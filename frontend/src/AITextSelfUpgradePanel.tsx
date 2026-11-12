@@ -11,7 +11,8 @@ import './aiTextSelfUpgrade.css';
 
 const PAGE_SIZE = 30;
 const DECISION_LABELS: Record<string, string> = {
-  pending: '待审', accepted: '已接受', rejected: '已驳回', ignored: '已忽略',
+  pending: '待审', accepted: '历史决定：接受AI判断', rejected: '历史决定：驳回AI判断', ignored: '已忽略',
+  reviewer_correct: '审核者正确', writer_correct: '编写者正确',
 };
 const VERDICT_LABELS: Record<string, string> = {
   writer1_error: '审核者意见成立，Writer1稿件有误',
@@ -61,7 +62,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
     }
   }
 
-  async function decide(decision: 'accepted' | 'rejected' | 'ignored') {
+  async function decide(decision: 'reviewer_correct' | 'writer_correct' | 'ignored') {
     if (!selected) return;
     setSaving(true);
     setError('');
@@ -83,12 +84,13 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
       <div className="aiTextUpgradeToolbar">
         <label><span>人工决定</span><select value={status} onChange={(event) => { setStatus(event.target.value); setOffset(0); }}>
           <option value="pending">待审</option>
-          <option value="accepted">已接受</option>
-          <option value="rejected">已驳回</option>
+          <option value="reviewer_correct">审核者正确</option>
+          <option value="writer_correct">编写者正确</option>
           <option value="ignored">已忽略</option>
+          <option value="legacy">历史决定</option>
           <option value="all">全部</option>
         </select></label>
-        <span>研究样本：{page?.accepted_count || 0} 条已接受</span>
+        <span>研究样本：{page?.confirmed_count || 0} 条人工确认</span>
         <span className="aiTextUpgradeRun">
           {latestRun
             ? `上次批次 ${formatDate(latestRun.started_at)} · 新增 ${latestRun.cases_found} · 完成 ${latestRun.cases_completed} · 待重试 ${latestRun.cases_failed} · 未关联 ${latestRun.cases_unlinked}`
@@ -108,7 +110,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
               key={item.case_key}
               onClick={() => void openItem(item)}
             >
-              <span className="aiTextUpgradeRowTitle"><strong>{item.audited_title || '无标题'}</strong><span className={`aiTextUpgradeStatus ${item.human_decision}`}>{DECISION_LABELS[item.human_decision]}</span></span>
+              <span className="aiTextUpgradeRowTitle"><strong>{item.audited_title || '无标题'}</strong><span className={`aiTextUpgradeStatus ${item.human_resolution || item.human_decision}`}>{decisionLabel(item)}</span></span>
               <span className="aiTextUpgradeRowMeta">
                 <span>{item.analysis_status === 'completed' ? VERDICT_LABELS[item.verdict || ''] || '已完成' : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
@@ -129,14 +131,14 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
         <aside className="aiTextUpgradeDetail">
           {!selected ? <div className="aiTextUpgradeEmpty">选择一条案例查看稿件和审核意见。</div> : <>
             <header className="aiTextUpgradeDetailHeader">
-              <div><span>{REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {DECISION_LABELS[selected.human_decision]}</span><h2>{selected.audited_title || '无标题'}</h2></div>
+              <div><span>{REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {decisionLabel(selected)}</span><h2>{selected.audited_title || '无标题'}</h2></div>
               <a href={auditedUrl} target="_blank" rel="noreferrer" title="打开已发布快讯"><ExternalLink size={16} /></a>
             </header>
             {selected.analysis_status === 'completed' ? (
               <section className="aiTextUpgradeVerdict">
                 <div><strong>{VERDICT_LABELS[selected.verdict || ''] || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'} · {selected.analysis_prompt_version || '未知Prompt版本'}</span></div>
                 <p>{selected.rationale}</p>
-                {selected.evidence.map((item, index) => <blockquote key={`${item.location}-${index}`}>
+                {uniqueEvidence(selected.evidence).map((item, index) => <blockquote key={`${item.location}-${index}`}>
                   <span>{EVIDENCE_LABELS[item.location] || item.location}</span>
                   <q>{item.quote}</q>
                   <p>{item.explanation}</p>
@@ -208,28 +210,43 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 <pre>{selected.source_content || '无写作素材正文'}</pre>
               </div>
             </details>
-            <TextBlock title="编写者1草稿" titleText={selected.draft_title} content={selected.draft_content} />
-            <TextBlock title="格式化稿件" titleText={selected.final_title} content={selected.final_content} />
-
             {selected.analysis_status === 'completed' && <>
               <div className="aiTextUpgradeDecisionMeaning">
-                接受将该 AI 判断计入研究样本；驳回和忽略均不计入。
+                人工确认审核者或编写者正确的案例计入研究样本。
               </div>
               <label className="aiTextUpgradeNote"><span>决定备注（可选）</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={2} maxLength={2000} /></label>
               <div className="aiTextUpgradeActions">
-                <button className="primaryButton" type="button" disabled={saving} onClick={() => void decide('accepted')}><Check size={16} /> 接受</button>
-                <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('rejected')}><X size={16} /> 驳回</button>
+                <button className="primaryButton" type="button" disabled={saving} onClick={() => void decide('reviewer_correct')}><Check size={16} /> 审核者正确</button>
+                <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('writer_correct')}><X size={16} /> 编写者正确</button>
                 <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('ignored')}><EyeOff size={16} /> 忽略</button>
               </div>
             </>}
             {selected.decisions?.length ? <section className="aiTextUpgradeHistory"><h3>决定历史</h3>{selected.decisions.map((decision, index) => <article key={`${decision.decided_at}-${index}`}>
-              <time>{formatDate(decision.decided_at)}</time><strong>{decision.actor} · {DECISION_LABELS[decision.decision] || decision.decision}</strong><p>{decision.note || '无备注'}</p>
+              <time>{formatDate(decision.decided_at)}</time><strong>{decision.actor} · {decision.legacy && decision.decision === 'ignored' ? '历史决定：忽略' : DECISION_LABELS[decision.decision] || decision.decision}</strong><p>{decision.note || '无备注'}</p>
             </article>)}</section> : null}
           </>}
         </aside>
       </div>
     </section>
   );
+}
+
+function decisionLabel(item: AITextSelfUpgradeItem): string {
+  if (item.human_resolution) return DECISION_LABELS[item.human_resolution];
+  if (item.human_decision === 'ignored') return '历史决定：忽略';
+  return DECISION_LABELS[item.human_decision];
+}
+
+function uniqueEvidence(evidence: AITextSelfUpgradeItem['evidence']) {
+  const seen = new Set<string>();
+  return evidence.filter((item) => {
+    if (item.location !== 'writer_draft' && item.location !== 'published_text') return true;
+    const quote = item.location === 'published_text' ? item.quote.replace(/[（(][A-Za-z][A-Za-z0-9 ._-]{0,40}[）)]\s*[。.]?\s*$/, '') : item.quote;
+    const key = quote.normalize('NFKC').replace(/\s+/g, '').replace(/[。.!！?？]+$/, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function TextBlock({ title, titleText, content }: { title: string; titleText: string | null; content: string | null }) {
