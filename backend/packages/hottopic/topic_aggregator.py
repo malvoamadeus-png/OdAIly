@@ -745,34 +745,88 @@ class TopicAggregator:
         if batch_size < 1:
             raise ValueError("prune batch size must be at least 1")
         cutoff = (dt(iso(at)) - timedelta(hours=retention_hours)).isoformat()
+
+        # Candidate discovery may scan old history, so do it before reserving
+        # SQLite's single writer slot.
+        topic_candidates = [
+            row["topic_id"]
+            for row in self.connection.execute(
+                "SELECT topic_id FROM topics WHERE retention_tier='transient' "
+                "AND matching_status='archived' "
+                "AND COALESCE(last_evidence_at, started_at) < ? LIMIT ?",
+                (cutoff, batch_size),
+            )
+        ]
+        content_candidates = [
+            row["content_item_id"]
+            for row in self.connection.execute(
+                "SELECT ci.content_item_id FROM content_items ci WHERE ci.created_at < ? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id "
+                "JOIN topics t ON t.topic_id=m.topic_id "
+                "WHERE cl.content_item_id=ci.content_item_id "
+                "AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM claims cl INDEXED BY idx_claim_item "
+                "CROSS JOIN topic_evidence te INDEXED BY idx_topic_evidence_claim CROSS JOIN topics t "
+                "WHERE cl.content_item_id=ci.content_item_id AND te.claim_id=cl.claim_id "
+                "AND t.topic_id=te.topic_id AND t.retention_tier='permanent') LIMIT ?",
+                (cutoff, batch_size),
+            )
+        ]
+        audit_candidates = [
+            row["decision_id"]
+            for row in self.connection.execute(
+                "SELECT decision_id FROM decision_audit WHERE created_at < ? AND (claim_id IS NULL OR NOT EXISTS ("
+                "SELECT 1 FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
+                "WHERE m.claim_id=decision_audit.claim_id AND m.superseded_by IS NULL "
+                "AND t.retention_tier='permanent')) LIMIT ?",
+                (cutoff, batch_size * 5),
+            )
+        ]
+        batch_candidates = [
+            row["batch_id"]
+            for row in self.connection.execute(
+                "SELECT batch_id FROM batches WHERE batch_time < ? LIMIT ?",
+                (cutoff, batch_size * 5),
+            )
+        ]
+
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            topic_ids = [
-                row["topic_id"]
-                for row in self.connection.execute(
-                    "SELECT topic_id FROM topics WHERE retention_tier='transient' "
-                    "AND matching_status='archived' "
-                    "AND COALESCE(last_evidence_at, started_at) < ? LIMIT ?",
-                    (cutoff, batch_size),
-                )
-            ]
-            content_ids = [
-                row["content_item_id"]
-                for row in self.connection.execute(
-                    "SELECT ci.content_item_id FROM content_items ci WHERE ci.created_at < ? "
-                    "AND NOT EXISTS ("
-                    "SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id "
-                    "JOIN topics t ON t.topic_id=m.topic_id "
-                    "WHERE cl.content_item_id=ci.content_item_id "
-                    "AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
-                    "AND NOT EXISTS ("
-                    "SELECT 1 FROM claims cl INDEXED BY idx_claim_item "
-                    "CROSS JOIN topic_evidence te INDEXED BY idx_topic_evidence_claim CROSS JOIN topics t "
-                    "WHERE cl.content_item_id=ci.content_item_id AND te.claim_id=cl.claim_id "
-                    "AND t.topic_id=te.topic_id AND t.retention_tier='permanent') LIMIT ?",
-                    (cutoff, batch_size),
-                )
-            ]
+            topic_ids = []
+            if topic_candidates:
+                topic_ids = [
+                    row["topic_id"]
+                    for row in self.connection.execute(
+                        "SELECT topic_id FROM topics WHERE topic_id IN "
+                        f"({','.join('?' for _ in topic_candidates)}) "
+                        "AND retention_tier='transient' AND matching_status='archived' "
+                        "AND COALESCE(last_evidence_at, started_at) < ?",
+                        [*topic_candidates, cutoff],
+                    )
+                ]
+            content_ids = []
+            if content_candidates:
+                content_marks = ",".join("?" for _ in content_candidates)
+                content_ids = [
+                    row["content_item_id"]
+                    for row in self.connection.execute(
+                        "SELECT ci.content_item_id FROM content_items ci "
+                        f"WHERE ci.content_item_id IN ({content_marks}) AND ci.created_at < ? "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id "
+                        "JOIN topics t ON t.topic_id=m.topic_id "
+                        "WHERE cl.content_item_id=ci.content_item_id "
+                        "AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM claims cl INDEXED BY idx_claim_item "
+                        "CROSS JOIN topic_evidence te INDEXED BY idx_topic_evidence_claim CROSS JOIN topics t "
+                        "WHERE cl.content_item_id=ci.content_item_id AND te.claim_id=cl.claim_id "
+                        "AND t.topic_id=te.topic_id AND t.retention_tier='permanent')",
+                        [*content_candidates, cutoff],
+                    )
+                ]
             claim_ids = [
                 row["claim_id"]
                 for row in self.connection.execute(
@@ -873,29 +927,36 @@ class TopicAggregator:
                     f"({','.join('?' for _ in content_ids)})",
                     content_ids,
                 )
-            old_audit_ids = [
-                row["decision_id"]
-                for row in self.connection.execute(
-                    "SELECT decision_id FROM decision_audit WHERE created_at < ? AND (claim_id IS NULL OR NOT EXISTS ("
-                    "SELECT 1 FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
-                    "WHERE m.claim_id=decision_audit.claim_id AND m.superseded_by IS NULL "
-                    "AND t.retention_tier='permanent')) LIMIT ?",
-                    (cutoff, batch_size * 5),
-                )
-            ]
+            old_audit_ids = []
+            if audit_candidates:
+                old_audit_ids = [
+                    row["decision_id"]
+                    for row in self.connection.execute(
+                        "SELECT decision_id FROM decision_audit WHERE decision_id IN "
+                        f"({','.join('?' for _ in audit_candidates)}) AND created_at < ? "
+                        "AND (claim_id IS NULL OR NOT EXISTS ("
+                        "SELECT 1 FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
+                        "WHERE m.claim_id=decision_audit.claim_id AND m.superseded_by IS NULL "
+                        "AND t.retention_tier='permanent'))",
+                        [*audit_candidates, cutoff],
+                    )
+                ]
             if old_audit_ids:
                 self.connection.execute(
                     "DELETE FROM decision_audit WHERE decision_id IN "
                     f"({','.join('?' for _ in old_audit_ids)})",
                     old_audit_ids,
                 )
-            old_batch_ids = [
-                row["batch_id"]
-                for row in self.connection.execute(
-                    "SELECT batch_id FROM batches WHERE batch_time < ? LIMIT ?",
-                    (cutoff, batch_size * 5),
-                )
-            ]
+            old_batch_ids = []
+            if batch_candidates:
+                old_batch_ids = [
+                    row["batch_id"]
+                    for row in self.connection.execute(
+                        "SELECT batch_id FROM batches WHERE batch_id IN "
+                        f"({','.join('?' for _ in batch_candidates)}) AND batch_time < ?",
+                        [*batch_candidates, cutoff],
+                    )
+                ]
             if old_batch_ids:
                 self.connection.execute(
                     "DELETE FROM batches WHERE batch_id IN "
@@ -903,10 +964,10 @@ class TopicAggregator:
                     old_batch_ids,
                 )
             has_more = (
-                len(topic_ids) == batch_size
-                or len(content_ids) == batch_size
-                or len(old_audit_ids) == batch_size * 5
-                or len(old_batch_ids) == batch_size * 5
+                len(topic_candidates) == batch_size
+                or len(content_candidates) == batch_size
+                or len(audit_candidates) == batch_size * 5
+                or len(batch_candidates) == batch_size * 5
             )
             self.connection.commit()
         except Exception:

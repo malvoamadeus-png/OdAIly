@@ -518,6 +518,8 @@ def scan_account(
         "kind": "rate_limited" if rate_limited else "fetch_failed",
         "error": str(last_error),
     }
+    if last_error and not rate_limited and _should_retry_request(last_error):
+        error["retryable"] = True
     if rate_limited:
         retry_after = retry_after_seconds(last_error)
         if retry_after > 0:

@@ -7,18 +7,20 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import heapq
 import json
 import os
 import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, Iterable
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
+from packages.common.storage import connect_sqlite_readonly
 from packages.x_agent import XAgentAnalyzer, is_relevant
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.investment_leads.schema import ensure_schema as ensure_investment_leads_schema
@@ -47,6 +49,7 @@ X_AGENT_ANALYSIS_BATCH_SIZE = 12
 X_AGENT_ANALYSIS_MAX_ATTEMPTS = 3
 X_AGENT_RETRY_DELAY = timedelta(minutes=15)
 X_AGENT_PROCESSING_LEASE = timedelta(minutes=5)
+COLLECT_RETRY_DELAY_SECONDS = 0.8
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hottopic_meta (
   singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'global'),
@@ -1096,37 +1099,73 @@ class HotTopicService:
         with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor:
             account_iter = iter(accounts)
             futures = {}
+            delayed_retries: list[tuple[float, int, AccountRow, int]] = []
+            retry_sequence = 0
+            max_in_flight = self.workers * 2
 
-            def submit_next() -> bool:
-                try:
-                    account = next(account_iter)
-                except StopIteration:
-                    return False
+            def submit(account: AccountRow, retry_count: int) -> None:
                 future = executor.submit(
                     scan_account,
                     account,
                     cutoff=cutoff,
                     timeline_count=100,
-                    retries=1,
+                    retries=0,
                     before_request=self.collect_request_pacer.wait,
                     include_investment_materials=True,
                 )
-                futures[future] = account
-                return True
+                futures[future] = (account, retry_count)
 
-            for _ in range(min(len(accounts), self.workers * 2)):
-                submit_next()
-            while futures:
-                future = next(as_completed(futures))
-                account = futures.pop(future)
-                now = iso(utc_now())
-                try:
-                    items, _latest, error = future.result()
-                except Exception as exc:
-                    items, error = [], {"kind": "exception", "error": str(exc)}
-                accepted += self._store_poll(account, items, error, now, database=db)
-                errors += int(error is not None)
-                submit_next()
+            def submit_new_accounts() -> None:
+                while len(futures) < max_in_flight:
+                    try:
+                        account = next(account_iter)
+                    except StopIteration:
+                        return
+                    submit(account, 0)
+
+            submit_new_accounts()
+            while futures or delayed_retries:
+                now_monotonic = time.monotonic()
+                while delayed_retries and delayed_retries[0][0] <= now_monotonic and len(futures) < max_in_flight:
+                    _ready_at, _sequence, account, retry_count = heapq.heappop(delayed_retries)
+                    submit(account, retry_count)
+                submit_new_accounts()
+
+                if not futures:
+                    if delayed_retries:
+                        time.sleep(max(0.0, delayed_retries[0][0] - time.monotonic()))
+                    continue
+
+                timeout = None
+                if delayed_retries and len(futures) < max_in_flight:
+                    timeout = max(0.0, delayed_retries[0][0] - time.monotonic())
+                completed, _pending = wait(futures, timeout=timeout, return_when=FIRST_COMPLETED)
+                if not completed:
+                    continue
+
+                for future in completed:
+                    account, retry_count = futures.pop(future)
+                    try:
+                        items, _latest, error = future.result()
+                    except Exception as exc:
+                        items, error = [], {"kind": "exception", "error": str(exc)}
+
+                    if error and error.get("retryable") and retry_count < 1:
+                        retry_sequence += 1
+                        heapq.heappush(
+                            delayed_retries,
+                            (
+                                time.monotonic() + COLLECT_RETRY_DELAY_SECONDS * (retry_count + 1),
+                                retry_sequence,
+                                account,
+                                retry_count + 1,
+                            ),
+                        )
+                        continue
+
+                    now = iso(utc_now())
+                    accepted += self._store_poll(account, items, error, now, database=db)
+                    errors += int(error is not None)
         return {"polled": len(accounts), "accepted": accepted, "errors": errors}
 
     def poll_once(self, *, collect_baseline_accounts: bool = True) -> dict[str, Any]:
@@ -2079,24 +2118,57 @@ class HotTopicService:
             current, retention_hours=TRANSIENT_RETENTION_HOURS, batch_size=100,
         )
         prune_pending = bool(state.pop("has_more"))
+        inbox_candidates: list[int] = []
+        event_candidates: list[int] = []
+        if maintenance_due or prune_pending:
+            reader = connect_sqlite_readonly(self.path, timeout_seconds=30.0)
+            try:
+                inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
+                event_cutoff = iso(current - timedelta(days=EVENT_RETENTION_DAYS))
+                inbox_candidates = [
+                    int(row["candidate_id"])
+                    for row in reader.execute(
+                        "SELECT i.rowid AS candidate_id FROM hottopic_inbox i WHERE i.processed_at IS NOT NULL "
+                        "AND i.collected_at<? AND NOT EXISTS (SELECT 1 FROM x_agent_analysis_jobs j "
+                        "WHERE j.tweet_id=i.tweet_id AND j.status IN ('pending','processing','failed')) LIMIT 500",
+                        (inbox_cutoff,),
+                    )
+                ]
+                event_candidates = [
+                    int(row["candidate_id"])
+                    for row in reader.execute(
+                        "SELECT id AS candidate_id FROM hottopic_events WHERE at<? LIMIT 500",
+                        (event_cutoff,),
+                    )
+                ]
+            finally:
+                reader.close()
         with self.lock:
             with self.db:
                 if maintenance_due or prune_pending:
                     inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
                     event_cutoff = iso(current - timedelta(days=EVENT_RETENTION_DAYS))
-                    inbox = self.db.execute(
-                        "DELETE FROM hottopic_inbox WHERE rowid IN ("
-                        "SELECT i.rowid FROM hottopic_inbox i WHERE i.processed_at IS NOT NULL "
-                        "AND i.collected_at<? AND NOT EXISTS (SELECT 1 FROM x_agent_analysis_jobs j "
-                        "WHERE j.tweet_id=i.tweet_id AND j.status IN ('pending','processing','failed')) LIMIT 500)",
-                        (inbox_cutoff,),
-                    ).rowcount
-                    events = self.db.execute(
-                        "DELETE FROM hottopic_events WHERE rowid IN ("
-                        "SELECT rowid FROM hottopic_events WHERE at<? LIMIT 500)",
-                        (event_cutoff,),
-                    ).rowcount
-                    prune_pending = prune_pending or inbox == 500 or events == 500
+                    if inbox_candidates:
+                        inbox = self.db.execute(
+                            "DELETE FROM hottopic_inbox WHERE rowid IN "
+                            f"({','.join('?' for _ in inbox_candidates)}) "
+                            "AND processed_at IS NOT NULL AND collected_at<? "
+                            "AND NOT EXISTS (SELECT 1 FROM x_agent_analysis_jobs j "
+                            "WHERE j.tweet_id=hottopic_inbox.tweet_id "
+                            "AND j.status IN ('pending','processing','failed'))",
+                            [*inbox_candidates, inbox_cutoff],
+                        ).rowcount
+                    if event_candidates:
+                        events = self.db.execute(
+                            "DELETE FROM hottopic_events WHERE rowid IN "
+                            f"({','.join('?' for _ in event_candidates)}) AND at<?",
+                            [*event_candidates, event_cutoff],
+                        ).rowcount
+                    prune_pending = (
+                        prune_pending
+                        or len(inbox_candidates) == 500
+                        or len(event_candidates) == 500
+                    )
                 if maintenance_due:
                     sentiment_snapshots = self._snapshot_x_agent_sentiment(current)
                     self.db.execute(

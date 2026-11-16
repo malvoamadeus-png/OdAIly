@@ -76,6 +76,43 @@ def test_due_account_poll_can_roll_through_bounded_batches(service: HotTopicServ
     assert len(service._due_accounts()) == 280
 
 
+def test_retry_delay_does_not_hold_a_collector_worker(service: HotTopicService, monkeypatch) -> None:
+    service.workers = 2
+    service.seed_accounts([{"screen_name": name} for name in ("alpha", "beta", "gamma")])
+    monkeypatch.setattr(service.collect_request_pacer, "wait", lambda: None)
+    monkeypatch.setattr("packages.hottopic.service.COLLECT_RETRY_DELAY_SECONDS", 0.05)
+    first_failure = threading.Event()
+    other_accounts_done = threading.Event()
+    attempts: dict[str, int] = {}
+    completed: set[str] = set()
+    completed_lock = threading.Lock()
+    retry_waited_for_others: list[bool] = []
+
+    def scan(account: AccountRow, **_kwargs):
+        attempts[account.screen_name] = attempts.get(account.screen_name, 0) + 1
+        if account.screen_name == "alpha" and attempts[account.screen_name] == 1:
+            first_failure.set()
+            return [], None, {"kind": "fetch_failed", "error": "HTTP 500", "retryable": True}
+        if account.screen_name == "alpha":
+            retry_waited_for_others.append(other_accounts_done.wait(timeout=2))
+            return [], None, None
+
+        assert first_failure.wait(timeout=2)
+        with completed_lock:
+            completed.add(account.screen_name)
+            if completed == {"beta", "gamma"}:
+                other_accounts_done.set()
+        return [], None, None
+
+    monkeypatch.setattr("packages.hottopic.service.scan_account", scan)
+
+    result = service.poll_due_accounts_once(limit=3)
+
+    assert result == {"polled": 3, "accepted": 0, "errors": 0}
+    assert attempts == {"alpha": 2, "beta": 1, "gamma": 1}
+    assert retry_waited_for_others == [True]
+
+
 def test_due_account_poll_can_use_a_separate_collector_connection(service: HotTopicService, monkeypatch) -> None:
     from packages.hottopic.service import open_worker_database
 

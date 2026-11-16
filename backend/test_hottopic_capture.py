@@ -62,6 +62,25 @@ def test_not_found_account_is_not_retried_immediately(monkeypatch) -> None:
 
     assert len(requests) == 1
     assert error is not None and error["kind"] == "fetch_failed"
+    assert not error.get("retryable")
+
+
+def test_server_error_is_marked_for_scheduler_retry(monkeypatch) -> None:
+    headers = Message()
+
+    def fail(*_args, **_kwargs):
+        raise HTTPError("https://api.fxtwitter.com/alice/statuses", 500, "Server Error", headers, BytesIO())
+
+    monkeypatch.setattr(capture, "fetch_json", fail)
+
+    _items, _latest, error = capture.scan_account(
+        AccountRow("alice", "", "", 0, 0, False, "https://x.com/alice"),
+        cutoff=datetime.now(UTC),
+        timeline_count=10,
+        retries=0,
+    )
+
+    assert error is not None and error["retryable"] is True
 
 
 def test_one_account_retry_wait_does_not_block_another(monkeypatch) -> None:
