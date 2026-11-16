@@ -25,11 +25,11 @@
 
 ## 阶段与 Prompt
 
-模型路由沿用 `X_AGENT_MODEL` 和 `X_AGENT_FALLBACK_MODEL`，默认 `gpt-6-luna`，文本请求使用 `reasoning_effort=none`。模型请求和 Web Search 均在 SQLite 写事务之外执行。Worker 一次处理扫描、推导、补充和身份搜索各一个批次/任务；扫描与推导按启用账号轮转，轮转游标保存在 `investment_lead_scheduler_cursor`。
+模型路由沿用 `X_AGENT_MODEL` 和 `X_AGENT_FALLBACK_MODEL`，默认 `gpt-6-luna`，文本请求使用 `reasoning_effort=none`。模型请求和 Web Search 均在 SQLite 写事务之外执行。Worker 每轮最多领取一个扫描批次、一个推导任务、一个补充任务和一个身份搜索任务。扫描与推导按任务创建时间全局排序，不按账号轮转；扫描批次可混合多个账号的帖子。身份搜索仍按账号轮转，轮转游标保存在 `investment_lead_scheduler_cursor`。
 
 ### 第一阶段：扫描
 
-Prompt 版本为 `investment_leads_scan_v4`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 10 个文本段和默认 24,000 序列化字符打包。批次未满时最多等待 60 秒。模型为每段给出分类、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选。模型响应中缺少材料判定时按普通失败重试，不会直接把单次漏项置为最终失败。
+Prompt 版本为 `investment_leads_scan_v4`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 10 个文本段和默认 24,000 序列化字符打包。扫描批次满额时立即提交，批次未满时最多等待 30 秒；队列有积压时，批次处理完立即继续领取下一批，不额外等待轮询间隔。模型为每段给出分类、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选。模型响应中缺少材料判定时按普通失败重试，不会直接把单次漏项置为最终失败。
 
 扫描要求企业、行业、市场或协议层面的实质变化，且能初步延伸到具体资产的盈利、供需、资金流、估值或风险溢价。个人订阅、个人额度或封号、查询功能暂不可用、例行审计、无商业传导的一般技术研究直接排除。重要性按相关资产的相对经济影响或重估意义判断，不设统一金额门槛。可组合材料仍保留于内部，不能把所有新闻都当作可组合材料。
 
@@ -138,13 +138,13 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 - `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：单次模型或 Web Search 超时，默认 `180` 秒，范围 `5–300`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS`：单次文本模型输出上限，默认 `5000`。
 - `X_AGENT_INVESTMENT_LEADS_BATCH_SIZE`：扫描批次材料数，默认 `10`，范围 `1–20`。
-- `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量批次等待上限，默认 `60` 秒，范围 `0–300`。
+- `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量扫描批次等待上限，默认 `30` 秒，范围 `0–300`；凑满批次或队列有积压时不等待。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：序列化请求字符预算，默认 `24000`，范围 `8000–300000`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 预算，默认 `30000000`；设为 `0` 会暂停全部文本分析。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS`：每日推导请求预算，默认 `2000`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS`：每日公网外链读取次数，默认 `100`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS`：每日身份 Web Search 请求数，默认 `50`。
-- `X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS`：Worker 轮询间隔，默认 `10` 秒，范围 `1–60`。
+- `X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS`：Worker 空闲时轮询间隔，默认 `10` 秒，范围 `1–60`；有任务完成时立即继续处理。
 
 ## 2026-11-02 投资线索重新起算
 

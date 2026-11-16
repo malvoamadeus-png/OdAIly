@@ -335,7 +335,7 @@ class InvestmentLeadService:
         if not reader_only:
             ensure_schema(self.db, capture_started_at=_iso())
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
-        self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 60, 0, 300)
+        self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
         self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 30_000_000, 0, 100_000_000)
         self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
         self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
@@ -436,53 +436,32 @@ class InvestmentLeadService:
             (material_id, content_hash),
         ).fetchone() is not None
 
-    def _next_fair_account(self, stage: str, now: str) -> str | None:
+    def _next_fair_identity_search_account(self, now: str) -> str | None:
         cursor = self.db.execute(
-            "SELECT account_lower FROM investment_lead_scheduler_cursor WHERE stage=?", (stage,)
+            "SELECT account_lower FROM investment_lead_scheduler_cursor WHERE stage='identity_search'"
         ).fetchone()
         last_account = str(cursor[0]) if cursor else ""
-        if stage == "identity_search":
-            row = self.db.execute(
-                "SELECT a.screen_name_lower FROM investment_lead_identity_searches s "
-                "JOIN investment_lead_sources ls ON ls.lead_id=s.lead_id "
-                "JOIN investment_lead_observations o ON o.material_id=ls.material_id AND o.content_hash=ls.content_hash "
-                "JOIN hottopic_accounts a ON a.screen_name_lower=o.screen_name_lower "
-                "WHERE s.status='pending' AND s.attempts<? AND (s.next_attempt_at IS NULL OR s.next_attempt_at<=?) "
-                "AND a.status='followed' AND a.investment_leads_enabled=1 GROUP BY a.screen_name_lower "
-                "ORDER BY CASE WHEN a.screen_name_lower>? THEN 0 ELSE 1 END,a.screen_name_lower LIMIT 1",
-                (MAX_ATTEMPTS, now, last_account),
-            ).fetchone()
-        else:
-            conditions = ""
-            params: list[Any] = [stage, MAX_ATTEMPTS, now]
-            if stage == "derive":
-                conditions = "AND EXISTS(SELECT 1 FROM investment_lead_events e WHERE e.material_id=t.material_id " \
-                    "AND e.content_hash=t.content_hash) "
-            params.append(last_account)
-            row = self.db.execute(
-                "SELECT a.screen_name_lower FROM investment_lead_tasks t "
-                "JOIN investment_lead_observations o ON o.material_id=t.material_id AND o.content_hash=t.content_hash "
-                "JOIN hottopic_accounts a ON a.screen_name_lower=o.screen_name_lower "
-                "WHERE t.stage=? AND t.status='pending' AND t.attempts<? "
-                "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=?) " + conditions +
-                "AND a.status='followed' AND a.investment_leads_enabled=1 GROUP BY a.screen_name_lower "
-                "ORDER BY CASE WHEN a.screen_name_lower>? THEN 0 ELSE 1 END,a.screen_name_lower LIMIT 1",
-                params,
-            ).fetchone()
+        row = self.db.execute(
+            "SELECT a.screen_name_lower FROM investment_lead_identity_searches s "
+            "JOIN investment_lead_sources ls ON ls.lead_id=s.lead_id "
+            "JOIN investment_lead_observations o ON o.material_id=ls.material_id AND o.content_hash=ls.content_hash "
+            "JOIN hottopic_accounts a ON a.screen_name_lower=o.screen_name_lower "
+            "WHERE s.status='pending' AND s.attempts<? AND (s.next_attempt_at IS NULL OR s.next_attempt_at<=?) "
+            "AND a.status='followed' AND a.investment_leads_enabled=1 GROUP BY a.screen_name_lower "
+            "ORDER BY CASE WHEN a.screen_name_lower>? THEN 0 ELSE 1 END,a.screen_name_lower LIMIT 1",
+            (MAX_ATTEMPTS, now, last_account),
+        ).fetchone()
         return str(row[0]) if row else None
 
-    def _advance_fair_cursor(self, stage: str, account_lower: str) -> None:
+    def _advance_identity_search_cursor(self, account_lower: str) -> None:
         self.db.execute(
-            "INSERT INTO investment_lead_scheduler_cursor(stage,account_lower) VALUES(?,?) "
+            "INSERT INTO investment_lead_scheduler_cursor(stage,account_lower) VALUES('identity_search',?) "
             "ON CONFLICT(stage) DO UPDATE SET account_lower=excluded.account_lower",
-            (stage, account_lower),
+            (account_lower,),
         )
 
     def _process_scan_batch(self, now: str) -> int:
         with self.db:
-            fair_account = self._next_fair_account("scan", now)
-            if fair_account is None:
-                return 0
             rows = self.db.execute(
                 "SELECT t.id,t.material_id,t.content_hash,t.attempts,m.payload_json,t.created_at "
                 "FROM investment_lead_tasks t JOIN investment_lead_materials m "
@@ -491,10 +470,10 @@ class InvestmentLeadService:
                 "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=?) "
                 "AND EXISTS(SELECT 1 FROM investment_lead_observations o JOIN hottopic_accounts a "
                 "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=t.material_id "
-                "AND o.content_hash=t.content_hash AND o.screen_name_lower=? "
+                "AND o.content_hash=t.content_hash "
                 "AND a.status='followed' AND a.investment_leads_enabled=1) "
                 "ORDER BY t.created_at,t.id LIMIT ?",
-                (MAX_ATTEMPTS, now, fair_account, self.batch_size),
+                (MAX_ATTEMPTS, now, self.batch_size),
             ).fetchall()
             if not rows:
                 return 0
@@ -502,7 +481,6 @@ class InvestmentLeadService:
                 oldest = datetime.fromisoformat(str(rows[0]["created_at"]))
                 if _now() - oldest < timedelta(seconds=self.flush_seconds):
                     return 0
-            self._advance_fair_cursor("scan", fair_account)
             jobs = [dict(row) for row in rows]
             for job in jobs:
                 if not self._eligible(job["material_id"], job["content_hash"]):
@@ -769,7 +747,7 @@ class InvestmentLeadService:
 
     def _process_one_identity_search(self, now: str) -> int:
         with self.db:
-            fair_account = self._next_fair_account("identity_search", now)
+            fair_account = self._next_fair_identity_search_account(now)
             if fair_account is None:
                 return 0
             row = self.db.execute(
@@ -805,7 +783,7 @@ class InvestmentLeadService:
                 "lease_until=?,updated_at=? WHERE id=? AND status='pending'",
                 (_iso(_now() + LEASE), now, job["id"]),
             )
-            self._advance_fair_cursor("identity_search", fair_account)
+            self._advance_identity_search_cursor(fair_account)
             job["attempts"] = int(job["attempts"]) + 1
         if self.analyzer is None:
             self._fail_identity_search(job, self.analyzer_error or "X Agent 模型路由不可用", now)
@@ -921,9 +899,6 @@ class InvestmentLeadService:
 
     def _process_one_derive(self, now: str) -> int:
         with self.db:
-            fair_account = self._next_fair_account("derive", now)
-            if fair_account is None:
-                return 0
             row = self.db.execute(
                 "SELECT t.id,t.material_id,t.content_hash,t.attempts,e.classification,e.subject,e.action,e.change_object,e.event_time,"
                 "e.impact_relations_json,e.summary,e.reason,m.payload_json,t.created_at "
@@ -936,10 +911,10 @@ class InvestmentLeadService:
                 "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=?) "
                 "AND EXISTS(SELECT 1 FROM investment_lead_observations o JOIN hottopic_accounts a "
                 "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=t.material_id "
-                "AND o.content_hash=t.content_hash AND o.screen_name_lower=? "
+                "AND o.content_hash=t.content_hash "
                 "AND a.status='followed' AND a.investment_leads_enabled=1) "
                 "ORDER BY t.created_at,t.id LIMIT 1",
-                (MAX_ATTEMPTS, now, fair_account),
+                (MAX_ATTEMPTS, now),
             ).fetchone()
             if row is None:
                 return 0
@@ -954,7 +929,6 @@ class InvestmentLeadService:
                 "WHERE id=? AND status='pending'",
                 (_iso(_now() + LEASE), now, job["id"]),
             )
-            self._advance_fair_cursor("derive", fair_account)
             job["attempts"] = int(job["attempts"]) + 1
         if self.analyzer is None:
             self._fail_batch([job], self.analyzer_error or "X Agent 模型路由不可用", now)
@@ -1524,6 +1498,7 @@ def run_worker(database_path: Path, *, once: bool = False) -> int:
                 result = service.process_once()
                 if result["scanned"] or result["derived"] or result["supplemented"] or result["identitySearched"]:
                     print(json.dumps(result, ensure_ascii=False))
+                    continue
             except Exception as exc:
                 print(f"[odaily] investment leads worker error: {type(exc).__name__}: {exc}")
             time.sleep(interval)
