@@ -14,6 +14,7 @@ Environment=X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS=30000000
 Environment=X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS=180
 Environment=X_AGENT_INVESTMENT_LEADS_BATCH_SIZE=10
 Environment=X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS=30
+Environment=X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY=10
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py x-agent-investment-leads-worker
 Restart=always
 RestartSec=10

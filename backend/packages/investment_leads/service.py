@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -336,6 +337,7 @@ class InvestmentLeadService:
             ensure_schema(self.db, capture_started_at=_iso())
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
+        self.derive_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY", 10, 1, 10)
         self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 30_000_000, 0, 100_000_000)
         self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
         self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
@@ -363,7 +365,7 @@ class InvestmentLeadService:
         self._reclaim_stale(now)
         self._resume_budget_paused(now)
         scan_count = self._process_scan_batch(now)
-        derive_count = self._process_one_derive(now)
+        derive_count = self._process_derive_batch(now)
         supplement_count = self._process_one_supplement(now)
         identity_search_count = self._process_one_identity_search(now)
         self._maintain(now)
@@ -897,9 +899,12 @@ class InvestmentLeadService:
                  message[:1200], now if exhausted else None, now, job["id"]),
             )
 
-    def _process_one_derive(self, now: str) -> int:
+    def _process_derive_batch(self, now: str) -> int:
+        claim_limit = self.derive_concurrency if self.analyzer is not None else 1
+        claimed: list[dict[str, Any]] = []
+        completed_without_model = 0
         with self.db:
-            row = self.db.execute(
+            rows = self.db.execute(
                 "SELECT t.id,t.material_id,t.content_hash,t.attempts,e.classification,e.subject,e.action,e.change_object,e.event_time,"
                 "e.impact_relations_json,e.summary,e.reason,m.payload_json,t.created_at "
                 "FROM investment_lead_tasks t JOIN investment_lead_events e "
@@ -913,77 +918,124 @@ class InvestmentLeadService:
                 "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=t.material_id "
                 "AND o.content_hash=t.content_hash "
                 "AND a.status='followed' AND a.investment_leads_enabled=1) "
-                "ORDER BY t.created_at,t.id LIMIT 1",
-                (MAX_ATTEMPTS, now),
-            ).fetchone()
-            if row is None:
+                "ORDER BY t.created_at,t.id LIMIT ?",
+                (MAX_ATTEMPTS, now, claim_limit),
+            ).fetchall()
+            if not rows:
                 return 0
-            job = dict(row)
-            if self._remaining_derive_calls() <= 0 or self._remaining_input_tokens() <= max(1, len(str(job["payload_json"]))):
-                self.db.execute(
-                    "UPDATE investment_lead_tasks SET status='budget_paused',updated_at=? WHERE id=?", (now, job["id"])
+            remaining_calls = self._remaining_derive_calls()
+            remaining_tokens = self._remaining_input_tokens()
+            for raw in rows:
+                job = dict(raw)
+                estimated_tokens = max(1, len(str(job["payload_json"])))
+                if remaining_calls <= 0 or estimated_tokens > remaining_tokens:
+                    self.db.execute(
+                        "UPDATE investment_lead_tasks SET status='budget_paused',updated_at=? "
+                        "WHERE id=? AND status='pending'",
+                        (now, job["id"]),
+                    )
+                    continue
+                cursor = self.db.execute(
+                    "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? "
+                    "WHERE id=? AND status='pending' AND attempts<?",
+                    (_iso(_now() + LEASE), now, job["id"], MAX_ATTEMPTS),
                 )
-                return 0
-            self.db.execute(
-                "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? "
-                "WHERE id=? AND status='pending'",
-                (_iso(_now() + LEASE), now, job["id"]),
-            )
-            job["attempts"] = int(job["attempts"]) + 1
+                if cursor.rowcount != 1:
+                    continue
+                job["attempts"] = int(job["attempts"]) + 1
+                remaining_calls -= 1
+                remaining_tokens -= estimated_tokens
+                claimed.append(job)
+
         if self.analyzer is None:
-            self._fail_batch([job], self.analyzer_error or "X Agent 模型路由不可用", now)
-            return 1
-        if not self._eligible(job["material_id"], job["content_hash"]):
-            self._mark_ignored(job["id"], now)
-            return 0
-        candidate_material = _decoded(job["payload_json"], {})
-        candidate = {
-            "material_id": job["material_id"], "content_hash": job["content_hash"],
-            "classification": job["classification"], "subject": job["subject"], "action": job["action"],
-            "change_object": job["change_object"], "event_time": job["event_time"],
-            "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
-            "reason": job["reason"], "material": candidate_material,
-        }
-        related_events = self._related_events(candidate, job["material_id"], job["content_hash"])
-        if candidate["classification"] == "composable" and not related_events:
-            self._set_job_status(job["id"], "no_candidate", now)
-            return 1
+            self._fail_batch(claimed, self.analyzer_error or "X Agent 模型路由不可用", now)
+            return completed_without_model + len(claimed)
+        if not claimed:
+            return completed_without_model
+
         existing_leads = self._recent_leads()
-        try:
-            output = self.analyzer.derive(candidate, related_events, existing_leads)
-            self._record_usage("derive", output, now)
+        model_jobs: list[dict[str, Any]] = []
+        for job in claimed:
             if not self._eligible(job["material_id"], job["content_hash"]):
                 self._mark_ignored(job["id"], now)
-                return 0
-            linked_materials: set[tuple[str, str]] = {(job["material_id"], job["content_hash"])}
-            for related in related_events:
-                linked_materials.add((str(related.get("material_id") or ""), str(related.get("content_hash") or "")))
-            with self.db:
-                self.db.execute("UPDATE investment_lead_tasks SET updated_at=updated_at WHERE id=?", (job["id"],))
+                continue
+            candidate = {
+                "material_id": job["material_id"], "content_hash": job["content_hash"],
+                "classification": job["classification"], "subject": job["subject"], "action": job["action"],
+                "change_object": job["change_object"], "event_time": job["event_time"],
+                "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
+                "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
+            }
+            related_events = self._related_events(candidate, job["material_id"], job["content_hash"])
+            if candidate["classification"] == "composable" and not related_events:
+                self._set_job_status(job["id"], "no_candidate", now)
+                completed_without_model += 1
+                continue
+            model_jobs.append({
+                **job, "candidate": candidate, "related_events": related_events,
+                "existing_leads": existing_leads,
+            })
+        if not model_jobs:
+            return completed_without_model
+
+        outputs: dict[int, ModelOutput | Exception] = {}
+        with ThreadPoolExecutor(max_workers=min(self.derive_concurrency, len(model_jobs)),
+                                thread_name_prefix="investment-derive") as executor:
+            futures = {
+                executor.submit(
+                    self.analyzer.derive, job["candidate"], job["related_events"], job["existing_leads"]
+                ): int(job["id"])
+                for job in model_jobs
+            }
+            for future in as_completed(futures):
+                try:
+                    outputs[futures[future]] = future.result()
+                except Exception as exc:
+                    outputs[futures[future]] = exc
+
+        processed = completed_without_model
+        for job in model_jobs:
+            result = outputs[int(job["id"])]
+            if isinstance(result, Exception):
+                self._fail_batch([job], f"{type(result).__name__}: {result}", now)
+                self.last_error = str(result)
+                processed += 1
+                continue
+            output = result
+            try:
+                self._record_usage("derive", output, now)
                 if not self._eligible(job["material_id"], job["content_hash"]):
+                    self._mark_ignored(job["id"], now)
+                    continue
+                linked_materials: set[tuple[str, str]] = {(job["material_id"], job["content_hash"])}
+                for related in job["related_events"]:
+                    linked_materials.add((str(related.get("material_id") or ""), str(related.get("content_hash") or "")))
+                with self.db:
+                    if not self._eligible(job["material_id"], job["content_hash"]):
+                        self.db.execute(
+                            "UPDATE investment_lead_tasks SET status='ignored',lease_until=NULL,completed_at=?,updated_at=? WHERE id=?",
+                            (now, now, job["id"]),
+                        )
+                        continue
+                    result_count = 0
+                    for lead in output.items:
+                        lead_sources = [pair for pair in linked_materials if pair[0] in lead["source_material_ids"]]
+                        if not lead_sources:
+                            lead_sources = [(job["material_id"], job["content_hash"])]
+                        lead_id = self._save_lead(lead, lead_sources, output, now)
+                        result_count += bool(lead_id)
+                    status = "succeeded" if result_count else "no_candidate"
                     self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='ignored',lease_until=NULL,completed_at=?,updated_at=? WHERE id=?",
-                        (now, now, job["id"]),
+                        "UPDATE investment_lead_tasks SET status=?,lease_until=NULL,next_attempt_at=NULL,actual_model=?,"
+                        "fallback_reason=?,input_tokens=?,output_tokens=?,last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
+                        (status, output.actual_model, output.fallback_reason, output.input_tokens, output.output_tokens, now, now, job["id"]),
                     )
-                    return 0
-                result_count = 0
-                for lead in output.items:
-                    lead_sources = [pair for pair in linked_materials if pair[0] in lead["source_material_ids"]]
-                    if not lead_sources:
-                        lead_sources = [(job["material_id"], job["content_hash"])]
-                    lead_id = self._save_lead(lead, lead_sources, output, now)
-                    result_count += bool(lead_id)
-                status = "succeeded" if result_count else "no_candidate"
-                self.db.execute(
-                    "UPDATE investment_lead_tasks SET status=?,lease_until=NULL,next_attempt_at=NULL,actual_model=?,"
-                    "fallback_reason=?,input_tokens=?,output_tokens=?,last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
-                    (status, output.actual_model, output.fallback_reason, output.input_tokens, output.output_tokens, now, now, job["id"]),
-                )
-            return 1
-        except Exception as exc:
-            self._fail_batch([job], f"{type(exc).__name__}: {exc}", now)
-            self.last_error = str(exc)
-            return 1
+                processed += 1
+            except Exception as exc:
+                self._fail_batch([job], f"{type(exc).__name__}: {exc}", now)
+                self.last_error = str(exc)
+                processed += 1
+        return processed
 
     def _related_events(self, candidate: dict[str, Any], material_id: str, content_hash: str) -> list[dict[str, Any]]:
         cutoff_7d = _iso(_now() - timedelta(days=7))
