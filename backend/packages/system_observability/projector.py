@@ -661,7 +661,7 @@ class MainTaskProjector:
             except sqlite3.Error as exc:
                 self.store.set_state(f'dependency_cleanup_{database_key}_error', f'{type(exc).__name__}: {exc}'[:300])
         cleanup_observation_errors(self.store, now_ms=now_ms)
-        from .business_retention import trim_search_details, trim_source_text, trim_candidate_details, trim_competitor_text, trim_attempt_details, trim_completed_attempt_events, reclaim_completed_attempt_evidence
+        from .business_retention import trim_search_details, trim_source_text, trim_candidate_details, trim_competitor_text, trim_attempt_details, trim_completed_attempt_events, reclaim_completed_attempt_evidence, queue_unreferenced_capture_evidence
         try:
             trimmed_search = trim_search_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('search_detail_retention_last_result', json.dumps(trimmed_search))
@@ -699,21 +699,49 @@ class MainTaskProjector:
         except sqlite3.Error as exc:
             self.store.set_state('competitor_text_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         if os.getenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
+            try:
+                self.store.set_state('capture_orphan_scan_last_result', json.dumps(queue_unreferenced_capture_evidence(self.store, now_ms=now_ms)))
+                self.store.set_state('capture_orphan_scan_error', '')
+            except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+                self.store.set_state('capture_orphan_scan_error', f'{type(exc).__name__}: {exc}'[:300])
             for key, cleanup in (('attempt_retention', trim_attempt_details),
-                                 ('attempt_event_retention', trim_completed_attempt_events),
-                                 ('attempt_evidence_reclaim', reclaim_completed_attempt_evidence)):
+                                 ('attempt_event_retention', trim_completed_attempt_events)):
                 try:
                     result = cleanup(self.source_database, self.store, now_ms=now_ms)
                     self.store.set_state(f'{key}_last_result', json.dumps(result))
                     self.store.set_state(f'{key}_error', '')
                 except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
                     self.store.set_state(f'{key}_error', f'{type(exc).__name__}: {exc}'[:300])
+            try:
+                self.store.set_state('small_evidence_gc_last_result', json.dumps(self.store.prune_unregistered_small_evidence()))
+                self.store.set_state('small_evidence_gc_error', '')
+            except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+                self.store.set_state('small_evidence_gc_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
-            removed = self.store.prune_task_status_events(source_database=self.source_database, now_ms=now_ms)
+            removed = {'scanned': 0, 'removed': 0}
+            for _ in range(4):
+                result = self.store.prune_task_status_events(source_database=self.source_database, now_ms=now_ms)
+                for key in removed:
+                    removed[key] += result.get(key, 0)
+                if not result.get('scanned'):
+                    break
             self.store.set_state('status_retention_last_result', json.dumps(removed))
             self.store.set_state('status_retention_error', '')
         except sqlite3.Error as exc:
             self.store.set_state('status_retention_error', f'{type(exc).__name__}: {exc}'[:300])
+        if os.getenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
+            try:
+                reclaimed = {'scanned': 0, 'removed': 0, 'bytes': 0}
+                for _ in range(4):
+                    result = reclaim_completed_attempt_evidence(self.source_database, self.store, now_ms=now_ms)
+                    for key in reclaimed:
+                        reclaimed[key] += result[key]
+                    if not result['scanned']:
+                        break
+                self.store.set_state('attempt_evidence_reclaim_last_result', json.dumps(reclaimed))
+                self.store.set_state('attempt_evidence_reclaim_error', '')
+            except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+                self.store.set_state('attempt_evidence_reclaim_error', f'{type(exc).__name__}: {exc}'[:300])
         self.store.set_state('dependency_cleanup_last_ms', now_ms)
 
     def _project_additional(self, now_ms: int, started_at_ms: int) -> tuple[int, int]:

@@ -1,10 +1,13 @@
 """Trim terminal task transport payloads only after their archive has been verified."""
 from __future__ import annotations
 
+import gzip
+import hashlib
 import sqlite3
 import json
 import re
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +92,7 @@ def trim_source_text(source: Path, store: Any, *, now_ms: int, limit: int = 100)
 
 def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
     """Retain duplicate identities while dropping old completed-task comparison details."""
-    cutoff = now_ms - 7 * 86_400_000
+    cutoff = now_ms - 86_400_000
     cursor = int(store.get_state('search_detail_retention_cursor', '0') or 0)
     keep = {'decision', 'is_duplicate', 'duplicate', 'duplicate_target_type', 'duplicate_target_id', 'target_type', 'target_id'}
     target_keep = {'target_type', 'target_id', 'title', 'target_title', 'source_url', 'candidate_id'}
@@ -133,7 +136,7 @@ def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 1
 
 
 def trim_candidate_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
-    cutoff = now_ms - 7 * 86_400_000
+    cutoff = now_ms - 86_400_000
     source_cutoff = now_ms - 30 * 86_400_000
     cursor = int(store.get_state('candidate_retention_cursor', '0') or 0)
     with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
@@ -195,7 +198,7 @@ def trim_competitor_text(source: Path, store: Any, *, now_ms: int, limit: int = 
 
 
 def trim_attempt_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
-    cutoff = now_ms - 7 * 86_400_000
+    cutoff = now_ms - 86_400_000
     cursor = int(store.get_state('attempt_retention_cursor', '0') or 0)
     watermark = int(store.get_state('main_attempt_events_watermark', '0') or 0)
     with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
@@ -235,6 +238,15 @@ def trim_attempt_details(source: Path, store: Any, *, now_ms: int, limit: int = 
                 continue
             if conn.execute('SELECT 1 FROM x_processing_attempt_events WHERE task_id=? AND attempt_id=? AND id>? LIMIT 1', (row['task_id'], row['id'], watermark)).fetchone():
                 continue
+            refs = {entry[0] for entry in conn.execute(
+                'SELECT response_ref FROM x_processing_attempts WHERE id=? AND response_ref IS NOT NULL '
+                'UNION SELECT response_ref FROM x_processing_attempt_events WHERE task_id=? AND attempt_id=? AND id<=? AND response_ref IS NOT NULL',
+                (row['id'], row['task_id'], row['id'], watermark),
+            ) if entry[0]}
+            if refs:
+                with store.connect() as obs:
+                    obs.execute('PRAGMA busy_timeout=2000')
+                    obs.executemany('INSERT OR IGNORE INTO system_information_expired_evidence_candidates(evidence_ref,eligible_at_ms) VALUES(?,?)', ((ref, now_ms) for ref in refs))
             cleared += conn.execute("UPDATE x_processing_attempts SET input_json='{}',rule_json='{}',response_gzip=NULL,response_ref=NULL,response_excerpt=NULL WHERE id=? AND (input_json<>'{}' OR rule_json<>'{}' OR response_gzip IS NOT NULL OR response_ref IS NOT NULL OR response_excerpt IS NOT NULL)", (row['id'],)).rowcount
             conn.execute('UPDATE x_processing_attempt_events SET response_gzip=NULL,response_ref=NULL,response_excerpt=NULL WHERE task_id=? AND attempt_id=? AND id<=?', (row['task_id'], row['id'], watermark))
         conn.commit()
@@ -255,7 +267,7 @@ def trim_completed_attempt_events(source: Path, store: Any, *, now_ms: int, limi
     if not any(row['event_type'] == 'stage_attempt' and str(row['event_id']).startswith('stage-attempt:')
                and row['source_table'] == 'tasks' and row['source_database'] == str(source)
                and row['item_status'] in TERMINAL_STATUSES and row['updated_at_ms'] is not None
-               and row['updated_at_ms'] < now_ms - 7 * 86_400_000
+               and row['updated_at_ms'] < now_ms - 86_400_000
                and (row['evidence_ref'] or '"input"' in row['details_json'] or '"rules"' in row['details_json']) for row in rows):
         store.set_state('attempt_event_retention_cursor', int(rows[-1]['rowid']))
         return {'scanned': len(rows), 'cleared': 0}
@@ -283,7 +295,7 @@ def trim_completed_attempt_events(source: Path, store: Any, *, now_ms: int, limi
                 if not event_id.isdigit() or int(event_id) > watermark:
                     continue
                 attempt = main.execute("SELECT a.id,a.task_id,a.status,t.status AS task_status,(julianday(t.updated_at)-2440587.5)*86400000 AS age_ms FROM x_processing_attempt_events e JOIN x_processing_attempts a ON a.id=e.attempt_id AND a.task_id=e.task_id JOIN tasks t ON t.id=a.task_id WHERE e.id=?", (int(event_id),)).fetchone()
-                if not attempt or str(attempt['task_id']) != str(event['source_row_id']) or attempt['status'] != 'succeeded' or attempt['task_status'] not in TERMINAL_STATUSES or attempt['age_ms'] is None or attempt['age_ms'] >= now_ms - 7 * 86_400_000:
+                if not attempt or str(attempt['task_id']) != str(event['source_row_id']) or attempt['status'] != 'succeeded' or attempt['task_status'] not in TERMINAL_STATUSES or attempt['age_ms'] is None or attempt['age_ms'] >= now_ms - 86_400_000:
                     continue
                 if _audit_protects(main, active, attempt['task_id']) or main.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (attempt['task_id'],)).fetchone():
                     continue
@@ -308,11 +320,58 @@ def trim_completed_attempt_events(source: Path, store: Any, *, now_ms: int, limi
     return {'scanned': len(rows), 'cleared': cleared}
 
 
-def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int, limit: int = 5) -> dict[str, int]:
+def queue_unreferenced_capture_evidence(store: Any, *, now_ms: int, limit: int = 200) -> dict[str, int]:
+    """Queue old, identifiable successful capture snapshots for the normal reference checks."""
+    from .error_policy import error_messages
+    from .store import timestamp_ms
+
+    cutoff = now_ms - 86_400_000
+    cursor = int(store.get_state('capture_orphan_scan_cursor', '0') or 0)
+    with store.connect() as conn:
+        rows = conn.execute('SELECT rowid,evidence_ref,path,byte_size,created_at_ms FROM system_information_evidence WHERE rowid>? ORDER BY rowid LIMIT ?',
+                            (cursor, max(1, min(limit, 500)))).fetchall()
+    eligible = []
+    for record in rows:
+        ref = str(record['evidence_ref'])
+        path = Path(record['path'])
+        if (not re.fullmatch(r'[0-9a-f]{64}', ref) or path != store.evidence_dir / ref[:2] / f'{ref}.json.gz'
+                or record['created_at_ms'] >= cutoff or record['byte_size'] > 256 * 1024):
+            continue
+        try:
+            with gzip.open(path, 'rb') as file:
+                raw = file.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024 or hashlib.sha256(raw).hexdigest() != ref:
+                continue
+            evidence = json.loads(raw)
+            row = evidence.get('row') if isinstance(evidence, dict) and evidence.get('recorded_scope') == 'source_table_snapshot' else None
+            if (not isinstance(row, dict) or not {'id', 'username_lower', 'status', 'source', 'started_at', 'finished_at', 'error', 'candidate_count'} <= row.keys()
+                    or not str(row['id']).isdigit() or not row['username_lower'] or row['source'] != 'fxtwitter'
+                    or row['status'] != 'success' or row['error'] or error_messages(evidence)
+                    or timestamp_ms(row['finished_at']) is None or timestamp_ms(row['finished_at']) >= cutoff):
+                continue
+        except (OSError, EOFError, ValueError, TypeError, zlib.error):
+            continue
+        eligible.append((ref, str(path)))
+    queued = 0
+    with store.connect() as conn:
+        conn.execute('PRAGMA busy_timeout=2000')
+        conn.execute('BEGIN IMMEDIATE')
+        for ref, path in eligible:
+            current = conn.execute('SELECT path,created_at_ms FROM system_information_evidence WHERE evidence_ref=?', (ref,)).fetchone()
+            if (not current or current['path'] != path or current['created_at_ms'] >= cutoff
+                    or conn.execute('SELECT 1 FROM system_information_items WHERE evidence_ref=? LIMIT 1', (ref,)).fetchone()
+                    or conn.execute('SELECT 1 FROM system_information_events WHERE evidence_ref=? LIMIT 1', (ref,)).fetchone()):
+                continue
+            queued += conn.execute('INSERT OR IGNORE INTO system_information_expired_evidence_candidates(evidence_ref,eligible_at_ms) VALUES(?,?)', (ref, now_ms)).rowcount
+        conn.execute("INSERT INTO system_information_state VALUES('capture_orphan_scan_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid'] if rows else 0), now_ms))
+    return {'scanned': len(rows), 'queued': queued}
+
+
+def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int, limit: int = 50) -> dict[str, int]:
     """Reclaim only references explicitly released by successful attempt retention."""
     cursor = int(store.get_state('attempt_evidence_reclaim_cursor', '0') or 0)
     with store.connect() as obs:
-        rows = obs.execute('SELECT rowid,evidence_ref FROM system_information_expired_evidence_candidates WHERE rowid>? ORDER BY rowid LIMIT ?', (cursor, max(1, min(limit, 10)))).fetchall()
+        rows = obs.execute('SELECT rowid,evidence_ref FROM system_information_expired_evidence_candidates WHERE rowid>? ORDER BY rowid LIMIT ?', (cursor, max(1, min(limit, 50)))).fetchall()
     if not rows:
         store.set_state('attempt_evidence_reclaim_cursor', 0)
         return {'scanned': 0, 'removed': 0, 'bytes': 0}
@@ -325,13 +384,20 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
         main.execute('BEGIN IMMEDIATE')
         deadline = time.monotonic() + 1.0
         main.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-        removed = total_bytes = 0
+        removed = total_bytes = processed = 0
+        last_processed = cursor
+        small_to_remove = []
+        files_to_remove = []
         with store.connect() as obs:
             obs.execute('PRAGMA busy_timeout=2000')
             obs.execute('BEGIN IMMEDIATE')
             obs.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             tables = {r[0] for r in obs.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             for row in rows:
+                if time.monotonic() >= deadline - 0.1:
+                    break
+                last_processed = int(row['rowid'])
+                processed += 1
                 ref = str(row['evidence_ref'])
                 if not re.fullmatch(r'[0-9a-f]{64}', ref):
                     continue
@@ -340,7 +406,8 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
                     obs.execute('DELETE FROM system_information_expired_evidence_candidates WHERE evidence_ref=?', (ref,))
                     continue
                 path = Path(current['path'])
-                if path != store.evidence_dir / ref[:2] / f'{ref}.json.gz' or current['created_at_ms'] >= now_ms - 7 * 86_400_000:
+                is_small = path == store.evidence_dir / '_sqlite' / ref
+                if (not is_small and path != store.evidence_dir / ref[:2] / f'{ref}.json.gz') or current['created_at_ms'] >= now_ms - 86_400_000:
                     continue
                 if any(main.execute(f'SELECT 1 FROM {table} WHERE response_ref=? LIMIT 1', (ref,)).fetchone()
                        for table in ('x_processing_attempts', 'x_processing_attempt_events')):
@@ -360,7 +427,10 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
                     allocated = stat.st_blocks * 512 if stat.st_nlink == 1 else 0
                 except FileNotFoundError:
                     allocated = 0
-                path.unlink(missing_ok=True)
+                if is_small:
+                    small_to_remove.append(ref)
+                else:
+                    files_to_remove.append(path)
                 obs.execute('DELETE FROM system_information_evidence WHERE evidence_ref=?', (ref,))
                 obs.execute('DELETE FROM system_information_expired_evidence_candidates WHERE evidence_ref=?', (ref,))
                 removed += 1
@@ -368,9 +438,13 @@ def reclaim_completed_attempt_evidence(source: Path, store: Any, *, now_ms: int,
             for key, amount in (('attempt_evidence_reclaim_total_files', removed), ('attempt_evidence_reclaim_total_allocated_bytes', total_bytes)):
                 if amount:
                     obs.execute("INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=CAST(system_information_state.state_value AS INTEGER)+CAST(excluded.state_value AS INTEGER),updated_at_ms=excluded.updated_at_ms", (key, str(amount), now_ms))
-            obs.execute("INSERT INTO system_information_state VALUES('attempt_evidence_reclaim_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid']), now_ms))
+            obs.execute("INSERT INTO system_information_state VALUES('attempt_evidence_reclaim_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(last_processed), now_ms))
         main.rollback()
-    return {'scanned': len(rows), 'removed': removed, 'bytes': total_bytes}
+    for ref in small_to_remove:
+        store._remove_small_if_unregistered(ref)
+    for path in files_to_remove:
+        store._unlink_if_unregistered(path)
+    return {'scanned': processed, 'removed': removed, 'bytes': total_bytes}
 
 
 def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain_days: int = 30,

@@ -495,6 +495,8 @@ CREATE TABLE IF NOT EXISTS decision_audit (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_batch ON decision_audit(batch_id);
+CREATE INDEX IF NOT EXISTS idx_audit_claim ON decision_audit(claim_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON decision_audit(created_at);
 CREATE TABLE IF NOT EXISTS topic_merges (
   merge_id TEXT PRIMARY KEY,
   source_topic_id TEXT NOT NULL REFERENCES topics(topic_id),
@@ -798,16 +800,7 @@ class TopicAggregator:
                     f"({','.join('?' for _ in topic_ids)})",
                     [*topic_ids, *topic_ids],
                 )
-                # SQLite limits expression-tree depth, so large historical
-                # cleanups cannot combine every Topic ID into one OR clause.
-                for start in range(0, len(topic_ids), 100):
-                    topic_like = [f'%{topic_id}%' for topic_id in topic_ids[start:start + 100]]
-                    self.connection.execute(
-                        "DELETE FROM decision_audit WHERE created_at < ? AND (" + " OR ".join(
-                            "topic_ids_json LIKE ?" for _ in topic_like
-                        ) + ")",
-                        [cutoff, *topic_like],
-                    )
+                # Audit rows are pruned below after checking permanent memberships.
                 self.connection.execute(
                     "DELETE FROM topic_merges WHERE source_topic_id IN "
                     f"({','.join('?' for _ in topic_ids)}) OR target_topic_id IN "

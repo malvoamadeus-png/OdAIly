@@ -129,7 +129,7 @@ X Article 与引用/回复前序链处理规则：
 - 出错、出新内容、行为变化时仍需要完整落库
 - 对纯空轮询则没有必要维持原来的高写频
 
-默认保留期为 `X_CAPTURE_ATTEMPT_RETENTION_DAYS=7` 天。针对空轮询采样检查的高频查询，生产库和 schema 中维护 `idx_x_capture_attempts_noop_recent` 局部索引，避免每次检查都扫描大量历史 attempt。
+普通成功采集轮次默认保留期为 `X_CAPTURE_ATTEMPT_RETENTION_DAYS=1` 天，每分钟最多删除 500 条；失败及带错误的记录不由该轮次清理删除。针对空轮询采样检查的高频查询，生产库和 schema 中维护 `idx_x_capture_attempts_noop_recent` 局部索引，避免每次检查都扫描大量历史 attempt。
 
 ## 心跳
 

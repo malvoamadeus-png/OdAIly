@@ -571,7 +571,7 @@ def test_successful_completed_attempt_raw_response_expires_after_seven_days(tmp_
     source = tmp_path / 'source.sqlite'
     now = datetime.now(UTC)
     old = (now - timedelta(days=8)).isoformat()
-    recent = (now - timedelta(days=4)).isoformat()
+    recent = (now - timedelta(hours=12)).isoformat()
     with sqlite3.connect(source) as conn:
         conn.executescript("""
             CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
@@ -664,7 +664,7 @@ def test_completed_attempt_events_drop_payloads_only_for_verified_success(tmp_pa
     source = tmp_path / 'source.sqlite'
     now = datetime.now(UTC)
     old = (now - timedelta(days=8)).isoformat()
-    recent = (now - timedelta(days=4)).isoformat()
+    recent = (now - timedelta(hours=12)).isoformat()
     with sqlite3.connect(source) as conn:
         conn.executescript("""
             CREATE TABLE tasks(id INTEGER PRIMARY KEY,status TEXT,updated_at TEXT);
@@ -851,7 +851,7 @@ def test_completed_evidence_maintenance_is_opt_in(tmp_path: Path, monkeypatch) -
     for name in ('trim_search_details', 'trim_source_text', 'trim_candidate_details', 'trim_competitor_text'):
         monkeypatch.setattr(business_retention, name, lambda *args, **kwargs: {})
     for name in ('trim_attempt_details', 'trim_completed_attempt_events', 'reclaim_completed_attempt_evidence'):
-        monkeypatch.setattr(business_retention, name, lambda *args, _name=name, **kwargs: calls.append(_name) or {})
+        monkeypatch.setattr(business_retention, name, lambda *args, _name=name, **kwargs: calls.append(_name) or {'scanned': 0, 'removed': 0, 'bytes': 0})
     monkeypatch.setattr(error_retention, 'cleanup_observation_errors', lambda *args, **kwargs: {})
     monkeypatch.setattr(store, 'trim_task_evidence', lambda **kwargs: {})
     monkeypatch.setattr(store, 'compact_search_index', lambda **kwargs: {})
@@ -906,21 +906,22 @@ def test_capture_evidence_retention_batches_resume_without_skipping(tmp_path: Pa
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp()*1000)
     old = now - 8 * 86_400_000
-    store.upsert_snapshot({'item_id':'capture','business_key':'x','source':'x_capture','source_id':'alice','source_name':'alice',
-                           'title':'采集','status':'success','result':'direct_publish','source_database':'source',
-                           'source_table':'x_capture_attempts','source_row_id':'1','updated_at_ms':old}, None)
     for n in range(7):
+        item_id = f'capture-item-{n}'
+        store.upsert_snapshot({'item_id':item_id,'business_key':'x','source':'x_capture','source_id':str(n+1),'source_name':'alice',
+                               'title':'采集','status':'success','result':'direct_publish','source_database':'source',
+                               'source_table':'x_capture_attempts','source_row_id':str(n+1),'updated_at_ms':old}, None)
         payload = {'recorded_scope':'source_table_snapshot','row':{'id':n+1,'username_lower':'alice','status':'success',
                    'started_at':'2024-01-01T00:00:00Z','finished_at':'2024-01-01T00:00:01Z','error':None}}
-        store.append_event(item_id='capture',event_id=f'capture-{n}',event_type='observed_change',stage='采集',
+        store.append_event(item_id=item_id,event_id=f'capture-{n}',event_type='observed_change',stage='采集',
                            status='success',result='direct_publish',happened_at_ms=old,summary='成功',evidence=payload)
-    first = store.prune_task_status_events(now_ms=now)
+    first = store.prune_task_status_events(now_ms=now, max_queued=5)
     with store.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM system_information_expired_evidence_candidates').fetchone()[0] == 5
-    second = store.prune_task_status_events(now_ms=now)
+    second = store.prune_task_status_events(now_ms=now, max_queued=5)
     with store.connect() as conn:
         assert conn.execute('SELECT COUNT(*) FROM system_information_expired_evidence_candidates').fetchone()[0] == 7
-    assert first['removed'] + second['removed'] == 8
+    assert first['removed'] + second['removed'] == 14
 
 
 def test_status_retention_preserves_completed_task_with_failed_attempt(tmp_path: Path) -> None:

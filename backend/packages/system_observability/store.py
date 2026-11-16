@@ -315,16 +315,42 @@ class SystemInformationStore:
             (now, evidence_ref),
         ).rowcount)
 
-    def _write_evidence_file(self, conn: sqlite3.Connection, evidence: Any) -> tuple[str, Path, int]:
+    @staticmethod
+    def _is_small_capture(safe: Any, size: int) -> bool:
+        if not isinstance(safe, dict) or size > 8192:
+            return False
+        scope = safe.get('recorded_scope')
+        row = safe.get('row') if scope == 'source_table_snapshot' else safe.get('payload')
+        capture = ((scope == 'source_table_snapshot' and isinstance(row, dict)
+                    and 'username_lower' in row and 'candidate_count' in row)
+                   or (scope == 'transactional_source_outbox'
+                       and safe.get('source_table') in {'x_capture_attempts', 'binance_square_attempts'}))
+        return bool(capture and isinstance(row, dict) and row.get('status') == 'success' and not row.get('error'))
+
+    def _write_evidence_file(self, conn: sqlite3.Connection, evidence: Any, *, prepared: set[str] | None = None) -> tuple[str, Path, int]:
         safe = _safe_json(evidence)
         payload = json.dumps(safe, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
         digest = hashlib.sha256(payload).hexdigest()
         directory = self.evidence_dir / digest[:2]
         path = directory / f"{digest}.json.gz"
+        if self._is_small_capture(safe, len(payload)):
+            path = self.evidence_dir / '_sqlite' / digest
         compressed = gzip.compress(payload, compresslevel=6, mtime=0)
         # Registration acquires the SQLite write lock before touching the file;
         # cleanup uses the same lock, so it cannot unlink a concurrently reused file.
         self._register_evidence(conn, digest, path, len(payload))
+        path = Path(conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (digest,)).fetchone()[0])
+        if path == self.evidence_dir / '_sqlite' / digest:
+            if prepared is not None and digest in prepared:
+                return digest, path, len(payload)
+            database = self.evidence_dir.parent / 'small_evidence.sqlite'
+            database.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with sqlite3.connect(database, timeout=5) as small:
+                small.execute('CREATE TABLE IF NOT EXISTS evidence(ref TEXT PRIMARY KEY, payload BLOB NOT NULL)')
+                small.execute('INSERT OR IGNORE INTO evidence(ref,payload) VALUES(?,?)', (digest, compressed))
+            database.chmod(0o600)
+            return digest, path, len(payload)
+        directory = path.parent
         if not path.exists():
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd, temp_name = tempfile.mkstemp(prefix=".evidence-", dir=directory)
@@ -356,6 +382,37 @@ class SystemInformationStore:
             path.unlink(missing_ok=True)
             return existed
 
+    def _remove_small_if_unregistered(self, ref: str) -> bool:
+        if not re.fullmatch(r'[0-9a-f]{64}', ref):
+            return False
+        database = self.evidence_dir.parent / 'small_evidence.sqlite'
+        if not database.exists():
+            return False
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute('SELECT 1 FROM system_information_evidence WHERE evidence_ref=?', (ref,)).fetchone():
+                return False
+            with sqlite3.connect(database, timeout=5) as small:
+                return bool(small.execute('DELETE FROM evidence WHERE ref=?', (ref,)).rowcount)
+
+    def prune_unregistered_small_evidence(self, *, limit: int = 200) -> dict[str, int]:
+        database = self.evidence_dir.parent / 'small_evidence.sqlite'
+        if not database.exists():
+            return {'scanned': 0, 'removed': 0}
+        with self.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='small_evidence_gc_cursor'").fetchone()
+            cursor = row[0] if row else ''
+            with sqlite3.connect(database, timeout=5) as small:
+                rows = small.execute('SELECT ref FROM evidence WHERE ref>? ORDER BY ref LIMIT ?', (cursor, max(1, min(limit, 1000)))).fetchall()
+                removed = 0
+                for (ref,) in rows:
+                    registered = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (ref,)).fetchone()
+                    if not registered or Path(registered[0]) != self.evidence_dir / '_sqlite' / ref:
+                        removed += small.execute('DELETE FROM evidence WHERE ref=?', (ref,)).rowcount
+            conn.execute("INSERT INTO system_information_state VALUES('small_evidence_gc_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (rows[-1][0] if rows else '', int(datetime.now(UTC).timestamp() * 1000)))
+        return {'scanned': len(rows), 'removed': removed}
+
     def load_evidence(self, evidence_ref: str | None) -> Any:
         if not evidence_ref:
             return None
@@ -368,8 +425,14 @@ class SystemInformationStore:
     @staticmethod
     def _read_evidence_file(path: str, evidence_ref: str) -> Any:
         try:
+            marker = Path(path)
+            if marker.parent.name == '_sqlite' and marker.name == evidence_ref:
+                database = marker.parent.parent.parent / 'small_evidence.sqlite'
+                with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=2) as conn:
+                    row = conn.execute('SELECT payload FROM evidence WHERE ref=?', (evidence_ref,)).fetchone()
+                return json.loads(gzip.decompress(row[0])) if row else {"unavailable": True, "evidence_ref": evidence_ref}
             return json.loads(gzip.decompress(Path(path).read_bytes()))
-        except (OSError, EOFError, json.JSONDecodeError):
+        except (OSError, EOFError, UnicodeError, json.JSONDecodeError, sqlite3.Error, zlib.error):
             return {"unavailable": True, "evidence_ref": evidence_ref}
 
     @staticmethod
@@ -851,10 +914,10 @@ class SystemInformationStore:
         with self.connect() as conn:
             return self._upsert_snapshot_in_connection(conn, snapshot, evidence, observed)
 
-    def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
+    def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000, max_queued: int = 50) -> dict[str, int]:
         """Remove old status observations in bounded batches, preserving attempt evidence."""
         now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-        cutoff = now - 7 * 86_400_000
+        cutoff = now - 86_400_000
         with ExitStack() as cleanup, self.connect() as conn:
             conn.execute('PRAGMA busy_timeout=2000')
             row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
@@ -887,9 +950,12 @@ class SystemInformationStore:
                         main.close()
                     main = None
             conn.execute('BEGIN IMMEDIATE')
+            batch_deadline = time.monotonic() + 0.9
             removed = queued = scanned = 0
             next_cursor = cursor
             for candidate in rows:
+                if time.monotonic() >= batch_deadline:
+                    break
                 scanned += 1
                 next_cursor = int(candidate['rowid'])
                 candidate_time = candidate['happened_at_ms'] or candidate['observed_at_ms']
@@ -934,29 +1000,44 @@ class SystemInformationStore:
                     if not identity or event['status'] not in {'success', 'succeeded'}:
                         continue
                     if event['evidence_ref']:
-                        evidence_row = conn.execute('SELECT path FROM system_information_evidence WHERE evidence_ref=?', (event['evidence_ref'],)).fetchone()
+                        evidence_row = conn.execute('SELECT path,byte_size FROM system_information_evidence WHERE evidence_ref=?', (event['evidence_ref'],)).fetchone()
                         evidence = None
-                        if evidence_row:
+                        if evidence_row and evidence_row['byte_size'] <= 256 * 1024:
                             try:
-                                with gzip.open(evidence_row['path'], 'rb') as file:
-                                    payload = file.read(256 * 1024 + 1)
-                                if len(payload) <= 256 * 1024:
-                                    evidence = json.loads(payload)
+                                evidence_path = Path(evidence_row['path'])
+                                if evidence_path == self.evidence_dir / '_sqlite' / event['evidence_ref']:
+                                    evidence = self._read_evidence_file(evidence_row['path'], event['evidence_ref'])
+                                else:
+                                    with gzip.open(evidence_path, 'rb') as file:
+                                        payload = file.read(256 * 1024 + 1)
+                                    if len(payload) <= 256 * 1024:
+                                        evidence = json.loads(payload)
                             except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError, zlib.error):
                                 pass
                         source_row = evidence.get('row') if isinstance(evidence, dict) and evidence.get('recorded_scope') == 'source_table_snapshot' else None
                         identity_key = 'username_lower' if item['source_table'] == 'x_capture_attempts' else 'slug_lower'
-                        if (not isinstance(source_row, dict) or not {'id', 'status', 'started_at', 'finished_at', 'error', identity_key} <= source_row.keys()
-                                or str(source_row[identity_key]).casefold() != identity.casefold()
-                                or source_row['status'] not in {'success', 'succeeded'} or source_row['error']
-                                or timestamp_ms(source_row['finished_at']) is None or timestamp_ms(source_row['finished_at']) >= cutoff
-                                or error_messages(evidence)):
+                        valid_snapshot = (isinstance(source_row, dict)
+                                          and {'id', 'status', 'started_at', 'finished_at', 'error', identity_key} <= source_row.keys()
+                                          and str(source_row['id']) == str(item['source_row_id'])
+                                          and str(source_row[identity_key]).casefold() == identity.casefold()
+                                          and source_row['status'] in {'success', 'succeeded'} and not source_row['error']
+                                          and timestamp_ms(source_row['finished_at']) is not None
+                                          and timestamp_ms(source_row['finished_at']) < cutoff)
+                        outbox = evidence.get('payload') if isinstance(evidence, dict) and evidence.get('recorded_scope') == 'transactional_source_outbox' else None
+                        valid_outbox = (isinstance(outbox, dict) and evidence.get('source_table') == item['source_table']
+                                        and str(evidence.get('source_row_id')) == str(item['source_row_id'])
+                                        and str(outbox.get('id')) == str(item['source_row_id'])
+                                        and outbox.get('status') in {'success', 'succeeded'} and not outbox.get('error')
+                                        and timestamp_ms(outbox.get('finished_at')) is not None
+                                        and timestamp_ms(outbox['finished_at']) < cutoff)
+                        if not (valid_snapshot or valid_outbox) or error_messages(evidence):
                             continue
                         if os.getenv('ODAILY_COMPLETED_EVIDENCE_RETENTION_ENABLED', '').lower() in {'1', 'true', 'yes', 'on'}:
                             conn.execute('INSERT OR IGNORE INTO system_information_expired_evidence_candidates(evidence_ref,eligible_at_ms) VALUES(?,?)', (event['evidence_ref'], now))
+                            conn.execute('UPDATE system_information_items SET evidence_ref=NULL WHERE item_id=? AND evidence_ref=?', (event['item_id'], event['evidence_ref']))
                             queued += 1
                 removed += conn.execute("DELETE FROM system_information_events WHERE rowid=?", (event['rowid'],)).rowcount
-                if queued >= 5:
+                if queued >= max(1, min(max_queued, 100)):
                     break
             if not rows:
                 next_cursor = 0
@@ -1002,7 +1083,7 @@ class SystemInformationStore:
                 if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}:
                     continue
                 stamp = row['updated_at_ms'] or row['created_at_ms']
-                if stamp is None or stamp >= now - 7 * 86_400_000 or not row['evidence_ref']:
+                if stamp is None or stamp >= now - 86_400_000 or not row['evidence_ref']:
                     continue
                 if conn.execute("SELECT 1 FROM system_information_items WHERE parent_item_id=? AND result IN ('processing','unknown','backoffice') LIMIT 1", (row['item_id'],)).fetchone():
                     continue
@@ -1018,7 +1099,7 @@ class SystemInformationStore:
                     original_task = source.execute("SELECT status,(julianday(updated_at)-2440587.5)*86400000 AS updated_ms FROM tasks WHERE id=?", (row['source_row_id'],)).fetchone()
                     audits = _active_audits(source, tables)
                     if (not original_task or original_task['status'] not in TERMINAL_STATUSES or original_task['updated_ms'] is None
-                            or original_task['updated_ms'] >= now - 7 * 86_400_000 or audits is None
+                            or original_task['updated_ms'] >= now - 86_400_000 or audits is None
                             or _audit_protects(source, audits, row['source_row_id'])):
                         continue
                     if 'x_processing_attempts' in tables and source.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (row['source_row_id'],)).fetchone():
@@ -1080,6 +1161,7 @@ class SystemInformationStore:
 
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,
+        *, prepared: set[str] | None = None,
     ) -> bool:
         operation_time = snapshot.get('updated_at_ms') or snapshot.get('created_at_ms')
         material = expire_external_errors({'snapshot': snapshot, 'evidence': evidence}, operation_time)
@@ -1101,7 +1183,7 @@ class SystemInformationStore:
             return False
         evidence_ref = None
         if evidence is not None:
-            evidence_ref, evidence_path, evidence_size = self._write_evidence_file(conn, evidence)
+            evidence_ref, evidence_path, evidence_size = self._write_evidence_file(conn, evidence, prepared=prepared)
         conn.execute(
             """INSERT INTO system_information_items(
                 item_id,business_key,source,source_id,task_id,title,summary,source_url,stage,status,result,
@@ -1250,7 +1332,23 @@ class SystemInformationStore:
         """Commit a source-event batch and its resume cursor as one destination transaction."""
         observed = int(datetime.now(UTC).timestamp() * 1000)
         changed = 0
+        small_payloads = {}
+        for entry in entries:
+            safe = _safe_json(entry.get('evidence'))
+            payload = json.dumps(safe, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
+            if self._is_small_capture(safe, len(payload)):
+                small_payloads[hashlib.sha256(payload).hexdigest()] = gzip.compress(payload, compresslevel=6, mtime=0)
         with self.connect() as conn:
+            prepared = set()
+            if small_payloads:
+                conn.execute('BEGIN IMMEDIATE')
+                database = self.evidence_dir.parent / 'small_evidence.sqlite'
+                database.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with sqlite3.connect(database, timeout=5) as small:
+                    small.execute('CREATE TABLE IF NOT EXISTS evidence(ref TEXT PRIMARY KEY, payload BLOB NOT NULL)')
+                    small.executemany('INSERT OR IGNORE INTO evidence(ref,payload) VALUES(?,?)', small_payloads.items())
+                database.chmod(0o600)
+                prepared = set(small_payloads)
             snapshots: dict[str, dict[str, Any]] = {}
             for entry in entries:
                 snapshot = entry["snapshot"]
@@ -1299,7 +1397,7 @@ class SystemInformationStore:
                         changed += int(cursor.rowcount > 0)
                         continue
                 changed += int(self._upsert_snapshot_in_connection(
-                    conn, snapshot, entry.get("evidence"), observed,
+                    conn, snapshot, entry.get("evidence"), observed, prepared=prepared,
                 ))
             for entry in entries:
                 snapshot = entry["snapshot"]
@@ -1416,7 +1514,7 @@ class SystemInformationStore:
                 evidence_path = row["evidence_path"]
                 if evidence_path:
                     try:
-                        evidence = json.loads(gzip.decompress(Path(evidence_path).read_bytes()))
+                        evidence = self._read_evidence_file(evidence_path, row['evidence_ref'])
                     except (OSError, EOFError, json.JSONDecodeError):
                         evidence = None
                 searchable = _searchable_text(

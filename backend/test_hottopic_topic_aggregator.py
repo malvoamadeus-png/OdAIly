@@ -220,6 +220,33 @@ def test_transient_pruning_preserves_permanent_topic_evidence(tmp_path: Path) ->
         aggregator.close()
 
 
+def test_transient_pruning_preserves_audit_for_permanent_membership(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / 'topics.sqlite')
+    old = datetime(2026, 9, 25, tzinfo=UTC)
+    stamp = old.isoformat()
+    try:
+        with aggregator.connection as conn:
+            conn.execute('INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                         ('content', 'tweet', 'alice', 'alice', 'original', 'text', 'text', stamp,
+                          'https://example.com', '{}', '{}', '{}', 'fingerprint'))
+            conn.execute('INSERT INTO claims VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                         ('claim', 'content', 'text', 'statement', '[]', '', '', '', 1.0, 1.0, stamp))
+            for topic_id, tier, status in [('permanent', 'permanent', 'active'), ('transient', 'transient', 'archived')]:
+                conn.execute("INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,seed_expires_at,last_evidence_at,matching_status,visibility,retention_tier) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                             (topic_id, topic_id, topic_id, '[]', 'event', stamp, stamp, stamp, stamp, status, 'hidden', tier))
+            conn.execute('INSERT INTO memberships VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                         ('membership', 'claim', 'permanent', None, 'primary', 'new_fact', 1.0, 'test', 'test', stamp, None))
+            conn.execute('INSERT INTO decision_audit VALUES(?,?,?,?,?,?,?,?,?,?)',
+                         ('audit', 'batch', 'content', 'claim', 'attach', '["transient","permanent"]', '[]', '', 'test', stamp))
+        aggregator.prune_transient_state(old + timedelta(days=4))
+        assert aggregator.connection.execute('SELECT topic_id FROM topics').fetchone()[0] == 'permanent'
+        assert aggregator.connection.execute('SELECT decision_id FROM decision_audit').fetchone()[0] == 'audit'
+        plan = aggregator.connection.execute("EXPLAIN QUERY PLAN DELETE FROM decision_audit WHERE claim_id IN ('claim')").fetchall()
+        assert any('idx_audit_claim' in str(tuple(row)) for row in plan)
+    finally:
+        aggregator.close()
+
+
 def test_model_brief_writer_uses_litellm_master_key_for_a_local_proxy(monkeypatch) -> None:
     monkeypatch.delenv("HOTTOPIC_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "upstream-key")

@@ -977,9 +977,9 @@ def test_source_outbox_coalesces_snapshots_and_keeps_each_timeline_event() -> No
         original_upsert = store._upsert_snapshot_in_connection
         upserted_items: list[str] = []
 
-        def counted_upsert(conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int) -> bool:
+        def counted_upsert(conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int, **kwargs: Any) -> bool:
             upserted_items.append(str(snapshot["item_id"]))
-            return original_upsert(conn, snapshot, evidence, observed)
+            return original_upsert(conn, snapshot, evidence, observed, **kwargs)
 
         store._upsert_snapshot_in_connection = counted_upsert  # type: ignore[method-assign]
         imported, changed = projector._project_source_outbox(

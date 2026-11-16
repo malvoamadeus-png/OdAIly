@@ -506,7 +506,12 @@ class SQLiteXCaptureRepository:
 
     def prune_attempts_before(self, cutoff: datetime) -> int:
         with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM x_capture_attempts WHERE started_at<?", (cutoff.isoformat(),))
+            stamp = cutoff.isoformat()
+            cursor = conn.execute(
+                "DELETE FROM x_capture_attempts WHERE id IN (SELECT id FROM x_capture_attempts "
+                "WHERE started_at<? AND finished_at<? AND status='success' AND (error IS NULL OR error='') "
+                "ORDER BY started_at LIMIT 500)", (stamp, stamp),
+            )
             return int(cursor.rowcount or 0)
 
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]:

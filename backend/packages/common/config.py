@@ -118,7 +118,7 @@ def load_telegram_discovery_settings() -> TelegramDiscoverySettings:
 
 
 class XCaptureWorkerSettings(BaseModel):
-    attempt_retention_days: int = Field(default=7, ge=1, le=3650)
+    attempt_retention_days: int = Field(default=1, ge=1, le=3650)
     processing_freshness_window_seconds: int = Field(
         default=DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS,
         ge=1,
@@ -129,7 +129,7 @@ class XCaptureWorkerSettings(BaseModel):
 def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
     load_dotenv()
     payload = {
-        "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 7,
+        "attempt_retention_days": os.getenv("X_CAPTURE_ATTEMPT_RETENTION_DAYS") or 1,
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         ),

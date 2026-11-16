@@ -123,6 +123,8 @@ class SQLiteXProcessingRepository:
             ):
                 if name not in event_columns:
                     conn.execute(f"ALTER TABLE x_processing_attempt_events ADD COLUMN {name} {definition}")
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_x_processing_attempts_response_ref ON x_processing_attempts(response_ref) WHERE response_ref IS NOT NULL')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_x_processing_attempt_events_response_ref ON x_processing_attempt_events(response_ref) WHERE response_ref IS NOT NULL')
             self._ensure_publisher_defaults(conn)
             conn.commit()
 
@@ -213,24 +215,49 @@ class SQLiteXProcessingRepository:
         lock_seconds: int = 300,
         task_id: int | None = None,
     ) -> TaskRecord | None:
-        now, locked_until = _now(), _now() + timedelta(seconds=lock_seconds)
+        spec = STAGE_SPECS[stage]
+        statuses = {spec.claim_status, spec.processing_status, spec.failure_status}
+        if stage in {"judge", "judge_crypto", "judge_ai"}:
+            statuses.add("searched")
+        if stage == "search":
+            statuses.add("pending")
+        sources = WRITE_STAGE_SOURCES if stage in {"write", "format_publish", "publish"} else PROCESSING_SOURCES
+        status_marks = ",".join("?" for _ in statuses)
+        source_marks = ",".join("?" for _ in sources)
         with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            rows = conn.execute(
-                "SELECT t.*, COALESCE(a.is_ai_source, 0) AS account_is_ai_source FROM tasks t LEFT JOIN x_capture_accounts a ON t.source='x' AND a.username_lower=lower(COALESCE(json_extract(t.metadata, '$.account_username'), json_extract(t.metadata, '$.author_username'), '')) WHERE (? IS NULL OR t.id = ?) AND (t.locked_until IS NULL OR t.locked_until < ?) ORDER BY t.created_at, t.id",
-                (task_id, task_id, _iso(now)),
-            ).fetchall()
-            selected = next((row for row in rows if self._eligible(stage, dict(row), bool(row["account_is_ai_source"]))), None)
-            if selected is None:
+            for _ in range(3):
+                now = _now()
+                rows = conn.execute(
+                    "SELECT t.*, COALESCE(a.is_ai_source, 0) AS account_is_ai_source FROM tasks t "
+                    "LEFT JOIN x_capture_accounts a ON t.source='x' AND a.username_lower=lower(COALESCE(json_extract(t.metadata, '$.account_username'), json_extract(t.metadata, '$.author_username'), '')) "
+                    f"WHERE t.status IN ({status_marks}) AND t.source IN ({source_marks}) "
+                    "AND (? IS NULL OR t.id = ?) AND (t.locked_until IS NULL OR t.locked_until < ?) ORDER BY t.created_at, t.id",
+                    (*statuses, *sources, task_id, task_id, _iso(now)),
+                ).fetchall()
+                selected = next((row for row in rows if self._eligible(stage, dict(row), bool(row["account_is_ai_source"]))), None)
+                if selected is None:
+                    return None
+                conn.execute("BEGIN IMMEDIATE")
+                now = _now()
+                current = conn.execute(
+                    "SELECT t.*, COALESCE(a.is_ai_source, 0) AS account_is_ai_source FROM tasks t "
+                    "LEFT JOIN x_capture_accounts a ON t.source='x' AND a.username_lower=lower(COALESCE(json_extract(t.metadata, '$.account_username'), json_extract(t.metadata, '$.author_username'), '')) "
+                    "WHERE t.id=? AND (t.locked_until IS NULL OR t.locked_until < ?)",
+                    (selected["id"], _iso(now)),
+                ).fetchone()
+                if current is None or not self._eligible(stage, dict(current), bool(current["account_is_ai_source"])):
+                    conn.rollback()
+                    continue
+                conn.execute(
+                    "UPDATE tasks SET status=?, locked_by=?, locked_until=?, attempt_count=attempt_count+1, updated_at=? WHERE id=?",
+                    (spec.processing_status, worker_id, _iso(now + timedelta(seconds=lock_seconds)), _iso(now), current["id"]),
+                )
+                conn.execute("INSERT OR IGNORE INTO x_task_pipeline(task_id) VALUES (?)", (current["id"],))
+                row = conn.execute("SELECT * FROM tasks WHERE id=?", (current["id"],)).fetchone()
                 conn.commit()
+                break
+            else:
                 return None
-            conn.execute(
-                "UPDATE tasks SET status=?, locked_by=?, locked_until=?, attempt_count=attempt_count+1, updated_at=? WHERE id=?",
-                (STAGE_SPECS[stage].processing_status, worker_id, _iso(locked_until), _iso(now), selected["id"]),
-            )
-            conn.execute("INSERT OR IGNORE INTO x_task_pipeline(task_id) VALUES (?)", (selected["id"],))
-            row = conn.execute("SELECT * FROM tasks WHERE id=?", (selected["id"],)).fetchone()
-            conn.commit()
         return _row_to_task(_record(row))
 
     def get_pipeline(self, task_id: int):
