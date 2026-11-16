@@ -35,7 +35,7 @@ from .yesterday_hot_discussion import YesterdayHotDiscussion
 
 
 POLL_INTERVAL_SECONDS = 600
-DEFAULT_COLLECT_MIN_REQUEST_INTERVAL_SECONDS = 0.25
+DEFAULT_COLLECT_MIN_REQUEST_INTERVAL_SECONDS = 0.15
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300.0
 MAX_RATE_LIMIT_ACCOUNT_BACKOFF_SECONDS = 6 * 60 * 60
 TRANSIENT_RETENTION_HOURS = 48
@@ -51,7 +51,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS hottopic_meta (
   singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'global'),
   deployment_started_at TEXT NOT NULL,
-  last_maintenance_at TEXT
+  last_maintenance_at TEXT,
+  retention_prune_pending INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS hottopic_accounts (
   screen_name TEXT PRIMARY KEY,
@@ -241,9 +242,7 @@ class CollectRequestPacer:
         self._next_request_at = 0.0
 
     def wait(self) -> None:
-        # Waiters do not reserve a future slot.  A 429 can therefore move the
-        # shared deadline while other poll threads are asleep, preventing the
-        # rest of the batch from continuing into an upstream cooldown.
+        # Smooth request starts without letting one account pause other polls.
         while True:
             with self._lock:
                 now = time.monotonic()
@@ -252,11 +251,6 @@ class CollectRequestPacer:
                     self._next_request_at = now + self.min_interval_seconds
                     return
             time.sleep(min(delay, 0.5))
-
-    def defer(self, seconds: float) -> None:
-        with self._lock:
-            self._next_request_at = max(self._next_request_at, time.monotonic() + max(0.0, seconds))
-
 
 def _serialized(method: Any) -> Any:
     """Serialize access to the long-lived SQLite connection in the console process."""
@@ -426,6 +420,12 @@ class HotTopicService:
         self.db.close()
 
     def _init_meta(self) -> None:
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(hottopic_meta)")}
+        if "retention_prune_pending" not in columns:
+            with self.db:
+                self.db.execute(
+                    "ALTER TABLE hottopic_meta ADD COLUMN retention_prune_pending INTEGER NOT NULL DEFAULT 0"
+                )
         with self.db:
             self.db.execute(
                 "INSERT OR IGNORE INTO hottopic_meta(singleton_key,deployment_started_at) VALUES('global',?)",
@@ -1037,16 +1037,18 @@ class HotTopicService:
                            statuses_count=0, protected=bool(row["protected"]), url=f"https://x.com/{row['screen_name']}") for row in rows]
 
     def _scan_event_account(self, account: AccountRow, cutoff: datetime) -> tuple[list[ContentItem], Any, dict[str, Any] | None]:
-        return scan_account(
+        items, latest, error = scan_account(
             account,
             cutoff=cutoff,
             timeline_count=100,
             retries=1,
             before_request=self.collect_request_pacer.wait,
-            on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
-                max(self.rate_limit_cooldown_seconds, retry_after)
-            ),
         )
+        if error and self._is_rate_limited(error):
+            error["retry_after_seconds"] = max(
+                self.rate_limit_cooldown_seconds, self._retry_after_seconds(error)
+            )
+        return items, latest, error
 
     def _fetch_event_account_identity(self, screen_name: str) -> dict[str, Any]:
         return fetch_account_identity_snapshot(
@@ -1054,9 +1056,6 @@ class HotTopicService:
             post_count=4,
             retries=1,
             before_request=self.collect_request_pacer.wait,
-            on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
-                max(self.rate_limit_cooldown_seconds, retry_after)
-            ),
         )
 
     def _advance_event_tracking(self, *, poll_accounts: bool) -> dict[str, Any]:
@@ -1106,9 +1105,6 @@ class HotTopicService:
                     timeline_count=100,
                     retries=1,
                     before_request=self.collect_request_pacer.wait,
-                    on_rate_limited=lambda retry_after: self.collect_request_pacer.defer(
-                        max(self.rate_limit_cooldown_seconds, retry_after)
-                    ),
                     include_investment_materials=True,
                 ): account
                 for account in accounts
@@ -1191,10 +1187,6 @@ class HotTopicService:
                             )
             failures = 0 if not error else int(current["consecutive_failures"] or 0) + 1
             delay_seconds = self._next_poll_delay_seconds(error, failures)
-            if error and self._is_rate_limited(error):
-                self.collect_request_pacer.defer(
-                    max(self.rate_limit_cooldown_seconds, self._retry_after_seconds(error))
-                )
             self.db.execute(
                 "UPDATE hottopic_accounts SET next_due_at=?,last_polled_at=?,last_success_at=?,last_error=?,"
                 "consecutive_failures=?,last_item_count=?,cumulative_content_count=cumulative_content_count+?,updated_at=? "
@@ -2014,35 +2006,66 @@ class HotTopicService:
 
     def _maintain(self, *, force: bool) -> dict[str, int] | None:
         with self.lock:
-            row = self.db.execute("SELECT last_maintenance_at FROM hottopic_meta WHERE singleton_key='global'").fetchone()
+            row = self.db.execute(
+                "SELECT last_maintenance_at,retention_prune_pending FROM hottopic_meta WHERE singleton_key='global'"
+            ).fetchone()
         current = utc_now()
-        if not force and row[0] and current - datetime.fromisoformat(row[0]) < MAINTENANCE_INTERVAL:
+        maintenance_due = force or not row["last_maintenance_at"] or (
+            current - datetime.fromisoformat(row["last_maintenance_at"]) >= MAINTENANCE_INTERVAL
+        )
+        prune_pending = bool(row["retention_prune_pending"])
+        if not maintenance_due and not prune_pending:
             return None
-        reconciled = self.aggregator.reconcile_recent_topics(current)
-        merge_scan = self.scan_visible_topic_merges(force=force)
-        tracking_reconciled = self.event_tracker.reconcile_topic_merges()
-        self.event_tracker.observe_topics()
-        self._refresh_hot_topic_counts()
-        state = self.aggregator.prune_transient_state(current, retention_hours=TRANSIENT_RETENTION_HOURS)
-        inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
-        event_cutoff = iso(current - timedelta(days=EVENT_RETENTION_DAYS))
+
+        reconciled: dict[str, Any] = {"topic_merges": [], "semantic_review": {"pending": 0}}
+        merge_scan: dict[str, Any] | None = None
+        tracking_reconciled = 0
+        inbox = events = sentiment_snapshots = 0
+        if maintenance_due:
+            reconciled = self.aggregator.reconcile_recent_topics(current)
+            merge_scan = self.scan_visible_topic_merges(force=force)
+            tracking_reconciled = self.event_tracker.reconcile_topic_merges()
+            self.event_tracker.observe_topics()
+            self._refresh_hot_topic_counts()
+
+        state = self.aggregator.prune_transient_state(
+            current, retention_hours=TRANSIENT_RETENTION_HOURS, batch_size=100,
+        )
+        prune_pending = bool(state.pop("has_more"))
         with self.lock:
             with self.db:
-                inbox = self.db.execute(
-                    "DELETE FROM hottopic_inbox WHERE processed_at IS NOT NULL AND collected_at<? AND NOT EXISTS ("
-                    "SELECT 1 FROM x_agent_analysis_jobs j WHERE j.tweet_id=hottopic_inbox.tweet_id "
-                    "AND j.status IN ('pending','processing','failed')"
-                    ")",
-                    (inbox_cutoff,),
-                ).rowcount
-                events = self.db.execute("DELETE FROM hottopic_events WHERE at<?", (event_cutoff,)).rowcount
-                sentiment_snapshots = self._snapshot_x_agent_sentiment(current)
-                self.db.execute("UPDATE hottopic_meta SET last_maintenance_at=? WHERE singleton_key='global'", (iso(current),))
+                if maintenance_due or prune_pending:
+                    inbox_cutoff = iso(current - timedelta(hours=TRANSIENT_RETENTION_HOURS))
+                    event_cutoff = iso(current - timedelta(days=EVENT_RETENTION_DAYS))
+                    inbox = self.db.execute(
+                        "DELETE FROM hottopic_inbox WHERE rowid IN ("
+                        "SELECT i.rowid FROM hottopic_inbox i WHERE i.processed_at IS NOT NULL "
+                        "AND i.collected_at<? AND NOT EXISTS (SELECT 1 FROM x_agent_analysis_jobs j "
+                        "WHERE j.tweet_id=i.tweet_id AND j.status IN ('pending','processing','failed')) LIMIT 500)",
+                        (inbox_cutoff,),
+                    ).rowcount
+                    events = self.db.execute(
+                        "DELETE FROM hottopic_events WHERE rowid IN ("
+                        "SELECT rowid FROM hottopic_events WHERE at<? LIMIT 500)",
+                        (event_cutoff,),
+                    ).rowcount
+                    prune_pending = prune_pending or inbox == 500 or events == 500
+                if maintenance_due:
+                    sentiment_snapshots = self._snapshot_x_agent_sentiment(current)
+                    self.db.execute(
+                        "UPDATE hottopic_meta SET last_maintenance_at=? WHERE singleton_key='global'",
+                        (iso(current),),
+                    )
+                self.db.execute(
+                    "UPDATE hottopic_meta SET retention_prune_pending=? WHERE singleton_key='global'",
+                    (int(prune_pending),),
+                )
         return {
             **state,
             "deleted_inbox": inbox,
             "deleted_events": events,
             "sentiment_snapshots": sentiment_snapshots,
+            "retention_prune_pending": int(prune_pending),
             "merged_topics": len(reconciled["topic_merges"]) + len((merge_scan or {}).get("merges", [])),
             "tracking_merges": tracking_reconciled,
             "semantic_review_pending": reconciled["semantic_review"].get("pending", 0),

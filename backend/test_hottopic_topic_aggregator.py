@@ -198,6 +198,35 @@ def test_transient_pruning_removes_topic_pair_reviews_before_topics(tmp_path: Pa
         aggregator.close()
 
 
+def test_transient_pruning_is_bounded_and_reports_remaining_work(tmp_path: Path) -> None:
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    old = datetime(2026, 9, 25, tzinfo=UTC).isoformat()
+    try:
+        with aggregator.connection:
+            for index in range(3):
+                aggregator.connection.execute(
+                    "INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (f"content:{index}", f"tweet:{index}", "alice", "alice", "original", "text", "text", old,
+                     f"https://example.com/{index}", "{}", "{}", "{}", f"fingerprint:{index}"),
+                )
+
+        first = aggregator.prune_transient_state(
+            datetime(2026, 10, 1, tzinfo=UTC), batch_size=2,
+        )
+        assert first["deleted_content_items"] == 2
+        assert first["has_more"] is True
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 1
+
+        second = aggregator.prune_transient_state(
+            datetime(2026, 10, 1, tzinfo=UTC), batch_size=2,
+        )
+        assert second["deleted_content_items"] == 1
+        assert second["has_more"] is False
+        assert aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 0
+    finally:
+        aggregator.close()
+
+
 def test_transient_pruning_preserves_permanent_topic_evidence(tmp_path: Path) -> None:
     aggregator = TopicAggregator(tmp_path / 'topics.sqlite')
     old = datetime(2026, 9, 25, tzinfo=UTC)

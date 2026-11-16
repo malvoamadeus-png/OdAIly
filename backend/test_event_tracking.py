@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from packages.hottopic.capture import ContentItem
+from packages.hottopic.capture import AccountRow, ContentItem
 from packages.hottopic.event_tracking import EventModelResult, EventTracker, OpenAIEventTrackingAI
 from packages.hottopic.service import open_worker_database
 from packages.hottopic.topic_aggregator import TopicAggregator
@@ -237,6 +237,33 @@ def _official_update(clock: Clock, tweet_id: str = "official-progress") -> Conte
         likes=0,
         views=0,
     )
+
+
+def test_event_account_rate_limit_uses_retry_after_without_shared_pause(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    now_text = clock().isoformat()
+    account = AccountRow("GIWAofficial", "GIWA", "", 0, 0, False, "https://x.com/GIWAofficial")
+    try:
+        connection.execute(
+            "INSERT INTO event_tracking_accounts(handle_lower,screen_name,official_entity,official_relation,status,next_due_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ("giwaofficial", "GIWAofficial", "GIWA", "official_project", "active", now_text, now_text, now_text),
+        )
+
+        tracker._store_event_poll(
+            account,
+            [],
+            {"kind": "rate_limited", "error": "HTTP Error 429", "retry_after_seconds": 300},
+        )
+
+        row = connection.execute(
+            "SELECT next_due_at,consecutive_failures FROM event_tracking_accounts WHERE handle_lower='giwaofficial'"
+        ).fetchone()
+        assert datetime.fromisoformat(row["next_due_at"]) == clock() + timedelta(minutes=5)
+        assert row["consecutive_failures"] == 1
+    finally:
+        tracker.close()
+        connection.close()
 
 
 def test_official_only_discovery_material_progress_outbox_and_silence_lifecycle(tmp_path: Path) -> None:

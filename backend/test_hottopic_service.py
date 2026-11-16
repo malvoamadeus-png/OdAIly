@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from packages.hottopic.capture import AccountRow, ContentItem
-from packages.hottopic.service import CollectRequestPacer, HotTopicService, open_worker_database
+from packages.hottopic.service import HotTopicService, open_worker_database
 
 
 def item(handle: str, tweet_id: str, created_at: datetime) -> ContentItem:
@@ -343,24 +343,51 @@ def test_retention_constants_are_applied(service: HotTopicService) -> None:
     assert service.db.execute("SELECT COUNT(*) FROM hottopic_events WHERE kind='old'").fetchone()[0] == 0
 
 
-def test_zero_interval_pacer_still_honors_a_shared_rate_limit(monkeypatch) -> None:
-    clock = [0.0]
-    sleeps: list[float] = []
+def test_retention_cleanup_resumes_in_later_poll_cycles(service: HotTopicService) -> None:
+    old = (datetime.now(UTC) - timedelta(days=4)).isoformat()
+    with service.aggregator.connection:
+        service.aggregator.connection.executemany(
+            "INSERT INTO content_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (f"content:{index}", f"tweet:{index}", "alice", "alice", "original", "text", "text", old,
+                 f"https://example.com/{index}", "{}", "{}", "{}", f"fingerprint:{index}")
+                for index in range(101)
+            ],
+        )
 
-    def monotonic() -> float:
-        return clock[0]
+    first = service.maintain(force=True)
+    assert first is not None
+    assert first["deleted_content_items"] == 100
+    assert first["retention_prune_pending"] == 1
 
-    def sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        clock[0] += seconds
+    second = service.maintain()
+    assert second is not None
+    assert second["deleted_content_items"] == 1
+    assert second["retention_prune_pending"] == 0
+    assert service.aggregator.connection.execute("SELECT COUNT(*) FROM content_items").fetchone()[0] == 0
 
-    monkeypatch.setattr("packages.hottopic.service.time.monotonic", monotonic)
-    monkeypatch.setattr("packages.hottopic.service.time.sleep", sleep)
-    pacer = CollectRequestPacer(0)
-    pacer.defer(1.2)
-    pacer.wait()
 
-    assert sum(sleeps) >= 1.2
+def test_rate_limit_backoff_only_changes_the_failing_account(service: HotTopicService, monkeypatch) -> None:
+    service.seed_accounts([{"screen_name": "alice"}, {"screen_name": "bob"}])
+    shared_cooldowns: list[float] = []
+    monkeypatch.setattr(service.collect_request_pacer, "defer", shared_cooldowns.append, raising=False)
+    before = service.db.execute(
+        "SELECT next_due_at FROM hottopic_accounts WHERE screen_name_lower='bob'"
+    ).fetchone()[0]
+    rate_limited = {
+        "kind": "rate_limited", "error": "HTTP Error 429", "retry_after_seconds": 900,
+    }
+
+    service._store_poll(
+        AccountRow("alice", "", "", 0, 0, False, "https://x.com/alice"),
+        [], rate_limited, datetime.now(UTC).isoformat(),
+    )
+
+    after = service.db.execute(
+        "SELECT next_due_at FROM hottopic_accounts WHERE screen_name_lower='bob'"
+    ).fetchone()[0]
+    assert after == before
+    assert shared_cooldowns == []
 
 
 def test_collection_failures_back_off_per_account(service: HotTopicService) -> None:

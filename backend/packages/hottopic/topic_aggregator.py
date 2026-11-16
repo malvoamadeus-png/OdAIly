@@ -731,7 +731,8 @@ class TopicAggregator:
         at: datetime | str,
         *,
         retention_hours: int = TRANSIENT_RETENTION_HOURS,
-    ) -> dict[str, int]:
+        batch_size: int = 100,
+    ) -> dict[str, Any]:
         """Discard expired non-hotspot material while preserving permanent evidence.
 
         A Topic becomes permanent as soon as it meets the active-topic
@@ -741,6 +742,8 @@ class TopicAggregator:
         """
         if retention_hours < 24:
             raise ValueError("transient retention must be at least 24 hours")
+        if batch_size < 1:
+            raise ValueError("prune batch size must be at least 1")
         cutoff = (dt(iso(at)) - timedelta(hours=retention_hours)).isoformat()
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -749,8 +752,8 @@ class TopicAggregator:
                 for row in self.connection.execute(
                     "SELECT topic_id FROM topics WHERE retention_tier='transient' "
                     "AND matching_status='archived' "
-                    "AND COALESCE(last_evidence_at, started_at) < ?",
-                    (cutoff,),
+                    "AND COALESCE(last_evidence_at, started_at) < ? LIMIT ?",
+                    (cutoff, batch_size),
                 )
             ]
             content_ids = [
@@ -766,8 +769,8 @@ class TopicAggregator:
                     "SELECT 1 FROM claims cl INDEXED BY idx_claim_item "
                     "CROSS JOIN topic_evidence te INDEXED BY idx_topic_evidence_claim CROSS JOIN topics t "
                     "WHERE cl.content_item_id=ci.content_item_id AND te.claim_id=cl.claim_id "
-                    "AND t.topic_id=te.topic_id AND t.retention_tier='permanent')",
-                    (cutoff,),
+                    "AND t.topic_id=te.topic_id AND t.retention_tier='permanent') LIMIT ?",
+                    (cutoff, batch_size),
                 )
             ]
             claim_ids = [
@@ -870,23 +873,52 @@ class TopicAggregator:
                     f"({','.join('?' for _ in content_ids)})",
                     content_ids,
                 )
-            self.connection.execute("DELETE FROM batches WHERE batch_time < ?", (cutoff,))
-            self.connection.execute(
-                "DELETE FROM decision_audit WHERE created_at < ? AND (claim_id IS NULL OR NOT EXISTS ("
-                "SELECT 1 FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
-                "WHERE m.claim_id=decision_audit.claim_id AND m.superseded_by IS NULL "
-                "AND t.retention_tier='permanent'))",
-                (cutoff,),
+            old_audit_ids = [
+                row["decision_id"]
+                for row in self.connection.execute(
+                    "SELECT decision_id FROM decision_audit WHERE created_at < ? AND (claim_id IS NULL OR NOT EXISTS ("
+                    "SELECT 1 FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
+                    "WHERE m.claim_id=decision_audit.claim_id AND m.superseded_by IS NULL "
+                    "AND t.retention_tier='permanent')) LIMIT ?",
+                    (cutoff, batch_size * 5),
+                )
+            ]
+            if old_audit_ids:
+                self.connection.execute(
+                    "DELETE FROM decision_audit WHERE decision_id IN "
+                    f"({','.join('?' for _ in old_audit_ids)})",
+                    old_audit_ids,
+                )
+            old_batch_ids = [
+                row["batch_id"]
+                for row in self.connection.execute(
+                    "SELECT batch_id FROM batches WHERE batch_time < ? LIMIT ?",
+                    (cutoff, batch_size * 5),
+                )
+            ]
+            if old_batch_ids:
+                self.connection.execute(
+                    "DELETE FROM batches WHERE batch_id IN "
+                    f"({','.join('?' for _ in old_batch_ids)})",
+                    old_batch_ids,
+                )
+            has_more = (
+                len(topic_ids) == batch_size
+                or len(content_ids) == batch_size
+                or len(old_audit_ids) == batch_size * 5
+                or len(old_batch_ids) == batch_size * 5
             )
             self.connection.commit()
         except Exception:
             self.connection.rollback()
             raise
-        self._reload_retrieval_cache()
+        if topic_ids or content_ids:
+            self._reload_retrieval_cache()
         return {
             "deleted_topics": len(topic_ids),
             "deleted_content_items": len(content_ids),
             "deleted_claims": len(claim_ids),
+            "has_more": has_more,
         }
 
     def __enter__(self) -> "TopicAggregator":

@@ -2657,6 +2657,9 @@ class EventTracker:
             delay = EVENT_TRACKING_POLL_INTERVAL if error is None else min(
                 timedelta(hours=6), EVENT_TRACKING_POLL_INTERVAL * (2 ** min(failures, 6))
             )
+            if error and str(error.get("kind") or "") == "rate_limited":
+                retry_after = max(0.0, float(error.get("retry_after_seconds") or 0.0))
+                delay = max(delay, timedelta(seconds=retry_after))
             self.db.execute(
                 """
                 UPDATE event_tracking_accounts

@@ -363,6 +363,12 @@ def latest_post_snapshot(account: AccountRow, results: list[dict[str, Any]]) -> 
     }
 
 
+def _should_retry_request(error: Exception) -> bool:
+    if not isinstance(error, urllib.error.HTTPError):
+        return True
+    return error.code in {408, 425} or error.code >= 500
+
+
 def fetch_account_identity_snapshot(
     screen_name: str,
     *,
@@ -370,7 +376,6 @@ def fetch_account_identity_snapshot(
     timeline_count: int = 20,
     retries: int = 1,
     before_request: Callable[[], None] | None = None,
-    on_rate_limited: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
     """Read a candidate's public profile fields and latest original posts."""
     normalized = screen_name.strip().lstrip("@")
@@ -388,10 +393,8 @@ def fetch_account_identity_snapshot(
         except Exception as exc:
             last_error = exc
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
-                if on_rate_limited is not None:
-                    on_rate_limited(retry_after_seconds(exc))
                 break
-            if attempt >= max(0, retries):
+            if attempt >= max(0, retries) or not _should_retry_request(exc):
                 break
             time.sleep(0.8 * (attempt + 1))
     if payload is None:
@@ -475,7 +478,6 @@ def scan_account(
     timeline_count: int,
     retries: int,
     before_request: Callable[[], None] | None = None,
-    on_rate_limited: Callable[[float], None] | None = None,
     include_investment_materials: bool = False,
 ) -> tuple[list[ContentItem], dict[str, Any] | None, dict[str, Any] | None]:
     if account.protected:
@@ -504,11 +506,9 @@ def scan_account(
         except Exception as exc:
             last_error = exc
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
-                # Do not spend the account retry budget inside an upstream
-                # cooldown. Let the worker pause every account immediately
-                # and reschedule this one with its persisted backoff instead.
-                if on_rate_limited is not None:
-                    on_rate_limited(retry_after_seconds(exc))
+                # The caller persists a backoff for this account only.
+                break
+            if not _should_retry_request(exc):
                 break
             if attempt < retries:
                 time.sleep(0.8 * (attempt + 1))

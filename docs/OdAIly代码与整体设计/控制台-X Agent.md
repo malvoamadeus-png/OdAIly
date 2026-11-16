@@ -55,7 +55,7 @@ AI 首次将热点判定为 `track` 并创建事件后，后端会向 Chrome 信
 
 ## 共享采集与分析
 
-`odaily-hottopic.service` 对一个账号只调用一次 X 抓取。新帖以 `tweet_id` 存入共享 inbox；热点话题使用既有消费位，市场情绪与按头操作各自创建唯一分析任务。投资线索从同一响应另存原帖、引用、纯转发及可用回复上下文，并保留目录账号与原作者关系；它使用独立材料版本、扫描事件、推导队列和线索修订，不依赖短期 inbox 保留期。纯转发和超出其他 HotTopic 消费窗口、但符合投资线索账号启用时间的材料只进入投资线索。所有 FXTwitter 请求仍由同一进程节流器统一排队，最小间隔为 0.25 秒；收到 429 时暂停共享节流器 5 分钟或遵从更长的 `Retry-After`，对应账号按指数退避。
+`odaily-hottopic.service` 对一个账号只调用一次 X 抓取。新帖以 `tweet_id` 存入共享 inbox；热点话题使用既有消费位，市场情绪与按头操作各自创建唯一分析任务。投资线索从同一响应另存原帖、引用、纯转发及可用回复上下文，并保留目录账号与原作者关系；它使用独立材料版本、扫描事件、推导队列和线索修订，不依赖短期 inbox 保留期。纯转发和超出其他 HotTopic 消费窗口、但符合投资线索账号启用时间的材料只进入投资线索。HotTopic worker 使用 64 个账号抓取 worker，并将请求启动间隔设为 0.15 秒，允许有限并发请求；429 的 `Retry-After` 和其他失败退避只作用于对应账号，不暂停共享请求队列。404 不做即时重试，服务端错误和网络异常在该账号 worker 内最多即时重试一次。SQLite 留存清理每个采集周期只处理一小批，剩余工作跨周期续跑。
 
 市场情绪先用确定性信号过滤，再以 `gpt-6-luna`、`reasoning_effort=none` 提取大盘、主流 CEX Crypto、美股、指数或 ETF 的标的和五级情绪；请求失败时按同一思考等级重试。五档情绪映射为 `-100 / -50 / 0 / +50 / +100`，同一标的按原帖的算术平均分汇总；主表按独立提及账号数降序，显示带零点的深绿至红色情绪条与数值。纯价格、新闻转发、链上新币和无明确情绪内容不生成结果；引用帖只取被跟踪账号自己的正文，不把被引用账号的观点归给它。模型失败、超时或非法 JSON 保留在任务错误中。
 
@@ -79,8 +79,8 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 - `X_AGENT_OPENAI_API_KEY`：可选的专用凭据；本机 LiteLLM 路由优先使用 `LITELLM_MASTER_KEY`，然后使用 `ODAILY_LLM_API_KEY` 或 `OPENAI_API_KEY`。
 - `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：默认均为 `gpt-6-luna`，失败时按原思考等级重试。
 - `X_AGENT_ANALYSIS_WORKERS`：单个 worker 的分析并发，默认 `2`。
-- `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小间隔，默认 `0.25` 秒；生产 unit 显式设为 `0.25` 秒。
-- `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后暂停共享请求节流器的最短秒数，默认 `300`。
+- `HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS`：同一 worker 中 FXTwitter 请求的最小启动间隔，默认 `0.15` 秒；生产 unit 显式设为 `0.15` 秒，网络请求可在途并行。
+- `HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS`：收到 FXTwitter 429 后，对受影响账号应用的最短退避秒数，默认 `300`；不会暂停其他账号请求。
 - `EDITOR_PLUGIN_CONSOLE_URL`：控制台网页地址，例如 `https://od-a-ily.vercel.app/#tasks`；用于生成热点自动快讯提醒卡片的“进入后台”链接。生成链接时会清除旧 Hash 路由，并附带 X Agent 模块和事件 ID。
 - `HOTTOPIC_CLAIM_REVIEW_OPENAI_BASE_URL` / `HOTTOPIC_CLAIM_REVIEW_OPENAI_API_KEY`：语义复核的可选专用兼容 API 与凭据；为空时沿用 `ODAILY_LLM_BASE_URL` 和本机 LiteLLM 凭据。
 - `HOTTOPIC_CLAIM_REVIEW_MODEL` / `HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL`：claim 复核模型与重试模型，默认均为 `gpt-6-luna`。
