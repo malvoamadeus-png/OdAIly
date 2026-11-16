@@ -58,6 +58,14 @@ def test_seed_defaults_every_account_to_hot_topic_enabled(service: HotTopicServi
     assert accounts["teamtrump"]["hot_topic_enabled"] == 1
 
 
+def test_due_account_queue_is_not_limited_by_worker_count(service: HotTopicService) -> None:
+    service.seed_accounts([{"screen_name": f"account{index}"} for index in range(300)])
+
+    due = service._due_accounts()
+
+    assert len(due) == 300
+
+
 def test_hot_topic_read_models_expose_lifecycle_times(service: HotTopicService) -> None:
     first_generated = "2026-09-29T01:00:00+00:00"
     last_updated = "2026-09-29T03:00:00+00:00"

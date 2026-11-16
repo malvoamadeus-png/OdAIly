@@ -1030,8 +1030,8 @@ class HotTopicService:
             "WHERE status='followed' AND (hot_topic_enabled=1 OR market_sentiment_enabled=1 OR "
             "project_promotion_enabled=1 OR investment_leads_enabled=1) "
             "AND (next_due_at IS NULL OR next_due_at<=?) "
-            "ORDER BY COALESCE(next_due_at,''),screen_name_lower LIMIT ?",
-            (iso(utc_now()), self.workers * 2),
+            "ORDER BY COALESCE(next_due_at,''),screen_name_lower",
+            (iso(utc_now()),),
         ).fetchall()
         return [AccountRow(screen_name=row["screen_name"], name=row["display_name"], description="", followers_count=0,
                            statuses_count=0, protected=bool(row["protected"]), url=f"https://x.com/{row['screen_name']}") for row in rows]
@@ -1110,7 +1110,7 @@ class HotTopicService:
                 for account in accounts
             }
             for future in as_completed(futures):
-                account = futures[future]
+                account = futures.pop(future)
                 now = iso(utc_now())
                 try:
                     items, _latest, error = future.result()
