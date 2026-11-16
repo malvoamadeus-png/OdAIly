@@ -15,7 +15,7 @@ Environment=HOTTOPIC_CLAIM_REVIEW_MODEL=gpt-6-luna
 Environment=HOTTOPIC_CLAIM_REVIEW_FALLBACK_MODEL=gpt-6-luna
 Environment=HOTTOPIC_CLAIM_REVIEW_REASONING_EFFORT=high
 Environment=HOTTOPIC_MIN_REQUEST_INTERVAL_SECONDS=0.25
-ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py hottopic-worker --seed --workers 8
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py hottopic-worker --seed --workers 64
 Restart=always
 RestartSec=10
 
