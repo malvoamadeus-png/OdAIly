@@ -66,6 +66,16 @@ def test_due_account_queue_is_not_limited_by_worker_count(service: HotTopicServi
     assert len(due) == 300
 
 
+def test_due_account_poll_can_roll_through_bounded_batches(service: HotTopicService, monkeypatch) -> None:
+    service.seed_accounts([{"screen_name": f"account{index}"} for index in range(300)])
+    monkeypatch.setattr("packages.hottopic.service.scan_account", lambda account, **kwargs: ([], None, None))
+
+    result = service.poll_due_accounts_once(limit=20)
+
+    assert result == {"polled": 20, "accepted": 0, "errors": 0}
+    assert len(service._due_accounts()) == 280
+
+
 def test_due_account_poll_can_use_a_separate_collector_connection(service: HotTopicService, monkeypatch) -> None:
     from packages.hottopic.service import open_worker_database
 

@@ -1026,16 +1026,25 @@ class HotTopicService:
             raise
 
     @_serialized
-    def _due_accounts(self, database: sqlite3.Connection | None = None) -> list[AccountRow]:
+    def _due_accounts(
+        self,
+        database: sqlite3.Connection | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[AccountRow]:
         db = database if database is not None else self.db
-        rows = db.execute(
+        query = (
             "SELECT screen_name,display_name,protected FROM hottopic_accounts "
             "WHERE status='followed' AND (hot_topic_enabled=1 OR market_sentiment_enabled=1 OR "
             "project_promotion_enabled=1 OR investment_leads_enabled=1) "
             "AND (next_due_at IS NULL OR next_due_at<=?) "
-            "ORDER BY COALESCE(next_due_at,''),screen_name_lower",
-            (iso(utc_now()),),
-        ).fetchall()
+            "ORDER BY COALESCE(next_due_at,''),screen_name_lower"
+        )
+        parameters: tuple[Any, ...] = (iso(utc_now()),)
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters += (max(1, limit),)
+        rows = db.execute(query, parameters).fetchall()
         return [AccountRow(screen_name=row["screen_name"], name=row["display_name"], description="", followers_count=0,
                            statuses_count=0, protected=bool(row["protected"]), url=f"https://x.com/{row['screen_name']}") for row in rows]
 
@@ -1071,9 +1080,14 @@ class HotTopicService:
         lifecycle = self.event_tracker.maintain()
         return {"discovery": discovery, "polling": polling, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
 
-    def poll_due_accounts_once(self, database: sqlite3.Connection | None = None) -> dict[str, int]:
+    def poll_due_accounts_once(
+        self,
+        database: sqlite3.Connection | None = None,
+        *,
+        limit: int | None = None,
+    ) -> dict[str, int]:
         db = database if database is not None else self.db
-        accounts = self._due_accounts(db)
+        accounts = self._due_accounts(db, limit=limit)
         if not accounts:
             return {"polled": 0, "accepted": 0, "errors": 0}
 
@@ -2214,7 +2228,7 @@ def run_worker(*, database_path: Path | None = None, seed_path: Path | None = No
             try:
                 while not stop_collector.is_set():
                     try:
-                        service.poll_due_accounts_once(database)
+                        result = service.poll_due_accounts_once(database, limit=service.workers * 2)
                     except Exception as exc:
                         try:
                             service.event(
@@ -2224,7 +2238,9 @@ def run_worker(*, database_path: Path | None = None, seed_path: Path | None = No
                             )
                         except Exception as log_exc:
                             print(f"HotTopic collector error: {exc}; log error: {log_exc}", flush=True)
-                    stop_collector.wait(2)
+                        stop_collector.wait(2)
+                    else:
+                        stop_collector.wait(0.05 if result["polled"] else 2)
             finally:
                 database.close()
 
