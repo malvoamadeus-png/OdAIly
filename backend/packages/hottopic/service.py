@@ -542,13 +542,15 @@ class HotTopicService:
                 )
 
     @_serialized
-    def deployment_started_at(self) -> str:
-        return str(self.db.execute("SELECT deployment_started_at FROM hottopic_meta WHERE singleton_key='global'").fetchone()[0])
+    def deployment_started_at(self, database: sqlite3.Connection | None = None) -> str:
+        db = database if database is not None else self.db
+        return str(db.execute("SELECT deployment_started_at FROM hottopic_meta WHERE singleton_key='global'").fetchone()[0])
 
     @_serialized
-    def event(self, kind: str, detail: dict[str, Any]) -> None:
-        with self.db:
-            self.db.execute(
+    def event(self, kind: str, detail: dict[str, Any], database: sqlite3.Connection | None = None) -> None:
+        db = database if database is not None else self.db
+        with db:
+            db.execute(
                 "INSERT INTO hottopic_events(at,kind,detail_json) VALUES(?,?,?)",
                 (iso(utc_now()), kind, json.dumps(detail, ensure_ascii=False)),
             )
@@ -1024,8 +1026,9 @@ class HotTopicService:
             raise
 
     @_serialized
-    def _due_accounts(self) -> list[AccountRow]:
-        rows = self.db.execute(
+    def _due_accounts(self, database: sqlite3.Connection | None = None) -> list[AccountRow]:
+        db = database if database is not None else self.db
+        rows = db.execute(
             "SELECT screen_name,display_name,protected FROM hottopic_accounts "
             "WHERE status='followed' AND (hot_topic_enabled=1 OR market_sentiment_enabled=1 OR "
             "project_promotion_enabled=1 OR investment_leads_enabled=1) "
@@ -1068,7 +1071,51 @@ class HotTopicService:
         lifecycle = self.event_tracker.maintain()
         return {"discovery": discovery, "polling": polling, "updates": updates, "outbox": outbox, "lifecycle": lifecycle}
 
-    def poll_once(self) -> dict[str, Any]:
+    def poll_due_accounts_once(self, database: sqlite3.Connection | None = None) -> dict[str, int]:
+        db = database if database is not None else self.db
+        accounts = self._due_accounts(db)
+        if not accounts:
+            return {"polled": 0, "accepted": 0, "errors": 0}
+
+        cutoff = datetime.fromisoformat(self.deployment_started_at(db))
+        accepted = errors = 0
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor:
+            account_iter = iter(accounts)
+            futures = {}
+
+            def submit_next() -> bool:
+                try:
+                    account = next(account_iter)
+                except StopIteration:
+                    return False
+                future = executor.submit(
+                    scan_account,
+                    account,
+                    cutoff=cutoff,
+                    timeline_count=100,
+                    retries=1,
+                    before_request=self.collect_request_pacer.wait,
+                    include_investment_materials=True,
+                )
+                futures[future] = account
+                return True
+
+            for _ in range(min(len(accounts), self.workers * 2)):
+                submit_next()
+            while futures:
+                future = next(as_completed(futures))
+                account = futures.pop(future)
+                now = iso(utc_now())
+                try:
+                    items, _latest, error = future.result()
+                except Exception as exc:
+                    items, error = [], {"kind": "exception", "error": str(exc)}
+                accepted += self._store_poll(account, items, error, now, database=db)
+                errors += int(error is not None)
+                submit_next()
+        return {"polled": len(accounts), "accepted": accepted, "errors": errors}
+
+    def poll_once(self, *, collect_baseline_accounts: bool = True) -> dict[str, Any]:
         ai_review = self._run_ai_review_if_due()
         # Existing events first: their 1-minute schedule has priority over the
         # broad baseline account pool while sharing the same FXTwitter pacer.
@@ -1078,7 +1125,7 @@ class HotTopicService:
         self.event_tracker.reverify_pending_account_bindings()
         event_before = self._advance_event_tracking(poll_accounts=True)
         self.scan_visible_topic_merges()
-        accounts = self._due_accounts()
+        accounts = self._due_accounts() if collect_baseline_accounts else []
         if not accounts:
             self.aggregate()
             yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
@@ -1094,30 +1141,7 @@ class HotTopicService:
                 "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
                 "ai_review": ai_review,
             }
-        cutoff = datetime.fromisoformat(self.deployment_started_at())
-        accepted = 0
-        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor:
-            futures = {
-                executor.submit(
-                    scan_account,
-                    account,
-                    cutoff=cutoff,
-                    timeline_count=100,
-                    retries=1,
-                    before_request=self.collect_request_pacer.wait,
-                    include_investment_materials=True,
-                ): account
-                for account in accounts
-            }
-            for future in as_completed(futures):
-                account = futures.pop(future)
-                now = iso(utc_now())
-                try:
-                    items, _latest, error = future.result()
-                except Exception as exc:
-                    items, error = [], {"kind": "exception", "error": str(exc)}
-                added = self._store_poll(account, items, error, now)
-                accepted += added
+        polling = self.poll_due_accounts_once()
         self.aggregate()
         yesterday_hot_discussion = self.yesterday_hot_discussion.run_if_due()
         event_after = self._advance_event_tracking(poll_accounts=True)
@@ -1125,8 +1149,8 @@ class HotTopicService:
         self.process_account_cleanup_jobs()
         self.maintain()
         return {
-            "polled": len(accounts),
-            "accepted": accepted,
+            "polled": polling["polled"],
+            "accepted": polling["accepted"],
             "analyzed": analyzed,
             "event_accepted": int(event_before["polling"]["accepted"]) + int(event_after["polling"]["accepted"]),
             "yesterday_hot_discussion": yesterday_hot_discussion.status if yesterday_hot_discussion else "not_due",
@@ -1141,13 +1165,22 @@ class HotTopicService:
             return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
     @_serialized
-    def _store_poll(self, account: AccountRow, items: list[ContentItem], error: dict[str, Any] | None, at: str) -> int:
+    def _store_poll(
+        self,
+        account: AccountRow,
+        items: list[ContentItem],
+        error: dict[str, Any] | None,
+        at: str,
+        *,
+        database: sqlite3.Connection | None = None,
+    ) -> int:
+        db = database if database is not None else self.db
         lower = account.screen_name.lower()
-        deployment_started = datetime.fromisoformat(self.deployment_started_at())
+        deployment_started = datetime.fromisoformat(self.deployment_started_at(db))
         # scan_account applies this bound too.  Keep it at the persistence
         # boundary so a future collector cannot accidentally backfill history.
-        with self.db:
-            current = self.db.execute(
+        with db:
+            current = db.execute(
                 "SELECT status,consecutive_failures,last_success_at,hot_topic_enabled,market_sentiment_enabled,"
                 "project_promotion_enabled,investment_leads_enabled "
                 "FROM hottopic_accounts WHERE screen_name_lower=?",
@@ -1159,7 +1192,7 @@ class HotTopicService:
                 for item in items:
                     if item.investment_materials:
                         persist_capture_materials(
-                            self.db,
+                            db,
                             account_lower=lower,
                             materials=item.investment_materials,
                             observed_at=at,
@@ -1170,7 +1203,7 @@ class HotTopicService:
                 if item.investment_only:
                     continue
                 processed_at = None if current["hot_topic_enabled"] else at
-                cursor = self.db.execute(
+                cursor = db.execute(
                     "INSERT OR IGNORE INTO hottopic_inbox(tweet_id,screen_name_lower,payload_json,collected_at,processed_at) VALUES(?,?,?,?,?)",
                     (item.tweet_id, lower, json.dumps(item.__dict__, ensure_ascii=False), at, processed_at),
                 )
@@ -1181,13 +1214,13 @@ class HotTopicService:
                         ("project_promotion", current["project_promotion_enabled"]),
                     ):
                         if enabled:
-                            self.db.execute(
+                            db.execute(
                                 "INSERT OR IGNORE INTO x_agent_analysis_jobs(tweet_id,module,status,created_at,updated_at) VALUES(?,?,?, ?, ?)",
                                 (item.tweet_id, module, "pending", at, at),
                             )
             failures = 0 if not error else int(current["consecutive_failures"] or 0) + 1
             delay_seconds = self._next_poll_delay_seconds(error, failures)
-            self.db.execute(
+            db.execute(
                 "UPDATE hottopic_accounts SET next_due_at=?,last_polled_at=?,last_success_at=?,last_error=?,"
                 "consecutive_failures=?,last_item_count=?,cumulative_content_count=cumulative_content_count+?,updated_at=? "
                 "WHERE screen_name_lower=?",
@@ -1195,7 +1228,7 @@ class HotTopicService:
                  json.dumps(error, ensure_ascii=False) if error else None, failures, len(items), accepted, at, lower),
             )
         if error:
-            self.event("collect_error", {"account": account.screen_name, "error": error})
+            self.event("collect_error", {"account": account.screen_name, "error": error}, database=db)
         return accepted
 
     @staticmethod
@@ -2174,8 +2207,35 @@ def run_worker(*, database_path: Path | None = None, seed_path: Path | None = No
         if once:
             print(json.dumps(service.poll_once(), ensure_ascii=False))
             return 0
-        while True:
-            service.poll_once()
-            time.sleep(2)
+        stop_collector = threading.Event()
+
+        def collect_loop() -> None:
+            database = open_worker_database(service.path)
+            try:
+                while not stop_collector.is_set():
+                    try:
+                        service.poll_due_accounts_once(database)
+                    except Exception as exc:
+                        try:
+                            service.event(
+                                "collect_loop_error",
+                                {"error": f"{type(exc).__name__}: {exc}"},
+                                database=database,
+                            )
+                        except Exception as log_exc:
+                            print(f"HotTopic collector error: {exc}; log error: {log_exc}", flush=True)
+                    stop_collector.wait(2)
+            finally:
+                database.close()
+
+        collector = threading.Thread(target=collect_loop, name="hottopic-collector", daemon=True)
+        collector.start()
+        try:
+            while True:
+                service.poll_once(collect_baseline_accounts=False)
+                time.sleep(2)
+        finally:
+            stop_collector.set()
+            collector.join()
     finally:
         service.close()
