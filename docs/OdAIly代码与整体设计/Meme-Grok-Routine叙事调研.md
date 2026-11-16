@@ -44,7 +44,7 @@ python backend/src/main.py meme grok-narrative \
 - 没有 `--wait-for-result` 或 `--callback-url` 时，Routine 仍只会把结果发到 Grok Bot Main Bot 聊天；操作者需在那里读取结果。
 - `--callback-url` 可用于外部接收端；接收端须自行验证一次性 URL token 等凭证。
 - 命令只发送一次请求，不自动重试，避免网络结果不确定时重复创建调查任务。
-- Routine 返回的 `ok`、`primary_narrative`、`narratives`、`evidence`、`summary`、`caveats` 和失败结构由上游定义；本模块只按 `request_id`、CA 和 token 关联并传回结果，不改写叙事正文。
+- Routine 的外部指令由 webhook 所属系统维护，不在本仓库。建议外部结果包含 `what_it_is`（一句说明代币关联对象）、`primary_narrative`（核心炒作逻辑）、`narratives`、`evidence`、`summary` 和 `caveats`。OdAIly 按 `request_id`、CA 和 token 关联回调，并将结构化研究字段合并传给成稿模型；只有这些字段缺失时才用旧版 `summary`。正文按“是什么。核心逻辑是……”两句式整合，不再要求Grok单独成段。`evidence` 应保留来源、原始说法、URL和时间；表态、已发生动作、传言与推测必须区分。
 
 ## 隐私与失败处理
 

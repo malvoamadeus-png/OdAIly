@@ -879,6 +879,8 @@ def ensure_gmgn_supplement(result: dict[str, Any], gmgn_supplement: list[dict[st
 def validate_final_result(
     result: dict[str, Any],
     material_by_id: dict[str, dict[str, Any]],
+    *,
+    require_grok_section: bool = True,
 ) -> dict[str, Any]:
     reader_text = normalize_reader_text(result.get("reader_text"))
     if READER_TEXT_FORBIDDEN.search(reader_text):
@@ -901,7 +903,9 @@ def validate_final_result(
     grok_ids = [item_id for item_id in supplement_ids if item_id.startswith("grok:")]
     if gmgn_ids and not re.search(r"(?m)^GMGN补充：", reader_text):
         raise RuntimeError("Final reader_text must place GMGN supplemental material under its labeled paragraph.")
-    if grok_ids and not re.search(r"(?m)^(?:" + re.escape(READER_OPENING) + r")?Grok(?:补充：|补充资料显示，)", reader_text):
+    if require_grok_section and grok_ids and not re.search(
+        r"(?m)^(?:" + re.escape(READER_OPENING) + r")?Grok(?:补充：|补充资料显示，)", reader_text
+    ):
         raise RuntimeError("Final reader_text must place Grok supplemental material under its labeled paragraph.")
 
     return {
