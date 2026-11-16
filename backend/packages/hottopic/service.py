@@ -1935,9 +1935,16 @@ class HotTopicService:
     def _refresh_hot_topic_counts(self) -> None:
         with self.db:
             self.db.execute(
-                "UPDATE hottopic_accounts SET cumulative_hot_topic_count=("
-                "SELECT COUNT(DISTINCT p.topic_id) FROM topic_participations p JOIN topics t ON t.topic_id=p.topic_id "
-                "WHERE lower(p.activity_account)=hottopic_accounts.screen_name_lower AND t.retention_tier='permanent')"
+                "WITH participation_counts AS MATERIALIZED ("
+                "SELECT lower(p.activity_account) AS account_lower,COUNT(DISTINCT p.topic_id) AS topic_count "
+                "FROM topic_participations p JOIN topics t ON t.topic_id=p.topic_id "
+                "WHERE t.retention_tier='permanent' GROUP BY lower(p.activity_account)), "
+                "desired_counts AS MATERIALIZED (SELECT a.screen_name_lower,"
+                "COALESCE(pc.topic_count,0) AS topic_count FROM hottopic_accounts a "
+                "LEFT JOIN participation_counts pc ON pc.account_lower=a.screen_name_lower) "
+                "UPDATE hottopic_accounts SET cumulative_hot_topic_count=desired_counts.topic_count "
+                "FROM desired_counts WHERE desired_counts.screen_name_lower=hottopic_accounts.screen_name_lower "
+                "AND cumulative_hot_topic_count!=desired_counts.topic_count"
             )
 
     def _snapshot_x_agent_sentiment(self, current: datetime) -> int:
