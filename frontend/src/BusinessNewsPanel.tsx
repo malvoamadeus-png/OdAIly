@@ -21,6 +21,7 @@ const classificationLabels: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   pending: '待处理',
   processing: 'AI 处理中',
+  skipped_link: '纯链接跳过',
   filtered_short: '字数过滤',
   activity_pending_api: '活动待接 API',
   skipped_long_content: '长内容跳过',

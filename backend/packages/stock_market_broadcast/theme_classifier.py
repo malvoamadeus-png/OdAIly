@@ -22,9 +22,10 @@ THEME_CLASSIFICATION_SCHEMA = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "title": {"type": "string"},
+            "title": {"type": "string", "maxLength": 60},
             "concepts": {
                 "type": "array",
+                "maxItems": 3,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -32,12 +33,17 @@ THEME_CLASSIFICATION_SCHEMA = {
                         "label": {"type": "string"},
                         "members": {
                             "type": "array",
+                            "minItems": 1,
                             "items": {
                                 "type": "object",
                                 "additionalProperties": False,
                                 "properties": {
                                     "symbol": {"type": "string"},
-                                    "confidence": {"type": "number"},
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                    },
                                 },
                                 "required": ["symbol", "confidence"],
                             },
@@ -188,9 +194,9 @@ class StockThemeClassifier:
     ) -> HeadlineGeneration:
         symbols = tuple(member.instrument.asset_name for member in members)
         if len(symbols) < 2:
-            return self._fallback(fallback_title, symbols, "not_aggregated")
+            return self._fallback(fallback_title, "not_aggregated")
         if self.client is None or self.model is None:
-            return self._fallback(fallback_title, symbols, "classifier_unavailable")
+            return self._fallback(fallback_title, "classifier_unavailable")
 
         inputs = []
         for member in members:
@@ -205,7 +211,7 @@ class StockThemeClassifier:
                 "change_percent": str(member.change_pct),
             })
         if not any(item["knowledge_verified"] for item in inputs):
-            return self._fallback(fallback_title, symbols, "knowledge_missing")
+            return self._fallback(fallback_title, "knowledge_missing")
         verified_symbols = {
             str(item["symbol"]) for item in inputs if item["knowledge_verified"]
         }
@@ -224,7 +230,7 @@ class StockThemeClassifier:
             )
         except Exception as exc:
             print(f"[stock-market] headline generation fallback error={type(exc).__name__}")
-            return self._fallback(fallback_title, symbols, "model_error")
+            return self._fallback(fallback_title, "model_error")
 
         moves = {member.instrument.asset_name: abs(member.change_pct) for member in members}
         generated, reason = self._parse(
@@ -237,7 +243,7 @@ class StockThemeClassifier:
             fallback_title=fallback_title,
         )
         if generated is None:
-            return self._fallback(fallback_title, symbols, reason or "invalid_response")
+            return self._fallback(fallback_title, reason or "invalid_response")
         return generated
 
     @staticmethod
@@ -260,7 +266,8 @@ class StockThemeClassifier:
             "放入 unclassified_symbols。概念标签用简短名词，不含“概念”二字；每个标的最多归入一个概念。"
             "同一投资概念的股票必须归入同一组，不要把相近业务拆成多个单只概念。"
             "为每个标的分别输出0到1的confidence；置信度低于0.8的标的不得支持标题分类，放入未归类列表。"
-            "最多输出3类。只有至少一个概念组包含两只或以上标的，才能使用概念标题；其他概念组允许只有一只标的。"
+            "最多输出3类；如果没有标的达到可归类标准，concepts可以为空且所有标的放入unclassified_symbols。"
+            "只有至少一个概念组包含两只或以上标的，才能使用概念标题；其他概念组允许只有一只标的。"
             "如果所有概念组都只有一只标的，title必须严格使用给定的独立标的兜底标题。\n"
             f"本组方向：{movement}。市场广度：{breadth}。"
             "只有广度达标才能在标题写“普涨”或“普跌”；未达标必须写“上涨”或“下跌”。"
@@ -280,13 +287,12 @@ class StockThemeClassifier:
     @staticmethod
     def _fallback(
         title: str,
-        symbols: tuple[str, ...],
         reason: str,
     ) -> HeadlineGeneration:
         return HeadlineGeneration(
             title=title,
             concepts=(),
-            unclassified_symbols=tuple(sorted(symbols)),
+            unclassified_symbols=(),
             fallback_reason=reason,
         )
 
@@ -315,7 +321,7 @@ class StockThemeClassifier:
             not isinstance(title, str)
             or not title.strip()
             or not isinstance(raw_concepts, list)
-            or not 1 <= len(raw_concepts) <= 3
+            or len(raw_concepts) > 3
             or not isinstance(raw_unclassified, list)
         ):
             return None, "invalid_response"
@@ -382,6 +388,13 @@ class StockThemeClassifier:
             concept.label.casefold(),
         ))
         remaining = tuple(sorted(low_confidence | unclassified))
+        if not concepts:
+            return HeadlineGeneration(
+                fallback_title,
+                (),
+                remaining,
+                "classification_below_threshold",
+            ), "classification_below_threshold"
         if not any(len(concept.symbols) >= 2 for concept in concepts):
             return HeadlineGeneration(
                 fallback_title,

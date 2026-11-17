@@ -282,7 +282,7 @@ def test_unverified_symbols_without_any_profile_use_generic_title_without_model_
 
     assert result.title == "多只美股上涨，BBX上涨9%、LYTE上涨8%"
     assert result.fallback_reason == "knowledge_missing"
-    assert result.unclassified_symbols == ("BBX", "LYTE")
+    assert result.unclassified_symbols == ()
     assert client.calls == []
 
 
@@ -311,7 +311,7 @@ def test_model_cannot_assign_unverified_symbol_to_a_concept() -> None:
 
     assert result.title == "多只美股上涨，MU上涨10%、BBX上涨9%"
     assert result.fallback_reason == "invalid_response"
-    assert result.unclassified_symbols == ("BBX", "MU", "SNDK", "WDC")
+    assert result.unclassified_symbols == ()
 
 
 def test_three_concepts_are_allowed_and_four_are_rejected() -> None:

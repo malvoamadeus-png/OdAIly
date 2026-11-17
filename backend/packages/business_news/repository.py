@@ -114,6 +114,7 @@ class BusinessNewsRepository:
         update: dict[str, Any],
         *,
         source_urls: list[str],
+        link_only: bool = False,
         own_bot_id: str | None,
         startup_backfill: bool = False,
         bot_id: str | None = None,
@@ -188,10 +189,10 @@ class BusinessNewsRepository:
                 and str(sender.get("id") or "") != str(own_bot_id or "")
             ):
                 raw_text = text_content
-                compact_length = sum(
-                    1 for char in _without_urls(raw_text or "") if not char.isspace()
-                )
-                if compact_length < 15:
+                compact_length = sum(1 for char in _without_urls(raw_text or "") if not char.isspace())
+                if link_only:
+                    status, reason, stored_text = "skipped_link", "纯链接内容，不生成快讯", None
+                elif compact_length < 15:
                     status, reason, stored_text = "filtered_short", "去掉空白和 URL 后不足 15 字", None
                 else:
                     status, reason, stored_text = "pending", None, raw_text

@@ -126,9 +126,7 @@ class StockMarketBroadcastService:
                 diagnostics = {
                     "status": "fallback",
                     "concepts": [],
-                    "unclassified_symbols": sorted(
-                        member.instrument.asset_name for member in alert.members
-                    ),
+                    "unclassified_symbols": [],
                     "fallback_reason": (
                         "classifier_disabled"
                         if not self.settings.theme_classification_enabled

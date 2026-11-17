@@ -44,7 +44,12 @@ BUSINESS_NEWS_JSON_SCHEMA = {
 }
 
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_BARE_URL_PATTERN = re.compile(
+    r"(?<![\w@])(?:www\.)?(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)+[a-z]{2,}(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
 _TRAILING_URL_PUNCTUATION = "。！？；，、：,.!?;:)]）】》」”’\"'"
+_LINK_ONLY_PUNCTUATION = " \t\r\n.,!?;:，。；：！？、()[]{}<>（）【】《》\"'“”‘’「」『』"
 
 
 def extract_urls(text: str, entities: Any = None) -> list[str]:
@@ -67,6 +72,46 @@ def extract_urls(text: str, entities: Any = None) -> list[str]:
 def count_non_whitespace_without_urls(text: str) -> int:
     without_urls = _URL_PATTERN.sub("", text)
     return sum(not char.isspace() for char in without_urls)
+
+
+def is_link_only_message(text: str, entities: Any = None) -> bool:
+    spans = [
+        (match.start(), len(match.group(0).rstrip(_TRAILING_URL_PUNCTUATION)))
+        for pattern in (_URL_PATTERN, _BARE_URL_PATTERN)
+        for match in pattern.finditer(text)
+    ]
+    if isinstance(entities, list):
+        utf16_offsets = _utf16_offset_map(text)
+        for entity in entities:
+            if not isinstance(entity, dict) or entity.get("type") not in {"url", "text_link"}:
+                continue
+            if entity.get("type") == "text_link" and not isinstance(entity.get("url"), str):
+                continue
+            offset = entity.get("offset")
+            length = entity.get("length")
+            if not isinstance(offset, int) or not isinstance(length, int) or length <= 0:
+                continue
+            start = utf16_offsets.get(offset)
+            end = utf16_offsets.get(offset + length)
+            if start is not None and end is not None and start < end:
+                spans.append((start, end))
+    if not spans:
+        return False
+
+    linked = [False] * len(text)
+    for start, end in spans:
+        for index in range(start, min(end, len(text))):
+            linked[index] = True
+    return all(is_linked or char in _LINK_ONLY_PUNCTUATION for is_linked, char in zip(linked, text))
+
+
+def _utf16_offset_map(text: str) -> dict[int, int]:
+    offsets = {0: 0}
+    units = 0
+    for index, char in enumerate(text, start=1):
+        units += len(char.encode("utf-16-le")) // 2
+        offsets[units] = index
+    return offsets
 
 
 class TelegramBotApi:
@@ -320,6 +365,7 @@ class BusinessTelegramWorker:
                         discovered = self.repository.ingest_update(
                             update,
                             source_urls=_message_urls(update),
+                            link_only=_message_is_link_only(update),
                             own_bot_id=self._bot_id,
                             bot_id=self._bot_id,
                         )
@@ -353,6 +399,7 @@ class BusinessTelegramWorker:
                 discovered = self.repository.ingest_update(
                     update,
                     source_urls=_message_urls(update),
+                    link_only=_message_is_link_only(update),
                     own_bot_id=self._bot_id,
                     startup_backfill=True,
                     bot_id=self._bot_id,
@@ -444,6 +491,19 @@ def _message_urls(update: dict[str, Any]) -> list[str]:
     entities = payload.get("entities") or payload.get("caption_entities")
     source_text = text or (payload.get("caption") if isinstance(payload.get("caption"), str) else "")
     return extract_urls(source_text, entities)
+
+
+def _message_is_link_only(update: dict[str, Any]) -> bool:
+    payload = update.get("message")
+    if not isinstance(payload, dict):
+        return False
+    text = payload.get("text") if isinstance(payload.get("text"), str) else None
+    if text is not None:
+        entities = payload.get("entities")
+    else:
+        text = payload.get("caption") if isinstance(payload.get("caption"), str) else ""
+        entities = payload.get("caption_entities")
+    return is_link_only_message(text, entities)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
