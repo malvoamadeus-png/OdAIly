@@ -36,7 +36,20 @@ FRED_SOURCE_URLS = {
     "retail_sales": "https://fred.stlouisfed.org/series/RSAFS",
     "initial_claims": "https://fred.stlouisfed.org/series/ICSA",
     "pce_price_index": "https://fred.stlouisfed.org/series/PCEPI",
+    "nfp_level": "https://fred.stlouisfed.org/series/PAYEMS",
+    "unemployment": "https://fred.stlouisfed.org/series/UNRATE",
+    "cpi_nsa": "https://fred.stlouisfed.org/series/CPIAUCNS",
+    "cpi_sa": "https://fred.stlouisfed.org/series/CPIAUCSL",
+    "core_cpi_sa": "https://fred.stlouisfed.org/series/CPILFESL",
 }
+FRED_BLS_SERIES = {
+    "nfp_level": "PAYEMS",
+    "unemployment": "UNRATE",
+    "cpi_nsa": "CPIAUCNS",
+    "cpi_sa": "CPIAUCSL",
+    "core_cpi_sa": "CPILFESL",
+}
+FRED_USER_AGENT = "curl/8.5.0 OdAIly-macro-newsflash/1.0"
 _FOMC_CACHE_LOCK = threading.Lock()
 _FOMC_CACHE_KEY: tuple[str, str] | None = None
 _FOMC_CACHE_VALUE: MacroUpdate | None = None
@@ -119,7 +132,7 @@ def fetch_fred_series(settings: MacroNewsflashSettings, series_id: str) -> list[
     response = requests.get(
         settings.fred_graph_endpoint,
         params={"id": series_id, "cosd": observation_start},
-        headers={"User-Agent": "OdAIly-macro-newsflash/1.0"},
+        headers={"User-Agent": FRED_USER_AGENT},
         timeout=settings.request_timeout_seconds,
     )
     response.raise_for_status()
@@ -252,8 +265,48 @@ def collect_updates(
 
 
 def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
-    payload = fetch_bls_series(settings)
+    fallback = False
+    try:
+        payload = fetch_bls_series(settings)
+    except Exception as bls_error:
+        from concurrent.futures import ThreadPoolExecutor
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(FRED_BLS_SERIES)) as pool:
+                fred_rows = dict(
+                    zip(
+                        FRED_BLS_SERIES,
+                        pool.map(lambda series_id: fetch_fred_series(settings, series_id), FRED_BLS_SERIES.values()),
+                        strict=True,
+                    )
+                )
+            payload = {
+                BLS_SERIES[name]: rows
+                for name, rows in fred_rows.items()
+            }
+            fallback = True
+        except Exception as fred_error:
+            raise RuntimeError(f"BLS API failed ({bls_error}); FRED mirror fallback failed ({fred_error})") from fred_error
     by_id = {name: payload[series_id] for name, series_id in BLS_SERIES.items()}
+    if fallback:
+        source = lambda name: (
+            f"FRED mirror of BLS {FRED_BLS_SERIES[name]}",
+            FRED_SOURCE_URLS[name],
+            FRED_BLS_SERIES[name],
+        )
+    else:
+        bls_source_names = {
+            "nfp_level": "BLS CES API",
+            "unemployment": "BLS CPS API",
+            "cpi_nsa": "BLS CPI API",
+            "cpi_sa": "BLS CPI API",
+            "core_cpi_sa": "BLS CPI API",
+        }
+        source = lambda name: (
+            bls_source_names[name],
+            BLS_SOURCE_URLS[name],
+            BLS_SERIES[name],
+        )
     updates: list[MacroUpdate] = []
     nfp = by_id["nfp_level"]
     if len(nfp) < 3:
@@ -261,6 +314,7 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
     current_nfp, previous_nfp, older_nfp = nfp[-1], nfp[-2], nfp[-3]
     if not _monthly_adjacent(current_nfp, previous_nfp) or not _monthly_adjacent(previous_nfp, older_nfp):
         raise RuntimeError("BLS nonfarm observations are not consecutive months")
+    nfp_source, nfp_source_url, nfp_series_id = source("nfp_level")
     updates.append(
         _update(
             metric_id="nonfarm_payrolls",
@@ -268,15 +322,16 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
             indicator="季调后非农就业人口",
             actual=f"{_fmt((current_nfp.value - previous_nfp.value) / Decimal(10))}万人",
             previous=f"{_fmt((previous_nfp.value - older_nfp.value) / Decimal(10))}万人",
-            source="BLS CES API",
-            source_url=BLS_SOURCE_URLS["nfp_level"],
-            raw={"series_id": BLS_SERIES["nfp_level"], "level_thousands": [str(item.value) for item in nfp[-3:]]},
+            source=nfp_source,
+            source_url=nfp_source_url,
+            raw={"series_id": nfp_series_id, "level_thousands": [str(item.value) for item in nfp[-3:]]},
         )
     )
 
     unemployment = by_id["unemployment"]
     if len(unemployment) < 2 or not _monthly_adjacent(unemployment[-1], unemployment[-2]):
         raise RuntimeError("BLS unemployment observations are not consecutive months")
+    unemployment_source, unemployment_source_url, unemployment_series_id = source("unemployment")
     updates.append(
         _update(
             metric_id="unemployment_rate",
@@ -284,9 +339,9 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
             indicator="失业率",
             actual=f"{_fmt(unemployment[-1].value)}%",
             previous=f"{_fmt(unemployment[-2].value)}%",
-            source="BLS CPS API",
-            source_url=BLS_SOURCE_URLS["unemployment"],
-            raw={"series_id": BLS_SERIES["unemployment"], "observations": [_json_observation(item) for item in unemployment[-2:]]},
+            source=unemployment_source,
+            source_url=unemployment_source_url,
+            raw={"series_id": unemployment_series_id, "observations": [_json_observation(item) for item in unemployment[-2:]]},
         )
     )
 
@@ -302,6 +357,7 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
         if not result:
             continue
         period, actual, previous_value, reference_rows = result
+        cpi_source, cpi_source_url, cpi_series_id = source(series_name)
         updates.append(
             _update(
                 metric_id=metric_id,
@@ -309,9 +365,9 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
                 indicator=indicator,
                 actual=f"{_fmt(actual)}%",
                 previous=f"{_fmt(previous_value)}%",
-                source="BLS CPI API",
-                source_url=BLS_SOURCE_URLS[series_name],
-                raw={"series_id": BLS_SERIES[series_name], "observations": [_json_observation(item) for item in reference_rows]},
+                source=cpi_source,
+                source_url=cpi_source_url,
+                raw={"series_id": cpi_series_id, "observations": [_json_observation(item) for item in reference_rows]},
             )
         )
     return updates
