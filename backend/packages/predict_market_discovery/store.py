@@ -94,6 +94,7 @@ class PredictMarketStore:
         filtered_markets = 0
         lower = completed_at - timedelta(hours=72)
         upper = completed_at + timedelta(hours=72)
+        created_lower = completed_at - timedelta(hours=72)
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -155,16 +156,21 @@ class PredictMarketStore:
                     (now_text,),
                 )
             pending = connection.execute(
-                """SELECT market_id, starts_at, market_status, trading_status
+                """SELECT market_id, starts_at, market_created_at, trading_status
                 FROM predict_market_observations
-                WHERE candidate_at IS NULL AND starts_at IS NOT NULL"""
+                WHERE candidate_at IS NULL AND starts_at IS NOT NULL
+                    AND market_created_at IS NOT NULL"""
             ).fetchall()
             for row in pending:
                 starts_at = _parse_time(row["starts_at"])
+                market_created_at = _parse_time(row["market_created_at"])
                 if (
                     starts_at is None
                     or starts_at < lower
                     or starts_at > upper
+                    or market_created_at is None
+                    or market_created_at < created_lower
+                    or market_created_at > completed_at
                     or row["trading_status"].upper() != "OPEN"
                 ):
                     continue
@@ -176,7 +182,12 @@ class PredictMarketStore:
             candidate_items = self._candidate_rows(
                 connection,
                 now=completed_at,
-                limit=100,
+                limit=30,
+                candidate_at=now_text,
+            )
+            new_candidate_count = self._candidate_count(
+                connection,
+                now=completed_at,
                 candidate_at=now_text,
             )
             candidate_count = self._candidate_count(connection, now=completed_at)
@@ -205,7 +216,7 @@ class PredictMarketStore:
             "categories": categories,
             "markets": len(deduplicated),
             "new_markets": new_markets,
-            "new_candidates": len(candidate_items),
+            "new_candidates": new_candidate_count,
             "pending_candidates": candidate_count,
             "filtered_markets": filtered_markets,
             "page_limit_reached": page_limit_reached,
@@ -260,10 +271,12 @@ class PredictMarketStore:
     ) -> list[dict[str, Any]]:
         lower = _iso(now - timedelta(hours=72))
         upper = _iso(now + timedelta(hours=72))
+        created_lower = _iso(now - timedelta(hours=72))
+        created_upper = _iso(now)
         candidate_clause = "AND candidate_at = ?" if candidate_at is not None else ""
-        parameters: tuple[Any, ...] = (lower, upper, limit)
+        parameters: tuple[Any, ...] = (lower, upper, created_lower, created_upper, limit)
         if candidate_at is not None:
-            parameters = (lower, upper, candidate_at, limit)
+            parameters = (lower, upper, created_lower, created_upper, candidate_at, limit)
         rows = connection.execute(
             f"""SELECT market_id, question, category_title, category_slug,
                 category_published_at, starts_at, market_created_at,
@@ -273,25 +286,39 @@ class PredictMarketStore:
             WHERE candidate_at IS NOT NULL
                 AND filter_reason IS NULL
                 AND starts_at >= ? AND starts_at <= ?
+                AND market_created_at >= ? AND market_created_at <= ?
                 AND trading_status = 'OPEN'
                 {candidate_clause}
-            ORDER BY candidate_at DESC, market_id
+            ORDER BY market_created_at DESC, candidate_at DESC, market_id
             LIMIT ?""",
             parameters,
         ).fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod
-    def _candidate_count(connection: sqlite3.Connection, *, now: datetime) -> int:
+    def _candidate_count(
+        connection: sqlite3.Connection,
+        *,
+        now: datetime,
+        candidate_at: str | None = None,
+    ) -> int:
         lower = _iso(now - timedelta(hours=72))
         upper = _iso(now + timedelta(hours=72))
+        created_lower = _iso(now - timedelta(hours=72))
+        created_upper = _iso(now)
+        candidate_clause = "AND candidate_at = ?" if candidate_at is not None else ""
+        parameters: tuple[Any, ...] = (lower, upper, created_lower, created_upper)
+        if candidate_at is not None:
+            parameters += (candidate_at,)
         row = connection.execute(
-            """SELECT COUNT(*) FROM predict_market_observations
+            f"""SELECT COUNT(*) FROM predict_market_observations
             WHERE candidate_at IS NOT NULL
                 AND filter_reason IS NULL
                 AND starts_at >= ? AND starts_at <= ?
-                AND trading_status = 'OPEN'""",
-            (lower, upper),
+                AND market_created_at >= ? AND market_created_at <= ?
+                AND trading_status = 'OPEN'
+                {candidate_clause}""",
+            parameters,
         ).fetchone()
         return int(row[0])
 
