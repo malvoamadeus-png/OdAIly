@@ -447,6 +447,14 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     body = normalize_display_numbers(body)
     title = normalize_reader_terms(title)
     body = normalize_reader_terms(body)
+    # Final deterministic attribution pass covers all Hyperliquid scenarios and
+    # runs after scenario-specific title reconstruction and number normalization.
+    names = event.get('evidence', {}).get('address_names', {})
+    first_address = event.get('addresses', [''])[0]
+    display_name = names.get(first_address)
+    if display_name and len(event.get('addresses', [])) == 1:
+        body = re.sub(r'(?:某地址|该地址)', display_name, body, count=1)
+        title = re.sub(r'(?:某地址|该地址)', display_name, title, count=1)
     return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))
 
 

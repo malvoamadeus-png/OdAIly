@@ -1,0 +1,115 @@
+{
+  "mode": "model",
+  "prompt_version": "highlight-name-v2",
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "started_at": "2026-11-17T06:13:08.450657+00:00",
+  "runtime_seconds": 56.427,
+  "results": [
+    {
+      "sample_id": "S1",
+      "address_prefix": "0xf5",
+      "as_of": "2026-11-16T20:52:42.040000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "SOL高胜率交易员0xf5",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S1-asset-ZEC"
+          ],
+          "feature_name": "ZEC连胜交易员",
+          "reason": "ZEC在统计窗口内21轮完整交易全胜，胜率100%；虽盈利约3.68万美元，低于SOL的约41.56万美元，但胜率与样本量结合后是鲜明特征。",
+          "name": "ZEC连胜交易员0xf5"
+        },
+        {
+          "evidence_ids": [
+            "S1-event-1029278",
+            "S1-position"
+          ],
+          "feature_name": "SOL空头巨鲸",
+          "reason": "最新事件显示SOL空单净减约104万美元，事件时仍持有约398万美元空单；这是事件时点持仓，不代表查询时当前敞口。",
+          "name": "SOL空头巨鲸0xf5"
+        }
+      ],
+      "evidence_ids": [
+        "S1-asset-SOL"
+      ],
+      "feature_name": "SOL高胜率交易员",
+      "reason": "SOL统计窗口内15轮完整交易13胜，胜率约86.7%，观察平仓净盈利约41.56万美元；盈利规模和样本胜率均比其他正向资产亮点更突出。账户累计PnL不具备当前总盈亏引用资格，未用于称谓。",
+      "title_examples": [
+        "SOL空单净减约104万美元，SOL高胜率交易员0xf5仍持有约398万美元空头仓位",
+        "SOL高胜率交易员0xf5 SOL平仓盈利约1万美元，空单净减约104万美元"
+      ]
+    },
+    {
+      "sample_id": "S2",
+      "address_prefix": "0xb8",
+      "as_of": "2026-11-16T20:48:51.603000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "ZEC高额平仓获利空头0xb8",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S2-event-1022272",
+            "S2-event-1023263",
+            "S2-event-1026308",
+            "S2-event-1029276"
+          ],
+          "feature_name": "比特币连环获利空头",
+          "reason": "多次大额减持BTC空单均实现平仓盈利，单次约276万至919万美元；这是事件窗口内的动作，不代表当前仓位。",
+          "name": "比特币连环获利空头0xb8"
+        },
+        {
+          "evidence_ids": [
+            "S2-asset-BTC"
+          ],
+          "feature_name": "比特币高额盈利交易员",
+          "reason": "统计窗口内BTC已实现交易净收益约400万美元，为所列资产中最高；无完整轮次，不能据此判断胜率。",
+          "name": "比特币高额盈利交易员0xb8"
+        }
+      ],
+      "evidence_ids": [
+        "S2-event-1029273"
+      ],
+      "feature_name": "ZEC高额平仓获利空头",
+      "reason": "最新事件中平掉ZEC空单并实现约2229万美元平仓盈利，显著高于其他单次事件；称谓仅对应该时点动作，不代表当前敞口。",
+      "title_examples": [
+        "ZEC高额平仓获利空头0xb8平掉ZEC空单，单次实现约2229万美元盈利",
+        "ZEC高额平仓获利空头0xb8减持ZEC空单约4270万美元，平仓盈利约2229万美元"
+      ]
+    },
+    {
+      "sample_id": "S3",
+      "address_prefix": "0x0c",
+      "as_of": "2026-11-16T22:59:33.999000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "布伦特原油近九千万美元多头0x0c",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S3-event-1029678"
+          ],
+          "feature_name": "布伦特原油加仓多头",
+          "reason": "事件时点继续增持布伦特原油多单，净加仓约1141万美元；这是动作特征，不代表当前仓位。",
+          "name": "布伦特原油加仓多头0x0c"
+        }
+      ],
+      "evidence_ids": [
+        "S3-position",
+        "S3-event-1029678"
+      ],
+      "feature_name": "布伦特原油近九千万美元多头",
+      "reason": "事件时点布伦特原油多头名义价值约8963万美元，持仓规模是最明确的中性亮点；虽有加仓动作，但未平仓盈利为负，不以盈利或胜率作称号。",
+      "title_examples": [
+        "布伦特原油近九千万美元多头0x0c继续加码布伦特原油多单，净增持约1141万美元",
+        "布伦特原油近九千万美元多头0x0c布伦特原油多头增至约8963万美元，未平仓亏损约1185万美元"
+      ]
+    }
+  ]
+}

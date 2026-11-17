@@ -6407,6 +6407,8 @@ textarea:focus {
 .hlIconButton { display:inline-grid; place-items:center; width:30px; height:30px; border:1px solid #dce4e6; border-radius:4px; background:#fff; color:#28735d; cursor:pointer; }
 .hlIconButton:disabled { opacity:.45; cursor:default; }
 .hlAddress details,.hlAddress > .notice { grid-column:1/-1; }
+.hlNamingDetails { grid-column:1/-1; padding:10px 12px; background:#f7faf8; border-left:3px solid #7da88d; }
+.hlNamingDetails .hlFacts { margin:8px 0 0; }
 .hlAddress details { padding:3px 0; }
 .hlTimeline { gap:12px; }
 .hlTimelineSearch { display:grid; grid-template-columns:minmax(250px,1.3fr) minmax(220px,.7fr); gap:12px; }
@@ -6538,3 +6540,7 @@ textarea:focus {
   .aiReviewQueue { min-height: 290px; border-right: 0; border-bottom: 1px solid #e2e8ea; }
   .aiReviewDetail { max-height: none; padding: 16px; }
 }
+
+.hlNamingDimension { padding: 10px 0; border-top: 1px solid var(--border, #e6e8eb); overflow-wrap: anywhere; }
+.hlNamingDimension ul { padding-left: 20px; margin: 6px 0; }
+.hlNamingDimension li { margin-bottom: 5px; }

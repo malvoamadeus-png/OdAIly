@@ -1,0 +1,47 @@
+{
+  "mode": "model",
+  "prompt_version": "highlight-name-v6",
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "started_at": "2026-11-17T07:13:53.099752+00:00",
+  "runtime_seconds": 5.378,
+  "results": [
+    {
+      "sample_id": "S4",
+      "address_prefix": "0x8a",
+      "as_of": "2026-11-17T05:46:22.003000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "标普500大多头0x8a",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S4-event-1"
+          ],
+          "feature_name": "BTC大多头",
+          "reason": "该时点BTC持仓显著扩大为多头，突出的是事件中的仓位规模与加仓动作。",
+          "name": "BTC大多头0x8a"
+        },
+        {
+          "evidence_ids": [
+            "S4-event-1031590",
+            "S4-position"
+          ],
+          "feature_name": "标普500浮盈巨鲸",
+          "reason": "该时点标普500持仓规模突出且仍有浮盈，属于持仓与浮动收益特征。",
+          "name": "标普500浮盈巨鲸0x8a"
+        }
+      ],
+      "evidence_ids": [
+        "S4-position",
+        "S4-event-1031590"
+      ],
+      "feature_name": "标普500大多头",
+      "reason": "该时点标普500仍持有显著规模的多头仓位；称谓依据当前快照持仓，不将浮盈表述为已实现盈利。",
+      "title_examples": [
+        "标普500大多头0x8a所持标普500多单浮盈回吐至约136万美元"
+      ]
+    }
+  ]
+}

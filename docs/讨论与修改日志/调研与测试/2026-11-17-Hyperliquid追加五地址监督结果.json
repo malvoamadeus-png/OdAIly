@@ -1,0 +1,88 @@
+{
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "production_changes": false,
+  "results": [
+    {
+      "sample_id": "S4",
+      "as_of": "2026-11-17T05:46:22.003000+00:00",
+      "address_prefix": "0x8a",
+      "review_status": "main_name_accepted_for_historical_snapshot",
+      "name": "标普500大多头0x8a",
+      "source_prompt_version": "highlight-name-v6",
+      "evidence_ids": [
+        "S4-position",
+        "S4-event-1031590"
+      ],
+      "title_examples": [
+        "标普500大多头0x8a所持标普500多单浮盈回吐至约136万美元"
+      ],
+      "alternatives_status": "not_approved_as_a_group"
+    },
+    {
+      "sample_id": "S5",
+      "as_of": "2026-11-16T18:11:14.038000+00:00",
+      "address_prefix": "0xb6",
+      "review_status": "main_name_accepted_for_historical_snapshot",
+      "name": "ETH大空头0xb6",
+      "source_prompt_version": "highlight-name-v5",
+      "evidence_ids": [
+        "S5-position",
+        "S5-event-1029078"
+      ],
+      "title_examples": [
+        "ETH大空头0xb6净减持约1460万美元ETH空单，实现约593万美元盈利"
+      ],
+      "alternatives_status": "not_approved_as_a_group"
+    },
+    {
+      "sample_id": "S6",
+      "as_of": "2026-11-16T00:36:38.380000+00:00",
+      "address_prefix": "0x02",
+      "review_status": "main_name_accepted_for_historical_snapshot",
+      "name": "英伟达重仓空头0x02",
+      "source_prompt_version": "highlight-name-v5",
+      "evidence_ids": [
+        "S6-asset-xyz:NVDA",
+        "S6-event-1023466",
+        "S6-position"
+      ],
+      "title_examples": [
+        "英伟达重仓空头0x02净减持约549万美元英伟达空单"
+      ],
+      "alternatives_status": "not_approved_as_a_group"
+    },
+    {
+      "sample_id": "S7",
+      "as_of": "2026-11-13T11:17:43.894000+00:00",
+      "address_prefix": "0x08",
+      "review_status": "main_name_accepted_for_historical_snapshot",
+      "name": "HYPE大多头0x08",
+      "source_prompt_version": "highlight-name-v5",
+      "evidence_ids": [
+        "S7-position",
+        "S7-event-1013650"
+      ],
+      "title_examples": [
+        "HYPE大多头0x08所持HYPE多单浮盈扩大至约4806万美元"
+      ],
+      "alternatives_status": "not_approved_as_a_group"
+    },
+    {
+      "sample_id": "S8",
+      "as_of": "2026-11-17T01:03:05.999000+00:00",
+      "address_prefix": "0x1f",
+      "review_status": "main_name_accepted_for_historical_snapshot",
+      "name": "BTC空头巨鲸0x1f",
+      "source_prompt_version": "highlight-name-v5",
+      "evidence_ids": [
+        "S8-position",
+        "S8-event-1030348"
+      ],
+      "title_examples": [
+        "BTC空头巨鲸0x1f净增持约1531万美元BTC空单"
+      ],
+      "alternatives_status": "not_approved_as_a_group"
+    }
+  ]
+}

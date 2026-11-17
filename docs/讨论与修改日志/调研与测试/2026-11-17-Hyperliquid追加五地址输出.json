@@ -1,0 +1,201 @@
+{
+  "mode": "model",
+  "prompt_version": "highlight-name-v5",
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "started_at": "2026-11-17T07:12:35.488384+00:00",
+  "runtime_seconds": 29.46,
+  "results": [
+    {
+      "sample_id": "S4",
+      "address_prefix": "0x8a",
+      "as_of": "2026-11-17T05:46:22.003000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "LINK爆赚交易员0x8a",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S4-event-1031590",
+            "S4-position"
+          ],
+          "feature_name": "标普500浮盈巨鲸",
+          "reason": "对应当前标普500大额持仓及其浮盈，属于观察时点的未实现盈亏。",
+          "name": "标普500浮盈巨鲸0x8a"
+        },
+        {
+          "evidence_ids": [
+            "S4-event-1"
+          ],
+          "feature_name": "BTC加仓多头",
+          "reason": "对应历史事件中的BTC多单加仓，不代表当前BTC仓位。",
+          "name": "BTC加仓多头0x8a"
+        }
+      ],
+      "evidence_ids": [
+        "S4-asset-LINK"
+      ],
+      "feature_name": "LINK爆赚交易员",
+      "reason": "观察到的LINK已实现交易盈利用于支持“爆赚”称谓；仅适用于样本记录的历史交易窗口。",
+      "title_examples": [
+        "LINK爆赚交易员0x8a所持标普500多单浮盈回吐至约136万美元"
+      ]
+    },
+    {
+      "sample_id": "S5",
+      "address_prefix": "0xb6",
+      "as_of": "2026-11-16T18:11:14.038000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "ETH大空头0xb6",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S5-event-1020139"
+          ],
+          "feature_name": "BTC浮盈空头",
+          "reason": "该时点BTC空头持仓显示显著浮盈；这是未实现浮盈，不代表已兑现收益。",
+          "name": "BTC浮盈空头0xb6"
+        },
+        {
+          "evidence_ids": [
+            "S5-event-3"
+          ],
+          "feature_name": "英伟达大空头",
+          "reason": "该事件记录英伟达空头仓位及大幅减仓动作，适用于该次历史持仓变化。",
+          "name": "英伟达大空头0xb6"
+        }
+      ],
+      "evidence_ids": [
+        "S5-position",
+        "S5-event-1029078"
+      ],
+      "feature_name": "ETH大空头",
+      "reason": "时点快照显示仍持有规模显著的ETH空头；该事件还记录了减仓并实现盈利，称谓侧重当前持仓特征。",
+      "title_examples": [
+        "ETH大空头0xb6净减持约1460万美元ETH空单，实现约593万美元盈利"
+      ]
+    },
+    {
+      "sample_id": "S6",
+      "address_prefix": "0x02",
+      "as_of": "2026-11-16T00:36:38.380000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "英伟达重仓空头0x02",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S6-event-1023466",
+            "S6-position"
+          ],
+          "feature_name": "英伟达大空头",
+          "reason": "时点仍持有英伟达空单，适用于该时点的当前持仓特征。",
+          "name": "英伟达大空头0x02"
+        },
+        {
+          "evidence_ids": [
+            "S6-asset-xyz:SNDK"
+          ],
+          "feature_name": "闪迪爆赚交易员",
+          "reason": "观测统计窗口内闪迪已实现交易盈利突出，称谓仅描述该窗口的历史表现。",
+          "name": "闪迪爆赚交易员0x02"
+        },
+        {
+          "evidence_ids": [
+            "S6-asset-xyz:CRCL"
+          ],
+          "feature_name": "CRCL爆赚交易员",
+          "reason": "观测统计窗口内CRCL已实现交易盈利显著，称谓适用于该窗口历史表现。",
+          "name": "CRCL爆赚交易员0x02"
+        }
+      ],
+      "evidence_ids": [
+        "S6-asset-xyz:NVDA",
+        "S6-event-1023466",
+        "S6-position"
+      ],
+      "feature_name": "英伟达重仓空头",
+      "reason": "时点仍持有规模显著的英伟达空单，且近期动作仍是减持空仓；称谓描述该时点持仓，不代表全历史或当前查询时仓位。",
+      "title_examples": [
+        "英伟达重仓空头0x02净减持约549万美元英伟达空单"
+      ]
+    },
+    {
+      "sample_id": "S7",
+      "address_prefix": "0x08",
+      "as_of": "2026-11-13T11:17:43.894000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "HYPE大多头0x08",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S7-event-1013650"
+          ],
+          "feature_name": "HYPE浮盈巨鲸",
+          "reason": "事件记录显示该时点 HYPE 持仓浮盈突出，称谓仅适用于该时点的浮盈状态。",
+          "name": "HYPE浮盈巨鲸0x08"
+        },
+        {
+          "evidence_ids": [
+            "S7-account"
+          ],
+          "feature_name": "历史盈利交易员",
+          "reason": "账户累计盈亏可作历史背景，不作为当前总盈利标题或称谓依据。",
+          "name": "历史盈利交易员0x08"
+        }
+      ],
+      "evidence_ids": [
+        "S7-position",
+        "S7-event-1013650"
+      ],
+      "feature_name": "HYPE大多头",
+      "reason": "该时点仍持有规模显著的 HYPE 多头仓位；事件所示盈亏为浮盈，名称突出当前持仓而非已兑现利润。",
+      "title_examples": [
+        "HYPE大多头0x08所持HYPE多单浮盈扩大至约4806万美元"
+      ]
+    },
+    {
+      "sample_id": "S8",
+      "address_prefix": "0x1f",
+      "as_of": "2026-11-17T01:03:05.999000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "BTC空头巨鲸0x1f",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S8-asset-BTC"
+          ],
+          "feature_name": "BTC短窗盈利巨鲸",
+          "reason": "在该资产已观察到的区间内，BTC平仓交易净盈利显著；仅代表这段观察期的已实现表现。",
+          "name": "BTC短窗盈利巨鲸0x1f"
+        },
+        {
+          "evidence_ids": [
+            "S8-position",
+            "S8-event-1030348"
+          ],
+          "feature_name": "BTC大空头",
+          "reason": "当时持有规模显著的BTC空单，反映该时点敞口，不代表历史盈利或后续仓位。",
+          "name": "BTC大空头0x1f"
+        }
+      ],
+      "evidence_ids": [
+        "S8-position",
+        "S8-event-1030348"
+      ],
+      "feature_name": "BTC空头巨鲸",
+      "reason": "当时持有大规模BTC空单，称谓突出当前快照的持仓规模与方向；未据此推断其盈利或全历史表现。",
+      "title_examples": [
+        "BTC空头巨鲸0x1f净增持约1531万美元BTC空单"
+      ]
+    }
+  ]
+}

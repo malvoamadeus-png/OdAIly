@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 from packages.common.paths import get_paths
@@ -200,6 +201,25 @@ def run_command(args: Any) -> int:
         from .dispatch import EventDispatcher
         print(encode(EventDispatcher(store, pipeline_database_path=pipeline_path).dispatch(
             limit=args.limit, event_keys=args.event_keys)))
+    elif action == 'run-naming':
+        import time
+        from .naming import NamingWorker, NamingStore, DEFAULT_MODEL
+        from packages.common.config import load_x_processing_settings
+        from packages.x_processing.ai_client import OpenAIResponsesClient
+        settings = load_x_processing_settings()
+        if not settings.openai_api_key:
+            raise RuntimeError('Missing OPENAI_API_KEY')
+        store.initialize()
+        client = OpenAIResponsesClient(api_key=settings.openai_api_key, base_url=str(settings.openai_base_url),
+            api_style=settings.openai_api_style, timeout_seconds=settings.writer_request_timeout_seconds,
+            max_attempts=settings.retry.max_attempts, backoff_seconds=settings.retry.backoff_seconds)
+        worker = NamingWorker(store, NamingStore(path), ai_client=client, model=DEFAULT_MODEL, batch_size=args.batch_size)
+        while True:
+            report = worker.run_once()
+            print(encode(report), flush=True)
+            if args.once:
+                break
+            time.sleep(1 if report['checked'] else args.interval_seconds)
     elif action == 'status':
         from .dashboard import dashboard
         print(encode(dashboard(store, pipeline_database_path=pipeline_path, page=args.page)))

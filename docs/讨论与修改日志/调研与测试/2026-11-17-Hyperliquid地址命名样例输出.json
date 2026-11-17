@@ -1,0 +1,125 @@
+{
+  "mode": "model",
+  "prompt_version": "highlight-name-v4",
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "started_at": "2026-11-17T06:17:36.687630+00:00",
+  "runtime_seconds": 17.752,
+  "results": [
+    {
+      "sample_id": "S1",
+      "address_prefix": "0xf5",
+      "as_of": "2026-11-16T20:52:42.040000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "近期SOL高胜率交易员0xf5",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S1-position",
+            "S1-event-1029278"
+          ],
+          "feature_name": "SOL大空头",
+          "reason": "事件时仍持有SOL空头，且该动作后空头仓位仍在；适用于该历史时点的持仓特征。",
+          "name": "SOL大空头0xf5"
+        },
+        {
+          "evidence_ids": [
+            "S1-asset-ZEC"
+          ],
+          "feature_name": "ZEC高胜率交易员",
+          "reason": "观察到的ZEC完整交易轮次均为盈利，适用于该资产统计窗口。",
+          "name": "ZEC高胜率交易员0xf5"
+        }
+      ],
+      "evidence_ids": [
+        "S1-asset-SOL"
+      ],
+      "feature_name": "近期SOL高胜率交易员",
+      "reason": "观察窗口内SOL完整交易轮次胜率较高，且有显著已实现盈利；称谓仅适用于该观察窗口。",
+      "title_examples": [
+        "近期SOL高胜率交易员0xf5净减持约104万美元SOL空单"
+      ]
+    },
+    {
+      "sample_id": "S2",
+      "address_prefix": "0xb8",
+      "as_of": "2026-11-16T20:48:51.603000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "ZEC爆赚交易员0xb8",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S2-event-1029273"
+          ],
+          "feature_name": "ZEC爆赚交易员",
+          "reason": "ZEC空单平仓实现显著盈利，适用于该次已完成的历史交易。",
+          "name": "ZEC爆赚交易员0xb8"
+        },
+        {
+          "evidence_ids": [
+            "S2-event-1029274"
+          ],
+          "feature_name": "HYPE爆赚交易员",
+          "reason": "HYPE空单平仓实现可观盈利，称谓对应这次历史平仓表现。",
+          "name": "HYPE爆赚交易员0xb8"
+        },
+        {
+          "evidence_ids": [
+            "S2-event-1025466"
+          ],
+          "feature_name": "白银空头交易员",
+          "reason": "该次减仓后仍留有白银空单，体现事件时的空头持仓特征。",
+          "name": "白银空头交易员0xb8"
+        }
+      ],
+      "evidence_ids": [
+        "S2-event-1029273"
+      ],
+      "feature_name": "ZEC爆赚交易员",
+      "reason": "ZEC空单平仓实现显著盈利，突出这次已完成交易的结果；不代表当前持仓或全历史表现。",
+      "title_examples": [
+        "ZEC爆赚交易员0xb8清仓ZEC空单，实现约2230万美元盈利"
+      ]
+    },
+    {
+      "sample_id": "S3",
+      "address_prefix": "0x0c",
+      "as_of": "2026-11-16T22:59:33.999000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "布伦特原油巨鲸0x0c",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S3-event-1029678"
+          ],
+          "feature_name": "布伦特原油大多头",
+          "reason": "事件时点仍持有并加仓布伦特原油多单，称谓对应当时持仓方向。",
+          "name": "布伦特原油大多头0x0c"
+        },
+        {
+          "evidence_ids": [
+            "S3-asset-xyz:BRENTOIL"
+          ],
+          "feature_name": "布伦特原油交易员",
+          "reason": "该称谓仅指已观察到的布伦特原油交易，不暗示盈利或胜率。",
+          "name": "布伦特原油交易员0x0c"
+        }
+      ],
+      "evidence_ids": [
+        "S3-position",
+        "S3-event-1029678"
+      ],
+      "feature_name": "布伦特原油巨鲸",
+      "reason": "事件时点布伦特原油持仓规模显著，且继续加仓；这是历史事件中的持仓特征，不代表查询时仓位。",
+      "title_examples": [
+        "布伦特原油巨鲸0x0c净增持约1141万美元布伦特原油多单"
+      ]
+    }
+  ]
+}

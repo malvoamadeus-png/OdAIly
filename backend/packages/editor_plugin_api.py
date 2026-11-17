@@ -1017,6 +1017,13 @@ class EditorPluginNewsGenService:
                          view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
                          address_status=payload.get('address_status', 'all'))
 
+    def get_hyperliquid_address_naming_details(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        from packages.hyperliquid_news.dashboard import address_naming_details
+        from packages.hyperliquid_news.store import NewsStore
+        address = str(payload.get('address') or '')
+        return address_naming_details(NewsStore(load_hyperliquid_storage_path()), address)
+
     def save_hyperliquid_address_block(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         from packages.common.storage import load_hyperliquid_storage_path
         from packages.hyperliquid_news.store import NewsStore
@@ -1529,6 +1536,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/stock-market/get",
         "/console/macro-newsflash/get",
         "/console/hyperliquid-news/get",
+        "/console/hyperliquid-news/address-naming-details",
         "/console/hyperliquid-news/address-note/save",
         "/console/hyperliquid-news/address-block/save",
         "/console/hyperliquid-news/address-add",
@@ -1893,6 +1901,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/hyperliquid-news/address-note/save":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.save_hyperliquid_address_note(actor, self._read_json())})
+                    return
+                if self.path == "/console/hyperliquid-news/address-naming-details":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_hyperliquid_address_naming_details(actor, self._read_json())})
                     return
                 if self.path == "/console/hyperliquid-news/address-add":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.add_hyperliquid_address(actor, self._read_json())})

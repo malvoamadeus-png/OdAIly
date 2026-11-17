@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Activity, ArrowRight, ChevronRight, Clock3, Database, FileText, Layers, Plus, RefreshCw, Save, Search, ShieldCheck } from 'lucide-react';
-import { addHyperliquidAddress, getHyperliquidNewsDashboard, saveHyperliquidAddressNote, saveHyperliquidAddressBlock, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
+import { addHyperliquidAddress, getHyperliquidAddressNamingDetails, getHyperliquidNewsDashboard, saveHyperliquidAddressNote, saveHyperliquidAddressBlock, type HyperliquidNewsDashboard, type HyperliquidNewsEvent } from './xCaptureStore';
 
 function money(value: unknown): string {
   if (value === null || value === undefined) return '未取得';
@@ -156,9 +156,30 @@ function EventDetail({ event, labels, onOpenPrompt }: { event: HyperliquidNewsEv
   </article>;
 }
 
+function NamingEvidence({ dimension: d }: { dimension: Record<string, any> }) {
+  if (!d.available) return <p className="hlMuted">{d.missing || '未取得'}</p>;
+  const entries = Object.entries(d.data || {}) as Array<[string, any]>;
+  if (d.key === 'current_positions') return entries.length ? <ul>{entries.map(([coin, p]) => <li key={coin}>{coin} · {Number(p.size) > 0 ? '多仓' : '空仓'} {money(p.notional)} · 浮盈亏 {money(p.unrealized_pnl)}</li>)}</ul> : <p>快照为空仓</p>;
+  if (d.key === 'asset_profit' || d.key === 'asset_win_rate') return <ul>{entries.map(([coin, a]) => <li key={coin}>{coin} · {d.key === 'asset_profit' ? `净交易盈亏 ${money(a.closed_pnl_less_fees)}（扣手续费、不含资金费）` : `${a.rounds} 个完整交易轮 · 胜率 ${a.win_rate == null ? '未取得' : percent(a.win_rate)}`} · {time(a.first_observed_fill_ms ?? a.window_start_ms)} 至 {time(a.last_observed_fill_ms ?? a.window_end_ms)}</li>)}</ul>;
+  if (d.key === 'account_performance') {
+    const periods: Record<string, string> = { day: '单日', week: '一周', month: '一月', allTime: '累计' };
+    return <ul>{Object.entries(d.data?.windows || {}).map(([key, value]: [string, any]) => <li key={key}>{periods[key] || key}：{money(value.pnl)}（含浮盈亏） · {time(value.history_sample_ms ?? value.observed_ms)}</li>)}</ul>;
+  }
+  if (d.key === 'recent_actions') return <ul>{(d.data || []).map((e: any, i: number) => <li key={i}>{time(e.observed_ms)} · {e.coin} · 持仓数量 {e.previous_size ?? '未取得'} → {e.position_size ?? '空仓'} · 平仓盈亏 {money(e.closed_pnl)}</li>)}</ul>;
+  return <p>{typeof d.data === 'string' ? d.data : '可用'}</p>;
+}
+
 function AddressRow({ address: a, onChanged }: { address: Record<string, any>; onChanged: () => void }) {
   const [note, setNote] = useState(a.note || ''), [saved, setSaved] = useState(a.note || '');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [expanded, setExpanded] = useState(false), [details, setDetails] = useState<Record<string, any> | null>(null), [detailsError, setDetailsError] = useState('');
+  useEffect(() => {
+    setNote(a.note || ''); setSaved(a.note || ''); setDetails(null); setDetailsError(''); setExpanded(false);
+  }, [a.address, a.note, a.name_checked_ms, a.name_manual_locked]);
+  async function toggleDetails() {
+    setExpanded(v => !v);
+    if (!details && !expanded) { setDetailsError(''); try { setDetails(await getHyperliquidAddressNamingDetails(a.address)); } catch (e) { setDetailsError(String(e)); } }
+  }
   async function block() {
     setBusy(true); setError('');
     try { await saveHyperliquidAddressBlock(a.address, !a.blocked); onChanged(); }
@@ -166,15 +187,31 @@ function AddressRow({ address: a, onChanged }: { address: Record<string, any>; o
   }
   async function save() {
     setBusy(true); setError('');
-    try { const result = await saveHyperliquidAddressNote(a.address, note); setSaved(result.note); setNote(result.note); }
+    try { const result = await saveHyperliquidAddressNote(a.address, note); setSaved(result.note); setNote(result.note); onChanged(); }
     catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   return <article className="hlAddress">
     <a className="hlAddressLink" href={`https://hyperbot.network/trader/${a.address}`} target="_blank" rel="noreferrer">{shortAddress(a.address)}</a>
     <input className="hlAddressInlineNote" aria-label={`${a.address} 地址备注`} placeholder="备注" maxLength={80} value={note} onChange={e => setNote(e.target.value)} />
     <span className={`hlAddressState ${a.blocked ? 'blocked' : ''}`}>{a.blocked ? '已拉黑' : '监测中'}</span>
-    <small>{a.blocked ? '已停止监测' : `检查 ${time(a.last_polled_ms)}`}</small>
-    <div className="hlAddressActions"><button className="hlIconButton" title="保存备注" aria-label="保存备注" disabled={busy || note === saved} onClick={save}>{busy ? '…' : <Save size={14} />}</button><button className="hlButton" disabled={busy} onClick={block}>{a.blocked ? '解除拉黑' : '拉黑'}</button></div>
+    <small>{a.name_manual_locked ? '人工维护 · 已锁定' : a.name_status === 'expired' ? '称谓已失效 · 待重命名' : a.name_checked_ms ? 'AI 自动备注' : '等待自动命名'}<br />{a.blocked ? '已停止监测' : `监测检查 ${time(a.last_polled_ms)}`}</small>
+    <div className="hlAddressActions"><button className="hlIconButton" title="保存备注" aria-label="保存备注" disabled={busy || note === saved} onClick={save}>{busy ? '…' : <Save size={14} />}</button><button className="hlButton" disabled={busy} onClick={block}>{a.blocked ? '解除拉黑' : '拉黑'}</button><button className="hlButton" type="button" aria-expanded={expanded} onClick={toggleDetails}>{expanded ? '收起检查' : '查看检查'}</button></div>
+    {expanded && <div className="hlNamingDetails">
+      <p><strong>{a.display_name || '未设置备注'}</strong> · {a.name_manual_locked ? '人工维护，程序不再修改' : 'AI 自动命名'} · 上次检查 {time(a.name_checked_ms)} · 下次检查 {a.name_manual_locked ? '不自动复核' : time(a.name_next_check_ms)}</p>
+      {detailsError && <p className="notice error">{detailsError}</p>}
+      {!details && !detailsError && <p className="hlMuted">正在读取命名分析…</p>}
+      {details && <>
+        <p><strong>最终选用：{details.selected_evidence?.label || (a.name_manual_locked ? '人工备注' : '尚未检查')}</strong>。{details.reason || ''}</p>
+        {details.last_error && <p className="notice error">检查失败：{details.last_error}</p>}
+        {!a.name_manual_locked && <p className="hlMuted">模型：{details.naming?.model || '—'} · 下列数据为命名时保存的证据。</p>}
+        {(details.dimensions || []).map((d: any) => <section className="hlNamingDimension" key={d.evidence_id}>
+          <strong>{d.label} · {d.available ? '可用' : '未取得'}{details.selected_dimensions === d.evidence_id ? ' · 已选用' : ''}</strong>
+          {d.observed_ms && <small> 数据时间 {time(d.observed_ms)}</small>}
+          <NamingEvidence dimension={d} />
+        </section>)}
+        {(details.dimensions || []).length > 0 && <details><summary>原始检查证据</summary><pre>{JSON.stringify(details.dimensions, null, 2)}</pre></details>}
+      </>}
+    </div>}
     {(error || a.error) && <p className="notice error">{error || a.error}</p>}
   </article>;
 }

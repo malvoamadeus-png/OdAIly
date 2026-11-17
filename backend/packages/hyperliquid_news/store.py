@@ -189,6 +189,10 @@ class NewsStore:
                     "AND name IN ('hl_news_candidates_address_insert','hl_news_candidates_address_delete')")}
                 if len(triggers) != 2:
                     conn.executescript(_candidate_address_triggers(if_not_exists=True))
+        # Naming state is additive and has its own migration, including legacy
+        # address_note rows.  Keep the import local to avoid a module cycle.
+        from .naming import NamingStore
+        NamingStore(self.path).initialize()
     def discover(self, address: str, *, source: dict[str, Any], now_ms: int, limit: int | None = 500) -> bool:
         address = address_key(address)
         with connect_sqlite(self.path) as conn:
@@ -477,6 +481,24 @@ class NewsStore:
             conn.execute(f'''INSERT INTO {state_table} VALUES(?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET
                 observed_ms=excluded.observed_ms,state=excluded.state,history=excluded.history,coverage=excluded.coverage''',
                          (address, now_ms, encode(state), encode(history), encode(coverage)))
+            name = conn.execute("SELECT kind,coin,side,manual_locked,current_name FROM hl_news_address_names WHERE address=?", (address,)).fetchone()
+            if name and name['kind'] == 'position' and not name['manual_locked']:
+                snapshots = []
+                for table in ('hl_news_normal_state', 'hl_news_state'):
+                    row = conn.execute(f'SELECT observed_ms,state FROM {table} WHERE address=?', (address,)).fetchone()
+                    if row:
+                        snapshots.append((int(row['observed_ms']), json.loads(row['state']).get('positions') or {}))
+                latest_positions = max(snapshots, key=lambda item: item[0])[1] if snapshots else {}
+                position = latest_positions.get(name['coin'])
+                size = float(position.get('size', 0)) if isinstance(position, dict) else 0.0
+                expected = 1 if name['side'] == 'long' else -1
+                if not position or size == 0 or (1 if size > 0 else -1) != expected:
+                    conn.execute("""UPDATE hl_news_address_names SET status='expired',current_name=NULL,
+                        reason='position_changed_or_closed',next_check_ms=?,retry_after_ms=0,inflight_token=NULL,inflight_started_ms=NULL
+                        WHERE address=? AND manual_locked=0 AND kind='position'""", (now_ms, address))
+                    conn.execute("DELETE FROM hl_news_metadata WHERE key=? AND json_extract(payload,'$.origin')='auto'", ('address_note:'+address,))
+            if name and not name['manual_locked'] and not old and str(name['current_name'] or '').startswith('普通地址'):
+                conn.execute('UPDATE hl_news_address_names SET next_check_ms=?,retry_after_ms=0 WHERE address=?', (now_ms,address))
             conn.execute('UPDATE hl_news_addresses SET last_polled_ms=?,error=NULL WHERE address=?', (now_ms, address))
             if state_table == 'hl_news_normal_state':
                 conn.execute('''INSERT INTO hl_news_normal_schedule VALUES(?,?)
@@ -556,22 +578,31 @@ class NewsStore:
                 'max_qualified_delay_ms': max(0, now_ms-due['oldest']) if due['oldest'] is not None else 0}
 
     def save_address_note(self, address: str, note: str, *, updated_by: str) -> dict[str, Any]:
-        address = address_key(address)
-        if not isinstance(note, str) or len(note.strip()) > 80 or any(c in note for c in '\n\r（）()'):
-            raise ValueError('Note must be at most 80 characters without newlines or parentheses')
-        with connect_sqlite(self.path) as conn:
-            if not conn.execute('SELECT 1 FROM hl_news_addresses WHERE address=?', (address,)).fetchone():
-                raise ValueError('Unknown monitored address')
-        from datetime import UTC, datetime
-        value = {'address': address, 'note': note.strip(), 'updated_by': updated_by,
-                 'updated_at': datetime.now(UTC).isoformat()}
-        self.save_global('address_note:' + address, value, [])
-        return value
+        from .naming import NamingStore
+        return NamingStore(self.path).set_manual(address, note, updated_by=updated_by)
 
     def with_address_notes(self, event: dict[str, Any]) -> dict[str, Any]:
-        notes = {a: self.metadata('address_note:' + address_key(a), {}).get('note', '')
-                 for a in event.get('addresses', [])}
-        return {**event, 'evidence': {**event['evidence'], 'address_notes': notes}}
+        notes = {}
+        names = {}
+        from .naming import NamingStore
+        naming = NamingStore(self.path)
+        for address in event.get('addresses', []):
+            address = address_key(address)
+            note_value = self.metadata('address_note:' + address, {})
+            notes[address] = note_value.get('note', '') if note_value.get('origin') != 'auto' else ''
+            row = naming.get(address)
+            if row and row.get('display_name') and not row.get('manual_locked'):
+                valid = row.get('status') == 'active'
+                if valid and row.get('kind') == 'position':
+                    event_side = event.get('evidence', {}).get('position') or {}
+                    event_coin = str(event.get('coin', ''))
+                    event_size = float(event_side.get('size', 0)) if event_side else 0
+                    valid = (event_coin == row.get('coin') and event_size != 0 and
+                             ('long' if event_size > 0 else 'short') == row.get('side'))
+                if valid:
+                    names[address] = row['display_name']
+        return {**event, 'evidence': {**event['evidence'], 'address_notes': notes,
+                                      'address_names': names}}
 
     def blocked(self, address: str, *, conn=None) -> bool:
         if conn is None:
@@ -610,6 +641,12 @@ class NewsStore:
             value['last_blocked_ms'] = int(datetime.now(UTC).timestamp()*1000) if blocked or previously_blocked else (json.loads(previous[0]).get('last_blocked_ms', -1) if previous else -1)
             conn.execute('INSERT INTO hl_news_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
                          ('address_block:' + address, encode(value)))
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hl_news_address_names'").fetchone():
+                if blocked:
+                    conn.execute("UPDATE hl_news_address_names SET status='blocked',current_name=NULL,inflight_token=NULL,inflight_started_ms=NULL WHERE address=? AND manual_locked=0", (address,))
+                    conn.execute("DELETE FROM hl_news_metadata WHERE key=? AND json_extract(payload,'$.origin')='auto'", ('address_note:'+address,))
+                elif previously_blocked:
+                    conn.execute("UPDATE hl_news_address_names SET status='expired',next_check_ms=?,current_name=NULL WHERE address=? AND manual_locked=0", (int(datetime.now(UTC).timestamp()*1000), address))
             if blocked:
                 conn.execute('DELETE FROM hl_news_account_pool WHERE address=?', (address,))
                 conn.execute("""INSERT OR IGNORE INTO hl_news_dispatch

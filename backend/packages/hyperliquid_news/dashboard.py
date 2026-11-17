@@ -146,10 +146,16 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
         addresses = []
         address_clause = "instr(lower(a.address),lower(?))>0" if view == 'timeline' else "(instr(lower(a.address),lower(?))>0 OR instr(lower(COALESCE(json_extract(m.payload,'$.note'),'')),lower(?))>0)"
         address_params = (address_query.strip(),) if view == 'timeline' else (address_query.strip(), address_query.strip())
+        name_table = 'hl_news_address_names' in tables
+        name_columns = ("n.current_name,n.kind AS name_kind,n.coin AS name_coin,n.side AS name_side,n.status AS name_status,"
+                        "n.manual_locked AS name_manual_locked,n.checked_ms AS name_checked_ms,n.next_check_ms AS name_next_check_ms") if name_table else "NULL AS current_name,NULL AS name_kind,NULL AS name_coin,NULL AS name_side,NULL AS name_status,0 AS name_manual_locked,0 AS name_checked_ms,0 AS name_next_check_ms"
+        name_join = 'LEFT JOIN hl_news_address_names n ON n.address=a.address' if name_table else ''
         for row in conn.execute(f'''SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
-            m.payload AS note_payload,b.payload AS block_payload FROM hl_news_addresses a
+            m.payload AS note_payload,b.payload AS block_payload,{name_columns}
+            FROM hl_news_addresses a
             LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
             LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
+            {name_join}
             WHERE {address_clause}
             AND (?='all' OR (?='blocked' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=1)
                  OR (?='active' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=0))
@@ -158,6 +164,8 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
             item = dict(row)
             item['note'] = json.loads(item.pop('note_payload') or '{}').get('note', '')
             item['blocked'] = bool(json.loads(item.pop('block_payload') or '{}').get('blocked'))
+            item['display_name'] = item.get('note') if item.get('name_manual_locked') else (item.get('current_name') or f"{item['address'][:4].lower()}地址")
+            item['name_manual_locked'] = bool(item.get('name_manual_locked'))
             addresses.append(item)
         counts: dict[str, int] = {}
         if not timeline:
@@ -172,3 +180,8 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
             'production': store.metadata('production_account_profit', None),
             'account_pool': store.account_pool_stats(int(time.time()*1000)) if not timeline and 'hl_news_account_pool' in tables else {},
             'flow': ['硬规则命中', '内部行为防重', '搜索者（跨来源查重）', '编写者1（独立Prompt）', '编写者2', '固定数据组装', '挂后台']}
+
+
+def address_naming_details(store: NewsStore, address: str) -> dict[str, Any]:
+    from .naming import naming_details
+    return naming_details(store, address)

@@ -3387,6 +3387,9 @@ export async function getHyperliquidNewsDashboard(page = 0, scenario = 'account_
 export async function saveHyperliquidAddressNote(address: string, note: string): Promise<{ address: string; note: string }> {
   return consoleApiPost('/console/hyperliquid-news/address-note/save', { address, note });
 }
+export async function getHyperliquidAddressNamingDetails(address: string): Promise<Record<string, any>> {
+  return consoleApiPost('/console/hyperliquid-news/address-naming-details', { address });
+}
 
 export async function addHyperliquidAddress(address: string): Promise<{ address: string; created: boolean; already_manual: boolean }> {
   return consoleApiPost('/console/hyperliquid-news/address-add', { address });

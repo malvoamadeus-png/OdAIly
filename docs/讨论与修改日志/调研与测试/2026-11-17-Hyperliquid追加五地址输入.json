@@ -1,0 +1,2079 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "sample_id": "S4",
+      "address_prefix": "0x8a",
+      "as_of": "2026-11-17T05:46:22.003000+00:00",
+      "coverage": {
+        "mode": "historical_production_snapshot",
+        "retrieved_at": "2026-11-17T07:11:42.270290+00:00",
+        "scope": "bounded_discovery_and_retained_api_history",
+        "all_market_rank_available": false,
+        "full_lifetime_history": false,
+        "asset_statistics_as_of": "2026-11-17T05:46:22.003000+00:00",
+        "note": "No future observations used. Assets missing means unavailable, not zero. Historical events are not current query-time positions; statistics retain their own timestamps."
+      },
+      "assets": [
+        {
+          "id": "S4-asset-BTC",
+          "coin": "BTC",
+          "statistics_observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "observed_start": "2026-11-14T21:18:15.559000+00:00",
+          "observed_end": "2026-11-15T01:45:41.377000+00:00",
+          "trading_pnl_usd": "-1210.328523",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S4-asset-LINK",
+          "coin": "LINK",
+          "statistics_observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "observed_start": "2026-11-14T21:05:57.577000+00:00",
+          "observed_end": "2026-11-14T22:10:37.937000+00:00",
+          "trading_pnl_usd": "158652.135944",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S4-asset-UNI",
+          "coin": "UNI",
+          "statistics_observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "observed_start": "2026-11-14T20:59:37.265000+00:00",
+          "observed_end": "2026-11-14T22:01:32.761000+00:00",
+          "trading_pnl_usd": "95087.519279",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S4-asset-ZEC",
+          "coin": "ZEC",
+          "statistics_observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "observed_start": "2026-11-14T20:57:03.157000+00:00",
+          "observed_end": "2026-11-14T21:18:10.724000+00:00",
+          "trading_pnl_usd": "-167.408873",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S4-asset-xyz:SKHX",
+          "coin": "xyz:SKHX",
+          "statistics_observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "observed_start": "2026-11-13T02:55:11.183000+00:00",
+          "observed_end": "2026-11-13T02:55:11.183000+00:00",
+          "trading_pnl_usd": "0.949115",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        }
+      ],
+      "account_pnl": {
+        "id": "S4-account",
+        "data": {
+          "observed_ms": 1794542880012,
+          "pnl": "66969833.1241770014",
+          "scope": "perpAllTime_including_unrealized",
+          "source": "hyperliquid_portfolio"
+        },
+        "age_seconds_at_event": 351501.991,
+        "eligible_for_current_total_pnl_copy": false,
+        "usage": "historical_background_only"
+      },
+      "events": [
+        {
+          "id": "S4-event-1031590",
+          "source_task_id": 1031590,
+          "observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "coin": "xyz:SP500",
+          "kinds": [
+            "profit_giveback"
+          ],
+          "previous_position": {
+            "coin": "xyz:SP500",
+            "notional": "41742607.3281000033",
+            "size": "5594.099",
+            "unrealized_pnl": "1622992.2262039999"
+          },
+          "final_position": {
+            "coin": "xyz:SP500",
+            "notional": "41481922.3147",
+            "size": "5594.099",
+            "unrealized_pnl": "1362307.2128039999"
+          },
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {
+            "episode_peak_unrealized_pnl": "2370923.2625040002",
+            "episode_peak_ms": 1794543745110,
+            "news_change": {
+              "current_size": "5594.099",
+              "observed_ms": 1794894382003,
+              "previous_floating_pnl": "1622992.2262039999",
+              "previous_observed_ms": 1794843458756,
+              "previous_position_value": "41742607.3281000033",
+              "previous_size": "5594.099"
+            }
+          }
+        },
+        {
+          "id": "S4-event-1",
+          "source_task_id": null,
+          "observed_at": "2026-11-15T11:21:36.622000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "large_position",
+            "large_position_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "2992799.0239840001",
+            "size": "46.23883",
+            "unrealized_pnl": "-275046.570457"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "13331527.2091099992",
+            "size": "203.80547",
+            "unrealized_pnl": "129685.136589"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "加仓",
+            "estimated_value": "10306906.62231999938150182132",
+            "quantity": "157.56664",
+            "side": "多单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "0",
+            "closed_pnl": "0.0",
+            "open_long_notional": "9933996.478080",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "0"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "203.80547",
+              "observed_ms": 1794741696622,
+              "previous_floating_pnl": "-275046.570457",
+              "previous_observed_ms": 1794690261615,
+              "previous_position_value": "2992799.0239840001",
+              "previous_size": "46.23883"
+            }
+          }
+        }
+      ],
+      "current_positions": [
+        {
+          "id": "S4-position",
+          "observed_at": "2026-11-17T05:46:22.003000+00:00",
+          "coin": "xyz:SP500",
+          "position": {
+            "coin": "xyz:SP500",
+            "notional": "41481922.3147",
+            "size": "5594.099",
+            "unrealized_pnl": "1362307.2128039999"
+          }
+        }
+      ],
+      "previous_name": null
+    },
+    {
+      "sample_id": "S5",
+      "address_prefix": "0xb6",
+      "as_of": "2026-11-16T18:11:14.038000+00:00",
+      "coverage": {
+        "mode": "historical_production_snapshot",
+        "retrieved_at": "2026-11-17T07:11:42.281551+00:00",
+        "scope": "bounded_discovery_and_retained_api_history",
+        "all_market_rank_available": false,
+        "full_lifetime_history": false,
+        "asset_statistics_as_of": "2026-11-16T18:11:14.038000+00:00",
+        "note": "No future observations used. Assets missing means unavailable, not zero. Historical events are not current query-time positions; statistics retain their own timestamps."
+      },
+      "assets": [
+        {
+          "id": "S5-asset-ETH",
+          "coin": "ETH",
+          "statistics_observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "observed_start": "2026-11-13T02:22:18.703000+00:00",
+          "observed_end": "2026-11-15T14:04:23.877000+00:00",
+          "trading_pnl_usd": "2038067.495803",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S5-asset-HYPE",
+          "coin": "HYPE",
+          "statistics_observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "observed_start": "2026-11-14T04:21:01.629000+00:00",
+          "observed_end": "2026-11-15T06:56:16.607000+00:00",
+          "trading_pnl_usd": "201.839471",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S5-asset-XMR",
+          "coin": "XMR",
+          "statistics_observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "observed_start": "2026-11-13T12:05:01.975000+00:00",
+          "observed_end": "2026-11-14T04:00:15.582000+00:00",
+          "trading_pnl_usd": "138414.720588",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S5-asset-xyz:ANT",
+          "coin": "xyz:ANT",
+          "statistics_observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "observed_start": "2026-11-13T15:49:39.763000+00:00",
+          "observed_end": "2026-11-15T23:02:43.778000+00:00",
+          "trading_pnl_usd": "-29.612225",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S5-asset-xyz:MU",
+          "coin": "xyz:MU",
+          "statistics_observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "observed_start": "2026-11-13T15:52:39.139000+00:00",
+          "observed_end": "2026-11-13T16:03:52.484000+00:00",
+          "trading_pnl_usd": "126.072561",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        }
+      ],
+      "account_pnl": {
+        "id": "S5-account",
+        "data": {
+          "observed_ms": 1794786720048,
+          "pnl": "34858431.8413759992",
+          "scope": "perpAllTime_including_unrealized",
+          "source": "hyperliquid_portfolio"
+        },
+        "age_seconds_at_event": 65953.99,
+        "eligible_for_current_total_pnl_copy": false,
+        "usage": "historical_background_only"
+      },
+      "events": [
+        {
+          "id": "S5-event-1029078",
+          "source_task_id": 1029078,
+          "observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "coin": "ETH",
+          "kinds": [
+            "large_position_action",
+            "large_realized_result"
+          ],
+          "previous_position": {
+            "coin": "ETH",
+            "notional": "20312407.0151400007",
+            "size": "-11118.5106",
+            "unrealized_pnl": "8125242.2311260002"
+          },
+          "final_position": {
+            "coin": "ETH",
+            "notional": "5601709.8059999999",
+            "size": "-3082.605",
+            "unrealized_pnl": "2282623.168271"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "14602847.65631999973931445644",
+            "quantity": "8035.9056",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "14625128.48317",
+            "closed_pnl": "5928146.551838",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "5928146.551838"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-3082.605",
+              "observed_ms": 1794852674038,
+              "previous_floating_pnl": "8125242.2311260002",
+              "previous_observed_ms": 1794801348604,
+              "previous_position_value": "20312407.0151400007",
+              "previous_size": "-11118.5106"
+            }
+          }
+        },
+        {
+          "id": "S5-event-1",
+          "source_task_id": null,
+          "observed_at": "2026-11-15T13:55:30.280000+00:00",
+          "coin": "ETH",
+          "kinds": [
+            "large_position_action"
+          ],
+          "previous_position": {
+            "coin": "ETH",
+            "notional": "24332917.0120199993",
+            "size": "-13902.9351",
+            "unrealized_pnl": "11226413.3783829994"
+          },
+          "final_position": {
+            "coin": "ETH",
+            "notional": "20880429.8279439993",
+            "size": "-11387.9174",
+            "unrealized_pnl": "8246277.1850500004"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "4611435.854011999845405237132",
+            "quantity": "2515.0177",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "4574302.25163",
+            "closed_pnl": "1834777.819074",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "1834777.819074"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-11387.9174",
+              "observed_ms": 1794750930280,
+              "previous_floating_pnl": "11226413.3783829994",
+              "previous_observed_ms": 1794699892006,
+              "previous_position_value": "24332917.0120199993",
+              "previous_size": "-13902.9351"
+            }
+          }
+        },
+        {
+          "id": "S5-event-1020139",
+          "source_task_id": 1020139,
+          "observed_at": "2026-11-14T23:44:52.006000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "large_profit"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "52623070.7211299986",
+            "size": "-780.88517",
+            "unrealized_pnl": "8977218.668598"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "49659611.5009799972",
+            "size": "-780.88517",
+            "unrealized_pnl": "11940677.8887479994"
+          },
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {
+            "episode_peak_unrealized_pnl": "11940677.8887479994",
+            "episode_peak_ms": 1794699892006,
+            "previous_reported_floating_pnl": "5616288.8969179997",
+            "news_change": {
+              "current_size": "-780.88517",
+              "observed_ms": 1794699892006,
+              "previous_floating_pnl": "8977218.668598",
+              "previous_observed_ms": 1794649659007,
+              "previous_position_value": "52623070.7211299986",
+              "previous_size": "-780.88517"
+            }
+          }
+        },
+        {
+          "id": "S5-event-3",
+          "source_task_id": null,
+          "observed_at": "2026-11-13T20:33:41.461000+00:00",
+          "coin": "xyz:NVDA",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "xyz:NVDA",
+            "notional": "9345150.0",
+            "size": "-57000.0",
+            "unrealized_pnl": "831306.95631"
+          },
+          "final_position": {
+            "coin": "xyz:NVDA",
+            "notional": "1940040.0",
+            "size": "-12000.0",
+            "unrealized_pnl": "202371.990479"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "7275150.000",
+            "quantity": "45000.0",
+            "side": "空单"
+          },
+          "actions": {},
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-12000.0",
+              "observed_ms": 1794602021461,
+              "previous_floating_pnl": "831306.95631",
+              "previous_observed_ms": 1794552654210,
+              "previous_position_value": "9345150.0",
+              "previous_size": "-57000.0"
+            }
+          }
+        },
+        {
+          "id": "S5-event-4",
+          "source_task_id": null,
+          "observed_at": "2026-11-08T21:45:08.461000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "address_divergence"
+          ],
+          "previous_position": null,
+          "final_position": null,
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {}
+        },
+        {
+          "id": "S5-event-5",
+          "source_task_id": null,
+          "observed_at": "2026-11-05T02:09:51.527000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "address_divergence"
+          ],
+          "previous_position": null,
+          "final_position": null,
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {}
+        },
+        {
+          "id": "S5-event-967287",
+          "source_task_id": 967287,
+          "observed_at": "2026-11-05T02:09:51.527000+00:00",
+          "coin": "ETH",
+          "kinds": [
+            "profit_giveback"
+          ],
+          "previous_position": {
+            "coin": "ETH",
+            "notional": "33359934.6856999993",
+            "size": "-14795.731",
+            "unrealized_pnl": "4483779.4268859997"
+          },
+          "final_position": {
+            "coin": "ETH",
+            "notional": "36015768.4002000019",
+            "size": "-14795.731",
+            "unrealized_pnl": "1827945.712386"
+          },
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {
+            "episode_peak_unrealized_pnl": "4795969.3509860002",
+            "episode_peak_ms": 1793371646272,
+            "news_change": {
+              "current_size": "-14795.731",
+              "observed_ms": 1793844591527,
+              "previous_floating_pnl": "4483779.4268859997",
+              "previous_observed_ms": 1793691375369,
+              "previous_position_value": "33359934.6856999993",
+              "previous_size": "-14795.731"
+            }
+          }
+        },
+        {
+          "id": "S5-event-7",
+          "source_task_id": null,
+          "observed_at": "2026-10-30T14:47:26.272000+00:00",
+          "coin": "ETH",
+          "kinds": [
+            "large_position_action"
+          ],
+          "previous_position": {
+            "coin": "ETH",
+            "notional": "35407744.2802800015",
+            "size": "-16214.5644",
+            "unrealized_pnl": "6064984.550694"
+          },
+          "final_position": {
+            "coin": "ETH",
+            "notional": "33047744.7615999989",
+            "size": "-14795.731",
+            "unrealized_pnl": "4795969.3509860002"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "3169106.282239999894515739709",
+            "quantity": "1418.8334",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "3171726.39641",
+            "closed_pnl": "457280.544106",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "457280.544106"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-14795.731",
+              "observed_ms": 1793371646272,
+              "previous_floating_pnl": "6064984.550694",
+              "previous_observed_ms": 1793325884875,
+              "previous_position_value": "35407744.2802800015",
+              "previous_size": "-16214.5644"
+            }
+          }
+        }
+      ],
+      "current_positions": [
+        {
+          "id": "S5-position",
+          "observed_at": "2026-11-16T18:11:14.038000+00:00",
+          "coin": "ETH",
+          "position": {
+            "coin": "ETH",
+            "notional": "5601709.8059999999",
+            "size": "-3082.605",
+            "unrealized_pnl": "2282623.168271"
+          }
+        }
+      ],
+      "previous_name": null
+    },
+    {
+      "sample_id": "S6",
+      "address_prefix": "0x02",
+      "as_of": "2026-11-16T00:36:38.380000+00:00",
+      "coverage": {
+        "mode": "historical_production_snapshot",
+        "retrieved_at": "2026-11-17T07:11:42.304744+00:00",
+        "scope": "bounded_discovery_and_retained_api_history",
+        "all_market_rank_available": false,
+        "full_lifetime_history": false,
+        "asset_statistics_as_of": "2026-11-15T17:44:19.139000+00:00",
+        "note": "No future observations used. Assets missing means unavailable, not zero. Historical events are not current query-time positions; statistics retain their own timestamps."
+      },
+      "assets": [
+        {
+          "id": "S6-asset-xyz:AAPL",
+          "coin": "xyz:AAPL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T06:54:49.256000+00:00",
+          "observed_end": "2026-11-15T11:35:38.298000+00:00",
+          "trading_pnl_usd": "2121.675330",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:AMD",
+          "coin": "xyz:AMD",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:01:21.873000+00:00",
+          "observed_end": "2026-11-15T16:47:23.071000+00:00",
+          "trading_pnl_usd": "-100038.257451",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:AMZN",
+          "coin": "xyz:AMZN",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-13T05:22:14.528000+00:00",
+          "observed_end": "2026-11-15T09:31:26.169000+00:00",
+          "trading_pnl_usd": "2.548356",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:BABA",
+          "coin": "xyz:BABA",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:21:34.307000+00:00",
+          "observed_end": "2026-11-15T14:57:47.412000+00:00",
+          "trading_pnl_usd": "23274.401209",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:BRENTOIL",
+          "coin": "xyz:BRENTOIL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T13:09:46.308000+00:00",
+          "observed_end": "2026-11-13T19:25:41.354000+00:00",
+          "trading_pnl_usd": "2.066328",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:CBRS",
+          "coin": "xyz:CBRS",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:01:52.687000+00:00",
+          "observed_end": "2026-11-15T17:35:59.407000+00:00",
+          "trading_pnl_usd": "-2730.468523",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 3,
+          "wins": 1,
+          "win_rate": "0.3333333333333333333333333333",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:COIN",
+          "coin": "xyz:COIN",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:02:20.073000+00:00",
+          "observed_end": "2026-11-14T14:50:49.506000+00:00",
+          "trading_pnl_usd": "-2931.288464",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:CRCL",
+          "coin": "xyz:CRCL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T13:13:50.445000+00:00",
+          "observed_end": "2026-11-15T09:12:04.203000+00:00",
+          "trading_pnl_usd": "642312.406344",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:CRWV",
+          "coin": "xyz:CRWV",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:04:29.909000+00:00",
+          "observed_end": "2026-11-15T02:40:11.096000+00:00",
+          "trading_pnl_usd": "2654.868999",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 12,
+          "wins": 9,
+          "win_rate": "0.75",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:DRAM",
+          "coin": "xyz:DRAM",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:02:38.120000+00:00",
+          "observed_end": "2026-11-13T20:55:02.360000+00:00",
+          "trading_pnl_usd": "66172.155533",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:EWY",
+          "coin": "xyz:EWY",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:01:39.099000+00:00",
+          "observed_end": "2026-11-12T14:31:37.722000+00:00",
+          "trading_pnl_usd": "111.938495",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:GOOGL",
+          "coin": "xyz:GOOGL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T06:54:27.135000+00:00",
+          "observed_end": "2026-11-15T02:15:31.343000+00:00",
+          "trading_pnl_usd": "96112.476198",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:HOOD",
+          "coin": "xyz:HOOD",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T13:30:34.365000+00:00",
+          "observed_end": "2026-11-15T06:04:48.774000+00:00",
+          "trading_pnl_usd": "7.042176",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 3,
+          "wins": 1,
+          "win_rate": "0.3333333333333333333333333333",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:IBM",
+          "coin": "xyz:IBM",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T12:45:29.789000+00:00",
+          "observed_end": "2026-11-15T16:45:17.674000+00:00",
+          "trading_pnl_usd": "-36.320003",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:INTC",
+          "coin": "xyz:INTC",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:00:00.833000+00:00",
+          "observed_end": "2026-11-15T17:33:29.091000+00:00",
+          "trading_pnl_usd": "463242.948578",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:KORU",
+          "coin": "xyz:KORU",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T15:47:40.892000+00:00",
+          "observed_end": "2026-11-13T11:50:45.589000+00:00",
+          "trading_pnl_usd": "6803.306167",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:LITE",
+          "coin": "xyz:LITE",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T06:52:05.104000+00:00",
+          "observed_end": "2026-11-15T17:41:02.681000+00:00",
+          "trading_pnl_usd": "7735.759482",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:LLY",
+          "coin": "xyz:LLY",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-14T16:07:58.406000+00:00",
+          "observed_end": "2026-11-15T14:11:49.518000+00:00",
+          "trading_pnl_usd": "-7.144463",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:META",
+          "coin": "xyz:META",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:13:31.654000+00:00",
+          "observed_end": "2026-11-15T11:06:56.337000+00:00",
+          "trading_pnl_usd": "14042.774940",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:MRNA",
+          "coin": "xyz:MRNA",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:06:39.692000+00:00",
+          "observed_end": "2026-11-15T16:41:46.335000+00:00",
+          "trading_pnl_usd": "1190.745692",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:MRVL",
+          "coin": "xyz:MRVL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T08:00:18.804000+00:00",
+          "observed_end": "2026-11-15T16:48:08.945000+00:00",
+          "trading_pnl_usd": "40195.537702",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:MSFT",
+          "coin": "xyz:MSFT",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:05:25.949000+00:00",
+          "observed_end": "2026-11-15T01:46:19.006000+00:00",
+          "trading_pnl_usd": "-7369.722649",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:MU",
+          "coin": "xyz:MU",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:00:01.620000+00:00",
+          "observed_end": "2026-11-15T11:09:51.897000+00:00",
+          "trading_pnl_usd": "17461.380274",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:NATGAS",
+          "coin": "xyz:NATGAS",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:02:03.194000+00:00",
+          "observed_end": "2026-11-13T19:28:07.212000+00:00",
+          "trading_pnl_usd": "117158.875352",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:NBIS",
+          "coin": "xyz:NBIS",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T06:45:07.027000+00:00",
+          "observed_end": "2026-11-15T02:07:22.117000+00:00",
+          "trading_pnl_usd": "120928.136373",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:NVDA",
+          "coin": "xyz:NVDA",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T11:04:40.987000+00:00",
+          "observed_end": "2026-11-15T11:52:38.490000+00:00",
+          "trading_pnl_usd": "478718.632589",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:ORCL",
+          "coin": "xyz:ORCL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:23:50.045000+00:00",
+          "observed_end": "2026-11-15T16:43:40.295000+00:00",
+          "trading_pnl_usd": "4047.868369",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:PLTR",
+          "coin": "xyz:PLTR",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-14T16:25:58.207000+00:00",
+          "observed_end": "2026-11-15T14:03:12.551000+00:00",
+          "trading_pnl_usd": "-12.465272",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SKHX",
+          "coin": "xyz:SKHX",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T08:42:39.326000+00:00",
+          "observed_end": "2026-11-13T20:59:50.383000+00:00",
+          "trading_pnl_usd": "119305.580862",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SKHY",
+          "coin": "xyz:SKHY",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T07:21:13.666000+00:00",
+          "observed_end": "2026-11-15T16:22:32.740000+00:00",
+          "trading_pnl_usd": "4544.397771",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SMSN",
+          "coin": "xyz:SMSN",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-13T18:19:40.333000+00:00",
+          "observed_end": "2026-11-13T18:36:58.178000+00:00",
+          "trading_pnl_usd": "-6.069750",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SNDK",
+          "coin": "xyz:SNDK",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:00:01.037000+00:00",
+          "observed_end": "2026-11-15T04:30:34.009000+00:00",
+          "trading_pnl_usd": "1455251.636056",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SOXL",
+          "coin": "xyz:SOXL",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:00:01.037000+00:00",
+          "observed_end": "2026-11-13T16:24:50.210000+00:00",
+          "trading_pnl_usd": "351.544205",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 6,
+          "wins": 5,
+          "win_rate": "0.8333333333333333333333333333",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SP500",
+          "coin": "xyz:SP500",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-14T14:51:28.287000+00:00",
+          "observed_end": "2026-11-14T16:34:57.663000+00:00",
+          "trading_pnl_usd": "-20.470642",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:SPCX",
+          "coin": "xyz:SPCX",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T09:00:01.037000+00:00",
+          "observed_end": "2026-11-15T15:54:18.096000+00:00",
+          "trading_pnl_usd": "87446.302070",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:TSLA",
+          "coin": "xyz:TSLA",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-12T08:28:57.129000+00:00",
+          "observed_end": "2026-11-15T12:35:38.167000+00:00",
+          "trading_pnl_usd": "121320.623189",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:TSM",
+          "coin": "xyz:TSM",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-14T14:43:56.080000+00:00",
+          "observed_end": "2026-11-15T16:53:40.118000+00:00",
+          "trading_pnl_usd": "-8.515275",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 1,
+          "wins": 0,
+          "win_rate": "0",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:XYZ100",
+          "coin": "xyz:XYZ100",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-14T14:45:06.194000+00:00",
+          "observed_end": "2026-11-15T02:05:25.825000+00:00",
+          "trading_pnl_usd": "3197.723584",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 1,
+          "wins": 1,
+          "win_rate": "1",
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        },
+        {
+          "id": "S6-asset-xyz:ZHIPU",
+          "coin": "xyz:ZHIPU",
+          "statistics_observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "observed_start": "2026-11-13T01:31:02.912000+00:00",
+          "observed_end": "2026-11-13T03:22:10.439000+00:00",
+          "trading_pnl_usd": "12145.097674",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 0,
+          "wins": 0,
+          "win_rate": null,
+          "position_discontinuities": 0,
+          "ambiguous_order_fills": 0
+        }
+      ],
+      "account_pnl": {
+        "id": "S6-account",
+        "data": {
+          "observed_ms": 1794701280056,
+          "pnl": "26478982.3093440011",
+          "scope": "perpAllTime_including_unrealized",
+          "source": "hyperliquid_portfolio"
+        },
+        "age_seconds_at_event": 88118.324,
+        "eligible_for_current_total_pnl_copy": false,
+        "usage": "historical_background_only"
+      },
+      "events": [
+        {
+          "id": "S6-event-1023466",
+          "source_task_id": 1023466,
+          "observed_at": "2026-11-16T00:36:38.380000+00:00",
+          "coin": "xyz:NVDA",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "xyz:NVDA",
+            "notional": "25601649.2685000002",
+            "size": "-153902.31",
+            "unrealized_pnl": "72374.885655"
+          },
+          "final_position": {
+            "coin": "xyz:NVDA",
+            "notional": "19874385.6552300006",
+            "size": "-120589.683",
+            "unrealized_pnl": "242417.230733"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减少",
+            "estimated_value": "5490254.055870000165748642029",
+            "previous_side": "空单",
+            "quantity": "33312.627",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "5505625.59258",
+            "closed_pnl": "41577.64356",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "41577.64356"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-120589.683",
+              "observed_ms": 1794789398380,
+              "previous_floating_pnl": "72374.885655",
+              "previous_observed_ms": 1794783923490,
+              "previous_position_value": "25601649.2685000002",
+              "previous_size": "-153902.31"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1022871",
+          "source_task_id": 1022871,
+          "observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "coin": "xyz:INTC",
+          "kinds": [
+            "near_liquidation"
+          ],
+          "previous_position": {
+            "coin": "xyz:INTC",
+            "notional": "9617965.8739199992",
+            "size": "-164713.76",
+            "unrealized_pnl": "2617732.1285870001"
+          },
+          "final_position": {
+            "coin": "xyz:INTC",
+            "notional": "8220734.3137600003",
+            "size": "-142582.46",
+            "unrealized_pnl": "2370948.620755"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "1276002.232800000046565264760",
+            "quantity": "22131.30",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "1261953.72005",
+            "closed_pnl": "382061.047930",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "382061.047930"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-142582.46",
+              "observed_ms": 1794764659139,
+              "previous_floating_pnl": "2617732.1285870001",
+              "previous_observed_ms": 1794662784198,
+              "previous_position_value": "9617965.8739199992",
+              "previous_size": "-164713.76"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1022872",
+          "source_task_id": 1022872,
+          "observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "coin": "xyz:CRCL",
+          "kinds": [
+            "near_liquidation"
+          ],
+          "previous_position": {
+            "coin": "xyz:CRCL",
+            "notional": "5624803.6308399998",
+            "size": "-93684.271",
+            "unrealized_pnl": "1012430.387158"
+          },
+          "final_position": {
+            "coin": "xyz:CRCL",
+            "notional": "3177513.0068399999",
+            "size": "-54964.764",
+            "unrealized_pnl": "709795.711371"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "2238374.699669999929555765945",
+            "quantity": "38719.507",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "2227419.913131",
+            "closed_pnl": "584476.990046",
+            "open_long_notional": "0.000000",
+            "open_short_notional": "61997.438586",
+            "ordinary_closed_pnl": "584476.990046"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-54964.764",
+              "observed_ms": 1794764659139,
+              "previous_floating_pnl": "1012430.387158",
+              "previous_observed_ms": 1794662784198,
+              "previous_position_value": "5624803.6308399998",
+              "previous_size": "-93684.271"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1022873",
+          "source_task_id": 1022873,
+          "observed_at": "2026-11-15T17:44:19.139000+00:00",
+          "coin": "xyz:NBIS",
+          "kinds": [
+            "near_liquidation"
+          ],
+          "previous_position": {
+            "coin": "xyz:NBIS",
+            "notional": "4476843.5423999997",
+            "size": "-39907.68",
+            "unrealized_pnl": "785281.12126"
+          },
+          "final_position": {
+            "coin": "xyz:NBIS",
+            "notional": "4051653.4818000002",
+            "size": "-36363.79",
+            "unrealized_pnl": "736717.318084"
+          },
+          "net_position_change": null,
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "422745.2390",
+            "closed_pnl": "88362.001530",
+            "open_long_notional": "0.0000",
+            "open_short_notional": "37353.5403",
+            "ordinary_closed_pnl": "88362.001530"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-36363.79",
+              "observed_ms": 1794764659139,
+              "previous_floating_pnl": "785281.12126",
+              "previous_observed_ms": 1794662784198,
+              "previous_position_value": "4476843.5423999997",
+              "previous_size": "-39907.68"
+            }
+          }
+        },
+        {
+          "id": "S6-event-4",
+          "source_task_id": null,
+          "observed_at": "2026-11-14T13:26:24.198000+00:00",
+          "coin": "xyz:NVDA",
+          "kinds": [
+            "large_position_action"
+          ],
+          "previous_position": {
+            "coin": "xyz:NVDA",
+            "notional": "29957639.6317499988",
+            "size": "-180088.005",
+            "unrealized_pnl": "520755.133367"
+          },
+          "final_position": {
+            "coin": "xyz:NVDA",
+            "notional": "20022539.4772799984",
+            "size": "-123840.546",
+            "unrealized_pnl": "742264.438782"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减仓",
+            "estimated_value": "9094089.171119999273291847403",
+            "quantity": "56247.459",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "13533399.12322",
+            "closed_pnl": "335414.199088",
+            "open_long_notional": "0.00000",
+            "open_short_notional": "4155271.17365",
+            "ordinary_closed_pnl": "335414.199088"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-123840.546",
+              "observed_ms": 1794662784198,
+              "previous_floating_pnl": "520755.133367",
+              "previous_observed_ms": 1794517373213,
+              "previous_position_value": "29957639.6317499988",
+              "previous_size": "-180088.005"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1010198",
+          "source_task_id": 1010198,
+          "observed_at": "2026-11-12T21:02:53.213000+00:00",
+          "coin": "xyz:AMD",
+          "kinds": [
+            "near_liquidation",
+            "oi_share"
+          ],
+          "previous_position": {
+            "coin": "xyz:AMD",
+            "notional": "559556.02254",
+            "size": "988.842",
+            "unrealized_pnl": "-2109.040417"
+          },
+          "final_position": {
+            "coin": "xyz:AMD",
+            "notional": "7127785.3069599997",
+            "size": "12179.668",
+            "unrealized_pnl": "169756.898227"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "加仓",
+            "estimated_value": "6549095.191719999724356378187",
+            "quantity": "11190.826",
+            "side": "多单"
+          },
+          "actions": {
+            "close_long_notional": "13740.28890",
+            "close_short_notional": "0",
+            "closed_pnl": "120.473900",
+            "open_long_notional": "6409983.17785",
+            "open_short_notional": "0.00000",
+            "ordinary_closed_pnl": "120.473900"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "12179.668",
+              "observed_ms": 1794517373213,
+              "previous_floating_pnl": "-2109.040417",
+              "previous_observed_ms": 1794470079210,
+              "previous_position_value": "559556.02254",
+              "previous_size": "988.842"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1010199",
+          "source_task_id": 1010199,
+          "observed_at": "2026-11-12T21:02:53.213000+00:00",
+          "coin": "xyz:NBIS",
+          "kinds": [
+            "near_liquidation"
+          ],
+          "previous_position": {
+            "coin": "xyz:NBIS",
+            "notional": "1491372.6022999999",
+            "size": "-9882.53",
+            "unrealized_pnl": "27015.103715"
+          },
+          "final_position": {
+            "coin": "xyz:NBIS",
+            "notional": "3631680.9969000001",
+            "size": "-28067.71",
+            "unrealized_pnl": "264812.237988"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "加仓",
+            "estimated_value": "2352980.440200000064790394371",
+            "quantity": "18185.18",
+            "side": "空单"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "53630.0534",
+            "closed_pnl": "1913.831076",
+            "open_long_notional": "0.0000",
+            "open_short_notional": "2433649.4294",
+            "ordinary_closed_pnl": "1913.831076"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-28067.71",
+              "observed_ms": 1794517373213,
+              "previous_floating_pnl": "27015.103715",
+              "previous_observed_ms": 1794470079210,
+              "previous_position_value": "1491372.6022999999",
+              "previous_size": "-9882.53"
+            }
+          }
+        },
+        {
+          "id": "S6-event-1006965",
+          "source_task_id": 1006965,
+          "observed_at": "2026-11-12T03:18:45.986000+00:00",
+          "coin": "xyz:NVDA",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "xyz:NVDA",
+            "notional": "21090272.6748600006",
+            "size": "-130719.429",
+            "unrealized_pnl": "1567292.672513"
+          },
+          "final_position": {
+            "coin": "xyz:NVDA",
+            "notional": "27130080.3840599991",
+            "size": "-168373.862",
+            "unrealized_pnl": "1606809.1393929999"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "6067258.789289999798727728299",
+            "previous_side": "空单",
+            "quantity": "37654.433",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "0",
+            "closed_pnl": "0.0",
+            "open_long_notional": "0",
+            "open_short_notional": "6069964.27250",
+            "ordinary_closed_pnl": "0"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-168373.862",
+              "observed_ms": 1794453525986,
+              "previous_floating_pnl": "1567292.672513",
+              "previous_observed_ms": 1794446486701,
+              "previous_position_value": "21090272.6748600006",
+              "previous_size": "-130719.429"
+            }
+          }
+        }
+      ],
+      "current_positions": [
+        {
+          "id": "S6-position",
+          "observed_at": "2026-11-16T00:36:38.380000+00:00",
+          "coin": "xyz:NVDA",
+          "position": {
+            "coin": "xyz:NVDA",
+            "notional": "19874385.6552300006",
+            "size": "-120589.683",
+            "unrealized_pnl": "242417.230733"
+          }
+        }
+      ],
+      "previous_name": null
+    },
+    {
+      "sample_id": "S7",
+      "address_prefix": "0x08",
+      "as_of": "2026-11-13T11:17:43.894000+00:00",
+      "coverage": {
+        "mode": "historical_production_snapshot",
+        "retrieved_at": "2026-11-17T07:11:42.306061+00:00",
+        "scope": "bounded_discovery_and_retained_api_history",
+        "all_market_rank_available": false,
+        "full_lifetime_history": false,
+        "asset_statistics_as_of": null,
+        "note": "No future observations used. Assets missing means unavailable, not zero. Historical events are not current query-time positions; statistics retain their own timestamps."
+      },
+      "assets": [],
+      "account_pnl": {
+        "id": "S7-account",
+        "data": {
+          "observed_ms": 1794517200021,
+          "pnl": "36297428.5779300034",
+          "scope": "perpAllTime_including_unrealized",
+          "source": "hyperliquid_portfolio"
+        },
+        "age_seconds_at_event": 51463.873,
+        "eligible_for_current_total_pnl_copy": false,
+        "usage": "historical_background_only"
+      },
+      "events": [
+        {
+          "id": "S7-event-1013650",
+          "source_task_id": 1013650,
+          "observed_at": "2026-11-13T11:17:43.894000+00:00",
+          "coin": "HYPE",
+          "kinds": [
+            "large_profit"
+          ],
+          "previous_position": {
+            "coin": "HYPE",
+            "notional": "99472094.890139997",
+            "size": "1380042.6599999999",
+            "unrealized_pnl": "46098164.8433919996"
+          },
+          "final_position": {
+            "coin": "HYPE",
+            "notional": "101435895.5953200012",
+            "size": "1380042.6599999999",
+            "unrealized_pnl": "48061965.5485719964"
+          },
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {
+            "episode_peak_unrealized_pnl": "48061965.5485719964",
+            "episode_peak_ms": 1794568663894,
+            "previous_reported_floating_pnl": "45123854.7254320011",
+            "news_change": {
+              "current_size": "1380042.6599999999",
+              "observed_ms": 1794568663894,
+              "previous_floating_pnl": "46098164.8433919996",
+              "previous_observed_ms": 1794519402922,
+              "previous_position_value": "99472094.890139997",
+              "previous_size": "1380042.6599999999"
+            }
+          }
+        },
+        {
+          "id": "S7-event-1",
+          "source_task_id": null,
+          "observed_at": "2026-11-12T08:07:46.344000+00:00",
+          "coin": "HYPE",
+          "kinds": [
+            "address_divergence"
+          ],
+          "previous_position": null,
+          "final_position": null,
+          "net_position_change": null,
+          "actions": {},
+          "floating_pnl_context": {}
+        }
+      ],
+      "current_positions": [
+        {
+          "id": "S7-position",
+          "observed_at": "2026-11-13T11:17:43.894000+00:00",
+          "coin": "HYPE",
+          "position": {
+            "coin": "HYPE",
+            "notional": "101435895.5953200012",
+            "size": "1380042.6599999999",
+            "unrealized_pnl": "48061965.5485719964"
+          }
+        }
+      ],
+      "previous_name": null
+    },
+    {
+      "sample_id": "S8",
+      "address_prefix": "0x1f",
+      "as_of": "2026-11-17T01:03:05.999000+00:00",
+      "coverage": {
+        "mode": "historical_production_snapshot",
+        "retrieved_at": "2026-11-17T07:11:42.334972+00:00",
+        "scope": "bounded_discovery_and_retained_api_history",
+        "all_market_rank_available": false,
+        "full_lifetime_history": false,
+        "asset_statistics_as_of": "2026-11-16T09:58:49.200000+00:00",
+        "note": "No future observations used. Assets missing means unavailable, not zero. Historical events are not current query-time positions; statistics retain their own timestamps."
+      },
+      "assets": [
+        {
+          "id": "S8-asset-BTC",
+          "coin": "BTC",
+          "statistics_observed_at": "2026-11-16T09:58:49.200000+00:00",
+          "observed_start": "2026-11-12T06:59:25.251000+00:00",
+          "observed_end": "2026-11-16T09:43:00.672000+00:00",
+          "trading_pnl_usd": "6290598.5874640008",
+          "pnl_scope": "observed_closed_pnl_less_supported_fees_excluding_funding",
+          "rounds": 6,
+          "wins": 1,
+          "win_rate": "0.1666666666666666666666666667",
+          "position_discontinuities": 37,
+          "ambiguous_order_fills": 0
+        }
+      ],
+      "account_pnl": {
+        "id": "S8-account",
+        "data": {
+          "observed_ms": 1794857880040,
+          "pnl": "-33856984.7045100033",
+          "scope": "perpAllTime_including_unrealized",
+          "source": "hyperliquid_portfolio"
+        },
+        "age_seconds_at_event": 19505.959,
+        "eligible_for_current_total_pnl_copy": false,
+        "usage": "historical_background_only"
+      },
+      "events": [
+        {
+          "id": "S8-event-1030348",
+          "source_task_id": 1030348,
+          "observed_at": "2026-11-17T01:03:05.999000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "81777098.1175000072",
+            "size": "-1262.88875",
+            "unrealized_pnl": "41557.04932"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "96868500.0",
+            "size": "-1500.0",
+            "unrealized_pnl": "266982.254333"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "15312407.41375",
+            "previous_side": "空单",
+            "quantity": "237.11125",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "10548.409200",
+            "closed_pnl": "36.106105",
+            "open_long_notional": "0.000000",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "36.106105"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-1500.0",
+              "observed_ms": 1794877385999,
+              "previous_floating_pnl": "41557.04932",
+              "previous_observed_ms": 1794874037669,
+              "previous_position_value": "81777098.1175000072",
+              "previous_size": "-1262.88875"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1030056",
+          "source_task_id": 1030056,
+          "observed_at": "2026-11-17T00:07:17.669000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "65260000.0",
+            "size": "1000.0",
+            "unrealized_pnl": "-148266.081825"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "81777098.1175000072",
+            "size": "-1262.88875",
+            "unrealized_pnl": "41557.04932"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "反手",
+            "estimated_value": "146531098.1175000129012147745",
+            "previous_side": "多单",
+            "quantity": "2262.88875",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "64882481.753370",
+            "close_short_notional": "0",
+            "closed_pnl": "-525718.2466299998",
+            "open_long_notional": "0",
+            "open_short_notional": "80995165.598580",
+            "ordinary_closed_pnl": "-525718.2466299998"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-1262.88875",
+              "observed_ms": 1794874037669,
+              "previous_floating_pnl": "-148266.081825",
+              "previous_observed_ms": 1794871230192,
+              "previous_position_value": "65260000.0",
+              "previous_size": "1000.0"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1029827",
+          "source_task_id": 1029827,
+          "observed_at": "2026-11-16T23:20:30.192000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "61505868.1827600002",
+            "size": "939.56598",
+            "unrealized_pnl": "51892.35321"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "65260000.0",
+            "size": "1000.0",
+            "unrealized_pnl": "-148266.081825"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "3943924.14520",
+            "previous_side": "多单",
+            "quantity": "60.43402",
+            "side": "多单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "841816.808110",
+            "close_short_notional": "0",
+            "closed_pnl": "-100.536158",
+            "open_long_notional": "0",
+            "open_short_notional": "0.000000",
+            "ordinary_closed_pnl": "-100.536158"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "1000.0",
+              "observed_ms": 1794871230192,
+              "previous_floating_pnl": "51892.35321",
+              "previous_observed_ms": 1794869277953,
+              "previous_position_value": "61505868.1827600002",
+              "previous_size": "939.56598"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1029643",
+          "source_task_id": 1029643,
+          "observed_at": "2026-11-16T22:47:57.953000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "65282000.0",
+            "size": "-1000.0",
+            "unrealized_pnl": "-646909.36714"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "61505868.1827600002",
+            "size": "939.56598",
+            "unrealized_pnl": "51892.35321"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "反手",
+            "estimated_value": "126967868.1827600004128642419",
+            "previous_side": "空单",
+            "quantity": "1939.56598",
+            "side": "多单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "65348004.421290",
+            "closed_pnl": "-713004.42129",
+            "open_long_notional": "49055389.109830",
+            "open_short_notional": "0",
+            "ordinary_closed_pnl": "-713004.42129"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "939.56598",
+              "observed_ms": 1794869277953,
+              "previous_floating_pnl": "-646909.36714",
+              "previous_observed_ms": 1794865742436,
+              "previous_position_value": "65282000.0",
+              "previous_size": "-1000.0"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1029411",
+          "source_task_id": 1029411,
+          "observed_at": "2026-11-16T21:49:02.436000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "83706432.2002999932",
+            "size": "-1289.5967",
+            "unrealized_pnl": "-413367.86506"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "65282000.0",
+            "size": "-1000.0",
+            "unrealized_pnl": "-646909.36714"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "减少",
+            "estimated_value": "18905451.7694",
+            "previous_side": "空单",
+            "quantity": "289.5967",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "32527821.692630",
+            "closed_pnl": "-210321.69263",
+            "open_long_notional": "0.000000",
+            "open_short_notional": "5181837.918790",
+            "ordinary_closed_pnl": "-210321.69263"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-1000.0",
+              "observed_ms": 1794865742436,
+              "previous_floating_pnl": "-413367.86506",
+              "previous_observed_ms": 1794861793743,
+              "previous_position_value": "83706432.2002999932",
+              "previous_size": "-1289.5967"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1029268",
+          "source_task_id": 1029268,
+          "observed_at": "2026-11-16T20:43:13.743000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "64763500.0",
+            "size": "-1000.0",
+            "unrealized_pnl": "-268705.45378"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "83706432.2002999932",
+            "size": "-1289.5967",
+            "unrealized_pnl": "-413367.86506"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "18797432.20029999847296634676",
+            "previous_side": "空单",
+            "quantity": "289.5967",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "0",
+            "closed_pnl": "0.0",
+            "open_long_notional": "0",
+            "open_short_notional": "16226592.689180",
+            "ordinary_closed_pnl": "0"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-1289.5967",
+              "observed_ms": 1794861793743,
+              "previous_floating_pnl": "-268705.45378",
+              "previous_observed_ms": 1794858392643,
+              "previous_position_value": "64763500.0",
+              "previous_size": "-1000.0"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1029210",
+          "source_task_id": 1029210,
+          "observed_at": "2026-11-16T19:46:32.643000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": {
+            "coin": "BTC",
+            "notional": "32460000.0",
+            "size": "-500.0",
+            "unrealized_pnl": "-407207.70438"
+          },
+          "final_position": {
+            "coin": "BTC",
+            "notional": "64763500.0",
+            "size": "-1000.0",
+            "unrealized_pnl": "-268705.45378"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "32381750.00",
+            "previous_side": "空单",
+            "quantity": "500.0",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "0",
+            "closed_pnl": "0.0",
+            "open_long_notional": "0",
+            "open_short_notional": "32442002.250600",
+            "ordinary_closed_pnl": "0"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-1000.0",
+              "observed_ms": 1794858392643,
+              "previous_floating_pnl": "-407207.70438",
+              "previous_observed_ms": 1794854873016,
+              "previous_position_value": "32460000.0",
+              "previous_size": "-500.0"
+            }
+          }
+        },
+        {
+          "id": "S8-event-1028853",
+          "source_task_id": 1028853,
+          "observed_at": "2026-11-16T16:33:57.001000+00:00",
+          "coin": "BTC",
+          "kinds": [
+            "highlighted_address_action"
+          ],
+          "previous_position": null,
+          "final_position": {
+            "coin": "BTC",
+            "notional": "32351500.0",
+            "size": "-500.0",
+            "unrealized_pnl": "-298707.70438"
+          },
+          "net_position_change": {
+            "closed": false,
+            "direction": "增持",
+            "estimated_value": "32351500.0",
+            "previous_side": "空单",
+            "quantity": "500.0",
+            "side": "空单",
+            "valuation_basis": "snapshot_reference_price"
+          },
+          "actions": {
+            "close_long_notional": "0",
+            "close_short_notional": "0",
+            "closed_pnl": "0.0",
+            "open_long_notional": "0",
+            "open_short_notional": "32052792.295620",
+            "ordinary_closed_pnl": "0"
+          },
+          "floating_pnl_context": {
+            "news_change": {
+              "current_size": "-500.0",
+              "observed_ms": 1794846837001,
+              "previous_floating_pnl": null,
+              "previous_observed_ms": 1794843398372,
+              "previous_position_value": null,
+              "previous_size": null
+            }
+          }
+        }
+      ],
+      "current_positions": [
+        {
+          "id": "S8-position",
+          "observed_at": "2026-11-17T01:03:05.999000+00:00",
+          "coin": "BTC",
+          "position": {
+            "coin": "BTC",
+            "notional": "96868500.0",
+            "size": "-1500.0",
+            "unrealized_pnl": "266982.254333"
+          }
+        }
+      ],
+      "previous_name": null
+    }
+  ]
+}

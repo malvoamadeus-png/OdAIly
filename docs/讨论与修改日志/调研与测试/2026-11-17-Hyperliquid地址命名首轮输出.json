@@ -1,0 +1,123 @@
+{
+  "mode": "model",
+  "requested_model": "gpt-6-luna",
+  "response_model": null,
+  "started_at": "2026-11-17T06:11:21.238163+00:00",
+  "runtime_seconds": 21.313,
+  "results": [
+    {
+      "sample_id": "S1",
+      "address_prefix": "0xf5",
+      "as_of": "2026-11-16T20:52:42.040000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "SOL十五轮十三胜0xf5",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S1-asset-ZEC"
+          ],
+          "feature_name": "ZEC二十一轮全胜",
+          "reason": "截至2026-11-16的观察统计中，ZEC完整交易回合21轮、21胜，观察胜率100%；仅代表该资产观察窗口。",
+          "name": "ZEC二十一轮全胜0xf5"
+        },
+        {
+          "evidence_ids": [
+            "S1-event-1029278",
+            "S1-position"
+          ],
+          "feature_name": "SOL空单减仓者",
+          "reason": "历史回放截至2026-11-16 20:52，SOL空单减仓约1,4523.30枚、估值约103.8万美元；该时点仍记录SOL空单，非查询时当前持仓。",
+          "name": "SOL空单减仓者0xf5"
+        }
+      ],
+      "evidence_ids": [
+        "S1-asset-SOL"
+      ],
+      "feature_name": "SOL十五轮十三胜",
+      "reason": "截至2026-11-16的SOL观察统计为15个完整回合、13胜，胜率约86.7%；此称谓仅描述该资产观察窗口，不代表盈利或全历史胜率。",
+      "title_examples": [
+        "SOL十五轮十三胜0xf5：截至2026-11-16，SOL观察窗口15轮完整回合中13轮获胜。",
+        "SOL十五轮十三胜0xf5：截至2026-11-16的历史回放记录其SOL空单减仓约1.45万枚。"
+      ]
+    },
+    {
+      "sample_id": "S2",
+      "address_prefix": "0xb8",
+      "as_of": "2026-11-16T20:48:51.603000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "HYPE空头兑现者0xb8",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S2-event-1022272",
+            "S2-event-1023263",
+            "S2-event-1026308",
+            "S2-event-1029276"
+          ],
+          "feature_name": "BTC空头分批兑现者",
+          "reason": "截至2026-11-16的历史回放，BTC空单连续减仓并产生已实现平仓收益：四次动作分别约918.8万、597.2万、275.7万和175.1万美元；不代表当前持仓。",
+          "name": "BTC空头分批兑现者0xb8"
+        },
+        {
+          "evidence_ids": [
+            "S2-event-1029273"
+          ],
+          "feature_name": "ZEC空头高额兑现者",
+          "reason": "2026-11-16历史事件中，平掉ZEC空单并实现约2229.7万美元平仓收益；该仓位已关闭，不表示当前敞口。",
+          "name": "ZEC空头高额兑现者0xb8"
+        }
+      ],
+      "evidence_ids": [
+        "S2-event-1029274",
+        "S2-event-1029273"
+      ],
+      "feature_name": "HYPE空头兑现者",
+      "reason": "2026-11-16历史事件中，平掉HYPE空单并实现约596.4万美元平仓收益；这是该时点的已实现收益，不表示当前持仓。",
+      "title_examples": [
+        "截至2026-11-16的历史回放，HYPE空头兑现者0xb8平掉HYPE空单，已实现平仓收益约596.4万美元。",
+        "截至2026-11-16的历史回放，HYPE空头兑现者0xb8平掉ZEC空单，已实现平仓收益约2229.7万美元。"
+      ]
+    },
+    {
+      "sample_id": "S3",
+      "address_prefix": "0x0c",
+      "as_of": "2026-11-16T22:59:33.999000+00:00",
+      "status": "success",
+      "requested_model": "gpt-6-luna",
+      "response_model": null,
+      "name": "布伦特原油百万单位多头0x0c",
+      "alternatives": [
+        {
+          "evidence_ids": [
+            "S3-event-1029678",
+            "S3-position"
+          ],
+          "feature_name": "布伦特原油百万单位多头",
+          "reason": "截至 2026-11-16 的事件回放时点，xyz:BRENTOIL 多单数量为 1,000,000；这是该时点的持仓事实，不代表查询时当前持仓。",
+          "name": "布伦特原油百万单位多头0x0c"
+        },
+        {
+          "evidence_ids": [
+            "S3-event-1029678"
+          ],
+          "feature_name": "布伦特原油加仓多头",
+          "reason": "事件记录显示该时点增加 127,355.8 单位多单，属于历史动作，不表示当前仍在加仓。",
+          "name": "布伦特原油加仓多头0x0c"
+        }
+      ],
+      "evidence_ids": [
+        "S3-position",
+        "S3-event-1029678"
+      ],
+      "feature_name": "布伦特原油百万单位多头",
+      "reason": "历史事件回放截至 2026-11-16 22:59 UTC，xyz:BRENTOIL 多单数量为 1,000,000；名称仅描述该时点持仓，不代表查询时当前持仓。",
+      "title_examples": [
+        "截至 2026-11-16 22:59 UTC，布伦特原油百万单位多头0x0c持有 1,000,000 单位 xyz:BRENTOIL 多单。"
+      ]
+    }
+  ]
+}
