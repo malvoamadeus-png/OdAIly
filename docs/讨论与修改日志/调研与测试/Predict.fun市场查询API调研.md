@@ -109,6 +109,24 @@ GET https://api.predict.fun/v1/categories/jensen-huang-rejoins-nvidia-before-div
 
 补充检查 Predict.fun 当日生产前端构建后，首页侧栏使用的 GraphQL operation 为 `GetSidebarCategories`，endpoint 为 `https://graphql.predict.fun/graphql`。其中 `newMarkets` 不是严格最新市场流：它以 `MOST_POPULAR` 从筛选后的候选中取 15 个类目，浏览器端再按类目 `createdAt` 排序，只展示前 5 个。筛选变体包含 `DEFAULT`、体育/电竞和 `TWEET_COUNT`，排除了 `CRYPTO_UP_DOWN` 与 `UP_DOWN`，但无法保证排除天气等 `DEFAULT` 类目。该查询未选择类目 `publishedAt`、slug 或单市场 `createdAt`，所以首页 “New” 不能作为完整、可增量消费的市场发现 API。该细节来自生产前端实现，可能随网站更新，不是稳定 API 契约。生产构建证据：[GraphQL endpoint 配置](https://predict.fun/_next/static/chunks/24449606sxsm3.js)、[`GetSidebarCategories` 查询](https://predict.fun/_next/static/chunks/30_nwox253e6o.js)、[前端排序与取前 5 项](https://predict.fun/_next/static/chunks/1nghb0xww-9rw.js)。
 
+### 2026-11-17 程序化发现接口复核
+
+用户给出的 `GetCategories` 是官网前端实际使用的 GraphQL operation，当前官网 bundle 中仍能找到该查询和 `CategoryFeedCard` fragment：[当前生产查询 bundle](https://predict.fun/_next/static/chunks/16wvzjdti38l6.js)。查询可以按类目 `startsAt` 排序，也能返回类目标题、slug 和嵌套市场题目；但网页 GraphQL 没有公开的开发者 API 契约，`STARTS_AT_ASC/DESC` 是网页实现字段，且它排序的是类目开始时间，不是市场创建时间。页面市场卡片的 `Market` fragment 没有请求单市场 `createdAt`；页面里的类目 `createdAt` 不能替代它。
+
+官方 REST OpenAPI 明确列出市场 `createdAt` 字段，但 `/v1/markets` 的排序枚举只有成交量、概率变化和奖励等，没有 `CREATED_AT_DESC`；`/v1/categories` 可按 `PUBLISHED_AT_DESC` 排类目，也没有类目开始时间排序。[REST OpenAPI](https://dev.predict.fun/openapi/rest.json) 因而适合在 Linux 无人值守运行的稳定路径是：分页读取官方 REST 类目并展开 markets，按市场 ID 持久去重，再用返回的 market `createdAt` 在本地判断新增；类目 `publishedAt` 只用于缩小扫描范围，不能当作市场创建时间。网页 GraphQL 可作为备用数据源候选，但需先在目标服务器以真实查询 payload 验证其不被 Cloudflare 拦截，并接受它随官网构建变化的维护风险。
+
+目标服务器上的实际复核结果：带现有 API key 请求 `GET https://api.predict.fun/v1/categories?first=2&sort=PUBLISHED_AT_DESC&status=OPEN` 返回 HTTP `200`，响应含类目标题、slug、发布时间和嵌套市场；当时真实首条类目为 `BNB Up or Down - November 18, 2:25AM-2:30AM ET`。同一服务器直接提交网页 `GetCategories` GraphQL POST 返回 Cloudflare HTTP `403`；Playwright 能打开 `/zh-cn/markets/new`（HTTP `200`），但从页面上下文 fetch GraphQL 返回 `TypeError: Failed to fetch`。因此已验证可无人值守的路径是官方 REST，不依赖 GraphQL 或 Playwright。
+
+随后再次只读核查：目标服务器的网页 GET 为 HTTP `200`，HTML 内含匿名用户的 `categories` 初始数据，样本含 `totalCount: 844`、类目标题和 `pageInfo.hasNextPage: true`；其查询条件为最新标签、`MOST_POPULAR` 排序。该快照的 `dehydratedAt` 为 `2026-11-17T07:47:20Z`，采集时约为 `07:47:36Z`，但未验证后续采集是否持续新鲜或覆盖完整市场。对 GraphQL POST 则返回 HTTP `403`，页面文本为 Cloudflare `Attention Required!`、`Please enable cookies` 和 `You have been blocked`，并非应用返回的 JWT 登录错误。无痕 Playwright 未通过不证明无法解决；现有证据也不足以证明 JWT 能通过 Cloudflare。网页初始数据只有首屏且按热门排序，不能据此宣称它能完整捕获新增市场。
+
+### 网页 HTML 只读验证
+
+2026-11-17 在 `odaily-official` 通过 Python `requests` 请求官网页面，提取 HTML 中 `self.__next_f.push` 的匿名查询数据，成功得到类目标题、slug、类目创建时间、开始时间，以及嵌套市场 ID 和 question。`/zh-cn/markets/new` 一次返回 16 项，`totalCount=844` 且 `hasNextPage=true`；传 `?page=2`、`?sort=STARTS_AT_ASC` 或 `?sort=STARTS_AT_DESC` 后，首屏查询仍是 `MOST_POPULAR`，游标和前几项不变。不能从这几个参数实现分页或排序。
+
+分类页同样可以解析：科技页 `totalCount=19`、返回前 16 项，其中包括类目 `will-jensen-huang-join-spacex-by-december-31-2026`（类目 `createdAt=2026-11-16T10:11:28.347Z`，子市场 4590308 的问题为黄仁勋是否在 2026 年底前加入 SpaceX），以及 Qwen Max 类目 `next-qwen-max-model-3pt9-text-arena-debut-20261106`（类目 `createdAt=2026-11-16T14:05:48.815Z`）。政治页 `totalCount=39`，首屏返回 16 项；经济和文化页也可读取。页面中的类目 `createdAt` 不能代替每个子市场的创建时间。
+
+`/markets/new` 在 `07:49:19Z` 与 `07:51:01Z` 的快照不完全相同，至少证明首屏内容会变化；例如后次前 16 项含 `sk-hynix-inc-up-or-down-on-november-18-2026`，类目创建时间为 `06:30:12Z`。这一变化可能来自热门排序或其他筛选条件，不能证明该市场在两次采样之间创建，也不能证明新市场能及时进入首屏。响应出现过 Cloudflare `HIT` 和 `EXPIRED`；缓存时间及持续新鲜度尚未系统测量。HTML 方案仅能部分发现进入首屏的题目，目前没有验证全部分页或覆盖率。服务仍按用户要求停止并禁用，本次不启动 worker、不创建数据库。
+
 ### `/markets/new` 页面查询
 
 检查 [Predict.fun 最新市场页](https://predict.fun/zh-cn/markets/new) 的页面 hydration 数据和生产前端后，发现“最新”实际是类目标签，不是固定的时间排序。此前抓取到的一次服务端初始 query state 为 `filter.status=OPEN`、`filter.tags=["3"]`（tag id `3` 的名称为“最新”）、`sort=MOST_POPULAR`。用户随后提供的截图显示成交量列带有排序标记，说明当前浏览器状态可能已改为其他排序；该页面的 sort 可以独立切换。GraphQL endpoint 使用官网配置的 `https://graphql.predict.fun/graphql`。
@@ -164,9 +182,9 @@ GET https://api.predict.fun/v1/categories/jensen-huang-rejoins-nvidia-before-div
 
 实现后再依据生产响应修正了两个字段条件：类目筛选 `status=OPEN` 时，子市场的 `status` 通常是 `REGISTERED`，可交易状态实际由 `tradingStatus=OPEN` 表示；且开始时间在 72 小时内不代表市场新建，需同时要求单市场 `createdAt` 落在过去 72 小时，避免把数周前创建的比赛当作新上架题目。
 
-最终服务器验证时间约为 `2026-11-17T06:59Z`：扫描 53 页、5,299 个类目、19,122 个市场；本轮新增 3 个市场 ID，但没有新增窗口候选。之前一次按创建时间与开始时间双窗口统计得到 2,603 个可交易市场，其中 `CRYPTO_UP_DOWN` 1,224 个、`UP_DOWN` 1 个、`DEFAULT` 531 个、体育/电竞变体合计 832 个、`TWEET_COUNT` 15 个。应用 Up/Down 变体、标题中的日常涨跌文字和天气模板过滤后，独立 SQLite 有 961 个待复核市场。候选仍含大量 CS2/Dota 等体育盘口，因此“自动获取新市场”已验证并运行，“读者可能喜欢”的排序没有完成，不能把这 961 个条目称为推荐选题。
+删除旧发现库后，服务曾按用户要求停用；随后用户明确要求把程序化市场发现重新运行在 Linux 服务器上，故于 `2026-11-17 15:34 CST` 重新启用。新库首轮为基线扫描：53 页、5,293 个开放类目、19,089 个市场，新增市场计数为 0（尚无前一轮 ID 可比较），并从当前快照建立 962 条符合发现窗口的候选。候选仍含大量体育/电竞盘口；这只是市场发现数据，不代表完成“读者可能喜欢”的排序。
 
-`odaily-predict-market.service` 已在官方服务器启用，systemd 状态为 `active` / `enabled`，最近检查 `NRestarts=0`。实时状态可在服务器运行 `python backend/src/main.py predict-market status`；服务每 600 秒再次分页扫描，候选与已见 ID 持久保存在 `data/runtime/predict_market_discovery.sqlite`。
+该服务随后按用户要求停止并禁用，核实为 `inactive/dead`、`disabled`；新建数据库保留。尚未通过连续快照和已知新增市场验证发现的及时性及覆盖率，首轮扫描不能证明发现能力。
 
 ## 官方来源
 

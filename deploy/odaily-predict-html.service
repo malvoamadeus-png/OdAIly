@@ -1,0 +1,16 @@
+[Unit]
+Description=OdAIly Predict.fun HTML discovery and background drafts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py predict-html run
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

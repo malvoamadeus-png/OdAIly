@@ -1,48 +1,17 @@
 # Predict.fun 市场发现
 
-`predict-market` 是独立只读 worker，从 Predict.fun 官方 REST API 分页读取开放类目和嵌套市场，为人工选题提供增量候选。它不创建 `tasks`，不调用发布接口，也不把未经编辑判断的市场推入快讯流。
+`predict-html` 每小时读取 Predict.fun 金融、科技、经济、文化、政治栏目的公开 HTML，仅扫描每个栏目的热门首屏；平台并不保证新类目都出现在首屏，可能遗漏。控制台「信源与监测 / 预测市场 / Predict / 上新」展示每栏扫描结果、发现记录、官方规则和草稿。Polymarket、体育、电竞尚未实现。
 
-## 发现逻辑
+每栏首次成功扫描单独建立基线；失败不建立基线。后续按类目 ID 跨栏目去重，首次看到且类目 `createdAt` 落在过去48小时内的主题进入队列。旧类目下的新子市场不会另行出稿。扫描记录为类别的总量、首屏数量和分页标记；页面变化、缺少字段或网络失败时记录错误。
 
-- 请求 `GET /v1/categories?first=100&sort=PUBLISHED_AT_DESC&status=OPEN`，通过 `cursor` 分页；主网使用 `x-api-key`。
-- 默认每 10 分钟扫描一次，每轮最多 80 页、每页 100 个类目。分页游标可能随列表变化，程序按市场 ID 持久去重；触及页数上限会在轮次结果中报告 `page_limit_reached`。
-- 首轮建立已见市场基线，同时把 `market.createdAt` 在过去 72 小时内、开始时间在当前时刻前后 72 小时且 `tradingStatus=OPEN` 的市场放入复核队列；市场自身的 `status` 可能是 `REGISTERED`，不能要求它等于 `OPEN`。首轮既有市场不会计为新发现。后续扫描只将首轮后首次见到的市场计为新市场，并保留相同创建时间条件，避免分页时把旧比赛误判为新题。
-- 时间统一转为 UTC 后按市场自身 `createdAt` 和所属类目的 `startsAt` 筛选。类目的 `publishedAt` 不被误当成子市场创建时间。
-- `CRYPTO_UP_DOWN`、`UP_DOWN` 变体、标题含 `Up or Down` 的日常涨跌题，以及标题明确命中天气/气温/降雨/降雪词的市场保存在已见账本中，但不进入人工候选。此规则只是压制常见重复模板，不代表“有趣”判断。
-- 一个类目下同一主题有多个期限或选项市场时，目前按市场 ID 分别存储，并在每条记录上保留类目标题、slug 和开始时间，供人工识别和合并。
+已知短周期涨跌、每日涨跌和每日天气用规则排除，其他日常重复题由写作模型判断。候选读取官方市场详情 HTML 的 `description`，并通过一次带 `PREDICT_FUN_API_KEY` 的官方 REST 类目请求获取每个子市场独立规则，再使用 `predict-new-v1` 专用 Prompt 由编写者1判断、写出陈述式主题和规则摘要，再由编写者2 `format_brief` 规范格式。缺少规则或模型判断规则不完整时不投递。题目是预测，不是已经发生的事实。每个主题一篇。
 
-## 状态与命令
-
-状态存入独立 SQLite：`data/runtime/predict_market_discovery.sqlite`。`status` 返回最近扫描结果、已见市场数及当前 72 小时窗口内的复核候选。worker 每轮把摘要和候选 JSON 写入 journald。
+运行数据保存在独立的 `data/runtime/predict_html_discovery.sqlite`，可用 `PREDICT_HTML_DB_PATH` 覆盖，旧 REST 数据库不作为基线。处理状态包括 `baseline`、`too_old`、`invalid_time`、`filtered`、`pending`、`retry_wait`、`rules_incomplete`、`ready`、`delivering`、`backgrounded` 和 `delivery_uncertain`。投递期间发生超时或进程中断时标记为 `delivery_uncertain`，不自动重发。请求挂后台固定 `isPublish=false,isPush=false`。
 
 ```bash
-python backend/src/main.py predict-market init-db
-python backend/src/main.py predict-market run --once
-python backend/src/main.py predict-market status
-python backend/src/main.py predict-market run
+python backend/src/main.py predict-html status
+python backend/src/main.py predict-html run --once --dry-run
+python backend/src/main.py predict-html run
 ```
 
-生产 systemd unit 为 `deploy/odaily-predict-market.service`，服务名为 `odaily-predict-market.service`。
-
-## 配置
-
-在服务器 `/opt/OdAIly/.env` 设置：
-
-```text
-PREDICT_FUN_API_KEY=...
-```
-
-可选变量：
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `PREDICT_FUN_API_BASE_URL` | `https://api.predict.fun` | REST API 地址 |
-| `PREDICT_MARKET_DB_PATH` | `data/runtime/predict_market_discovery.sqlite` | 独立 SQLite 路径 |
-| `PREDICT_MARKET_POLL_INTERVAL_SECONDS` | `600` | 轮询间隔，最小 60 秒 |
-| `PREDICT_MARKET_REQUEST_TIMEOUT_SECONDS` | `15` | 单次 HTTP 请求超时 |
-| `PREDICT_MARKET_MAX_PAGES` | `80` | 单轮最大页数，范围 1 至 100 |
-| `PREDICT_MARKET_PAGE_SIZE` | `100` | 每页类目数，范围 1 至 100 |
-
-主网 key 必须从 Predict.fun Developer Console 申请。REST 通用限流为每 app 每分钟 250 次；默认配置最多每 10 分钟请求 80 页。GraphQL 不作为后台依赖，因为官方 REST 已实测可在 Linux 请求，GraphQL 在该服务器上返回 Cloudflare `403`。
-
-“有趣”仍由人工复核决定。当前扫描器只做重复模板规则过滤，不自动分类、写稿或发布。
+`--dry-run` 不投递，但会写扫描、基线和草稿状态；验证时必须使用单独的 `PREDICT_HTML_DB_PATH`。服务为 `odaily-predict-html.service`。旧 REST 扫描服务 `odaily-predict-market.service` 停用，不作为新功能的数据源。控制台接口 `/console/predict-html/get` 要求控制台管理员认证，仅只读访问新库。

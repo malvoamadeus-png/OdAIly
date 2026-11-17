@@ -2281,6 +2281,17 @@ export async function getMemeDashboard(column: 'digest' | 'daily_hot' = 'digest'
   return consoleApiGet<MemeDashboard>(`/console/meme/get?column=${column}`);
 }
 
+export type PredictHtmlDashboard = {
+  available: boolean;
+  message: string;
+  scans: Array<{feed: string; scanned_at: string; status: string; returned_count: number | null; total_count: number | null; new_count: number; error: string | null}>;
+  items: Array<{category_id: string; slug: string; title: string; created_at: string | null; first_seen_at: string; first_feed: string; status: string; reason: string | null; last_error: string | null; final_title: string | null; final_content: string | null; detail_json: {description?: string} | null}>;
+};
+
+export async function getPredictHtmlDashboard(): Promise<PredictHtmlDashboard> {
+  return consoleApiGet<PredictHtmlDashboard>('/console/predict-html/get');
+}
+
 export type MemeNarrativeMaterial = Record<string, unknown>;
 
 export type MemeNarrativeDetail = {

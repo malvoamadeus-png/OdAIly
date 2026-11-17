@@ -578,6 +578,13 @@ def parse_args() -> argparse.Namespace:
     predict_market_run.add_argument("--once", action="store_true", help="Run one scan and exit.")
     predict_market_run.add_argument("--interval", type=int, help="Override the poll interval in seconds.")
 
+    predict_html = subparsers.add_parser("predict-html", help="Discover Predict.fun topics from webpage feeds.")
+    predict_html_subparsers = predict_html.add_subparsers(dest="predict_html_action", required=True)
+    predict_html_subparsers.add_parser("status", help="Show HTML discovery state.")
+    predict_html_run = predict_html_subparsers.add_parser("run", help="Run the HTML discovery worker.")
+    predict_html_run.add_argument("--once", action="store_true")
+    predict_html_run.add_argument("--dry-run", action="store_true", help="Do not send newsflashes; requires --once.")
+
     meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
     meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
     meme_scan = meme_subparsers.add_parser("scan", help="Scan OKX BSC and Robinhood migrated tokens and generate Meme drafts.")
@@ -2181,6 +2188,21 @@ def predict_market_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def predict_html_command(args: argparse.Namespace) -> int:
+    from packages.predict_market_discovery.html_worker import database_path, run_forever, run_once
+    from packages.predict_market_discovery.html_dashboard import dashboard
+
+    if args.predict_html_action == "status":
+        print(json.dumps(dashboard(database_path()), ensure_ascii=False, indent=2))
+    elif args.once:
+        print(json.dumps(run_once(send=not args.dry_run), ensure_ascii=False, indent=2))
+    elif args.dry_run:
+        raise ValueError("--dry-run requires --once")
+    else:
+        run_forever()
+    return 0
+
+
 def meme_command(args: argparse.Namespace) -> int:
     if args.meme_action == "scan":
         from packages.meme_scanner import scanner
@@ -2429,6 +2451,8 @@ def main() -> int:
             return macro_newsflash_command(args)
         if args.command == "predict-market":
             return predict_market_command(args)
+        if args.command == "predict-html":
+            return predict_html_command(args)
         if args.command == "meme":
             return meme_command(args)
         if args.command == "okx-stock-brief":

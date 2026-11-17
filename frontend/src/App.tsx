@@ -56,6 +56,7 @@ import {
   getGateMarketDashboard,
   getStockMarketDashboard,
   getMemeDashboard,
+  getPredictHtmlDashboard,
   getMemeNarrativeDetail,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
@@ -140,6 +141,7 @@ import {
   type GateMarketDashboard,
   type StockMarketDashboard,
   type MemeDashboard,
+  type PredictHtmlDashboard,
   type MemeDashboardItem,
   type MemeNarrativeDetail,
   type MemeNarrativeMaterial,
@@ -174,6 +176,7 @@ type ConsoleView =
   | 'gate_market'
   | 'stock_market'
   | 'meme'
+  | 'predict_market'
   | 'publisher'
   | 'workflow'
   | 'whale'
@@ -192,7 +195,7 @@ function resolveInitialView(value: string | null): ConsoleView {
   if (!value || value === 'tasks') return value === 'tasks' ? 'system_information' : 'x';
   const views: ConsoleView[] = [
     'x', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief', 'macro_newsflash',
-    'tasks', 'dedupe', 'timing', 'gate_market', 'stock_market', 'meme', 'publisher', 'workflow', 'whale',
+    'tasks', 'dedupe', 'timing', 'gate_market', 'stock_market', 'meme', 'predict_market', 'publisher', 'workflow', 'whale',
     'hyperliquid_news', 'prompts', 'competitor', 'newsflash', 'business_news', 'jin10', 'x_agent', 'ai_review', 'system_review', 'ai_text_self_upgrade',
   ];
   return views.includes(value as ConsoleView) ? value as ConsoleView : 'x';
@@ -1877,6 +1880,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? 'Stock Market'
       : view === 'meme'
         ? 'Meme Express'
+      : view === 'predict_market'
+        ? 'Prediction Markets'
       : view === 'x_agent'
         ? 'X Agent'
       : view === 'publisher'
@@ -1923,6 +1928,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? '股票行情播报'
       : view === 'meme'
         ? 'Meme速递'
+      : view === 'predict_market'
+        ? '预测市场'
       : view === 'x_agent'
         ? 'X Agent'
       : view === 'publisher'
@@ -2052,6 +2059,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <NavButton active={view === 'whale'} onClick={() => switchView('whale')} icon={<Wallet size={18} />}>巨鲸</NavButton>
             <NavButton active={view === 'hyperliquid_news'} onClick={() => switchView('hyperliquid_news')} icon={<Wallet size={18} />}>Hyperliquid监测</NavButton>
             <NavButton active={view === 'meme'} onClick={() => switchView('meme')} icon={<Megaphone size={18} />}>Meme速递</NavButton>
+            <NavButton active={view === 'predict_market'} onClick={() => switchView('predict_market')} icon={<Activity size={18} />}>预测市场</NavButton>
             <NavButton active={view === 'x_agent'} onClick={() => switchView('x_agent')} icon={<Zap size={18} />}>X Agent</NavButton>
           </div>
           <div className="navGroup"><span className="navGroupTitle">行情播报</span>
@@ -2402,6 +2410,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             </div>
             <MemeDashboardPanel dashboard={memeDashboard} loading={loadingMeme} />
           </>
+        ) : view === 'predict_market' ? (
+          <PredictMarketPanel />
         ) : view === 'non_mainstream' ? (
           <NonMainstreamPanel
             settings={nonMainstreamSettings}
@@ -3233,6 +3243,43 @@ function fmtMemeDuration(value: number | null | undefined): string {
   if (seconds < 1) return `${Math.round(value)} 毫秒`;
   if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
+}
+
+function PredictMarketPanel() {
+  const [platform, setPlatform] = useState<'predict' | 'polymarket'>('predict');
+  const [tab, setTab] = useState<'new' | 'sports' | 'esports'>('new');
+  const [data, setData] = useState<PredictHtmlDashboard | null>(null);
+  const [error, setError] = useState('');
+  const refresh = async () => {
+    try { setData(await getPredictHtmlDashboard()); setError(''); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+  useEffect(() => { void refresh(); }, []);
+  return <div>
+    <div className="memeAuditNestedTabs" role="tablist" aria-label="预测市场平台">
+      {(['predict', 'polymarket'] as const).map(p => <button key={p} className={`memeAuditNestedTab ${platform === p ? 'active' : ''}`} onClick={() => setPlatform(p)}>{p === 'predict' ? 'Predict' : 'Polymarket'}</button>)}
+    </div>
+    {platform === 'polymarket' ? <div className="emptyState">Polymarket 待建设</div> : <>
+      <div className="memeAuditNestedTabs" role="tablist" aria-label="Predict 分类">
+        {([['new','上新'],['sports','体育'],['esports','电竞']] as const).map(([key,label]) => <button key={key} className={`memeAuditNestedTab ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}>{label}</button>)}
+      </div>
+      {tab !== 'new' ? <div className="emptyState">{tab === 'sports' ? '体育' : '电竞'}待建设</div> : <>
+        <p>每小时扫描五个栏目的热门首屏，可能遗漏新市场。 <button onClick={() => void refresh()}>刷新</button></p>
+        {error && <div className="emptyState">{error}</div>}
+        {data && <><p>{data.message}</p>
+          {data.scans.map(scan => <p key={scan.feed}>{scan.feed}：{scan.status}，{scan.scanned_at}，已读 {scan.returned_count ?? '—'} / {scan.total_count ?? '—'}，新增 {scan.new_count}{scan.error ? `，${scan.error}` : ''}</p>)}
+          {data.items.map(item => <article key={item.category_id} className="panel" style={{marginBottom: 12, padding: 16}}>
+            <a href={`https://predict.fun/zh-cn/market/${item.slug}`} target="_blank" rel="noreferrer">{item.title}</a>
+            <p>{item.first_feed} · 创建 {item.created_at || '未知'} · 发现 {item.first_seen_at} · 状态 {item.status}</p>
+            {(item.reason || item.last_error) && <p>{item.reason || item.last_error}</p>}
+            {item.final_title && <strong>{item.final_title}</strong>}{item.final_content && <p>{item.final_content}</p>}
+            {item.detail_json?.description && <details><summary>官方结算规则</summary><p style={{whiteSpace:'pre-wrap'}}>{item.detail_json.description}</p></details>}
+          </article>)}
+          {data.available && data.items.length === 0 && <div className="emptyState">暂无新主题</div>}
+        </>}
+      </>}
+    </>}
+  </div>;
 }
 
 function memeStatusLabel(item: MemeDashboardItem): string {

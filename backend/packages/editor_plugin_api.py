@@ -1541,6 +1541,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/hyperliquid-news/address-block/save",
         "/console/hyperliquid-news/address-add",
         "/console/meme/get",
+        "/console/predict-html/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
         "/console/known-title-subjects/save",
@@ -1706,6 +1707,17 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     {"ok": True, "data": self.server.service.get_meme_dashboard(
                         actor, column=(parse_qs(parsed_path.query).get("column") or ["all"])[0])},
                 )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if parsed_path.path == "/console/predict-html/get":
+            try:
+                self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                from packages.predict_market_discovery.html_dashboard import dashboard
+                from packages.predict_market_discovery.html_worker import database_path
+                self._send_json(HTTPStatus.OK, {"ok": True, "data": dashboard(database_path())})
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
             except Exception as exc:
@@ -1919,6 +1931,11 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/meme/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_meme_dashboard(actor)})
+                    return
+                if self.path == "/console/predict-html/get":
+                    from packages.predict_market_discovery.html_dashboard import dashboard
+                    from packages.predict_market_discovery.html_worker import database_path
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": dashboard(database_path())})
                     return
                 if self.path == "/console/runtime-rules/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_runtime_rules(actor)})
