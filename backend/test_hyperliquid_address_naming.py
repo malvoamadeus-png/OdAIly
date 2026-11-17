@@ -195,3 +195,35 @@ def test_naming_cli_once_initializes_temporary_store(tmp_path, monkeypatch):
         retry=SimpleNamespace(max_attempts=1, backoff_seconds=0)))
     monkeypatch.setattr(ai_client, 'OpenAIResponsesClient', lambda **kwargs: object())
     assert commands.run_command(SimpleNamespace(hyperliquid_action='run-naming', once=True, batch_size=4, interval_seconds=30)) == 0
+
+
+def test_duplicate_feature_and_prefix_extend_actual_address_suffix(tmp_path):
+    store, names = setup(tmp_path)
+    other = A[:4]+'f'+A[5:]
+    store.discover(other, source={'kind':'test'}, now_ms=T, limit=None)
+    names.initialize()
+    result = {'name':'普通地址0x12', 'kind':'stable', 'selected_dimension':'address_prefix', 'evidence_refs':['address_prefix'],
+        'coverage':{'dimensions':[{'evidence_id':'address_prefix','available':True}]}}
+    claims={r['address']:r for r in names.claim_due(now_ms=T,limit=10)}
+    for address in (A,other):
+        assert names.save_result(address,token=claims[address]['claim_token'],result=result,now_ms=T,model='gpt-6-luna')
+    assert names.get(A)['current_name'] != names.get(other)['current_name']
+    assert names.get(other)['current_name'].endswith(other[:5])
+
+
+def test_invalid_model_reply_is_repaired_once_with_same_model(tmp_path):
+    store, names = setup(tmp_path)
+    names.initialize()
+    class Client:
+        calls=0
+        def generate_text(self, **kwargs):
+            self.calls+=1
+            assert kwargs['model']=='gpt-6-luna'
+            value={'name':'普通地址','kind':'stable','coin':None,'side':None,'reason':'缺少特长','evidence_refs':['address_prefix']}
+            if self.calls==2: value['selected_dimension']='address_prefix'
+            return json.dumps(value)
+    client=Client()
+    profile=build_profile(store,A,now_ms=T)
+    result=NamingWorker(store,names,ai_client=client)._choose(profile,A)
+    assert result['name']=='普通地址0x12'
+    assert client.calls==2
