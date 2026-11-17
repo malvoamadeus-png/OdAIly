@@ -61,6 +61,12 @@ class Observation:
     value: Decimal
 
 
+class PartialSourceError(RuntimeError):
+    def __init__(self, message: str, updates: list[MacroUpdate]) -> None:
+        super().__init__(message)
+        self.updates = updates
+
+
 def _decimal(value: Any) -> Decimal:
     try:
         return Decimal(str(value).replace(",", "").strip())
@@ -259,6 +265,9 @@ def collect_updates(
             source = futures[future]
             try:
                 updates.extend(future.result())
+            except PartialSourceError as exc:
+                updates.extend(exc.updates)
+                errors[source] = str(exc)
             except Exception as exc:
                 errors[source] = str(exc)
     return sorted(updates, key=lambda item: item.metric_id), errors
@@ -351,9 +360,14 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
         ("cpi_sa", "cpi_mom_sa", "季调后CPI月率", "month_over_month"),
         ("core_cpi_sa", "core_cpi_mom_sa", "季调后核心CPI月率", "month_over_month"),
     )
+    cpi_errors: list[str] = []
     for series_name, metric_id, indicator, kind in cpi_specs:
         rows = by_id[series_name]
-        result = _index_change(rows, kind)
+        try:
+            result = _index_change(rows, kind)
+        except (RuntimeError, ValueError) as exc:
+            cpi_errors.append(f"{indicator}: {exc}")
+            continue
         if not result:
             continue
         period, actual, previous_value, reference_rows = result
@@ -370,6 +384,8 @@ def _bls_updates(settings: MacroNewsflashSettings) -> list[MacroUpdate]:
                 raw={"series_id": cpi_series_id, "observations": [_json_observation(item) for item in reference_rows]},
             )
         )
+    if cpi_errors:
+        raise PartialSourceError("; ".join(cpi_errors), updates)
     return updates
 
 
