@@ -165,8 +165,7 @@ class PredictMarketStore:
                     starts_at is None
                     or starts_at < lower
                     or starts_at > upper
-                    or row["market_status"].upper() != "OPEN"
-                    or row["trading_status"].upper() not in {"", "OPEN"}
+                    or row["trading_status"].upper() != "OPEN"
                 ):
                     continue
                 connection.execute(
@@ -274,8 +273,7 @@ class PredictMarketStore:
             WHERE candidate_at IS NOT NULL
                 AND filter_reason IS NULL
                 AND starts_at >= ? AND starts_at <= ?
-                AND market_status = 'OPEN'
-                AND trading_status IN ('', 'OPEN')
+                AND trading_status = 'OPEN'
                 {candidate_clause}
             ORDER BY candidate_at DESC, market_id
             LIMIT ?""",
@@ -292,8 +290,7 @@ class PredictMarketStore:
             WHERE candidate_at IS NOT NULL
                 AND filter_reason IS NULL
                 AND starts_at >= ? AND starts_at <= ?
-                AND market_status = 'OPEN'
-                AND trading_status IN ('', 'OPEN', 'open')""",
+                AND trading_status = 'OPEN'""",
             (lower, upper),
         ).fetchone()
         return int(row[0])
