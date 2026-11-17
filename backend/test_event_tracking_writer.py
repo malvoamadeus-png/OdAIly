@@ -83,8 +83,12 @@ def test_event_writer_uses_real_author_and_event_progress_for_legacy_tasks() -> 
         task=_task(), prompt=repo.prompts["x_onchain_writer"], known_subjects=[],
     )
     assert "发布人：papertrade.xyz" in prompt
-    assert "候选账号：@papertrade_xyz" in prompt
+    assert "X 账号：@papertrade_xyz" in prompt
     assert "发布人：PaperTrade报价套利质疑" not in prompt
     assert "首次披露收紧措施。" in prompt
     assert "官方称已开始收紧持仓量上限。" in prompt
     assert "覆盖" in prompt and "监测" in prompt
+    assert "实质进展”决定稿件重点和信息排序，不代表只写相对上次新增的动作" in prompt
+    assert "事件原因或攻击方式" in prompt
+    assert "资金风险或追回情况" in prompt
+    assert "必须明确归属发帖账号" in prompt
