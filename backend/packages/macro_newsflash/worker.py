@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, time as wall_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -48,9 +49,15 @@ class MacroNewsflashWorker:
         *,
         publish_latest: bool = False,
         source_names: set[str] | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        settings = (
+            replace(self.settings, request_timeout_seconds=request_timeout_seconds)
+            if request_timeout_seconds is not None
+            else self.settings
+        )
         recovered = self.store.recover_inflight()
-        updates, errors = collect_updates(self.settings, source_names=source_names)
+        updates, errors = collect_updates(settings, source_names=source_names)
         checked_sources = (
             {"bls", "retail_sales", "initial_claims", "pce", "fomc"}
             if source_names is None
@@ -59,7 +66,7 @@ class MacroNewsflashWorker:
         self.store.record_source_refresh(checked_sources=checked_sources, errors=errors)
         calendar_errors: dict[str, str] = {}
         if self.store.schedule_refresh_due():
-            releases, calendar_errors, refreshed_sources = fetch_release_schedule(self.settings)
+            releases, calendar_errors, refreshed_sources = fetch_release_schedule(settings)
             self.store.replace_release_schedule(releases, refreshed_sources=refreshed_sources)
             self.store.record_schedule_refresh(errors=calendar_errors)
         queued = 0
@@ -114,12 +121,16 @@ class MacroNewsflashWorker:
         print(
             "[macro-newsflash] worker started "
             f"active_poll={self.settings.poll_interval_seconds}s "
+            f"release_poll={self.settings.release_poll_interval_seconds}s "
+            f"release_request_timeout={self.settings.release_request_timeout_seconds}s "
             f"quiet_poll={self.settings.quiet_poll_interval_seconds}s"
         )
         while not self._stop.is_set():
             started = time.monotonic()
             try:
-                due_sources = self._sources_due(datetime.now(EASTERN_TZ))
+                now = datetime.now(EASTERN_TZ)
+                fast_poll = self._fast_poll_due(now)
+                due_sources = self._sources_due(now)
                 sources = (
                     None
                     if initial_poll_pending
@@ -128,6 +139,9 @@ class MacroNewsflashWorker:
                 result = self.run_once(
                     publish_latest=publish_latest and first,
                     source_names=sources,
+                    request_timeout_seconds=(
+                        self.settings.release_request_timeout_seconds if fast_poll else None
+                    ),
                 )
                 print("[macro-newsflash] " + json.dumps(result, ensure_ascii=False, separators=(",", ":")))
                 if initial_poll_pending:
@@ -145,9 +159,26 @@ class MacroNewsflashWorker:
             self._stop.wait(remaining)
 
     def _poll_interval(self, now: datetime) -> int:
+        if self._fast_poll_due(now):
+            return self.settings.release_poll_interval_seconds
         if self._sources_due(now):
             return self.settings.poll_interval_seconds
         return self.settings.quiet_poll_interval_seconds
+
+    def _fast_poll_due(self, now: datetime) -> bool:
+        now_utc = now.astimezone(UTC)
+        for release in self.store.upcoming_releases():
+            scheduled_at = datetime.fromisoformat(release["scheduled_at"]).astimezone(UTC)
+            delta = scheduled_at - now_utc
+            if -timedelta(minutes=2) <= delta <= timedelta(minutes=15):
+                return True
+        if now.weekday() >= 5:
+            return False
+        local_time = now.timetz().replace(tzinfo=None)
+        return (
+            wall_time(8, 28) <= local_time <= wall_time(8, 45)
+            or wall_time(13, 58) <= local_time <= wall_time(14, 15)
+        )
 
     def _sources_due(self, now: datetime) -> set[str]:
         now_utc = now.astimezone(UTC)

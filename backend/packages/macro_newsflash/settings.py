@@ -14,6 +14,8 @@ class MacroNewsflashSettings:
     database_path: Path
     push_endpoint: str
     poll_interval_seconds: int
+    release_poll_interval_seconds: int
+    release_request_timeout_seconds: float
     quiet_poll_interval_seconds: int
     request_timeout_seconds: float
     push_timeout_seconds: float
@@ -43,6 +45,14 @@ def load_macro_newsflash_settings() -> MacroNewsflashSettings:
         ).expanduser().resolve(),
         push_endpoint=(os.getenv("ODAILY_PUSH_ENDPOINT") or "http://47.113.217.70:8501/push/data").strip(),
         poll_interval_seconds=max(10, int(os.getenv("MACRO_NEWSFLASH_POLL_INTERVAL_SECONDS") or 30)),
+        release_poll_interval_seconds=max(
+            1,
+            int(os.getenv("MACRO_NEWSFLASH_RELEASE_POLL_INTERVAL_SECONDS") or 2),
+        ),
+        release_request_timeout_seconds=max(
+            1.0,
+            float(os.getenv("MACRO_NEWSFLASH_RELEASE_REQUEST_TIMEOUT_SECONDS") or 3),
+        ),
         quiet_poll_interval_seconds=max(
             60,
             int(os.getenv("MACRO_NEWSFLASH_QUIET_POLL_INTERVAL_SECONDS") or 900),
