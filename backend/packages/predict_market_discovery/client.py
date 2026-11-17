@@ -140,6 +140,8 @@ def market_filter_reason(variant: str, question: str, category_title: str) -> st
     if normalized_variant in {"CRYPTO_UP_DOWN", "UP_DOWN"}:
         return "repetitive_up_down_template"
     searchable = f"{question} {category_title}".casefold()
+    if "up or down" in searchable:
+        return "repetitive_up_down_template"
     if any(
         token in searchable
         for token in (

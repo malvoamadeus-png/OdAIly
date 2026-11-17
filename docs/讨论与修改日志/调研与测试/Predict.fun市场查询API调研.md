@@ -160,7 +160,13 @@ GET https://api.predict.fun/v1/categories/jensen-huang-rejoins-nvidia-before-div
 
 服务器当时没有 Predict 专用环境变量或对应 systemd unit。key 通过 SSH 标准输入用于只读请求，没有回显或写入服务器；部署 worker 时需由运维配置 `PREDICT_FUN_API_KEY`。后台实现采用 REST，不依赖浏览器、Playwright 或 GraphQL：固定从类目 `PUBLISHED_AT_DESC` 开始分页，展开市场并按 ID 写入独立 SQLite；首轮建立基线，后续只报告首见市场，按类目 `startsAt` 筛选 ±72 小时窗口。默认每 10 分钟最多翻 80 页，低于每 app 每分钟 250 次的限额；API 仍未承诺分页快照一致性，因此要保留每轮从第一页开始的扫描和持久化 ID 去重。
 
-业务筛选的第一阶段只排除明确的 `CRYPTO_UP_DOWN` / `UP_DOWN` 与天气模板，剩余题目保留给人工复核。真正“读者可能喜欢”的语义判断、同类目多市场聚合及自动写稿发布均不属于该 API 扫描器的保证能力，需另行定义业务规则。
+业务筛选的第一阶段只排除明确的 `CRYPTO_UP_DOWN` / `UP_DOWN`、标题含 `Up or Down` 的日常涨跌题与天气模板，剩余题目保留给人工复核。真正“读者可能喜欢”的语义判断、同类目多市场聚合及自动写稿发布均不属于该 API 扫描器的保证能力，需另行定义业务规则。
+
+实现后再依据生产响应修正了两个字段条件：类目筛选 `status=OPEN` 时，子市场的 `status` 通常是 `REGISTERED`，可交易状态实际由 `tradingStatus=OPEN` 表示；且开始时间在 72 小时内不代表市场新建，需同时要求单市场 `createdAt` 落在过去 72 小时，避免把数周前创建的比赛当作新上架题目。
+
+最终服务器验证时间约为 `2026-11-17T06:52Z`：扫描 53 页、5,300 个类目、19,123 个市场；本轮新增 3 个市场 ID，但它们未进入候选窗口。开始时间与创建时间都在 72 小时内的可交易原始市场为 2,603 个，其中 `CRYPTO_UP_DOWN` 1,224 个、`UP_DOWN` 1 个、`DEFAULT` 531 个、体育/电竞变体合计 832 个、`TWEET_COUNT` 15 个。应用 Up/Down 和天气模板排除后，独立 SQLite 中有 971 个待复核市场。最新样本仍含大量 CS2/Dota 赛事与每日指数涨跌；因此“自动获取新市场”已验证并运行，“有趣题目”的筛选没有完成，不能把这 971 个条目称为推荐选题。
+
+`odaily-predict-market.service` 已在官方服务器启用，systemd 状态为 `active` / `enabled`，最近检查 `NRestarts=0`。实时状态可在服务器运行 `python backend/src/main.py predict-market status`；服务每 600 秒再次分页扫描，候选与已见 ID 持久保存在 `data/runtime/predict_market_discovery.sqlite`。
 
 ## 官方来源
 
