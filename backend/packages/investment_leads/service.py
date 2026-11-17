@@ -338,7 +338,7 @@ class InvestmentLeadService:
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
         self.derive_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY", 10, 1, 10)
-        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 30_000_000, 0, 100_000_000)
+        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 0, 0, 100_000_000)
         self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
         self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
         self.daily_identity_searches = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS", 50, 0, 10_000)
@@ -413,6 +413,24 @@ class InvestmentLeadService:
 
     def _resume_budget_paused(self, now: str) -> None:
         with self.db:
+            if self.daily_input_tokens <= 0:
+                self.db.execute(
+                    "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
+                    "WHERE status='budget_paused' AND stage='scan'",
+                    (now,),
+                )
+                if self._remaining_derive_calls() > 0:
+                    self.db.execute(
+                        "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
+                        "WHERE status='budget_paused' AND stage='derive'",
+                        (now,),
+                    )
+                if self._remaining_identity_searches() > 0:
+                    self.db.execute(
+                        "UPDATE investment_lead_identity_searches SET status='pending',attempts=0,updated_at=? "
+                        "WHERE status='budget_paused'",
+                        (now,),
+                    )
             self.db.execute(
                 "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
                 "WHERE status='budget_paused' AND stage IN ('scan','supplement') AND substr(updated_at,1,10)<?",
@@ -521,7 +539,7 @@ class InvestmentLeadService:
         estimated = sum(
             max(1, len(_json(_decoded(job["payload_json"], {})))) for job in claimed
         )
-        if self._remaining_input_tokens() < estimated:
+        if self.daily_input_tokens > 0 and self._remaining_input_tokens() < estimated:
             with self.db:
                 for job in claimed:
                     self.db.execute(
@@ -774,7 +792,7 @@ class InvestmentLeadService:
                 )
                 return 0
             estimated_input_tokens = 800 + len(str(job["asset_name"])) + len(str(job["context_json"]))
-            if self._remaining_input_tokens() < estimated_input_tokens:
+            if self.daily_input_tokens > 0 and self._remaining_input_tokens() < estimated_input_tokens:
                 self.db.execute(
                     "UPDATE investment_lead_identity_searches SET status='budget_paused',updated_at=? WHERE id=?",
                     (now, job["id"]),
@@ -928,7 +946,7 @@ class InvestmentLeadService:
             for raw in rows:
                 job = dict(raw)
                 estimated_tokens = max(1, len(str(job["payload_json"])))
-                if remaining_calls <= 0 or estimated_tokens > remaining_tokens:
+                if remaining_calls <= 0 or (self.daily_input_tokens > 0 and estimated_tokens > remaining_tokens):
                     self.db.execute(
                         "UPDATE investment_lead_tasks SET status='budget_paused',updated_at=? "
                         "WHERE id=? AND status='pending'",
@@ -944,7 +962,8 @@ class InvestmentLeadService:
                     continue
                 job["attempts"] = int(job["attempts"]) + 1
                 remaining_calls -= 1
-                remaining_tokens -= estimated_tokens
+                if self.daily_input_tokens > 0:
+                    remaining_tokens -= estimated_tokens
                 claimed.append(job)
 
         if self.analyzer is None:

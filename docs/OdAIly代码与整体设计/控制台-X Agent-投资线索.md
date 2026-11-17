@@ -104,7 +104,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 ## 预算、保留和服务
 
-每日用量记在 `investment_lead_usage`，按 UTC 日期区分扫描、推导、补充读取和身份搜索。输入 token 预算统计扫描、推导及身份搜索的输入用量；请求前按材料长度估算剩余额度，实际调用后再记录服务端用量。当前服务配置每日输入预算 `30,000,000` tokens、推导模型请求 `2,000` 次、补充链接读取 100 次、身份搜索 50 次。并发领取时按材料长度预留预算，但实际服务端 token 量可能高于估算，最多有一个并发批次的在途用量尚未记入。达到上限后任务保留并显示预算暂停；预算恢复时继续处理。扫描每批最多 20 项，文本模型输出上限 5,000 tokens，服务配置的模型/搜索超时为 180 秒。
+每日用量记在 `investment_lead_usage`，按 UTC 日期区分扫描、推导、补充读取和身份搜索。输入 token 用量统计扫描、推导及身份搜索的实际服务端用量；当前服务不设每日输入 token 上限。若显式设置正数，则请求前按材料长度估算剩余额度，实际调用后记录服务端用量；达到上限后任务保留并显示预算暂停。设为 `0` 表示不限每日输入 token，服务启动时会恢复因此暂停的扫描任务，以及仍有推导或身份搜索请求额度的任务。推导模型请求仍限每日 `2,000` 次，补充链接读取 100 次，身份搜索 50 次。扫描每批最多 20 项，文本模型单次输出上限 5,000 tokens，服务配置的模型/搜索超时为 180 秒。
 
 每小时维护时，30 天未处理任务标记为过期；30 天未再观察、且没有线索来源引用的材料和事件可清理。线索引用的正文摘录、来源 URL、账号观察关系和修订长期保留。采集起点、Worker 最近心跳、扫描/推导/补充/身份搜索积压、失败、预算暂停、材料不完整和各类用量通过控制台状态接口读取。
 
@@ -141,7 +141,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 - `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量扫描批次等待上限，默认 `30` 秒，范围 `0–300`；凑满批次或队列有积压时不等待。
 - `X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY`：单轮领取的推导数及最大模型并发数，默认 `10`，范围 `1–10`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：序列化请求字符预算，默认 `24000`，范围 `8000–300000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 预算，默认 `30000000`；设为 `0` 会暂停全部文本分析。
+- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 上限，默认 `0`；设为 `0` 不限制每日输入 token 用量。推导次数、补充读取和身份搜索仍分别受各自预算限制。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS`：每日推导请求预算，默认 `2000`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS`：每日公网外链读取次数，默认 `100`。
 - `X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS`：每日身份 Web Search 请求数，默认 `50`。
