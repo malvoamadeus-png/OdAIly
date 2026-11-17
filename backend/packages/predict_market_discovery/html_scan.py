@@ -15,15 +15,16 @@ from .html_feed import FEEDS, fetch_feed
 
 
 def daily_filter_reason(node: dict[str, Any]) -> str | None:
-    """Identify explicit recurring daily feeds; uncertain topics need semantic review."""
+    """Identify explicit up/down markets and recurring weather feeds."""
     variant = str(node.get("marketVariant") or "").upper()
     if variant in {"CRYPTO_UP_DOWN", "UP_DOWN"}:
-        return "日度或短周期涨跌模板"
+        return "资产涨跌预测"
     title = str(node.get("title") or "").casefold()
     slug = str(node.get("slug") or "").casefold()
     date_hint = bool(re.search(r"\d{1,2}月\d{1,2}日|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[- ]\d{1,2}\b", title + " " + slug))
-    if date_hint and ("up or down" in title or "up-or-down" in slug or "涨跌" in title or "涨还是跌" in title or "涨或跌" in title):
-        return "日度涨跌模板"
+    if ("up or down" in title or "up-or-down" in slug or "updown" in slug
+            or any(word in title for word in ("涨跌", "涨还是跌", "涨或跌", "上涨还是下跌", "上涨或下跌"))):
+        return "资产涨跌预测"
     if date_hint and any(word in title + " " + slug for word in ("temperature", "rainfall", "snowfall", "气温", "温度", "降雨", "降雪")):
         return "日度天气模板"
     return None

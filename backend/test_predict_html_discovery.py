@@ -53,6 +53,13 @@ def test_daily_filter_requires_date_for_non_variant_templates():
     assert daily_filter_reason({"slug": "will-ai-bubble-burst-by", "title": "AI泡沫会在2027年底前破裂吗"}) is None
 
 
+def test_asset_up_down_filtered_without_date_and_valuation_not_filtered():
+    assert daily_filter_reason({"slug": "cl-updown-15m-1794907800", "title": "Crude Oil 涨或跌"})
+    assert daily_filter_reason({"slug": "bitcoin-up-or-down-next-year", "title": "Bitcoin Up or Down Next Year"})
+    assert daily_filter_reason({"slug": "stock-direction", "title": "股票未来一年上涨还是下跌"})
+    assert daily_filter_reason({"slug": "anthropic-ipo-closing-market-cap-above", "title": "Anthropic IPO 收盘市值会高于 ___ 吗？"}) is None
+
+
 def test_detail_follows_utf8_sized_flight_reference():
     rules = "结算规则：Yes。"
     category = json.dumps({"slug": "sample", "description": "$aa"})
@@ -85,4 +92,19 @@ def test_writer_and_delivery_are_safe_on_uncertain_response(tmp_path, monkeypatc
     with store.connect() as con:
         row = con.execute("SELECT * FROM html_topics WHERE category_id='fresh'").fetchone()
         assert 'predict.fun上新' in row['final_title']
+        assert '预测事件。\n结算规则为' in row['final_content']
         assert row['status'] == 'delivery_uncertain'
+
+
+def test_existing_pending_up_down_is_filtered_before_network(tmp_path, monkeypatch):
+    from packages.predict_market_discovery import html_worker
+    now = datetime.now(UTC)
+    store = HtmlDiscoveryStore(tmp_path / 'discovery.sqlite')
+    store.initialize()
+    store.record_feed('finance', {'nodes': [], 'total_count': 0, 'has_next_page': False}, now)
+    node = {'id': 'oil', 'slug': 'cl-updown-15m', 'title': 'Crude Oil 涨或跌', 'createdAt': now.isoformat()}
+    with store.connect() as con:
+        con.execute('INSERT INTO html_topics (category_id,slug,title,created_at,first_seen_at,first_feed,status,raw_json) VALUES (?,?,?,?,?,?,?,?)',
+                    ('oil', node['slug'], node['title'], node['createdAt'], now.isoformat(), 'finance', 'pending', json.dumps(node)))
+    monkeypatch.setattr(html_worker, 'fetch_detail', lambda _: (_ for _ in ()).throw(AssertionError('unexpected network')))
+    assert html_worker.process_pending(store, send=False) == [{'category_id': 'oil', 'status': 'filtered'}]

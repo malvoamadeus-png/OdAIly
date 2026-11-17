@@ -3250,12 +3250,21 @@ function PredictMarketPanel() {
   const [tab, setTab] = useState<'new' | 'sports' | 'esports'>('new');
   const [data, setData] = useState<PredictHtmlDashboard | null>(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<'all' | 'backgrounded' | 'attention' | 'filtered'>('all');
   const refresh = async () => {
+    setLoading(true);
     try { setData(await getPredictHtmlDashboard()); setError(''); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); }
   };
   useEffect(() => { void refresh(); }, []);
-  return <div>
+  const names: Record<string, string> = {finance: '金融', tech: '科技', economy: '经济', culture: '文化', politics: '政治'};
+  const statuses: Record<string, string> = {backgrounded: '已挂后台', filtered: '已过滤', too_old: '超过时限', invalid_time: '时间异常', pending: '待处理', retry_wait: '等待重试', rules_incomplete: '规则待核查', ready: '草稿已生成', delivering: '投递中', delivery_uncertain: '投递待核查'};
+  const attention = new Set(['retry_wait', 'rules_incomplete', 'delivery_uncertain', 'invalid_time']);
+  const items = (data?.items || []).filter(item => filter === 'all' || (filter === 'attention' ? attention.has(item.status) : item.status === filter));
+  const fmtTime = (value: string | null) => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '—';
+  return <div className="predictMonitor">
     <div className="memeAuditNestedTabs" role="tablist" aria-label="预测市场平台">
       {(['predict', 'polymarket'] as const).map(p => <button key={p} className={`memeAuditNestedTab ${platform === p ? 'active' : ''}`} onClick={() => setPlatform(p)}>{p === 'predict' ? 'Predict' : 'Polymarket'}</button>)}
     </div>
@@ -3264,18 +3273,25 @@ function PredictMarketPanel() {
         {([['new','上新'],['sports','体育'],['esports','电竞']] as const).map(([key,label]) => <button key={key} className={`memeAuditNestedTab ${tab === key ? 'active' : ''}`} onClick={() => setTab(key)}>{label}</button>)}
       </div>
       {tab !== 'new' ? <div className="emptyState">{tab === 'sports' ? '体育' : '电竞'}待建设</div> : <>
-        <p>每小时扫描五个栏目的热门首屏，可能遗漏新市场。 <button onClick={() => void refresh()}>刷新</button></p>
+        <div className="predictToolbar"><div><h2>上新监测</h2><span>五个栏目 · 每小时扫描 · 仅覆盖热门首屏</span></div><button className="predictRefresh" onClick={() => void refresh()} disabled={loading} title="刷新" aria-label="刷新"><RefreshCcw size={16} /></button></div>
         {error && <div className="emptyState">{error}</div>}
-        {data && <><p>{data.message}</p>
-          {data.scans.map(scan => <p key={scan.feed}>{scan.feed}：{scan.status}，{scan.scanned_at}，已读 {scan.returned_count ?? '—'} / {scan.total_count ?? '—'}，新增 {scan.new_count}{scan.error ? `，${scan.error}` : ''}</p>)}
-          {data.items.map(item => <article key={item.category_id} className="panel" style={{marginBottom: 12, padding: 16}}>
-            <a href={`https://predict.fun/zh-cn/market/${item.slug}`} target="_blank" rel="noreferrer">{item.title}</a>
-            <p>{item.first_feed} · 创建 {item.created_at || '未知'} · 发现 {item.first_seen_at} · 状态 {item.status}</p>
-            {(item.reason || item.last_error) && <p>{item.reason || item.last_error}</p>}
-            {item.final_title && <strong>{item.final_title}</strong>}{item.final_content && <p>{item.final_content}</p>}
-            {item.detail_json?.description && <details><summary>官方结算规则</summary><p style={{whiteSpace:'pre-wrap'}}>{item.detail_json.description}</p></details>}
-          </article>)}
-          {data.available && data.items.length === 0 && <div className="emptyState">暂无新主题</div>}
+        {loading && !data && <div className="emptyState">正在读取监测数据</div>}
+        {data && <>
+          <div className="predictScans">{data.scans.map(scan => <div className="predictScan" key={scan.feed}>
+            <div className="predictScanTop"><strong>{names[scan.feed] || scan.feed}</strong><span className={`predictDot ${scan.status === 'success' ? 'ok' : 'bad'}`} /> <span>{scan.status === 'success' ? '正常' : '失败'}</span></div>
+            <div className="predictScanCount">{scan.returned_count ?? '—'} <span>/ {scan.total_count ?? '—'} 个主题</span></div>
+            <small>新增 {scan.new_count} · {fmtTime(scan.scanned_at)}</small>{scan.error && <small className="predictError">{scan.error}</small>}
+          </div>)}</div>
+          <div className="predictListHeader"><div><h3>发现记录 <span>{items.length}</span></h3><small>最近 200 条记录</small></div><label>状态 <select value={filter} onChange={e => setFilter(e.target.value as typeof filter)}><option value="all">全部</option><option value="backgrounded">已挂后台</option><option value="attention">待核查</option><option value="filtered">已过滤</option></select></label></div>
+          <div className="predictList">{items.map(item => <details className="predictItem" key={item.category_id}>
+            <summary><div className="predictItemMain"><span className="predictCategory">{names[item.first_feed] || item.first_feed}</span><strong>{item.final_title || item.title}</strong><div className="predictMeta">发现 {fmtTime(item.first_seen_at)} <span>·</span> 创建 {fmtTime(item.created_at)}</div></div><span className={`predictStatus ${attention.has(item.status) ? 'attention' : item.status === 'backgrounded' ? 'done' : ''}`}>{statuses[item.status] || item.status}</span><ChevronDown size={16} /></summary>
+            <div className="predictItemDetail"><div className="predictDetailLabel">原始主题</div><a href={`https://predict.fun/zh-cn/market/${item.slug}`} target="_blank" rel="noreferrer">{item.title} ↗</a>
+              {(item.reason || item.last_error) && <p className="predictError">{item.reason || item.last_error}</p>}
+              {item.final_content && <><div className="predictDetailLabel">后台稿件</div><p className="predictText">{item.final_content}</p></>}
+              {item.detail_json?.description && <details className="predictRules"><summary>官方结算规则 <ChevronDown size={14} /></summary><p className="predictText">{item.detail_json.description}</p></details>}
+            </div>
+          </details>)}</div>
+          {items.length === 0 && <div className="emptyState">{data.available ? '暂无符合条件的记录' : data.message}</div>}
         </>}
       </>}
     </>}
