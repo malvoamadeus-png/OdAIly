@@ -563,6 +563,17 @@ def parse_args() -> argparse.Namespace:
     )
     macro_newsflash_run.add_argument("--interval", type=int, help="Override the poll interval in seconds.")
 
+    predict_market = subparsers.add_parser(
+        "predict-market",
+        help="Discover new Predict.fun markets for manual review.",
+    )
+    predict_market_subparsers = predict_market.add_subparsers(dest="predict_market_action", required=True)
+    predict_market_subparsers.add_parser("init-db", help="Initialize the Predict.fun discovery SQLite database.")
+    predict_market_subparsers.add_parser("status", help="Print recently discovered Predict.fun markets.")
+    predict_market_run = predict_market_subparsers.add_parser("run", help="Poll Predict.fun for new markets.")
+    predict_market_run.add_argument("--once", action="store_true", help="Run one scan and exit.")
+    predict_market_run.add_argument("--interval", type=int, help="Override the poll interval in seconds.")
+
     meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
     meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
     meme_scan = meme_subparsers.add_parser("scan", help="Scan OKX BSC and Robinhood migrated tokens and generate Meme drafts.")
@@ -2135,6 +2146,37 @@ def macro_newsflash_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def predict_market_command(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from packages.predict_market_discovery import (
+        PredictMarketStore,
+        PredictMarketWorker,
+        load_predict_market_settings,
+    )
+
+    settings = load_predict_market_settings()
+    action = args.predict_market_action
+    if action == "run" and args.interval is not None:
+        if args.interval < 60:
+            raise ValueError("--interval must be at least 60 seconds")
+        settings = replace(settings, poll_interval_seconds=args.interval)
+    store = PredictMarketStore(settings.database_path)
+    store.initialize()
+    if action == "init-db":
+        print(f"[predict-market] initialized db={settings.database_path}")
+        return 0
+    if action == "status":
+        print(json.dumps(store.dashboard(), ensure_ascii=False, indent=2))
+        return 0
+    worker = PredictMarketWorker(settings=settings, store=store)
+    if args.once:
+        print(json.dumps(worker.run_once(), ensure_ascii=False, indent=2))
+        return 0
+    worker.run_forever()
+    return 0
+
+
 def meme_command(args: argparse.Namespace) -> int:
     if args.meme_action == "scan":
         from packages.meme_scanner import scanner
@@ -2381,6 +2423,8 @@ def main() -> int:
             return stock_market_command(args)
         if args.command == "macro-newsflash":
             return macro_newsflash_command(args)
+        if args.command == "predict-market":
+            return predict_market_command(args)
         if args.command == "meme":
             return meme_command(args)
         if args.command == "okx-stock-brief":
