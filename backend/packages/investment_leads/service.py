@@ -338,10 +338,6 @@ class InvestmentLeadService:
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
         self.derive_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY", 10, 1, 10)
-        self.daily_input_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS", 0, 0, 100_000_000)
-        self.daily_derive_calls = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS", 2_000, 0, 100_000)
-        self.daily_supplement_reads = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS", 100, 0, 10_000)
-        self.daily_identity_searches = _env_int("X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS", 50, 0, 10_000)
         self.last_error: str | None = None
         self.analyzer_error: str | None = None
         if reader_only:
@@ -413,38 +409,15 @@ class InvestmentLeadService:
 
     def _resume_budget_paused(self, now: str) -> None:
         with self.db:
-            if self.daily_input_tokens <= 0:
-                self.db.execute(
-                    "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
-                    "WHERE status='budget_paused' AND stage='scan'",
-                    (now,),
-                )
-                if self._remaining_derive_calls() > 0:
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
-                        "WHERE status='budget_paused' AND stage='derive'",
-                        (now,),
-                    )
-                if self._remaining_identity_searches() > 0:
-                    self.db.execute(
-                        "UPDATE investment_lead_identity_searches SET status='pending',attempts=0,updated_at=? "
-                        "WHERE status='budget_paused'",
-                        (now,),
-                    )
             self.db.execute(
                 "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
-                "WHERE status='budget_paused' AND stage IN ('scan','supplement') AND substr(updated_at,1,10)<?",
-                (now, _utc_date()),
-            )
-            self.db.execute(
-                "UPDATE investment_lead_tasks SET status='pending',attempts=0,updated_at=? "
-                "WHERE status='budget_paused' AND stage='derive' AND substr(updated_at,1,10)<?",
-                (now, _utc_date()),
+                "WHERE status='budget_paused'",
+                (now,),
             )
             self.db.execute(
                 "UPDATE investment_lead_identity_searches SET status='pending',attempts=0,updated_at=? "
-                "WHERE status='budget_paused' AND substr(updated_at,1,10)<?",
-                (now, _utc_date()),
+                "WHERE status='budget_paused'",
+                (now,),
             )
 
     def _eligible(self, material_id: str, content_hash: str) -> bool:
@@ -536,17 +509,6 @@ class InvestmentLeadService:
         if self.analyzer is None:
             self._fail_batch(claimed, self.analyzer_error or "X Agent 模型路由不可用", now)
             return len(claimed) + len(without_text)
-        estimated = sum(
-            max(1, len(_json(_decoded(job["payload_json"], {})))) for job in claimed
-        )
-        if self.daily_input_tokens > 0 and self._remaining_input_tokens() < estimated:
-            with self.db:
-                for job in claimed:
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='budget_paused',lease_until=NULL,updated_at=? WHERE id=?",
-                        (now, job["id"]),
-                    )
-            return 0
         materials = []
         for job in claimed:
             material = _decoded(job["payload_json"], {})
@@ -652,15 +614,6 @@ class InvestmentLeadService:
             job = dict(row)
             material = _decoded(job["payload_json"], {})
             urls = list(dict.fromkeys(str(url).strip() for url in material.get("links", []) if str(url).strip()))[:3]
-            has_alt_text = any(
-                isinstance(attachment, dict) and str(attachment.get("alt_text") or "").strip()
-                for attachment in (material.get("attachments") or [])[:3]
-            )
-            if urls and self._remaining_supplement_reads() <= 0 and not has_alt_text:
-                self.db.execute(
-                    "UPDATE investment_lead_tasks SET status='budget_paused',updated_at=? WHERE id=?", (now, job["id"])
-                )
-                return 0
             self.db.execute(
                 "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? "
                 "WHERE id=? AND status='pending'",
@@ -686,9 +639,7 @@ class InvestmentLeadService:
         attempted_urls = set(str(url) for url in material.get("supplemented_urls", []) if str(url))
         pending_urls = [url for url in urls if url not in attempted_urls]
         eligible_urls = pending_urls[:max(0, 3 - len(supplemented))]
-        read_limit = min(len(eligible_urls), self._remaining_supplement_reads())
-        urls_to_read = eligible_urls[:read_limit]
-        deferred_urls = eligible_urls[read_limit:]
+        urls_to_read = eligible_urls
         for url in urls_to_read:
             attempted_urls.add(url)
             page = _read_public_page(url)
@@ -696,7 +647,7 @@ class InvestmentLeadService:
                 supplemented.append(page)
         material["supplement_materials"] = supplemented[:3]
         material["supplemented_urls"] = sorted(attempted_urls)
-        material["supplement_attempted"] = not deferred_urls
+        material["supplement_attempted"] = True
         try:
             if not self._eligible(job["material_id"], job["content_hash"]):
                 self._mark_ignored(job["id"], now)
@@ -714,24 +665,17 @@ class InvestmentLeadService:
                     "WHERE material_id=? AND content_hash=?",
                     (_json(material), now, job["material_id"], job["content_hash"]),
                 )
-                if deferred_urls:
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='budget_paused',attempts=MAX(0,attempts-1),"
-                        "lease_until=NULL,next_attempt_at=NULL,last_error=NULL,completed_at=NULL,updated_at=? WHERE id=?",
-                        (now, job["id"]),
-                    )
-                else:
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,"
-                        "last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
-                        (now, now, job["id"]),
-                    )
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='pending',attempts=0,next_attempt_at=NULL,"
-                        "completed_at=NULL,updated_at=? WHERE material_id=? AND content_hash=? AND stage='scan' "
-                        "AND status='needs_material'",
-                        (now, job["material_id"], job["content_hash"]),
-                    )
+                self.db.execute(
+                    "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,"
+                    "last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
+                    (now, now, job["id"]),
+                )
+                self.db.execute(
+                    "UPDATE investment_lead_tasks SET status='pending',attempts=0,next_attempt_at=NULL,"
+                    "completed_at=NULL,updated_at=? WHERE material_id=? AND content_hash=? AND stage='scan' "
+                    "AND status='needs_material'",
+                    (now, job["material_id"], job["content_hash"]),
+                )
                 if urls_to_read:
                     self.db.execute(
                         "INSERT INTO investment_lead_usage(usage_date,kind,calls,input_tokens,output_tokens,updated_at) "
@@ -744,26 +688,6 @@ class InvestmentLeadService:
             self._fail_batch([job], f"{type(exc).__name__}: {exc}", now)
             self.last_error = str(exc)
             return 1
-
-    def _remaining_supplement_reads(self) -> int:
-        if self.daily_supplement_reads <= 0:
-            return 0
-        row = self.db.execute(
-            "SELECT COALESCE(calls,0) FROM investment_lead_usage WHERE usage_date=? AND kind='supplement'",
-            (_utc_date(),),
-        ).fetchone()
-        used = int(row[0]) if row else 0
-        return max(0, self.daily_supplement_reads - used)
-
-    def _remaining_identity_searches(self) -> int:
-        if self.daily_identity_searches <= 0:
-            return 0
-        row = self.db.execute(
-            "SELECT COALESCE(calls,0) FROM investment_lead_usage WHERE usage_date=? AND kind='search'",
-            (_utc_date(),),
-        ).fetchone()
-        used = int(row[0]) if row else 0
-        return max(0, self.daily_identity_searches - used)
 
     def _process_one_identity_search(self, now: str) -> int:
         with self.db:
@@ -785,19 +709,6 @@ class InvestmentLeadService:
             if row is None:
                 return 0
             job = dict(row)
-            if self._remaining_identity_searches() <= 0:
-                self.db.execute(
-                    "UPDATE investment_lead_identity_searches SET status='budget_paused',updated_at=? WHERE id=?",
-                    (now, job["id"]),
-                )
-                return 0
-            estimated_input_tokens = 800 + len(str(job["asset_name"])) + len(str(job["context_json"]))
-            if self.daily_input_tokens > 0 and self._remaining_input_tokens() < estimated_input_tokens:
-                self.db.execute(
-                    "UPDATE investment_lead_identity_searches SET status='budget_paused',updated_at=? WHERE id=?",
-                    (now, job["id"]),
-                )
-                return 0
             self.db.execute(
                 "UPDATE investment_lead_identity_searches SET status='processing',attempts=attempts+1,"
                 "lease_until=?,updated_at=? WHERE id=? AND status='pending'",
@@ -941,18 +852,8 @@ class InvestmentLeadService:
             ).fetchall()
             if not rows:
                 return 0
-            remaining_calls = self._remaining_derive_calls()
-            remaining_tokens = self._remaining_input_tokens()
             for raw in rows:
                 job = dict(raw)
-                estimated_tokens = max(1, len(str(job["payload_json"])))
-                if remaining_calls <= 0 or (self.daily_input_tokens > 0 and estimated_tokens > remaining_tokens):
-                    self.db.execute(
-                        "UPDATE investment_lead_tasks SET status='budget_paused',updated_at=? "
-                        "WHERE id=? AND status='pending'",
-                        (now, job["id"]),
-                    )
-                    continue
                 cursor = self.db.execute(
                     "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? "
                     "WHERE id=? AND status='pending' AND attempts<?",
@@ -961,9 +862,6 @@ class InvestmentLeadService:
                 if cursor.rowcount != 1:
                     continue
                 job["attempts"] = int(job["attempts"]) + 1
-                remaining_calls -= 1
-                if self.daily_input_tokens > 0:
-                    remaining_tokens -= estimated_tokens
                 claimed.append(job)
 
         if self.analyzer is None:
@@ -1213,24 +1111,6 @@ class InvestmentLeadService:
                 (_utc_date(), kind, output.calls, output.input_tokens, output.output_tokens, now),
             )
 
-    def _remaining_input_tokens(self) -> int:
-        if self.daily_input_tokens <= 0:
-            return 0
-        used = int(self.db.execute(
-            "SELECT COALESCE(SUM(input_tokens),0) FROM investment_lead_usage WHERE usage_date=?", (_utc_date(),)
-        ).fetchone()[0])
-        return max(0, self.daily_input_tokens - used)
-
-    def _remaining_derive_calls(self) -> int:
-        if self.daily_derive_calls <= 0:
-            return 0
-        row = self.db.execute(
-            "SELECT COALESCE(calls,0) FROM investment_lead_usage WHERE usage_date=? AND kind='derive'",
-            (_utc_date(),),
-        ).fetchone()
-        used = int(row[0]) if row else 0
-        return max(0, self.daily_derive_calls - used)
-
     def _fail_batch(self, jobs: Iterable[dict[str, Any]], message: str, now: str) -> None:
         with self.db:
             for job in jobs:
@@ -1406,14 +1286,14 @@ class InvestmentLeadService:
             },
             "usage": {
                 "inputTokens": input_tokens,
-                "inputTokenBudget": self.daily_input_tokens,
+                "inputTokenBudget": None,
                 "scanCalls": int(usage_by_kind["scan"]["calls"] if usage_by_kind.get("scan") else 0),
                 "deriveCalls": int(usage_by_kind["derive"]["calls"] if usage_by_kind.get("derive") else 0),
-                "deriveCallBudget": self.daily_derive_calls,
+                "deriveCallBudget": None,
                 "supplementReads": int(usage_by_kind["supplement"]["calls"] if usage_by_kind.get("supplement") else 0),
-                "supplementReadBudget": self.daily_supplement_reads,
+                "supplementReadBudget": None,
                 "searchCalls": int(usage_by_kind["search"]["calls"] if usage_by_kind.get("search") else 0),
-                "searchCallBudget": self.daily_identity_searches,
+                "searchCallBudget": None,
                 "outputTokens": sum(int(row["output_tokens"] or 0) for row in usage),
             },
         }

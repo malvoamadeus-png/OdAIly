@@ -465,7 +465,7 @@ export type XAgentInvestmentLeadsStatus = {
     oldestPendingAt: string | null;
   };
   results: { active: number; unlocated: number; scannedNoCandidate: number };
-  usage: { inputTokens: number; inputTokenBudget: number; scanCalls: number; deriveCalls: number; deriveCallBudget: number; supplementReads: number; supplementReadBudget: number; searchCalls: number; searchCallBudget: number; outputTokens: number };
+  usage: { inputTokens: number; inputTokenBudget: number | null; scanCalls: number; deriveCalls: number; deriveCallBudget: number | null; supplementReads: number; supplementReadBudget: number | null; searchCalls: number; searchCallBudget: number | null; outputTokens: number };
 };
 
 export type XAgentInvestmentLead = {

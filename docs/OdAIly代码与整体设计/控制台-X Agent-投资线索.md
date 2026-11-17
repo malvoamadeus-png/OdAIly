@@ -46,7 +46,7 @@ Prompt 版本为 `investment_leads_scan_v4`。扫描不按账号类型、金融�
 
 补充任务最多读取三项材料，包含外链页面和图片替代文本。HTML 读取只接收 HTML、XHTML 或纯文本，单次超时 10 秒、响应体最多读取 256 KB、可见文本最多保留 4,000 字符；拒绝非公网 IP、凭据 URL、非标准端口和重定向。不会默认抓取全部外链、执行 OCR 或启动第二条 FXTwitter 请求通道。
 
-外链读取失败、没有内容或未命中每日额度时，不得标为 `no_candidate`。已尝试的链接和成功摘要会保留；额度不足的链接进入 `budget_paused`，UTC 日期切换后继续。最多三项补充材料处理完后重新扫描；仍不完整时保留 `needs_material` 状态，不无限重复读取。只有重新扫描得出完整分类后材料完整性才更新为 `complete`。
+外链读取失败或没有内容时，不得标为 `no_candidate`。已尝试的链接和成功摘要会保留；每份材料最多读取三项补充材料，处理后重新扫描；仍不完整时保留 `needs_material` 状态，不无限重复读取。只有重新扫描得出完整分类后材料完整性才更新为 `complete`。
 
 ### 关联与第二阶段
 
@@ -78,7 +78,7 @@ v5 在每个资产的 `assessment` 中分别保存预期影响 `impact` 和判�
 
 Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资产名但缺 ticker 时，独立 `investment_lead_identity_searches` 队列可启用一次 GPT Responses `web_search` 查询。查询只解决公司身份、交易代码和市场；每项最多保留三个搜索摘要及实际返回的来源 URL。搜索结果不能反向改变驱动方向，歧义、私营公司或无法确认的代码必须留空。
 
-身份任务状态为 `pending / processing / succeeded / unresolved / budget_paused / ignored / failed / expired`。找到代码时将代码和市场写入资产并生成线索修订，来源和搜索摘要保留在修订记录；未找到时状态为 `unresolved`，继续展示待定位资产。请求错误会按 15 分钟间隔自动重试，最多三次；可通过重试接口手动重新排队。搜索调用单独计入 `search` 用量，默认每日上限 50 次；输入 token 仍计入总输入 token 预算。
+身份任务状态为 `pending / processing / succeeded / unresolved / budget_paused / ignored / failed / expired`。其中 `budget_paused` 仅为旧数据兼容状态，worker 启动时会重新排队。找到代码时将代码和市场写入资产并生成线索修订，来源和搜索摘要保留在修订记录；未找到时状态为 `unresolved`，继续展示待定位资产。请求错误会按 15 分钟间隔自动重试，最多三次；可通过重试接口手动重新排队。搜索调用单独计入 `search` 用量，不设每日搜索次数或输入 token 额度。
 
 ## 队列与状态
 
@@ -91,24 +91,24 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 | `succeeded` | 扫描/推导/补充阶段完成 |
 | `no_candidate` | 扫描或组合推导确认没有可保留线索 |
 | `needs_material` | 当前材料不足，等待或已完成一次补充后仍不足 |
-| `budget_paused` | 日预算达到上限，等待 UTC 日期切换 |
+| `budget_paused` | 旧版额度暂停状态；新版 worker 启动时会重新排队 |
 | `ignored` | 已无任何启用账号观察，或账号资格在提交前关闭 |
 | `failed` | 达到三次自动尝试上限，保留错误供人工重试 |
 | `expired` | 任务超过 30 天保留期限 |
 
-模型请求成功但响应未包含某材料的判定会按 15 分钟间隔自动重试，达到三次上限后才标为失败，避免把缺失结果当成无候选。Worker 心跳及模型路由错误写入 `investment_leads_meta`；任务错误保存在各队列行。任务租约为 60 分钟；重启后按租约到期回收，未耗尽次数的任务重新排队。预算暂停不消耗重试次数，预算恢复时重置尝试计数。失败任务可按阶段和数量有界重试，单次最多 500 项。
+模型请求成功但响应未包含某材料的判定会按 15 分钟间隔自动重试，达到三次上限后才标为失败，避免把缺失结果当成无候选。Worker 心跳及模型路由错误写入 `investment_leads_meta`；任务错误保存在各队列行。任务租约为 60 分钟；重启后按租约到期回收，未耗尽次数的任务重新排队。旧版额度暂停任务会在启动时重置尝试计数并重新排队。失败任务可按阶段和数量有界重试，单次最多 500 项。
 
 扫描领取查询必须读取任务的 `attempts`，领取时数据库计数和内存任务计数同时递增。2026-10-30 修复了查询漏取该字段导致 `KeyError`、领取事务回滚、全部任务停留在待扫描的问题。既有待扫描任务由修复后的 Worker 正常领取，无需清空或重建队列。
 
 任务落库在写事务中再次检查观察资格。关闭一个账号仅在其他启用目录账号都没有观察同一材料/线索时取消未开始任务；运行中工作在保存扫描结果、线索或搜索身份前再次检查。共享材料后续被新的启用账号观察时，该材料及其线索下先前因无资格而忽略的扫描、推导、补充和身份搜索任务会重新排队。
 
-## 预算、保留和服务
+## 用量、保留和服务
 
-每日用量记在 `investment_lead_usage`，按 UTC 日期区分扫描、推导、补充读取和身份搜索。输入 token 用量统计扫描、推导及身份搜索的实际服务端用量；当前服务不设每日输入 token 上限。若显式设置正数，则请求前按材料长度估算剩余额度，实际调用后记录服务端用量；达到上限后任务保留并显示预算暂停。设为 `0` 表示不限每日输入 token，服务启动时会恢复因此暂停的扫描任务，以及仍有推导或身份搜索请求额度的任务。推导模型请求仍限每日 `2,000` 次，补充链接读取 100 次，身份搜索 50 次。扫描每批最多 20 项，文本模型单次输出上限 5,000 tokens，服务配置的模型/搜索超时为 180 秒。
+用量记在 `investment_lead_usage`，按 UTC 日期记录扫描、推导、补充读取和身份搜索的实际调用数及模型返回的 token 数，仅用于观察。线上服务不设置每日 token、每日调用次数或应用级输出 token 限制；文本模型请求不发送 `max_tokens` 参数。每份材料最多读取三项补充材料。扫描每批最多 20 项，模型/搜索请求超时为 180 秒。
 
-每小时维护时，30 天未处理任务标记为过期；30 天未再观察、且没有线索来源引用的材料和事件可清理。线索引用的正文摘录、来源 URL、账号观察关系和修订长期保留。采集起点、Worker 最近心跳、扫描/推导/补充/身份搜索积压、失败、预算暂停、材料不完整和各类用量通过控制台状态接口读取。
+每小时维护时，30 天未处理任务标记为过期；30 天未再观察、且没有线索来源引用的材料和事件可清理。线索引用的正文摘录、来源 URL、账号观察关系和修订长期保留。采集起点、Worker 最近心跳、扫描/推导/补充/身份搜索积压、失败、材料不完整和各类用量通过控制台状态接口读取。
 
-独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。它只打开共享 HotTopic SQLite，不调用 FXTwitter；该连接使用 WAL 和 60 秒 SQLite busy timeout。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、每日输入 token 上限为 `30000000`、模型请求超时为 180 秒、扫描批次材料数为 10、推导并发数为 10；默认 10 秒轮询。控制台管理员 API 为：
+独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。它只打开共享 HotTopic SQLite，不调用 FXTwitter；该连接使用 WAL 和 60 秒 SQLite busy timeout。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、模型请求超时为 180 秒、扫描批次材料数为 10、推导并发数为 10；默认 10 秒轮询，不设每日用量额度。控制台管理员 API 为：
 
 - `/console/x-agent/investment-leads`：列表、时间窗口、关键词、账号和待定位筛选，服务端分页。
 - `/console/x-agent/investment-leads/detail`：原帖/推导、来源材料、补充读取、身份搜索、线索修订。
@@ -123,28 +123,23 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 `scripts/replay_investment_leads.py --source /opt/OdAIly/data/runtime/hottopic.sqlite --output /opt/OdAIly/data/exports/investment_replay_20261102` 只读冻结已有扫描事件对应的全部公开材料，以及原有线索与来源关系。输出目录保存 `input.json`、独立生成的 `replay.sqlite`、`summary.json`、`leads.json`、`sources.json`、`materials.csv` 和 `report.md`。不复制生产数据库，不写生产任务、线索、用量或账号开关。回放也包含当前已关闭账号的历史材料，影子库使用独立 replay 观察账号，不重新开启生产账号。
 
-回放复用线上新版分析器、归一化门槛、关联召回和保存逻辑；先批量扫描全部冻结材料，再推导。默认三个并发模型请求、独立 300 万输入 token 预算，无身份搜索、附件追加抓取或事实核查。该预算仅适用于本次有界回放，不修改日常服务额度；并发请求可能使预算超出最多一轮在途请求的用量。目录内保存检查点，使用相同目录可续跑；Prompt 版本不同须新建目录。失败最多尝试三次，缺失响应不得当作无候选。
+回放复用线上新版分析器、归一化门槛、关联召回和保存逻辑；先批量扫描全部冻结材料，再推导。默认三个并发模型请求，不设输入 token 预算；不执行身份搜索、附件追加抓取或事实核查。目录内保存检查点，使用相同目录可续跑；Prompt 版本不同须新建目录。失败最多尝试三次，缺失响应不得当作无候选。
 
-回放使用材料原始发布时间，并在报告中明确标记历史回看。扫描按跨账号批次执行，并发推导看到各自提交时的已有线索上下文，归并结果可能与串行在线处理不同。由于全部材料先扫描，可能关联到原帖发布之后的材料，不能用回放结果声称实时发现能力。`previous_leads_with_retained_source` 只表示旧线索有来源被新版保留，并不表示原有逻辑被完整认可。完成数、失败、待补充和预算未完成项必须分别报告。
+回放使用材料原始发布时间，并在报告中明确标记历史回看。扫描按跨账号批次执行，并发推导看到各自提交时的已有线索上下文，归并结果可能与串行在线处理不同。由于全部材料先扫描，可能关联到原帖发布之后的材料，不能用回放结果声称实时发现能力。`previous_leads_with_retained_source` 只表示旧线索有来源被新版保留，并不表示原有逻辑被完整认可。完成数、失败和待补充项必须分别报告。
 
 回放可通过 `--snapshot-from` 使用之前冻结的公开材料，新目录按当前 Prompt 重跑；或通过 `--latest-limit 400` 从当前库中选最近 24 小时内按原帖时间排序的最新 400 份主帖材料，不设金融关键词过滤。已选材料和冻结时间写入 `input.json`，不是声称覆盖 X 全平台。
 
-默认回放仍不写生产。只有显式 `--publish-only --publish-label 历史重分析` 才导入完整结果；扫描/推导仍有失败、待处理或预算暂停时拒绝导入。写入前在短写事务内重查来源账号资格，不恢复已关闭账号、不导入无资格来源。`investment_lead_replay_imports` 按运行目录名及回放线索 ID 幂等记录导入关系，重复导入不再创建结果。`investment_leads.replay_json` 保存标签、来源最新原帖时间、导入时间和运行标识，API 返回 `replay`；网页明确标记历史重分析或新样本回放。列表排序沿用来源原帖时间，身份补码也不把历史回放刷新成新消息；实时新进展实质修订时清除回放标签。原始来源和历史修订保留，旧版本结果不视为通过当前门槛。
+默认回放仍不写生产。只有显式 `--publish-only --publish-label 历史重分析` 才导入完整结果；扫描/推导仍有失败或待处理项时拒绝导入。写入前在短写事务内重查来源账号资格，不恢复已关闭账号、不导入无资格来源。`investment_lead_replay_imports` 按运行目录名及回放线索 ID 幂等记录导入关系，重复导入不再创建结果。`investment_leads.replay_json` 保存标签、来源最新原帖时间、导入时间和运行标识，API 返回 `replay`；网页明确标记历史重分析或新样本回放。列表排序沿用来源原帖时间，身份补码也不把历史回放刷新成新消息；实时新进展实质修订时清除回放标签。原始来源和历史修订保留，旧版本结果不视为通过当前门槛。
 
 ## 环境变量
 
 - `X_AGENT_OPENAI_BASE_URL` / `X_AGENT_OPENAI_API_KEY`：可选专用兼容 API 路由与凭据；为空时沿用现有 X Agent / ODAILY LLM 配置。
 - `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL`：文本分析主模型和回退模型，默认 `gpt-6-luna`。
 - `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：单次模型或 Web Search 超时，默认 `180` 秒，范围 `5–300`。
-- `X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS`：单次文本模型输出上限，默认 `5000`。
 - `X_AGENT_INVESTMENT_LEADS_BATCH_SIZE`：扫描批次材料数，默认 `10`，范围 `1–20`。
 - `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量扫描批次等待上限，默认 `30` 秒，范围 `0–300`；凑满批次或队列有积压时不等待。
 - `X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY`：单轮领取的推导数及最大模型并发数，默认 `10`，范围 `1–10`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：序列化请求字符预算，默认 `24000`，范围 `8000–300000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS`：每日输入 token 上限，默认 `0`；设为 `0` 不限制每日输入 token 用量。推导次数、补充读取和身份搜索仍分别受各自预算限制。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS`：每日推导请求预算，默认 `2000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS`：每日公网外链读取次数，默认 `100`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS`：每日身份 Web Search 请求数，默认 `50`。
 - `X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS`：Worker 空闲时轮询间隔，默认 `10` 秒，范围 `1–60`；有任务完成时立即继续处理。
 
 ## 2026-11-02 投资线索重新起算

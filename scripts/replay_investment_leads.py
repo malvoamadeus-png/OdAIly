@@ -190,7 +190,6 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=3)
-    parser.add_argument("--input-token-budget", type=int, default=3_000_000)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--snapshot-from", type=Path)
     selection.add_argument("--latest-limit", type=int, default=0)
@@ -229,13 +228,10 @@ def main() -> None:
     if analyzer is None:
         raise RuntimeError(service.analyzer_error)
 
-    def used_tokens() -> int:
-        return int(db.execute("SELECT COALESCE(SUM(input_tokens),0) FROM investment_lead_usage").fetchone()[0])
-
     workers = min(4, max(1, args.workers))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for stage in ("scan", "derive"):
-            while used_tokens() < args.input_token_budget:
+            while True:
                 jobs = [dict(r) for r in db.execute(
                     "SELECT t.*,m.payload_json FROM investment_lead_tasks t JOIN investment_lead_materials m "
                     "ON m.material_id=t.material_id AND m.content_hash=t.content_hash "

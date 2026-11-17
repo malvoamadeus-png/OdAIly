@@ -98,19 +98,16 @@ X Agent 从引用帖只保留被跟踪账号自己的正文作为模型输入与
 
 投资线索使用同一 `X_AGENT_MODEL` / `X_AGENT_FALLBACK_MODEL` 路由，但由独立 `x-agent-investment-leads-worker` 执行，固定单路扫描/推导。扫描 worker 每批最多领取 10 份材料（配置上限 20）；正文按段落拆分，每次模型请求最多包含 10 段。批次满额立即提交；批次未满时最多等待 30 秒。扫描和推导按任务创建时间全局排序，不按账号轮转；扫描批次可以包含多个账号的帖子。身份搜索仍按账号轮转。长帖按段落拆分，按主体、动作、变化对象和影响关系检索近 7 天事件，明确同主体可扩展至近 30 天，最多向推导模型提供 20 条去重材料。模型请求不在 SQLite 写事务内执行，任务最多三次尝试，最长 60 分钟租约；关闭订阅后，运行中任务在写入前复核至少有一个仍启用的观察账号。
 
-第一阶段按帖子输出 `driver_candidate / composable / no_candidate / incomplete`，不使用金融关键词、ticker 或账号分类预过滤。第二阶段分开保存原帖主张和系统推导，可输出没有代码的具体资产或待定位线索，不核查真假、财务贡献、估值或市场是否计价，也不输出买卖建议。材料被判为不完整时，可读取最多三个公开链接或附件替代文本；请求拒绝重定向、限制响应体、拒绝非公网目标，失败后仍显示材料不完整。公司名称明确但缺代码时可生成独立身份搜索任务；Web Search 最多保留三个摘要与来源 URL，只处理公司名、交易代码和市场身份，搜索失败或预算用尽不会被记为无候选。
+第一阶段按帖子输出 `driver_candidate / composable / no_candidate / incomplete`，不使用金融关键词、ticker 或账号分类预过滤。第二阶段分开保存原帖主张和系统推导，可输出没有代码的具体资产或待定位线索，不核查真假、财务贡献、估值或市场是否计价，也不输出买卖建议。材料被判为不完整时，可读取最多三个公开链接或附件替代文本；请求拒绝重定向、限制响应体、拒绝非公网目标，失败后仍显示材料不完整。公司名称明确但缺代码时可生成独立身份搜索任务；Web Search 最多保留三个摘要与来源 URL，只处理公司名、交易代码和市场身份，搜索失败不会被记为无候选。
 
 控制台主表显示驱动逻辑、标的和来源时间；详情展示原帖与推导、来源账号/作者、引用或转发关系、补充读取和身份搜索来源。支持 `24h / 7d / 30d`、待定位、账号和关键词筛选，服务端分页。线索只按模型命中的同一驱动 ID 归并；新增来源不刷新实质更新时间，驱动、条件或标的关系变化才生成修订。
 
 - `X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS`：模型和身份搜索单次请求超时，默认 `180` 秒。
-- `X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS`：单次文本模型输出上限，默认 `5000`。
 - `X_AGENT_INVESTMENT_LEADS_BATCH_SIZE` / `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：扫描材料批次默认 `10`、配置上限 `20`、低流量等待上限 `30` 秒；满批或有积压时连续提交。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：扫描请求序列化输入字符上限，默认 `24000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_INPUT_TOKENS` / `X_AGENT_INVESTMENT_LEADS_DAILY_DERIVE_CALLS`：每日输入 token 上限和推导请求预算；输入 token 上限默认为 `0`（不限），推导请求预算默认为 `2000`。
-- `X_AGENT_INVESTMENT_LEADS_DAILY_SUPPLEMENT_READS` / `X_AGENT_INVESTMENT_LEADS_DAILY_SEARCH_CALLS`：每日外链读取和身份搜索请求预算，默认分别为 `100` 与 `50`。
 - `X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS`：独立 worker 空闲轮询间隔，默认 `10` 秒；有任务完成时立即继续处理。
 
-运行状态展示扫描/推导/补充/身份搜索的待处理数、失败数、预算暂停、最老任务时间、使用量和 Worker 心跳。失败任务可经 `/console/x-agent/investment-leads/retry-failed` 有界重排；每小时维护将 30 天未处理材料及任务标为过期并清除未被线索引用的原文。已生成线索保留必要原文摘录、来源链接和修订。
+投资线索不设置每日 token、请求次数或应用级输出 token 上限；控制台只记录实际 token 与请求用量。运行状态展示扫描/推导/补充/身份搜索的待处理数、失败数、最老任务时间、用量和 Worker 心跳。失败任务可经 `/console/x-agent/investment-leads/retry-failed` 有界重排；每小时维护将 30 天未处理材料及任务标为过期并清除未被线索引用的原文。已生成线索保留必要原文摘录、来源链接和修订。
 
 完整表结构、Prompt 版本、状态和失败契约见《控制台-X Agent-投资线索》。
 

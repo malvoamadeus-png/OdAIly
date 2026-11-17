@@ -57,7 +57,6 @@ class InvestmentLeadAnalyzer:
         ).rstrip("/")
         self.api_key = api_key or self._default_api_key(self.base_url)
         self.timeout = timeout or _env_float("X_AGENT_INVESTMENT_LEADS_TIMEOUT_SECONDS", 180.0, 5.0, 300.0)
-        self.max_output_tokens = _env_int("X_AGENT_INVESTMENT_LEADS_MAX_OUTPUT_TOKENS", 5000, 512, 12000)
         self._post_json = post_json or self._http_post_json
         if not self.base_url or not self.api_key:
             raise RuntimeError("X Agent 投资线索需要兼容模型路由和 API key")
@@ -303,7 +302,7 @@ class InvestmentLeadAnalyzer:
     def _request(self, model: str, prompt: str) -> tuple[list[dict[str, Any]], int, int]:
         body = json.dumps({
             "model": model, "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1, "reasoning_effort": "none", "max_tokens": self.max_output_tokens,
+            "temperature": 0.1, "reasoning_effort": "none",
         }, ensure_ascii=False).encode("utf-8")
         last_error: Exception | None = None
         for attempt in range(2):
