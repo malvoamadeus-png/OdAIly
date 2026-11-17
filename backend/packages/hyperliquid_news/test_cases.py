@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from .actions import snapshot_net_change
 from .client import NewsClient
 from .discovery import trade_candidates
 from .detector import evaluate_address
@@ -298,6 +299,9 @@ def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
             asset = e.get('history', {}).get('assets', {}).get(event['coin'], {})
             rounds = asset.get('rounds', 0)
             invalid_win_rate = 'asset_high_win_rate' in labels and rounds < rules.min_rounds
+            net_change = snapshot_net_change(e)
+            invalid_account_profit = bool({'account_high_profit', 'official_account_high_profit'} & set(labels)) and (
+                not net_change or number(net_change['estimated_value']) < rules.account_profit_action)
             monthly_pnl = asset.get('last_30d_closed_pnl_less_fees')
             threshold = rules.asset_profit_line(event['coin'])
             actions = e.get('actions', {})
@@ -307,17 +311,19 @@ def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
                                      action_amount < rules.asset_profit_action))
             invalid_pnl_kinds = {kind for kind in ('large_profit', 'large_loss')
                                  if kind in kinds and not _valid_large_pnl_movement(event, kind)}
-            if not invalid_win_rate and not invalid_asset_profit and not invalid_pnl_kinds:
+            if not invalid_win_rate and not invalid_account_profit and not invalid_asset_profit and not invalid_pnl_kinds:
                 continue
             e['highlights'] = [label for label in labels if label not in (
                 {'asset_high_win_rate'} if invalid_win_rate else set()) | (
-                {'asset_high_profit'} if invalid_asset_profit else set())]
+                {'asset_high_profit'} if invalid_asset_profit else set()) | (
+                {'account_high_profit', 'official_account_high_profit'} if invalid_account_profit else set())]
             event['kinds'] = [kind for kind in kinds if kind not in invalid_pnl_kinds]
             e.setdefault('threshold_rules', {}).update({
                 'min_rounds': rules.min_rounds,
                 'asset_profit': str(rules.asset_profit),
                 'other_asset_profit': str(rules.other_asset_profit),
                 'asset_profit_action': str(rules.asset_profit_action),
+                'account_profit_action': str(rules.account_profit_action),
             })
             if not e['highlights']:
                 event['kinds'] = [kind for kind in event['kinds'] if kind != 'highlighted_address_action']
@@ -849,8 +855,8 @@ def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]
     for r in rows:
         e=json.loads(r[0])
         if e['evidence']['test_replay'].get('simulated_monitor_start'):continue
-        action=e['evidence']['actions']
-        if max(number(action['open_notional']),number(action['close_notional']))>=rules.action:
+        change=snapshot_net_change(e['evidence'])
+        if change and number(change['estimated_value'])>=rules.account_profit_action:
             groups.setdefault(e['addresses'][0],[]).append(e)
     report={'processed':0,'added':0,'failed':{}}
     for address,events in list(groups.items())[:limit]:

@@ -45,7 +45,8 @@ def level(value: Decimal, threshold: Decimal, rules: Rules) -> int:
 def action_highlights(labels: list[str], amount: Decimal, rules: Rules) -> list[str]:
     return [label for label in labels if amount >= (
         rules.win_rate_action if label == 'asset_high_win_rate' else
-        rules.asset_profit_action if label == 'asset_high_profit' else rules.action)]
+        rules.asset_profit_action if label == 'asset_high_profit' else
+        rules.account_profit_action if label in ('account_high_profit', 'official_account_high_profit') else rules.action)]
 
 
 def evaluate_address(*, address: str, observed_ms: int, first_seen_ms: int,

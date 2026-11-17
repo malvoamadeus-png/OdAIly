@@ -26,6 +26,7 @@ class Rules:
     major_pnl: Decimal = Decimal('5000000')
     other_pnl: Decimal = Decimal('2000000')
     action: Decimal = Decimal('3000000')
+    account_profit_action: Decimal = Decimal('5000000')
     win_rate_action: Decimal = Decimal('1000000')
     win_rate: Decimal = Decimal('0.70')
     asset_profit: Decimal = Decimal('3000000')
@@ -42,7 +43,7 @@ class Rules:
     new_address_window_ms: int = 3600000
 
     def __post_init__(self) -> None:
-        for key in ('large_position', 'major_pnl', 'other_pnl', 'action', 'asset_profit',
+        for key in ('large_position', 'major_pnl', 'other_pnl', 'action', 'account_profit_action', 'asset_profit',
                     'other_asset_profit', 'asset_profit_action', 'account_profit',
                     'historical_loss', 'win_rate_action', 'giveback_major_pnl', 'giveback_other_pnl'):
             if number(getattr(self, key)) <= 0:

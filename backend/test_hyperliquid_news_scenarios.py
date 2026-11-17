@@ -48,8 +48,10 @@ def scenario(name):
         else:
             new=position(size='-100');fills=[fill(before='100',size='200',side='A',stamp=200)]
     elif name.endswith('_action'):
-        expected='highlighted_address_action';new=position(size='140',notional='14000000')
-        fills=[fill(before='100',size='40',stamp=200)]
+        expected='highlighted_address_action'
+        action_size = '60' if name in ('account_profit_action', 'official_profit_action') else '40'
+        new=position(size=str(100+int(action_size)),notional=str((100+int(action_size))*100000))
+        fills=[fill(before='100',size=action_size,stamp=200)]
         if name=='asset_profit_action':history=stats(win='0.3',account='0')
         elif name=='account_profit_action':history=stats(win='0.3',profit='0')
         elif name=='official_profit_action':history={'official_account_performance':{'windows':{'week':{'pnl':'21000000','rank':1}}}}

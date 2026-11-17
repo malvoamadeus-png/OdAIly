@@ -86,7 +86,8 @@ def account_event(event, rules: Rules | None = None, *, include_loss: bool = Fal
     if 'highlighted_address_action' not in event.kinds or not (loss or profit):
         return None
     change = snapshot_net_change(event.evidence)
-    if not change or number(change['estimated_value']) < rules.action:
+    action_threshold = rules.action if loss else rules.account_profit_action
+    if not change or number(change['estimated_value']) < action_threshold:
         return None
     evidence = {k: v for k, v in event.evidence.items() if k not in (
         'previous_reported_floating_pnl', 'previous_reported_floating_pnl_ms',

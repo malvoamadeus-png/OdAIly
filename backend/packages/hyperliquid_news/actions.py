@@ -72,7 +72,8 @@ def action_scenario_allowed(scenario: str, evidence: dict[str, Any]) -> bool:
     """Recheck operation scenarios without suppressing realized or liquidation facts."""
     from .models import Rules
     rule = {'asset_win_rate': 'win_rate_action', 'asset_profit': 'asset_profit_action',
-            'account_profit': 'action', 'historical_loss': 'action', 'loss_addition': 'action'}.get(scenario)
+            'account_profit': 'account_profit_action', 'historical_loss': 'action',
+            'loss_addition': 'action'}.get(scenario)
     if not rule:
         return True
     net = snapshot_net_change(evidence)

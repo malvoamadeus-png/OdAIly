@@ -49,11 +49,12 @@ def production_allowed(event: dict[str, Any], policy: dict[str, Any] | None) -> 
     if not 0 <= observed-fetched <= 3600000:
         return False
     change = snapshot_net_change(evidence)
-    if not change or number(change['estimated_value']) < Rules().action:
+    action_threshold = Rules().action if loss else Rules().account_profit_action
+    if not change or number(change['estimated_value']) < action_threshold:
+        return False
+    if loss and number(evidence.get('net_action_notional_usd', 0)) < action_threshold:
         return False
     if loss:
-        if number(evidence.get('net_action_notional_usd', 0)) < Rules().action:
-            return False
         data = performance.get('windows', {}).get('allTime', {})
         return (number(data.get('pnl', 0)) <= -Rules().historical_loss and
                 0 <= observed-int(data.get('observed_ms', 0)) <= 86400000)
