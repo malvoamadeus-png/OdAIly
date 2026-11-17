@@ -320,6 +320,11 @@ button.xAgentMetric {
   white-space: nowrap;
 }
 
+.xAgentAccountIdentity .xAgentInvalidAccount {
+  color: #b42318;
+  font-weight: 700;
+}
+
 .xAgentSubscriptionToggle {
   display: inline-flex;
   gap: 6px;

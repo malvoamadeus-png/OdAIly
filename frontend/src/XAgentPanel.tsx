@@ -37,6 +37,7 @@ import {
 type XAgentTab = 'hot_topic' | 'auto_newsflash' | 'accounts' | 'market_sentiment' | 'project_promotion' | 'investment_leads';
 type SubscriptionField = keyof XAgentSubscriptionPatch;
 type EnabledFilter = 'all' | 'enabled' | 'disabled';
+type AccountAvailabilityFilter = 'all' | 'suspected_invalid';
 
 const PAGE_SIZE = 50;
 const MARKET_WINDOW_OPTIONS = [
@@ -90,10 +91,6 @@ function formatTime(value: string | null | undefined): string {
 
 function accountUrl(account: XAgentAccount): string {
   return account.profileUrl || `https://x.com/${account.screenName}`;
-}
-
-function combineErrors(account: XAgentAccount): string | null {
-  return account.lastAnalysisError || account.lastError || null;
 }
 
 function subscriptionKey(screenName: string, field: SubscriptionField): string {
@@ -449,6 +446,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [accountQuery, setAccountQuery] = useState('');
   const [accountModule, setAccountModule] = useState<'all' | XAgentAccountModule>('all');
   const [accountEnabled, setAccountEnabled] = useState<EnabledFilter>('all');
+  const [accountAvailability, setAccountAvailability] = useState<AccountAvailabilityFilter>('all');
   const [accountOffset, setAccountOffset] = useState(0);
   const [accountReload, setAccountReload] = useState(0);
   const [batchSaving, setBatchSaving] = useState<SubscriptionField | null>(null);
@@ -597,6 +595,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         query: accountQuery.trim(),
         module: accountModule === 'all' ? undefined : accountModule,
         enabled: accountEnabled === 'all' ? undefined : accountEnabled === 'enabled',
+        availability: accountAvailability,
         offset: accountOffset,
         limit: PAGE_SIZE,
       }).then((page) => {
@@ -617,7 +616,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       });
     }, 250);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [tab, accountQuery, accountModule, accountEnabled, accountOffset, accountReload]);
+  }, [tab, accountQuery, accountModule, accountEnabled, accountAvailability, accountOffset, accountReload]);
 
   useEffect(() => {
     if (tab !== 'market_sentiment') return;
@@ -938,6 +937,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
     setAccountQuery('');
     setAccountModule(module);
     setAccountEnabled('enabled');
+    setAccountAvailability('all');
     setAccountOffset(0);
     setAccounts([]);
     setAccountsTotal(0);
@@ -1021,6 +1021,12 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
               ['disabled', '未打开'],
             ] as Array<[EnabledFilter, string]>).map(([value, label]) => <button key={value} className={accountEnabled === value ? 'active' : ''} type="button" onClick={() => { setAccountEnabled(value); setAccountOffset(0); }}>{label}</button>)}
           </div>
+          <div className="segmentedControl" aria-label="账号状态筛选">
+            {([
+              ['all', '全部账号'],
+              ['suspected_invalid', '疑似无效'],
+            ] as Array<[AccountAvailabilityFilter, string]>).map(([value, label]) => <button key={value} className={accountAvailability === value ? 'active' : ''} type="button" onClick={() => { setAccountAvailability(value); setAccountOffset(0); }}>{label}</button>)}
+          </div>
         </div>
         <div className="xAgentBatchActions">
           <span>当前页 {accounts.length.toLocaleString()} 个账号</span>
@@ -1035,9 +1041,9 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <div className="xAgentAccountHead" role="row"><span>账号</span><span title="累计去重收录的发言条数，不随短期原帖清理减少">收录发言</span><span title="包含该账号的不同永久热点话题数">热点包含数</span><span>热点话题</span><span>市场情绪</span><span>按头操作</span><span>投资线索</span><span>最近采集</span><span>最近分析</span></div>
           {!accountsLoading && accounts.length === 0 && <div className="emptyState">没有匹配的账号。</div>}
           {accounts.map((account) => {
-            const accountError = combineErrors(account);
+            const accountError = account.lastAnalysisError || (account.suspectedInvalid ? null : account.lastError);
             return <div className="xAgentAccountRow" key={account.screenName} role="row">
-              <div className="xAgentAccountIdentity"><a href={accountUrl(account)} target="_blank" rel="noreferrer">@{account.screenName}</a>{account.displayName && <span>{account.displayName}</span>}{accountError && <small title={accountError}><CircleAlert size={13} /> {accountError}</small>}</div>
+              <div className="xAgentAccountIdentity"><a href={accountUrl(account)} target="_blank" rel="noreferrer">@{account.screenName}</a>{account.displayName && <span>{account.displayName}</span>}{account.suspectedInvalid && <small className="xAgentInvalidAccount" title={`连续 ${account.consecutiveNotFoundCount} 次收到 HTTP 404，请人工检查账号是否改名或注销。`}><CircleAlert size={13} /> 疑似无效 · 连续 404 {account.consecutiveNotFoundCount} 次</small>}{accountError && <small title={accountError}><CircleAlert size={13} /> {accountError}</small>}</div>
               <span>{account.cumulativeContentCount?.toLocaleString() ?? '-'}</span>
               <span>{account.cumulativeHotTopicCount?.toLocaleString() ?? '-'}</span>
               <AccountSubscriptionToggle account={account} field="hotTopicEnabled" label="热点话题" pending={batchSaving !== null || pendingSubscriptionKeys.has(subscriptionKey(account.screenName, 'hotTopicEnabled'))} onChange={saveSubscriptionChange} />

@@ -49,6 +49,7 @@ X_AGENT_ANALYSIS_BATCH_SIZE = 12
 X_AGENT_ANALYSIS_MAX_ATTEMPTS = 3
 X_AGENT_RETRY_DELAY = timedelta(minutes=15)
 X_AGENT_PROCESSING_LEASE = timedelta(minutes=5)
+X_AGENT_SUSPECTED_INVALID_404_THRESHOLD = 3
 COLLECT_RETRY_DELAY_SECONDS = 0.8
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hottopic_meta (
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS hottopic_accounts (
   last_success_at TEXT,
   last_error TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  consecutive_not_found INTEGER NOT NULL DEFAULT 0,
   last_item_count INTEGER NOT NULL DEFAULT 0,
   cumulative_content_count INTEGER NOT NULL DEFAULT 0,
   cumulative_hot_topic_count INTEGER NOT NULL DEFAULT 0,
@@ -441,6 +443,7 @@ class HotTopicService:
             row["name"] for row in self.db.execute("PRAGMA table_info(hottopic_accounts)").fetchall()
         }
         additions = {
+            "consecutive_not_found": "INTEGER NOT NULL DEFAULT 0",
             "hot_topic_enabled": "INTEGER NOT NULL DEFAULT 1",
             "market_sentiment_enabled": "INTEGER NOT NULL DEFAULT 0",
             "project_promotion_enabled": "INTEGER NOT NULL DEFAULT 0",
@@ -449,6 +452,7 @@ class HotTopicService:
             "last_x_agent_analyzed_at": "TEXT",
             "last_x_agent_error": "TEXT",
         }
+        had_consecutive_not_found = "consecutive_not_found" in columns
         already_had_subscriptions = all(name in columns for name in (
             "hot_topic_enabled",
             "market_sentiment_enabled",
@@ -468,6 +472,34 @@ class HotTopicService:
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS hottopic_migrations(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL)"
             )
+            if not had_consecutive_not_found:
+                self.db.execute(
+                    "UPDATE hottopic_accounts SET consecutive_not_found=1 "
+                    "WHERE last_error IS NOT NULL AND (last_error LIKE '%HTTP Error 404%' "
+                    "OR last_error LIKE '%\"http_status\": 404%' "
+                    "OR last_error LIKE '%\"kind\": \"not_found\"%')"
+                )
+            migration = self.db.execute(
+                "INSERT OR IGNORE INTO hottopic_migrations(name,applied_at) VALUES(?,?)",
+                ("clear_resolved_x_agent_account_errors_v1", iso(utc_now())),
+            )
+            if migration.rowcount:
+                self.db.execute(
+                    "UPDATE hottopic_accounts SET last_x_agent_error=NULL "
+                    "WHERE last_x_agent_error IS NOT NULL AND EXISTS ("
+                    "SELECT 1 FROM x_agent_analysis_jobs succeeded "
+                    "JOIN hottopic_inbox i ON i.tweet_id=succeeded.tweet_id "
+                    "WHERE i.screen_name_lower=hottopic_accounts.screen_name_lower "
+                    "AND succeeded.status='succeeded' AND NOT EXISTS ("
+                    "SELECT 1 FROM x_agent_analysis_jobs unresolved "
+                    "JOIN hottopic_inbox ui ON ui.tweet_id=unresolved.tweet_id "
+                    "WHERE ui.screen_name_lower=hottopic_accounts.screen_name_lower "
+                    "AND unresolved.status IN ('pending','processing','failed') "
+                    "AND unresolved.last_error IS NOT NULL AND ("
+                    "unresolved.updated_at>succeeded.updated_at OR "
+                    "(unresolved.updated_at=succeeded.updated_at AND unresolved.id>succeeded.id)"
+                    ")))"
+                )
             # A former HotTopic blacklist is not an X Agent account state.
             # During the first migration all such rows receive the normal
             # account-directory default. If a partial prior deployment already
@@ -686,6 +718,7 @@ class HotTopicService:
         query: str = "",
         module: str = "all",
         enabled: str | bool = "all",
+        availability: str = "all",
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -700,6 +733,11 @@ class HotTopicService:
         column = column_by_module.get(module)
         if module != "all" and column is None:
             raise ValueError("不支持的 X Agent 模块筛选")
+        if availability not in {"all", "suspected_invalid"}:
+            raise ValueError("不支持的 X Agent 账号状态筛选")
+        if availability == "suspected_invalid":
+            clauses.append("consecutive_not_found>=?")
+            params.append(X_AGENT_SUSPECTED_INVALID_404_THRESHOLD)
         if query.strip():
             value = f"%{query.strip().lower()}%"
             clauses.append("(screen_name_lower LIKE ? OR lower(display_name) LIKE ?)")
@@ -714,7 +752,7 @@ class HotTopicService:
         rows = self.db.execute(
             "SELECT screen_name,screen_name_lower,display_name,status,hot_topic_enabled,market_sentiment_enabled,"
             "project_promotion_enabled,investment_leads_enabled,cumulative_content_count,cumulative_hot_topic_count,"
-            "last_polled_at,last_success_at,last_error,last_x_agent_analyzed_at,last_x_agent_error "
+            "last_polled_at,last_success_at,last_error,consecutive_not_found,last_x_agent_analyzed_at,last_x_agent_error "
             f"FROM hottopic_accounts{where} "
             "ORDER BY hot_topic_enabled DESC,market_sentiment_enabled DESC,project_promotion_enabled DESC,"
             "investment_leads_enabled DESC,screen_name_lower "
@@ -802,9 +840,7 @@ class HotTopicService:
                     cancel_ineligible_jobs(
                         self.db, account_lower=str(values["screen_name_lower"]), now=now
                     )
-                # An ignored former subscription no longer represents a live
-                # analysis failure. Preserve an error only while another
-                # enabled module still has unresolved failed work.
+                # Ignored work no longer represents the account's latest analysis result.
                 self._update_x_agent_account_state(values["screen_name_lower"], None, None)
                 updated.append(self._x_agent_account_payload(self._account(values["screen_name_lower"])))
         return updated
@@ -825,6 +861,8 @@ class HotTopicService:
             "lastPolledAt": row.get("last_polled_at"),
             "lastSuccessAt": row.get("last_success_at"),
             "lastError": row.get("last_error"),
+            "consecutiveNotFoundCount": int(row.get("consecutive_not_found") or 0),
+            "suspectedInvalid": int(row.get("consecutive_not_found") or 0) >= X_AGENT_SUSPECTED_INVALID_404_THRESHOLD,
             "lastAnalyzedAt": row.get("last_x_agent_analyzed_at"),
             "lastAnalysisError": row.get("last_x_agent_error"),
         }
@@ -1235,7 +1273,7 @@ class HotTopicService:
         with db:
             current = db.execute(
                 "SELECT status,consecutive_failures,last_success_at,hot_topic_enabled,market_sentiment_enabled,"
-                "project_promotion_enabled,investment_leads_enabled "
+                "project_promotion_enabled,investment_leads_enabled,consecutive_not_found "
                 "FROM hottopic_accounts WHERE screen_name_lower=?",
                 (lower,),
             ).fetchone()
@@ -1272,17 +1310,32 @@ class HotTopicService:
                                 (item.tweet_id, module, "pending", at, at),
                             )
             failures = 0 if not error else int(current["consecutive_failures"] or 0) + 1
+            not_found_failures = (
+                int(current["consecutive_not_found"] or 0) + 1
+                if self._is_account_not_found(error)
+                else 0
+            )
             delay_seconds = self._next_poll_delay_seconds(error, failures)
             db.execute(
                 "UPDATE hottopic_accounts SET next_due_at=?,last_polled_at=?,last_success_at=?,last_error=?,"
-                "consecutive_failures=?,last_item_count=?,cumulative_content_count=cumulative_content_count+?,updated_at=? "
+                "consecutive_failures=?,consecutive_not_found=?,last_item_count=?,"
+                "cumulative_content_count=cumulative_content_count+?,updated_at=? "
                 "WHERE screen_name_lower=?",
                 (iso(utc_now() + timedelta(seconds=delay_seconds)), at, at if not error else current["last_success_at"],
-                 json.dumps(error, ensure_ascii=False) if error else None, failures, len(items), accepted, at, lower),
+                 json.dumps(error, ensure_ascii=False) if error else None, failures, not_found_failures,
+                 len(items), accepted, at, lower),
             )
         if error:
             self.event("collect_error", {"account": account.screen_name, "error": error}, database=db)
         return accepted
+
+    @staticmethod
+    def _is_account_not_found(error: dict[str, Any] | None) -> bool:
+        if not error:
+            return False
+        if error.get("kind") == "not_found" or error.get("http_status") == 404:
+            return True
+        return "HTTP Error 404" in str(error.get("error") or "")
 
     @staticmethod
     def _is_rate_limited(error: dict[str, Any]) -> bool:
@@ -1531,20 +1584,6 @@ class HotTopicService:
     def _update_x_agent_account_state(self, account: str, analyzed_at: str | None, error: str | None) -> None:
         if not account:
             return
-        if error is None:
-            unresolved = self.db.execute(
-                "SELECT 1 FROM x_agent_analysis_jobs j JOIN hottopic_inbox i ON i.tweet_id=j.tweet_id "
-                "WHERE i.screen_name_lower=? AND j.status IN ('pending','processing','failed') "
-                "AND j.last_error IS NOT NULL LIMIT 1",
-                (account,),
-            ).fetchone()
-            if unresolved:
-                self.db.execute(
-                    "UPDATE hottopic_accounts SET last_x_agent_analyzed_at=COALESCE(?,last_x_agent_analyzed_at) "
-                    "WHERE screen_name_lower=?",
-                    (analyzed_at, account),
-                )
-                return
         self.db.execute(
             "UPDATE hottopic_accounts SET last_x_agent_analyzed_at=COALESCE(?,last_x_agent_analyzed_at),"
             "last_x_agent_error=? WHERE screen_name_lower=?",
@@ -1640,7 +1679,9 @@ class HotTopicService:
             "SELECT COUNT(*) total,SUM(hot_topic_enabled=1) hot_topic_enabled,"
             "SUM(market_sentiment_enabled=1) market_sentiment_enabled,"
             "SUM(project_promotion_enabled=1) project_promotion_enabled,"
-            "SUM(last_error IS NOT NULL OR last_x_agent_error IS NOT NULL) errors "
+            "SUM((last_error IS NOT NULL AND last_error NOT LIKE '%HTTP Error 404%' "
+            "AND last_error NOT LIKE '%\"kind\": \"not_found\"%') "
+            "OR last_x_agent_error IS NOT NULL) errors "
             "FROM hottopic_accounts"
         ).fetchone()
         jobs = self.db.execute(
@@ -2194,7 +2235,8 @@ class HotTopicService:
     def health(self) -> dict[str, Any]:
         counts = self.db.execute(
             "SELECT COUNT(*) total,SUM(status='followed') followed,SUM(status='unfollowed') unfollowed,SUM(status='blacklisted') blacklisted,"
-            "SUM(last_error IS NOT NULL) errors FROM hottopic_accounts"
+            "SUM(last_error IS NOT NULL AND last_error NOT LIKE '%HTTP Error 404%' "
+            "AND last_error NOT LIKE '%\"kind\": \"not_found\"%') errors FROM hottopic_accounts"
         ).fetchone()
         topic_counts = self.db.execute("SELECT matching_status,COUNT(*) FROM topics GROUP BY matching_status").fetchall()
         return {"deploymentStartedAt": self.deployment_started_at(), "accounts": dict(counts),

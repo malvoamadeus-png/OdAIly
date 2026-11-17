@@ -427,6 +427,8 @@ export type XAgentAccount = {
   lastAnalyzedAt: string | null;
   lastError: string | null;
   lastAnalysisError: string | null;
+  consecutiveNotFoundCount: number;
+  suspectedInvalid: boolean;
 };
 
 export type XAgentPage<T> = {
@@ -2381,12 +2383,14 @@ export async function listXAgentAccounts({
   query = '',
   module,
   enabled,
+  availability = 'all',
   offset = 0,
   limit = 50,
 }: {
   query?: string;
   module?: XAgentAccountModule;
   enabled?: boolean;
+  availability?: 'all' | 'suspected_invalid';
   offset?: number;
   limit?: number;
 } = {}): Promise<XAgentPage<XAgentAccount>> {
@@ -2394,6 +2398,7 @@ export async function listXAgentAccounts({
     query,
     module,
     enabled,
+    availability,
     offset,
     limit,
   });

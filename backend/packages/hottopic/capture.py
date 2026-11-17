@@ -512,12 +512,21 @@ def scan_account(
                 break
             if attempt < retries:
                 time.sleep(0.8 * (attempt + 1))
-    rate_limited = isinstance(last_error, urllib.error.HTTPError) and last_error.code == 429
+    http_status = last_error.code if isinstance(last_error, urllib.error.HTTPError) else None
+    rate_limited = http_status == 429
+    if rate_limited:
+        kind = "rate_limited"
+    elif http_status == 404:
+        kind = "not_found"
+    else:
+        kind = "fetch_failed"
     error: dict[str, Any] = {
         "account": account.screen_name,
-        "kind": "rate_limited" if rate_limited else "fetch_failed",
+        "kind": kind,
         "error": str(last_error),
     }
+    if http_status is not None:
+        error["http_status"] = http_status
     if last_error and not rate_limited and _should_retry_request(last_error):
         error["retryable"] = True
     if rate_limited:

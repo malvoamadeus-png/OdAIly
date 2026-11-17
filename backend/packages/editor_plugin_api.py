@@ -800,6 +800,7 @@ class EditorPluginNewsGenService:
                 query=str(payload.get("query") or ""),
                 module=str(payload.get("module") or "all"),
                 enabled=payload.get("enabled", "all"),
+                availability=str(payload.get("availability") or "all"),
                 offset=int(payload.get("offset") or 0),
                 limit=int(payload.get("limit") or 50),
             )
