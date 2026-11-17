@@ -119,10 +119,11 @@ class MacroNewsflashWorker:
         while not self._stop.is_set():
             started = time.monotonic()
             try:
+                due_sources = self._sources_due(datetime.now(EASTERN_TZ))
                 sources = (
                     None
                     if initial_poll_pending
-                    else startup_retry_sources or self._sources_due(datetime.now(EASTERN_TZ))
+                    else startup_retry_sources | due_sources
                 )
                 result = self.run_once(
                     publish_latest=publish_latest and first,
