@@ -1,7 +1,9 @@
 # OdAIly
 
-OdAIly is a Python worker that generates market briefs and sends them to the
-Push Data API with `isPublish=true` and `isPush=false`.
+OdAIly is a Python worker suite for market and news briefs. Each workflow sets
+its own Push Data API publish mode; standard scheduled briefs use
+`isPublish=true,isPush=false`, while macro data newsflashes enter the background
+with `isPublish=false,isPush=false`.
 
 ## Structure
 
@@ -81,6 +83,9 @@ The helper prefers:
 - `gate-tradfi open`: 09:31 America/New_York.
 - `okx-stock-brief weekly`: Friday 12:00 Asia/Shanghai; directly publishes the
   30-day OKX US stock turnover brief.
+- `macro-newsflash run`: syncs official release calendars and checks the
+  corresponding data source around each release; new observation periods queue
+  a brief without a fixed Beijing-time schedule.
 
 Calendar rules:
 
@@ -93,6 +98,12 @@ Calendar rules:
 - `us-market premarket` logic is still available for manual `run-once`, but it
   is intentionally not part of the scheduled worker.
 - `--force` bypasses these calendar skips for one manual run.
+- Macro data releases are detected from new source observations, so U.S. daylight
+  saving changes and release-date shifts do not require updating a cron entry.
+  It checks the matching provider every 30 seconds around scheduled releases;
+  when no event is near, it only refreshes the calendar on its six-hour cycle.
+  Retail sales, initial claims, and PCE use FRED-hosted series credited to Census,
+  DOL, and BEA; their availability follows FRED's update latency.
 
 If Yahoo returns no valid market data, or Gate returns no valid title candidate
 data, the worker records a skipped result and does not call the Push Data API.
@@ -106,12 +117,15 @@ python backend/src/main.py run-once --task us-market --kind open --send
 python backend/src/main.py run-once --task gate-tradfi --kind open --send
 python backend/src/main.py run-once --task okx-stock-brief --kind weekly
 python backend/src/main.py run-once --task okx-stock-brief --kind weekly --dry-run
+python backend/src/main.py macro-newsflash init-db
+python backend/src/main.py macro-newsflash run --once
+python backend/src/main.py macro-newsflash status
 ```
 
 The OKX weekly task publishes directly by default, even when the common
 `ODAILY_DRY_RUN=true` setting is present. Use `--dry-run` for a local rehearsal.
 
-Every real request sends:
+The standard scheduled market-brief workers send:
 
 ```json
 {
@@ -410,6 +424,7 @@ Repo-tracked service files live under
 - `deploy/odaily-whale-watch.service`
 - `deploy/odaily-whale-watch-hyperliquid.service`
 - `deploy/odaily-pipeline-supervisor.service`
+- `deploy/odaily-macro-newsflash.service`
 
 Compatibility units for the retired `odaily-x-process@` and
 `odaily-external-media-alert@` staged workers remain in `deploy/` for disaster

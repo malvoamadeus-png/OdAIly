@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowLeftRight,
   Ban,
+  CalendarDays,
   ClipboardCheck,
   ChevronDown,
   ChevronLeft,
@@ -147,6 +148,7 @@ import {
 import { HyperliquidNewsPanel } from './HyperliquidNewsPanel';
 import { GateMarketPanel } from './GateMarketPanel';
 import { StockMarketPanel } from './StockMarketPanel';
+import { MacroNewsflashPanel } from './MacroNewsflashPanel';
 import { BusinessNewsPanel } from './BusinessNewsPanel';
 import {
   workflowFilters,
@@ -166,6 +168,7 @@ type ConsoleView =
   | 'system_information'
   | 'system_health'
   | 'scheduled_brief'
+  | 'macro_newsflash'
   | 'dedupe'
   | 'timing'
   | 'gate_market'
@@ -188,7 +191,7 @@ type ConsoleView =
 function resolveInitialView(value: string | null): ConsoleView {
   if (!value || value === 'tasks') return value === 'tasks' ? 'system_information' : 'x';
   const views: ConsoleView[] = [
-    'x', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief',
+    'x', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief', 'macro_newsflash',
     'tasks', 'dedupe', 'timing', 'gate_market', 'stock_market', 'meme', 'publisher', 'workflow', 'whale',
     'hyperliquid_news', 'prompts', 'competitor', 'newsflash', 'business_news', 'jin10', 'x_agent', 'ai_review', 'system_review', 'ai_text_self_upgrade',
   ];
@@ -961,6 +964,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
   const [aiReviewRefreshToken, setAIReviewRefreshToken] = useState(0);
   const [systemInformationRefreshToken, setSystemInformationRefreshToken] = useState(0);
+  const [macroNewsflashRefreshToken, setMacroNewsflashRefreshToken] = useState(0);
   const [lastSourceManagementView, setLastSourceManagementView] = useState<SourceManagementView>('x');
   const [loading, setLoading] = useState(true);
   const [loadingProcessingTasks, setLoadingProcessingTasks] = useState(true);
@@ -1891,6 +1895,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? '信源管理'
       : view === 'scheduled_brief'
         ? '定时行情简报'
+      : view === 'macro_newsflash'
+        ? '美国数据追踪'
       : view === 'system_health'
         ? '运行健康'
       : view === 'tasks' || view === 'system_information'
@@ -1935,6 +1941,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       ? `当前子页：${sourceManagementLabel} · ${sourceManagementSummary}`
       : view === 'scheduled_brief'
         ? '现有调度、最近执行结果与稿件'
+      : view === 'macro_newsflash'
+        ? '美国宏观指标发布时间、数据采集和挂后台状态'
       : view === 'system_health'
         ? 'Worker 心跳、数据接入和信息流投影状态'
       : view === 'tasks' || view === 'system_information'
@@ -1999,6 +2007,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ? loadGateMarket()
       : view === 'stock_market'
         ? loadStockMarket()
+      : view === 'macro_newsflash'
+        ? (setMacroNewsflashRefreshToken((value) => value + 1), Promise.resolve())
       : view === 'meme'
         ? loadMemeDashboard()
       : view === 'x_agent'
@@ -2048,6 +2058,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <NavButton active={view === 'gate_market'} onClick={() => switchView('gate_market')} icon={<Activity size={18} />}>Gate行情播报</NavButton>
             <NavButton active={view === 'stock_market'} onClick={() => switchView('stock_market')} icon={<Activity size={18} />}>股票行情播报</NavButton>
             <NavButton active={view === 'scheduled_brief'} onClick={() => switchView('scheduled_brief')} icon={<Timer size={18} />}>定时行情简报</NavButton>
+            <NavButton active={view === 'macro_newsflash'} onClick={() => switchView('macro_newsflash')} icon={<CalendarDays size={18} />}>美国数据追踪</NavButton>
           </div>
           <div className="navGroup"><span className="navGroupTitle">内容与发布规则</span>
             <NavButton active={view === 'prompts'} onClick={() => switchView('prompts')} icon={<FileText size={18} />}>Prompt及规则管理</NavButton>
@@ -2458,6 +2469,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           />
         ) : view === 'system_health' || view === 'scheduled_brief' ? (
           <SystemHealthPanel mode={view === 'scheduled_brief' ? 'briefs' : 'all'} refreshToken={systemInformationRefreshToken} onOpenInformation={() => switchView('system_information')} />
+        ) : view === 'macro_newsflash' ? (
+          <MacroNewsflashPanel refreshToken={macroNewsflashRefreshToken} />
         ) : view === 'system_information' ? (
           <SystemInformationPanel
             refreshToken={systemInformationRefreshToken}

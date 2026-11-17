@@ -547,6 +547,22 @@ def parse_args() -> argparse.Namespace:
     stock_market_run = stock_market_subparsers.add_parser("run", help="Run the Binance stock market worker.")
     stock_market_run.add_argument("--once", action="store_true", help="Run one polling cycle and exit.")
 
+    macro_newsflash = subparsers.add_parser(
+        "macro-newsflash",
+        help="Run or inspect the US macroeconomic data newsflash worker.",
+    )
+    macro_newsflash_subparsers = macro_newsflash.add_subparsers(dest="macro_newsflash_action", required=True)
+    macro_newsflash_subparsers.add_parser("init-db", help="Initialize the macro newsflash SQLite database.")
+    macro_newsflash_subparsers.add_parser("status", help="Print macro observations and delivery state.")
+    macro_newsflash_run = macro_newsflash_subparsers.add_parser("run", help="Poll official-source series and queue new releases.")
+    macro_newsflash_run.add_argument("--once", action="store_true", help="Run one polling cycle and exit.")
+    macro_newsflash_run.add_argument(
+        "--publish-latest",
+        action="store_true",
+        help="Publish current observations on the first pass; requires --once.",
+    )
+    macro_newsflash_run.add_argument("--interval", type=int, help="Override the poll interval in seconds.")
+
     meme = subparsers.add_parser("meme", help="Run the OdAIly Meme scanner or Telegram watcher.")
     meme_subparsers = meme.add_subparsers(dest="meme_action", required=True)
     meme_scan = meme_subparsers.add_parser("scan", help="Scan OKX BSC and Robinhood migrated tokens and generate Meme drafts.")
@@ -2086,6 +2102,39 @@ def stock_market_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def macro_newsflash_command(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from packages.macro_newsflash import (
+        MacroNewsflashStore,
+        MacroNewsflashWorker,
+        load_macro_newsflash_settings,
+    )
+
+    settings = load_macro_newsflash_settings()
+    if args.macro_newsflash_action == "run" and args.interval is not None:
+        if args.interval < 10:
+            raise ValueError("--interval must be at least 10 seconds")
+        settings = replace(settings, poll_interval_seconds=args.interval)
+    store = MacroNewsflashStore(settings.database_path)
+    store.initialize()
+    action = args.macro_newsflash_action
+    if action == "init-db":
+        print(f"[macro-newsflash] initialized db={settings.database_path}")
+        return 0
+    if action == "status":
+        print(json.dumps(store.dashboard(), ensure_ascii=False, indent=2))
+        return 0
+    if args.publish_latest and not args.once:
+        raise ValueError("--publish-latest is only allowed with --once")
+    worker = MacroNewsflashWorker(settings=settings, store=store)
+    if args.once:
+        print(json.dumps(worker.run_once(publish_latest=args.publish_latest), ensure_ascii=False, indent=2))
+        return 0
+    worker.run_forever()
+    return 0
+
+
 def meme_command(args: argparse.Namespace) -> int:
     if args.meme_action == "scan":
         from packages.meme_scanner import scanner
@@ -2330,6 +2379,8 @@ def main() -> int:
             return gate_market_command(args)
         if args.command == "stock-market":
             return stock_market_command(args)
+        if args.command == "macro-newsflash":
+            return macro_newsflash_command(args)
         if args.command == "meme":
             return meme_command(args)
         if args.command == "okx-stock-brief":

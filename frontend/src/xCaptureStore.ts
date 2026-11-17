@@ -2171,6 +2171,58 @@ export async function getStockMarketDashboard(): Promise<StockMarketDashboard> {
   return consoleApiGet<StockMarketDashboard>('/console/stock-market/get');
 }
 
+export type MacroNewsflashMetricState = {
+  metric_id: string;
+  last_reference_period: string;
+  last_observed_at: string;
+  source_name: string;
+  source_url: string;
+  actual: string | null;
+  previous: string | null;
+  rate_action: string | null;
+};
+
+export type MacroNewsflashEvent = {
+  event_key: string;
+  metric_id: string;
+  reference_period: string;
+  actual: string;
+  previous: string;
+  title: string;
+  status: string;
+  error: string | null;
+  created_at: string;
+  published_at: string | null;
+};
+
+export type MacroNewsflashRelease = {
+  release_id: string;
+  source_name: string;
+  title: string;
+  metric_ids: string[];
+  scheduled_at: string;
+  scheduled_at_eastern: string;
+  scheduled_at_beijing: string;
+  source_url: string;
+  is_estimate: boolean;
+};
+
+export type MacroNewsflashDashboard = {
+  available: boolean;
+  database_path: string;
+  metrics: MacroNewsflashMetricState[];
+  events: MacroNewsflashEvent[];
+  scheduled_releases: MacroNewsflashRelease[];
+  schedule_refreshed_at: string | null;
+  schedule_errors: Record<string, string>;
+  source_checked_at: string | null;
+  source_errors: Record<string, string>;
+};
+
+export async function getMacroNewsflashDashboard(): Promise<MacroNewsflashDashboard> {
+  return consoleApiGet<MacroNewsflashDashboard>('/console/macro-newsflash/get');
+}
+
 export type MemeDashboardItem = {
   id: number;
   address: string;

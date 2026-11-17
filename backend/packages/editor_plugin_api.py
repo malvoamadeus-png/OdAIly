@@ -46,6 +46,8 @@ from packages.gate_market_broadcast.settings import load_gate_market_settings
 from packages.gate_market_broadcast.store import GateMarketStore
 from packages.stock_market_broadcast.settings import load_stock_market_settings
 from packages.stock_market_broadcast.store import StockMarketStore
+from packages.macro_newsflash.settings import load_macro_newsflash_settings
+from packages.macro_newsflash.store import MacroNewsflashStore
 from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
 from packages.newsflash_operations import NewsflashOperationsRepository
@@ -409,6 +411,7 @@ class EditorPluginNewsGenService:
         self.gate_market_store.initialize()
         self.stock_market_store = StockMarketStore(load_stock_market_settings().database_path)
         self.stock_market_store.initialize()
+        self.macro_newsflash_store = MacroNewsflashStore(load_macro_newsflash_settings().database_path)
         self.meme_dashboard_store = MemeDashboardStore()
         self.auth_repository = create_editor_plugin_auth_repository(database_url)
         self.x_capture_repository = create_x_capture_repository(database_url)
@@ -1039,6 +1042,10 @@ class EditorPluginNewsGenService:
         del actor
         return self.stock_market_store.dashboard()
 
+    def get_macro_newsflash(self, actor: AuthenticatedEditor) -> dict[str, Any]:
+        del actor
+        return self.macro_newsflash_store.dashboard()
+
     def get_meme_dashboard(self, actor: AuthenticatedEditor, column: str = "all") -> dict[str, Any]:
         del actor
         if column not in {"all", "digest", "daily_hot"}:
@@ -1519,6 +1526,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/pipeline-timing/get",
         "/console/gate-market/get",
         "/console/stock-market/get",
+        "/console/macro-newsflash/get",
         "/console/hyperliquid-news/get",
         "/console/hyperliquid-news/address-note/save",
         "/console/hyperliquid-news/address-block/save",
@@ -1644,6 +1652,18 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {"ok": True, "data": self.server.service.get_stock_market(actor)},
+                )
+            except EditorPluginApiError as exc:
+                self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+            return
+        if parsed_path.path == "/console/macro-newsflash/get":
+            try:
+                actor = self.server.service.authenticate_console_admin(self.headers.get("Authorization"))
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "data": self.server.service.get_macro_newsflash(actor)},
                 )
             except EditorPluginApiError as exc:
                 self._send_json(exc.status_code, {"ok": False, "message": str(exc)})
