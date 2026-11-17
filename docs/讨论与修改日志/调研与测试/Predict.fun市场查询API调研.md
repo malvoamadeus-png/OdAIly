@@ -164,7 +164,7 @@ GET https://api.predict.fun/v1/categories/jensen-huang-rejoins-nvidia-before-div
 
 实现后再依据生产响应修正了两个字段条件：类目筛选 `status=OPEN` 时，子市场的 `status` 通常是 `REGISTERED`，可交易状态实际由 `tradingStatus=OPEN` 表示；且开始时间在 72 小时内不代表市场新建，需同时要求单市场 `createdAt` 落在过去 72 小时，避免把数周前创建的比赛当作新上架题目。
 
-最终服务器验证时间约为 `2026-11-17T06:52Z`：扫描 53 页、5,300 个类目、19,123 个市场；本轮新增 3 个市场 ID，但它们未进入候选窗口。开始时间与创建时间都在 72 小时内的可交易原始市场为 2,603 个，其中 `CRYPTO_UP_DOWN` 1,224 个、`UP_DOWN` 1 个、`DEFAULT` 531 个、体育/电竞变体合计 832 个、`TWEET_COUNT` 15 个。应用 Up/Down 和天气模板排除后，独立 SQLite 中有 971 个待复核市场。最新样本仍含大量 CS2/Dota 赛事与每日指数涨跌；因此“自动获取新市场”已验证并运行，“有趣题目”的筛选没有完成，不能把这 971 个条目称为推荐选题。
+最终服务器验证时间约为 `2026-11-17T06:59Z`：扫描 53 页、5,299 个类目、19,122 个市场；本轮新增 3 个市场 ID，但没有新增窗口候选。之前一次按创建时间与开始时间双窗口统计得到 2,603 个可交易市场，其中 `CRYPTO_UP_DOWN` 1,224 个、`UP_DOWN` 1 个、`DEFAULT` 531 个、体育/电竞变体合计 832 个、`TWEET_COUNT` 15 个。应用 Up/Down 变体、标题中的日常涨跌文字和天气模板过滤后，独立 SQLite 有 961 个待复核市场。候选仍含大量 CS2/Dota 等体育盘口，因此“自动获取新市场”已验证并运行，“读者可能喜欢”的排序没有完成，不能把这 961 个条目称为推荐选题。
 
 `odaily-predict-market.service` 已在官方服务器启用，systemd 状态为 `active` / `enabled`，最近检查 `NRestarts=0`。实时状态可在服务器运行 `python backend/src/main.py predict-market status`；服务每 600 秒再次分页扫描，候选与已见 ID 持久保存在 `data/runtime/predict_market_discovery.sqlite`。
 
