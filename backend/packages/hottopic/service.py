@@ -1096,6 +1096,7 @@ class HotTopicService:
             timeline_count=100,
             retries=1,
             before_request=self.collect_request_pacer.wait,
+            include_x_articles=True,
         )
         if error and self._is_rate_limited(error):
             error["retry_after_seconds"] = max(

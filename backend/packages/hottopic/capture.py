@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,6 +27,11 @@ if hasattr(sys.stderr, "reconfigure"):
 
 FXTWITTER_BASE_URL = "https://api.fxtwitter.com"
 DEFAULT_OUTPUT_ROOT = Path("data/runtime/hottopic")
+X_ARTICLE_URL_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:x|twitter)\.com/i/article/\d+", re.IGNORECASE)
+X_ARTICLE_CONTEXT_KEYS = {"quote", "quoted_tweet", "quote_tweet", "quoted_status", "replying_to_status"}
+X_ARTICLE_CACHE_CAPACITY = 512
+_x_article_cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+_x_article_cache_lock = threading.Lock()
 
 
 @dataclass
@@ -99,6 +107,150 @@ def find_quote(payload: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(value, dict) and value:
             return value
     return None
+
+
+def _article_text(article: dict[str, Any]) -> str:
+    content = article.get("content")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (TypeError, ValueError):
+            content = None
+    blocks = nested_dict(content).get("blocks")
+    lines: list[str] = []
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            value = block.get("text")
+            text = compact_text(value.get("text") if isinstance(value, dict) else value)
+            if not text:
+                continue
+            block_type = str(block.get("type") or "unstyled")
+            prefix = {
+                "header-one": "# ",
+                "header-two": "## ",
+                "header-three": "### ",
+                "blockquote": "> ",
+                "unordered-list-item": "- ",
+                "ordered-list-item": "1. ",
+            }.get(block_type, "")
+            lines.append(f"{prefix}{text}")
+    if lines:
+        return "\n".join(lines)
+    return compact_text(article.get("body") or article.get("text") or article.get("preview_text"))
+
+
+def _find_x_articles(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    articles: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            article = value.get("article")
+            if isinstance(article, dict):
+                identity = (
+                    str(article.get("id") or ""),
+                    compact_text(article.get("title")),
+                    _article_text(article),
+                )
+                if identity not in seen and any(identity):
+                    seen.add(identity)
+                    articles.append(article)
+            for key, nested in value.items():
+                if key not in X_ARTICLE_CONTEXT_KEYS:
+                    visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(payload)
+    return articles
+
+
+def _has_x_article_link(payload: dict[str, Any]) -> bool:
+    values = [payload.get("text"), payload.get("raw_text")]
+    entities = nested_dict(payload.get("entities"))
+    urls = entities.get("urls")
+    if isinstance(urls, list):
+        for value in urls:
+            if isinstance(value, dict):
+                values.extend((value.get("expanded_url"), value.get("url")))
+    return any(X_ARTICLE_URL_RE.search(str(value or "")) for value in values)
+
+
+def _fetch_x_articles(
+    account: AccountRow,
+    item: dict[str, Any],
+    *,
+    cutoff: datetime,
+    retries: int,
+    before_request: Callable[[], None] | None,
+) -> dict[str, Any]:
+    author = author_username(item)
+    created = parse_created_at(str(item.get("created_at") or ""))
+    if (author and author.lower() != account.screen_name.lower()) or created is None or created < cutoff:
+        return item
+    articles = _find_x_articles(item)
+    tweet_id = str(item.get("id") or "").strip()
+    if not articles and tweet_id:
+        with _x_article_cache_lock:
+            cached_articles = _x_article_cache.get(tweet_id)
+            if cached_articles is not None:
+                _x_article_cache.move_to_end(tweet_id)
+                articles = cached_articles
+    if not articles and _has_x_article_link(item):
+        if not tweet_id:
+            raise ValueError("X Article link found without a post id")
+        last_error: Exception | None = None
+        for attempt in range(max(0, retries) + 1):
+            try:
+                if before_request is not None:
+                    before_request()
+                payload = fetch_json(f"{FXTWITTER_BASE_URL}/{account.screen_name}/status/{tweet_id}")
+                detail = nested_dict(payload.get("tweet")) or payload
+                articles = _find_x_articles(detail)
+                if not articles:
+                    raise ValueError(f"FXTwitter Article detail missing for post {tweet_id}")
+                break
+            except Exception as exc:
+                last_error = exc
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                    break
+                if attempt >= max(0, retries) or not _should_retry_request(exc):
+                    break
+                time.sleep(0.8 * (attempt + 1))
+        if not articles:
+            if last_error is not None:
+                raise last_error
+            raise ValueError(f"FXTwitter Article detail missing for post {tweet_id}")
+    if not articles:
+        return item
+    if tweet_id:
+        with _x_article_cache_lock:
+            _x_article_cache[tweet_id] = articles
+            _x_article_cache.move_to_end(tweet_id)
+            while len(_x_article_cache) > X_ARTICLE_CACHE_CAPACITY:
+                _x_article_cache.popitem(last=False)
+    enriched = dict(item)
+    enriched["_hottopic_x_articles"] = articles
+    return enriched
+
+
+def _format_x_articles(articles: list[dict[str, Any]]) -> list[str]:
+    sections: list[str] = []
+    for article in articles:
+        title = compact_text(article.get("title"))
+        body = _article_text(article)
+        if not title and not body:
+            continue
+        lines = ["【X文章】"]
+        if title:
+            lines.append(f"标题：{title}")
+        if body:
+            lines.append(f"正文：{body}")
+        sections.append("\n".join(lines))
+    return sections
 
 
 def parse_created_at(value: str | None) -> datetime | None:
@@ -301,6 +453,11 @@ def item_to_content(
         quote_text = compact_text(quote.get("text") or quote.get("raw_text")) or None
         if quote_text:
             expanded_parts.append(f"引用 @{quote_author or 'unknown'}: {quote_text}")
+    article_values = item.get("_hottopic_x_articles")
+    if isinstance(article_values, list):
+        expanded_parts.extend(
+            _format_x_articles([article for article in article_values if isinstance(article, dict)])
+        )
     expanded_text = "\n".join(expanded_parts).strip()
     investment_only = bool(include_investment_materials and (outside_collection_window or pure_repost or not expanded_text))
     if outside_collection_window:
@@ -479,6 +636,7 @@ def scan_account(
     retries: int,
     before_request: Callable[[], None] | None = None,
     include_investment_materials: bool = False,
+    include_x_articles: bool = False,
 ) -> tuple[list[ContentItem], dict[str, Any] | None, dict[str, Any] | None]:
     if account.protected:
         return [], None, {"account": account.screen_name, "kind": "protected", "error": "protected account skipped"}
@@ -496,13 +654,50 @@ def scan_account(
                 return [], None, {"account": account.screen_name, "kind": "parse_empty", "error": "missing results"}
             raw_results = [raw for raw in results if isinstance(raw, dict)]
             latest = latest_post_snapshot(account, raw_results)
+            if include_x_articles:
+                enriched_results: list[dict[str, Any]] = []
+                article_errors: list[tuple[str, Exception]] = []
+                for raw in raw_results:
+                    try:
+                        enriched_results.append(
+                            _fetch_x_articles(
+                                account,
+                                raw,
+                                cutoff=cutoff,
+                                retries=retries,
+                                before_request=before_request,
+                            )
+                        )
+                    except Exception as exc:
+                        article_errors.append((str(raw.get("id") or "unknown"), exc))
+                raw_results = enriched_results
             items = [
                 content
                 for raw in raw_results
                 for content in [item_to_content(account, raw, cutoff=cutoff, include_investment_materials=include_investment_materials)]
                 if content is not None
             ]
-            return items, latest, None
+            if not include_x_articles or not article_errors:
+                return items, latest, None
+            http_errors = [error for _tweet_id, error in article_errors if isinstance(error, urllib.error.HTTPError)]
+            rate_limit_error = next((error for error in http_errors if error.code == 429), None)
+            error: dict[str, Any] = {
+                "account": account.screen_name,
+                "kind": "rate_limited" if rate_limit_error else "article_fetch_failed",
+                "error": "; ".join(
+                    f"{tweet_id}: {type(exc).__name__}: {exc}" for tweet_id, exc in article_errors
+                ),
+            }
+            reported_http_error = rate_limit_error or (http_errors[0] if http_errors else None)
+            if reported_http_error:
+                error["http_status"] = reported_http_error.code
+            if rate_limit_error is not None:
+                retry_after = retry_after_seconds(rate_limit_error)
+                if retry_after > 0:
+                    error["retry_after_seconds"] = retry_after
+            elif any(_should_retry_request(exc) for _tweet_id, exc in article_errors):
+                error["retryable"] = True
+            return items, latest, error
         except Exception as exc:
             last_error = exc
             if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
