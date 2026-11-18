@@ -60,7 +60,8 @@ def create_system_observability_runtime(
                                              local_pipeline_database_path=(additional_databases or {}).get("queue"))
     if initialize:
         information_store.initialize()
-        review_repository.initialize()
+        if settings.backend == "postgres":
+            review_repository.initialize()
     return SystemObservabilityRuntime(information_store, projector, review_repository, review_service)
 
 
