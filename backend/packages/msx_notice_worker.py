@@ -48,7 +48,13 @@ class MSXNoticeWorker:
         if not 1 <= page_size <= 100:
             raise ValueError("page_size must be between 1 and 100")
         self.database_path = database_path or load_storage_settings().sqlite_path
-        self.state_database_path = capture_path(self.database_path, str(state_database_path) if state_database_path else None)
+        self._postgres_store = None
+        if load_storage_settings().backend == "postgres":
+            from packages.postgres_msx_notice_store import PostgresMSXNoticeStore
+            self._postgres_store = PostgresMSXNoticeStore()
+            self.state_database_path = self.database_path
+        else:
+            self.state_database_path = capture_path(self.database_path, str(state_database_path) if state_database_path else None)
         self.client = client or MSXNoticeClient()
         self.pipeline_client = pipeline_client
         self.interval_seconds = interval_seconds
@@ -58,6 +64,9 @@ class MSXNoticeWorker:
         self.init_schema()
 
     def init_schema(self) -> None:
+        if self._postgres_store is not None:
+            self._postgres_store.ensure_state()
+            return
         with connect_sqlite(self.database_path) as conn:
             conn.executescript(SQLITE_SCHEMA_SQL)
             conn.commit()
@@ -161,11 +170,16 @@ class MSXNoticeWorker:
         return f"{MSX_SOURCE}:{notice.id}"
 
     def _is_unseeded(self) -> bool:
+        if self._postgres_store is not None:
+            return self._postgres_store.is_unseeded()
         with connect_sqlite(self.state_database_path) as conn:
             row = conn.execute("SELECT seeded_at FROM msx_notice_state WHERE singleton_key='global'").fetchone()
         return not row or not row["seeded_at"]
 
     def _seed(self, notices: list[MSXNotice]) -> None:
+        if self._postgres_store is not None:
+            self._postgres_store.seed([self.source_item_id(notice) for notice in notices])
+            return
         with connect_sqlite(self.state_database_path) as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO msx_notice_seen_items(source_item_id, seeded) VALUES (?, 1)",
@@ -180,6 +194,8 @@ class MSXNoticeWorker:
         ids = [self.source_item_id(notice) for notice in notices]
         if not ids:
             return set()
+        if self._postgres_store is not None:
+            return self._postgres_store.unseen(ids)
         placeholders = ",".join("?" for _ in ids)
         with connect_sqlite(self.state_database_path) as conn:
             rows = conn.execute(
@@ -201,6 +217,10 @@ class MSXNoticeWorker:
             "omit_site_attribution": True,
         }
         raw_payload = notice.to_json()
+        if self._postgres_store is not None:
+            return self._postgres_store.save_task(source_item_id=source_item_id, source_url=notice.detail_url,
+                title=notice.title, content=notice.content or "", published_at=published_at.astimezone(UTC),
+                raw=raw_payload, metadata=metadata)
         with connect_sqlite(self.database_path) as conn:
             conn.execute(
                 """
@@ -230,6 +250,8 @@ class MSXNoticeWorker:
         return int(row["id"])
 
     def _mark_seen(self, source_item_id: str, *, seeded: bool) -> bool:
+        if self._postgres_store is not None:
+            return self._postgres_store.mark_seen(source_item_id, seeded)
         with connect_sqlite(self.state_database_path) as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO msx_notice_seen_items(source_item_id, seeded) VALUES (?, ?)",
@@ -239,6 +261,9 @@ class MSXNoticeWorker:
         return cur.rowcount > 0
 
     def _record_state(self, *, success: bool, error: str | None = None) -> None:
+        if self._postgres_store is not None:
+            self._postgres_store.record_state(success, error)
+            return
         with connect_sqlite(self.state_database_path) as conn:
             conn.execute(
                 """
@@ -256,6 +281,17 @@ class MSXNoticeWorker:
         error = None
         if stats.detail_errors:
             error = "; ".join(f"{key}: {value}" for key, value in stats.detail_errors.items())[:2000]
+        metadata = {
+            "candidate_count": stats.candidate_count,
+            "seeded_count": stats.seeded_count,
+            "new_count": stats.new_count,
+            "saved_count": stats.saved_count,
+        }
+        if self._postgres_store is not None:
+            self._postgres_store.record_heartbeat(worker_id=self.worker_id,
+                status="ok" if stats.status == "success" else "failed", success=stats.status == "success",
+                error=error, metadata=metadata)
+            return
         with connect_sqlite(self.database_path) as conn:
             conn.execute(
                 """
@@ -277,12 +313,7 @@ class MSXNoticeWorker:
                     datetime.now(UTC).isoformat(),
                     datetime.now(UTC).isoformat() if stats.status == "success" else None,
                     error,
-                    _json({
-                        "candidate_count": stats.candidate_count,
-                        "seeded_count": stats.seeded_count,
-                        "new_count": stats.new_count,
-                        "saved_count": stats.saved_count,
-                    }),
+                    _json(metadata),
                 ),
             )
             conn.commit()

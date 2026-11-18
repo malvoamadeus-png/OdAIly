@@ -197,8 +197,7 @@ class ExternalMediaAlertWorker:
                 result = StageRunResult(0, self.stage, 0, 0, "no task")
                 self._record_heartbeat(result)
                 return result
-            self._process_task(task)
-            result = StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
+            result = self.process_claimed_task(task)
         except HandledStageError as exc:
             task_label = str(task.id) if task is not None else "unknown"
             result = StageRunResult(1, self.stage, 0, 1, f"failed task {task_label}: {exc}")
@@ -210,6 +209,23 @@ class ExternalMediaAlertWorker:
                 result = StageRunResult(1, self.stage, 0, 1, f"worker failed before claim: {exc}")
         self._record_heartbeat(result)
         return result
+
+    def process_claimed_task(self, task) -> StageRunResult:
+        """Execute a task claimed by the shared local pipeline queue owner."""
+        try:
+            set_claim = getattr(self.repository, "set_claim_context", None)
+            if callable(set_claim):
+                set_claim(task)
+            self._process_task(task)
+            return StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
+        except Exception as exc:
+            owns_claim = getattr(self.repository, "owns_task_claim", lambda _task: True)(task)
+            if owns_claim:
+                try:
+                    self.repository.fail_task(task.id, stage=self.stage, error=str(exc))
+                except RuntimeError:
+                    pass
+            return StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
 
     def run_forever(self) -> None:
         notify_thread = self._start_notify_listener()

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.system_observability.postgres_schema import SourceStateTriggerSpec, ensure_source_state_schema, install_source_state_trigger
 
 from .models import DEFAULT_JIN10_ENDPOINT_URL, DEFAULT_JIN10_HEADERS, JIN10_SOURCE, Jin10Item, Jin10RunResult, Jin10Settings
 
@@ -68,27 +71,40 @@ def _row_to_settings(row: dict[str, Any]) -> Jin10Settings:
 
 class PostgresJin10MonitorRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresJin10MonitorRepository is retired; use create_jin10_monitor_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-jin10-monitor"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(JIN10_SCHEMA_SQL)
-            conn.commit()
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            trigger_spec = ("jin10_settings", ("singleton_key",), ("enabled", "interval_seconds", "endpoint_url", "channel", "last_error"))
+            def apply(connection):
+                connection.execute(JIN10_SCHEMA_SQL)
+                ensure_source_state_schema(connection)
+                install_source_state_trigger(connection, SourceStateTriggerSpec(
+                    schema="main", table=trigger_spec[0], row_id_columns=trigger_spec[1], payload_columns=trigger_spec[2],
+                ))
+
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="jin10_monitor",
+                migrations=(PostgresMigration(
+                    1, "jin10_initial", sha256((JIN10_SCHEMA_SQL + repr(trigger_spec)).encode()).hexdigest(), apply,
+                ),),
+            )
 
     def get_settings(self) -> Jin10Settings:
         with self._connect() as conn:
@@ -102,7 +118,6 @@ class PostgresJin10MonitorRepository:
             ).fetchone()
             if row is None:
                 row = conn.execute("SELECT * FROM jin10_settings WHERE singleton_key = 'global'").fetchone()
-            conn.commit()
         return _row_to_settings(row)
 
     def update_settings(
@@ -138,7 +153,6 @@ class PostgresJin10MonitorRepository:
                 },
             ).fetchone()
             conn.execute("SELECT pg_notify(%s, %s)", (JIN10_CONFIG_NOTIFY_CHANNEL, "manual"))
-            conn.commit()
         return _row_to_settings(row)
 
     def has_seen_items(self) -> bool:
@@ -157,7 +171,6 @@ class PostgresJin10MonitorRepository:
                     """,
                     (source_item_id,),
                 )
-            conn.commit()
 
     def unseen_source_item_ids(self, source_item_ids: list[str]) -> set[str]:
         if not source_item_ids:
@@ -185,7 +198,6 @@ class PostgresJin10MonitorRepository:
                 """,
                 (source_item_id, seeded),
             ).fetchone()
-            conn.commit()
         return row is not None
 
     def save_task(self, item: Jin10Item) -> int | None:
@@ -211,7 +223,6 @@ class PostgresJin10MonitorRepository:
                     self._Jsonb({**item.metadata, "source_kind": JIN10_SOURCE}),
                 ),
             ).fetchone()
-            conn.commit()
         return int(row["id"]) if row is not None else None
 
     def record_run(self, result: Jin10RunResult, *, finished_at: datetime) -> None:
@@ -231,7 +242,6 @@ class PostgresJin10MonitorRepository:
                     "error": (result.error or result.status)[:2000],
                 },
             )
-            conn.commit()
 
     def record_worker_heartbeat(
         self,
@@ -271,11 +281,13 @@ class PostgresJin10MonitorRepository:
                     success,
                 ),
             )
-            conn.commit()
 
 
 def create_jin10_monitor_repository(database_url: str | None = None) -> Jin10MonitorRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresJin10MonitorRepository()
     from .sqlite_repository import SQLiteJin10MonitorRepository
     return SQLiteJin10MonitorRepository(load_storage_settings().sqlite_path)
 
@@ -404,10 +416,6 @@ ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS last_polled_at timestamptz;
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
 ALTER TABLE jin10_settings ADD COLUMN IF NOT EXISTS last_error text;
 
-INSERT INTO jin10_settings (singleton_key)
-VALUES ('global')
-ON CONFLICT (singleton_key) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS jin10_seen_items (
     source_item_id text PRIMARY KEY,
     seeded boolean NOT NULL DEFAULT false,
@@ -428,27 +436,4 @@ AFTER UPDATE OF enabled, interval_seconds, endpoint_url, channel, request_header
 FOR EACH ROW
 EXECUTE FUNCTION notify_jin10_config_changed();
 
-ALTER TABLE jin10_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE jin10_seen_items ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS jin10_settings_console_admin_all ON jin10_settings;
-DROP POLICY IF EXISTS jin10_seen_items_console_admin_select ON jin10_seen_items;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON jin10_settings, jin10_seen_items FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON jin10_settings TO authenticated;
-        GRANT SELECT ON jin10_seen_items TO authenticated;
-        EXECUTE 'CREATE POLICY jin10_settings_console_admin_all ON jin10_settings
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY jin10_seen_items_console_admin_select ON jin10_seen_items
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """

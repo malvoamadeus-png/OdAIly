@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .analysis import (
     DERIVE_PROMPT_VERSION,
@@ -25,12 +25,17 @@ from .analysis import (
     InvestmentLeadAnalyzer,
     ModelOutput,
 )
+from .postgres_repository import InvestmentLeadPostgresRepository
 from .schema import ensure_schema
 
 MAX_ATTEMPTS = 3
 LEASE = timedelta(minutes=60)
 RETRY_DELAY = timedelta(minutes=15)
 RETENTION = timedelta(days=30)
+MAINTENANCE_MAX_ROWS = 100
+MAINTENANCE_TRANSACTION_ROWS = 25
+MAINTENANCE_BUDGET_SECONDS = 0.05
+MAINTENANCE_CONTINUE_DELAY = timedelta(seconds=10)
 # Legacy results stay in storage but are not presented as passing the new gate.
 VISIBLE_LEAD_SQL = (
     "EXISTS(SELECT 1 FROM investment_lead_revisions quality_revision "
@@ -75,6 +80,8 @@ def _open_database(path: Path) -> sqlite3.Connection:
 
 
 def _decoded(value: Any, fallback: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
     try:
         return json.loads(str(value))
     except (TypeError, json.JSONDecodeError):
@@ -329,11 +336,15 @@ class InvestmentLeadService:
         analyzer: InvestmentLeadAnalyzer | None = None,
         connection: sqlite3.Connection | None = None,
         reader_only: bool = False,
+        postgres_repository: InvestmentLeadPostgresRepository | None = None,
     ) -> None:
         self.path = database_path
+        self.postgres_repository = postgres_repository
         self._owns_connection = connection is None
-        self.db = connection or _open_database(database_path)
-        if not reader_only:
+        self.db = None if postgres_repository is not None else (connection or _open_database(database_path))
+        if postgres_repository is not None:
+            postgres_repository.initialize(capture_started_at=_now())
+        if not reader_only and self.db is not None:
             ensure_schema(self.db, capture_started_at=_iso())
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
@@ -352,11 +363,22 @@ class InvestmentLeadService:
             self.analyzer = analyzer
 
     def close(self) -> None:
-        if self._owns_connection:
+        if self._owns_connection and self.db is not None:
             self.db.close()
 
     def process_once(self) -> dict[str, int]:
         now = _iso()
+        if self.postgres_repository is not None:
+            now_dt = datetime.fromisoformat(now)
+            self.postgres_repository.heartbeat(now=now_dt, model_error=self.analyzer_error)
+            self.postgres_repository.reclaim_stale(now=now_dt, lease=LEASE, max_attempts=MAX_ATTEMPTS)
+            self.postgres_repository.resume_budget_paused(now=now_dt)
+            scanned = self._process_scan_batch_postgres(now)
+            derived = self._process_derive_batch_postgres(now)
+            supplemented = self._process_one_supplement_postgres(now)
+            identity_searched = self._process_one_identity_search_postgres(now)
+            self.postgres_repository.maintain(now=now_dt, cutoff=now_dt - RETENTION)
+            return {"scanned": scanned, "derived": derived, "supplemented": supplemented, "identitySearched": identity_searched}
         self._heartbeat(now)
         self._reclaim_stale(now)
         self._resume_budget_paused(now)
@@ -369,6 +391,277 @@ class InvestmentLeadService:
             "scanned": scan_count, "derived": derive_count, "supplemented": supplement_count,
             "identitySearched": identity_search_count,
         }
+
+    def _process_scan_batch_postgres(self, now: str) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now_dt = datetime.fromisoformat(now)
+        jobs = repository.claim_scan_batch(
+            now=now_dt, lease=LEASE, limit=self.batch_size, max_attempts=MAX_ATTEMPTS,
+            flush_seconds=self.flush_seconds,
+        )
+        if not jobs:
+            return 0
+        for job in jobs:
+            job["derive_prompt_version"] = DERIVE_PROMPT_VERSION
+        without_text = [job for job in jobs if not _has_readable_material(_decoded(job["payload_json"], {}))]
+        for job in without_text:
+            saved = repository.save_scan_result(
+                job=job,
+                result={"classification": "incomplete", "reason": "原帖正文缺失，需读取附件或链接"},
+                actual_model="",
+                fallback_reason=None,
+                input_tokens=0,
+                output_tokens=0,
+                now=now_dt,
+                max_attempts=MAX_ATTEMPTS,
+            )
+            if not saved:
+                continue
+        jobs = [job for job in jobs if job not in without_text]
+        if not jobs:
+            return len(without_text)
+        if self.analyzer is None:
+            self._fail_scan_batch_postgres(jobs, self.analyzer_error or "X Agent 模型路由不可用", now_dt)
+            return len(jobs) + len(without_text)
+        materials = []
+        for job in jobs:
+            material = _decoded(job["payload_json"], {})
+            material["content_hash"] = str(job["content_hash"])
+            materials.append(material)
+        try:
+            output = self.analyzer.scan(materials)
+            repository.record_usage(
+                kind="scan", usage_date=now_dt, calls=output.calls, input_tokens=output.input_tokens,
+                output_tokens=output.output_tokens, updated_at=now_dt,
+            )
+            results = {
+                (str(item.get("material_id") or ""), str(item.get("content_hash") or "")): item
+                for item in output.items
+            }
+            for job in jobs:
+                result = results.get((str(job["material_id"]), str(job["content_hash"])))
+                if result is None:
+                    self._fail_scan_batch_postgres([job], "模型未返回该材料的判定", now_dt)
+                    continue
+                repository.save_scan_result(
+                    job=job, result=result, actual_model=output.actual_model,
+                    fallback_reason=output.fallback_reason, input_tokens=output.input_tokens,
+                    output_tokens=output.output_tokens, now=now_dt, max_attempts=MAX_ATTEMPTS,
+                )
+            return len(jobs) + len(without_text)
+        except Exception as exc:
+            self._fail_scan_batch_postgres(jobs, f"{type(exc).__name__}: {exc}", now_dt)
+            self.last_error = str(exc)
+            return len(jobs) + len(without_text)
+
+    def _fail_scan_batch_postgres(self, jobs: Iterable[dict[str, Any]], message: str, now: datetime) -> None:
+        repository = self.postgres_repository
+        assert repository is not None
+        for job in jobs:
+            lease_until = job.get("lease_until")
+            if isinstance(lease_until, str):
+                lease_until = datetime.fromisoformat(lease_until)
+            if not isinstance(lease_until, datetime):
+                continue
+            repository.fail_scan_task(
+                task_id=int(job["id"]), now=now, message=message, attempts=int(job["attempts"]),
+                lease_until=lease_until, max_attempts=MAX_ATTEMPTS,
+            )
+
+    def _process_one_supplement_postgres(self, now: str) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now_dt = datetime.fromisoformat(now)
+        job = repository.claim_supplement(now=now_dt, lease=LEASE, max_attempts=MAX_ATTEMPTS)
+        if job is None:
+            return 0
+        material = _decoded(job["payload_json"], {})
+        urls = list(dict.fromkeys(str(url).strip() for url in material.get("links", []) if str(url).strip()))[:3]
+        supplemented: list[dict[str, str]] = []
+        for existing in (material.get("supplement_materials") or [])[:3]:
+            if isinstance(existing, dict) and existing.get("text"):
+                supplemented.append({"url": str(existing.get("url") or ""), "text": str(existing["text"])[:4000]})
+        for attachment in (material.get("attachments") or [])[:3]:
+            if isinstance(attachment, dict) and str(attachment.get("alt_text") or "").strip():
+                alt_material = {
+                    "url": str(attachment.get("url") or ""),
+                    "text": "图片替代文本：" + " ".join(str(attachment["alt_text"]).split())[:1000],
+                }
+                if alt_material not in supplemented:
+                    supplemented.append(alt_material)
+        attempted_urls = set(str(url) for url in material.get("supplemented_urls", []) if str(url))
+        pending_urls = [url for url in urls if url not in attempted_urls]
+        urls_to_read = pending_urls[:max(0, 3 - len(supplemented))]
+        try:
+            for url in urls_to_read:
+                attempted_urls.add(url)
+                page = _read_public_page(url)
+                if page:
+                    supplemented.append(page)
+            material["supplement_materials"] = supplemented[:3]
+            material["supplemented_urls"] = sorted(attempted_urls)
+            material["supplement_attempted"] = True
+            repository.save_supplement_result(
+                job=job, material=material, now=now_dt, usage_calls=len(urls_to_read),
+            )
+            return 1
+        except Exception as exc:
+            self._fail_scan_batch_postgres([job], f"{type(exc).__name__}: {exc}", now_dt)
+            self.last_error = str(exc)
+            return 1
+
+    def _process_derive_batch_postgres(self, now: str) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now_dt = datetime.fromisoformat(now)
+        claim_limit = self.derive_concurrency if self.analyzer is not None else 1
+        jobs = repository.claim_derive_batch(
+            now=now_dt, lease=LEASE, limit=claim_limit, max_attempts=MAX_ATTEMPTS,
+        )
+        if not jobs:
+            return 0
+        if self.analyzer is None:
+            self._fail_scan_batch_postgres(jobs, self.analyzer_error or "X Agent 模型路由不可用", now_dt)
+            return len(jobs)
+        recent_leads = repository.recent_leads(cutoff=now_dt - timedelta(days=30))
+        model_jobs: list[dict[str, Any]] = []
+        completed = 0
+        for job in jobs:
+            candidate = {
+                "material_id": job["material_id"], "content_hash": job["content_hash"],
+                "classification": job["classification"], "subject": job["subject"], "action": job["action"],
+                "change_object": job["change_object"], "event_time": job["event_time"],
+                "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
+                "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
+            }
+            related_events = self._related_events_postgres(candidate, job)
+            if candidate["classification"] == "composable" and not related_events:
+                repository.set_task_status(job=job, status="no_candidate", now=now_dt)
+                completed += 1
+                continue
+            model_jobs.append({**job, "candidate": candidate, "related_events": related_events})
+        if not model_jobs:
+            return completed
+        outputs: dict[int, ModelOutput | Exception] = {}
+        with ThreadPoolExecutor(max_workers=min(self.derive_concurrency, len(model_jobs)),
+                                thread_name_prefix="investment-derive") as executor:
+            futures = {
+                executor.submit(self.analyzer.derive, job["candidate"], job["related_events"], recent_leads): int(job["id"])
+                for job in model_jobs
+            }
+            for future in as_completed(futures):
+                try:
+                    outputs[futures[future]] = future.result()
+                except Exception as exc:
+                    outputs[futures[future]] = exc
+        for job in model_jobs:
+            output = outputs[int(job["id"])]
+            if isinstance(output, Exception):
+                self._fail_scan_batch_postgres([job], f"{type(output).__name__}: {output}", now_dt)
+                self.last_error = str(output)
+                completed += 1
+                continue
+            try:
+                repository.record_usage(
+                    kind="derive", usage_date=now_dt, calls=output.calls, input_tokens=output.input_tokens,
+                    output_tokens=output.output_tokens, updated_at=now_dt,
+                )
+                repository.save_derive_result(
+                    job=job, leads=output.items, related_events=job["related_events"],
+                    actual_model=output.actual_model, fallback_reason=output.fallback_reason,
+                    input_tokens=output.input_tokens, output_tokens=output.output_tokens, now=now_dt,
+                    derive_prompt_version=DERIVE_PROMPT_VERSION,
+                    identity_prompt_version=IDENTITY_SEARCH_PROMPT_VERSION, max_attempts=MAX_ATTEMPTS,
+                )
+                completed += 1
+            except Exception as exc:
+                self._fail_scan_batch_postgres([job], f"{type(exc).__name__}: {exc}", now_dt)
+                self.last_error = str(exc)
+                completed += 1
+        return completed
+
+    def _related_events_postgres(self, candidate: dict[str, Any], job: dict[str, Any]) -> list[dict[str, Any]]:
+        repository = self.postgres_repository
+        assert repository is not None
+        now = _now()
+        cutoff_7d = now - timedelta(days=7)
+        cutoff_30d = now - timedelta(days=30)
+        rows = repository.related_event_candidates(
+            material_id=str(job["material_id"]), content_hash=str(job["content_hash"]), cutoff=cutoff_30d,
+        )
+        current_terms = _terms(" ".join(str(candidate.get(key) or "") for key in
+                                         ("subject", "action", "change_object", "summary", "impact_relations")))
+        selected: list[tuple[float, dict[str, Any]]] = []
+        seen_materials: set[str] = set()
+        for row in rows:
+            data = dict(row)
+            if data["material_id"] in seen_materials:
+                continue
+            other_terms = _terms(" ".join(str(data.get(key) or "") for key in
+                                           ("subject", "action", "change_object", "summary", "impact_relations_json")))
+            shared = len(current_terms & other_terms)
+            score = shared / max(1, len(current_terms | other_terms))
+            same_subject = bool(candidate.get("subject") and
+                                str(candidate.get("subject")).casefold() == str(data.get("subject") or "").casefold())
+            activity_time = data.get("activity_at") if data.get("activity_time_complete") else data.get("posted_at")
+            activity_time = activity_time or data.get("posted_at") or data.get("created_at")
+            activity_dt = activity_time if isinstance(activity_time, datetime) else datetime.fromisoformat(str(activity_time))
+            if activity_dt < cutoff_7d and not same_subject:
+                continue
+            if activity_dt < cutoff_30d:
+                continue
+            if same_subject or shared >= 2 or (not current_terms and len(selected) < 5):
+                material = _decoded(data["payload_json"], {})
+                selected.append((2.0 if same_subject else score, {
+                    "material_id": data["material_id"], "content_hash": data["content_hash"],
+                    "classification": data["classification"], "subject": data["subject"], "action": data["action"],
+                    "change_object": data["change_object"], "event_time": data["event_time"],
+                    "impact_relations": _decoded(data["impact_relations_json"], []), "summary": data["summary"],
+                    "created_at": data["created_at"], "posted_at": data["posted_at"], "activity_at": data["activity_at"],
+                    "author_screen_name": material.get("author_screen_name"), "role": material.get("role"),
+                    "url": material.get("url"), "text": str(material.get("text") or "")[:2000],
+                }))
+                seen_materials.add(str(data["material_id"]))
+        selected.sort(key=lambda item: item[0], reverse=True)
+        return [item for _, item in selected[:20]]
+
+    def _process_one_identity_search_postgres(self, now: str) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now_dt = datetime.fromisoformat(now)
+        job = repository.claim_identity_search(now=now_dt, lease=LEASE, max_attempts=MAX_ATTEMPTS)
+        if job is None:
+            return 0
+        if self.analyzer is None:
+            repository.fail_identity_search(
+                job=job, now=now_dt, message=self.analyzer_error or "X Agent 模型路由不可用",
+                max_attempts=MAX_ATTEMPTS,
+            )
+            return 1
+        try:
+            context = _decoded(job["context_json"], {})
+            output = self.analyzer.search_identity(str(job["asset_name"]), context)
+            result = {
+                "status": "resolved" if output.identity.get("ticker") else "unresolved",
+                "identity": output.identity, "summaries": output.summaries[:3],
+                "citations": output.citations[:3], "actualModel": output.actual_model,
+            }
+            repository.finish_identity_search(
+                job=job, result=result, now=now_dt, actual_model=output.actual_model,
+                input_tokens=output.input_tokens, output_tokens=output.output_tokens,
+                identity_prompt_version=IDENTITY_SEARCH_PROMPT_VERSION,
+            )
+            return 1
+        except Exception as exc:
+            repository.record_usage(
+                kind="search", usage_date=now_dt, calls=1, input_tokens=0, output_tokens=0, updated_at=now_dt,
+            )
+            repository.fail_identity_search(
+                job=job, now=now_dt, message=f"{type(exc).__name__}: {exc}", max_attempts=MAX_ATTEMPTS,
+            )
+            self.last_error = str(exc)
+            return 1
 
     def _heartbeat(self, now: str) -> None:
         with self.db:
@@ -1139,44 +1432,154 @@ class InvestmentLeadService:
                 (status, now, now, job_id),
             )
 
-    def _maintain(self, now: str) -> None:
-        last = self.db.execute(
-            "SELECT last_maintenance_at FROM investment_leads_meta WHERE singleton_key='global'"
+    def _maintain(self, now: str) -> dict[str, int]:
+        meta = self.db.execute(
+            "SELECT last_maintenance_at,maintenance_next_at FROM investment_leads_meta WHERE singleton_key='global'"
         ).fetchone()
-        if last and last[0]:
-            try:
-                if _now() - datetime.fromisoformat(str(last[0])) < timedelta(hours=1):
-                    return
-            except ValueError:
-                pass
-        cutoff = _iso(_now() - RETENTION)
-        with self.db:
-            self.db.execute(
-                "UPDATE investment_lead_tasks SET status='expired',lease_until=NULL,last_error=COALESCE(last_error,'超过材料保留期限'),"
-                "completed_at=?,updated_at=? WHERE status IN ('pending','failed','budget_paused') AND created_at<?",
-                (now, now, cutoff),
+        now_dt = datetime.fromisoformat(now)
+        if meta:
+            continuation = meta["maintenance_next_at"]
+            if continuation:
+                try:
+                    if now_dt < datetime.fromisoformat(str(continuation)):
+                        return {"tasks": 0, "identity_searches": 0, "events": 0, "materials": 0, "continued": 0}
+                except ValueError:
+                    pass
+            elif meta["last_maintenance_at"]:
+                try:
+                    if now_dt - datetime.fromisoformat(str(meta["last_maintenance_at"])) < timedelta(hours=1):
+                        return {"tasks": 0, "identity_searches": 0, "events": 0, "materials": 0, "continued": 0}
+                except ValueError:
+                    pass
+
+        cutoff = _iso(now_dt - RETENTION)
+        deadline = time.monotonic() + MAINTENANCE_BUDGET_SECONDS
+        result = {"tasks": 0, "identity_searches": 0, "events": 0, "materials": 0, "continued": 0}
+
+        def apply_bounded(
+            rows: list[Any], apply_row: Callable[[Any], None], *,
+            cursor_stage: str = "", cursor_key: Callable[[Any], tuple[str, str, str]] | None = None,
+        ) -> bool:
+            candidates = rows[:MAINTENANCE_MAX_ROWS]
+            for start in range(0, len(candidates), MAINTENANCE_TRANSACTION_ROWS):
+                if time.monotonic() >= deadline:
+                    return True
+                with self.db:
+                    chunk = candidates[start:start + MAINTENANCE_TRANSACTION_ROWS]
+                    for row in chunk:
+                        apply_row(row)
+                    if cursor_stage and cursor_key and chunk:
+                        cursor_time, cursor_id, cursor_value = cursor_key(chunk[-1])
+                        self.db.execute(
+                            "INSERT INTO investment_lead_maintenance_progress(stage,cursor_time,cursor_id,cursor_value,updated_at) "
+                            "VALUES(?,?,?,?,?) ON CONFLICT(stage) DO UPDATE SET cursor_time=excluded.cursor_time,"
+                            "cursor_id=excluded.cursor_id,cursor_value=excluded.cursor_value,updated_at=excluded.updated_at",
+                            (cursor_stage, cursor_time, cursor_id, cursor_value, now),
+                        )
+            has_more = len(rows) > MAINTENANCE_MAX_ROWS
+            if cursor_stage:
+                if has_more:
+                    result["continued"] = 1
+                else:
+                    with self.db:
+                        self.db.execute(
+                            "DELETE FROM investment_lead_maintenance_progress WHERE stage=?", (cursor_stage,)
+                        )
+            return has_more
+
+        task_rows = self.db.execute(
+            "SELECT id FROM investment_lead_tasks WHERE status IN ('pending','failed','budget_paused') "
+            "AND created_at<? ORDER BY created_at,id LIMIT ?",
+            (cutoff, MAINTENANCE_MAX_ROWS + 1),
+        ).fetchall()
+        def expire_task(row: Any) -> None:
+            cursor = self.db.execute(
+                "UPDATE investment_lead_tasks SET status='expired',lease_until=NULL,"
+                "last_error=COALESCE(last_error,'超过材料保留期限'),completed_at=?,updated_at=? "
+                "WHERE id=? AND status IN ('pending','failed','budget_paused') AND created_at<?",
+                (now, now, row["id"], cutoff),
             )
-            self.db.execute(
+            result["tasks"] += cursor.rowcount
+        result["continued"] |= int(apply_bounded(task_rows, expire_task))
+
+        search_rows = self.db.execute(
+            "SELECT id FROM investment_lead_identity_searches WHERE status IN ('pending','failed','budget_paused') "
+            "AND created_at<? ORDER BY created_at,id LIMIT ?",
+            (cutoff, MAINTENANCE_MAX_ROWS + 1),
+        ).fetchall()
+        def expire_search(row: Any) -> None:
+            cursor = self.db.execute(
                 "UPDATE investment_lead_identity_searches SET status='expired',lease_until=NULL,"
                 "last_error=COALESCE(last_error,'超过材料保留期限'),completed_at=?,updated_at=? "
-                "WHERE status IN ('pending','failed','budget_paused') AND created_at<?",
-                (now, now, cutoff),
+                "WHERE id=? AND status IN ('pending','failed','budget_paused') AND created_at<?",
+                (now, now, row["id"], cutoff),
             )
-            self.db.execute(
-                "DELETE FROM investment_lead_events WHERE created_at<? AND NOT EXISTS("
+            result["identity_searches"] += cursor.rowcount
+        result["continued"] |= int(apply_bounded(search_rows, expire_search))
+
+        event_cursor = self.db.execute(
+            "SELECT cursor_time,cursor_id FROM investment_lead_maintenance_progress WHERE stage='events'"
+        ).fetchone()
+        event_rows = self.db.execute(
+            "SELECT id,created_at FROM investment_lead_events WHERE created_at<? AND "
+            "(? IS NULL OR created_at>? OR (created_at=? AND id>CAST(? AS INTEGER))) "
+            "ORDER BY created_at,id LIMIT ?",
+            (cutoff, event_cursor["cursor_time"] if event_cursor else None,
+             event_cursor["cursor_time"] if event_cursor else "", event_cursor["cursor_time"] if event_cursor else "",
+             event_cursor["cursor_id"] if event_cursor else "0", MAINTENANCE_MAX_ROWS + 1),
+        ).fetchall()
+        def delete_event(row: Any) -> None:
+            cursor = self.db.execute(
+                "DELETE FROM investment_lead_events WHERE id=? AND created_at<? AND NOT EXISTS("
                 "SELECT 1 FROM investment_lead_sources s WHERE s.material_id=investment_lead_events.material_id "
                 "AND s.content_hash=investment_lead_events.content_hash)",
-                (cutoff,),
+                (row["id"], cutoff),
             )
-            self.db.execute(
-                "DELETE FROM investment_lead_materials WHERE last_observed_at<? AND NOT EXISTS("
+            result["events"] += cursor.rowcount
+        result["continued"] |= int(apply_bounded(
+            event_rows, delete_event, cursor_stage="events",
+            cursor_key=lambda row: (str(row["created_at"]), str(row["id"]), ""),
+        ))
+
+        material_cursor = self.db.execute(
+            "SELECT cursor_time,cursor_id,cursor_value FROM investment_lead_maintenance_progress WHERE stage='materials'"
+        ).fetchone()
+        material_rows = self.db.execute(
+            "SELECT material_id,content_hash,last_observed_at FROM investment_lead_materials WHERE last_observed_at<? AND "
+            "(? IS NULL OR last_observed_at>? OR (last_observed_at=? AND material_id>?) "
+            "OR (last_observed_at=? AND material_id=? AND content_hash>?)) "
+            "ORDER BY last_observed_at,material_id,content_hash LIMIT ?",
+            (cutoff, material_cursor["cursor_time"] if material_cursor else None,
+             material_cursor["cursor_time"] if material_cursor else "", material_cursor["cursor_time"] if material_cursor else "",
+             material_cursor["cursor_id"] if material_cursor else "", material_cursor["cursor_time"] if material_cursor else "",
+             material_cursor["cursor_id"] if material_cursor else "", material_cursor["cursor_value"] if material_cursor else "",
+             MAINTENANCE_MAX_ROWS + 1),
+        ).fetchall()
+        def delete_material(row: Any) -> None:
+            cursor = self.db.execute(
+                "DELETE FROM investment_lead_materials WHERE material_id=? AND content_hash=? AND last_observed_at<? AND NOT EXISTS("
                 "SELECT 1 FROM investment_lead_sources s WHERE s.material_id=investment_lead_materials.material_id "
                 "AND s.content_hash=investment_lead_materials.content_hash)",
-                (cutoff,),
+                (row["material_id"], row["content_hash"], cutoff),
             )
-            self.db.execute("UPDATE investment_leads_meta SET last_maintenance_at=? WHERE singleton_key='global'", (now,))
+            result["materials"] += cursor.rowcount
+        result["continued"] |= int(apply_bounded(
+            material_rows, delete_material, cursor_stage="materials",
+            cursor_key=lambda row: (str(row["last_observed_at"]), str(row["material_id"]), str(row["content_hash"])),
+        ))
+
+        next_at = _iso(now_dt + MAINTENANCE_CONTINUE_DELAY) if result["continued"] else None
+        with self.db:
+            self.db.execute(
+                "UPDATE investment_leads_meta SET last_maintenance_at=CASE WHEN ? IS NULL THEN ? ELSE last_maintenance_at END,"
+                "maintenance_next_at=? WHERE singleton_key='global'",
+                (next_at, now, next_at),
+            )
+        return result
 
     def retry_failed(self, *, stage: str = "", limit: int = 100) -> int:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.retry_failed(stage=stage, limit=limit, now=_now())
         if stage and stage not in {"scan", "derive", "supplement", "identity_search"}:
             raise ValueError("不支持的投资线索任务阶段")
         safe_limit = min(500, max(1, int(limit)))
@@ -1231,6 +1634,40 @@ class InvestmentLeadService:
         return core_requeued + len(search_ids)
 
     def dashboard(self) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            data = self.postgres_repository.dashboard_rows(
+                usage_date=_now(), derive_prompt_version=DERIVE_PROMPT_VERSION,
+            )
+            counts = data["counts"]
+            identity_counts = data["identity_counts"]
+            usage = data["usage_by_kind"]
+            meta = data["meta"] or {}
+            return {
+                "generatedAt": _iso(), "captureStartedAt": meta.get("capture_started_at"),
+                "workerLastSeenAt": meta.get("worker_last_seen_at"), "modelError": meta.get("model_error"),
+                "accounts": {"total": int(data["account"]["total"] or 0),
+                             "investmentLeadsEnabled": int(data["account"]["enabled"] or 0)},
+                "tasks": {
+                    "pendingScan": counts.get(("scan", "pending"), 0), "processingScan": counts.get(("scan", "processing"), 0),
+                    "pendingDerive": counts.get(("derive", "pending"), 0), "processingDerive": counts.get(("derive", "processing"), 0),
+                    "pendingSupplement": counts.get(("supplement", "pending"), 0), "processingSupplement": counts.get(("supplement", "processing"), 0),
+                    "pendingIdentitySearch": identity_counts.get("pending", 0), "processingIdentitySearch": identity_counts.get("processing", 0),
+                    "failed": sum(counts.get((stage, "failed"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("failed", 0),
+                    "budgetPaused": sum(counts.get((stage, "budget_paused"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("budget_paused", 0),
+                    "identitySearchFailures": identity_counts.get("failed", 0), "identitySearchUnresolved": identity_counts.get("unresolved", 0),
+                    "incomplete": counts.get(("scan", "needs_material"), 0), "oldestPendingAt": data["oldest"],
+                },
+                "results": {"active": data["active"], "unlocated": data["unlocated"],
+                            "scannedNoCandidate": counts.get(("scan", "no_candidate"), 0)},
+                "usage": {
+                    "inputTokens": data["input_tokens"], "inputTokenBudget": None,
+                    "scanCalls": int(usage["scan"]["calls"] if usage.get("scan") else 0),
+                    "deriveCalls": int(usage["derive"]["calls"] if usage.get("derive") else 0), "deriveCallBudget": None,
+                    "supplementReads": int(usage["supplement"]["calls"] if usage.get("supplement") else 0), "supplementReadBudget": None,
+                    "searchCalls": int(usage["search"]["calls"] if usage.get("search") else 0), "searchCallBudget": None,
+                    "outputTokens": data["output_tokens"],
+                },
+            }
         accounts = self.db.execute(
             "SELECT COUNT(*) total,SUM(investment_leads_enabled=1) enabled "
             "FROM hottopic_accounts WHERE status='followed'"
@@ -1312,6 +1749,14 @@ class InvestmentLeadService:
         durations = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
         if window not in durations:
             raise ValueError("不支持的投资线索时间窗口")
+        if self.postgres_repository is not None:
+            safe_limit, safe_offset = min(100, max(1, int(limit))), max(0, int(offset))
+            total, rows = self.postgres_repository.list_leads_rows(
+                cutoff=_now() - durations[window], query=query, account=account,
+                unlocated_only=unlocated_only, impact=impact, offset=safe_offset, limit=safe_limit,
+                derive_prompt_version=DERIVE_PROMPT_VERSION,
+            )
+            return {"items": [self._lead_payload(row) for row in rows], "total": total}
         cutoff = _iso(_now() - durations[window])
         clauses = ["l.last_substantive_at>=?", VISIBLE_LEAD_SQL]
         params: list[Any] = [cutoff]
@@ -1348,6 +1793,40 @@ class InvestmentLeadService:
         return {"items": [self._lead_payload(dict(row)) for row in rows], "total": total}
 
     def lead_detail(self, lead_id: str) -> dict[str, Any] | None:
+        if self.postgres_repository is not None:
+            rows = self.postgres_repository.lead_detail_rows(lead_id)
+            if rows is None:
+                return None
+            lead = self._lead_payload(rows["lead"])
+            lead["identitySearches"] = []
+            for search in rows["searches"]:
+                result = _decoded(search["result_json"], {})
+                lead["identitySearches"].append({
+                    "assetName": search["asset_name"], "status": search["status"],
+                    "identity": result.get("identity") or {}, "summaries": result.get("summaries") or [],
+                    "citations": result.get("citations") or [], "error": search["last_error"],
+                    "updatedAt": search["updated_at"],
+                })
+            lead["sources"] = []
+            for source in rows["sources"]:
+                payload = _decoded(source["payload_json"], {})
+                lead["sources"].append({
+                    "materialId": source["material_id"], "account": source["accounts"] or "",
+                    "author": payload.get("author_screen_name") or "", "authorName": payload.get("author_name") or "",
+                    "url": payload.get("url") or "", "text": payload.get("text") or "",
+                    "postedAt": source["posted_at"], "activityAt": source["activity_at"],
+                    "activityTimeComplete": bool(source["activity_time_complete"]),
+                    "relation": payload.get("relation") or "", "role": payload.get("role") or "",
+                    "relatedMaterials": payload.get("related_materials") or [],
+                    "supplementMaterials": payload.get("supplement_materials") or [],
+                })
+            lead["revisions"] = [{
+                "revision": int(item["revision"]), "subject": item["subject"], "driverLogic": item["driver_logic"],
+                "conditions": item["conditions"], "assets": _decoded(item["assets_json"], []),
+                "sourceClaims": _decoded(item["source_claims_json"], []), "actualModel": item["actual_model"],
+                "createdAt": item["created_at"],
+            } for item in rows["revisions"]]
+            return lead
         row = self.db.execute("SELECT * FROM investment_leads WHERE id=?", (lead_id,)).fetchone()
         if row is None:
             return None

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.common.storage import load_storage_settings
 
 from .prompts import POLICY_VERSION
 
@@ -84,7 +85,7 @@ class FactReviewRepository:
         with connect_sqlite(path) as conn:
             conn.executescript(SCHEMA_SQL)
 
-    def claim(self, *, worker_id: str, lookback_minutes: int, max_attempts: int, start_after: str = "") -> dict[str, Any] | None:
+    def claim(self, *, worker_id: str, lookback_minutes: int, max_attempts: int, start_after: str = "", lock_seconds: int = 600) -> dict[str, Any] | None:
         now = datetime.now(UTC)
         now_iso = now.isoformat()
         cutoff = (now - timedelta(minutes=lookback_minutes)).isoformat()
@@ -113,14 +114,14 @@ class FactReviewRepository:
             if selected is None:
                 conn.commit()
                 return None
-            lock_until = (now + timedelta(minutes=10)).isoformat()
+            lock_until = (now + timedelta(seconds=lock_seconds)).isoformat()
             conn.execute("UPDATE fact_checks SET status='processing',locked_by=?,locked_until=?,attempts=attempts+1,updated_at=? WHERE id=?",
                          (worker_id, lock_until, now_iso, selected["id"]))
             selected = conn.execute("SELECT * FROM fact_checks WHERE id=?", (selected["id"],)).fetchone()
             conn.commit()
             return decode_check(selected)
 
-    def save(self, task: dict[str, Any], result: dict[str, Any], *, worker_id: str) -> None:
+    def save(self, task: dict[str, Any], result: dict[str, Any], *, worker_id: str) -> bool | None:
         now = datetime.now(UTC)
         retry_at = (now + timedelta(seconds=min(900, 60 * 2 ** task["attempts"]))).isoformat()
         with connect_sqlite(self.path) as conn:
@@ -162,3 +163,15 @@ class FactReviewRepository:
         return {"check": decode_check(row) if row else None,
                 "published": {key: current[key] for key in ("source_item_id", "title", "content", "published_at")},
                 "is_current": bool(row and row["id"] == current["current_check_id"]), "history": history, "runs": runs}
+
+
+def create_fact_review_repository(path: Path | None = None):
+    if load_storage_settings().backend == "postgres":
+        from .postgres_repository import PostgresFactReviewRepository
+
+        return PostgresFactReviewRepository(path)
+    if path is None:
+        from packages.common.storage import load_storage_settings as storage_settings
+
+        path = storage_settings().sqlite_path
+    return FactReviewRepository(path)

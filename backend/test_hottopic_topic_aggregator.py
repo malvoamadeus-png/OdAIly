@@ -573,7 +573,7 @@ def test_process_batch_rebuilds_retrieval_cache_after_transaction_rollback(tmp_p
 
     original_refresh = aggregator._refresh_all_topics
 
-    def fail_after_topic_state(_at: str):
+    def fail_after_topic_state(_at: str, **_kwargs):
         raise RuntimeError("forced failure after topic cache update")
 
     aggregator._refresh_all_topics = fail_after_topic_state  # type: ignore[method-assign]
@@ -970,5 +970,91 @@ def test_lifecycle_qualifies_accounts_sharing_an_exact_contract(tmp_path: Path) 
         assert aggregator.connection.execute(
             "SELECT matching_status FROM topics WHERE topic_id=?", (topic_id,)
         ).fetchone()[0] == "active"
+        assert aggregator.connection.execute(
+            "SELECT retention_tier,participant_count_24h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()["retention_tier"] == "permanent"
+
+        one_hour_edge = now + timedelta(hours=1, minutes=4)
+        aggregator._refresh_all_topics(one_hour_edge.isoformat())
+        row = aggregator.connection.execute(
+            "SELECT participant_count_1h,participant_count_6h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()
+        assert (row["participant_count_1h"], row["participant_count_6h"]) == (1, 5)
+        aggregator._refresh_all_topics((one_hour_edge + timedelta(microseconds=2)).isoformat())
+        assert aggregator.connection.execute(
+            "SELECT participant_count_1h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()[0] == 0
+
+        six_hour_edge = now + timedelta(hours=6, minutes=4)
+        aggregator._refresh_all_topics(six_hour_edge.isoformat())
+        assert aggregator.connection.execute(
+            "SELECT participant_count_6h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()[0] == 1
+        aggregator._refresh_all_topics((six_hour_edge + timedelta(microseconds=2)).isoformat())
+        assert aggregator.connection.execute(
+            "SELECT participant_count_6h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()[0] == 0
+
+        day_edge = now + timedelta(hours=24, minutes=4)
+        day_transition = aggregator._refresh_all_topics(day_edge.isoformat())
+        assert aggregator.connection.execute(
+            "SELECT participant_count_24h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()[0] == 1
+        assert topic_id in day_transition["affected_topic_ids"]
+        aggregator._refresh_all_topics((day_edge + timedelta(microseconds=2)).isoformat())
+        assert aggregator.connection.execute(
+            "SELECT matching_status,participant_count_24h FROM topics WHERE topic_id=?", (topic_id,)
+        ).fetchone()["matching_status"] == "archived"
+        row = aggregator.connection.execute("SELECT retention_tier FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+        assert row["retention_tier"] == "permanent"
     finally:
         aggregator.close()
+
+
+def test_lifecycle_refresh_processes_a_bounded_due_page(tmp_path: Path) -> None:
+    now = datetime(2026, 9, 30, tzinfo=UTC)
+    aggregator = TopicAggregator(tmp_path / "topics.sqlite")
+    try:
+        with aggregator.connection:
+            aggregator.connection.executemany(
+                "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+                "seed_expires_at,matching_status,visibility) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (f"topic:{index:04d}", "Seed", "Seed", "[]", "event", now.isoformat(), now.isoformat(),
+                     (now + timedelta(days=1)).isoformat(), "seed", "hidden")
+                    for index in range(301)
+                ],
+            )
+
+        first = aggregator._refresh_all_topics(now.isoformat())
+        second = aggregator._refresh_all_topics((now + timedelta(minutes=1)).isoformat())
+
+        assert first["refreshed_count"] == 200
+        assert second["refreshed_count"] == 101
+        assert aggregator.connection.execute(
+            "SELECT COUNT(*) FROM topics WHERE lifecycle_refresh_at IS NULL"
+        ).fetchone()[0] == 0
+    finally:
+        aggregator.close()
+
+
+def test_lifecycle_refresh_schema_migrates_existing_topic_table(tmp_path: Path) -> None:
+    database = tmp_path / "topics.sqlite"
+    initial = TopicAggregator(database)
+    initial.close()
+    legacy = sqlite3.connect(database)
+    try:
+        legacy.execute("DROP INDEX idx_topic_lifecycle_due")
+        legacy.execute("ALTER TABLE topics DROP COLUMN lifecycle_refresh_at")
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    migrated = TopicAggregator(database)
+    try:
+        columns = {row["name"] for row in migrated.connection.execute("PRAGMA table_info(topics)")}
+        indexes = {row["name"] for row in migrated.connection.execute("PRAGMA index_list(topics)")}
+        assert "lifecycle_refresh_at" in columns
+        assert "idx_topic_lifecycle_due" in indexes
+    finally:
+        migrated.close()

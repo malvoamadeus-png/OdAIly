@@ -508,7 +508,7 @@ class SystemReviewService:
         self.evidence_database_path = evidence_database_path or primary_database_path
         self.local_pipeline_database_path = local_pipeline_database_path
         self.repository = repository
-        self.information_store = SystemInformationStore(repository.path)
+        self.information_store = getattr(repository, "information_store", None) or SystemInformationStore(repository.path)
         self._worker_lock = threading.Lock()
 
     def run_deterministic_checks(self) -> dict[str, int]:

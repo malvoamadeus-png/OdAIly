@@ -65,11 +65,14 @@ class EventDispatcher:
             params = (min(int(policy['started_ms']),
                           int(policy.get('loss_started_ms', policy['started_ms']))),
                       int(policy.get('scenario_started_ms', policy['started_ms'])))
-        with connect_sqlite(self.store.path) as conn:
-            rows = conn.execute(f'''SELECT c.event_key,c.payload FROM hl_news_candidates c
-                LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
-                WHERE (d.event_key IS NULL OR d.status IN ('created','enqueue_failed')) {scope}
-                ORDER BY c.observed_ms,c.event_key LIMIT 500''', params).fetchall()
+        if getattr(self.store, "backend", "sqlite") == "postgres":
+            rows = self._postgres_candidates(policy, event_keys)
+        else:
+            with connect_sqlite(self.store.path) as conn:
+                rows = conn.execute(f'''SELECT c.event_key,c.payload FROM hl_news_candidates c
+                    LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
+                    WHERE (d.event_key IS NULL OR d.status IN ('created','enqueue_failed')) {scope}
+                    ORDER BY c.observed_ms,c.event_key LIMIT 500''', params).fetchall()
         for row in rows:
             if event_keys and row['event_key'] not in event_keys:
                 continue
@@ -86,8 +89,13 @@ class EventDispatcher:
                 results.append(result)
                 continue
             try:
-                self.pipeline_client.submit_job(job_type='write_flow', task_id=result['task_id'],
-                                               source=HYPERLIQUID_SOURCE, source_item_id=event['key'])
+                if getattr(self.store, "backend", "sqlite") == "postgres":
+                    from packages.local_pipeline.postgres_queue import create_local_pipeline_queue
+                    create_local_pipeline_queue().enqueue(job_type='write_flow', task_id=result['task_id'],
+                                                          source=HYPERLIQUID_SOURCE, source_item_id=event['key'])
+                else:
+                    self.pipeline_client.submit_job(job_type='write_flow', task_id=result['task_id'],
+                                                   source=HYPERLIQUID_SOURCE, source_item_id=event['key'])
                 result['status'] = 'queued'
                 self._set_status(event['key'], 'queued', None)
             except Exception as exc:
@@ -97,11 +105,18 @@ class EventDispatcher:
         return results
 
     def _set_status(self, key: str, status: str, error: str | None) -> None:
+        if getattr(self.store, "backend", "sqlite") == "postgres":
+            with self.store._connect() as conn:
+                conn.execute("UPDATE hl_news_dispatch SET status=%s,error=%s,updated_at=%s WHERE event_key=%s",
+                             (status, error, datetime.now(UTC), key))
+            return
         with connect_sqlite(self.store.path) as conn:
             conn.execute('UPDATE hl_news_dispatch SET status=?,error=?,updated_at=? WHERE event_key=?',
                          (status, error, datetime.now(UTC).isoformat(), key))
 
     def _create_task(self, event: dict[str, Any]) -> dict[str, Any]:
+        if getattr(self.store, "backend", "sqlite") == "postgres":
+            return self._create_postgres_task(event)
         now = datetime.now(UTC).isoformat()
         signature = fingerprint(event)
         with connect_sqlite(self.store.path) as conn:
@@ -162,3 +177,64 @@ class EventDispatcher:
                 status=excluded.status,error=NULL,updated_at=excluded.updated_at''',
                          (event['key'], signature, task_id, 'created', None, now, now))
         return {'event_key': event['key'], 'task_id': task_id, 'status': 'created'}
+
+    def _postgres_candidates(self, policy: dict[str, Any] | None, event_keys: list[str] | None):
+        clauses = ["(d.event_key IS NULL OR d.status IN ('created','enqueue_failed'))"]
+        params: list[Any] = []
+        if event_keys:
+            clauses.append("c.event_key = ANY(%s)")
+            params.append(event_keys)
+        if policy is not None:
+            clauses.append("((c.observed_ms >= %s AND c.payload->'evidence'->>'production_direction' IN ('account_profit','historical_loss')) OR c.observed_ms >= %s)")
+            params.extend((min(int(policy['started_ms']), int(policy.get('loss_started_ms', policy['started_ms']))),
+                           int(policy.get('scenario_started_ms', policy['started_ms']))))
+        with self.store._connect() as conn:
+            return conn.execute(f"""SELECT c.event_key,c.payload FROM hl_news_candidates c
+                LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key
+                WHERE {' AND '.join(clauses)} ORDER BY c.observed_ms,c.event_key LIMIT 500""", params).fetchall()
+
+    def _create_postgres_task(self, event: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        now = datetime.now(UTC)
+        key = event['key']
+        signature = fingerprint(event)
+        if self.store.event_blocked(event):
+            with self.store._connect() as conn:
+                conn.execute("INSERT INTO hl_news_dispatch(event_key,signature,status,created_at,updated_at) VALUES(%s,%s,'address_blocked',%s,%s) ON CONFLICT(event_key) DO NOTHING", (key, signature, now, now))
+            return {'event_key': key, 'task_id': None, 'status': 'address_blocked'}
+        if not news_eligibility(event)['eligible']:
+            with self.store._connect() as conn:
+                conn.execute("INSERT INTO hl_news_dispatch(event_key,signature,status,error,created_at,updated_at) VALUES(%s,%s,'no_change_evidence','baseline_without_change',%s,%s) ON CONFLICT(event_key) DO UPDATE SET status='no_change_evidence',error='baseline_without_change',updated_at=excluded.updated_at", (key, signature, now, now))
+            return {'event_key': key, 'task_id': None, 'status': 'no_change_evidence'}
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key='production_account_profit'").fetchone()
+            policy = row['payload'] if row else None
+            if isinstance(policy, str):
+                policy = json.loads(policy)
+            if not production_allowed(event, policy):
+                return {'event_key': key, 'task_id': None, 'status': 'direction_disabled'}
+            existing = conn.execute("SELECT task_id,status FROM hl_news_dispatch WHERE event_key=%s FOR UPDATE", (key,)).fetchone()
+            if existing and existing['task_id'] is not None:
+                task = conn.execute("SELECT 1 FROM main.tasks WHERE id=%s", (existing['task_id'],)).fetchone()
+                if task:
+                    return {'event_key': key, 'task_id': int(existing['task_id']), 'status': existing['status']}
+            duplicate = conn.execute("""SELECT d.task_id FROM hl_news_dispatch d JOIN main.tasks t ON t.id=d.task_id
+                WHERE d.signature=%s AND d.status<>'duplicate' AND d.event_key<>%s ORDER BY d.created_at LIMIT 1""", (signature, key)).fetchone()
+            if duplicate:
+                conn.execute("INSERT INTO hl_news_dispatch(event_key,signature,task_id,status,created_at,updated_at) VALUES(%s,%s,%s,'duplicate',%s,%s) ON CONFLICT(event_key) DO UPDATE SET signature=excluded.signature,task_id=excluded.task_id,status='duplicate',error=NULL,updated_at=excluded.updated_at", (key, signature, duplicate['task_id'], now, now))
+                return {'event_key': key, 'task_id': int(duplicate['task_id']), 'status': 'duplicate'}
+            metadata = {'writer_template_key': prompt_key_for_event(event), 'force_backend_only': True,
+                        'hyperliquid_event_key': key, 'rule_kinds': event['kinds'],
+                        'production_direction': event['evidence'].get('production_direction')}
+            url = source_url(event)
+            title, content = search_material(event)
+            task = conn.execute("""INSERT INTO main.tasks(source,source_item_id,source_url,title,content,published_at,raw_payload,metadata,status,created_at,updated_at)
+                VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'judged',%s,%s)
+                ON CONFLICT(source,source_item_id) DO UPDATE SET source_url=excluded.source_url
+                RETURNING id""", (HYPERLIQUID_SOURCE, key, url, title, content,
+                    datetime.fromtimestamp(event['observed_ms']/1000, UTC), encode(event), encode(metadata), now, now)).fetchone()
+            task_id = int(task['id'])
+            conn.execute("INSERT INTO main.x_task_pipeline(task_id,news_type) VALUES(%s,'onchain') ON CONFLICT(task_id) DO NOTHING", (task_id,))
+            conn.execute("INSERT INTO hl_news_dispatch(event_key,signature,task_id,status,created_at,updated_at) VALUES(%s,%s,%s,'created',%s,%s) ON CONFLICT(event_key) DO UPDATE SET signature=excluded.signature,task_id=excluded.task_id,status='created',error=NULL,updated_at=excluded.updated_at", (key, signature, task_id, now, now))
+        return {'event_key': key, 'task_id': task_id, 'status': 'created'}

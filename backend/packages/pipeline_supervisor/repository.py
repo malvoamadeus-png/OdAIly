@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date, datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 
 
 def to_json_safe(value: Any) -> Any:
@@ -68,27 +70,33 @@ class PipelineSupervisorRepository(Protocol):
 
 class PostgresPipelineSupervisorRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresPipelineSupervisorRepository is retired; use create_pipeline_supervisor_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-pipeline-supervisor"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(PIPELINE_MONITORING_SCHEMA_SQL)
-            conn.commit()
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="pipeline_supervisor",
+                migrations=(PostgresMigration(
+                    1, "pipeline_supervisor_initial", sha256(PIPELINE_MONITORING_SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(PIPELINE_MONITORING_SCHEMA_SQL),
+                ),),
+            )
 
     def list_stale_heartbeats(self, *, cutoff: datetime) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -288,7 +296,7 @@ class PostgresPipelineSupervisorRepository:
 
     def count_recent_x_success_attempts(self, *, since: datetime) -> int:
         with self._connect() as conn:
-            exists = conn.execute("SELECT to_regclass('public.x_capture_attempts') AS table_name").fetchone()
+            exists = conn.execute("SELECT to_regclass('main.x_capture_attempts') AS table_name").fetchone()
             if not exists or not exists.get("table_name"):
                 return 0
             row = conn.execute(
@@ -338,5 +346,4 @@ class PostgresPipelineSupervisorRepository:
                 """,
                 (alert_key, message, self._Jsonb(to_json_safe(metadata or {})), dedup_cutoff),
             ).fetchone()
-            conn.commit()
             return row is not None

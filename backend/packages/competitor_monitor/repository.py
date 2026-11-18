@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.time_utils import SHANGHAI_TZ
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
 from packages.x_processing.repository import SCHEMA_SQL, _import_psycopg, get_database_url
 from packages.x_processing.searcher import content_hash, normalize_for_embedding
 
-from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord, generate_event_id
+from .events import EventAssignment, EventSourceRecord, NewsflashItemRecord, canonicalize_source_url, generate_event_id
 from .fetchers import NewsflashItem
 
 
@@ -52,27 +55,31 @@ PANEWS_PUBLISHED_AT_CORRECTION = timedelta(minutes=1)
 
 class PostgresCompetitorMonitorRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresCompetitorMonitorRepository is retired; use create_competitor_monitor_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        _psycopg, _dict_row, self._Jsonb = _import_psycopg()
         self.application_name = "odaily-competitor-monitor"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(SCHEMA_SQL)
-            conn.commit()
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="competitor_monitor",
+                migrations=(PostgresMigration(
+                    1, "competitor_monitor_initial", sha256(SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(SCHEMA_SQL),
+                ),),
+            )
 
     def list_enabled_competitor_exclusion_terms(self) -> list[str]:
         with self._connect() as conn:
@@ -159,7 +166,6 @@ class PostgresCompetitorMonitorRepository:
                 ).fetchone()
                 if row:
                     task_records.append((item, int(row["id"])))
-            conn.commit()
         return task_records, reference_count
 
     def _legacy_save_items(self, items: list[NewsflashItem]) -> tuple[int, int]:
@@ -229,7 +235,6 @@ class PostgresCompetitorMonitorRepository:
                 ).fetchone()
                 if row:
                     task_count += 1
-            conn.commit()
         return task_count, reference_count
 
     def upsert_newsflash_items(self, items: list[NewsflashItem]) -> list[NewsflashItemRecord]:
@@ -243,12 +248,13 @@ class PostgresCompetitorMonitorRepository:
                 row = conn.execute(
                     """
                     INSERT INTO newsflash_items (
-                        source, source_item_id, source_url, title, content, content_hash,
+                        source, source_item_id, source_url, source_url_key, title, content, content_hash,
                         published_at, raw_payload, metadata
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (source, source_item_id) DO UPDATE SET
                         source_url = EXCLUDED.source_url,
+                        source_url_key = EXCLUDED.source_url_key,
                         title = EXCLUDED.title,
                         content = EXCLUDED.content,
                         content_hash = EXCLUDED.content_hash,
@@ -262,6 +268,7 @@ class PostgresCompetitorMonitorRepository:
                         item.source,
                         item.source_item_id,
                         item.source_url,
+                        canonicalize_source_url(item.source_url),
                         item.title,
                         item.content,
                         digest,
@@ -271,8 +278,23 @@ class PostgresCompetitorMonitorRepository:
                     ),
                 ).fetchone()
                 records.append(_row_to_newsflash_item(row))
-            conn.commit()
         return records
+
+    def record_event_exclusions(self, items: list[NewsflashItem]) -> None:
+        with self._connect() as conn:
+            for item in items:
+                assigned = conn.execute(
+                    "SELECT 1 FROM newsflash_items i JOIN newsflash_event_sources s ON s.item_id=i.id "
+                    "WHERE i.source=%s AND i.source_item_id=%s",
+                    (item.source, item.source_item_id),
+                ).fetchone()
+                if assigned:
+                    continue
+                conn.execute(
+                    "INSERT INTO newsflash_event_exclusions(source,source_item_id,title) VALUES (%s,%s,%s) "
+                    "ON CONFLICT(source,source_item_id) DO NOTHING",
+                    (item.source, item.source_item_id, item.title),
+                )
 
     def list_existing_event_sources(self, *, item_ids: set[int]) -> list[EventSourceRecord]:
         if not item_ids:
@@ -334,6 +356,40 @@ class PostgresCompetitorMonitorRepository:
             ).fetchall()
         return [EventSourceRecord(event_id=str(row["event_id"]), item=_row_to_newsflash_item(row)) for row in rows]
 
+    def list_event_sources_by_urls(
+        self, *, source_urls: set[str], exclude_item_ids: set[int],
+    ) -> list[EventSourceRecord]:
+        if not source_urls:
+            return []
+        url_keys = sorted({key for url in source_urls if (key := canonicalize_source_url(url))})
+        if not url_keys:
+            return []
+        exclude_sql = "AND i.id <> ALL(%s)" if exclude_item_ids else ""
+        params: list[Any] = [url_keys]
+        if exclude_item_ids:
+            params.append(sorted(exclude_item_ids))
+        with self._connect(autocommit=True) as conn:
+            rows = conn.execute(
+                "SELECT s.event_id,i.* FROM newsflash_event_sources s "
+                "JOIN newsflash_items i ON i.id=s.item_id JOIN newsflash_events e ON e.event_id=s.event_id "
+                "WHERE e.status='active' AND i.source_url_key=ANY(%s) " + exclude_sql +
+                " ORDER BY COALESCE(i.published_at,i.first_seen_at) DESC,i.id DESC",
+                tuple(params),
+            ).fetchall()
+        return [EventSourceRecord(event_id=str(row["event_id"]), item=_row_to_newsflash_item(row)) for row in rows]
+
+    def list_event_anchors(self, *, event_ids: set[str]) -> list[EventSourceRecord]:
+        if not event_ids:
+            return []
+        with self._connect(autocommit=True) as conn:
+            rows = conn.execute(
+                "SELECT e.event_id,i.* FROM newsflash_events e "
+                "JOIN newsflash_items i ON i.id=e.representative_item_id "
+                "WHERE e.status='active' AND e.event_id=ANY(%s)",
+                (sorted(event_ids),),
+            ).fetchall()
+        return [EventSourceRecord(event_id=str(row["event_id"]), item=_row_to_newsflash_item(row)) for row in rows]
+
     def create_event_with_source(self, item: NewsflashItemRecord, *, needs_review: bool = False) -> str:
         event_id = generate_event_id()
         event_time = item.published_at or item.first_seen_at
@@ -387,7 +443,6 @@ class PostgresCompetitorMonitorRepository:
                     conn.execute("DELETE FROM newsflash_events WHERE event_id = %s", (event_id,))
                     if existing is not None:
                         event_id = str(existing["event_id"])
-            conn.commit()
         return event_id
 
     def assign_item_to_event(self, assignment: EventAssignment) -> None:
@@ -451,14 +506,12 @@ class PostgresCompetitorMonitorRepository:
                     ).fetchone()
                     if deleted is None:
                         self._update_event_summaries(conn, {previous_event_id})
-            conn.commit()
 
     def update_event_summaries(self, event_ids: set[str]) -> None:
         if not event_ids:
             return
         with self._connect() as conn:
             self._update_event_summaries(conn, event_ids)
-            conn.commit()
 
     def prune_orphan_events(self) -> int:
         with self._connect() as conn:
@@ -473,7 +526,6 @@ class PostgresCompetitorMonitorRepository:
                 RETURNING event_id
                 """
             ).fetchall()
-            conn.commit()
         return len(rows)
 
     def prune_excluded_event_sources(self, terms: list[str] | None = None) -> dict[str, int]:
@@ -563,7 +615,6 @@ class PostgresCompetitorMonitorRepository:
                 remaining_event_ids = affected_event_ids - deleted_event_ids
                 if remaining_event_ids:
                     self._update_event_summaries(conn, remaining_event_ids)
-            conn.commit()
 
         return {
             "matched_items": len(matched_item_ids),
@@ -635,7 +686,6 @@ class PostgresCompetitorMonitorRepository:
                     affected_event_ids = {str(row["event_id"]) for row in affected_rows}
                     if affected_event_ids:
                         self._update_event_summaries(conn, affected_event_ids)
-            conn.commit()
         return {"updated_items": len(updated_item_ids), "updated_events": len(affected_event_ids)}
 
     def _update_event_summaries(self, conn, event_ids: set[str]) -> None:
@@ -724,11 +774,13 @@ class PostgresCompetitorMonitorRepository:
                     success,
                 ),
             )
-            conn.commit()
 
 
 def create_competitor_monitor_repository(database_url: str | None = None) -> CompetitorMonitorRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresCompetitorMonitorRepository()
     from .sqlite_repository import SQLiteCompetitorMonitorRepository
     return SQLiteCompetitorMonitorRepository(load_storage_settings().sqlite_path)
 

@@ -23,6 +23,15 @@ def _iso(timestamp: int | None) -> str | None:
 
 
 class GateMarketStore:
+    def __new__(cls, path: Path):
+        from packages.common.storage import load_storage_settings
+
+        if cls is GateMarketStore and load_storage_settings().backend == "postgres":
+            from .postgres_store import PostgresGateMarketStore
+
+            return PostgresGateMarketStore(path)
+        return super().__new__(cls)
+
     def __init__(self, path: Path) -> None:
         self.path = path
 

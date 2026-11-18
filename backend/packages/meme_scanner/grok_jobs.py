@@ -16,6 +16,8 @@ from .grok_routine import DEFAULT_CALLBACK_BASE_URL, load_bearer_headers, load_w
 
 
 def setup(conn: Any) -> None:
+    if hasattr(conn, "record_grok_request"):
+        return
     conn.execute('''CREATE TABLE IF NOT EXISTS meme_grok_jobs(
         trigger_key TEXT PRIMARY KEY, request_id TEXT NOT NULL, started_at TEXT NOT NULL,
         state TEXT NOT NULL, result_json TEXT, error TEXT)''')
@@ -24,19 +26,36 @@ def setup(conn: Any) -> None:
 
 def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
     """Return (ready_for_writer, safe_audit); never wait for a callback here."""
-    setup(store.conn)
     key = job['trigger_key']
-    row = store.conn.execute('SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)).fetchone()
+    if hasattr(store, "record_grok_request"):
+        row = store.get_grok_request(key)
+    else:
+        setup(store.conn)
+        row = store.conn.execute('SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)).fetchone()
     root = get_paths().runtime_dir / 'grok_narrative_callbacks'
+    created_by_this_worker = False
+    created_request = row is None
     if row is None:
         request_id = 'meme-' + uuid.uuid4().hex
         started = datetime.now(UTC).isoformat()
         # Commit before HTTP: after a crash do not resubmit an uncertain delivery.
-        with store.conn:
-            store.conn.execute('''INSERT INTO meme_grok_jobs(
-                trigger_key, request_id, started_at, state, result_json, error
-            ) VALUES (?, ?, ?, ?, NULL, NULL)''',
-                               (key, request_id, started, 'pending'))
+        if hasattr(store, "record_grok_request"):
+            row, created_by_this_worker = store.record_grok_request(trigger_key=key, request_id=request_id, started_at=started)
+            request_id = row['request_id']
+        else:
+            with store.conn:
+                store.conn.execute('''INSERT INTO meme_grok_jobs(
+                    trigger_key, request_id, started_at, state, result_json, error
+                ) VALUES (?, ?, ?, ?, NULL, NULL)''',
+                                   (key, request_id, started, 'pending'))
+            row = store.conn.execute('SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)).fetchone()
+            created_by_this_worker = True
+    if hasattr(store, "record_grok_request") and not created_request and row is not None and row['state'] == 'pending':
+        row, created_by_this_worker = store.record_grok_request(
+            trigger_key=key, request_id=row['request_id'], started_at=row['started_at'],
+        )
+    if created_by_this_worker:
+        request_id = row['request_id']
         try:
             credentials = Path(os.getenv('GROK_ROUTINE_CREDENTIALS_FILE') or
                                get_paths().config_dir / 'grok.txt')
@@ -62,10 +81,15 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
                     raise RuntimeError('Grok webhook rejected the request')
         except Exception as exc:
             # Never persist response text, URLs, headers or credentials in diagnostics.
-            with store.conn:
-                store.conn.execute("UPDATE meme_grok_jobs SET state='failed',error=? WHERE trigger_key=?",
-                                   (type(exc).__name__, key))
-        row = store.conn.execute('SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)).fetchone()
+            if hasattr(store, "update_grok_request"):
+                store.update_grok_request(key, state='failed', error=type(exc).__name__)
+            else:
+                with store.conn:
+                    store.conn.execute("UPDATE meme_grok_jobs SET state='failed',error=? WHERE trigger_key=?",
+                                       (type(exc).__name__, key))
+        row = store.get_grok_request(key) if hasattr(store, "get_grok_request") else store.conn.execute(
+            'SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)
+        ).fetchone()
     state = row['state']
     result = json.loads(row['result_json']) if row['result_json'] else None
     if state == 'pending':
@@ -81,17 +105,27 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
         elif (datetime.now(UTC) - datetime.fromisoformat(row['started_at'])).total_seconds() >= 900:
             state = 'timeout'
         if state != 'pending':
-            with store.conn:
-                store.conn.execute('UPDATE meme_grok_jobs SET state=?,result_json=? WHERE trigger_key=?',
-                                   (state, json.dumps(result, ensure_ascii=False) if result else None, key))
+            if hasattr(store, "update_grok_request"):
+                store.update_grok_request(key, state=state, result_json=json.dumps(result, ensure_ascii=False) if result else None)
+            else:
+                with store.conn:
+                    store.conn.execute('UPDATE meme_grok_jobs SET state=?,result_json=? WHERE trigger_key=?',
+                                       (state, json.dumps(result, ensure_ascii=False) if result else None, key))
     audit = {'request_id': row['request_id'], 'state': state, 'started_at': row['started_at'],
              'error': row['error'], 'result': result}
     if state == 'pending':
-        with store.conn:
-            store.conn.execute('''UPDATE jobs SET status='retry_wait', reason='grok_pending',
-                next_attempt_at=?, attempts=MAX(0,attempts-1), updated_at=?, narrative_json=? WHERE id=?''',
-                ((datetime.now(UTC) + timedelta(seconds=15)).isoformat(), datetime.now(UTC).isoformat(),
-                 json.dumps({'status': 'pending', 'grok_routine': audit,
-                             'discovery': json.loads(job['evidence_json'] or '{}')}, ensure_ascii=False), job['id']))
+        next_at = (datetime.now(UTC) + timedelta(seconds=15)).isoformat()
+        updated_at = datetime.now(UTC).isoformat()
+        narrative_json = json.dumps({'status': 'pending', 'grok_routine': audit,
+                                     'discovery': json.loads(job['evidence_json'] or '{}')}, ensure_ascii=False)
+        if hasattr(store, "defer_grok_job"):
+            if not store.defer_grok_job(job_id=job['id'], next_attempt_at=next_at, updated_at=updated_at, narrative_json=narrative_json,
+                                        claim_token=job.get('claim_token') if isinstance(job, dict) else None):
+                raise RuntimeError("Meme job claim was superseded before Grok deferral")
+        else:
+            with store.conn:
+                store.conn.execute('''UPDATE jobs SET status='retry_wait', reason='grok_pending',
+                    next_attempt_at=?, attempts=MAX(0,attempts-1), updated_at=?, narrative_json=? WHERE id=?''',
+                    (next_at, updated_at, narrative_json, job['id']))
         return False, audit
     return True, audit

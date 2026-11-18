@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from packages.common.local_auth import LocalAuthRepository
+from packages.common.local_auth import create_local_auth_repository
 from packages.common.storage import connect_sqlite, load_storage_settings
 
 
@@ -29,7 +29,7 @@ class SQLiteConsoleAuthRepository:
         self.init_schema()
 
     def init_schema(self) -> None:
-        LocalAuthRepository(self.path)
+        create_local_auth_repository(self.path).init_schema()
         with connect_sqlite(self.path) as conn:
             conn.execute(
                 """
@@ -79,6 +79,50 @@ class SQLiteConsoleAuthRepository:
         )
 
 
+class PostgresConsoleAuthRepository:
+    def __init__(self) -> None:
+        self.local_auth = create_local_auth_repository()
+        self.local_auth.init_schema()
+
+    def init_schema(self) -> None:
+        self.local_auth.init_schema()
+
+    def upsert_admin(self, email: str) -> ConsoleAdminRecord:
+        record = self.get_admin(normalize_console_admin_email(email))
+        if record is None:
+            raise ValueError("only the configured local operator can be a console admin")
+        return record
+
+    def delete_admin(self, email: str) -> bool:
+        normalize_console_admin_email(email)
+        return False
+
+    def list_admins(self) -> list[ConsoleAdminRecord]:
+        with self.local_auth._connect() as conn:
+            rows = conn.execute(
+                "SELECT email,created_at,updated_at FROM local_auth_users WHERE enabled=true ORDER BY email"
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
+    def get_admin(self, email: str) -> ConsoleAdminRecord | None:
+        with self.local_auth._connect() as conn:
+            row = conn.execute(
+                "SELECT email,created_at,updated_at FROM local_auth_users WHERE lower(email)=lower(%s) AND enabled=true",
+                (normalize_console_admin_email(email),),
+            ).fetchone()
+        return self._record(row) if row else None
+
+    @staticmethod
+    def _record(row) -> ConsoleAdminRecord:
+        return ConsoleAdminRecord(
+            email=str(row["email"]), created_at=row["created_at"].isoformat(),
+            updated_at=row["updated_at"].isoformat(),
+        )
+
+
 def create_console_auth_repository(database_url: str | None = None) -> SQLiteConsoleAuthRepository:
     del database_url
-    return SQLiteConsoleAuthRepository(load_storage_settings().sqlite_path)
+    settings = load_storage_settings()
+    if settings.backend == "postgres":
+        return PostgresConsoleAuthRepository()
+    return SQLiteConsoleAuthRepository(settings.sqlite_path)

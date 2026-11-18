@@ -10,7 +10,7 @@ import math
 import os
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 CHAINS = ('solana', 'bsc', 'base', 'eth', 'robinhood')
@@ -25,6 +25,8 @@ HIDEONBUSH_TOKENIZED_STOCK_SYMBOLS = frozenset({
 
 
 def setup(conn: Any) -> None:
+    if conn is None:
+        return
     conn.executescript('''
         CREATE TABLE IF NOT EXISTS daily_hot_chains(chain TEXT PRIMARY KEY, initialized_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS daily_hot_seen(
@@ -129,14 +131,23 @@ def ranked_candidates(chain: str, views: dict[str, list[dict[str, Any]]]) -> dic
 def scan(store: Any, *, fetch: Any = fetch_rows, market: Any = None, force: bool = False) -> dict[str, Any]:
     from .scanner import (_merge_dexscreener_price_info, get_dexscreener_client,
                           token_from_row, volume_ratio_gate)
-    setup(store.conn)
+    native = getattr(store, "postgres", None)
+    conn = getattr(store, "conn", None)
+    if native is None and conn is None:
+        native = store
+    setup(conn)
     stamp = datetime.now(UTC).isoformat()
-    last = store.conn.execute('SELECT started_at FROM daily_hot_scans ORDER BY id DESC LIMIT 1').fetchone()
-    if last and not force and (datetime.now(UTC) - datetime.fromisoformat(last[0])).total_seconds() < 3600:
+    last = native.daily_hot_last_started() if native is not None else (
+        lambda row: row[0] if row else None
+    )(conn.execute('SELECT started_at FROM daily_hot_scans ORDER BY id DESC LIMIT 1').fetchone())
+    if last and not force and (datetime.now(UTC) - datetime.fromisoformat(last)).total_seconds() < 3600:
         return {'status': 'not_due'}
-    cursor = store.conn.execute('INSERT INTO daily_hot_scans(started_at) VALUES (?)', (stamp,))
-    run_id = cursor.lastrowid
-    store.conn.commit()
+    if native is not None:
+        run_id = native.start_daily_hot_scan(stamp)
+    else:
+        cursor = conn.execute('INSERT INTO daily_hot_scans(started_at) VALUES (?)', (stamp,))
+        run_id = cursor.lastrowid
+        conn.commit()
     summary: dict[str, Any] = {'queued': 0, 'baseline': 0, 'errors': {}, 'qualified': 0}
     client = market or get_dexscreener_client()
     for chain in CHAINS:
@@ -160,33 +171,48 @@ def scan(store: Any, *, fetch: Any = fetch_rows, market: Any = None, force: bool
                             and math.isfinite(token.volume_24h) and token.market_cap >= 1_000_000
                             and token.volume_ratio >= volume_ratio_gate(token.market_cap)):
                         qualified.append(token)
-            baseline = store.conn.execute('SELECT 1 FROM daily_hot_chains WHERE chain=?', (chain,)).fetchone() is None
+            baseline = not native.daily_hot_initialized(chain) if native is not None else conn.execute(
+                'SELECT 1 FROM daily_hot_chains WHERE chain=?', (chain,)
+            ).fetchone() is None
             # Ledger and job insertion must commit together, including the initialization.
-            with store.conn:
-                for token in qualified:
-                    evidence = {'first_qualified_at': stamp, 'matches': candidates[token.address]['matches']}
-                    inserted = store.conn.execute('''INSERT OR IGNORE INTO daily_hot_seen
-                        VALUES (?,?,?,?,?)''', (chain, token.address, stamp, int(baseline), json.dumps(evidence))).rowcount
-                    summary['qualified'] += 1
-                    if not inserted:
-                        continue
-                    if baseline:
-                        summary['baseline'] += 1
-                    else:
-                        key = f'daily_hot:{chain}:{token.address}'
-                        store.conn.execute('''INSERT OR IGNORE INTO jobs
-                            (address,trigger_key,payload_json,trigger_kind,queued_at,status,evidence_json,updated_at)
-                            VALUES (?,?,?,'daily_hot',?,'queued',?,?)''',
-                            (token.address, key, json.dumps(token.raw, ensure_ascii=False), stamp,
-                             json.dumps(evidence), stamp))
-                        summary['queued'] += 1
-                store.conn.execute('INSERT OR IGNORE INTO daily_hot_chains VALUES (?,?)', (chain, stamp))
+            summary['qualified'] += len(qualified)
+            if native is not None:
+                rows = [(token, {'first_qualified_at': stamp, 'matches': candidates[token.address]['matches']}, baseline)
+                        for token in qualified]
+                _, baseline_count, queued_count = native.apply_daily_hot_chain(chain=chain, stamp=stamp, qualified=rows)
+                summary['baseline'] += baseline_count
+                summary['queued'] += queued_count
+            else:
+                with conn:
+                    for token in qualified:
+                        evidence = {'first_qualified_at': stamp, 'matches': candidates[token.address]['matches']}
+                        inserted = conn.execute('''INSERT OR IGNORE INTO daily_hot_seen
+                            VALUES (?,?,?,?,?)''', (chain, token.address, stamp, int(baseline), json.dumps(evidence))).rowcount
+                        if not inserted:
+                            continue
+                        if baseline:
+                            summary['baseline'] += 1
+                        else:
+                            key = f'daily_hot:{chain}:{token.address}'
+                            conn.execute('''INSERT OR IGNORE INTO jobs
+                                (address,trigger_key,payload_json,trigger_kind,queued_at,status,evidence_json,updated_at)
+                                VALUES (?,?,?,'daily_hot',?,'queued',?,?)''',
+                                (token.address, key, json.dumps(token.raw, ensure_ascii=False), stamp,
+                                 json.dumps(evidence), stamp))
+                            summary['queued'] += 1
+                    conn.execute('INSERT OR IGNORE INTO daily_hot_chains VALUES (?,?)', (chain, stamp))
         except Exception as exc:
             summary['errors'][chain] = type(exc).__name__ + ': ' + str(exc)[:200]
-    with store.conn:
-        store.conn.execute('UPDATE daily_hot_scans SET completed_at=?,summary_json=? WHERE id=?',
-                           (datetime.now(UTC).isoformat(), json.dumps(summary), run_id))
-        store.conn.execute("DELETE FROM daily_hot_scans WHERE julianday(started_at) < julianday('now','-7 days')")
+    completed = datetime.now(UTC).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    if native is not None:
+        native.finish_daily_hot_scan(run_id=run_id, completed_at=completed,
+                                     summary_json=json.dumps(summary), cutoff=cutoff)
+    else:
+        with conn:
+            conn.execute('UPDATE daily_hot_scans SET completed_at=?,summary_json=? WHERE id=?',
+                         (completed, json.dumps(summary), run_id))
+            conn.execute("DELETE FROM daily_hot_scans WHERE julianday(started_at) < julianday('now','-7 days')")
     return summary
 
 

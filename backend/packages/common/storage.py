@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import sqlite3
 import sys
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,7 +17,7 @@ from .paths import AppPaths, get_paths
 from .time_utils import today_key
 
 
-StorageBackend = Literal["sqlite"]
+StorageBackend = Literal["sqlite", "postgres"]
 STORAGE_EPOCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
@@ -27,17 +28,111 @@ class StorageSettings:
     sqlite_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class PostgresSettings:
+    dsn: str = field(repr=False)
+    connect_timeout_seconds: int
+    statement_timeout_ms: int
+    lock_timeout_ms: int
+    idle_transaction_timeout_ms: int
+    migration_statement_timeout_ms: int
+    migration_lock_timeout_ms: int
+    migration_idle_transaction_timeout_ms: int
+    pool_max_size: int
+    pool_checkout_timeout_seconds: float
+    pool_max_waiting: int
+    application_name: str
+
+
+def load_postgres_settings() -> PostgresSettings:
+    """Load settings for the new local PostgreSQL backend only."""
+    load_dotenv()
+    dsn = (os.getenv("ODAILY_POSTGRES_DSN") or "").strip()
+    if not dsn:
+        raise RuntimeError("Missing ODAILY_POSTGRES_DSN")
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        connection_info = conninfo_to_dict(dsn)
+        # libpq accepts comma-separated host lists, and missing DSN fields fall
+        # back to PGHOST/PGHOSTADDR. Validate those effective values too.
+        service = connection_info.get("service") or os.getenv("PGSERVICE", "")
+        host = connection_info.get("host") or os.getenv("PGHOST", "")
+        hostaddr = connection_info.get("hostaddr") or os.getenv("PGHOSTADDR", "")
+    except Exception:
+        raise ValueError("ODAILY_POSTGRES_DSN is not a valid PostgreSQL connection string") from None
+
+    def local_host(value: str) -> bool:
+        if not value:
+            return True
+        if value.lower() == "localhost" or value.startswith("/"):
+            return True
+        try:
+            return ipaddress.ip_address(value).is_loopback
+        except ValueError:
+            return False
+
+    def local_hostaddr(value: str) -> bool:
+        if not value:
+            return True
+        try:
+            return ipaddress.ip_address(value).is_loopback
+        except ValueError:
+            return False
+
+    hosts = [value.strip() for value in host.split(",")]
+    hostaddrs = [value.strip() for value in hostaddr.split(",")]
+    if service or not all(local_host(value) for value in hosts) or not all(local_hostaddr(value) for value in hostaddrs):
+        raise ValueError("ODAILY_POSTGRES_DSN must target local PostgreSQL")
+
+    def integer_setting(name: str, default: int, *, minimum: int = 0) -> int:
+        raw = (os.getenv(name) or str(default)).strip()
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+        if value < minimum:
+            raise ValueError(f"{name} must be at least {minimum}")
+        return value
+
+    pool_max_size = integer_setting("ODAILY_POSTGRES_POOL_MAX_SIZE", 2, minimum=1)
+    if pool_max_size > 4:
+        raise ValueError("ODAILY_POSTGRES_POOL_MAX_SIZE must not exceed 4")
+    try:
+        pool_checkout_timeout_seconds = float(os.getenv("ODAILY_POSTGRES_POOL_CHECKOUT_TIMEOUT_SECONDS") or "5")
+    except ValueError:
+        raise ValueError("ODAILY_POSTGRES_POOL_CHECKOUT_TIMEOUT_SECONDS must be a positive number") from None
+    if pool_checkout_timeout_seconds <= 0:
+        raise ValueError("ODAILY_POSTGRES_POOL_CHECKOUT_TIMEOUT_SECONDS must be a positive number")
+    return PostgresSettings(
+        dsn=dsn,
+        connect_timeout_seconds=integer_setting("ODAILY_POSTGRES_CONNECT_TIMEOUT_SECONDS", 5, minimum=1),
+        statement_timeout_ms=integer_setting("ODAILY_POSTGRES_STATEMENT_TIMEOUT_MS", 30_000),
+        lock_timeout_ms=integer_setting("ODAILY_POSTGRES_LOCK_TIMEOUT_MS", 5_000),
+        idle_transaction_timeout_ms=integer_setting("ODAILY_POSTGRES_IDLE_TRANSACTION_TIMEOUT_MS", 60_000),
+        migration_statement_timeout_ms=integer_setting("ODAILY_POSTGRES_MIGRATION_STATEMENT_TIMEOUT_MS", 600_000),
+        migration_lock_timeout_ms=integer_setting("ODAILY_POSTGRES_MIGRATION_LOCK_TIMEOUT_MS", 60_000),
+        migration_idle_transaction_timeout_ms=integer_setting("ODAILY_POSTGRES_MIGRATION_IDLE_TRANSACTION_TIMEOUT_MS", 300_000),
+        pool_max_size=pool_max_size,
+        pool_checkout_timeout_seconds=pool_checkout_timeout_seconds,
+        pool_max_waiting=integer_setting("ODAILY_POSTGRES_POOL_MAX_WAITING", 16, minimum=1),
+        application_name=(os.getenv("ODAILY_POSTGRES_APPLICATION_NAME") or "odaily").strip() or "odaily",
+    )
+
+
 def load_storage_settings() -> StorageSettings:
     load_dotenv()
     raw_backend = (os.getenv("ODAILY_STORAGE_BACKEND") or "sqlite").strip().lower()
-    if raw_backend != "sqlite":
-        raise ValueError("ODAILY_STORAGE_BACKEND must be sqlite in this version")
+    if raw_backend not in {"sqlite", "postgres"}:
+        raise ValueError("ODAILY_STORAGE_BACKEND must be sqlite or postgres")
     backend: StorageBackend = raw_backend  # type: ignore[assignment]
     epoch = (os.getenv("ODAILY_STORAGE_EPOCH") or "sqlite-primary").strip()
     if not STORAGE_EPOCH_PATTERN.fullmatch(epoch):
         raise ValueError("ODAILY_STORAGE_EPOCH contains unsupported characters")
     default_path = get_paths().data_dir / "database" / "odaily.sqlite"
     sqlite_path = Path(os.getenv("ODAILY_SQLITE_PATH") or default_path).expanduser().resolve()
+    if backend == "postgres":
+        load_postgres_settings()
     return StorageSettings(backend=backend, epoch=epoch, sqlite_path=sqlite_path)
 
 

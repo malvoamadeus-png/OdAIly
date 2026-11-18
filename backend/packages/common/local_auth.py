@@ -155,3 +155,14 @@ class LocalAuthRepository:
                 (email.strip().lower(),),
             )
             conn.commit()
+
+
+def create_local_auth_repository(path: Path | None = None):
+    settings = load_storage_settings()
+    if settings.backend == "postgres":
+        if path is not None:
+            raise ValueError("PostgreSQL local auth does not accept a SQLite path")
+        from .postgres_local_auth import PostgresLocalAuthRepository
+
+        return PostgresLocalAuthRepository()
+    return LocalAuthRepository(path or settings.sqlite_path)

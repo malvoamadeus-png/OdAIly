@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from packages.common.storage import connect_sqlite, connect_sqlite_readonly, load_storage_settings
 
@@ -38,6 +39,7 @@ class SQLiteAuditorRepository:
                     audit_result text NOT NULL DEFAULT '{}', telegram_text text,
                     telegram_result text NOT NULL DEFAULT '{}', alerted_at text,
                     locked_by text, locked_until text, attempt_count integer NOT NULL DEFAULT 0,
+                    claim_token text,
                     last_error text, metadata text NOT NULL DEFAULT '{}',
                     created_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at text NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -52,6 +54,9 @@ class SQLiteAuditorRepository:
                 );
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(auditor_checks)")}
+            if "claim_token" not in columns:
+                conn.execute("ALTER TABLE auditor_checks ADD COLUMN claim_token text")
             conn.commit()
 
     def claim_task(self, *, worker_id: str, prompt_version: str, lookback_minutes: int, lock_seconds: int = 300) -> AuditorTask | None:
@@ -83,6 +88,7 @@ class SQLiteAuditorRepository:
                     writer.execute("BEGIN IMMEDIATE")
                     claim_now = datetime.now(UTC)
                     lock_until = _iso(claim_now + timedelta(seconds=lock_seconds))
+                    claim_token = uuid4().hex
                     current = writer.execute(
                         "SELECT source_item_id, source_url, title, content, published_at, metadata "
                         "FROM odaily_reference_items WHERE source_item_id=?", (row["source_item_id"],),
@@ -101,14 +107,14 @@ class SQLiteAuditorRepository:
                     metadata = row["metadata"] or "{}"
                     writer.execute(
                         """INSERT INTO auditor_checks
-                        (source_item_id,source_url,title,content,content_hash,published_at,prompt_version,status,locked_by,locked_until,attempt_count,metadata)
-                        VALUES (?,?,?,?,?,?,?,'processing',?,?,1,?)
+                        (source_item_id,source_url,title,content,content_hash,published_at,prompt_version,status,locked_by,locked_until,claim_token,attempt_count,metadata)
+                        VALUES (?,?,?,?,?,?,?,'processing',?,?,?,1,?)
                         ON CONFLICT(source_item_id,content_hash,prompt_version) DO UPDATE SET
                         source_url=excluded.source_url,title=excluded.title,content=excluded.content,published_at=excluded.published_at,
-                        status='processing',locked_by=excluded.locked_by,locked_until=excluded.locked_until,
+                        status='processing',locked_by=excluded.locked_by,locked_until=excluded.locked_until,claim_token=excluded.claim_token,
                         attempt_count=auditor_checks.attempt_count+1,last_error=NULL,metadata=excluded.metadata,updated_at=CURRENT_TIMESTAMP""",
                         (row["source_item_id"], row["source_url"], row["title"], row["content"], content_hash,
-                         row["published_at"], prompt_version, worker_id, lock_until, metadata),
+                         row["published_at"], prompt_version, worker_id, lock_until, claim_token, metadata),
                     )
                     check = writer.execute(
                         "SELECT id FROM auditor_checks WHERE source_item_id=? AND content_hash=? AND prompt_version=?",
@@ -117,7 +123,7 @@ class SQLiteAuditorRepository:
                     writer.commit()
                 return AuditorTask(id=int(check["id"]), source_item_id=str(row["source_item_id"]), source_url=row["source_url"],
                                    title=row["title"], content=str(row["content"]), content_hash=content_hash,
-                                   published_at=_dt(row["published_at"]), metadata=json.loads(metadata))
+                                   published_at=_dt(row["published_at"]), metadata=json.loads(metadata), claim_token=claim_token)
         return None
 
     def complete_passed(self, task: AuditorTask, *, model: str, prompt_version: str, raw_output: str, result: dict[str, Any]) -> None:
@@ -132,14 +138,14 @@ class SQLiteAuditorRepository:
         with connect_sqlite(self.path) as conn:
             conn.execute("""UPDATE auditor_checks SET status=?,model=?,prompt_version=?,raw_output=?,audit_result=?,telegram_text=?,
                          telegram_result=?,alerted_at=CASE WHEN ?='flagged' THEN CURRENT_TIMESTAMP ELSE alerted_at END,
-                         locked_by=NULL,locked_until=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                         locked_by=NULL,locked_until=NULL,last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND claim_token=? AND julianday(locked_until)>julianday('now')""",
                          (status, model, prompt_version, raw_output, json.dumps(result, ensure_ascii=False), telegram_text,
-                          json.dumps(telegram_result, ensure_ascii=False), status, error, task.id))
+                          json.dumps(telegram_result, ensure_ascii=False), status, error, task.id, task.claim_token))
             conn.commit()
 
     def complete_failed(self, task: AuditorTask, *, error: str) -> None:
         with connect_sqlite(self.path) as conn:
-            conn.execute("UPDATE auditor_checks SET status='failed',last_error=?,locked_by=NULL,locked_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (error[:2000], task.id))
+            conn.execute("UPDATE auditor_checks SET status='failed',last_error=?,locked_by=NULL,locked_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND claim_token=? AND julianday(locked_until)>julianday('now')", (error[:2000], task.id, task.claim_token))
             conn.commit()
 
     def record_worker_heartbeat(self, *, component: str, worker_id: str, status: str, success: bool,
@@ -155,5 +161,10 @@ class SQLiteAuditorRepository:
 
 
 def create_auditor_repository(database_url: str | None = None) -> SQLiteAuditorRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        from .repository import PostgresAuditorRepository
+
+        return PostgresAuditorRepository()
     return SQLiteAuditorRepository(load_storage_settings().sqlite_path)

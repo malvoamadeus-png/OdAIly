@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import sqlite3
+import threading
+import time
 
 from packages.local_pipeline.queue import LocalPipelineQueue
 from packages.local_pipeline.server import LocalPipelineService
@@ -68,3 +70,64 @@ def test_worker_checks_for_abandoned_jobs_periodically(monkeypatch) -> None:
     service._run_worker_once()
     assert len(queue.calls) == 1
     assert queue.calls[0]['exclude_worker_id'] == 'test-worker'
+
+
+def test_stale_lease_cannot_complete_reclaimed_job(tmp_path) -> None:
+    queue = LocalPipelineQueue(tmp_path / 'queue.sqlite', storage_epoch='current')
+    queue.enqueue(job_type='write_flow', task_id=1, source='x', source_item_id='lease-test')
+
+    first = queue.claim_next(worker_id='worker-a')
+    assert first is not None and first.lease_token
+    stale_before = datetime.now(UTC) + timedelta(seconds=1)
+    assert queue.requeue_stale_running_jobs(stale_before=stale_before) == 1
+
+    second = queue.claim_next(worker_id='worker-b')
+    assert second is not None and second.lease_token != first.lease_token
+    assert queue.mark_succeeded(first.id, lease_token=first.lease_token) is False
+    assert queue.mark_succeeded(second.id, lease_token=second.lease_token) is True
+    assert queue.stats() == {'succeeded': 1}
+
+
+def test_shutdown_drains_active_job_and_rejects_new_enqueue(tmp_path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    ledger: list[str] = []
+
+    class BlockingProcessor(_Processor):
+        def process(self, job):
+            entered.set()
+            assert release.wait(5)
+            ledger.append("external-result")
+            return type("Result", (), {"task_id": job.task_id, "status": "published", "message": "done"})()
+
+        def stop_background_tasks(self):
+            ledger.append("background-stopped")
+
+    queue = LocalPipelineQueue(tmp_path / "queue.sqlite", storage_epoch="drain")
+    service = LocalPipelineService(queue=queue, processor=BlockingProcessor([]))  # type: ignore[arg-type]
+    service.start()
+    service.enqueue({"job_type": "write_flow", "task_id": 1, "source": "x", "source_item_id": "drain-1"})
+    assert entered.wait(2)
+
+    stopper = threading.Thread(target=service.stop)
+    stopper.start()
+    time.sleep(0.05)
+    assert stopper.is_alive()
+    health = service.health()
+    assert health["ok"] is False
+    assert health["state"] == "draining"
+    assert health["accepting"] is False
+    assert health["draining"] is True
+    assert health["inflight"] == 1
+    try:
+        service.enqueue({"job_type": "write_flow", "task_id": 2, "source": "x", "source_item_id": "drain-2"})
+    except RuntimeError as exc:
+        assert "shutting down" in str(exc)
+    else:
+        raise AssertionError("shutdown must reject new jobs")
+
+    release.set()
+    stopper.join(2)
+    assert not stopper.is_alive()
+    assert ledger == ["external-result", "background-stopped"]
+    assert queue.stats() == {"succeeded": 1}

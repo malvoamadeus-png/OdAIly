@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
 from packages.x_processing.models import PromptTemplateVersion, TaskRecord
-from packages.x_processing.repository import _import_psycopg, get_database_url
 from packages.x_processing.searcher import SearchDocument
 
 from .models import (
@@ -60,6 +63,7 @@ def normalize_compare_url(value: str | None) -> str:
 class ExternalMediaAlertRepository(Protocol):
     def init_schema(self) -> None: ...
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None: ...
+    def claim_task_by_id(self, stage: AlertStage, *, task_id: int, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None: ...
     def get_pipeline(self, task_id: int) -> ExternalMediaAlertPipelineRecord: ...
     def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]: ...
     def get_active_prompt(self, template_key: str = ALERT_PROMPT_KEY) -> PromptTemplateVersion: ...
@@ -114,6 +118,7 @@ def _row_to_task(row: dict[str, Any]) -> TaskRecord:
         status=str(row["status"]),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        claim_token=row.get("lease_token"),
     )
 
 
@@ -150,29 +155,57 @@ def _row_to_pipeline(row: dict[str, Any]) -> ExternalMediaAlertPipelineRecord:
 
 class PostgresExternalMediaAlertRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresExternalMediaAlertRepository is retired; use create_external_media_alert_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-external-media-alert"
+        self._claim_context: ContextVar[tuple[int, str] | None] = ContextVar("external_media_alert_claim", default=None)
 
+    def set_claim_context(self, task: TaskRecord) -> None:
+        self._claim_context.set((task.id, task.claim_token or ""))
+
+    def owns_task_claim(self, task: TaskRecord) -> bool:
+        return self._claim_context.get() == (task.id, task.claim_token or "") and bool(task.claim_token)
+
+    def _require_claim(self, conn, task_id: int) -> str:
+        claim = self._claim_context.get()
+        if claim is None or claim[0] != task_id or not claim[1]:
+            raise RuntimeError("external media alert write requires an active task claim")
+        row = conn.execute("SELECT lease_token,locked_until FROM tasks WHERE id=%s FOR UPDATE", (task_id,)).fetchone()
+        if not row or row["lease_token"] != claim[1] or not row["locked_until"] or row["locked_until"] <= utc_now():
+            raise RuntimeError("external media alert task claim is stale")
+        return claim[1]
+
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(SCHEMA_SQL)
-            conn.commit()
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="external_media_alert",
+                migrations=(PostgresMigration(
+                    1, "external_media_alert_initial", sha256(SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(SCHEMA_SQL),
+                ),),
+            )
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds)
+
+    def claim_task_by_id(self, stage: AlertStage, *, task_id: int, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds, task_id=task_id)
+
+    def _claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int, task_id: int | None = None) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         sources = list(ALERT_NOTIFY_TASK_SOURCES if stage == "notify" else DOMAIN_WORKER_TASK_SOURCES)
         with self._connect() as conn:
@@ -182,6 +215,7 @@ class PostgresExternalMediaAlertRepository:
                     SELECT id
                     FROM tasks
                     WHERE source = ANY(%(sources)s)
+                      AND (%(task_id)s::bigint IS NULL OR id = %(task_id)s::bigint)
                       AND status IN (%(claim_status)s, %(processing_status)s)
                       AND (locked_until IS NULL OR locked_until < now())
                     ORDER BY created_at ASC, id ASC
@@ -192,6 +226,7 @@ class PostgresExternalMediaAlertRepository:
                 SET status = %(processing_status)s,
                     locked_by = %(worker_id)s,
                     locked_until = now() + (%(lock_seconds)s || ' seconds')::interval,
+                    lease_token = md5(random()::text || clock_timestamp()::text || t.id::text),
                     attempt_count = attempt_count + 1,
                     updated_at = now()
                 FROM candidate
@@ -204,17 +239,18 @@ class PostgresExternalMediaAlertRepository:
                     "processing_status": spec.processing_status,
                     "worker_id": worker_id,
                     "lock_seconds": lock_seconds,
+                    "task_id": task_id,
                 },
             ).fetchone()
             if row is None:
-                conn.commit()
                 return None
             conn.execute(
                 "INSERT INTO external_media_alert_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING",
                 (row["id"],),
             )
-            conn.commit()
-            return _row_to_task(row)
+            task = _row_to_task(row)
+            self.set_claim_context(task)
+            return task
 
     def get_pipeline(self, task_id: int) -> ExternalMediaAlertPipelineRecord:
         with self._connect(autocommit=True) as conn:
@@ -239,7 +275,6 @@ class PostgresExternalMediaAlertRepository:
                 "INSERT INTO external_media_alert_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING",
                 (task_id,),
             )
-            conn.commit()
 
     def save_media_newsflash_items(self, items: list[MediaNewsflashItem]) -> tuple[int, int]:
         if not items:
@@ -342,7 +377,6 @@ class PostgresExternalMediaAlertRepository:
                     ),
                 )
                 saved += 1
-            conn.commit()
         return saved, duplicate
 
     def get_active_prompt(self, template_key: str = ALERT_PROMPT_KEY) -> PromptTemplateVersion:
@@ -375,6 +409,7 @@ class PostgresExternalMediaAlertRepository:
         if categories:
             domain_output["categories"] = list(categories)
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -397,8 +432,7 @@ class PostgresExternalMediaAlertRepository:
                     task_id,
                 ),
             )
-            self._set_task_status(conn, task_id, "classified")
-            conn.commit()
+            self._set_task_status(conn, task_id, "classified", token)
 
     def complete_domain_discard(
         self,
@@ -410,6 +444,7 @@ class PostgresExternalMediaAlertRepository:
         discard_reason: str = "non_crypto",
     ) -> None:
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -432,11 +467,11 @@ class PostgresExternalMediaAlertRepository:
                     task_id,
                 ),
             )
-            self._set_task_status(conn, task_id, "discarded")
-            conn.commit()
+            self._set_task_status(conn, task_id, "discarded", token)
 
     def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -447,11 +482,11 @@ class PostgresExternalMediaAlertRepository:
                 """,
                 (self._Jsonb(result), task_id),
             )
-            self._set_task_status(conn, task_id, "duplicate")
-            conn.commit()
+            self._set_task_status(conn, task_id, "duplicate", token)
 
     def complete_search_ready(self, task_id: int, *, result: dict[str, Any]) -> None:
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -462,11 +497,11 @@ class PostgresExternalMediaAlertRepository:
                 """,
                 (self._Jsonb(result), task_id),
             )
-            self._set_task_status(conn, task_id, "deduped")
-            conn.commit()
+            self._set_task_status(conn, task_id, "deduped", token)
 
     def complete_notify(self, task_id: int, *, telegram_result: dict[str, Any]) -> None:
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -477,11 +512,11 @@ class PostgresExternalMediaAlertRepository:
                 """,
                 (self._Jsonb(telegram_result), task_id),
             )
-            self._set_task_status(conn, task_id, "notified")
-            conn.commit()
+            self._set_task_status(conn, task_id, "notified", token)
 
     def fail_task(self, task_id: int, *, stage: AlertStage, error: str, status: str | None = None) -> None:
         with self._connect() as conn:
+            token = self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE external_media_alert_pipeline
@@ -491,8 +526,7 @@ class PostgresExternalMediaAlertRepository:
                 """,
                 (error[:2000], task_id),
             )
-            self._set_task_status(conn, task_id, status or STAGE_SPECS[stage].failure_status)
-            conn.commit()
+            self._set_task_status(conn, task_id, status or STAGE_SPECS[stage].failure_status, token)
 
     def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         with self._connect(autocommit=True) as conn:
@@ -596,24 +630,29 @@ class PostgresExternalMediaAlertRepository:
                     success,
                 ),
             )
-            conn.commit()
 
-    def _set_task_status(self, conn, task_id: int, status: str) -> None:
-        conn.execute(
+    def _set_task_status(self, conn, task_id: int, status: str, token: str) -> None:
+        result = conn.execute(
             """
             UPDATE tasks
             SET status = %s,
                 locked_by = NULL,
                 locked_until = NULL,
+                lease_token = NULL,
                 updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND lease_token = %s
             """,
-            (status, task_id),
+            (status, task_id, token),
         )
+        if result.rowcount != 1:
+            raise RuntimeError("external media alert task claim is stale")
 
 
 def create_external_media_alert_repository(database_url: str | None = None) -> ExternalMediaAlertRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresExternalMediaAlertRepository()
     from .sqlite_repository import SQLiteExternalMediaAlertRepository
     return SQLiteExternalMediaAlertRepository(load_storage_settings().sqlite_path)
 
@@ -709,10 +748,18 @@ class InMemoryExternalMediaAlertRepository:
         return saved, duplicate
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, task_id=None)
+
+    def claim_task_by_id(self, stage: AlertStage, *, task_id: int, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         del worker_id, lock_seconds
+        return self._claim_task(stage, task_id=task_id)
+
+    def _claim_task(self, stage: AlertStage, *, task_id: int | None) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         claim_sources = set(ALERT_NOTIFY_TASK_SOURCES if stage == "notify" else DOMAIN_WORKER_TASK_SOURCES)
         for task in sorted(self.tasks.values(), key=lambda item: item.id):
+            if task_id is not None and task.id != task_id:
+                continue
             if task.source not in claim_sources:
                 continue
             if task.status not in {spec.claim_status, spec.processing_status} or task.id in self._locks:
@@ -885,6 +932,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS lease_token text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS published_at timestamptz;
 

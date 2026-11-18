@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.editor_plugin_local_store import LocalEditorPluginStore
+from packages.common.storage import load_storage_settings
 
 
 def _now() -> datetime:
@@ -64,6 +65,10 @@ def _auto_newsflash_console_url(event_id: str) -> str | None:
 
 class LocalEditorPluginFeedWriter:
     def __init__(self, store: LocalEditorPluginStore | None = None) -> None:
+        if store is None and load_storage_settings().backend == "postgres":
+            from packages.editor_plugin_postgres_local_store import PostgresEditorPluginLocalStore
+
+            store = PostgresEditorPluginLocalStore()
         if store is None:
             paths = get_paths()
             ensure_runtime_dirs(paths)

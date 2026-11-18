@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from packages.common.paths import get_paths
-from packages.common.storage import ClosingSQLiteConnection
+from packages.common.storage import ClosingSQLiteConnection, load_storage_settings
+from packages.meme_scanner.postgres_store import PostgresMemeStore
 
 
 def load_meme_scanner_database_path() -> Path:
@@ -176,6 +177,7 @@ def _row_item(
         "chat_count": candidate.get("chat_count"),
         "sender_count": candidate.get("sender_count"),
         "status": str(row["status"]),
+        "delivery_reconciliation_available": str(row["status"]) == "publish_uncertain",
         "reason": str(row["reason"] or ""),
         "title": str(row["title"] or ""),
         "content": str(row["content"] or ""),
@@ -202,6 +204,27 @@ class MemeDashboardStore:
         column_clause = {"all": "1=1", "digest": "trigger_kind != 'daily_hot'",
                          "daily_hot": "trigger_kind = 'daily_hot'"}[column]
         generated_at = datetime.now(UTC).isoformat()
+        if load_storage_settings().backend == "postgres":
+            try:
+                store = PostgresMemeStore(initialize=False)
+                jobs = store.dashboard_jobs(limit=limit, column=column)
+                candidate_rows = store.dashboard_candidates()
+                market_observations = store.dashboard_market_observations()
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "generated_at": generated_at,
+                    "items": [],
+                    "last_error": str(exc),
+                }
+            candidates = {int(row["id"]): row for row in candidate_rows}
+            return {
+                "available": True,
+                "generated_at": generated_at,
+                "items": [_row_item(row, candidates, market_observations) for row in jobs],
+                "last_error": None,
+            }
+
         if not self.path.exists():
             return {
                 "available": False,
@@ -255,6 +278,29 @@ class MemeDashboardStore:
         }
 
     def narrative_detail(self, job_id: int) -> dict[str, Any] | None:
+        if load_storage_settings().backend == "postgres":
+            try:
+                store = PostgresMemeStore(initialize=False)
+                row = store.narrative_detail(job_id)
+                if row is None:
+                    return None
+                key = str(row.get("trigger_key") or "")
+                try:
+                    candidate_id = int(key.split(":", 1)[1]) if key.startswith("tg_burst:") else 0
+                except (IndexError, TypeError, ValueError):
+                    candidate_id = 0
+                candidates = {
+                    int(item["id"]): item for item in store.dashboard_candidates()
+                    if int(item["id"]) == candidate_id
+                }
+                payload = _json_object(row.get("narrative_json"))
+                return {
+                    "available": bool(payload),
+                    "job": _row_item(row, candidates, store.dashboard_market_observations()),
+                    "narrative": payload if payload else None,
+                }
+            except Exception:
+                return None
         if not self.path.exists():
             return None
         try:
@@ -289,3 +335,8 @@ class MemeDashboardStore:
             "job": _row_item(row, candidates, market_observations),
             "narrative": payload if payload else None,
         }
+
+    def reconcile_uncertain_delivery(self, job_id: int, resolution: str) -> bool:
+        if load_storage_settings().backend != "postgres":
+            raise RuntimeError("手工核对投递结果目前要求 PostgreSQL 存储")
+        return PostgresMemeStore(initialize=False).reconcile_uncertain_delivery(job_id, resolution)

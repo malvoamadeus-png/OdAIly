@@ -20,6 +20,7 @@ class AuditorTask:
     content_hash: str
     published_at: datetime | None
     metadata: dict[str, Any] = field(default_factory=dict)
+    claim_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

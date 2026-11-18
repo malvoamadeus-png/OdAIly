@@ -38,15 +38,13 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
   const [page, setPage] = useState<SystemInformationPage | null>(null);
   const [registry, setRegistry] = useState<SystemInformationRegistry | null>(null);
   const [detail, setDetail] = useState<SystemInformationDetail | null>(null);
-  const [query, setQuery] = useState('');
   const [business, setBusiness] = useState('all');
   const [source, setSource] = useState('all');
   const [stage, setStage] = useState('all');
   const [status, setStatus] = useState('all');
   const [result, setResult] = useState('all');
   const [failure, setFailure] = useState('all');
-  const [since, setSince] = useState('');
-  const [until, setUntil] = useState('');
+  const [windowEnd, setWindowEnd] = useState(() => Date.now());
   const [sort, setSort] = useState<'created' | 'activity'>('activity');
   const [view, setView] = useState<'news' | 'diagnostic'>('news');
   const [cursor, setCursor] = useState<{ time: number | null; id: string } | null>(null);
@@ -62,13 +60,13 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
     return registry.sources.filter((item) => (registry.registry.find((entry) => entry.key === item.business_key)?.key || '') === business);
   }, [business, registry]);
 
-  async function loadPage(nextCursor: { time: number | null; id: string } | null, nextSort = sort, nextView = view) {
+  async function loadPage(nextCursor: { time: number | null; id: string } | null, nextSort = sort, nextView = view, endMs = windowEnd) {
     setLoading(true);
     setError('');
     try {
       const data = await listSystemInformation({
-        view: nextView, q: query.trim(), business, source, stage, status, result, failure_category: failure,
-        since: since ? new Date(since).toISOString() : '', until: until ? new Date(until).toISOString() : '',
+        view: nextView, business, source, stage, status, result, failure_category: failure,
+        since: new Date(endMs - 6 * 60 * 60 * 1000).toISOString(), until: new Date(endMs).toISOString(),
         sort: nextSort, cursor: nextCursor, limit: PAGE_SIZE,
       });
       setPage(data);
@@ -87,7 +85,9 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
 
   useEffect(() => {
     setPreviousCursors([]);
-    void loadPage(null);
+    const endMs = Date.now();
+    setWindowEnd(endMs);
+    void loadPage(null, sort, view, endMs);
   }, [refreshToken]);
 
   async function openDetail(item: SystemInformationItem) {
@@ -104,8 +104,10 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const endMs = Date.now();
+    setWindowEnd(endMs);
     setPreviousCursors([]);
-    void loadPage(null);
+    void loadPage(null, sort, view, endMs);
   }
 
   function nextPage() {
@@ -135,10 +137,6 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
         }}>{next === 'news' ? '新闻信息流' : '采集与处理诊断'}</button>)}
       </div>
       <form className="systemInformationFilters" onSubmit={applyFilters}>
-        <label className="systemInformationSearch">
-          <span>关键词</span>
-          <div><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="标题、稿件、来源、ID、URL" /></div>
-        </label>
         <label><span>业务</span><select value={business} onChange={(event) => { setBusiness(event.target.value); setSource('all'); }}>
           <option value="all">全部业务</option>
           {(registry?.registry || []).map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
@@ -160,23 +158,20 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
         <label><span>故障类别</span><select value={failure} onChange={(event) => setFailure(event.target.value)}>
           <option value="all">全部</option><option value="local_storage">本地存储</option><option value="upstream_timeout">上游超时</option><option value="upstream_http">上游接口</option><option value="upstream_auth">上游权限或额度</option><option value="program_or_unknown">程序或未知</option>
         </select></label>
-        <label><span>开始时间</span><input type="datetime-local" value={since} onChange={(event) => setSince(event.target.value)} /></label>
-        <label><span>结束时间</span><input type="datetime-local" value={until} onChange={(event) => setUntil(event.target.value)} /></label>
         <button className="primaryButton" type="submit"><Search size={16} /> 查询</button>
       </form>
 
       {error && <div className="notice error" role="alert">{error}</div>}
       <div className="systemInformationMeta">
         <span>{loading ? '正在查询' : page ? `${page.total} 条记录` : '读取失败'}</span>
+        <span>最近六小时 · {fmtDate(windowEnd - 6 * 60 * 60 * 1000)} 至 {fmtDate(windowEnd)}</span>
         <span>{loading ? '索引状态读取中' : page?.index.generated_at_ms ? `索引 ${fmtDate(page.index.generated_at_ms)}` : page ? '索引尚无成功记录' : '索引状态未知'}</span>
         <span>{loading ? '积压状态读取中' : page ? page.index.lag ? `主流程积压 ${page.index.lag} 条` : '主流程索引已追平' : '积压状态未知'}</span>
-        {loading ? <span>关键词索引状态读取中</span> : page ? !page.search_index_ready && <span>关键词索引初始化中</span> : <span>关键词索引状态未知</span>}
-        <span>{page?.search_scope}</span>
         <div className="systemInformationSort" role="group" aria-label="排序方式">
           <button type="button" className={sort === 'created' ? 'active' : ''} onClick={() => changeSort('created')}><ArrowDownWideNarrow size={15} /> 创建时间</button>
           <button type="button" className={sort === 'activity' ? 'active' : ''} onClick={() => changeSort('activity')}><ArrowUpWideNarrow size={15} /> 最后处理时间</button>
         </div>
-        <button className="iconButton" type="button" title="刷新列表" onClick={() => { setPreviousCursors([]); void loadPage(null); }}><RefreshCcw size={16} /></button>
+        <button className="iconButton" type="button" title="刷新列表" onClick={() => { const endMs = Date.now(); setWindowEnd(endMs); setPreviousCursors([]); void loadPage(null, sort, view, endMs); }}><RefreshCcw size={16} /></button>
       </div>
 
       <div className="systemInformationColumns">
@@ -263,7 +258,7 @@ function DeferredDetails({ label, className, children }: { label: string; classN
 
 function resultLabel(result: string): string {
   const labels: Record<string, string> = {
-    processing: '处理中', backoffice: '挂后台', direct_publish: '已直发', stopped: '正常停止', failed: '失败', unknown: '结果未知', configuration_change: '配置生效变更',
+    processing: '处理中', backoffice: '挂后台', direct_publish: '已直发', capture_success: '采集成功', stopped: '正常停止', failed: '失败', unknown: '结果未知', configuration_change: '配置生效变更',
   };
   return labels[result] || result;
 }

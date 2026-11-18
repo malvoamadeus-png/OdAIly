@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import nullcontext
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
@@ -141,9 +142,11 @@ def json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def json_loads(value: str | None, default: Any) -> Any:
+def json_loads(value: Any, default: Any) -> Any:
     if not value:
         return default
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
     try:
         return json.loads(value)
     except (TypeError, ValueError):
@@ -415,7 +418,8 @@ CREATE TABLE IF NOT EXISTS topics (
   participant_count_24h INTEGER NOT NULL DEFAULT 0,
   participant_velocity REAL NOT NULL DEFAULT 0,
   hotness_score REAL NOT NULL DEFAULT 0,
-  retention_tier TEXT NOT NULL DEFAULT 'transient' CHECK(retention_tier IN ('transient','permanent'))
+  retention_tier TEXT NOT NULL DEFAULT 'transient' CHECK(retention_tier IN ('transient','permanent')),
+  lifecycle_refresh_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_topic_status ON topics(matching_status, visibility);
 CREATE TABLE IF NOT EXISTS threads (
@@ -453,6 +457,7 @@ CREATE TABLE IF NOT EXISTS topic_participations (
   last_content_item_id TEXT NOT NULL,
   PRIMARY KEY(topic_id, activity_account)
 );
+CREATE INDEX IF NOT EXISTS idx_participation_topic_time ON topic_participations(topic_id, last_participation_at);
 CREATE TABLE IF NOT EXISTS retrieval_state (
   scope_type TEXT NOT NULL,
   scope_id TEXT NOT NULL,
@@ -577,32 +582,35 @@ class TopicAggregator:
         visible_merge_reviewer: Any | None = None,
         semantic_review_batch_size: int = SEMANTIC_REVIEW_BATCH_SIZE,
         semantic_review_backfill_limit: int = SEMANTIC_REVIEW_BACKFILL_LIMIT,
+        postgres_repository: Any | None = None,
     ) -> None:
+        self.postgres_repository = postgres_repository
         self.database = str(database)
         # The live dashboard reads the state from separate connections, while
         # shutdown and test harnesses may close the service from a supervisor
         # thread. SQLite remains serialized by the aggregator transaction.
-        from packages.common.storage import MonitoredPersistentSQLiteConnection
-        self.connection = sqlite3.connect(self.database, timeout=30.0, check_same_thread=False, factory=MonitoredPersistentSQLiteConnection)
-        self.connection.row_factory = sqlite3.Row
+        self.connection = None
+        if self.postgres_repository is None:
+            from packages.common.storage import MonitoredPersistentSQLiteConnection
+            self.connection = sqlite3.connect(self.database, timeout=30.0, check_same_thread=False, factory=MonitoredPersistentSQLiteConnection)
+            self.connection.row_factory = sqlite3.Row
         # This connection shares the worker SQLite file with the account
         # directory. Match its lock wait and WAL settings so a short console
         # write does not make an aggregation transaction fail after SQLite's
         # default five seconds.
-        self.connection.execute("PRAGMA busy_timeout=30000")
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA synchronous=FULL")
-        self.connection.executescript(SCHEMA)
-        self.connection.execute(
-            "INSERT OR IGNORE INTO topic_merge_scan_state(singleton_key) VALUES('global')"
-        )
-        self.connection.commit()
-        self._migrate_single_brief_schema()
-        self._migrate_brief_status_schema()
-        self._migrate_retention_schema()
-        self._migrate_topic_evidence()
-        self._migrate_topic_claim_reviews()
+            self.connection.execute("PRAGMA busy_timeout=30000")
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA foreign_keys=ON")
+            self.connection.execute("PRAGMA synchronous=FULL")
+            self.connection.executescript(SCHEMA)
+            self.connection.execute("INSERT OR IGNORE INTO topic_merge_scan_state(singleton_key) VALUES('global')")
+            self.connection.commit()
+            self._migrate_single_brief_schema()
+            self._migrate_brief_status_schema()
+            self._migrate_retention_schema()
+            self._migrate_lifecycle_refresh_schema()
+            self._migrate_topic_evidence()
+            self._migrate_topic_claim_reviews()
         self._retrieval_cache: dict[str, dict[str, Any]] = {}
         self._feature_index: defaultdict[str, set[str]] = defaultdict(set)
         self._load_retrieval_cache()
@@ -614,6 +622,7 @@ class TopicAggregator:
         self.visible_merge_reviewer = visible_merge_reviewer
         self.semantic_review_batch_size = max(1, int(semantic_review_batch_size))
         self.semantic_review_backfill_limit = max(0, int(semantic_review_backfill_limit))
+        self._aggregation_uow: Any | None = None
 
     def _migrate_single_brief_schema(self) -> None:
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(brief_revisions)")}
@@ -685,6 +694,20 @@ class TopicAggregator:
                 "(SELECT 1 FROM brief_revisions br WHERE br.topic_id=topics.topic_id))"
             )
 
+    def _migrate_lifecycle_refresh_schema(self) -> None:
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(topics)")}
+        with self.connection:
+            if "lifecycle_refresh_at" not in columns:
+                self.connection.execute("ALTER TABLE topics ADD COLUMN lifecycle_refresh_at TEXT")
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_lifecycle_due "
+                "ON topics(matching_status,lifecycle_refresh_at,topic_id)"
+            )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_participation_topic_time "
+                "ON topic_participations(topic_id,last_participation_at)"
+            )
+
     def _migrate_topic_evidence(self) -> None:
         """Materialize brief citations so context evidence survives retention."""
         with self.connection:
@@ -724,7 +747,8 @@ class TopicAggregator:
             )
 
     def close(self) -> None:
-        self.connection.close()
+        if self.connection is not None:
+            self.connection.close()
 
     def prune_transient_state(
         self,
@@ -998,6 +1022,23 @@ class TopicAggregator:
         normalized = [item for value in content_items if (item := ContentItem.from_any(value)) is not None]
         normalized.sort(key=lambda item: (item.created_at, item.tweet_id))
         batch_id = stable_id("batch", batch_iso, *(item.tweet_id for item in normalized))
+
+        if self.postgres_repository is not None:
+            result = self._process_batch_postgres(normalized, batch_iso, batch_id, started)
+            if not result.get("idempotent_replay"):
+                try:
+                    result = self._postprocess_batch_postgres(result, batch_iso)
+                except Exception as exc:
+                    # The durable deterministic batch is already committed. Keep
+                    # it replayable and expose post-processing failure for the
+                    # next maintenance/reconciliation pass instead of losing it.
+                    result.setdefault("metrics", {}).setdefault("errors", []).append({
+                        "error_code": "postgres_postprocess_failed",
+                        "error_message": f"{type(exc).__name__}: {str(exc).strip() or 'post-processing failed'}",
+                        "retryable": True,
+                    })
+                    self.postgres_repository.replace_batch_result(batch_id=batch_id, result=result)
+            return result
 
         existing = self.connection.execute("SELECT result_json FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
         if existing:
@@ -1287,7 +1328,8 @@ class TopicAggregator:
             for request in merge_requests:
                 affected.add(request["source_topic_id"])
                 affected.add(request["target_topic_id"])
-            status_requests = self._refresh_all_topics(batch_iso)
+            status_requests = self._refresh_all_topics(batch_iso, topic_ids=affected)
+            metrics["lifecycle_refresh_count"] = status_requests["refreshed_count"]
             affected.update(status_requests["affected_topic_ids"])
             # An active topic with no successful brief remains a real topic,
             # not a missing topic.  Include it on every later batch so a
@@ -1374,9 +1416,209 @@ class TopicAggregator:
             self._reload_retrieval_cache()
             raise
 
+    def _process_batch_postgres(self, normalized: list[ContentItem], batch_iso: str, batch_id: str, started: float) -> dict[str, Any]:
+        """Deterministic PostgreSQL batch path; model enrichment stays outside the transaction."""
+        metrics: dict[str, Any] = {"batch_id": batch_id, "batch_time": batch_iso, "input_count": len(normalized),
+                                   "deduplicated_count": 0, "claim_count": 0, "candidate_count": 0,
+                                   "attach_count": 0, "create_seed_count": 0, "defer_count": 0, "ignore_count": 0,
+                                   "affected_topic_ids": [], "topic_merges": [], "errors": [],
+                                   "semantic_review": {"enabled": bool(self.semantic_reviewer), "requested": 0, "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0},
+                                   "candidate_resolver": {"enabled": bool(self.resolver), "requested_posts": 0, "resolved_claims": 0, "fallback_posts": 0, "model_calls": 0},
+                                   "token_usage": {"input": 0, "output": 0, "cached": 0, "total": 0}}
+        decisions: list[dict[str, Any]] = []
+        affected: set[str] = set()
+        prepared_claims: dict[str, list[Claim]] = {}
+        prepared_resolutions: dict[str, dict[str, Any]] = {}
+        if self.resolver:
+            preparation_cases: list[dict[str, Any]] = []
+            for item in normalized:
+                if self.postgres_repository.content_exists(item.tweet_id):
+                    continue
+                claims = list(self.extractor(item))
+                prepared_claims[item.tweet_id] = claims
+                pending = [(claim, self._retrieve_candidates(claim, item, batch_iso)) for claim in claims]
+                pending = [(claim, candidates) for claim, candidates in pending if self._needs_candidate_resolution(candidates)]
+                if pending:
+                    preparation_cases.append(self._candidate_resolution_case(item, claims, pending, batch_iso))
+            for offset in range(0, len(preparation_cases), CANDIDATE_RESOLVER_BATCH_SIZE):
+                cases = preparation_cases[offset:offset + CANDIDATE_RESOLVER_BATCH_SIZE]
+                metrics["candidate_resolver"]["requested_posts"] += len(cases)
+                metrics["candidate_resolver"]["model_calls"] += 1
+                try:
+                    responses = self._validate_candidate_resolution_responses(cases, self.resolver(cases))
+                except Exception as exc:
+                    metrics["errors"].append({"error_code":"candidate_resolver_failed","error_message":f"{type(exc).__name__}: {str(exc).strip() or 'candidate resolver failed'}","retryable":True})
+                    continue
+                for case_id, response in responses.items():
+                    prepared_resolutions[case_id] = {"payload":next(case for case in cases if case["case_id"] == case_id),"response":response}
+        with self.postgres_repository.aggregation_transaction() as unit:
+            self._aggregation_uow = unit
+            try:
+                existing = unit.batch_result(batch_id)
+                if existing:
+                    existing["idempotent_replay"] = True
+                    return existing
+                metrics["state_before"] = {status: unit.count_topics_by_status(status) for status in ("seed", "active", "archived")}
+                for item in normalized:
+                    if unit.content_exists(item.tweet_id):
+                        metrics["deduplicated_count"] += 1
+                        decisions.append({"tweet_id": item.tweet_id, "action": "duplicate", "topic_ids": []})
+                        continue
+                    fingerprint = hashlib.sha256((item.expanded_text + "\x1f" + item.activity_account).encode()).hexdigest()
+                    if not unit.insert_content_item(item=item, fingerprint=fingerprint):
+                        metrics["deduplicated_count"] += 1
+                        continue
+                    claims = prepared_claims.get(item.tweet_id)
+                    if claims is None:
+                        claims = list(self.extractor(item))
+                    metrics["claim_count"] += len(claims)
+                    if not claims:
+                        metrics["ignore_count"] += 1
+                        decisions.append({"tweet_id": item.tweet_id, "action": "ignore", "topic_ids": [], "reason": "no_claim"})
+                        continue
+                    item_topics: set[str] = set()
+                    pending_claims: list[tuple[Claim, list[Candidate]]] = []
+                    for claim in claims:
+                        self._insert_claim(claim, item.created_at)
+                        candidates = self._retrieve_candidates(claim, item, batch_iso)
+                        metrics["candidate_count"] += len(candidates)
+                        if self.resolver and self._needs_candidate_resolution(candidates):
+                            pending_claims.append((claim, candidates))
+                            continue
+                        action, topic_ids, reason, source = self._decide(claim, candidates)
+                        if action == "create_seed":
+                            topic_id = self._create_seed(claim, item, batch_iso)
+                            metrics["create_seed_count"] += 1
+                            topic_ids = {topic_id}
+                        elif action == "attach":
+                            metrics["attach_count"] += 1
+                        elif action == "defer":
+                            metrics["defer_count"] += 1
+                        else:
+                            metrics["ignore_count"] += 1
+                        if action in {"attach", "create_seed"}:
+                            for topic_id in topic_ids:
+                                self._attach_claim(claim, topic_id, candidates, reason, source, item, batch_iso)
+                                affected.add(topic_id)
+                                item_topics.add(topic_id)
+                        decisions.append({"tweet_id": item.tweet_id, "content_item_id": item.content_item_id, "claim_id": claim.claim_id,
+                                          "action": action, "topic_ids": sorted(topic_ids), "candidates": [candidate.as_dict() for candidate in candidates],
+                                          "reason": reason, "decision_source": source})
+                    if pending_claims:
+                        payload = self._candidate_resolution_case(item, claims, pending_claims, batch_iso)
+                        prepared = prepared_resolutions.get(str(payload["case_id"]))
+                        old_payload = prepared.get("payload") if prepared else None
+                        response = prepared.get("response") if prepared else None
+                        valid = bool(old_payload and old_payload["candidate_topic_ids_by_claim"] == payload["candidate_topic_ids_by_claim"] and old_payload["topics"] == payload["topics"])
+                        assignments = response.get("assignments", []) if isinstance(response, dict) else []
+                        by_claim = {str(row.get("claim_id")):row for row in assignments if isinstance(row,dict) and row.get("claim_id")} if isinstance(assignments,list) else {}
+                        expected = {claim.claim_id for claim,_ in pending_claims}
+                        valid = valid and len(by_claim)==len(expected) and set(by_claim)==expected
+                        for claim,_ in pending_claims:
+                            assignment=by_claim.get(claim.claim_id,{})
+                            action=str(assignment.get("action") or "")
+                            if action=="attach" and str(assignment.get("topic_id") or "") in payload["candidate_topic_ids_by_claim"].get(claim.claim_id,[]):
+                                continue
+                            if action=="new_topic" and compact(assignment.get("new_topic_group")):
+                                continue
+                            valid=False
+                        groups: dict[str,str] = {}
+                        if valid:
+                            for claim,candidates in pending_claims:
+                                assignment=by_claim[claim.claim_id]
+                                action=str(assignment["action"])
+                                group=compact(assignment.get("new_topic_group"))[:64] or None
+                                topic_ids={str(assignment.get("topic_id"))} if action=="attach" else set()
+                                if action=="new_topic":
+                                    topic_id=groups.get(group or "")
+                                    if not topic_id:
+                                        topic_id=self._create_seed(claim,item,batch_iso)
+                                        groups[group or ""]=topic_id
+                                    topic_ids={topic_id}
+                                    action="create_seed"
+                                if action=="attach": metrics["attach_count"]+=1
+                                else: metrics["create_seed_count"]+=1
+                                for topic_id in topic_ids:
+                                    self._attach_claim(claim,topic_id,candidates,compact(assignment.get("reason")) or "Luna 候选话题判断","candidate_resolver",item,batch_iso)
+                                    affected.add(topic_id); item_topics.add(topic_id)
+                                decisions.append({"tweet_id":item.tweet_id,"content_item_id":item.content_item_id,"claim_id":claim.claim_id,"action":action,"topic_ids":sorted(topic_ids),"candidates":[candidate.as_dict() for candidate in candidates],"reason":compact(assignment.get("reason")) or "Luna 候选话题判断","decision_source":"candidate_resolver"})
+                                metrics["candidate_resolver"]["resolved_claims"] += 1
+                                metrics["model_candidate_count"] = metrics.get("model_candidate_count",0)+1
+                        else:
+                            metrics["candidate_resolver"]["fallback_posts"] += 1
+                            for claim,candidates in pending_claims:
+                                action,topic_ids,reason,source=self._decide(claim,candidates)
+                                if action=="create_seed":
+                                    topic_ids={self._create_seed(claim,item,batch_iso)}; metrics["create_seed_count"]+=1
+                                elif action=="attach": metrics["attach_count"]+=1
+                                for topic_id in topic_ids:
+                                    self._attach_claim(claim,topic_id,candidates,f"候选模型不可用或候选快照已变化，沿用确定性结果：{reason}",source,item,batch_iso)
+                                    affected.add(topic_id); item_topics.add(topic_id)
+                                decisions.append({"tweet_id":item.tweet_id,"content_item_id":item.content_item_id,"claim_id":claim.claim_id,"action":action,"topic_ids":sorted(topic_ids),"candidates":[candidate.as_dict() for candidate in candidates],"reason":reason,"decision_source":source})
+                    if item_topics:
+                        metrics.setdefault("item_topic_ids", {})[item.tweet_id] = sorted(item_topics)
+                status_requests = self._refresh_all_topics(batch_iso, topic_ids=affected)
+                metrics["lifecycle_refresh_count"] = status_requests["refreshed_count"]
+                affected.update(status_requests["affected_topic_ids"])
+                metrics["affected_topic_ids"] = sorted(affected)
+                pending_briefs = unit.pending_brief_topic_ids()
+                metrics["brief_deferred_count"] = 0
+                metrics["brief_refresh_requests"] = []
+                if pending_briefs:
+                    metrics["brief_refresh_requests"] = [{"topic_id": topic_id, "brief_status": "deferred", "reason": "postgres_brief_writer_pending"} for topic_id in sorted(pending_briefs)]
+                for decision in decisions:
+                    unit.insert_audit(decision_id=stable_id("decision", batch_id, decision.get("claim_id"), decision.get("tweet_id"), decision.get("action")),
+                                      batch_id=batch_id, decision=decision, created_at=batch_iso)
+                result = {"metrics": metrics, "decisions": decisions, "idempotent_replay": False}
+                unit.insert_batch_result(batch_id=batch_id, batch_time=batch_iso, input_count=len(normalized), committed_at=iso(UTC_NOW()), result=result)
+                metrics["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                return result
+            finally:
+                self._aggregation_uow = None
+
+    def _postprocess_batch_postgres(self, result: dict[str, Any], at: str) -> dict[str, Any]:
+        """Run review/model work between short native transactions after durable batch writes."""
+        metrics = result["metrics"]
+        affected = set(metrics.get("affected_topic_ids") or [])
+        review_topics = set(affected)
+        if self.semantic_reviewer:
+            review_topics.update(self.postgres_repository.active_topic_ids())
+            targets = self._unreviewed_review_targets(
+                review_topics, limit=max(self.semantic_review_backfill_limit, len(affected) * 100),
+            )
+            review_result = self._review_memberships(targets, at)
+            self._rebuild_topic_participations({topic_id for _claim_id, topic_id in targets}, at)
+            metrics["semantic_review"] = review_result
+        transitions = self._refresh_all_topics(at, topic_ids=affected)
+        affected.update(transitions["affected_topic_ids"])
+        metrics["lifecycle_refresh_count"] = metrics.get("lifecycle_refresh_count", 0) + transitions["refreshed_count"]
+        merge_requests: list[dict[str, str]] = []
+        if not (self.topic_merge_reviewer or self.visible_merge_reviewer):
+            merge_requests = self._consolidate_dirty_topics(affected, at)
+        metrics["topic_merges"] = merge_requests
+        for request in merge_requests:
+            affected.update((request["source_topic_id"], request["target_topic_id"]))
+        if self.topic_merge_reviewer:
+            merge_requests.extend(self._review_topic_pairs(affected, at))
+        brief_ids = affected | self.postgres_repository.pending_brief_topic_ids()
+        brief_requests = self._refresh_briefs(brief_ids, at, transitions["transitions"])
+        metrics["brief_refresh_requests"] = brief_requests
+        metrics["brief_deferred_count"] = sum(row.get("brief_status") == "deferred" for row in brief_requests)
+        metrics["errors"].extend({"topic_id": row["topic_id"], "error_code": row["error_code"],
+                                  "error_message": row["error_message"], "retryable": row["retryable"]}
+                                 for row in brief_requests if row.get("brief_status") == "error")
+        metrics["affected_topic_ids"] = sorted(affected)
+        metrics["pending_semantic_reviews"] = self._count_pending_claim_reviews()
+        self.postgres_repository.replace_batch_result(
+            batch_id=metrics["batch_id"], result=result,
+        )
+        return result
+
     def reconcile_recent_topics(self, at: datetime | str) -> dict[str, Any]:
         """Reapply topic merge identity to every visible open topic."""
         batch_iso = iso(at)
+        if self.postgres_repository is not None:
+            return self._reconcile_recent_topics_postgres(batch_iso)
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             topic_ids = {
@@ -1414,7 +1656,7 @@ class TopicAggregator:
             for request in merge_requests:
                 affected.add(request["source_topic_id"])
                 affected.add(request["target_topic_id"])
-            status_requests = self._refresh_all_topics(batch_iso)
+            status_requests = self._refresh_all_topics(batch_iso, topic_ids=topic_ids)
             affected.update(status_requests["affected_topic_ids"])
             pending_briefs = {
                 row["topic_id"]
@@ -1456,8 +1698,48 @@ class TopicAggregator:
             self.connection.rollback()
             raise
 
+    def _reconcile_recent_topics_postgres(self, at: str) -> dict[str, Any]:
+        topic_ids = self.postgres_repository.visible_open_topic_ids(self.postgres_repository.active_topic_ids())
+        affected = set(topic_ids)
+        if self.semantic_reviewer:
+            targets = self._unreviewed_review_targets(
+                self.postgres_repository.active_topic_ids(), limit=self.semantic_review_backfill_limit,
+            )
+            review_result = self._review_memberships(targets, at)
+            reviewed = {topic_id for _claim_id, topic_id in targets}
+            self._rebuild_topic_participations(reviewed, at)
+            topic_ids.update(reviewed)
+            affected.update(reviewed)
+        else:
+            review_result = {"enabled":False,"requested":0,"support":0,"context":0,"unrelated":0,"fallback":0,"model_calls":0}
+        merges = self._consolidate_dirty_topics(topic_ids, at) if not (self.topic_merge_reviewer or self.visible_merge_reviewer) else []
+        if self.topic_merge_reviewer and not self.visible_merge_reviewer:
+            merges.extend(self._review_topic_pairs(topic_ids, at))
+        for merge in merges:
+            affected.update((merge["source_topic_id"], merge["target_topic_id"]))
+        status = self._refresh_all_topics(at, topic_ids=topic_ids)
+        affected.update(status["affected_topic_ids"])
+        brief_ids = affected | self.postgres_repository.pending_brief_topic_ids()
+        briefs = self._refresh_briefs(brief_ids, at, status["transitions"])
+        newly_visible = {row["topic_id"] for row in briefs if row.get("brief_status")=="ready" and row.get("visibility")=="visible"
+                         and row.get("reason") in {"became_visible","visibility_or_lifecycle_change"}}
+        if newly_visible and self.visible_merge_reviewer:
+            self.postgres_repository.queue_visible_merge_scan()
+        elif newly_visible:
+            extra = self._review_topic_pairs(newly_visible, at) if self.topic_merge_reviewer else self._consolidate_dirty_topics(newly_visible, at)
+            merges.extend(extra)
+            affected.update(value for row in extra for value in (row["source_topic_id"],row["target_topic_id"]))
+            targets = {row["target_topic_id"] for row in extra}
+            if targets:
+                briefs.extend(self._refresh_briefs(targets, at, {}, force_topic_ids=targets))
+        return {"topic_merges":merges,"brief_refresh_requests":briefs,
+                "semantic_review":{**review_result,"pending":self._count_pending_claim_reviews()}}
+
     def _merge_visible_topics(self, topic_ids: set[str], at: str) -> list[dict[str, str]]:
         """Run the configured merge path after topics become visible."""
+        if self.postgres_repository is not None:
+            requests = self._review_topic_pairs(topic_ids, at) if self.topic_merge_reviewer else self._consolidate_dirty_topics(topic_ids, at)
+            return requests
         self.connection.commit()
         requests = (
             self._review_topic_pairs(topic_ids, at)
@@ -1468,6 +1750,9 @@ class TopicAggregator:
         return requests
 
     def queue_visible_merge_scan(self) -> None:
+        if self.postgres_repository is not None:
+            self.postgres_repository.queue_visible_merge_scan()
+            return
         self.connection.execute(
             "UPDATE topic_merge_scan_state SET pending_new_visible=1,request_seq=request_seq+1 WHERE singleton_key='global'"
         )
@@ -1476,9 +1761,10 @@ class TopicAggregator:
     def visible_merge_scan_due(self, at: datetime | str, *, force: bool = False) -> str | None:
         if not self.visible_merge_reviewer:
             return None
-        row = self.connection.execute(
-            "SELECT * FROM topic_merge_scan_state WHERE singleton_key='global'"
-        ).fetchone()
+        if self.postgres_repository is not None:
+            row = self.postgres_repository.visible_merge_scan_state()
+        else:
+            row = self.connection.execute("SELECT * FROM topic_merge_scan_state WHERE singleton_key='global'").fetchone()
         current = dt(iso(at))
         if not force and row["next_retry_at"] and current < dt(row["next_retry_at"]):
             return None
@@ -1488,6 +1774,8 @@ class TopicAggregator:
         return "new_visible" if row["pending_new_visible"] else None
 
     def _visible_merge_cards(self) -> list[dict[str, Any]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.visible_merge_cards()
         rows = self.connection.execute(
             "SELECT t.topic_id,t.first_seen_at,b.revision,b.title,b.brief,b.content_hash,b.source_claim_ids_json "
             "FROM topics t JOIN brief_revisions b ON b.topic_id=t.topic_id "
@@ -1498,6 +1786,8 @@ class TopicAggregator:
         return [dict(row) for row in rows]
 
     def _visible_merge_evidence(self, topic_id: str) -> list[dict[str, str]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.visible_merge_evidence(topic_id)
         brief = self.connection.execute(
             "SELECT source_claim_ids_json FROM brief_revisions WHERE topic_id=? ORDER BY revision DESC LIMIT 1",
             (topic_id,),
@@ -1533,6 +1823,8 @@ class TopicAggregator:
         return [sorted(component) for component in sorted(components, key=lambda value: sorted(value)[0])]
 
     def scan_visible_topics(self, at: datetime | str, *, force: bool = False) -> dict[str, Any] | None:
+        if self.postgres_repository is not None:
+            return self._scan_visible_topics_postgres(at, force=force)
         trigger = self.visible_merge_scan_due(at, force=force)
         if not trigger:
             return None
@@ -1601,7 +1893,7 @@ class TopicAggregator:
                     for source_id in ids:
                         if source_id != target_id:
                             merges.append(self._merge_topic(source_id, target_id, scan_at, f"editorial: {compact(decision.get('reason'))}", preserve_identity=True))
-                    self._refresh_all_topics(scan_at)
+                    self._refresh_all_topics(scan_at, topic_ids={target_id})
                     self.connection.commit()
                     brief_requests = self._refresh_briefs(
                         {target_id}, scan_at, {}, force_topic_ids={target_id},
@@ -1634,6 +1926,50 @@ class TopicAggregator:
             )
             self.connection.commit()
             return {"scan_id": scan_id, "topics": len(cards), "groups": len(deep), "merges": merges, "error": str(exc), "retry_at": retry_at}
+
+    def _scan_visible_topics_postgres(self, at: datetime | str, *, force: bool = False) -> dict[str, Any] | None:
+        trigger = self.visible_merge_scan_due(at, force=force)
+        if not trigger:
+            return None
+        scan_at=iso(at); state=self.postgres_repository.visible_merge_scan_state(); request_seq=int(state.get("request_seq") or 0)
+        cards=self._visible_merge_cards(); evidence_by_id={row["topic_id"]:self._visible_merge_evidence(row["topic_id"]) for row in cards}
+        snapshot={row["topic_id"]:(row["revision"],row["content_hash"],hashlib.sha256(json_dumps(evidence_by_id[row["topic_id"]]).encode()).hexdigest()) for row in cards}
+        input_hash=hashlib.sha256(json_dumps(snapshot).encode()).hexdigest(); scan_id=stable_id("topic-merge-scan",scan_at,input_hash)
+        self.postgres_repository.create_visible_merge_scan(scan_id=scan_id,started_at=dt(scan_at),trigger=trigger,input_hash=input_hash,topic_ids=sorted(snapshot),request_seq=request_seq)
+        coarse=[]; deep=[]; merges=[]
+        try:
+            if len(cards)>=2:
+                coarse=list(self.visible_merge_reviewer.propose([{"id":row["topic_id"],"title":row["title"],"summary":row["brief"][:700]} for row in cards]))
+                groups=self._combine_merge_groups(coarse,set(snapshot)); by_id={row["topic_id"]:row for row in cards}
+                for ids in groups:
+                    case=[{"id":topic_id,"title":by_id[topic_id]["title"],"brief":by_id[topic_id]["brief"],"evidence":evidence_by_id[topic_id]} for topic_id in ids]
+                    decision=dict(self.visible_merge_reviewer.review(case)); decision["ids"]=ids; deep.append(decision)
+                    if decision.get("decision")!="merge" or float(decision.get("confidence") or 0)<0.8: continue
+                    evidence=decision.get("evidence_claim_ids")
+                    if not isinstance(evidence,dict) or any(not isinstance(evidence.get(topic_id),list) or not set(evidence[topic_id]) & {r["claim_id"] for r in topic["evidence"]} for topic_id,topic in zip(ids,case)) or not compact(decision.get("shared_fact")):
+                        raise ValueError("visible topic merge review lacks evidence for every topic")
+                    fresh_cards={row["topic_id"]:row for row in self._visible_merge_cards()}
+                    fresh={topic_id:(fresh_cards[topic_id]["revision"],fresh_cards[topic_id]["content_hash"],hashlib.sha256(json_dumps(self._visible_merge_evidence(topic_id)).encode()).hexdigest()) for topic_id in ids if topic_id in fresh_cards}
+                    if fresh!= {topic_id:snapshot[topic_id] for topic_id in ids}:
+                        raise RuntimeError("visible topic changed during merge review")
+                    target_id=min(ids,key=lambda topic_id:(iso(by_id[topic_id]["first_seen_at"]),topic_id))
+                    cited={claim_id for topic_id in ids for claim_id in json_loads(by_id[topic_id]["source_claim_ids_json"],[])}
+                    cited.update(claim_id for values in evidence.values() for claim_id in values)
+                    for source_id in ids:
+                        if source_id!=target_id:
+                            merges.append(self.postgres_repository.consolidate_topic_pair(source_topic_id=source_id,target_topic_id=target_id,at=dt(scan_at),reason=f"editorial: {compact(decision.get('reason'))}"))
+                    self.postgres_repository.refresh_topic_identity(topic_id=target_id,at=scan_at)
+                    self._update_retrieval(target_id,scan_at)
+                    self._refresh_all_topics(scan_at,topic_ids={target_id})
+                    brief_requests=self._refresh_briefs({target_id},scan_at,{},force_topic_ids={target_id},evidence_claim_ids=cited,editorial_guidance=decision)
+                    if any(row.get("brief_status") in {"error","deferred"} for row in brief_requests):
+                        raise RuntimeError("merged topic brief refresh failed")
+            self.postgres_repository.complete_visible_merge_scan(scan_id=scan_id,completed_at=UTC_NOW(),coarse=coarse,deep=deep,merge_ids=[row["merge_id"] for row in merges],request_seq=request_seq,trigger=trigger)
+            return {"scan_id":scan_id,"topics":len(cards),"groups":len(deep),"merges":merges}
+        except Exception as exc:
+            retry_at=dt(scan_at)+timedelta(minutes=15)
+            self.postgres_repository.fail_visible_merge_scan(scan_id=scan_id,failed_at=UTC_NOW(),error=f"{type(exc).__name__}: {exc}"[:1000],retry_at=retry_at)
+            return {"scan_id":scan_id,"topics":len(cards),"groups":len(deep),"merges":merges,"error":str(exc),"retry_at":retry_at.isoformat()}
 
     def repair_visible_merge_brief(self, merge_id: str, at: datetime | str) -> dict[str, Any]:
         merge = self.connection.execute(
@@ -1753,6 +2089,11 @@ class TopicAggregator:
         return ",".join(dict.fromkeys(found)) or "一般讨论"
 
     def _insert_claim(self, claim: Claim, created_at: str) -> None:
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is None:
+                raise RuntimeError("PostgreSQL claim insert requires an active aggregation transaction")
+            self._aggregation_uow.insert_claim(claim=claim, created_at=created_at)
+            return
         self.connection.execute(
             "INSERT OR IGNORE INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -1879,15 +2220,21 @@ class TopicAggregator:
             for claim_id, topic_ids in candidate_topic_ids_by_claim.items()
         }
         topic_profiles: list[dict[str, Any]] = []
-        for topic_id in selected_topic_ids:
-            topic = self.connection.execute(
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is not None:
+                topic_profiles = self._aggregation_uow.candidate_topic_profiles(selected_topic_ids)
+            else:
+                topic_profiles = self.postgres_repository.candidate_topic_profiles(selected_topic_ids)
+        else:
+            for topic_id in selected_topic_ids:
+                topic = self.connection.execute(
                 "SELECT topic_id,working_title,canonical_subject,core_entities_json,event_or_issue "
                 "FROM topics WHERE topic_id=?",
                 (topic_id,),
-            ).fetchone()
-            if topic is None:
-                continue
-            evidence = self.connection.execute(
+                ).fetchone()
+                if topic is None:
+                    continue
+                evidence = self.connection.execute(
                 "SELECT ci.activity_account,cl.claim_text FROM memberships m "
                 "JOIN claims cl ON cl.claim_id=m.claim_id "
                 "JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
@@ -1895,8 +2242,8 @@ class TopicAggregator:
                 "WHERE m.topic_id=? AND m.superseded_by IS NULL AND r.decision='support' "
                 "ORDER BY ci.created_at DESC LIMIT 3",
                 (topic_id,),
-            ).fetchall()
-            topic_profiles.append({
+                ).fetchall()
+                topic_profiles.append({
                 "topic_id": topic_id,
                 "title": topic["working_title"][:180],
                 "canonical_subject": topic["canonical_subject"][:180],
@@ -1906,7 +2253,7 @@ class TopicAggregator:
                     {"account": row["activity_account"], "text": row["claim_text"][:240]}
                     for row in evidence
                 ],
-            })
+                })
 
         available_topic_ids = {topic["topic_id"] for topic in topic_profiles}
         candidate_topic_ids_by_claim = {
@@ -1978,6 +2325,11 @@ class TopicAggregator:
     def _create_seed(self, claim: Claim, item: ContentItem, at: str) -> str:
         topic_id = stable_id("topic", claim.claim_id)
         subject = compact(claim.claim_text)[:120]
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is None:
+                raise RuntimeError("PostgreSQL topic seed requires an active aggregation transaction")
+            self._aggregation_uow.create_seed(topic_id=topic_id, claim=claim, item=item)
+            return topic_id
         self.connection.execute(
             # Seed IDs are deterministic so an inbox retry can encounter a
             # topic that was committed before the inbox marker was updated.
@@ -2009,6 +2361,15 @@ class TopicAggregator:
     ) -> None:
         best_score = next((candidate.score for candidate in candidates if candidate.topic_id == topic_id), 0.0)
         relation_values = self._relations(claim)
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is None:
+                raise RuntimeError("PostgreSQL topic attachment requires an active aggregation transaction")
+            self._aggregation_uow.attach_claim(
+                claim=claim, topic_id=topic_id, score=best_score, reason=reason, source=source, item=item, at=at,
+                relations=relation_values, membership_role=self._membership_role(claim), defer_participation=defer_participation,
+            )
+            self._update_retrieval(topic_id, at)
+            return
         topic = self.connection.execute("SELECT event_or_issue FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         for relation in relation_values:
             thread_id = self._ensure_thread(topic_id, relation, claim, at)
@@ -2049,6 +2410,14 @@ class TopicAggregator:
         if decision not in SEMANTIC_REVIEW_DECISIONS:
             raise ValueError(f"invalid semantic review decision: {decision}")
         confidence = min(1.0, max(0.0, float(confidence)))
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is None:
+                raise RuntimeError("PostgreSQL claim review requires an active aggregation transaction")
+            self._aggregation_uow.store_claim_review(
+                claim_id=claim_id,topic_id=topic_id,decision=decision,confidence=confidence,reason=compact(reason),model=model,
+                reasoning_effort=reasoning_effort,input_hash=input_hash,reviewed_at=reviewed_at,error=error,
+            )
+            return
         self.connection.execute(
             "INSERT OR REPLACE INTO topic_claim_reviews("
             "claim_id,topic_id,decision,confidence,reason,model,reasoning_effort,input_hash,reviewed_at,error"
@@ -2060,6 +2429,10 @@ class TopicAggregator:
         )
 
     def _semantic_review_case(self, claim_id: str, topic_id: str, pending: set[tuple[str, str]]) -> dict[str, Any] | None:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.semantic_review_case(
+                claim_id=claim_id, topic_id=topic_id, pending=pending,
+            )
         row = self.connection.execute(
             "SELECT cl.*,ci.activity_account,ci.created_at,ci.tweet_id,ci.source_url,"
             "t.working_title,t.canonical_subject,t.core_entities_json,t.event_or_issue,t.identity_revision "
@@ -2129,6 +2502,10 @@ class TopicAggregator:
         topic_ids = sorted(set(topic_ids))
         if not topic_ids or limit <= 0:
             return set()
+        if self.postgres_repository is not None:
+            return self.postgres_repository.unreviewed_claim_targets(
+                topic_ids=topic_ids, limit=limit, exclude=exclude,
+            )
         marks = ",".join("?" for _ in topic_ids)
         rows = self.connection.execute(
             "SELECT m.claim_id,m.topic_id FROM memberships m "
@@ -2158,11 +2535,16 @@ class TopicAggregator:
         result = {"enabled": True, "requested": len(cases), "support": 0, "context": 0, "unrelated": 0, "fallback": 0, "model_calls": 0}
         misses: list[dict[str, Any]] = []
         for case in cases:
-            cached = self.connection.execute(
-                "SELECT decision,confidence,reason,model,reasoning_effort,error FROM topic_claim_reviews "
-                "WHERE claim_id=? AND topic_id=? AND input_hash=?",
-                (case["claim_id"], case["topic_id"], case["input_hash"]),
-            ).fetchone()
+            if self.postgres_repository is not None:
+                cached = self.postgres_repository.cached_claim_review(
+                    claim_id=case["claim_id"], topic_id=case["topic_id"], input_hash=case["input_hash"],
+                )
+            else:
+                cached = self.connection.execute(
+                    "SELECT decision,confidence,reason,model,reasoning_effort,error FROM topic_claim_reviews "
+                    "WHERE claim_id=? AND topic_id=? AND input_hash=?",
+                    (case["claim_id"], case["topic_id"], case["input_hash"]),
+                ).fetchone()
             if cached is None or cached["error"]:
                 misses.append(case)
                 continue
@@ -2182,36 +2564,62 @@ class TopicAggregator:
                 }
             except Exception as exc:
                 error_message = f"{type(exc).__name__}: {str(exc).strip() or 'semantic reviewer failed'}"
-            for case in chunk:
-                response = response_by_case.get(case["case_id"], {})
-                decision = compact(response.get("decision"))
-                fallback = not error_message and decision not in SEMANTIC_REVIEW_DECISIONS
-                if error_message or fallback:
-                    decision = "support"
-                    result["fallback"] += 1
-                    reason = "AI复核失败，沿用确定性聚合结果" if error_message else "AI复核返回了无效分类，沿用确定性聚合结果"
-                    error = error_message or "invalid_decision"
-                    confidence = 0.0
-                else:
-                    reason = compact(response.get("reason")) or "AI语义复核"
-                    error = None
-                    try:
-                        confidence = min(1.0, max(0.0, float(response.get("confidence", 0.0))))
-                    except (TypeError, ValueError):
-                        confidence = 0.0
-                result[decision] = result.get(decision, 0) + 1
-                self._store_topic_claim_review(
-                    case["claim_id"], case["topic_id"], decision, reason,
-                    confidence=confidence,
-                    model=compact(response.get("model")) or getattr(self.semantic_reviewer, "model", ""),
-                    reasoning_effort=compact(response.get("reasoning_effort")) or getattr(self.semantic_reviewer, "reasoning_effort", ""),
-                    input_hash=case["input_hash"], reviewed_at=at, error=error,
-                )
-            self.connection.commit()
+            write_context = self.postgres_repository.aggregation_transaction() if self.postgres_repository is not None else nullcontext(None)
+            with write_context as unit:
+                previous_uow = self._aggregation_uow
+                if self.postgres_repository is not None:
+                    self._aggregation_uow = unit
+                try:
+                    for case in chunk:
+                        if unit is not None:
+                            current_case = unit.semantic_review_case(
+                                claim_id=case["claim_id"], topic_id=case["topic_id"], pending=pending,
+                            )
+                            if not current_case or current_case["input_hash"] != case["input_hash"]:
+                                continue
+                        response = response_by_case.get(case["case_id"], {})
+                        decision = compact(response.get("decision"))
+                        fallback = not error_message and decision not in SEMANTIC_REVIEW_DECISIONS
+                        if error_message or fallback:
+                            decision = "support"
+                            result["fallback"] += 1
+                            reason = "AI复核失败，沿用确定性聚合结果" if error_message else "AI复核返回了无效分类，沿用确定性聚合结果"
+                            error = error_message or "invalid_decision"
+                            confidence = 0.0
+                        else:
+                            reason = compact(response.get("reason")) or "AI语义复核"
+                            error = None
+                            try:
+                                confidence = min(1.0, max(0.0, float(response.get("confidence", 0.0))))
+                            except (TypeError, ValueError):
+                                confidence = 0.0
+                        result[decision] = result.get(decision, 0) + 1
+                        self._store_topic_claim_review(
+                            case["claim_id"], case["topic_id"], decision, reason,
+                            confidence=confidence,
+                            model=compact(response.get("model")) or getattr(self.semantic_reviewer, "model", ""),
+                            reasoning_effort=compact(response.get("reasoning_effort")) or getattr(self.semantic_reviewer, "reasoning_effort", ""),
+                            input_hash=case["input_hash"], reviewed_at=at, error=error,
+                        )
+                finally:
+                    self._aggregation_uow = previous_uow
+            if self.postgres_repository is None:
+                self.connection.commit()
         return result
 
     def _rebuild_topic_participations(self, topic_ids: set[str], at: str) -> None:
         """Recompute participants from support claims, excluding context-only links."""
+        if self.postgres_repository is not None:
+            with self.postgres_repository.aggregation_transaction() as unit:
+                unit.rebuild_topic_participations(topic_ids=topic_ids)
+                previous_uow = self._aggregation_uow
+                self._aggregation_uow = unit
+                try:
+                    for topic_id in sorted(topic_ids):
+                        self._update_retrieval(topic_id, at)
+                finally:
+                    self._aggregation_uow = previous_uow
+            return
         for topic_id in sorted(topic_ids):
             topic = self.connection.execute("SELECT topic_id FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
             if topic is None:
@@ -2357,19 +2765,24 @@ class TopicAggregator:
         return leaders
 
     def _topic_event_profile(self, topic_id: str) -> dict[str, Any] | None:
-        topic = self.connection.execute(
-            "SELECT * FROM topics WHERE topic_id=? AND matching_status IN ('seed','active')", (topic_id,)
-        ).fetchone()
+        if self.postgres_repository is not None:
+            topic, rows, participants = self.postgres_repository.topic_event_profile_rows(topic_id)
+        else:
+            topic = self.connection.execute(
+                "SELECT * FROM topics WHERE topic_id=? AND matching_status IN ('seed','active')", (topic_id,)
+            ).fetchone()
+            rows = []
         if not topic:
             return None
-        rows = self.connection.execute(
+        if self.postgres_repository is None:
+            rows = self.connection.execute(
             "SELECT cl.*,ci.activity_account,ci.created_at,ci.tweet_id FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
             "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
             "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
             "GROUP BY cl.claim_id ORDER BY ci.created_at",
             (topic_id,),
-        ).fetchall()
+            ).fetchall()
         if not rows:
             return None
 
@@ -2395,12 +2808,13 @@ class TopicAggregator:
                 contract_accounts[contract.lower()].add(row["activity_account"])
         identity = self._event_identity(rows)
         event_kinds = self._event_kinds(rows)
-        participants = {
-            row["activity_account"]
-            for row in self.connection.execute(
-                "SELECT activity_account FROM topic_participations WHERE topic_id=?", (topic_id,)
-            )
-        }
+        if self.postgres_repository is None:
+            participants = {
+                row["activity_account"]
+                for row in self.connection.execute(
+                    "SELECT activity_account FROM topic_participations WHERE topic_id=?", (topic_id,)
+                )
+            }
         event_score = (
             len(launch_accounts) * 4
             + len(mechanism_accounts) * 3
@@ -2710,6 +3124,8 @@ class TopicAggregator:
         }
 
     def _count_pending_claim_reviews(self) -> int:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.count_pending_claim_reviews()
         return self.connection.execute(
             "SELECT COUNT(*) FROM memberships m JOIN topics t ON t.topic_id=m.topic_id "
             "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
@@ -2720,6 +3136,8 @@ class TopicAggregator:
     def _review_topic_pairs(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
         if not self.topic_merge_reviewer:
             return []
+        if self.postgres_repository is not None:
+            return self._review_topic_pairs_postgres(dirty_topic_ids, at)
         visible_ids = {
             row["topic_id"]
             for row in self.connection.execute(
@@ -2818,7 +3236,143 @@ class TopicAggregator:
                             requests.append(self._merge_topic(source["topic_id"], target["topic_id"], at, f"semantic: {reason}"))
         return requests
 
+    def _review_topic_pairs_postgres(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        visible_ids = self.postgres_repository.visible_open_topic_ids(dirty_topic_ids)
+        pairs: dict[tuple[str, str], dict[str, Any]] = {}
+        for topic_id in sorted(visible_ids):
+            profile = self._topic_event_profile(topic_id)
+            if not profile:
+                continue
+            candidates = set()
+            for feature in profile["identity"].lookup_terms:
+                candidates.update(self._feature_index.get(f"t:{feature}", set()))
+            if not candidates:
+                candidates.update(self.postgres_repository.topic_identity_candidate_ids(profile["identity"].lookup_terms))
+            for candidate_id in candidates - {topic_id}:
+                other = self._topic_event_profile(candidate_id)
+                if not other or other["topic"]["visibility"] != "visible":
+                    continue
+                left_id, right_id = sorted((topic_id, candidate_id))
+                left, right = (profile, other) if topic_id == left_id else (other, profile)
+                case = {"case_id": stable_id("topic-pair", left_id, right_id),
+                        "left": self._topic_pair_snapshot(left), "right": self._topic_pair_snapshot(right)}
+                case["input_hash"] = hashlib.sha256(json_dumps(case).encode()).hexdigest()
+                old = self.postgres_repository.topic_pair_review(left_id, right_id)
+                if old and old["input_hash"] == case["input_hash"] and (
+                    old["decision"] != "failed" or (old["next_attempt_at"] and old["next_attempt_at"] > dt(at))
+                ):
+                    continue
+                pairs[(left_id, right_id)] = case
+        requests: list[dict[str, str]] = []
+        selected = list(pairs.items())[:40]
+        for offset in range(0, len(selected), 10):
+            chunk = selected[offset:offset + 10]
+            error = "invalid topic pair review"
+            try:
+                responses = self.topic_merge_reviewer([case for _, case in chunk])
+                by_id = {str(row["case_id"]): row for row in responses}
+            except Exception as exc:
+                by_id = {}
+                error = f"{type(exc).__name__}: {exc}"[:1000]
+            for (left_id, right_id), case in chunk:
+                response = by_id.get(case["case_id"], {})
+                decision = str(response.get("decision") or "")
+                evidence_ids = set(response.get("evidence_claim_ids") or [])
+                left_ids = {row["claim_id"] for row in case["left"]["evidence"]}
+                right_ids = {row["claim_id"] for row in case["right"]["evidence"]}
+                try:
+                    confidence = float(response.get("confidence") or 0)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                if decision == "merge" and not (confidence >= 0.8 and evidence_ids & left_ids and evidence_ids & right_ids and compact(response.get("shared_event_fact"))):
+                    decision = "failed"
+                if decision not in {"merge", "separate"}:
+                    decision = "failed"
+                reason = compact(response.get("reason")) if decision != "failed" else error
+                fresh_left, fresh_right = self._topic_event_profile(left_id), self._topic_event_profile(right_id)
+                fresh_hash = None
+                if fresh_left and fresh_right:
+                    fresh_case = {"case_id": case["case_id"], "left": self._topic_pair_snapshot(fresh_left), "right": self._topic_pair_snapshot(fresh_right)}
+                    fresh_hash = hashlib.sha256(json_dumps(fresh_case).encode()).hexdigest()
+                if fresh_hash != case["input_hash"]:
+                    decision, reason = "failed", "topic evidence changed during review"
+                self.postgres_repository.save_topic_pair_review(
+                    left_topic_id=left_id, right_topic_id=right_id, input_hash=case["input_hash"], decision=decision,
+                    reason=reason, response=response, reviewed_at=dt(at),
+                    retry_at=dt(at) + timedelta(minutes=15) if decision == "failed" else None,
+                )
+                if decision == "merge" and fresh_left and fresh_right:
+                    rank = lambda value: (value["topic"]["matching_status"] == "active", -dt(iso(value["topic"]["started_at"])).timestamp())
+                    target, source = (fresh_left, fresh_right) if rank(fresh_left) >= rank(fresh_right) else (fresh_right, fresh_left)
+                    request = self.postgres_repository.consolidate_topic_pair(
+                        source_topic_id=source["topic_id"], target_topic_id=target["topic_id"], at=dt(at), reason=f"semantic: {reason}",
+                    )
+                    requests.append(request)
+                    self.postgres_repository.refresh_topic_identity(topic_id=target["topic_id"], at=at)
+                    self._update_retrieval(target["topic_id"], at)
+        return requests
+
+    @staticmethod
+    def _topic_pair_snapshot(profile: dict[str, Any]) -> dict[str, Any]:
+        return {"topic_id": profile["topic_id"], "title": profile["topic"]["working_title"],
+                "subject": profile["topic"]["canonical_subject"], "event_or_issue": profile["topic"]["event_or_issue"],
+                "started_at": iso(profile["topic"]["started_at"]),
+                "last_evidence_at": iso(profile["topic"]["last_evidence_at"]) if profile["topic"]["last_evidence_at"] else None,
+                "evidence": [{"claim_id": row["claim_id"], "account": row["activity_account"], "text": row["claim_text"]}
+                             for row in profile["rows"][-6:]]}
+
     def _consolidate_dirty_topics(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        if self.postgres_repository is not None:
+            label_support: defaultdict[str, set[str]] = defaultdict(set)
+            dollar_support: set[str] = set()
+            for row in self.postgres_repository.consolidation_evidence():
+                text = compact(row["claim_text"])
+                for label in RE_HASHTAG.findall(text):
+                    label_support[label.lower().lstrip("#")].add(row["activity_account"])
+                for asset in asset_labels(text):
+                    label_support[asset].add(row["activity_account"])
+                    dollar_support.add(asset)
+            queue = list(sorted(self.postgres_repository.visible_open_topic_ids(dirty_topic_ids)))
+            considered: set[tuple[str, str]] = set()
+            requests: list[dict[str, str]] = []
+            while queue:
+                topic_id = queue.pop(0)
+                profile = self._topic_event_profile(topic_id)
+                if not profile:
+                    continue
+                candidates = set()
+                for feature in profile["identity"].lookup_terms:
+                    candidates.update(self._feature_index.get(f"t:{feature}", set()))
+                if not candidates:
+                    candidates.update(self.postgres_repository.topic_identity_candidate_ids(profile["identity"].lookup_terms))
+                for candidate_id in sorted(candidates - {topic_id}):
+                    pair = tuple(sorted((topic_id, candidate_id)))
+                    if pair in considered:
+                        continue
+                    considered.add(pair)
+                    candidate = self._topic_event_profile(candidate_id)
+                    if not candidate or candidate["topic"]["visibility"] != "visible":
+                        continue
+                    should_merge, reason = self._topics_share_continuous_subject(profile, candidate, label_support, dollar_support)
+                    if not should_merge:
+                        continue
+                    left = (profile["event_score"], len(profile["participants"]), -dt(iso(profile["topic"]["started_at"])).timestamp())
+                    right = (candidate["event_score"], len(candidate["participants"]), -dt(iso(candidate["topic"]["started_at"])).timestamp())
+                    target, source = (profile, candidate) if left >= right else (candidate, profile)
+                    request = self.postgres_repository.consolidate_topic_pair(
+                        source_topic_id=source["topic_id"], target_topic_id=target["topic_id"], at=dt(at), reason=reason,
+                    )
+                    requests.append(request)
+                    self.postgres_repository.refresh_topic_identity(topic_id=target["topic_id"], at=at)
+                    self._update_retrieval(target["topic_id"], at)
+                    cached = self._retrieval_cache.get(source["topic_id"])
+                    if cached:
+                        cached["matching_status"] = "archived"
+                    profile = self._topic_event_profile(target["topic_id"])
+                    if profile:
+                        queue.append(target["topic_id"])
+                    break
+            return requests
         requests: list[dict[str, str]] = []
         label_support: defaultdict[str, set[str]] = defaultdict(set)
         dollar_support: set[str] = set()
@@ -2914,6 +3468,47 @@ class TopicAggregator:
         return thread_id
 
     def _update_retrieval(self, topic_id: str, at: str) -> None:
+        if self.postgres_repository is not None:
+            if self._aggregation_uow is not None:
+                rows, topic = self._aggregation_uow.retrieval_source_rows(topic_id)
+            else:
+                rows, topic = self.postgres_repository.topic_retrieval_source_rows(topic_id)
+            all_tokens: set[str] = set()
+            all_keys: set[str] = set()
+            all_entities: set[str] = set()
+            asset_accounts: defaultdict[str, set[str]] = defaultdict(set)
+            contract_accounts: defaultdict[str, set[str]] = defaultdict(set)
+            claim_rows: list[str] = []
+            for row in rows:
+                all_tokens.update(tokens(row["claim_text"]))
+                all_entities.update(row["entities_json"] or [])
+                refs = row["references_json"] or {}
+                if refs.get("quote_id"):
+                    all_keys.add(f"quote:{refs['quote_id']}")
+                if refs.get("reply_to"):
+                    all_keys.add(f"reply:{refs['reply_to']}")
+                all_keys.update((f"reply:{row['tweet_id']}", f"quote:{row['tweet_id']}", f"content:{row['tweet_id']}"))
+                for value in subject_tags(row["claim_text"]):
+                    asset_accounts[value].add(row["activity_account"])
+                for value in RE_CONTRACT.findall(row["claim_text"]):
+                    contract_accounts[value.lower()].add(row["activity_account"])
+                claim_rows.append(row["claim_id"])
+            primary_assets = self._primary_identity_values(asset_accounts)
+            primary_contracts = self._primary_identity_values(contract_accounts)
+            all_keys.update(f"asset:{value}" for value in primary_assets)
+            all_keys.update(f"contract:{value}" for value in primary_contracts)
+            save_retrieval = self._aggregation_uow.save_retrieval_state if self._aggregation_uow is not None else self.postgres_repository.save_topic_retrieval_state
+            save_retrieval(
+                topic_id=topic_id,tokens=sorted(all_tokens),hard_keys=sorted(all_keys),entities=sorted(all_entities),
+                representative_claim_ids=claim_rows[-4:],recent_claim_ids=claim_rows[:12],updated_at=at,
+            )
+            if topic:
+                self._cache_topic(topic_id, {
+                    "topic_id":topic_id,"matching_status":topic["matching_status"],"event_or_issue":topic["event_or_issue"],
+                    "last_evidence_at":topic["last_evidence_at"],"started_at":topic["started_at"],"tokens":all_tokens,
+                    "hard_keys":all_keys,"entities":all_entities,"primary_assets":primary_assets,"primary_contracts":primary_contracts,
+                })
+            return
         rows = self.connection.execute(
             "SELECT cl.claim_id, cl.claim_text, cl.entities_json, cl.content_item_id, ci.tweet_id, ci.created_at, "
             "ci.activity_account, ci.references_json "
@@ -2970,6 +3565,16 @@ class TopicAggregator:
             })
 
     def _load_retrieval_cache(self) -> None:
+        if self.postgres_repository is not None:
+            rows = self.postgres_repository.load_topic_retrieval_cache()
+            for row in rows:
+                self._cache_topic(row["topic_id"], {
+                    "topic_id": row["topic_id"], "matching_status": row["matching_status"],
+                    "event_or_issue": row["event_or_issue"], "last_evidence_at": row["last_evidence_at"],
+                    "started_at": row["started_at"], "tokens": set(row["tokens_json"] or []),
+                    "hard_keys": set(row["hard_keys_json"] or []), "entities": set(row["entities_json"] or []),
+                })
+            return
         rows = self.connection.execute(
             "SELECT t.topic_id,t.matching_status,t.event_or_issue,t.last_evidence_at,t.started_at,"
             "r.tokens_json,r.hard_keys_json,r.entities_json FROM topics t JOIN retrieval_state r "
@@ -3005,8 +3610,75 @@ class TopicAggregator:
         for feature in value["entities"]:
             self._feature_index[f"e:{feature}"].add(topic_id)
 
-    def _refresh_all_topics(self, at: str) -> dict[str, Any]:
-        rows = self.connection.execute("SELECT * FROM topics WHERE matching_status IN ('seed','active')").fetchall()
+    def _due_topic_ids(self, at: str, *, limit: int = 200) -> set[str]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.due_topic_ids(at=dt(at), limit=limit)
+        rows = self.connection.execute(
+            "SELECT topic_id FROM topics WHERE matching_status IN ('seed','active') "
+            "AND (lifecycle_refresh_at IS NULL OR lifecycle_refresh_at<=?) "
+            "ORDER BY lifecycle_refresh_at,topic_id LIMIT ?",
+            (at, max(1, min(1000, int(limit)))),
+        ).fetchall()
+        return {str(row["topic_id"]) for row in rows}
+
+    def has_due_topic_refresh(self, at: datetime | str) -> bool:
+        return bool(self._due_topic_ids(iso(at), limit=1))
+
+    def _refresh_all_topics(
+        self, at: str, *, topic_ids: Iterable[str] | None = None, due_limit: int = 200,
+    ) -> dict[str, Any]:
+        current = dt(at)
+        selected = set(topic_ids or ()) | self._due_topic_ids(at, limit=due_limit)
+        if not selected:
+            return {"transitions": {}, "affected_topic_ids": [], "refreshed_count": 0}
+        if self.postgres_repository is not None:
+            transitions: dict[str, dict[str, str]] = {}
+            affected: set[str] = set()
+            transaction = nullcontext(self._aggregation_uow) if self._aggregation_uow is not None else self.postgres_repository.aggregation_transaction()
+            with transaction as unit:
+                rows = unit.topic_state_rows(selected)
+                for row in rows:
+                    old_status, old_visibility = row["matching_status"], row["visibility"]
+                    topic_id = row["topic_id"]
+                    events = unit.topic_participation_rows(topic_id)
+                    assessment_rows = unit.lifecycle_assessment_rows(topic_id=topic_id, cutoff=current-timedelta(hours=24))
+                    assessment = self._assess_topic_from_rows(assessment_rows)
+                    count_events = [event for event in events if event["activity_account"] in assessment.qualified_accounts] if assessment.qualified_accounts else events
+                    counts = [sum(1 for event in count_events if dt(iso(event["last_participation_at"])) >= current-timedelta(hours=hours)) for hours in (1,6,24)]
+                    latest = max((event["last_participation_at"] for event in events), default=None)
+                    status, visibility = old_status, old_visibility
+                    if old_status == "seed":
+                        if counts[2] >= MIN_VISIBLE_PARTICIPANTS and assessment.qualifies:
+                            status, visibility = "active", "hidden"
+                        elif current >= dt(iso(row["seed_expires_at"])):
+                            status, visibility = "archived", "hidden"
+                    elif old_status == "active" and counts[2] < MIN_VISIBLE_PARTICIPANTS:
+                        status, visibility = "archived", "hidden"
+                    velocity = counts[0] / 1.0
+                    hotness = round(counts[0] + counts[1]*0.5 + counts[2]*0.25 + velocity*0.1, 4)
+                    became_hotspot = counts[2] >= MIN_VISIBLE_PARTICIPANTS and assessment.qualifies
+                    archived_at = at if status == "archived" and old_status != "archived" else row["archived_at"]
+                    edges = [dt(iso(event["last_participation_at"]))+timedelta(hours=hours,microseconds=1) for event in events for hours in (1,6,24)]
+                    edges = [edge for edge in edges if edge > current]
+                    if status == "seed" and dt(iso(row["seed_expires_at"])) > current:
+                        edges.append(dt(iso(row["seed_expires_at"])))
+                    next_refresh = min(edges).isoformat() if status in {"seed","active"} and edges else None
+                    unit.update_topic_lifecycle(topic_id=topic_id,matching_status=status,visibility=visibility,archived_at=archived_at,
+                                                retention_tier="permanent" if became_hotspot else row["retention_tier"],
+                                                lifecycle_refresh_at=next_refresh,refreshed_at=at)
+                    unit.update_topic_metrics(topic_id=topic_id,last_participation_at=latest,counts=counts,velocity=velocity,hotness=hotness)
+                    if status != old_status or visibility != old_visibility:
+                        transitions[topic_id] = {"from":f"{old_status}+{old_visibility}","to":f"{status}+{visibility}"}
+                        affected.add(topic_id)
+                    cached = self._retrieval_cache.get(topic_id)
+                    if cached:
+                        cached["matching_status"] = status
+            return {"transitions":transitions,"affected_topic_ids":sorted(affected),"refreshed_count":len(rows)}
+        marks = ",".join("?" for _ in selected)
+        rows = self.connection.execute(
+            f"SELECT * FROM topics WHERE matching_status IN ('seed','active') AND topic_id IN ({marks})",
+            sorted(selected),
+        ).fetchall()
         transitions: dict[str, dict[str, str]] = {}
         affected: set[str] = set()
         for row in rows:
@@ -3015,7 +3687,6 @@ class TopicAggregator:
             events = self.connection.execute(
                 "SELECT activity_account,last_participation_at FROM topic_participations WHERE topic_id=?", (topic_id,)
             ).fetchall()
-            current = dt(at)
             assessment = self._assess_topic(topic_id, current)
             count_events = (
                 [event for event in events if event["activity_account"] in assessment.qualified_accounts]
@@ -3039,13 +3710,23 @@ class TopicAggregator:
             hotness = round(counts[0] * 1.0 + counts[1] * 0.5 + counts[2] * 0.25 + velocity * 0.1, 4)
             became_hotspot = counts[2] >= MIN_VISIBLE_PARTICIPANTS and assessment.qualifies
             archived_at = at if status == "archived" and old_status != "archived" else row["archived_at"]
+            refresh_edges = []
+            for event in events:
+                participation_at = dt(event["last_participation_at"])
+                for hours in (1, 6, 24):
+                    edge = participation_at + timedelta(hours=hours, microseconds=1)
+                    if edge > current:
+                        refresh_edges.append(edge)
+            if status == "seed" and dt(row["seed_expires_at"]) > current:
+                refresh_edges.append(dt(row["seed_expires_at"]))
+            next_refresh = min(refresh_edges).isoformat() if status in {"seed", "active"} and refresh_edges else None
             self.connection.execute(
                 "UPDATE topics SET matching_status=?,visibility=?,last_participation_at=?,participant_count_1h=?,participant_count_6h=?,"
-                "participant_count_24h=?,participant_velocity=?,hotness_score=?,archived_at=?,"
+                "participant_count_24h=?,participant_velocity=?,hotness_score=?,archived_at=?,lifecycle_refresh_at=?,"
                 "retention_tier=CASE WHEN ? THEN 'permanent' ELSE retention_tier END WHERE topic_id=?",
                 (
                     status, visibility, latest, counts[0], counts[1], counts[2], velocity, hotness,
-                    archived_at, int(became_hotspot), topic_id,
+                    archived_at, next_refresh, int(became_hotspot), topic_id,
                 ),
             )
             if status != old_status or visibility != old_visibility:
@@ -3054,19 +3735,29 @@ class TopicAggregator:
             cached = self._retrieval_cache.get(topic_id)
             if cached:
                 cached["matching_status"] = status
-        return {"transitions": transitions, "affected_topic_ids": sorted(affected)}
+        return {
+            "transitions": transitions,
+            "affected_topic_ids": sorted(affected),
+            "refreshed_count": len(rows),
+        }
 
     def _assess_topic(self, topic_id: str, current: datetime) -> TopicAssessment:
         """Decide whether a coherent event exists without asking the brief renderer."""
         cutoff = (current - timedelta(hours=24)).isoformat()
-        rows = self.connection.execute(
+        if self.postgres_repository is not None:
+            rows = self.postgres_repository.lifecycle_assessment_rows(topic_id=topic_id, cutoff=dt(cutoff))
+        else:
+            rows = self.connection.execute(
             "SELECT cl.*,ci.tweet_id,ci.activity_account,ci.references_json,ci.created_at FROM memberships m "
             "JOIN claims cl ON cl.claim_id=m.claim_id JOIN content_items ci ON ci.content_item_id=cl.content_item_id "
             "LEFT JOIN topic_claim_reviews r ON r.claim_id=m.claim_id AND r.topic_id=m.topic_id "
             "WHERE m.topic_id=? AND m.superseded_by IS NULL AND COALESCE(r.decision,'support')='support' "
             "AND ci.created_at>=? GROUP BY cl.claim_id",
             (topic_id, cutoff),
-        ).fetchall()
+            ).fetchall()
+        return self._assess_topic_from_rows(rows)
+
+    def _assess_topic_from_rows(self, rows: Sequence[dict[str, Any]]) -> TopicAssessment:
         all_accounts = {row["activity_account"] for row in rows}
         if not all_accounts:
             return TopicAssessment(frozenset(), 0.0, "", False)
@@ -3148,6 +3839,9 @@ class TopicAggregator:
         evidence_claim_ids: set[str] | None = None,
         editorial_guidance: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        if self.postgres_repository is not None:
+            return self._refresh_briefs_postgres(topic_ids, at, transitions, force_topic_ids=force_topic_ids,
+                                                 evidence_claim_ids=evidence_claim_ids, editorial_guidance=editorial_guidance)
         requests: list[dict[str, Any]] = []
         current = dt(at)
         forced = force_topic_ids or set()
@@ -3198,6 +3892,41 @@ class TopicAggregator:
             requests.append({"topic_id": topic_id, "revision": revision, "reason": reason, **result})
         return requests
 
+    def _refresh_briefs_postgres(self, topic_ids: set[str], at: str, transitions: dict[str, dict[str, str]], *,
+                                 force_topic_ids: set[str] | None = None, evidence_claim_ids: set[str] | None = None,
+                                 editorial_guidance: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        requests: list[dict[str, Any]] = []
+        current = dt(at)
+        forced = force_topic_ids or set()
+        for topic_id in sorted(topic_ids):
+            snapshot = self.postgres_repository.brief_snapshot(topic_id)
+            if not snapshot or snapshot["topic"]["matching_status"] != "active":
+                continue
+            topic = snapshot["topic"]
+            retry_after = topic.get("brief_retry_after")
+            if retry_after and current < dt(retry_after) and topic_id not in forced:
+                requests.append({"topic_id": topic_id, "revision": snapshot["revision"] + 1, "reason": "retry_deferred",
+                                 "brief_status": "deferred", "visibility": topic["visibility"], "retryable": True,
+                                 "retry_count": topic.get("brief_retry_count", 0), "retry_after": retry_after})
+                continue
+            last_revision = snapshot["revision"]
+            last_generated = snapshot.get("generated_at")
+            transition = transitions.get(topic_id, {})
+            if topic_id in forced:
+                reason = "topic_merge"
+            elif not last_revision:
+                reason = "became_visible"
+            elif transition.get("to", "").startswith("active+"):
+                reason = "visibility_or_lifecycle_change"
+            elif last_generated and current - dt(iso(last_generated)) < timedelta(minutes=15):
+                continue
+            else:
+                reason = "ordinary_substantive_update"
+            result = self._write_brief(topic_id, last_revision + 1, at, reason, evidence_claim_ids=evidence_claim_ids,
+                                       editorial_guidance=editorial_guidance)
+            requests.append({"topic_id": topic_id, "revision": last_revision + 1, "reason": reason, **result})
+        return requests
+
     def _brief_generation_error(
         self,
         topic_id: str,
@@ -3207,6 +3936,9 @@ class TopicAggregator:
         *,
         retryable: bool = True,
     ) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.record_brief_error(topic_id=topic_id, at=dt(at), error_code=error_code,
+                                                               error_message=error_message, retryable=retryable)
         topic = self.connection.execute(
             "SELECT visibility,brief_retry_count FROM topics WHERE topic_id=?", (topic_id,)
         ).fetchone()
@@ -3246,6 +3978,46 @@ class TopicAggregator:
         evidence_claim_ids: set[str] | None = None,
         editorial_guidance: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            snapshot = self.postgres_repository.brief_snapshot(topic_id)
+            if not snapshot:
+                return {"brief_status": "error", "visibility": "hidden", "error_code": "topic_missing",
+                        "error_message": "话题不存在。", "retryable": False}
+            topic = snapshot["topic"]
+            claims = snapshot["claims"]
+            if evidence_claim_ids is not None:
+                claims = [row for row in claims if row["claim_id"] in evidence_claim_ids]
+            else:
+                claims = self._select_narrative_claims(claims, snapshot["context_claims"], asset_labels(topic["canonical_subject"]))
+            if not self.brief_writer:
+                return self._brief_generation_error(topic_id, at, "ai_brief_writer_missing", "未配置 AI 正文生成器；不会生成本地规则正文。", retryable=False)
+            if not claims:
+                return self._brief_generation_error(topic_id, at, "ai_brief_evidence_missing", "没有可交给 AI 正文生成器的证据。", retryable=False)
+            try:
+                connection = _BriefSnapshotConnection(topic)
+                if editorial_guidance and isinstance(self.brief_writer, ModelBriefWriter):
+                    payload = self.brief_writer(connection, topic_id, at, claims, editorial_guidance=editorial_guidance)
+                else:
+                    payload = self.brief_writer(connection, topic_id, at, claims)
+            except Exception as exc:
+                return self._brief_generation_error(topic_id, at, "ai_brief_generation_failed", f"{type(exc).__name__}: {str(exc).strip() or 'AI 正文生成器返回异常。'}")
+            if not isinstance(payload, dict) or not str(payload.get("brief") or "").strip():
+                return self._brief_generation_error(topic_id, at, "ai_brief_invalid_response", "AI 正文生成器返回了空正文。")
+            title = compact(str(payload.get("title") or topic["working_title"]))
+            text = str(payload["brief"]).strip()
+            valid_ids = {row["claim_id"] for row in claims}
+            source_ids = [str(value) for value in (payload.get("source_claim_ids") or []) if str(value) in valid_ids]
+            if not source_ids:
+                source_ids = [row["claim_id"] for row in claims[:8]]
+            by_id = {row["claim_id"]: row for row in claims}
+            bindings = [{"claim_id": claim_id, "tweet_id": by_id[claim_id]["tweet_id"], "url": by_id[claim_id]["source_url"],
+                         "contribution": self._clean_claim_text(by_id[claim_id]["claim_text"])[:160],
+                         "context_only": bool(by_id[claim_id].get("context_only"))} for claim_id in source_ids[:8] if claim_id in by_id]
+            if not self.postgres_repository.write_brief(topic_id=topic_id, expected_revision=revision - 1, revision=revision,
+                                                        title=title, brief=text, source_claim_ids=source_ids,
+                                                        source_bindings=bindings, generated_at=dt(at), generation_reason=reason):
+                return {"brief_status": "deferred", "visibility": topic["visibility"], "retryable": True, "reason": "brief_snapshot_changed"}
+            return {"brief_status": "ready", "visibility": "visible", "title": title, "brief": text}
         topic = self.connection.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         if evidence_claim_ids is None:
             merge = self.connection.execute(
@@ -3584,6 +4356,8 @@ class TopicAggregator:
         return [dict(row) for row in self.connection.execute(query, params).fetchall()]
 
     def export_topics(self, *, visible_only: bool = False) -> list[dict[str, Any]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.export_topics(visible_only=visible_only)
         query = "SELECT * FROM topics"
         params: tuple[Any, ...] = ()
         if visible_only:
@@ -3608,6 +4382,8 @@ class TopicAggregator:
         return result
 
     def counts(self) -> dict[str, int]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.topic_counts()
         return {key: self.connection.execute(f"SELECT COUNT(*) FROM {key}").fetchone()[0] for key in ("batches", "content_items", "claims", "topics", "threads", "memberships", "brief_revisions", "topic_evidence", "decision_audit")}
 
 
@@ -3977,6 +4753,26 @@ class TopicVisibleMergeReviewer(TopicClaimReviewer):
         if reviews[0].get("decision") not in {"merge", "separate"}:
             raise ValueError("invalid visible topic group decision")
         return reviews[0]
+
+
+class _BriefSnapshotConnection:
+    """Minimal read-only adapter for the model writer's topic lookup."""
+
+    def __init__(self, topic: dict[str, Any]) -> None:
+        self.topic = topic
+
+    def execute(self, query: str, params: Sequence[Any] = ()):
+        if "FROM topics" not in query or not params or str(params[0]) != str(self.topic["topic_id"]):
+            raise RuntimeError("brief writer attempted an unsupported database read")
+        return _SingleRowResult(self.topic)
+
+
+class _SingleRowResult:
+    def __init__(self, row: dict[str, Any]) -> None:
+        self.row = row
+
+    def fetchone(self) -> dict[str, Any]:
+        return self.row
 
 
 class ModelBriefWriter:

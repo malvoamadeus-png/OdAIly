@@ -13,6 +13,15 @@ from .models import MacroUpdate
 
 
 class MacroNewsflashStore:
+    def __new__(cls, database_path: Path):
+        from packages.common.storage import load_storage_settings
+
+        if cls is MacroNewsflashStore and load_storage_settings().backend == "postgres":
+            from .postgres_store import PostgresMacroNewsflashStore
+
+            return PostgresMacroNewsflashStore(database_path)
+        return super().__new__(cls)
+
     def __init__(self, database_path: Path) -> None:
         self.path = database_path
 

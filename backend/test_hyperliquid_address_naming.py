@@ -199,6 +199,38 @@ def test_naming_cli_once_initializes_temporary_store(tmp_path, monkeypatch):
     assert commands.run_command(SimpleNamespace(hyperliquid_action='run-naming', once=True, batch_size=4, interval_seconds=30)) == 0
 
 
+def test_hyperliquid_init_and_status_use_postgres_without_sqlite_pipeline(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+    from packages.hyperliquid_news import commands
+
+    class FakeRepository:
+        def init_schema(self):
+            calls.append('init_schema')
+
+        def seed_prompt_templates(self, *, root_dir):
+            calls.append(('seed_prompt_templates', root_dir))
+
+    class FakeStore:
+        backend = 'postgres'
+
+        def initialize(self):
+            calls.append('store_initialize')
+
+    calls = []
+    monkeypatch.setattr(commands, 'load_hyperliquid_storage_path', lambda: tmp_path / 'hl.sqlite')
+    monkeypatch.setattr(commands, 'load_storage_settings', lambda: SimpleNamespace(backend='postgres', sqlite_path=tmp_path / 'main.sqlite'))
+    monkeypatch.setattr(commands, 'create_news_store', lambda _path: FakeStore())
+    monkeypatch.setattr('packages.x_processing.repository.create_x_processing_repository', lambda _url: FakeRepository())
+    monkeypatch.setattr(commands, 'get_paths', lambda: SimpleNamespace(root_dir=tmp_path))
+    assert commands.run_command(SimpleNamespace(hyperliquid_action='init')) == 0
+    assert calls == ['init_schema', ('seed_prompt_templates', tmp_path), 'store_initialize']
+
+    monkeypatch.setattr('packages.hyperliquid_news.dashboard.dashboard', lambda _store, **kwargs: calls.append(kwargs) or {'initialized': True})
+    assert commands.run_command(SimpleNamespace(hyperliquid_action='status', page=0)) == 0
+    assert calls[-1] == {'pipeline_database_path': None, 'page': 0}
+    assert '"initialized": true' in capsys.readouterr().out
+
+
 def test_duplicate_feature_and_prefix_extend_actual_address_suffix(tmp_path):
     store, names = setup(tmp_path)
     other = A[:4]+'f'+A[5:]

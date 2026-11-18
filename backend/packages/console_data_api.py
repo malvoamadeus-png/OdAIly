@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 from packages.common.storage import connect_sqlite
+from packages.common.storage import load_storage_settings
 
 
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -44,17 +46,32 @@ def _decode_row(row: Any) -> dict[str, Any]:
     return result
 
 
-def _encode(value: Any) -> Any:
+def _encode(value: Any, *, postgres: bool = False) -> Any:
     if isinstance(value, (dict, list)):
+        if postgres:
+            from psycopg.types.json import Jsonb
+
+            return Jsonb(value)
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, bool):
+    if isinstance(value, bool) and not postgres:
         return int(value)
     return value
 
 
 class ConsoleDataApi:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         self.path = path
+        self.backend = load_storage_settings().backend
+        self._postgres = None
+        if self.backend == "postgres":
+            from packages.common.pg_native import connect_postgres
+
+            self._postgres = connect_postgres
+
+    def _connect(self):
+        if self.backend == "postgres":
+            return self._postgres(schema="main", application_name="odaily-console-data")
+        return connect_sqlite(self.path or load_storage_settings().sqlite_path)
 
     def execute(self, payload: dict[str, Any]) -> Any:
         table = _identifier(payload.get("table"))
@@ -77,21 +94,23 @@ class ConsoleDataApi:
             op = str(item.get("op"))
             value = item.get("value")
             if op in FILTER_OPERATORS:
-                clauses.append(f"{column} {FILTER_OPERATORS[op]} ?")
-                params.append(_encode(value))
+                placeholder = "%s" if self.backend == "postgres" else "?"
+                clauses.append(f"{column} {FILTER_OPERATORS[op]} {placeholder}")
+                params.append(_encode(value, postgres=self.backend == "postgres"))
             elif op == "in":
                 values = list(value or [])
                 if not values:
-                    clauses.append("0")
+                    clauses.append("FALSE" if self.backend == "postgres" else "0")
                 else:
-                    clauses.append(f"{column} IN ({','.join('?' for _ in values)})")
-                    params.extend(_encode(entry) for entry in values)
+                    placeholder = "%s" if self.backend == "postgres" else "?"
+                    clauses.append(f"{column} IN ({','.join(placeholder for _ in values)})")
+                    params.extend(_encode(entry, postgres=self.backend == "postgres") for entry in values)
             elif op == "is":
                 if value is None:
                     clauses.append(f"{column} IS NULL")
                 else:
-                    clauses.append(f"{column} IS ?")
-                    params.append(_encode(value))
+                    clauses.append(f"{column} IS NOT DISTINCT FROM %s" if self.backend == "postgres" else f"{column} IS ?")
+                    params.append(_encode(value, postgres=self.backend == "postgres"))
             else:
                 raise ValueError("unsupported console filter")
         return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", params)
@@ -107,7 +126,7 @@ class ConsoleDataApi:
             column = _identifier(item.get("column"))
             # Tasks contain both SQLite CURRENT_TIMESTAMP values and ISO-8601
             # values with a `T` separator. Normalize them before pagination.
-            expression = "datetime(created_at)" if table == "tasks" and column == "created_at" else column
+            expression = "datetime(created_at)" if self.backend == "sqlite" and table == "tasks" and column == "created_at" else column
             order_parts.append(f"{expression} {'ASC' if item.get('ascending', True) else 'DESC'}")
         sql = f"SELECT {columns} FROM {table}{where}"
         if order_parts:
@@ -115,21 +134,21 @@ class ConsoleDataApi:
         offset = max(0, int(payload.get("offset") or 0))
         limit = payload.get("limit")
         if limit is not None:
-            sql += " LIMIT ? OFFSET ?"
+            sql += " LIMIT %s OFFSET %s" if self.backend == "postgres" else " LIMIT ? OFFSET ?"
             params.extend([max(0, int(limit)), offset])
-        with connect_sqlite(self.path) as conn:
+        with self._connect() as conn:
             rows = [_decode_row(row) for row in conn.execute(sql, params).fetchall()]
             if include_pipeline:
                 for row in rows:
-                    pipeline = conn.execute("SELECT * FROM x_task_pipeline WHERE task_id=?", (row["id"],)).fetchone()
+                    marker = "%s" if self.backend == "postgres" else "?"
+                    pipeline = conn.execute(f"SELECT * FROM x_task_pipeline WHERE task_id={marker}", (row["id"],)).fetchone()
                     decoded_pipeline = _decode_row(pipeline) if pipeline else None
                     if decoded_pipeline is not None:
                         self._hydrate_duplicate_target(conn, decoded_pipeline)
                     row["x_task_pipeline"] = decoded_pipeline
         return rows
 
-    @staticmethod
-    def _hydrate_duplicate_target(conn: sqlite3.Connection, pipeline: dict[str, Any]) -> None:
+    def _hydrate_duplicate_target(self, conn: Any, pipeline: dict[str, Any]) -> None:
         search_result = pipeline.get("search_result")
         if not isinstance(search_result, dict) or not search_result.get("is_duplicate"):
             return
@@ -161,29 +180,30 @@ class ConsoleDataApi:
             search_result["duplicate_target"] = target
             return
 
-        resolved: sqlite3.Row | None = None
+        resolved: Any | None = None
+        marker = "%s" if self.backend == "postgres" else "?"
         try:
             if target_type == "odaily_published":
                 resolved = conn.execute(
-                    "SELECT source_item_id AS target_id, title, source_url FROM odaily_reference_items WHERE source_item_id=?",
+                    f"SELECT source_item_id AS target_id, title, source_url FROM odaily_reference_items WHERE source_item_id={marker}",
                     (target_id,),
                 ).fetchone()
             elif target_type in {"inflight_candidate", "recent_processed"}:
                 resolved = conn.execute(
-                    """
+                    f"""
                     SELECT c.id AS target_id, c.title,
                            COALESCE(es.source_url, t.source_url) AS source_url
                     FROM search_event_candidates c
                     LEFT JOIN search_event_sources es
                       ON es.candidate_id = c.id AND es.role = 'primary'
                     LEFT JOIN tasks t ON t.id = c.primary_task_id
-                    WHERE c.id=?
+                    WHERE c.id={marker}
                     ORDER BY es.id DESC
                     LIMIT 1
                     """,
                     (int(target_id),),
                 ).fetchone()
-        except (TypeError, ValueError, sqlite3.OperationalError):
+        except (TypeError, ValueError, sqlite3.Error, RuntimeError):
             resolved = None
         if resolved is not None:
             for key in ("target_id", "title", "source_url"):
@@ -199,53 +219,79 @@ class ConsoleDataApi:
         data = payload.get("data")
         if table == "binance_square_settings" and operation == "delete":
             raise ValueError("binance square settings cannot be deleted")
-        with connect_sqlite(self.path) as conn:
-            if operation == "delete":
-                existing = [_decode_row(row) for row in conn.execute(f"SELECT * FROM {table}{where}", where_params).fetchall()]
-                conn.execute(f"DELETE FROM {table}{where}", where_params)
-                conn.commit()
-                return existing
-            records = data if isinstance(data, list) else [data]
-            if not records or not all(isinstance(record, dict) for record in records):
-                raise ValueError("mutation data must be an object or array")
-            self._validate_binance_square_mutation(table, operation, records)
-            if operation == "update":
-                if len(records) != 1:
-                    raise ValueError("update accepts one object")
-                record = records[0]
-                columns = [_identifier(key) for key in record]
-                conn.execute(
-                    f"UPDATE {table} SET {','.join(f'{key}=?' for key in columns)}{where}",
-                    [_encode(record[key]) for key in columns] + where_params,
-                )
-                rows = [_decode_row(row) for row in conn.execute(f"SELECT * FROM {table}{where}", where_params).fetchall()]
+        with self._connect() as conn:
+            transaction = conn.transaction() if self.backend == "postgres" else nullcontext()
+            with transaction:
+                return self._mutate_in_connection(conn, table, operation, payload, where, where_params, data)
+
+    def _mutate_in_connection(self, conn, table, operation, payload, where, where_params, data):
+        marker = "%s" if self.backend == "postgres" else "?"
+
+        def placeholders(count: int) -> str:
+            return ",".join(marker for _ in range(count))
+
+        if operation == "delete":
+            existing = [
+                _decode_row(row)
+                for row in conn.execute(f"SELECT * FROM {table}{where}", where_params).fetchall()
+            ]
+            conn.execute(f"DELETE FROM {table}{where}", where_params)
+            return existing
+
+        records = data if isinstance(data, list) else [data]
+        if not records or not all(isinstance(record, dict) for record in records):
+            raise ValueError("mutation data must be an object or array")
+        self._validate_binance_square_mutation(table, operation, records)
+
+        if operation == "update":
+            if len(records) != 1:
+                raise ValueError("update accepts one object")
+            record = records[0]
+            columns = [_identifier(key) for key in record]
+            conn.execute(
+                f"UPDATE {table} SET {','.join(f'{key}={marker}' for key in columns)}{where}",
+                [_encode(record[key], postgres=self.backend == "postgres") for key in columns] + where_params,
+            )
+            return [
+                _decode_row(row)
+                for row in conn.execute(f"SELECT * FROM {table}{where}", where_params).fetchall()
+            ]
+
+        conflict = str(payload.get("on_conflict") or "")
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            columns = [_identifier(key) for key in record]
+            sql = f"INSERT INTO {table}({','.join(columns)}) VALUES ({placeholders(len(columns))})"
+            conflict_columns: list[str] = []
+            if operation == "upsert":
+                conflict_columns = [_identifier(value.strip()) for value in conflict.split(",") if value.strip()]
+                if not conflict_columns:
+                    raise ValueError("upsert requires on_conflict")
+                updates = [key for key in columns if key not in conflict_columns]
+                if not updates:
+                    sql += f" ON CONFLICT({','.join(conflict_columns)}) DO NOTHING"
+                else:
+                    assignments = ",".join(f"{key}=excluded.{key}" for key in updates)
+                    sql += f" ON CONFLICT({','.join(conflict_columns)}) DO UPDATE SET {assignments}"
+            if self.backend == "postgres":
+                sql += " RETURNING *"
+            cursor = conn.execute(
+                sql,
+                [_encode(record[key], postgres=self.backend == "postgres") for key in columns],
+            )
+            if self.backend == "postgres":
+                returned = cursor.fetchone()
+            elif operation == "insert":
+                returned = conn.execute(f"SELECT * FROM {table} WHERE rowid=?", (cursor.lastrowid,)).fetchone()
             else:
-                conflict = str(payload.get("on_conflict") or "")
-                rows: list[dict[str, Any]] = []
-                for record in records:
-                    columns = [_identifier(key) for key in record]
-                    placeholders = ",".join("?" for _ in columns)
-                    sql = f"INSERT INTO {table}({','.join(columns)}) VALUES ({placeholders})"
-                    if operation == "upsert":
-                        conflict_columns = [_identifier(value.strip()) for value in conflict.split(",") if value.strip()]
-                        if not conflict_columns:
-                            raise ValueError("upsert requires on_conflict")
-                        updates = [key for key in columns if key not in conflict_columns]
-                        sql += f" ON CONFLICT({','.join(conflict_columns)}) DO UPDATE SET " + ",".join(f"{key}=excluded.{key}" for key in updates)
-                    cursor = conn.execute(sql, [_encode(record[key]) for key in columns])
-                    if operation == "insert":
-                        returned = conn.execute(f"SELECT * FROM {table} WHERE rowid=?", (cursor.lastrowid,)).fetchone()
-                    else:
-                        conflict_columns = [_identifier(value.strip()) for value in conflict.split(",") if value.strip()]
-                        conflict_where = " AND ".join(f"{key}=?" for key in conflict_columns)
-                        returned = conn.execute(
-                            f"SELECT * FROM {table} WHERE {conflict_where}",
-                            [_encode(record[key]) for key in conflict_columns],
-                        ).fetchone()
-                    if returned is not None:
-                        rows.append(_decode_row(returned))
-            conn.commit()
-            return rows
+                conflict_where = " AND ".join(f"{key}=?" for key in conflict_columns)
+                returned = conn.execute(
+                    f"SELECT * FROM {table} WHERE {conflict_where}",
+                    [_encode(record[key]) for key in conflict_columns],
+                ).fetchone()
+            if returned is not None:
+                rows.append(_decode_row(returned))
+        return rows
 
     @staticmethod
     def _validate_binance_square_mutation(table: str, operation: str, records: list[dict[str, Any]]) -> None:

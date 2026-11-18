@@ -1,5 +1,9 @@
 # Hyperliquid关键地址与新闻事件
 
+## PostgreSQL 迁移实现状态
+
+Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。当前生产仍使用 SQLite，只有全量导入与验收通过后才可切换。PostgreSQL 服务初始化只应用版本化 schema，不在启动时全量重建候选索引或遍历命名记录；迁移导入器负责保留并核验既有数据与主键。名称分配在短事务中串行化。
+
 ## 已确认的产品范围（2026-10-13）
 
 目标是发现真实、突出、容易理解的新闻亮点，自动发现地址、持续监测行为与结果，最终形成快讯。地址标签是新闻事实，不是交易能力认证。2026-10-19 启用七类，2026-10-20 增加单资产高盈利、回吐/转换和清算方向，共十类，均强制挂后台。
@@ -386,3 +390,6 @@ systemctl restart odaily-hyperliquid-account-profit.service odaily-local-pipelin
 ## 地址自动称谓（2026-11-17）
 
 独立命名worker使用 `gpt-6-luna`，覆盖全部已发现、未拉黑且未人工锁定的地址，存量逐批命名，新增自动进入队列，每七天复核。稳定特长优先，状态称谓在对应仓位反手或清仓时立即停用并重新命名。人工保存备注后永久接管，包括清空；模型请求期间人工编辑也不能被覆盖。命名不改变十个方向的新闻准入，也不阻塞监测、派发或写稿。取数、事务保护、运行命令、失败处理和控制台分析契约见 `Hyperliquid地址自动称谓.md`。
+# PostgreSQL 迁移实现状态
+
+Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。SQLite 仍是当前生产来源，只有完整导入和验收后才允许切换。PostgreSQL 服务初始化只应用版本化 schema，不在每次启动时重建候选索引或全量遍历命名记录；导入器负责保留并核验既有数据与主键。PostgreSQL 地址名称的唯一名分配在短事务中串行化。

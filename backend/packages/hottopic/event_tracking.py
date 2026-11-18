@@ -729,6 +729,30 @@ class SQLiteEventTrackingTaskDispatcher:
         return {"cancelledTaskIds": cancelled, "publishedTaskIds": published, "terminalTaskIds": terminal}
 
 
+class PostgresEventTrackingTaskDispatcher:
+    def __init__(self, repository: Any) -> None:
+        self.repository = repository
+
+    def ensure_task(self, *, event: dict[str, Any], cycle: dict[str, Any], update: dict[str, Any], post: dict[str, Any]) -> int:
+        return self.repository.ensure_primary_task(event=event, cycle=cycle, update=update, post=post)
+
+    def submit(self, *, task_id: int, tweet_id: str) -> None:
+        from packages.local_pipeline.client import LocalPipelineClient
+        LocalPipelineClient().submit_job(job_type="write_flow", task_id=task_id, source=EVENT_TRACKING_SOURCE, source_item_id=tweet_id)
+
+    def task_status(self, task_id: int) -> str | None:
+        return self.repository.primary_task_status(task_id)
+
+    def is_event_tracking_cancelled(self, task_id: int) -> bool:
+        return self.repository.primary_task_cancelled(task_id)
+
+    def task_detail(self, task_id: int) -> dict[str, Any] | None:
+        return self.repository.primary_task_detail(task_id)
+
+    def dismiss_event_tasks(self, *, event_id: str, dismissed_at: str, dismissed_by: str, handle: str | None = None) -> dict[str, Any]:
+        return self.repository.dismiss_primary_tasks(event_id=event_id, dismissed_at=dismissed_at, dismissed_by=dismissed_by, handle=handle)
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -854,7 +878,7 @@ class EventTracker:
 
     def __init__(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None = None,
         *,
         primary_database_path: Path,
         ai: EventTrackingAI | None = None,
@@ -864,13 +888,22 @@ class EventTracker:
         now: Callable[[], datetime] = utc_now,
         enabled: bool | None = None,
         owns_connection: bool = False,
+        postgres_repository: Any | None = None,
     ) -> None:
         self.db = connection
+        self.postgres_repository = postgres_repository
         self._owns_connection = owns_connection
+        if self.db is None and self.postgres_repository is None:
+            raise ValueError("EventTracker requires a SQLite connection or PostgreSQL repository")
         self.now = now
         self.enabled = _bool_env("HOTTOPIC_EVENT_TRACKING_ENABLED", True) if enabled is None else enabled
         self.ai = ai if ai is not None else OpenAIEventTrackingAI.from_environment()
-        self.dispatcher = dispatcher or SQLiteEventTrackingTaskDispatcher(primary_database_path)
+        if dispatcher is not None:
+            self.dispatcher = dispatcher
+        elif self.postgres_repository is None:
+            self.dispatcher = SQLiteEventTrackingTaskDispatcher(primary_database_path)
+        else:
+            self.dispatcher = self.postgres_repository.task_dispatcher()
         self.feed_writer = feed_writer
         self.account_identity_fetcher = account_identity_fetcher
         self.topic_model = os.getenv("HOTTOPIC_EVENT_TOPIC_MODEL") or "gpt-6-luna"
@@ -881,12 +914,13 @@ class EventTracker:
         self.discovery_retry_model = os.getenv("HOTTOPIC_EVENT_WEB_SEARCH_RETRY_MODEL") or self.topic_fallback_model
         self.identity_model = os.getenv("HOTTOPIC_EVENT_IDENTITY_MODEL") or self.topic_model
         self.identity_retry_model = os.getenv("HOTTOPIC_EVENT_IDENTITY_RETRY_MODEL") or self.topic_fallback_model
-        self.db.executescript(EVENT_TRACKING_SCHEMA)
-        self._ensure_event_tracking_schema()
+        if self.db is not None:
+            self.db.executescript(EVENT_TRACKING_SCHEMA)
+            self._ensure_event_tracking_schema()
         self._seed_prompt_versions()
 
     def close(self) -> None:
-        if self._owns_connection:
+        if self._owns_connection and self.db is not None:
             self.db.close()
 
     def _ensure_event_tracking_schema(self) -> None:
@@ -910,16 +944,22 @@ class EventTracker:
             ("account_identity", 2, ACCOUNT_IDENTITY_PROMPT_V2),
             ("update_materiality", 3, UPDATE_MATERIALITY_PROMPT_V3),
         )
-        with self.db:
-            for prompt_key, version_number, content in versions:
-                self.db.execute(
-                    "INSERT OR IGNORE INTO event_tracking_prompt_versions(prompt_key,version_number,content,created_at) VALUES(?,?,?,?)",
-                    (prompt_key, version_number, content, now),
-                )
+        if self.postgres_repository is not None:
+            self.postgres_repository.seed_prompt_versions(versions, created_at=self.now())
+        else:
+            with self.db:
+                for prompt_key, version_number, content in versions:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO event_tracking_prompt_versions(prompt_key,version_number,content,created_at) VALUES(?,?,?,?)",
+                        (prompt_key, version_number, content, now),
+                    )
         self._reopen_recent_legacy_discoveries()
         self._reopen_recent_unclear_identity_reviews()
 
     def _reopen_recent_legacy_discoveries(self) -> None:
+        if self.postgres_repository is not None:
+            self.postgres_repository.reopen_recent_legacy_discoveries(self.now())
+            return
         prompt = self._prompt("official_discovery")
         cutoff = utc_iso(self.now() - EVENT_TRACKING_INITIAL_WINDOW)
         rows = self.db.execute(
@@ -960,6 +1000,9 @@ class EventTracker:
 
     def _reopen_recent_unclear_identity_reviews(self) -> None:
         """Retry recent unclear account decisions with the current identity prompt, without Web Search."""
+        if self.postgres_repository is not None:
+            self.postgres_repository.reopen_recent_unclear_identity_reviews(self.now())
+            return
         prompt = self._prompt("account_identity")
         if int(prompt["version_number"]) < 2:
             return
@@ -1052,6 +1095,11 @@ class EventTracker:
                 )
 
     def _prompt(self, prompt_key: str) -> sqlite3.Row:
+        if self.postgres_repository is not None:
+            row = self.postgres_repository.prompt(prompt_key)
+            if row is None:
+                raise RuntimeError(f"event tracking prompt is missing: {prompt_key}")
+            return row
         row = self.db.execute(
             "SELECT * FROM event_tracking_prompt_versions WHERE prompt_key=? ORDER BY version_number DESC LIMIT 1",
             (prompt_key,),
@@ -1062,6 +1110,9 @@ class EventTracker:
 
     def _audit(self, kind: str, detail: dict[str, Any], *, event_id: str | None = None, cycle_id: str | None = None) -> None:
         at = utc_iso(self.now())
+        if self.postgres_repository is not None:
+            self.postgres_repository.audit(kind, detail, at=self.now(), event_id=event_id, cycle_id=cycle_id)
+            return
         self.db.execute(
             "INSERT INTO event_tracking_audit(audit_id,at,kind,event_id,cycle_id,detail_json) VALUES(?,?,?,?,?,?)",
             (stable_id("event-audit", kind, event_id or "", cycle_id or "", at, compact_json(detail)), at, kind, event_id, cycle_id, compact_json(detail)),
@@ -1141,8 +1192,46 @@ class EventTracker:
 
     def observe_topics(self, topic_ids: Iterable[str] | None = None) -> dict[str, int]:
         """Assess eligible HotTopics, keeping new and failed topics ahead of rechecks."""
+        if self.postgres_repository is not None:
+            if not self.enabled:
+                return {"assessed": 0, "tracked": 0, "failed": 0}
+            snapshots = self.postgres_repository.topic_snapshots(topic_ids)
+            self.postgres_repository.queue_observations(snapshots, at=self.now())
+            pending: list[dict[str, Any]] = []
+            for snapshot in snapshots:
+                assessment = self.postgres_repository.assessment(snapshot["topic_id"])
+                if assessment is not None and assessment.get("actual_model") == "operator_override":
+                    continue
+                if assessment is not None and assessment.get("snapshot_hash") == snapshot["snapshot_hash"]:
+                    if assessment["decision"] in {"track", "do_not_track"}:
+                        self.postgres_repository.save_cached_observation(snapshot, assessment, at=self.now())
+                        continue
+                    if assessment.get("next_attempt_at") and assessment["next_attempt_at"] > self.now():
+                        continue
+                pending.append(snapshot)
+            pending = pending[:EVENT_TRACKING_TOPIC_BATCH_SIZE]
+            if not pending:
+                return {"assessed": 0, "tracked": 0, "failed": 0}
+            self.postgres_repository.mark_judging([item["topic_id"] for item in pending], at=self.now())
+            prompt_version = self._prompt("topic_judgment")
+            prompt = str(prompt_version["content"]).replace("{{TOPICS}}", compact_json(pending))
+            try:
+                result = self._call_text(prompt=prompt, models=(self.topic_model, self.topic_fallback_model))
+                parsed = _parse_json_output(result.text)
+                if not isinstance(parsed, list):
+                    raise ValueError("topic judgment output must be a JSON array")
+                decisions = self._parse_topic_decisions(parsed, pending)
+            except Exception as exc:
+                self.postgres_repository.save_failure(pending, prompt=prompt_version, error=exc, at=self.now())
+                return {"assessed": 0, "tracked": 0, "failed": len(pending)}
+            for snapshot in pending:
+                decisions.setdefault(snapshot["topic_id"], self._do_not_track_decision(snapshot, "模型未返回该热点的有效判断"))
+            tracked = self.postgres_repository.save_observations(pending, decisions, prompt=prompt_version, result=result, at=self.now())
+            return {"assessed": len(pending), "tracked": tracked, "failed": 0}
         if not self.enabled:
             return {"assessed": 0, "tracked": 0, "failed": 0}
+        if self.db.in_transaction:
+            raise RuntimeError("observe_topics requires transaction ownership; finish the caller transaction first")
         snapshots = self._topic_snapshots(topic_ids)
         pending: list[dict[str, Any]] = []
         current = utc_iso(self.now())
@@ -1230,6 +1319,21 @@ class EventTracker:
         return {"assessed": len(pending), "tracked": tracked, "failed": 0}
 
     def _save_topic_observation_result(self, topic_id: str, decision: str, at: str, *, reason: str | None = None) -> None:
+        owns_transaction = not self.db.in_transaction
+        if owns_transaction:
+            self.db.execute("BEGIN")
+        try:
+            self._write_topic_observation_result(topic_id, decision, at, reason=reason)
+            if owns_transaction:
+                self.db.commit()
+        except Exception:
+            if owns_transaction and self.db.in_transaction:
+                self.db.rollback()
+            raise
+
+    def _write_topic_observation_result(
+        self, topic_id: str, decision: str, at: str, *, reason: str | None = None,
+    ) -> None:
         status = "tracked" if decision == "track" else "not_tracked" if decision == "do_not_track" else "failed"
         assessment = self.db.execute(
             "SELECT result_json,last_error,judged_at FROM event_tracking_topic_assessments WHERE topic_id=?",
@@ -1269,6 +1373,8 @@ class EventTracker:
             )
 
     def topic_assessment_status(self, topic_id: str, *, first_seen_at: str | None = None) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.topic_assessment_status(topic_id, first_seen_at=first_seen_at, enabled=self.enabled, now=self.now())
         if not self.enabled:
             return {
                 "status": "disabled",
@@ -1353,6 +1459,12 @@ class EventTracker:
         unconfirmed_claims: list[str],
         official_response_hypothesis: dict[str, Any],
     ) -> str:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.start_tracking_topic(
+                tracker=self, topic_id=topic_id, actor=actor, reason=reason, tracking_type=tracking_type,
+                reader_value=reader_value, confirmed_facts=confirmed_facts, unconfirmed_claims=unconfirmed_claims,
+                official_response_hypothesis=official_response_hypothesis,
+            )
         """Start a single operator-selected HotTopic through normal discovery and lifecycle."""
         if not self.enabled:
             raise RuntimeError("event tracking is disabled")
@@ -1654,6 +1766,8 @@ class EventTracker:
         ).fetchone()
 
     def reconcile_topic_merges(self) -> dict[str, int]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.reconcile_topic_merges(tracker=self)
         """Make one tracking cycle owner follow the surviving HotTopic."""
         merges = self.db.execute(
             "SELECT source_topic_id,target_topic_id FROM topic_merges ORDER BY created_at,merge_id"
@@ -1773,6 +1887,8 @@ class EventTracker:
 
     def discover_official_accounts(self, *, event_id: str | None = None) -> dict[str, int]:
         """Find and identity-check accounts for newly opened event cycles."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.discover_official_accounts(tracker=self, event_id=event_id)
         if not self.enabled:
             return {"discovered": 0, "failed": 0, "bound": 0}
         rows = self.db.execute(
@@ -1798,6 +1914,8 @@ class EventTracker:
 
     def reverify_pending_account_bindings(self, *, limit: int = EVENT_TRACKING_MAX_ACTIVE_ACCOUNTS) -> dict[str, int]:
         """Apply profile-based identity checks to bindings created before the verifier existed."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.reverify_pending_account_bindings(tracker=self, limit=limit)
         if not self.enabled:
             return {"verified": 0, "rejected": 0, "deferred": 0}
         rows = self.db.execute(
@@ -1910,6 +2028,8 @@ class EventTracker:
 
     def retry_pending_identity_discoveries(self, *, limit: int = 12) -> dict[str, int]:
         """Retry FXTwitter or AI identity checks without repeating Web Search."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.retry_pending_identity_discoveries(tracker=self, limit=limit)
         if not self.enabled:
             return {"retried": 0, "bound": 0, "failed": 0, "deferred": 0}
         rows = self.db.execute(
@@ -2575,6 +2695,8 @@ class EventTracker:
         )
 
     def due_accounts(self, *, limit: int = EVENT_TRACKING_MAX_ACTIVE_ACCOUNTS) -> list[tuple[AccountRow, datetime]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.due_accounts(now=self.now(), limit=limit)
         now_text = utc_iso(self.now())
         rows = self.db.execute(
             """
@@ -2613,6 +2735,8 @@ class EventTracker:
         workers: int = EVENT_TRACKING_MAX_ACTIVE_ACCOUNTS,
     ) -> dict[str, int]:
         """Poll official accounts before the caller polls baseline HotTopic accounts."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.poll_due_accounts(tracker=self, scanner=scanner, workers=workers)
         if not self.enabled:
             return {"polled": 0, "accepted": 0, "errors": 0}
         due = self.due_accounts()
@@ -2632,6 +2756,8 @@ class EventTracker:
         return {"polled": len(due), "accepted": accepted, "errors": errors}
 
     def _store_event_poll(self, account: AccountRow, items: list[ContentItem], error: dict[str, Any] | None) -> int:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.store_event_poll(account=account, items=items, error=error, now=self.now())
         lower = account.screen_name.lower()
         now = self.now()
         now_text = utc_iso(now)
@@ -2677,6 +2803,8 @@ class EventTracker:
 
     def classify_official_updates(self, *, limit: int = 30) -> dict[str, int]:
         """Classify each official post against every active event binding."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.classify_official_updates(tracker=self, limit=limit)
         if not self.enabled:
             return {"classified": 0, "material": 0, "failed": 0}
         now_text = utc_iso(self.now())
@@ -2902,6 +3030,8 @@ class EventTracker:
 
     def dispatch_publications(self, *, limit: int = 20) -> dict[str, int]:
         """Persist a main-pipeline task first, then enqueue it with tweet-level idempotency."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.dispatch_publications(tracker=self, limit=limit)
         if not self.enabled:
             return {"submitted": 0, "failed": 0, "duplicate": 0, "published": 0}
         self.refresh_publication_statuses()
@@ -3019,6 +3149,8 @@ class EventTracker:
 
     def maintain(self) -> dict[str, int]:
         """End silent/expired cycles and release their temporary account bindings."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.maintain(tracker=self)
         now = self.now()
         now_text = utc_iso(now)
         rows = self.db.execute(
@@ -3057,6 +3189,8 @@ class EventTracker:
 
     def retry_rejected_identity_task_cancellations(self, *, limit: int = 20) -> dict[str, int]:
         """Retry stopping unpublished tasks from accounts that failed identity review."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.retry_rejected_identity_task_cancellations(tracker=self, limit=limit)
         dismiss_tasks = getattr(self.dispatcher, "dismiss_event_tasks", None)
         if not callable(dismiss_tasks):
             return {"cancelled": 0, "deferred": 0}
@@ -3189,6 +3323,8 @@ class EventTracker:
 
     def dismiss_event(self, event_id: str, *, actor: str = "") -> dict[str, Any]:
         """Stop one event without deleting its evidence or published output."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.dismiss_event(event_id, actor=actor, tracker=self)
         normalized_id = str(event_id or "").strip()
         if not normalized_id:
             raise ValueError("event_id 不能为空")
@@ -3287,6 +3423,8 @@ class EventTracker:
         }
 
     def dashboard(self, *, limit: int = 100) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.dashboard(limit=limit, enabled=self.enabled)
         now = self.now()
         rows = self.db.execute(
             """
@@ -3375,6 +3513,8 @@ class EventTracker:
         }
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.event_detail(event_id, dispatcher=self.dispatcher)
         event = self.db.execute("SELECT * FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()
         if event is None or self._is_event_dismissed(event_id):
             return None
@@ -3545,6 +3685,8 @@ class EventTracker:
         }
 
     def prompt_versions(self, *, include_content: bool = True) -> list[dict[str, Any]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.prompt_versions(include_content=include_content)
         rows = self.db.execute(
             """
             SELECT p.*,COUNT(a.topic_id) AS topic_call_count

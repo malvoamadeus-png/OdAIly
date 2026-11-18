@@ -111,6 +111,11 @@ def _response_ids(response_text: str | None) -> set[str]:
 
 
 def ensure_newsflash_metadata_schema(path: Path) -> None:
+    from packages.common.storage import load_storage_settings
+    if load_storage_settings().backend == "postgres":
+        from packages.postgres_newsflash_operations import PostgresNewsflashOperationsRepository
+        PostgresNewsflashOperationsRepository(path).ensure_metadata_schema()
+        return
     with connect_sqlite(path) as conn:
         ensure_newsflash_metadata_tables(conn)
         conn.execute(
@@ -165,9 +170,10 @@ def _matching_metadata_rows(conn, *, title: str | None, published_at: Any) -> li
     published = _parse_datetime(published_at)
     if published is None:
         return []
+    placeholder = "%s" if _is_postgres(conn) else "?"
     candidates = conn.execute(
-        "SELECT * FROM newsflash_production_metadata "
-        "WHERE title=? AND odaily_id IS NULL AND id_match_status='missing'",
+        f"SELECT * FROM newsflash_production_metadata "
+        f"WHERE title={placeholder} AND odaily_id IS NULL AND id_match_status='missing'",
         (title,),
     ).fetchall()
     return [
@@ -177,11 +183,16 @@ def _matching_metadata_rows(conn, *, title: str | None, published_at: Any) -> li
     ]
 
 
+def _is_postgres(conn: Any) -> bool:
+    return conn.__class__.__module__.startswith("psycopg")
+
+
 def _has_unresolved_metadata_for_title(conn, title: str | None) -> bool:
     if not title:
         return False
+    placeholder = "%s" if _is_postgres(conn) else "?"
     return conn.execute(
-        "SELECT 1 FROM newsflash_production_metadata WHERE title=? AND odaily_id IS NULL LIMIT 1",
+        f"SELECT 1 FROM newsflash_production_metadata WHERE title={placeholder} AND odaily_id IS NULL LIMIT 1",
         (title,),
     ).fetchone() is not None
 
@@ -192,13 +203,14 @@ def _matching_reference_rows(conn, *, title: str | None, published_at: Any) -> l
     published = _parse_datetime(published_at)
     if published is None:
         return []
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='odaily_reference_items'"
-    ).fetchone()
+    exists = (conn.execute("SELECT to_regclass('main.odaily_reference_items') AS relation").fetchone()["relation"]
+              if _is_postgres(conn) else conn.execute(
+                  "SELECT 1 FROM sqlite_master WHERE type='table' AND name='odaily_reference_items'"
+              ).fetchone())
     if not exists:
         return []
     references = conn.execute(
-        "SELECT source_item_id,published_at FROM odaily_reference_items WHERE title=?",
+        f"SELECT source_item_id,published_at FROM odaily_reference_items WHERE title={('%s' if _is_postgres(conn) else '?')}",
         (title,),
     ).fetchall()
     return [
@@ -209,6 +221,21 @@ def _matching_reference_rows(conn, *, title: str | None, published_at: Any) -> l
 
 
 def _try_link_metadata(conn, row: Any, source_item_id: str) -> bool:
+    if _is_postgres(conn):
+        try:
+            with conn.transaction():
+                cursor = conn.execute(
+                    "UPDATE newsflash_production_metadata SET odaily_id=%s,id_match_status='matched',updated_at=now() "
+                    "WHERE delivery_key=%s AND odaily_id IS NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM newsflash_production_metadata other WHERE other.odaily_id=%s)",
+                    (source_item_id, row["delivery_key"], source_item_id),
+                )
+            return cursor.rowcount == 1
+        except Exception as exc:
+            from psycopg import errors
+            if isinstance(exc, errors.UniqueViolation):
+                return False
+            raise
     try:
         cursor = conn.execute(
             "UPDATE newsflash_production_metadata SET odaily_id=?,id_match_status='matched',updated_at=CURRENT_TIMESTAMP "
@@ -257,6 +284,15 @@ def record_newsflash_delivery(
             outlet_category = "ai_regular"
     if outlet_category not in OUTLET_CATEGORY_CODES:
         raise ValueError(f"invalid newsflash outlet category: {outlet_category}")
+    from packages.common.storage import load_storage_settings
+    if load_storage_settings().backend == "postgres":
+        from packages.postgres_newsflash_operations import PostgresNewsflashOperationsRepository
+        return PostgresNewsflashOperationsRepository(path).record_newsflash_delivery(
+            delivery_key=delivery_key, origin_key=origin_key, outlet_category=outlet_category,
+            title=title, response_text=response_text, pushed_at=pushed_at,
+            priority_status=priority_status, priority_level=priority_level,
+            priority_reason=priority_reason, duplicate_result=duplicate_result,
+        )
     ensure_newsflash_metadata_schema(path)
     key = str(delivery_key or uuid.uuid4().hex)
     stamp = pushed_at or datetime.now(UTC).isoformat()
@@ -283,6 +319,10 @@ def record_newsflash_delivery(
         duplicate_target_title = duplicate_target_title[:500] if duplicate_target_title else None
         duplicate_reason = duplicate_reason[:500] if duplicate_reason else None
 
+    # Resolve slow title/time matching before acquiring SQLite's writer lock.
+    with connect_sqlite(path) as read_conn:
+        matches = _matching_metadata_rows(read_conn, title=title, published_at=stamp) if id_match_status == "missing" else []
+        matching_refs = _matching_reference_rows(read_conn, title=title, published_at=stamp) if id_match_status == "missing" else []
     with connect_sqlite(path) as conn:
         conn.execute(
             """INSERT INTO newsflash_production_metadata(
@@ -313,11 +353,21 @@ def record_newsflash_delivery(
              priority_reason, duplicate_status, duplicate_target_type, duplicate_target_id,
              duplicate_target_title, duplicate_reason),
         )
-        if id_match_status == "missing":
-            matches = _matching_metadata_rows(conn, title=title, published_at=stamp)
-            matching_refs = _matching_reference_rows(conn, title=title, published_at=stamp)
-            if len(matches) == 1 and len(matching_refs) == 1:
-                _try_link_metadata(conn, matches[0], str(matching_refs[0]["source_item_id"]))
+        if id_match_status == "missing" and len(matching_refs) == 1:
+            # Recheck uniqueness atomically after the insert; concurrent deliveries stay unresolved.
+            lower = ( _parse_datetime(stamp) - __import__("datetime").timedelta(seconds=300)).isoformat()
+            upper = ( _parse_datetime(stamp) + __import__("datetime").timedelta(seconds=300)).isoformat()
+            candidates = conn.execute(
+                "SELECT * FROM newsflash_production_metadata WHERE title=? AND odaily_id IS NULL "
+                "AND id_match_status='missing' AND datetime(pushed_at)>=datetime(?) AND datetime(pushed_at)<=datetime(?)",
+                (title,lower,upper),
+            ).fetchall()
+            refs = conn.execute(
+                "SELECT count(*) AS n FROM odaily_reference_items WHERE title=? AND datetime(published_at)>=datetime(?) AND datetime(published_at)<=datetime(?)",
+                (title,lower,upper),
+            ).fetchone()["n"]
+            if len(candidates) == 1 and refs == 1:
+                _try_link_metadata(conn,candidates[0],str(matching_refs[0]["source_item_id"]))
         conn.commit()
     return key
 
@@ -330,6 +380,12 @@ def update_newsflash_priority(
     level: str | None = None,
     reason: str | None = None,
 ) -> bool:
+    from packages.common.storage import load_storage_settings
+    if load_storage_settings().backend == "postgres":
+        from packages.postgres_newsflash_operations import PostgresNewsflashOperationsRepository
+        return PostgresNewsflashOperationsRepository(path).update_newsflash_priority(
+            delivery_key=delivery_key,status=status,level=level,reason=reason,
+        )
     ensure_newsflash_metadata_schema(path)
     if status not in PRIORITY_STATUSES:
         status = "failed"
@@ -356,10 +412,11 @@ def metadata_for_reference(
     publisher_kind: str | None,
     operation_created_at: Any,
 ) -> dict[str, Any]:
+    placeholder = "%s" if _is_postgres(conn) else "?"
     state = conn.execute("SELECT enabled_at FROM newsflash_metadata_state WHERE singleton_key='global'").fetchone()
     enabled_at = _parse_datetime(state["enabled_at"]) if state else None
     direct = conn.execute(
-        "SELECT * FROM newsflash_production_metadata WHERE odaily_id=?",
+        f"SELECT * FROM newsflash_production_metadata WHERE odaily_id={placeholder}",
         (source_item_id,),
     ).fetchone()
     if direct:
@@ -377,51 +434,12 @@ def metadata_for_reference(
                 row = dict(candidate)
                 row["odaily_id"] = source_item_id
             else:
-                return {
-                    "origin_key": None,
-                    "outlet_category": None,
-                    "origin_label": "来源待匹配",
-                    "origin_status": "pending",
-                    "priority_status": "pending",
-                    "priority_level": None,
-                    "priority_reason": None,
-                    "duplicate_status": "pending",
-                    "duplicate_target_type": None,
-                    "duplicate_target_id": None,
-                    "duplicate_target_title": None,
-                    "duplicate_reason": None,
-                }
+                return _pending_metadata()
         elif candidates:
-            return {
-                "origin_key": None,
-                "outlet_category": None,
-                "origin_label": "来源待匹配",
-                "origin_status": "pending",
-                "priority_status": "pending",
-                "priority_level": None,
-                "priority_reason": None,
-                "duplicate_status": "pending",
-                "duplicate_target_type": None,
-                "duplicate_target_id": None,
-                "duplicate_target_title": None,
-                "duplicate_reason": None,
-            }
+            return _pending_metadata()
         else:
             if _has_unresolved_metadata_for_title(conn, title):
-                return {
-                    "origin_key": None,
-                    "outlet_category": None,
-                    "origin_label": "来源待匹配",
-                    "origin_status": "pending",
-                    "priority_status": "pending",
-                    "priority_level": None,
-                    "priority_reason": None,
-                    "duplicate_status": "pending",
-                    "duplicate_target_type": None,
-                    "duplicate_target_id": None,
-                    "duplicate_target_title": None,
-                    "duplicate_reason": None,
-                }
+                return _pending_metadata()
             created = _parse_datetime(operation_created_at)
             published = _parse_datetime(published_at)
             if publisher_kind == "human" and enabled_at and created and published and created >= enabled_at and published >= enabled_at:
@@ -469,4 +487,13 @@ def metadata_for_reference(
         "duplicate_target_id": row["duplicate_target_id"],
         "duplicate_target_title": row["duplicate_target_title"],
         "duplicate_reason": row["duplicate_reason"],
+    }
+
+
+def _pending_metadata() -> dict[str, Any]:
+    return {
+        "origin_key": None, "outlet_category": None, "origin_label": "来源待匹配",
+        "origin_status": "pending", "priority_status": "pending", "priority_level": None,
+        "priority_reason": None, "duplicate_status": "pending", "duplicate_target_type": None,
+        "duplicate_target_id": None, "duplicate_target_title": None, "duplicate_reason": None,
     }

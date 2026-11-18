@@ -13,6 +13,13 @@ from .models import AnalysisResult, OdailyReference, Writer3Candidate
 
 
 class Writer3Index:
+    def __new__(cls, path: Path):
+        from packages.common.storage import load_storage_settings
+        if cls is Writer3Index and load_storage_settings().backend == "postgres":
+            from .postgres_index import PostgresWriter3Index
+            return PostgresWriter3Index()
+        return super().__new__(cls)
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)

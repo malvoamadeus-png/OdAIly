@@ -102,6 +102,8 @@ def _json(value: Any) -> str:
 
 
 def _decode(value: Any, default: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
     try:
         return json.loads(str(value)) if value not in (None, "") else default
     except (TypeError, json.JSONDecodeError):
@@ -577,7 +579,15 @@ class AIReviewService:
         self, *, database_path: Path, primary_database_path: Path, hottopic_database_path: Path,
         analyzer: AIReviewAnalyzer | None = None,
     ) -> None:
-        self.repository = AIReviewRepository(database_path)
+        from packages.common.storage import load_storage_settings
+
+        self.storage_backend = load_storage_settings().backend
+        if self.storage_backend == "postgres":
+            from packages.ai_review_postgres import PostgresAIReviewRepository
+
+            self.repository = PostgresAIReviewRepository()
+        else:
+            self.repository = AIReviewRepository(database_path)
         self.primary_database_path = primary_database_path
         self.hottopic_database_path = hottopic_database_path
         self.analyzer = analyzer or AIReviewAnalyzer()
@@ -645,6 +655,8 @@ class AIReviewService:
         return connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
     def _queue_events(self, since: datetime) -> int:
+        if self.storage_backend == "postgres":
+            return self._queue_events_postgres(since)
         try:
             conn = _read_only(self.primary_database_path)
         except sqlite3.Error:
@@ -757,6 +769,122 @@ class AIReviewService:
         finally:
             conn.close()
         return inserted
+
+    def _queue_events_postgres(self, since: datetime) -> int:
+        from packages.common.pg_native import connect_postgres
+
+        inserted = 0
+        retained_keys: set[str] = set()
+        event_cursor: tuple[datetime, str] | None = None
+        while True:
+            events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            with connect_postgres(schema="main", application_name="odaily-ai-review-source") as conn:
+                if conn.execute("SELECT to_regclass('main.newsflash_events') AS relation").fetchone()["relation"] is None:
+                    return 0
+                params: list[Any] = [since.astimezone(UTC)]
+                cursor_clause = ""
+                if event_cursor is not None:
+                    cursor_clause = " AND (e.event_time,e.event_id) < (%s,%s)"
+                    params.extend(event_cursor)
+                event_rows = conn.execute(
+                    "SELECT e.event_id,e.event_time FROM main.newsflash_events e "
+                    "WHERE e.status='active' AND e.event_time >= %s" + cursor_clause +
+                    " ORDER BY e.event_time DESC,e.event_id DESC LIMIT 200",
+                    params,
+                ).fetchall()
+                if not event_rows:
+                    break
+                event_ids = [str(row["event_id"]) for row in event_rows]
+                rows = conn.execute(
+                    "SELECT e.event_id,e.representative_title,e.event_time,e.first_published_at,e.first_sources,e.first_source,"
+                    "e.competitor_source_count,e.has_odaily,i.source,i.source_item_id,i.source_url,i.title,i.content,"
+                    "i.published_at,i.raw_payload,i.metadata FROM main.newsflash_events e "
+                    "JOIN main.newsflash_event_sources s ON s.event_id=e.event_id "
+                    "JOIN main.newsflash_items i ON i.id=s.item_id WHERE e.event_id=ANY(%s) ORDER BY e.event_time DESC,e.event_id,i.id",
+                    (event_ids,),
+                ).fetchall()
+                for row in rows:
+                    events[str(row["event_id"])].append(dict(row))
+                known_handles = set()
+                if conn.execute("SELECT to_regclass('main.x_capture_accounts') AS relation").fetchone()["relation"]:
+                    known_handles.update(str(row["username_lower"]).casefold().lstrip("@") for row in conn.execute("SELECT username_lower FROM main.x_capture_accounts WHERE enabled=true").fetchall())
+                known_domains = set(TRACKED_SOURCE_DOMAINS)
+                if conn.execute("SELECT to_regclass('main.non_mainstream_media_sources') AS relation").fetchone()["relation"]:
+                    for row in conn.execute("SELECT homepage_url FROM main.non_mainstream_media_sources WHERE enabled=true").fetchall():
+                        host = (urlparse(str(row["homepage_url"] or "")).hostname or "").casefold().removeprefix("www.")
+                        if host: known_domains.add(host)
+                if conn.execute("SELECT to_regclass('hottopic.hottopic_accounts') AS relation").fetchone()["relation"]:
+                    known_handles.update(str(row["screen_name_lower"]).casefold().lstrip("@") for row in conn.execute("SELECT screen_name_lower FROM hottopic.hottopic_accounts WHERE status='followed' AND (hot_topic_enabled OR market_sentiment_enabled OR project_promotion_enabled OR investment_leads_enabled)").fetchall())
+                odaily_ids = [str(row["source_item_id"]) for sources in events.values() for row in sources if str(row["source"]).casefold() == "odaily"]
+                publish_statuses: dict[str, str] = {}
+                if odaily_ids and conn.execute("SELECT to_regclass('main.newsflash_production_metadata') AS relation").fetchone()["relation"]:
+                    statuses = conn.execute("SELECT DISTINCT ON (m.odaily_id) m.odaily_id,t.status FROM main.newsflash_production_metadata m JOIN main.tasks t ON m.delivery_key='odaily-task-'||t.id WHERE m.origin_key='competitor' AND m.outlet_category='ai_regular' AND t.status IN ('auto_published','ready_review') AND m.odaily_id=ANY(%s) ORDER BY m.odaily_id,m.pushed_at DESC,m.delivery_key DESC", (odaily_ids,)).fetchall()
+                    publish_statuses = {str(row["odaily_id"]): str(row["status"]) for row in statuses if row["odaily_id"] is not None}
+                last = event_rows[-1]
+                event_cursor = (last["event_time"], str(last["event_id"]))
+            for event_id, sources in events.items():
+                if any(self._is_hyperbot_source(row) for row in sources):
+                    continue
+                outlets = {str(row["source"]).casefold() for row in sources}
+                competitors = [row for row in sources if str(row["source"]).casefold() != "odaily"]
+                odaily = [row for row in sources if str(row["source"]).casefold() == "odaily"]
+                category = ""
+                publish_status = None
+                if competitors and odaily:
+                    comp_times = [_parse_datetime(row["published_at"]) for row in competitors]
+                    odaily_times = [_parse_datetime(row["published_at"]) for row in odaily]
+                    first_comp = min((value for value in comp_times if value), default=None)
+                    first_odaily = min((value for value in odaily_times if value), default=None)
+                    if first_comp and first_odaily and first_comp < first_odaily:
+                        publish_status = next((publish_statuses.get(str(row["source_item_id"])) for row in odaily if publish_statuses.get(str(row["source_item_id"]))), None)
+                        if publish_status:
+                            category = "competitor_first_ai"
+                elif len(outlets - {"odaily"}) >= 2 and not odaily:
+                    category = "multiple_competitors_no_odaily"
+                if not category:
+                    continue
+                title = str(sources[0]["representative_title"] or sources[0]["title"] or "未命名事件")
+                if category == "competitor_first_ai":
+                    title = f"{title} · 竞品先发 / Odaily {'直发' if publish_status == 'auto_published' else '挂后台'}"
+                else:
+                    title = f"{title} · 多家竞品发布，Odaily 未发"
+                ordered = sorted(competitors, key=lambda row: _parse_datetime(row["published_at"]) or datetime.max.replace(tzinfo=UTC))
+                candidates: dict[str, dict[str, Any]] = {}
+                for source in ordered[:20]:
+                    outlet = str(source["source"]).casefold()
+                    article_url = _publisher_article_url(outlet, str(source["source_item_id"] or ""), str(source["source_url"] or ""))
+                    for origin in _extract_original_sources(source, known_handles=known_handles, known_domains=known_domains):
+                        identity = str(origin["identity"])
+                        candidate = candidates.setdefault(identity, {"origin": dict(origin), "urls": set(), "evidence": []})
+                        candidate["urls"].update(origin.get("urls") or [origin["url"]])
+                        article = {"source": PUBLISHER_LABELS.get(outlet, str(source["source"])), "sourceKind": "competitor", "url": article_url or None,
+                                   "title": str(source["title"] or ""), "publishedAt": source["published_at"].isoformat() if isinstance(source["published_at"], datetime) else source["published_at"],
+                                   "text": str(source["content"] or "")[:1800]}
+                        evidence_key = (outlet, article_url, article["title"])
+                        if not any((item["_outlet"], item["url"], item["title"]) == evidence_key for item in candidate["evidence"]):
+                            candidate["evidence"].append({**article, "_outlet": outlet})
+                for identity, candidate in candidates.items():
+                    origin = candidate["origin"]
+                    origin["urls"] = sorted(candidate["urls"], key=str.casefold)
+                    origin["url"] = min(origin["urls"], key=str.casefold)
+                    evidence = [{**{key: value for key, value in item.items() if key != "_outlet"}, "originSources": [origin]} for item in candidate["evidence"]]
+                    account = str(origin.get("sourceAccount") or "")
+                    domain = str(origin.get("sourceDomain") or "")
+                    label = f"@{account}" if account else domain
+                    key = _event_source_key(event_id, category, identity)
+                    retained_keys.add(key)
+                    latest = max((str(item.get("publishedAt") or "") for item in evidence), key=lambda value: _parse_datetime(value) or datetime.min.replace(tzinfo=UTC), default=None)
+                    inserted += int(self.repository.insert_candidate(key=key, category=category, title=f"{label} · {title}", evidence=evidence[:20],
+                        clues={"xAccounts": [account] if account else [], "domains": [domain] if domain else []}, source_updated_at=latest, refresh_existing=True))
+        self.repository.delete_stale_event_candidates(since,retained_keys)
+        return inserted
+
+    @staticmethod
+    def _ai_competitor_publish_postgres(conn: Any, odaily_id: str) -> str | None:
+        if conn.execute("SELECT to_regclass('main.newsflash_production_metadata') AS relation").fetchone()["relation"] is None:
+            return None
+        row=conn.execute("SELECT t.status FROM main.newsflash_production_metadata m JOIN main.tasks t ON m.delivery_key='odaily-task-'||t.id WHERE m.odaily_id=%s AND m.origin_key='competitor' AND m.outlet_category='ai_regular' AND t.status IN ('auto_published','ready_review') ORDER BY m.pushed_at DESC LIMIT 1",(odaily_id,)).fetchone()
+        return str(row["status"]) if row else None
 
     @staticmethod
     def _is_hyperbot_source(row: sqlite3.Row) -> bool:

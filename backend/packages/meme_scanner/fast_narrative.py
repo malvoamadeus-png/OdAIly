@@ -179,12 +179,15 @@ def run(
         if not grok_research and grok_result.get("summary"):
             grok_research["summary"] = grok_result["summary"]
         if grok_research:
-            grok_materials.append({
-                "id": "grok:routine:research",
-                "source": "grok_routine",
-                "statement": json.dumps(grok_research, ensure_ascii=False),
-                "metadata": {},
-            })
+            grok_materials.extend(
+                {
+                    "id": f"grok:routine:{key}",
+                    "source": "grok_routine",
+                    "statement": json.dumps({key: value}, ensure_ascii=False),
+                    "metadata": {},
+                }
+                for key, value in grok_research.items()
+            )
     if bundle["status"] == "error" and not grok_materials:
         raise narrative_v2.NarrativeStageError(
             "local_fast_evidence",

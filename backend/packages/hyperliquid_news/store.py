@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from packages.common.storage import connect_sqlite
+from packages.common.storage import connect_sqlite, load_hyperliquid_storage_path, load_storage_settings
 from .client import address_key
 from .history import fill_key
 from .models import Candidate
@@ -69,6 +69,7 @@ def _candidate_address_triggers(*, if_not_exists: bool = False) -> str:
 
 class NewsStore:
     def __init__(self, path: Path) -> None:
+        self.backend = "sqlite"
         self.path = path
 
     def initialize(self) -> None:
@@ -671,3 +672,16 @@ class NewsStore:
                 conn.execute('DELETE FROM hl_news_state WHERE address=?',(address,))
                 conn.execute('DELETE FROM hl_news_normal_state WHERE address=?',(address,))
         return value
+
+
+def create_news_store(path: Path | None = None):
+    settings = load_storage_settings()
+    configured_path = load_hyperliquid_storage_path()
+    selected_path = path or configured_path
+    if settings.backend == "postgres":
+        if selected_path.resolve() != configured_path:
+            raise ValueError("PostgreSQL Hyperliquid storage does not accept a custom SQLite path")
+        from .postgres_store import PostgresNewsStore
+
+        return PostgresNewsStore(configured_path)
+    return NewsStore(selected_path)

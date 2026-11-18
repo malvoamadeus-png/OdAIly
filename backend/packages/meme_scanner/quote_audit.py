@@ -14,6 +14,7 @@ from urllib.parse import quote
 import requests
 
 from packages.common.paths import get_paths
+from packages.common.storage import load_storage_settings
 
 
 DEXSCREENER_URL = "https://api.dexscreener.com"
@@ -273,6 +274,48 @@ class AuditStore:
 
 
 def active_candidates(scanner_db: Path) -> list[dict[str, Any]]:
+    if load_storage_settings().backend == "postgres":
+        from packages.common.pg_native import connect_postgres
+        from .scanner import market_cap_levels
+
+        with connect_postgres(schema="meme", application_name="odaily-meme-quote-audit-source") as connection:
+            rows = connection.execute(
+                """SELECT address,symbol,last_market_cap,highest_market_cap FROM observations
+                   WHERE tracking_status='active' AND lower(chain)='solana'"""
+            ).fetchall()
+            active = {str(row["address"]): dict(row) for row in rows}
+            if not active:
+                return []
+            console_addresses: set[str] = set()
+            jobs = connection.execute(
+                """SELECT address,payload_json FROM jobs WHERE COALESCE(reason,'') NOT IN
+                   ('volume_gate_failed','tg_market_cap_gate_failed','unsupported_chain','token_not_found')
+                   ORDER BY updated_at DESC,id DESC LIMIT %s""", (CONSOLE_JOB_LIMIT,)
+            ).fetchall()
+            for job in jobs:
+                address = str(job["address"] or "")
+                payload = _json_object(job["payload_json"])
+                if address in active and str(payload.get("chain") or "").lower() in {"solana", "sol"}:
+                    console_addresses.add(address)
+            consumed: dict[str, set[float]] = {}
+            for row in connection.execute("SELECT address,level FROM market_cap_milestones WHERE chain='solana'"):
+                consumed.setdefault(str(row["address"]), set()).add(float(row["level"]))
+        candidates: list[dict[str, Any]] = []
+        for address, row in active.items():
+            cap = _number(row.get("last_market_cap")) or 0.0
+            remaining = [level for level in market_cap_levels("solana")
+                         if level not in consumed.get(address, set()) and level > cap]
+            near_milestone = bool(remaining and cap >= remaining[0] * MILESTONE_NEAR_RATIO)
+            priority_reason = "console" if address in console_addresses else "near_milestone" if near_milestone else "baseline"
+            candidates.append({
+                "address": address,
+                "symbol": str(row.get("symbol") or ""),
+                "market_cap": cap,
+                "highest_market_cap": _number(row.get("highest_market_cap")) or 0.0,
+                "priority": 2 if priority_reason == "console" else 1 if priority_reason == "near_milestone" else 0,
+                "priority_reason": priority_reason,
+            })
+        return candidates
     if not scanner_db.exists():
         return []
     connection = sqlite3.connect(f"{scanner_db.resolve().as_uri()}?mode=ro", uri=True, timeout=10)

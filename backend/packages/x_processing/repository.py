@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager
+from contextvars import ContextVar
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,13 +14,16 @@ from packages.common.pipeline_schema import (
     NEWSFLASH_EVENT_SCHEMA_SQL,
     PIPELINE_MONITORING_SCHEMA_SQL,
 )
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
+from packages.system_observability.postgres_schema import SourceStateTriggerSpec, ensure_source_state_schema, install_source_state_trigger
 
 from .models import (
     ACTIVE_CANDIDATE_TTL,
     AI_SOURCE,
     COMPETITOR_SOURCES,
     EVENT_TRACKING_SOURCE,
+    HYPERLIQUID_SOURCE,
     JIN10_SOURCE,
     MAINSTREAM_MEDIA_SOURCE,
     MSX_SOURCE,
@@ -43,6 +49,39 @@ from .models import (
 from .searcher import SearchDocument, content_hash
 
 CRYPTO_SEARCH_FIRST_SOURCES = {*COMPETITOR_SOURCES, NON_MAINSTREAM_MEDIA_SOURCE, MSX_SOURCE}
+
+TASK_SOURCE_STATE_TRIGGER = SourceStateTriggerSpec(
+    schema="main",
+    table="tasks",
+    row_id_columns=("id",),
+    payload_columns=(
+        "source", "source_item_id", "source_url", "title", "content", "status",
+        "created_at", "updated_at", "metadata", "raw_payload",
+    ),
+)
+PIPELINE_SOURCE_STATE_TRIGGER = SourceStateTriggerSpec(
+    schema="main",
+    table="x_task_pipeline",
+    row_id_columns=("task_id",),
+    payload_columns=(
+        "news_type", "candidate_id", "judge_model", "judge_output", "judge_completed_at",
+        "search_result", "search_completed_at", "prompt_template_key", "prompt_version_id",
+        "writer_feature_mode_enabled", "writer_model", "writer_output", "draft_title",
+        "draft_content", "write_completed_at", "final_title", "final_content",
+        "format_completed_at", "publisher_channel", "publisher_model", "publisher_category",
+        "publisher_decision", "publisher_reason_code", "publisher_output", "publisher_decided_at",
+        "publish_completed_at", "push_result", "telegram_result", "last_error", "updated_at",
+    ),
+)
+TASK_SOURCE_STATE_CHECKSUM = sha256(
+    repr((TASK_SOURCE_STATE_TRIGGER, PIPELINE_SOURCE_STATE_TRIGGER)).encode("utf-8")
+).hexdigest()
+
+
+def _install_task_source_state_trigger(connection) -> None:
+    ensure_source_state_schema(connection)
+    install_source_state_trigger(connection, TASK_SOURCE_STATE_TRIGGER)
+    install_source_state_trigger(connection, PIPELINE_SOURCE_STATE_TRIGGER)
 
 
 def _task_has_x_ai_source_label(task: TaskRecord) -> bool:
@@ -290,6 +329,11 @@ class XProcessingRepository(Protocol):
     def list_active_candidate_documents(self) -> list[SearchDocument]: ...
     def create_candidate_for_task(self, task: TaskRecord, *, search_result: dict[str, Any]) -> tuple[int, bool]: ...
     def link_task_to_candidate(self, task: TaskRecord, *, candidate_id: int, search_result: dict[str, Any]) -> None: ...
+    def start_stage_attempt(self, task_id: int, *, stage: str, executor: str, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> int: ...
+    def record_stage_attempt_response(self, attempt_id: int, raw_output: str) -> None: ...
+    def record_stage_attempt_context(self, attempt_id: int, *, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> None: ...
+    def complete_stage_attempt(self, attempt_id: int, *, result: dict[str, Any] | None = None) -> None: ...
+    def fail_stage_attempt(self, attempt_id: int, error: str, *, error_code: str | None = None) -> None: ...
     def complete_write(
         self,
         task_id: int,
@@ -300,6 +344,7 @@ class XProcessingRepository(Protocol):
         draft_content: str,
         raw_output: str,
         trace: dict[str, Any],
+        attempt_id: int | None = None,
     ) -> None: ...
     def complete_format_publish(
         self,
@@ -307,6 +352,7 @@ class XProcessingRepository(Protocol):
         *,
         final_title: str,
         final_content: str,
+        attempt_id: int | None = None,
     ) -> None: ...
     def get_publisher_settings(self) -> PublisherSettingsRecord: ...
     def list_publisher_channels(self) -> list[PublisherChannelRecord]: ...
@@ -334,7 +380,7 @@ class XProcessingRepository(Protocol):
         status: str,
         last_error: str | None = None,
     ) -> None: ...
-    def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None: ...
+    def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None, error_code: str | None = None) -> None: ...
     def record_worker_heartbeat(
         self,
         *,
@@ -352,25 +398,23 @@ def utc_now() -> datetime:
 
 
 def get_database_url() -> str:
-    from packages.common.postgres import load_database_url
+    from packages.common.storage import load_postgres_settings
 
-    return load_database_url()
+    return load_postgres_settings().dsn
 
 
 def _import_psycopg():
     try:
-        import psycopg
-        from psycopg.rows import dict_row
         from psycopg.types.json import Jsonb
     except Exception as exc:  # pragma: no cover - exercised only when dependency is absent.
-        raise RuntimeError("psycopg is required for Supabase/Postgres access") from exc
-    return psycopg, dict_row, Jsonb
+        raise RuntimeError("psycopg is required for PostgreSQL storage") from exc
+    return None, None, Jsonb
 
 
 def get_postgres_connect_timeout_seconds() -> int:
-    from packages.common.postgres import get_postgres_connect_timeout_seconds as _get_postgres_connect_timeout_seconds
+    from packages.common.storage import load_postgres_settings
 
-    return _get_postgres_connect_timeout_seconds()
+    return load_postgres_settings().connect_timeout_seconds
 
 
 def _row_to_task(row: dict[str, Any]) -> TaskRecord:
@@ -387,6 +431,7 @@ def _row_to_task(row: dict[str, Any]) -> TaskRecord:
         published_at=row.get("published_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        claim_token=row.get("lease_token"),
     )
 
 
@@ -474,29 +519,56 @@ def _row_to_publisher_channel(row: dict[str, Any]) -> PublisherChannelRecord:
 
 class PostgresXProcessingRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresXProcessingRepository is retired; use create_x_processing_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        _psycopg, _dict_row, self._Jsonb = _import_psycopg()
         self.application_name = "odaily-x-processing"
+        self._claim_context: ContextVar[tuple[int, str] | None] = ContextVar("x_processing_claim", default=None)
 
+    def set_claim_context(self, task: TaskRecord) -> None:
+        self._claim_context.set((task.id, task.claim_token or ""))
+
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(SCHEMA_SQL)
-            self._ensure_publisher_defaults(conn)
-            conn.commit()
+        self.initialize_schema()
+        with connect_postgres(schema="main", application_name="odaily-x-processing-defaults") as conn:
+            with postgres_transaction(conn):
+                self._ensure_publisher_defaults(conn)
+
+    @staticmethod
+    def initialize_schema() -> None:
+        with connect_postgres(schema="main", application_name="odaily-x-processing-migrate") as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="x_processing",
+                migrations=(PostgresMigration(
+                    1, "x_processing_initial", sha256(SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(SCHEMA_SQL),
+                ), PostgresMigration(
+                    2, "x_processing_task_source_state_outbox", TASK_SOURCE_STATE_CHECKSUM,
+                    _install_task_source_state_trigger,
+                ), PostgresMigration(
+                    3, "x_processing_task_lease_token", sha256(b"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS lease_token text").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS lease_token text"),
+                ), PostgresMigration(
+                    4, "x_processing_attempt_lease_token", sha256(b"ALTER TABLE x_processing_attempts ADD COLUMN IF NOT EXISTS lease_token text").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE x_processing_attempts ADD COLUMN IF NOT EXISTS lease_token text"),
+                ), PostgresMigration(
+                    5, "x_processing_external_error_counter", sha256(b"ALTER TABLE x_processing_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE x_processing_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
+                )),
+            )
+        from packages.common.source_exclusions import PostgresSourceExclusionRepository
+        PostgresSourceExclusionRepository().init_schema()
 
     def _ensure_publisher_defaults(self, conn) -> None:
         conn.execute(
@@ -534,7 +606,6 @@ class PostgresXProcessingRepository:
     def clear_old_pending_x_tasks(self) -> int:
         with self._connect() as conn:
             row = conn.execute("DELETE FROM tasks WHERE source = 'x' AND status = 'pending' RETURNING id").fetchall()
-            conn.commit()
             return len(row)
 
     def seed_prompt_templates(self, *, root_dir: Path) -> None:
@@ -580,7 +651,6 @@ class PostgresXProcessingRepository:
                     """,
                     (version["id"], template_key),
                 )
-            conn.commit()
 
     def claim_task(self, stage: ProcessingStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
         return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds)
@@ -655,6 +725,7 @@ class PostgresXProcessingRepository:
                     OR (t.source = %(jin10_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
                     OR (t.source = %(event_tracking_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
+                    OR (t.source = %(hyperliquid_source)s AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                 )
             """
@@ -670,7 +741,7 @@ class PostgresXProcessingRepository:
                       ON t.source = 'x'
                      AND xa.username_lower = lower(COALESCE(t.metadata ->> 'account_username', t.metadata ->> 'author_username', ''))
                     WHERE {source_filter}
-                      AND (%(task_id)s IS NULL OR t.id = %(task_id)s)
+                      AND (%(task_id)s::bigint IS NULL OR t.id = %(task_id)s::bigint)
                       AND (t.locked_until IS NULL OR t.locked_until < now())
                     ORDER BY t.created_at ASC, t.id ASC
                     FOR UPDATE OF t SKIP LOCKED
@@ -681,6 +752,7 @@ class PostgresXProcessingRepository:
                     locked_by = %(worker_id)s,
                     locked_until = now() + (%(lock_seconds)s || ' seconds')::interval,
                     attempt_count = attempt_count + 1,
+                    lease_token = gen_random_uuid()::text,
                     updated_at = now()
                 FROM candidate
                 WHERE t.id = candidate.id
@@ -698,18 +770,74 @@ class PostgresXProcessingRepository:
                     "crypto_search_first_sources": list(CRYPTO_SEARCH_FIRST_SOURCES),
                     "ai_source": AI_SOURCE,
                     "event_tracking_source": EVENT_TRACKING_SOURCE,
+                    "hyperliquid_source": HYPERLIQUID_SOURCE,
                     "jin10_source": JIN10_SOURCE,
                 },
             ).fetchone()
             if row is None:
-                conn.commit()
                 return None
             conn.execute(
                 "INSERT INTO x_task_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING",
                 (row["id"],),
             )
-            conn.commit()
-            return _row_to_task(row)
+            task = _row_to_task(row)
+            self.set_claim_context(task)
+            return task
+
+    def owns_claim(self, task_id: int) -> bool:
+        return False
+
+    def owns_task_claim(self, task: TaskRecord) -> bool:
+        token = task.claim_token
+        if not token:
+            return False
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute("SELECT 1 FROM tasks WHERE id=%s AND lease_token=%s AND locked_until>now()", (task.id, token)).fetchone()
+        return bool(row)
+
+    def _require_claim(self, conn, task_id: int) -> str:
+        row = conn.execute("SELECT lease_token,locked_until FROM tasks WHERE id=%s FOR UPDATE", (task_id,)).fetchone()
+        claim = self._claim_context.get()
+        token = claim[1] if claim and claim[0] == int(task_id) else None
+        if not token:
+            raise RuntimeError("Missing PostgreSQL task claim token")
+        if not row or row["lease_token"] != token or not row["locked_until"] or row["locked_until"] <= utc_now():
+            raise RuntimeError("PostgreSQL task claim is stale")
+        return token
+
+    def _require_task_claim(self, conn, task: TaskRecord) -> str:
+        """Validate the exact lease carried by a worker's task snapshot."""
+        row = conn.execute(
+            "SELECT lease_token,locked_until FROM tasks WHERE id=%s FOR UPDATE",
+            (task.id,),
+        ).fetchone()
+        token = task.claim_token
+        if not token or not row or row["lease_token"] != token:
+            raise RuntimeError("PostgreSQL task claim is stale")
+        if not row["locked_until"] or row["locked_until"] <= utc_now():
+            raise RuntimeError("PostgreSQL task claim is stale")
+        return token
+
+    def _require_attempt_claim(self, conn, attempt_id: int):
+        row = conn.execute(
+            "SELECT task_id,lease_token,status,executor FROM x_processing_attempts WHERE id=%s",
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            token = self._require_claim(conn, int(row["task_id"]))
+        except RuntimeError:
+            return None
+        if row["status"] != "running" or row["lease_token"] != token:
+            return None
+        locked = conn.execute(
+            "SELECT task_id,lease_token,status,executor FROM x_processing_attempts WHERE id=%s FOR UPDATE",
+            (attempt_id,),
+        ).fetchone()
+        if locked is None or locked["status"] != "running" or locked["lease_token"] != token:
+            return None
+        return locked
 
     def is_event_tracking_cancelled(self, task_id: int) -> bool:
         with self._connect(autocommit=True) as conn:
@@ -740,7 +868,6 @@ class PostgresXProcessingRepository:
     def ensure_pipeline(self, task_id: int) -> None:
         with self._connect() as conn:
             conn.execute("INSERT INTO x_task_pipeline (task_id) VALUES (%s) ON CONFLICT (task_id) DO NOTHING", (task_id,))
-            conn.commit()
 
     def count_legacy_unfinished_tasks(self) -> int:
         with self._connect(autocommit=True) as conn:
@@ -770,7 +897,6 @@ class PostgresXProcessingRepository:
                 """,
                 (LEGACY_SKIP_SOURCES, LEGACY_SKIP_UNFINISHED_STATUSES),
             ).fetchall()
-            conn.commit()
         return len(row)
 
     def get_active_prompt(self, template_key: str) -> PromptTemplateVersion:
@@ -789,6 +915,98 @@ class PostgresXProcessingRepository:
             raise ValueError(f"active prompt not found: {template_key}")
         return _row_to_prompt(row)
 
+    def append_prompt_version(
+        self, *, template_key: str, appendix: str, note: str,
+    ) -> tuple[PromptTemplateVersion, bool]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT v.*, t.feature_mode_enabled, t.feature_mode_text "
+                "FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=%s AND v.deleted_at IS NULL FOR UPDATE OF t",
+                (template_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"active prompt not found: {template_key}")
+            active = _row_to_prompt(row)
+            addition = appendix.strip()
+            content = active.content if not addition or addition in active.content else (
+                active.content + ("\n\n" if active.content and not active.content.endswith("\n") else "\n" if active.content else "") + addition
+            )
+            if content == active.content:
+                return active, False
+            version_number = int(conn.execute(
+                "SELECT COALESCE(MAX(version_number),0)+1 AS version_number "
+                "FROM prompt_template_versions WHERE template_key=%s",
+                (template_key,),
+            ).fetchone()["version_number"])
+            timestamp = utc_now()
+            version = conn.execute(
+                "INSERT INTO prompt_template_versions(template_key,version_number,content,note,created_at,published_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (template_key, version_number, content, note, timestamp, timestamp),
+            ).fetchone()
+            conn.execute(
+                "UPDATE prompt_templates SET active_version_id=%s,updated_at=%s WHERE template_key=%s",
+                (version["id"], timestamp, template_key),
+            )
+            updated = conn.execute(
+                "SELECT v.*,t.feature_mode_enabled,t.feature_mode_text FROM prompt_templates t "
+                "JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=%s AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+        if updated is None:
+            raise ValueError(f"active prompt not found after update: {template_key}")
+        return _row_to_prompt(updated), True
+
+    def publish_prompt_policy(
+        self, *, template_key: str, prompt_appendix: str, feature_mode_appendix: str, note: str,
+    ) -> tuple[PromptTemplateVersion, bool, bool]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT v.*,t.feature_mode_enabled,t.feature_mode_text FROM prompt_templates t "
+                "JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=%s AND v.deleted_at IS NULL FOR UPDATE OF t",
+                (template_key,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"active prompt not found: {template_key}")
+            active = _row_to_prompt(row)
+            content = _append_prompt_text(active.content, prompt_appendix)
+            feature_text = _append_prompt_text(active.feature_mode_text, feature_mode_appendix)
+            content_changed = content != active.content
+            feature_changed = feature_text != active.feature_mode_text
+            timestamp = utc_now()
+            if content_changed:
+                version_number = int(conn.execute(
+                    "SELECT COALESCE(MAX(version_number),0)+1 AS version_number "
+                    "FROM prompt_template_versions WHERE template_key=%s",
+                    (template_key,),
+                ).fetchone()["version_number"])
+                version = conn.execute(
+                    "INSERT INTO prompt_template_versions(template_key,version_number,content,note,created_at,published_at) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (template_key, version_number, content, note, timestamp, timestamp),
+                ).fetchone()
+                conn.execute(
+                    "UPDATE prompt_templates SET active_version_id=%s,feature_mode_text=%s,updated_at=%s WHERE template_key=%s",
+                    (version["id"], feature_text, timestamp, template_key),
+                )
+            elif feature_changed:
+                conn.execute(
+                    "UPDATE prompt_templates SET feature_mode_text=%s,updated_at=%s WHERE template_key=%s",
+                    (feature_text, timestamp, template_key),
+                )
+            updated = conn.execute(
+                "SELECT v.*,t.feature_mode_enabled,t.feature_mode_text FROM prompt_templates t "
+                "JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=%s AND v.deleted_at IS NULL",
+                (template_key,),
+            ).fetchone()
+        if updated is None:
+            raise ValueError(f"active prompt not found after policy update: {template_key}")
+        return _row_to_prompt(updated), content_changed, feature_changed
+
     def get_publisher_settings(self) -> PublisherSettingsRecord:
         with self._connect() as conn:
             self._ensure_publisher_defaults(conn)
@@ -799,7 +1017,6 @@ class PostgresXProcessingRepository:
                 WHERE singleton_key = 'global'
                 """,
             ).fetchone()
-            conn.commit()
         if row is None:
             raise ValueError("publisher settings not found")
         return _row_to_publisher_settings(row)
@@ -814,13 +1031,12 @@ class PostgresXProcessingRepository:
                 ORDER BY channel_key ASC
                 """,
             ).fetchall()
-            conn.commit()
         return [_row_to_publisher_channel(row) for row in rows]
 
     def get_publisher_rule_config_snapshot(self) -> dict[str, Any] | None:
         with self._connect(autocommit=True) as conn:
             exists = conn.execute(
-                "SELECT to_regclass('public.publisher_rule_config') AS reg"
+                "SELECT to_regclass('main.publisher_rule_config') AS reg"
             ).fetchone()
             if exists is None or exists.get("reg") is None:
                 return None
@@ -845,7 +1061,7 @@ class PostgresXProcessingRepository:
     ) -> None:
         with self._connect() as conn:
             exists = conn.execute(
-                "SELECT to_regclass('public.publisher_rule_config') AS reg"
+                "SELECT to_regclass('main.publisher_rule_config') AS reg"
             ).fetchone()
             if exists is None or exists.get("reg") is None:
                 conn.rollback()
@@ -872,7 +1088,6 @@ class PostgresXProcessingRepository:
                     "updated_by": updated_by,
                 },
             )
-            conn.commit()
 
     def complete_judge(
         self,
@@ -890,6 +1105,7 @@ class PostgresXProcessingRepository:
         if rule_version:
             output["rule_version"] = rule_version
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -911,7 +1127,6 @@ class PostgresXProcessingRepository:
             task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
             next_status = "deduped" if task and task.get("source") in SEARCH_FIRST_SOURCES else "judged"
             self._set_task_status(conn, task_id, next_status)
-            conn.commit()
 
     def complete_judge_discard(
         self,
@@ -929,6 +1144,7 @@ class PostgresXProcessingRepository:
         if rule_version:
             output["rule_version"] = rule_version
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -948,13 +1164,13 @@ class PostgresXProcessingRepository:
             )
             self._release_primary_candidate(conn, task_id=task_id, release_reason="discarded")
             self._set_task_status(conn, task_id, "discarded")
-            conn.commit()
 
     def complete_search(self, task_id: int) -> None:
         self.complete_search_ready(task_id, candidate_id=0, result={"skipped": True, "reason": "searcher is no-op"})
 
     def complete_search_duplicate(self, task_id: int, *, result: dict[str, Any]) -> None:
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             candidate_id = result.get("candidate_id")
             conn.execute(
                 """
@@ -969,10 +1185,10 @@ class PostgresXProcessingRepository:
                 (candidate_id, self._Jsonb(result), task_id),
             )
             self._set_task_status(conn, task_id, "duplicate")
-            conn.commit()
 
     def complete_search_ready(self, task_id: int, *, candidate_id: int, result: dict[str, Any]) -> None:
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -988,7 +1204,6 @@ class PostgresXProcessingRepository:
             task = conn.execute("SELECT source FROM tasks WHERE id = %s", (task_id,)).fetchone()
             next_status = "searched" if task and task.get("source") in SEARCH_FIRST_SOURCES else "deduped"
             self._set_task_status(conn, task_id, next_status)
-            conn.commit()
 
     def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
         with self._connect(autocommit=True) as conn:
@@ -1054,6 +1269,7 @@ class PostgresXProcessingRepository:
         created_after = utc_now() - ACTIVE_CANDIDATE_TTL
         with self._connect() as conn:
             with conn.transaction():
+                self._require_task_claim(conn, task)
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (digest,))
                 existing = conn.execute(
                     """
@@ -1094,14 +1310,13 @@ class PostgresXProcessingRepository:
                 ).fetchone()
                 candidate_id = int(row["id"])
                 self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="primary", search_result=search_result)
-            conn.commit()
             return candidate_id, True
 
     def link_task_to_candidate(self, task: TaskRecord, *, candidate_id: int, search_result: dict[str, Any]) -> None:
         with self._connect() as conn:
             with conn.transaction():
+                self._require_task_claim(conn, task)
                 self._insert_event_source(conn, candidate_id=candidate_id, task=task, role="supporting", search_result=search_result)
-            conn.commit()
 
     def _insert_event_source(self, conn, *, candidate_id: int, task: TaskRecord, role: str, search_result: dict[str, Any]) -> None:
         conn.execute(
@@ -1128,6 +1343,106 @@ class PostgresXProcessingRepository:
             ),
         )
 
+    def start_stage_attempt(
+        self, task_id: int, *, stage: str, executor: str,
+        input_evidence: dict[str, Any], rule_evidence: dict[str, Any],
+    ) -> int:
+        with self._connect() as conn:
+            claim_token = self._require_claim(conn, task_id)
+            next_no = conn.execute(
+                "SELECT COALESCE(MAX(attempt_no),0)+1 AS attempt_no FROM x_processing_attempts WHERE task_id=%s AND stage=%s",
+                (task_id, stage),
+            ).fetchone()
+            row = conn.execute(
+                "INSERT INTO x_processing_attempts(task_id,stage,attempt_no,executor,status,started_at,input_json,rule_json,lease_token) "
+                "VALUES (%s,%s,%s,%s,'running',now(),%s,%s,%s) RETURNING id,started_at",
+                (task_id, stage, int(next_no["attempt_no"]), executor,
+                 self._Jsonb(input_evidence), self._Jsonb(rule_evidence), claim_token),
+            ).fetchone()
+            self._append_attempt_event(conn, int(row["id"]), task_id, "started", "running", row["started_at"])
+            return int(row["id"])
+
+    def record_stage_attempt_response(self, attempt_id: int, raw_output: str) -> None:
+        import gzip
+        import hashlib
+
+        payload = raw_output.encode("utf-8")
+        compressed = gzip.compress(payload)
+        with self._connect() as conn:
+            row = self._require_attempt_claim(conn, attempt_id)
+            if row is None:
+                return
+            call = conn.execute(
+                "SELECT COALESCE(MAX(call_no),0)+1 AS call_no FROM x_processing_attempt_events "
+                "WHERE attempt_id=%s AND event_type='response_received'",
+                (attempt_id,),
+            ).fetchone()
+            digest = hashlib.sha256(payload).hexdigest()
+            now = utc_now()
+            conn.execute(
+                "UPDATE x_processing_attempts SET response_gzip=%s,response_excerpt=%s,response_sha256=%s,"
+                "response_bytes=%s,response_received_at=%s WHERE id=%s",
+                (compressed, raw_output[:1000], digest, len(payload), now, attempt_id),
+            )
+            conn.execute(
+                "INSERT INTO x_processing_attempt_events(attempt_id,task_id,event_type,status,happened_at,call_no,executor,"
+                "response_gzip,response_sha256,response_bytes,response_excerpt) "
+                "VALUES (%s,%s,'response_received','running',%s,%s,%s,%s,%s,%s,%s)",
+                (attempt_id, int(row["task_id"]), now, int(call["call_no"]), row["executor"],
+                 compressed, digest, len(payload), raw_output[:1000]),
+            )
+
+    def record_stage_attempt_context(
+        self, attempt_id: int, *, input_evidence: dict[str, Any], rule_evidence: dict[str, Any],
+    ) -> None:
+        with self._connect() as conn:
+            if self._require_attempt_claim(conn, attempt_id) is None:
+                return
+            conn.execute(
+                "UPDATE x_processing_attempts SET input_json=%s,rule_json=%s WHERE id=%s",
+                (self._Jsonb(input_evidence), self._Jsonb(rule_evidence), attempt_id),
+            )
+
+    def complete_stage_attempt(self, attempt_id: int, *, result: dict[str, Any] | None = None) -> None:
+        with self._connect() as conn:
+            self._finish_stage_attempt(conn, attempt_id, "succeeded", result=result)
+
+    def fail_stage_attempt(self, attempt_id: int, error: str, *, error_code: str | None = None) -> None:
+        with self._connect() as conn:
+            self._finish_stage_attempt(conn, attempt_id, "failed", error=error, error_code=error_code)
+
+    def _finish_stage_attempt(
+        self, conn, attempt_id: int, outcome: str, *, error: str | None = None,
+        error_code: str | None = None, result: dict[str, Any] | None = None,
+        release_lease: bool = True,
+    ) -> None:
+        row = self._require_attempt_claim(conn, attempt_id)
+        if row is None:
+            return
+        now = utc_now()
+        conn.execute(
+            "UPDATE x_processing_attempts SET status=%s,finished_at=%s,error_code=%s,error_message=%s,result_json=%s WHERE id=%s",
+            (outcome, now, error_code, error[:2000] if error else None, self._Jsonb(result or {}), attempt_id),
+        )
+        self._append_attempt_event(conn, attempt_id, int(row["task_id"]), outcome, outcome, now,
+                                  error_code=error_code, error=error)
+        if release_lease:
+            conn.execute(
+                "UPDATE tasks SET locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=%s AND lease_token=%s",
+                (int(row["task_id"]), row["lease_token"]),
+            )
+
+    @staticmethod
+    def _append_attempt_event(
+        conn, attempt_id: int, task_id: int, event_type: str, status: str, happened_at: datetime,
+        *, error_code: str | None = None, error: str | None = None,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO x_processing_attempt_events(attempt_id,task_id,event_type,status,happened_at,error_code,error_message) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (attempt_id, task_id, event_type, status, happened_at, error_code, error[:2000] if error else None),
+        )
+
     def complete_write(
         self,
         task_id: int,
@@ -1138,8 +1453,10 @@ class PostgresXProcessingRepository:
         draft_content: str,
         raw_output: str,
         trace: dict[str, Any],
+        attempt_id: int | None = None,
     ) -> None:
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -1167,7 +1484,6 @@ class PostgresXProcessingRepository:
                 ),
             )
             self._set_task_status(conn, task_id, "written")
-            conn.commit()
 
     def complete_format_publish(
         self,
@@ -1177,6 +1493,7 @@ class PostgresXProcessingRepository:
         final_content: str,
     ) -> None:
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -1194,7 +1511,6 @@ class PostgresXProcessingRepository:
                 },
             )
             self._set_task_status(conn, task_id, "publisher_pending")
-            conn.commit()
 
     def complete_publish(
         self,
@@ -1211,8 +1527,10 @@ class PostgresXProcessingRepository:
         decided_at: datetime,
         status: str,
         last_error: str | None = None,
+        attempt_id: int | None = None,
     ) -> None:
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -1247,11 +1565,14 @@ class PostgresXProcessingRepository:
             if status == "publisher_failed":
                 self._release_primary_candidate(conn, task_id=task_id, release_reason=status)
             self._set_task_status(conn, task_id, status)
-            conn.commit()
 
-    def fail_task(self, task_id: int, *, stage: ProcessingStage, error: str, status: str | None = None) -> None:
+    def fail_task(
+        self, task_id: int, *, stage: ProcessingStage, error: str,
+        status: str | None = None, error_code: str | None = None,
+    ) -> None:
         status = status or STAGE_SPECS[stage].failure_status
         with self._connect() as conn:
+            self._require_claim(conn, task_id)
             conn.execute(
                 """
                 UPDATE x_task_pipeline
@@ -1261,9 +1582,32 @@ class PostgresXProcessingRepository:
                 """,
                 (error[:2000], task_id),
             )
+            attempt = conn.execute(
+                "SELECT id FROM x_processing_attempts WHERE task_id=%s AND stage=%s AND status='running' "
+                "ORDER BY id DESC LIMIT 1 FOR UPDATE",
+                (task_id, str(stage)),
+            ).fetchone()
+            outcome = "failed" if status == STAGE_SPECS[stage].failure_status else "stopped"
+            if attempt is not None:
+                self._finish_stage_attempt(
+                    conn, int(attempt["id"]), outcome, error=error, error_code=error_code,
+                    release_lease=False,
+                )
+            else:
+                next_no = conn.execute(
+                    "SELECT COALESCE(MAX(attempt_no),0)+1 AS attempt_no FROM x_processing_attempts "
+                    "WHERE task_id=%s AND stage=%s",
+                    (task_id, str(stage)),
+                ).fetchone()
+                row = conn.execute(
+                    "INSERT INTO x_processing_attempts(task_id,stage,attempt_no,executor,status,started_at,finished_at,error_code,error_message) "
+                    "VALUES (%s,%s,%s,'x_processing_worker',%s,now(),now(),%s,%s) RETURNING id,started_at",
+                    (task_id, str(stage), int(next_no["attempt_no"]), outcome, error_code, error[:2000]),
+                ).fetchone()
+                self._append_attempt_event(conn, int(row["id"]), task_id, outcome, outcome, row["started_at"],
+                                           error_code=error_code, error=error)
             self._release_primary_candidate(conn, task_id=task_id, release_reason=status)
             self._set_task_status(conn, task_id, status)
-            conn.commit()
 
     def record_worker_heartbeat(
         self,
@@ -1303,20 +1647,29 @@ class PostgresXProcessingRepository:
                     success,
                 ),
             )
-            conn.commit()
 
     def _set_task_status(self, conn, task_id: int, status: str) -> None:
+        token = self._require_claim(conn, task_id)
         conn.execute(
             """
             UPDATE tasks
             SET status = %s,
                 locked_by = NULL,
-                locked_until = NULL,
                 updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND lease_token = %s
             """,
-            (status, task_id),
+            (status, task_id, token),
         )
+        attempt = conn.execute(
+            "SELECT id,stage FROM x_processing_attempts WHERE task_id=%s AND lease_token=%s AND status='running' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+            (task_id, token),
+        ).fetchone()
+        if attempt:
+            now = utc_now()
+            conn.execute("UPDATE x_processing_attempts SET status='succeeded',finished_at=%s,result_json=%s WHERE id=%s",
+                         (now, self._Jsonb({"task_status": status}), int(attempt["id"])))
+            self._append_attempt_event(conn, int(attempt["id"]), task_id, "succeeded", "succeeded", now)
+        conn.execute("UPDATE tasks SET locked_by=NULL,locked_until=NULL,updated_at=now() WHERE id=%s AND lease_token=%s", (task_id, token))
 
     def _release_primary_candidate(self, conn, *, task_id: int, release_reason: str) -> None:
         row = conn.execute(
@@ -1354,7 +1707,10 @@ class PostgresXProcessingRepository:
 
 
 def create_x_processing_repository(database_url: str | None = None) -> XProcessingRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresXProcessingRepository()
     from .sqlite_repository import SQLiteXProcessingRepository
     return SQLiteXProcessingRepository(load_storage_settings().sqlite_path)
 
@@ -1782,6 +2138,44 @@ class InMemoryXProcessingRepository:
 
 
 SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + NEWSFLASH_EVENT_SCHEMA_SQL + """
+CREATE TABLE IF NOT EXISTS tasks (
+    id bigserial PRIMARY KEY,
+    source text NOT NULL,
+    source_item_id text NOT NULL,
+    source_url text,
+    title text,
+    content text NOT NULL,
+    published_at timestamptz,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    status text NOT NULL DEFAULT 'pending',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    locked_by text,
+    locked_until timestamptz,
+    attempt_count integer NOT NULL DEFAULT 0,
+    UNIQUE(source, source_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS x_capture_accounts (
+    id bigserial PRIMARY KEY,
+    username text NOT NULL,
+    username_lower text NOT NULL UNIQUE,
+    display_name text,
+    write_name text,
+    profile_url text,
+    enabled boolean NOT NULL DEFAULT true,
+    is_ai_source boolean NOT NULL DEFAULT false,
+    monitor_group text NOT NULL DEFAULT 'high',
+    interval_seconds integer,
+    seeded_at timestamptz,
+    last_polled_at timestamptz,
+    last_success_at timestamptz,
+    last_error text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_by text;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS locked_until timestamptz;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0;
@@ -1844,16 +2238,6 @@ ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS timezone text NOT NULL D
 ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_start_local time NOT NULL DEFAULT '00:01';
 ALTER TABLE publisher_settings ADD COLUMN IF NOT EXISTS window_end_local time NOT NULL DEFAULT '07:30';
 
-INSERT INTO publisher_settings (
-    singleton_key,
-    enabled,
-    timezone,
-    window_start_local,
-    window_end_local
-)
-VALUES ('global', true, 'Asia/Shanghai', '00:01', '07:30')
-ON CONFLICT (singleton_key) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS publisher_channels (
     channel_key text PRIMARY KEY,
     display_name text NOT NULL,
@@ -1864,16 +2248,6 @@ CREATE TABLE IF NOT EXISTS publisher_channels (
 
 ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE publisher_channels ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT false;
-
-INSERT INTO publisher_channels (channel_key, display_name, enabled)
-VALUES
-    ('external_media', '外媒', true),
-    ('x', 'X', false),
-    ('competitor', '竞品', false),
-    ('jin10', '金十', false)
-ON CONFLICT (channel_key) DO UPDATE
-SET display_name = EXCLUDED.display_name,
-    updated_at = now();
 
 CREATE TABLE IF NOT EXISTS publisher_rule_config (
     singleton_key text PRIMARY KEY,
@@ -2044,71 +2418,55 @@ WHEN (
 )
 EXECUTE FUNCTION notify_prompt_config_changed();
 
-ALTER TABLE prompt_templates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE prompt_template_versions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE publisher_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE publisher_channels ENABLE ROW LEVEL SECURITY;
-ALTER TABLE publisher_rule_config ENABLE ROW LEVEL SECURITY;
-ALTER TABLE x_task_pipeline ENABLE ROW LEVEL SECURITY;
-ALTER TABLE odaily_reference_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE search_event_candidates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE search_event_sources ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS x_processing_attempts (
+    id bigserial PRIMARY KEY,
+    task_id bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    stage text NOT NULL,
+    attempt_no integer NOT NULL,
+    executor text NOT NULL,
+    lease_token text,
+    status text NOT NULL,
+    started_at timestamptz NOT NULL,
+    response_received_at timestamptz,
+    finished_at timestamptz,
+    input_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    rule_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    response_gzip bytea,
+    response_sha256 text,
+    response_bytes bigint,
+    response_ref text,
+    response_excerpt text,
+    response_archive_error text,
+    result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    error_code text,
+    error_message text,
+    UNIQUE(task_id, stage, attempt_no)
+);
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempts_task
+ON x_processing_attempts(task_id, stage, attempt_no);
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempts_response_ref
+ON x_processing_attempts(response_ref) WHERE response_ref IS NOT NULL;
 
-DROP POLICY IF EXISTS prompt_templates_anon_all ON prompt_templates;
-DROP POLICY IF EXISTS prompt_template_versions_anon_all ON prompt_template_versions;
-DROP POLICY IF EXISTS publisher_settings_anon_all ON publisher_settings;
-DROP POLICY IF EXISTS publisher_channels_anon_all ON publisher_channels;
-DROP POLICY IF EXISTS publisher_rule_config_anon_all ON publisher_rule_config;
-DROP POLICY IF EXISTS x_task_pipeline_anon_select ON x_task_pipeline;
-DROP POLICY IF EXISTS odaily_reference_items_anon_select ON odaily_reference_items;
-DROP POLICY IF EXISTS search_event_candidates_anon_select ON search_event_candidates;
-DROP POLICY IF EXISTS search_event_sources_anon_select ON search_event_sources;
-DROP POLICY IF EXISTS prompt_templates_console_admin_all ON prompt_templates;
-DROP POLICY IF EXISTS prompt_template_versions_console_admin_all ON prompt_template_versions;
-DROP POLICY IF EXISTS publisher_settings_console_admin_all ON publisher_settings;
-DROP POLICY IF EXISTS publisher_channels_console_admin_all ON publisher_channels;
-DROP POLICY IF EXISTS publisher_rule_config_console_admin_all ON publisher_rule_config;
-DROP POLICY IF EXISTS x_task_pipeline_console_admin_select ON x_task_pipeline;
-DROP POLICY IF EXISTS odaily_reference_items_console_admin_select ON odaily_reference_items;
-DROP POLICY IF EXISTS search_event_candidates_console_admin_select ON search_event_candidates;
-DROP POLICY IF EXISTS search_event_sources_console_admin_select ON search_event_sources;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON prompt_templates, prompt_template_versions, publisher_settings, publisher_channels, publisher_rule_config, x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE prompt_template_versions_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON prompt_templates TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON prompt_template_versions TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON publisher_settings TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON publisher_channels TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON publisher_rule_config TO authenticated;
-        GRANT SELECT ON x_task_pipeline, odaily_reference_items, search_event_candidates, search_event_sources TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE prompt_template_versions_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY prompt_templates_console_admin_all ON prompt_templates
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY prompt_template_versions_console_admin_all ON prompt_template_versions
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY publisher_settings_console_admin_all ON publisher_settings
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY publisher_channels_console_admin_all ON publisher_channels
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY publisher_rule_config_console_admin_all ON publisher_rule_config
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY x_task_pipeline_console_admin_select ON x_task_pipeline
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY odaily_reference_items_console_admin_select ON odaily_reference_items
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY search_event_candidates_console_admin_select ON search_event_candidates
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY search_event_sources_console_admin_select ON search_event_sources
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
+CREATE TABLE IF NOT EXISTS x_processing_attempt_events (
+    id bigserial PRIMARY KEY,
+    attempt_id bigint NOT NULL REFERENCES x_processing_attempts(id) ON DELETE CASCADE,
+    task_id bigint NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    event_type text NOT NULL,
+    status text NOT NULL,
+    happened_at timestamptz NOT NULL,
+    error_code text,
+    error_message text,
+    call_no integer,
+    executor text,
+    response_gzip bytea,
+    response_sha256 text,
+    response_bytes bigint,
+    response_ref text,
+    response_excerpt text,
+    response_archive_error text
+);
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempt_events_task
+ON x_processing_attempt_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_x_processing_attempt_events_response_ref
+ON x_processing_attempt_events(response_ref) WHERE response_ref IS NOT NULL;
 """

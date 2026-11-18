@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
+from packages.common.storage import load_storage_settings
+from packages.system_observability.postgres_schema import SourceStateTriggerSpec, ensure_source_state_schema, install_source_state_trigger
 
 from .detector import normalize_evm_address
 from .models import Activity, ChainState, WhaleAddress
@@ -38,27 +42,44 @@ class WhaleWatchRepository(Protocol):
 
 class PostgresWhaleWatchRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresWhaleWatchRepository is retired; use create_whale_watch_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-whale-watch"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(SCHEMA_SQL)
-            conn.commit()
+        self.initialize_schema()
+
+    @staticmethod
+    def initialize_schema() -> None:
+        with connect_postgres(schema="main", application_name="odaily-whale-watch-migrate") as conn:
+            trigger_spec = ("whale_watch_addresses", ("id",), ("address", "address_lower", "label", "enabled"))
+            def apply(connection):
+                connection.execute(SCHEMA_SQL)
+                ensure_source_state_schema(connection)
+                install_source_state_trigger(connection, SourceStateTriggerSpec(
+                    schema="main", table=trigger_spec[0], row_id_columns=trigger_spec[1], payload_columns=trigger_spec[2],
+                ))
+
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="whale_watch",
+                migrations=(PostgresMigration(
+                    1, "whale_watch_initial", sha256((SCHEMA_SQL + repr(trigger_spec)).encode()).hexdigest(), apply,
+                ),),
+            )
 
     def list_addresses(self, *, include_disabled: bool = False) -> list[WhaleAddress]:
         where_sql = "" if include_disabled else "WHERE enabled = true"
@@ -98,7 +119,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (ids,),
             ).fetchall()
-            conn.commit()
         return len(rows)
 
     def get_chain_state(self, *, address_id: int, chain_key: str) -> ChainState | None:
@@ -134,7 +154,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (address_id, chain_key, polled_at, polled_at, polled_at, block_number),
             )
-            conn.commit()
 
     def record_chain_success(self, *, address_id: int, chain_key: str, block_number: int | None, polled_at: datetime) -> None:
         with self._connect() as conn:
@@ -156,7 +175,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (address_id, chain_key, polled_at, polled_at, block_number),
             )
-            conn.commit()
 
     def record_chain_error(self, *, address_id: int, chain_key: str, error: str, polled_at: datetime) -> None:
         with self._connect() as conn:
@@ -171,7 +189,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (address_id, chain_key, polled_at, error[:1000]),
             )
-            conn.commit()
 
     def save_activity(self, *, whale: WhaleAddress, chain_key: str, activity: Activity) -> int | None:
         with self._connect() as conn:
@@ -202,7 +219,6 @@ class PostgresWhaleWatchRepository:
                     self._Jsonb(activity.raw_payload),
                 ),
             ).fetchone()
-            conn.commit()
         return int(row["id"]) if row is not None else None
 
     def update_activity_telegram_result(self, *, tx_hash: str, fingerprint: str, telegram_result: dict[str, Any]) -> None:
@@ -217,7 +233,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (self._Jsonb(telegram_result), self._Jsonb(telegram_result), tx_hash, fingerprint),
             )
-            conn.commit()
 
     def record_worker_heartbeat(
         self,
@@ -249,7 +264,6 @@ class PostgresWhaleWatchRepository:
                 """,
                 (component, worker_id, status, success, error, self._Jsonb(metadata or {}), success),
             )
-            conn.commit()
 
 
 def _row_to_address(row: dict[str, Any]) -> WhaleAddress:
@@ -342,25 +356,15 @@ ON whale_watch_activities(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whale_watch_addresses_created_at
 ON whale_watch_addresses(created_at DESC);
 
-CREATE OR REPLACE FUNCTION whale_watch_actor_email()
-RETURNS text
-LANGUAGE sql
-STABLE
-AS $$
-    SELECT NULLIF(lower(COALESCE(auth.jwt() ->> 'email', '')), '');
-$$;
-
 CREATE OR REPLACE FUNCTION whale_watch_addresses_set_audit_fields()
 RETURNS trigger AS $$
-DECLARE
-    v_actor text := whale_watch_actor_email();
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        NEW.created_by := COALESCE(NULLIF(NEW.created_by, ''), v_actor, NEW.created_by);
-        NEW.updated_by := COALESCE(NULLIF(NEW.updated_by, ''), v_actor, NEW.updated_by, NEW.created_by);
+        NEW.created_by := NULLIF(NEW.created_by, '');
+        NEW.updated_by := COALESCE(NULLIF(NEW.updated_by, ''), NEW.created_by);
     ELSE
         NEW.created_by := COALESCE(OLD.created_by, NEW.created_by);
-        NEW.updated_by := COALESCE(v_actor, NEW.updated_by, OLD.updated_by, OLD.created_by);
+        NEW.updated_by := COALESCE(NULLIF(NEW.updated_by, ''), OLD.updated_by, OLD.created_by);
     END IF;
     RETURN NEW;
 END;
@@ -414,39 +418,6 @@ CREATE TRIGGER trg_whale_watch_addresses_guard_insert
 BEFORE INSERT ON whale_watch_addresses
 FOR EACH ROW EXECUTE FUNCTION whale_watch_addresses_guard_insert();
 
-ALTER TABLE whale_watch_addresses ENABLE ROW LEVEL SECURITY;
-ALTER TABLE whale_watch_chain_states ENABLE ROW LEVEL SECURITY;
-ALTER TABLE whale_watch_activities ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS whale_watch_addresses_anon_all ON whale_watch_addresses;
-DROP POLICY IF EXISTS whale_watch_chain_states_anon_all ON whale_watch_chain_states;
-DROP POLICY IF EXISTS whale_watch_activities_anon_all ON whale_watch_activities;
-DROP POLICY IF EXISTS whale_watch_addresses_console_admin_all ON whale_watch_addresses;
-DROP POLICY IF EXISTS whale_watch_chain_states_console_admin_select ON whale_watch_chain_states;
-DROP POLICY IF EXISTS whale_watch_activities_console_admin_select ON whale_watch_activities;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON whale_watch_addresses, whale_watch_chain_states, whale_watch_activities FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE whale_watch_addresses_id_seq, whale_watch_activities_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON whale_watch_addresses TO authenticated;
-        GRANT SELECT ON whale_watch_chain_states, whale_watch_activities TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE whale_watch_addresses_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY whale_watch_addresses_console_admin_all ON whale_watch_addresses
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY whale_watch_chain_states_console_admin_select ON whale_watch_chain_states
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY whale_watch_activities_console_admin_select ON whale_watch_activities
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """
 
 

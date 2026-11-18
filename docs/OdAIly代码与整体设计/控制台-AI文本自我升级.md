@@ -18,7 +18,7 @@
 - 若同一时间窗口中有多个完全相同哈希的 Writer1 定稿，因来源无法唯一确定而不建案，计入未关联数。
 - 除了唯一 ID 映射外，无法唯一关联、Writer1 草稿缺失或稿件版本不能匹配时不建立案例。
 
-生产主 SQLite 只读。案例快照、第三方判断、批次和人工决定保存在 `ODAILY_SYSTEM_OBSERVABILITY_DIR/ai_text_self_upgrade.sqlite`。
+生产主 SQLite 只读。SQLite 模式下，案例快照、第三方判断、批次和人工决定保存在 `ODAILY_SYSTEM_OBSERVABILITY_DIR/ai_text_self_upgrade.sqlite`；选择 `ODAILY_STORAGE_BACKEND=postgres` 时，这些表迁移到本机 PostgreSQL 的 `system_observability` schema，主库、文本审查者记录、事实审查者记录和 Writer1 发布记录仍按原有只读来源读取。PostgreSQL 实现保留 `source_type`、`auditor_check_id`、`fact_check_id` 和 `source_item_id` 的独立身份字段。来源查询按稳定复合键分页，每页单独 checkout/release 连接，避免长时间持有连接或一次取回过大的结果集；库存导入只初始化表结构，不播种运行状态或恢复任务。
 
 ## 调度、判断与回放
 

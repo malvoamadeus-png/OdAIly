@@ -107,10 +107,14 @@ def resolve_original(path, task: dict[str, Any], linked: dict[str, Any] | None) 
         text = str(linked["content"])
         chain_status = "not_applicable"
         if linked.get("source") == "x":
-            try:
-                metadata = json.loads(linked.get("metadata") or "{}")
-            except (TypeError, ValueError):
-                metadata = {}
+            raw_metadata = linked.get("metadata")
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            else:
+                try:
+                    metadata = json.loads(raw_metadata or "{}")
+                except (TypeError, ValueError):
+                    metadata = {}
             if not isinstance(metadata, dict):
                 metadata = {}
             chain = metadata.get("context_chain")

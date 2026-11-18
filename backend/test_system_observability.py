@@ -1619,3 +1619,107 @@ def test_orphan_cleanup_requires_source_provenance(tmp_path) -> None:
     with pytest.raises(RuntimeError, match='provenance'):
         store.prune_orphan_evidence(dry_run=False)
     assert store.load_evidence(reference) == payload
+
+
+def test_frozen_source_outbox_drain_is_bounded_and_does_not_clean_source(tmp_path) -> None:
+    root = tmp_path
+    source = root / "source.sqlite"
+    with sqlite3.connect(source) as conn:
+        conn.executescript("""
+            CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);
+            INSERT INTO jobs VALUES(1,'candidate-1','queued',NULL,'2026-11-03T00:00:00Z');
+        """)
+    spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+    SourceAuditInstaller().install(source, (spec,))
+    with sqlite3.connect(source) as conn:
+        for index in range(2, 66):
+            conn.execute("INSERT INTO jobs VALUES(?,?,?,NULL,?)", (index, f"candidate-{index}", "queued", "2026-11-03T00:00:00Z"))
+        conn.execute("UPDATE odaily_observability_outbox SET happened_at_ms=1")
+        source_rows_before = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        event_rows_before = conn.execute("SELECT COUNT(*) FROM odaily_observability_outbox").fetchone()[0]
+        maximum = conn.execute("SELECT MAX(seq) FROM odaily_observability_outbox").fetchone()[0]
+
+    store = SystemInformationStore(root / "system_information.sqlite")
+    store.initialize()
+    projector = MainTaskProjector(source, store, additional_databases={"meme": source},
+                                  table_specs=(spec,), outbox_batch_size=25)
+    first = projector.drain_source_outbox("meme", target_sequence=maximum, max_batches=1)
+    assert first["complete"] is False
+    assert first["watermark"] < maximum
+    result = projector.drain_source_outbox("meme", target_sequence=maximum, max_batches=10)
+    assert result["complete"] is True
+    assert result["watermark"] == maximum
+    with sqlite3.connect(source) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == source_rows_before
+        assert conn.execute("SELECT COUNT(*) FROM odaily_observability_outbox").fetchone()[0] == event_rows_before
+    assert store.get_state("source_audit_meme_watermark") == str(maximum)
+
+
+def test_frozen_cutover_requires_writer_stop_and_reports_readiness(tmp_path) -> None:
+    from packages.system_observability.native_import_cutover import run_frozen_cutover_drain
+
+    source = tmp_path / "source.sqlite"
+    with sqlite3.connect(source) as conn:
+        conn.executescript("CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);")
+    spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+    SourceAuditInstaller().install(source, (spec,))
+    store = SystemInformationStore(tmp_path / "information.sqlite")
+    store.initialize()
+    projector = MainTaskProjector(source, store, additional_databases={"meme": source}, table_specs=(spec,))
+    with pytest.raises(RuntimeError, match="writers must be stopped"):
+        run_frozen_cutover_drain(projector, sources={"meme": source}, source_writes_stopped=False)
+    report = run_frozen_cutover_drain(projector, sources={"meme": source}, source_writes_stopped=True)
+    assert report["readiness"]["ready"] is True
+    assert report["targets"] == {"meme": 0}
+    assert report["complete"] is True
+
+
+def test_frozen_cutover_readiness_rejects_unknown_outbox_table(tmp_path) -> None:
+    from packages.system_observability.native_import_cutover import inspect_frozen_sources, run_frozen_cutover_drain
+
+    source = tmp_path / "source.sqlite"
+    with sqlite3.connect(source) as conn:
+        conn.executescript("CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);")
+    spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+    SourceAuditInstaller().install(source, (spec,))
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO odaily_observability_outbox(event_id,table_name,source_row_id,operation,happened_at_ms,payload_json) VALUES('unknown-1','unmapped_table','1','insert',1,'{}')")
+    store = SystemInformationStore(tmp_path / "information.sqlite")
+    store.initialize()
+    projector = MainTaskProjector(source, store, additional_databases={"meme": source}, table_specs=(spec,))
+
+    report = inspect_frozen_sources({"meme": source}, projector=projector)
+
+    assert report["ready"] is False
+    assert report["sources"]["meme"]["unknown_outbox_tables"] == ["unmapped_table"]
+    with pytest.raises(RuntimeError, match="readiness checks failed"):
+        run_frozen_cutover_drain(projector, sources={"meme": source}, source_writes_stopped=True)
+
+
+def test_frozen_cutover_requires_nonempty_mapped_source_set(tmp_path) -> None:
+    from packages.system_observability.native_import_cutover import inspect_frozen_sources
+
+    store = SystemInformationStore(tmp_path / "information.sqlite")
+    store.initialize()
+    projector = MainTaskProjector(tmp_path / "main.sqlite", store, table_specs=())
+    with pytest.raises(ValueError, match="at least one configured source"):
+        inspect_frozen_sources({}, projector=projector)
+    report = inspect_frozen_sources({"not_mapped": tmp_path / "optional.sqlite"}, projector=projector)
+    assert report["ready"] is False
+    assert report["sources"]["not_mapped"]["reason"] == "source database has no mapped outbox tables"
+
+
+def test_frozen_outbox_cli_requires_explicit_writer_stop_before_runtime_setup(tmp_path, monkeypatch, capsys) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "drain_frozen_source_outboxes.py"
+    spec = importlib.util.spec_from_file_location("drain_frozen_source_outboxes", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observability_dir = tmp_path / "must-not-be-created"
+    exit_code = module.main(["--source", f"main={tmp_path / 'main.sqlite'}", "--observability-dir", str(observability_dir)])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "source-writes-stopped" in captured.err
+    assert not observability_dir.exists()

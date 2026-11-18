@@ -35,7 +35,7 @@
 
 .systemInformationFilters {
   display: grid;
-  grid-template-columns: minmax(210px, 1.6fr) repeat(4, minmax(115px, 1fr));
+  grid-template-columns: repeat(6, minmax(115px, 1fr)) auto;
   align-items: end;
   gap: 10px;
   padding-bottom: 14px;
@@ -62,29 +62,6 @@
   padding: 0 9px;
 }
 
-.systemInformationSearch > div {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  min-height: 36px;
-  border: 1px solid #d7dde3;
-  border-radius: 6px;
-  background: #fff;
-  padding: 0 9px;
-}
-
-.systemInformationSearch svg {
-  flex: 0 0 auto;
-  color: #7b8490;
-}
-
-.systemInformationSearch input {
-  border: 0;
-  padding: 0;
-  outline: 0;
-}
-
 .systemInformationFilters .primaryButton {
   min-height: 36px;
   justify-self: start;
@@ -97,10 +74,6 @@
   gap: 8px 14px;
   color: #68727d;
   font-size: 12px;
-}
-
-.systemInformationMeta > span:nth-child(4) {
-  flex: 1 1 260px;
 }
 
 .systemInformationSort {
@@ -396,7 +369,6 @@
   .navGroup { display: contents; }
   .navGroupTitle { display: none; }
   .systemInformationFilters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .systemInformationFilters .systemInformationSearch { grid-column: 1 / -1; }
   .systemInformationFilters .primaryButton { grid-column: 1 / -1; }
   .workflowGuideSelectors { grid-template-columns: 1fr; }
   .workflowGuideEntry { padding-bottom: 0; }

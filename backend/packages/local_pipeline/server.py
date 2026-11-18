@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,7 @@ from packages.common.paths import ensure_runtime_dirs, get_paths
 
 from .processor import LocalPipelineProcessor
 from .queue import LocalPipelineQueue
+from .postgres_queue import create_local_pipeline_queue
 
 
 class LocalPipelineInstanceLock:
@@ -68,13 +70,17 @@ class LocalPipelineService:
         self.processor = processor
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
+        self._accepting = threading.Event()
         self._worker_lock = threading.Lock()
+        self._enqueue_lock = threading.Lock()
+        self._claim_lock = threading.Lock()
         self._worker_thread: threading.Thread | None = None
         self._worker_restart_count = 0
         self._last_worker_error: str | None = None
         self._last_stale_recovery = 0.0
 
     def start(self) -> None:
+        self._accepting.set()
         if hasattr(self.processor, "init_remote_schema"):
             self.processor.init_remote_schema()
         if hasattr(self.processor, "start_background_tasks"):
@@ -90,15 +96,27 @@ class LocalPipelineService:
         self._ensure_worker_running()
 
     def stop(self) -> None:
-        self._stop_event.set()
-        self._wake_event.set()
+        self.begin_shutdown()
         worker = self._worker_thread
         if worker is not None:
-            worker.join(timeout=5)
+            worker.join()
         if hasattr(self.processor, "stop_background_tasks"):
             self.processor.stop_background_tasks()
 
+    def begin_shutdown(self) -> None:
+        with self._enqueue_lock:
+            self._accepting.clear()
+        with self._claim_lock:
+            self._stop_event.set()
+        self._wake_event.set()
+
     def enqueue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._enqueue_lock:
+            if not self._accepting.is_set():
+                raise RuntimeError("local pipeline is shutting down")
+            return self._enqueue_accepted(payload)
+
+    def _enqueue_accepted(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_type = str(payload.get("job_type") or "").strip()
         source = str(payload.get("source") or "").strip()
         source_item_id = str(payload.get("source_item_id") or "").strip()
@@ -122,15 +140,22 @@ class LocalPipelineService:
         return {"id": job.id, "status": job.status, "storage_epoch": job.storage_epoch}
 
     def health(self) -> dict[str, Any]:
-        self._ensure_worker_running()
         worker = self._worker_thread
         worker_alive = worker is not None and worker.is_alive()
+        accepting = self._accepting.is_set()
+        queue_stats = self._safe_queue_stats()
+        inflight = int(queue_stats.get("running", 0))
+        state = "accepting" if accepting else "draining" if inflight else "stopped"
         return {
-            "ok": worker_alive,
+            "ok": worker_alive and accepting,
+            "state": state,
             "storage_epoch": self.queue.storage_epoch,
-            "queue": self._safe_queue_stats(),
+            "queue": queue_stats,
             "queue_by_epoch": self.queue.stats_by_epoch(),
             "worker_alive": worker_alive,
+            "accepting": accepting,
+            "draining": not accepting and inflight > 0,
+            "inflight": inflight,
             "worker_restarts": self._worker_restart_count,
             "last_worker_error": self._last_worker_error,
         }
@@ -162,8 +187,11 @@ class LocalPipelineService:
             self._last_stale_recovery = now_monotonic
             if recovered:
                 print(f"[odaily] local pipeline recovered abandoned jobs count={recovered}")
-        job = self.queue.claim_next(worker_id=self.processor.worker_id)
+        with self._claim_lock:
+            job = None if self._stop_event.is_set() else self.queue.claim_next(worker_id=self.processor.worker_id)
         if job is None:
+            if self._stop_event.is_set():
+                return
             self._safe_record_heartbeat(success=True, error=None, metadata={"idle": True, "queue": self._safe_queue_stats()})
             self._wake_event.wait(5)
             self._wake_event.clear()
@@ -171,7 +199,15 @@ class LocalPipelineService:
         try:
             result = self.processor.process(job)
         except Exception as exc:
-            self.queue.mark_failed(job.id, error=str(exc), attempt_count=job.attempt_count)
+            updated = self.queue.mark_failed(
+                job.id,
+                error=str(exc),
+                attempt_count=job.attempt_count,
+                lease_token=job.lease_token,
+            )
+            if updated is False:
+                print(f"[odaily] local pipeline ignored failure from expired lease job_id={job.id}")
+                return
             self._safe_record_heartbeat(
                 success=False,
                 error=str(exc),
@@ -179,7 +215,10 @@ class LocalPipelineService:
             )
             print(f"[odaily] local pipeline failed job_id={job.id} task_id={job.task_id} error={exc}")
             return
-        self.queue.mark_succeeded(job.id)
+        updated = self.queue.mark_succeeded(job.id, lease_token=job.lease_token)
+        if updated is False:
+            print(f"[odaily] local pipeline ignored completion from expired lease job_id={job.id}")
+            return
         self._last_worker_error = None
         self._safe_record_heartbeat(
             success=True,
@@ -206,7 +245,7 @@ class LocalPipelineService:
             if self._worker_thread is not None:
                 self._worker_restart_count += 1
                 print("[odaily] local pipeline worker restarting")
-            self._worker_thread = threading.Thread(target=self._run_worker, name="local-pipeline-worker", daemon=True)
+            self._worker_thread = threading.Thread(target=self._run_worker, name="local-pipeline-worker", daemon=False)
             self._worker_thread.start()
 
     def _safe_queue_stats(self) -> dict[str, int]:
@@ -292,7 +331,7 @@ def run_local_pipeline_server(
     instance_lock.acquire()
     try:
         settings = load_local_pipeline_settings()
-        queue = LocalPipelineQueue(
+        queue = create_local_pipeline_queue(
             queue_path or paths.runtime_dir / "local_pipeline.sqlite",
             max_attempts=settings.max_attempts,
         )
@@ -306,13 +345,24 @@ def run_local_pipeline_server(
         service.start()
         server = LocalPipelineHTTPServer((host, port), LocalPipelineHandler)
         server.service = service
+        previous_term = signal.getsignal(signal.SIGTERM)
+        previous_int = signal.getsignal(signal.SIGINT)
+
+        def request_shutdown(_signum, _frame) -> None:
+            service.begin_shutdown()
+            threading.Thread(target=server.shutdown, name="local-pipeline-http-shutdown", daemon=True).start()
+
+        signal.signal(signal.SIGTERM, request_shutdown)
+        signal.signal(signal.SIGINT, request_shutdown)
         print(f"[odaily] local pipeline server listening on {host}:{port}")
         if requeued:
             print(f"[odaily] local pipeline requeued stale running jobs count={requeued}")
         try:
             server.serve_forever()
         finally:
-            server.server_close()
             service.stop()
+            server.server_close()
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGINT, previous_int)
     finally:
         instance_lock.release()

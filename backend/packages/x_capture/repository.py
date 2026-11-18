@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import UTC, datetime
+from hashlib import sha256
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 from packages.common.attempt_sampling import (
@@ -10,6 +12,7 @@ from packages.common.attempt_sampling import (
     x_capture_attempt_fingerprint,
 )
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
 
 from .client import normalize_username
@@ -86,9 +89,9 @@ UNSET = _Unset()
 
 
 def get_database_url() -> str:
-    from packages.common.postgres import load_database_url
+    from packages.common.storage import load_postgres_settings
 
-    return load_database_url()
+    return load_postgres_settings().dsn
 
 
 def utc_now() -> datetime:
@@ -97,12 +100,10 @@ def utc_now() -> datetime:
 
 def _import_psycopg():
     try:
-        import psycopg
-        from psycopg.rows import dict_row
         from psycopg.types.json import Jsonb
     except Exception as exc:  # pragma: no cover - exercised only when dependency is absent.
-        raise RuntimeError("psycopg is required for Supabase/Postgres access") from exc
-    return psycopg, dict_row, Jsonb
+        raise RuntimeError("psycopg is required for PostgreSQL storage") from exc
+    return None, None, Jsonb
 
 
 def _row_to_settings(row: dict[str, Any]) -> XCaptureSettings:
@@ -136,33 +137,43 @@ def _row_to_account(row: dict[str, Any]) -> XCaptureAccount:
 
 class PostgresXCaptureRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresXCaptureRepository is retired; use create_x_capture_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-x-capture"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        if autocommit:
+            raise ValueError("Repository operations use explicit transactions")
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            with postgres_transaction(conn):
+                yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(SCHEMA_SQL)
-            conn.commit()
+        self.initialize_schema()
+
+    @staticmethod
+    def initialize_schema() -> None:
+        with connect_postgres(schema="main", application_name="odaily-x-capture-migrate") as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="x_capture",
+                migrations=(PostgresMigration(
+                    1, "x_capture_initial", sha256(SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(SCHEMA_SQL),
+                ), PostgresMigration(
+                    2, "x_capture_external_error_counter", sha256(b"ALTER TABLE x_capture_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE x_capture_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
+                )),
+            )
 
     def notify_config_changed(self) -> None:
         with self._connect() as conn:
             conn.execute("SELECT pg_notify(%s, %s)", (CONFIG_NOTIFY_CHANNEL, "manual"))
-            conn.commit()
 
     def get_settings(self) -> XCaptureSettings:
         with self._connect() as conn:
@@ -176,7 +187,6 @@ class PostgresXCaptureRepository:
             ).fetchone()
             if row is None:
                 row = conn.execute("SELECT * FROM x_capture_settings WHERE singleton_key = 'global'").fetchone()
-            conn.commit()
             return _row_to_settings(row)
 
     def update_settings(
@@ -206,7 +216,6 @@ class PostgresXCaptureRepository:
                 """,
                 values,
             ).fetchone()
-            conn.commit()
             return _row_to_settings(row)
 
     def list_accounts(self, *, include_disabled: bool = False) -> list[XCaptureAccount]:
@@ -262,7 +271,6 @@ class PostgresXCaptureRepository:
                     interval_seconds,
                 ),
             ).fetchone()
-            conn.commit()
             return _row_to_account(row)
 
     def update_account(
@@ -304,7 +312,6 @@ class PostgresXCaptureRepository:
             ).fetchone()
             if row is None:
                 raise ValueError(f"X capture account not found: {account_id}")
-            conn.commit()
             return _row_to_account(row)
 
     def get_account_by_username(self, username_or_url: str) -> XCaptureAccount | None:
@@ -341,7 +348,6 @@ class PostgresXCaptureRepository:
             row = conn.execute("DELETE FROM x_capture_accounts WHERE id = %s RETURNING id", (account_id,)).fetchone()
             if row is None:
                 raise ValueError(f"X capture account not found: {account_id}")
-            conn.commit()
 
     def mark_account_seeded(self, account: XCaptureAccount, tweet_ids: list[str]) -> None:
         with self._connect() as conn:
@@ -355,7 +361,6 @@ class PostgresXCaptureRepository:
                     (tweet_id, account.id, account.username_lower),
                 )
             conn.execute("UPDATE x_capture_accounts SET seeded_at = now(), updated_at = now() WHERE id = %s", (account.id,))
-            conn.commit()
 
     def mark_seen(self, account: XCaptureAccount, tweet_id: str, *, seeded: bool) -> bool:
         with self._connect() as conn:
@@ -368,7 +373,6 @@ class PostgresXCaptureRepository:
                 """,
                 (tweet_id, account.id, account.username_lower, seeded),
             ).fetchone()
-            conn.commit()
             return row is not None
 
     def unseen_tweet_ids(self, tweet_ids: list[str]) -> set[str]:
@@ -434,7 +438,6 @@ class PostgresXCaptureRepository:
                     "metadata": self._Jsonb(payload["metadata"]),
                 },
             ).fetchone()
-            conn.commit()
             return int(row["id"]) if row is not None else None
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
@@ -528,7 +531,6 @@ class PostgresXCaptureRepository:
                     "account_id": stats.account.id,
                 },
             )
-            conn.commit()
 
     def prune_attempts_before(self, cutoff: datetime) -> int:
         with self._connect() as conn:
@@ -540,7 +542,6 @@ class PostgresXCaptureRepository:
                 """,
                 (cutoff,),
             ).fetchall()
-            conn.commit()
             return len(rows)
 
     def list_recent_attempts(self, *, limit: int = 25) -> list[dict[str, Any]]:
@@ -607,11 +608,13 @@ class PostgresXCaptureRepository:
                     success,
                 ),
             )
-            conn.commit()
 
 
 def create_x_capture_repository(database_url: str | None = None) -> XCaptureRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresXCaptureRepository()
     from .sqlite_repository import SQLiteXCaptureRepository
     return SQLiteXCaptureRepository(load_storage_settings().sqlite_path)
 
@@ -907,10 +910,6 @@ CREATE TABLE IF NOT EXISTS x_capture_settings (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO x_capture_settings (singleton_key)
-VALUES ('global')
-ON CONFLICT (singleton_key) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS x_capture_accounts (
     id bigserial PRIMARY KEY,
     username text NOT NULL,
@@ -920,6 +919,7 @@ CREATE TABLE IF NOT EXISTS x_capture_accounts (
     profile_url text,
     enabled boolean NOT NULL DEFAULT true,
     is_ai_source boolean NOT NULL DEFAULT false,
+    monitor_group text NOT NULL DEFAULT 'high',
     interval_seconds integer CHECK (interval_seconds IS NULL OR interval_seconds BETWEEN 5 AND 3600),
     seeded_at timestamptz,
     last_polled_at timestamptz,
@@ -1003,43 +1003,4 @@ CREATE TRIGGER trg_x_capture_accounts_notify
 AFTER INSERT OR UPDATE OR DELETE ON x_capture_accounts
 FOR EACH ROW EXECUTE FUNCTION notify_x_capture_config_changed();
 
-ALTER TABLE x_capture_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE x_capture_accounts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE x_capture_attempts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS x_capture_settings_anon_all ON x_capture_settings;
-DROP POLICY IF EXISTS x_capture_accounts_anon_all ON x_capture_accounts;
-DROP POLICY IF EXISTS x_capture_attempts_anon_select ON x_capture_attempts;
-DROP POLICY IF EXISTS tasks_x_anon_select ON tasks;
-DROP POLICY IF EXISTS x_capture_settings_console_admin_all ON x_capture_settings;
-DROP POLICY IF EXISTS x_capture_accounts_console_admin_all ON x_capture_accounts;
-DROP POLICY IF EXISTS x_capture_attempts_console_admin_select ON x_capture_attempts;
-DROP POLICY IF EXISTS tasks_x_console_admin_select ON tasks;
-DROP POLICY IF EXISTS tasks_console_admin_select ON tasks;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON x_capture_settings, x_capture_accounts, x_capture_attempts, tasks FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE x_capture_accounts_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON x_capture_settings, x_capture_accounts TO authenticated;
-        GRANT SELECT ON x_capture_attempts, tasks TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE x_capture_accounts_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY x_capture_settings_console_admin_all ON x_capture_settings
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY x_capture_accounts_console_admin_all ON x_capture_accounts
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY x_capture_attempts_console_admin_select ON x_capture_attempts
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY tasks_console_admin_select ON tasks
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """

@@ -637,7 +637,20 @@ def tg_market_cap_gate(chain: str) -> float | None:
     return None
 
 
+class JobClaimLost(RuntimeError):
+    """A worker attempted to mutate a job after its durable claim was replaced."""
+
+
 class Store:
+    def __new__(cls, path: Path):
+        from packages.common.storage import load_storage_settings
+
+        if cls is Store and load_storage_settings().backend == "postgres":
+            from .postgres_store import PostgresMemeStore
+
+            return PostgresMemeStore(path)
+        return super().__new__(cls)
+
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, timeout=30)
@@ -749,6 +762,8 @@ class Store:
         if "next_attempt_at" not in columns:
             self.conn.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT")
         self.conn.commit()
+
+
         candidate_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(tg_candidates)")}
         if "chain" not in candidate_columns:
             self.conn.execute("ALTER TABLE tg_candidates ADD COLUMN chain TEXT NOT NULL DEFAULT 'evm'")
@@ -872,12 +887,34 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
+    def update_job_evidence(self, job_id: int, evidence_json: str, updated_at: str, claim_token: str | None = None) -> None:
+        self.conn.execute("UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?", (evidence_json, updated_at, job_id))
+        self.conn.commit()
+
+    def update_job_reason(self, job_id: int, reason: str | None, claim_token: str | None = None) -> None:
+        self.conn.execute("UPDATE jobs SET reason=? WHERE id=?", (reason, job_id))
+        self.conn.commit()
+
+    def database_path(self) -> str:
+        return str(self.conn.execute("PRAGMA database_list").fetchone()[2])
+
+    def assert_job_claim(self, job_id: int, claim_token: str | None, *, status: str | None = None) -> None:
+        return None
+
     def initialized(self) -> bool:
         return self.conn.execute("SELECT 1 FROM scanner_meta WHERE key='initialized'").fetchone() is not None
 
     def mark_initialized(self) -> None:
         self.conn.execute("INSERT OR REPLACE INTO scanner_meta(key, value) VALUES('initialized', ?)", (now_iso(),))
         self.conn.commit()
+
+    def recover_inflight(self) -> int:
+        cursor = self.conn.execute(
+            """UPDATE jobs SET status='retry_wait',reason='service_restarted',next_attempt_at=?,updated_at=?
+               WHERE status IN ('processing','publishing')""", (now_iso(), now_iso())
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     def meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM scanner_meta WHERE key=?", (key,)).fetchone()
@@ -1341,16 +1378,6 @@ class Store:
             self.conn.rollback()
             raise
 
-    def recover_inflight(self) -> int:
-        cursor = self.conn.execute(
-            """UPDATE jobs SET status='retry_wait', reason='service_restarted',
-              next_attempt_at=?, updated_at=?
-            WHERE status IN ('processing', 'publishing')""",
-            (now_iso(), now_iso()),
-        )
-        self.conn.commit()
-        return cursor.rowcount
-
     def retry_job(self, job: sqlite3.Row, reason: str, *, narrative: dict[str, Any] | None = None) -> str:
         attempts = int(job["attempts"] or 0)
         waiting_for_fomo_login = reason == "narrative_fomo_login_required"
@@ -1383,7 +1410,7 @@ class Store:
         )
         self.conn.commit()
 
-    def update_job(self, job_id: int, status: str, *, reason: str | None = None, narrative: dict[str, Any] | None = None, title: str | None = None, content: str | None = None, publish: dict[str, Any] | None = None) -> None:
+    def update_job(self, job_id: int, status: str, *, reason: str | None = None, narrative: dict[str, Any] | None = None, title: str | None = None, content: str | None = None, publish: dict[str, Any] | None = None, claim_token: str | None = None) -> None:
         stamp = now_iso()
         publishing_started_at = stamp if status == "publishing" else None
         completed_at = stamp if status in {"publisher_pending", "discarded", "publish_failed"} else None
@@ -1705,6 +1732,13 @@ def push_pending(
     return {"ok": False, "error": str(last_error) if last_error else "push failed", "payload": payload}
 
 
+def _job_claim_token(job: Any) -> str | None:
+    try:
+        return job["claim_token"]
+    except (IndexError, KeyError):
+        return None
+
+
 def _ensure_gmgn_kol_profile(
     store: Store,
     job: sqlite3.Row,
@@ -1722,11 +1756,7 @@ def _ensure_gmgn_kol_profile(
     payload = fetch_gmgn_token_info_payload(token.address, token.chain)
     profile = _gmgn_prewrite_profile(payload, token)
     job_evidence["gmgn_token_profile"] = profile
-    with store.conn:
-        store.conn.execute(
-            "UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?",
-            (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job["id"]),
-        )
+    store.update_job_evidence(job["id"], json.dumps(job_evidence, ensure_ascii=False), now_iso(), _job_claim_token(job))
     return profile
 
 
@@ -1734,14 +1764,18 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     job = store.claim_job(address)
     if job is None:
         return None
+    try:
+        claim_token = job["claim_token"]
+    except (IndexError, KeyError):
+        claim_token = None
     queued_at = datetime.fromisoformat(job["queued_at"])
     if (datetime.now(UTC) - queued_at).total_seconds() > QUEUE_EXPIRY_SECONDS:
-        store.update_job(job["id"], "discarded", reason="queue_expired")
+        store.update_job(job["id"], "discarded", reason="queue_expired", claim_token=claim_token)
         return "queue_expired"
     raw = json.loads(job["payload_json"])
     token = token_from_row(raw)
     if token is None:
-        store.update_job(job["id"], "discarded", reason="invalid_token_payload")
+        store.update_job(job["id"], "discarded", reason="invalid_token_payload", claim_token=claim_token)
         return "invalid_token_payload"
     job_evidence = json.loads(job["evidence_json"]) if job["evidence_json"] else {}
     try:
@@ -1786,13 +1820,10 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
                 "gmgn_token_profile": gmgn_profile,
                 "reader_text": "",
             },
+            claim_token=claim_token,
         )
         return "kol_count_zero"
-    with store.conn:
-        store.conn.execute(
-            "UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?",
-            (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job["id"]),
-        )
+    store.update_job_evidence(job["id"], json.dumps(job_evidence, ensure_ascii=False), now_iso(), claim_token)
     from .grok_jobs import prepare as prepare_grok
     verification = job_evidence.get('market_verification')
     if token.chain == 'solana' and not (
@@ -1802,9 +1833,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     ):
         verification = verify_market_cap(token)
         job_evidence['market_verification'] = verification
-        with store.conn:
-            store.conn.execute('UPDATE jobs SET evidence_json=?,updated_at=? WHERE id=?',
-                               (json.dumps(job_evidence, ensure_ascii=False), now_iso(), job['id']))
+        store.update_job_evidence(job['id'], json.dumps(job_evidence, ensure_ascii=False), now_iso(), claim_token)
         if verification['status'] != 'passed':
             suspect = verification['status'] == 'suspect'
             reason = 'market_cap_suspect' if suspect else 'market_verification_unavailable'
@@ -1812,15 +1841,14 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
                      'decision_reason': '市值存疑，验证源与 Dexscreener 偏差超过 15%，拒绝写作。' if suspect else '暂无有效验证市值，等待重试。',
                      'market_verification': verification, 'reader_text': ''}
             if suspect:
-                store.update_job(job['id'], 'discarded', reason=reason, narrative=audit)
+                store.update_job(job['id'], 'discarded', reason=reason, narrative=audit, claim_token=claim_token)
                 return reason
             return store.retry_job(job, reason, narrative=audit)
     grok_ready, grok_audit = prepare_grok(store, job, token)
     if not grok_ready:
         return "grok_pending"
     if job["reason"] == "grok_pending":
-        with store.conn:
-            store.conn.execute("UPDATE jobs SET reason=NULL WHERE id=?", (job["id"],))
+        store.update_job_reason(job["id"], None, claim_token)
     job_evidence["grok_routine"] = grok_audit
     narrative = collect_narrative(
         token,
@@ -1831,7 +1859,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         database_path=(
             Path(args.db)
             if getattr(args, "db", None)
-            else Path(store.conn.execute("PRAGMA database_list").fetchone()[2])
+            else Path(store.database_path())
         ),
         evidence=job_evidence,
         trigger_kind=str(job["trigger_kind"]),
@@ -1844,10 +1872,11 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
     if narrative.get("transient_error"):
         return store.retry_job(job, str(narrative["transient_error"]), narrative=narrative)
     if not reader_text:
-        store.update_job(job["id"], "discarded", reason="no_usable_narrative", narrative=narrative)
+        store.update_job(job["id"], "discarded", reason="no_usable_narrative", narrative=narrative, claim_token=claim_token)
         return "no_usable_narrative"
     title, content = format_text(token, reader_text, queued_at, str(job["trigger_kind"]))
-    store.update_job(job["id"], "publishing", narrative=narrative, title=title, content=content)
+    store.update_job(job["id"], "publishing", narrative=narrative, title=title, content=content, claim_token=claim_token)
+    store.assert_job_claim(job["id"], claim_token, status="publishing")
     endpoint = os.environ.get("MEME_ODAILY_PUSH_ENDPOINT") or os.environ.get("ODAILY_PUSH_ENDPOINT") or DEFAULT_ODAILY_PUSH_ENDPOINT
     pushed = push_pending(
         title,
@@ -1858,7 +1887,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
         idempotency_key=f"odaily:meme:{token.chain}:{token.address}:{job['trigger_key']}",
     )
     if pushed["ok"]:
-        store.update_job(job["id"], "publisher_pending", publish=pushed)
+        store.update_job(job["id"], "publisher_pending", publish=pushed, claim_token=claim_token)
         if job["trigger_kind"] != "daily_hot":
             store.upsert_observation(
                 token, published_at=now_iso(),
@@ -1882,7 +1911,7 @@ def process_one(store: Store, args: argparse.Namespace, *, address: str | None =
                 print(f"[meme-scan] feed write failed job_id={job['id']} error={exc}")
         return "publisher_pending"
     else:
-        store.update_job(job["id"], "publish_failed", publish=pushed)
+        store.update_job(job["id"], "publish_failed", publish=pushed, claim_token=claim_token)
         return "publish_failed"
 
 
@@ -2008,10 +2037,11 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
     row = store.due_token_info(now=stamp, latest_completed_seen_at=latest_completed)
     if row is None:
         return {"status": "idle", "expired": expired}
-    allowed, remaining = store.token_info_request_allowed(
-        now,
-        int(getattr(args, "token_info_min_gap", TOKEN_INFO_MIN_GAP_SECONDS)),
-    )
+    min_gap = int(getattr(args, "token_info_min_gap", TOKEN_INFO_MIN_GAP_SECONDS))
+    if hasattr(store, "reserve_token_info_request"):
+        allowed, remaining = store.reserve_token_info_request(now, min_gap)
+    else:
+        allowed, remaining = store.token_info_request_allowed(now, min_gap)
     if not allowed:
         return {"status": "rate_limited_local", "remaining": remaining, "expired": expired}
 
@@ -2019,7 +2049,8 @@ def process_due_token_info(store: Store, args: argparse.Namespace) -> dict[str, 
     backlog = store.token_info_backlog(now=stamp, latest_completed_seen_at=latest_completed)
     if backlog > 1:
         print(f"[meme-scan] token_info backlog={backlog}", file=sys.stderr)
-    store.mark_token_info_request(now)
+    if not hasattr(store, "reserve_token_info_request"):
+        store.mark_token_info_request(now)
     try:
         chain = str(row["chain"] or CHAIN)
         token = fetch_token_info(address, chain) if chain != CHAIN else fetch_token_info(address)
@@ -2291,7 +2322,8 @@ def run(args: argparse.Namespace) -> int:
                         worker = None
                     try:
                         if time.monotonic() - last_retention >= 3600:
-                            print(f"[meme-scan] retention={prune_history(store.conn)}")
+                            retention = store.prune_history() if hasattr(store, "prune_history") else prune_history(store.conn)
+                            print(f"[meme-scan] retention={retention}")
                             last_retention = time.monotonic()
                         summary = discover_once(store, args)
                         if worker is None:

@@ -17,6 +17,7 @@ from packages.ai_text_self_upgrade import (
 )
 from packages.ai_text_self_upgrade.prompts import parse_output
 from packages.ai_text_self_upgrade.worker import current_run_key
+from packages.ai_text_self_upgrade.service import _fetch_postgres_pages
 
 
 class FakeAIClient:
@@ -36,6 +37,51 @@ class FakeAIClient:
         if isinstance(output, Exception):
             raise output
         return output
+
+
+def test_postgres_source_paging_releases_each_checkout_and_advances_keyset() -> None:
+    class Connection:
+        def __init__(self, rows: list[dict[str, Any]]) -> None:
+            self.rows = rows
+            self.closed = False
+            self.cursor = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+
+        def execute(self, query: str, params: tuple[Any, ...]):
+            self.query = query
+            self.params = params
+            return self
+
+        def fetchall(self):
+            if "WHERE (reviewed_at, auditor_check_id) < (%s, %s)" not in self.query:
+                return self.rows[: self.params[-1]]
+            last_key = self.params[-3:-1]
+            return [row for row in self.rows if (row["reviewed_at"], row["auditor_check_id"]) < last_key][: self.params[-1]]
+
+    all_rows = [
+        {"reviewed_at": 3, "auditor_check_id": 3},
+        {"reviewed_at": 3, "auditor_check_id": 2},
+        {"reviewed_at": 2, "auditor_check_id": 9},
+    ]
+    connections: list[Connection] = []
+
+    def connect():
+        connection = Connection(all_rows)
+        connections.append(connection)
+        return connection
+
+    rows = _fetch_postgres_pages(
+        connect, "SELECT reviewed_at,auditor_check_id FROM audits", (),
+        key_columns=("reviewed_at", "auditor_check_id"), page_size=2,
+    )
+    assert rows == all_rows
+    assert len(connections) == 3
+    assert all(connection.closed for connection in connections)
 
 
 def _create_primary_database(path: Path) -> None:

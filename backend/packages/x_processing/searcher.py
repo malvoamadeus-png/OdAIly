@@ -286,6 +286,13 @@ def _duplicate_decision_for_document(
 
 
 class SearchCache:
+    def __new__(cls, path: Path):
+        from packages.common.storage import load_storage_settings
+        if cls is SearchCache and load_storage_settings().backend == "postgres":
+            from .postgres_search_cache import PostgresSearchCache
+            return PostgresSearchCache()
+        return super().__new__(cls)
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -910,7 +917,7 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _row_to_search_document(row: sqlite3.Row) -> SearchDocument:
-    metadata_json = str(row["metadata_json"]) if row["metadata_json"] is not None else "{}"
+    metadata_json = row["metadata_json"] if row["metadata_json"] is not None else {}
     return SearchDocument(
         doc_type=str(row["doc_type"]),
         doc_id=str(row["doc_id"]),
@@ -925,7 +932,7 @@ def _row_to_search_document(row: sqlite3.Row) -> SearchDocument:
         created_at=_parse_dt(row["created_at"]),
         updated_at=_parse_dt(row["updated_at"]),
         expires_at=_parse_dt(row["expires_at"]),
-        metadata=json.loads(metadata_json) if metadata_json else {},
+        metadata=(json.loads(metadata_json) if isinstance(metadata_json, str) else metadata_json) or {},
     )
 
 

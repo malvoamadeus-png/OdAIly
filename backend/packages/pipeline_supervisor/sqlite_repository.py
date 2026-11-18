@@ -161,5 +161,10 @@ class SQLitePipelineSupervisorRepository:
 
 
 def create_pipeline_supervisor_repository(database_url: str | None = None) -> SQLitePipelineSupervisorRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        from .repository import PostgresPipelineSupervisorRepository
+
+        return PostgresPipelineSupervisorRepository()
     return SQLitePipelineSupervisorRepository(load_storage_settings().sqlite_path)

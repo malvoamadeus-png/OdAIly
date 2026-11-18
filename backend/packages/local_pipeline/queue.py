@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,6 +43,7 @@ class LocalPipelineJob:
     attempt_count: int
     payload: dict[str, Any]
     storage_epoch: str
+    lease_token: str | None = None
 
 
 class LocalPipelineQueue:
@@ -78,6 +80,7 @@ class LocalPipelineQueue:
                     storage_epoch TEXT NOT NULL DEFAULT 'postgres-legacy',
                     locked_by TEXT,
                     locked_at TEXT,
+                    lease_token TEXT,
                     next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     last_error TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -91,6 +94,8 @@ class LocalPipelineQueue:
                 conn.execute(
                     "ALTER TABLE local_pipeline_jobs ADD COLUMN storage_epoch TEXT NOT NULL DEFAULT 'postgres-legacy'"
                 )
+            if "lease_token" not in columns:
+                conn.execute("ALTER TABLE local_pipeline_jobs ADD COLUMN lease_token TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_local_pipeline_jobs_epoch_status_next
@@ -146,6 +151,7 @@ class LocalPipelineQueue:
 
     def claim_next(self, *, worker_id: str) -> LocalPipelineJob | None:
         now = encode_dt()
+        lease_token = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -171,10 +177,11 @@ class LocalPipelineQueue:
                     attempt_count = attempt_count + 1,
                     locked_by = ?,
                     locked_at = ?,
+                    lease_token = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (worker_id, now, now, int(row["id"])),
+                (worker_id, now, lease_token, now, int(row["id"])),
             )
             row = conn.execute("SELECT * FROM local_pipeline_jobs WHERE id = ?", (int(row["id"]),)).fetchone()
             conn.commit()
@@ -190,6 +197,7 @@ class LocalPipelineQueue:
                 SET status = CASE WHEN attempt_count >= ? THEN 'exhausted' ELSE 'failed' END,
                     locked_by = NULL,
                     locked_at = NULL,
+                    lease_token = NULL,
                     last_error = CASE
                         WHEN coalesce(last_error, '') = '' THEN 'stale running job requeued after worker restart'
                         ELSE substr(last_error, 1, 1800) || '\n[stale running job requeued after worker restart]'
@@ -206,7 +214,7 @@ class LocalPipelineQueue:
             )
             return int(cursor.rowcount or 0)
 
-    def mark_succeeded(self, job_id: int) -> None:
+    def mark_succeeded(self, job_id: int, *, lease_token: str | None = None) -> bool:
         now = encode_dt()
         with self._connect() as conn:
             conn.execute(
@@ -215,14 +223,16 @@ class LocalPipelineQueue:
                 SET status = 'succeeded',
                     locked_by = NULL,
                     locked_at = NULL,
+                    lease_token = NULL,
                     last_error = NULL,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND (? IS NULL OR lease_token = ?)
                 """,
-                (now, job_id),
+                (now, job_id, lease_token, lease_token),
             )
+            return bool(conn.execute("SELECT changes()").fetchone()[0])
 
-    def mark_failed(self, job_id: int, *, error: str, attempt_count: int) -> None:
+    def mark_failed(self, job_id: int, *, error: str, attempt_count: int, lease_token: str | None = None) -> bool:
         delay = min(300, max(5, 2 ** min(attempt_count, 8)))
         next_attempt_at = encode_dt(utc_now() + timedelta(seconds=delay))
         now = encode_dt()
@@ -233,10 +243,11 @@ class LocalPipelineQueue:
                 SET status = CASE WHEN ? >= ? THEN 'exhausted' ELSE 'failed' END,
                     locked_by = NULL,
                     locked_at = NULL,
+                    lease_token = NULL,
                     last_error = ?,
                     next_attempt_at = CASE WHEN ? >= ? THEN ? ELSE ? END,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND (? IS NULL OR lease_token = ?)
                 """,
                 (
                     attempt_count,
@@ -248,8 +259,11 @@ class LocalPipelineQueue:
                     next_attempt_at,
                     now,
                     job_id,
+                    lease_token,
+                    lease_token,
                 ),
             )
+            return bool(conn.execute("SELECT changes()").fetchone()[0])
 
     def list_over_limit_jobs(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -341,4 +355,5 @@ class LocalPipelineQueue:
             attempt_count=int(row["attempt_count"]),
             payload=decode_payload(row["payload"]),
             storage_epoch=str(row["storage_epoch"]),
+            lease_token=row["lease_token"] if "lease_token" in row.keys() else None,
         )

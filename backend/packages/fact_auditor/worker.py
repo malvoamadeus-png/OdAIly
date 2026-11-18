@@ -5,7 +5,8 @@ import time
 from typing import Any
 
 from packages.common.heartbeat import HeartbeatThrottle
-from packages.common.source_exclusions import SQLiteSourceExclusionRepository, is_source_excluded
+from packages.common.source_exclusions import create_source_exclusion_repository, is_source_excluded
+from packages.common.storage import load_storage_settings
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 
 from .alerts import plugin_alert_summary
@@ -20,25 +21,37 @@ class FactAuditorWorker:
     def __init__(self, repository: FactReviewRepository, settings: FactAuditorSettings, *, ai=None) -> None:
         self.repository = repository
         self.settings = settings
-        self.feed_writer = LocalEditorPluginFeedWriter()
+        if load_storage_settings().backend == "postgres":
+            from packages.editor_plugin_postgres_feed import PostgresFactAuditorFeedWriter
+
+            self.feed_writer = PostgresFactAuditorFeedWriter()
+        else:
+            self.feed_writer = LocalEditorPluginFeedWriter()
         self.worker_id = "fact-auditor-" + str(os.getpid())
         self.engine = FactReviewEngine(ai or FactReviewAI(settings), max_questions=settings.max_search_questions)
-        self.exclusions = SQLiteSourceExclusionRepository(repository.path)
-        from packages.auditor.sqlite_repository import SQLiteAuditorRepository
-        heartbeat_repo = SQLiteAuditorRepository(repository.path)
-        heartbeat_repo.init_schema()
+        self.exclusions = create_source_exclusion_repository(path=repository.path)
+        if load_storage_settings().backend == "postgres":
+            heartbeat_writer = repository.record_worker_heartbeat
+        else:
+            from packages.auditor.sqlite_repository import SQLiteAuditorRepository
+
+            heartbeat_repo = SQLiteAuditorRepository(repository.path)
+            heartbeat_repo.init_schema()
+            heartbeat_writer = heartbeat_repo.record_worker_heartbeat
         self.heartbeat = HeartbeatThrottle(component="fact_auditor", worker_id=self.worker_id,
-            writer=lambda component, worker_id, status, success, error, metadata: heartbeat_repo.record_worker_heartbeat(
+            writer=lambda component, worker_id, status, success, error, metadata: heartbeat_writer(
                 component=component, worker_id=worker_id, status=status, success=success, error=error, metadata=metadata))
 
     def run_once(self) -> dict[str, Any] | None:
         task = self.repository.claim(worker_id=self.worker_id, lookback_minutes=self.settings.lookback_minutes,
-            max_attempts=self.settings.max_attempts, start_after=self.settings.start_after)
+            max_attempts=self.settings.max_attempts, start_after=self.settings.start_after,
+            lock_seconds=max(60, int(self.settings.request_timeout + 60)))
         if task is None:
             self.heartbeat.send(status="ok", success=True, metadata={"processed": 0})
             return None
         try:
-            linked = linked_material(self.repository.path, task)
+            linked = (self.repository.linked_material(task) if hasattr(self.repository, "linked_material")
+                      else linked_material(self.repository.path, task))
             reason = deterministic_reason(task, linked)
             matched = []
             if not reason:
@@ -54,7 +67,10 @@ class FactAuditorWorker:
                     original_loader=lambda: resolve_original(self.repository.path, task, linked))
         except Exception as exc:
             result = {"status": "failed", "reason": "", "summary": "事实审查执行失败", "error": str(exc)[:1000], "stages": {}}
-        self.repository.save(task, result, worker_id=self.worker_id)
+        saved = self.repository.save(task, result, worker_id=self.worker_id)
+        if saved is False:
+            self.heartbeat.send(status="ok", success=True, metadata={"processed": 0, "stale_claim": task["id"]})
+            return {"source_item_id": task["source_item_id"], "check_id": task["id"], "status": "stale_claim"}
         if result["status"] == "flagged":
             try:
                 self.feed_writer.upsert_fact_auditor_alert(

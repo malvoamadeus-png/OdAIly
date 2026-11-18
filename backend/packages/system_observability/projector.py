@@ -77,6 +77,7 @@ TABLE_SPECS = (
     TableSpec("stock", "instruments", "stock_market", "stock_market", "configuration"),
     TableSpec("stock", "settings", "stock_market", "stock_market", "configuration"),
     TableSpec("main", "tasks", "unmapped_source", "main_pipeline"),
+    TableSpec("main", "x_task_pipeline", "unmapped_source", "main_pipeline"),
     TableSpec("main", "business_message_inbox", "business_news", "business_telegram"),
     TableSpec("main", "whale_watch_activities", "whale", "whale_watch"),
     TableSpec("main", "whale_watch_hyperliquid_activities", "whale", "whale_watch_hyperliquid"),
@@ -148,6 +149,7 @@ CONFIGURATION_TABLES = frozenset(spec.table for spec in TABLE_SPECS if spec.reco
 
 AUDIT_COLUMN_NAMES = frozenset({
     "id", "source", "source_item_id", "event_id", "event_key", "identity_key", "check_id",
+    "username_lower",
     "tweet_id", "task_id", "update_id", "attempt_id", "tx_hash", "fill_key",
     "trigger_key", "status", "state", "result", "decision", "stage", "kind",
     "type", "title", "name", "symbol", "address", "contract_address", "reason",
@@ -285,6 +287,8 @@ def _first(row: dict[str, Any], *names: str) -> Any:
 
 
 def _result(status: str, business_key: str, row: dict[str, Any]) -> str:
+    if row.get('__source_table__') == 'x_capture_attempts':
+        return 'capture_success' if status.casefold() == 'success' else 'failed' if status.casefold() in {'fetch_failed', 'parse_failed', 'failed', 'error'} else 'unknown'
     value = status.casefold().replace("-", "_")
     if failure_category(_first(row, 'last_error', 'error', 'reason')) == 'expected_result':
         return 'stopped'
@@ -317,10 +321,10 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
     source_id = str(_first(row, "source_item_id", "event_key", "event_id", "tweet_id", "tx_hash", "fill_key", "trigger_key", "identity_key", "update_id", "username_lower", "slug_lower", "site_key", "template_key", "rule_key", "channel_key", "key", "id", "__obs_rowid__") or "")
     created_value = _first(row, "created_at", "received_at", "queued_at", "observed_at", "at", "posted_at", "published_at", "fill_time", "first_seen_ms", "created_ms")
     updated_value = _first(row, "updated_at", "completed_at", "last_mentioned_at", "last_seen_at", "sent_at", "telegram_sent_at")
-    if spec.table in {'x_capture_attempts', 'binance_square_attempts'}:
-        # Attempts belong to individual rows, not to the account being polled.
-        # Grouping them by username makes tail rechecks alternate old snapshots.
-        source_id = str(_first(row, 'id', '__obs_rowid__') or '')
+    if spec.table == 'x_capture_attempts':
+        row = {**row, '__source_table__': spec.table}
+        # One account-level item represents its latest final poll result.
+        source_id = str(_first(row, 'username_lower') or '')
         created_value = _first(row, 'started_at', 'created_at')
         updated_value = _first(row, 'finished_at', 'updated_at')
     created_ms = timestamp_ms(created_value)
@@ -341,10 +345,11 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         source_value = spec.source
         business_key = spec.business_key
     source_database_key = "main" if spec.database_key == "hyperliquid" or spec.table == "business_message_inbox" else spec.database_key
+    identity = str(row.get("id", row.get("__obs_rowid__"))) if spec.table == "x_capture_attempts" else source_id or row.get("__obs_rowid__")
     item_id = (
         f"task:{source_value}:{source_id or row.get('__obs_rowid__')}"
         if spec.table == "tasks"
-        else f"{source_database_key}:{spec.table}:{source_id or row.get('__obs_rowid__')}"
+        else f"{source_database_key}:{spec.table}:{identity}"
     )
     snapshot = {
         "item_id": item_id,
@@ -361,8 +366,13 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         "search_extra": " ".join(str(value) for key, value in row.items() if key != "__obs_rowid__" and isinstance(value, (str, int, float))),
         "news_visible": False,
     }
-    if spec.table in {'x_capture_attempts', 'binance_square_attempts'}:
-        snapshot['source_name'] = str(_first(row, 'username_lower', 'slug_lower') or '')
+    if spec.table == 'x_capture_attempts':
+        snapshot['source_name'] = str(_first(row, 'username_lower') or '')
+        snapshot['title'] = str(_first(row, 'username_lower') or title)
+        snapshot['summary'] = str(_first(row, 'last_error', 'error_message', 'error', 'status_reason') or summary)[:1200]
+        if not snapshot['summary']:
+            snapshot['summary'] = "采集成功" if raw_status == "success" else "采集结果"
+        snapshot['result'] = 'capture_success' if raw_status == 'success' else 'failed' if raw_status in {'fetch_failed', 'parse_failed', 'failed', 'error'} else 'unknown'
     # Only actual draft/news outputs are standalone news; technical records remain diagnostic.
     if spec.table == 'business_message_inbox' and _first(row, 'writer4_title', 'writer2_title', 'title'):
         snapshot['news_visible'] = bool(_first(row, 'writer4_title', 'writer2_title') or raw_status in {'ready_review', 'published', 'sent'})
@@ -640,7 +650,6 @@ class MainTaskProjector:
             self.store.set_state("main_tasks_last_success", now_ms)
             self.store.set_state("main_tasks_last_error", "")
             extra_read, extra_changed = self._project_additional(now_ms, started_at_ms)
-            self.store.rebuild_search_index(self.batch_size)
             return {"read": imported + extra_read, "changed": changed + extra_changed}
         except Exception as exc:
             self.store.set_state("main_tasks_last_error", f"{type(exc).__name__}: {exc}"[:1000])
@@ -681,11 +690,11 @@ class MainTaskProjector:
         except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
             self.store.set_state('task_evidence_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
-            reindex = self.store.compact_search_index(now_ms=now_ms)
-            self.store.set_state('readable_search_reindex_last_result', json.dumps(reindex))
-            self.store.set_state('readable_search_reindex_error', '')
-        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
-            self.store.set_state('readable_search_reindex_error', f'{type(exc).__name__}: {exc}'[:300])
+            trimmed_items = self.store.trim_information_items(now_ms=now_ms)
+            self.store.set_state('information_item_retention_last_result', json.dumps(trimmed_items))
+            self.store.set_state('information_item_retention_error', '')
+        except sqlite3.Error as exc:
+            self.store.set_state('information_item_retention_error', f'{type(exc).__name__}: {exc}'[:300])
         try:
             candidates = trim_candidate_details(self.source_database, self.store, now_ms=now_ms)
             self.store.set_state('candidate_retention_last_result', json.dumps(candidates))
@@ -832,8 +841,82 @@ class MainTaskProjector:
         self.store.set_state("additional_projection_last_ms", now_ms)
         return imported, changed
 
+    def drain_source_outbox(
+        self, database_key: str, *, target_sequence: int | None = None, max_batches: int = 1000,
+    ) -> dict[str, int | bool]:
+        """Drain a frozen SQLite source outbox without installing triggers or applying retention."""
+        if max_batches < 1:
+            raise ValueError("max_batches must be positive")
+        specs = [spec for spec in self.table_specs if spec.database_key == database_key]
+        path = self.source_database if database_key == "main" else self.additional_databases.get(database_key)
+        if not specs or path is None or not path.is_file():
+            raise ValueError(f"source database is unavailable or unmapped: {database_key}")
+        with self._read_path(path) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='odaily_observability_outbox'"
+            ).fetchone()
+            if exists is None:
+                raise RuntimeError(f"source outbox is missing: {database_key}")
+            maximum = int(conn.execute(
+                "SELECT COALESCE(MAX(seq),0) AS n FROM odaily_observability_outbox"
+            ).fetchone()["n"])
+            version = conn.execute(
+                "SELECT meta_value FROM odaily_observability_meta WHERE meta_key=?",
+                (f"source_audit_trigger_version:{database_key}",),
+            ).fetchone()
+        if not version or str(version["meta_value"]) != str(SOURCE_AUDIT_TRIGGER_VERSION):
+            raise RuntimeError(f"source outbox triggers are not current for {database_key}")
+        target = maximum if target_sequence is None else int(target_sequence)
+        if target < 0 or target > maximum:
+            raise ValueError("target_sequence must be between zero and the captured source maximum")
+        watermark_key = f"source_audit_{database_key}_watermark"
+        watermark = int(self.store.get_state(watermark_key, "0") or 0)
+        if watermark > maximum:
+            raise RuntimeError(f"source watermark exceeds current outbox maximum for {database_key}: {watermark}>{maximum}")
+        mapped = {spec.table for spec in specs}
+        with self._read_path(path) as conn:
+            unknown = [str(row["table_name"]) for row in conn.execute(
+                "SELECT DISTINCT table_name FROM odaily_observability_outbox WHERE seq>? AND seq<=? ORDER BY table_name",
+                (watermark, target),
+            ).fetchall() if str(row["table_name"]) not in mapped]
+            pending_rows = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM odaily_observability_outbox WHERE seq>? AND seq<=?",
+                (watermark, target),
+            ).fetchone()["n"])
+        if unknown:
+            raise RuntimeError(f"unmapped source outbox tables for {database_key}: {unknown}")
+        imported = changed = batches = 0
+        while watermark < target and batches < max_batches:
+            read_count, changed_count = self._project_source_outbox(
+                database_key, path, specs, int(datetime.now(UTC).timestamp() * 1000),
+                cleanup=False, target_sequence=target,
+            )
+            imported += read_count
+            changed += changed_count
+            batches += 1
+            next_watermark = int(self.store.get_state(watermark_key, "0") or 0)
+            if next_watermark <= watermark:
+                with self._read_path(path) as conn:
+                    remaining = int(conn.execute(
+                        "SELECT COUNT(*) AS n FROM odaily_observability_outbox WHERE seq>? AND seq<=?",
+                        (watermark, target),
+                    ).fetchone()["n"])
+                if remaining == 0:
+                    self.store.set_state(watermark_key, target)
+                    watermark = target
+                break
+            watermark = next_watermark
+        with self._read_path(path) as conn:
+            latest = int(conn.execute("SELECT COALESCE(MAX(seq),0) AS n FROM odaily_observability_outbox").fetchone()["n"])
+        complete = watermark >= target and latest <= target
+        return {"target_sequence": target, "watermark": watermark, "latest_sequence": latest,
+                "pending_rows_at_start": pending_rows, "imported": imported,
+                "changed": changed, "batches": batches, "complete": complete,
+                "status": "complete" if complete else "source_changed_during_drain" if latest > target else "stalled"}
+
     def _project_source_outbox(
-        self, database_key: str, path: Path, specs: list[TableSpec], now_ms: int,
+        self, database_key: str, path: Path, specs: list[TableSpec], now_ms: int, *,
+        cleanup: bool = True, target_sequence: int | None = None,
     ) -> tuple[int, int]:
         watermark_key = f"source_audit_{database_key}_watermark"
         watermark = int(self.store.get_state(watermark_key, "0") or 0)
@@ -846,9 +929,14 @@ class MainTaskProjector:
                 return 0, 0
             rows = conn.execute(
                 "SELECT seq,event_id,table_name,source_row_id,operation,happened_at_ms,payload_json "
-                "FROM odaily_observability_outbox WHERE seq>? ORDER BY seq LIMIT ?",
-                (watermark, self.outbox_batch_size),
+                "FROM odaily_observability_outbox WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                (watermark, target_sequence if target_sequence is not None else 2**63 - 1, self.outbox_batch_size),
             ).fetchall()
+            if target_sequence is not None:
+                mapped = set(by_table)
+                unknown = [str(row["table_name"]) for row in rows if str(row["table_name"]) not in mapped]
+                if unknown:
+                    raise RuntimeError(f"unmapped source outbox tables for {database_key}: {sorted(set(unknown))}")
         entries: list[dict[str, Any]] = []
         with self._read_path(path) as link_conn:
             for event in rows:
@@ -881,7 +969,10 @@ class MainTaskProjector:
                 if spec.table != "tasks":
                     self._link_to_news(link_conn, snapshot, source_row)
                 snapshot["legacy_history"] = False
-                snapshot["updated_at_ms"] = timestamp_ms(
+                snapshot["updated_at_ms"] = (
+                    timestamp_ms(payload.get("finished_at") or payload.get("updated_at"))
+                    if spec.table == "x_capture_attempts" else None
+                ) or timestamp_ms(
                     payload.get("updated_at") or payload.get("completed_at") or payload.get("last_seen_at")
                 ) or int(event["happened_at_ms"])
                 compact_evidence = {
@@ -907,7 +998,7 @@ class MainTaskProjector:
                 entries.append({
                     "snapshot": snapshot,
                     "evidence": compact_evidence,
-                    "only_if_newer": spec.table == "tasks",
+                    "only_if_newer": spec.table in {"tasks", "x_capture_attempts"},
                     "event_id": f"source-audit:{database_key}:{event['event_id']}",
                     "stage": str(snapshot["stage"]),
                     "status": "deleted" if operation == "delete" else status,
@@ -925,7 +1016,8 @@ class MainTaskProjector:
                 entries, watermark_key=watermark_key, watermark=last_seq,
             )
             watermark = last_seq
-        self._cleanup_source_outbox(database_key, path, watermark, now_ms)
+        if cleanup:
+            self._cleanup_source_outbox(database_key, path, watermark, now_ms)
         return imported, changed
 
     def _link_to_news(self, conn: sqlite3.Connection, snapshot: dict[str, Any], row: dict[str, Any]) -> None:

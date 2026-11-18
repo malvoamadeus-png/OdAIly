@@ -44,13 +44,8 @@ def database_path() -> Path:
 
 
 def _update(store: HtmlDiscoveryStore, category_id: str, **values: Any) -> None:
-    allowed = {"status", "reason", "detail_json", "writer_json", "final_title", "final_content", "push_result", "last_error", "updated_at"}
-    if not values.keys() <= allowed:
-        raise ValueError("invalid update field")
     values["updated_at"] = datetime.now(UTC).isoformat()
-    with store.connect() as con:
-        con.execute("UPDATE html_topics SET " + ",".join(f"{key}=?" for key in values) + " WHERE category_id=?",
-                    (*values.values(), category_id))
+    store.update_topic(category_id, values)
 
 
 def _writer_client(settings: Any) -> OpenAIResponsesClient:
@@ -87,15 +82,14 @@ def _market_rules(slug: str) -> list[dict[str, str]]:
 
 def process_pending(store: HtmlDiscoveryStore, *, send: bool = True) -> list[dict[str, str]]:
     settings = load_x_processing_settings()
-    with store.connect() as con:
-        # A process interruption after starting delivery has an ambiguous outcome.
-        con.execute("UPDATE html_topics SET status='delivery_uncertain',last_error='投递期间进程中断，需人工核查' WHERE status='delivering'")
-        rows = [dict(row) for row in con.execute("SELECT * FROM html_topics WHERE status IN ('pending','retry_wait') ORDER BY first_seen_at")]
+    rows = store.pending_topics()
     output = []
     for row in rows:
         category_id = row["category_id"]
         try:
-            node = json.loads(row["raw_json"])
+            node = row["raw_json"]
+            if isinstance(node, str):
+                node = json.loads(node)
             filter_reason = daily_filter_reason(node)
             if filter_reason:
                 _update(store, category_id, status="filtered", reason=filter_reason, last_error=None)
@@ -153,9 +147,7 @@ def process_pending(store: HtmlDiscoveryStore, *, send: bool = True) -> list[dic
                 _update(store, category_id, status=status, last_error=str(exc)[:1000])
             output.append({"category_id": category_id, "status": status})
         except Exception as exc:
-            with store.connect() as con:
-                current = con.execute("SELECT status FROM html_topics WHERE category_id=?", (category_id,)).fetchone()
-            current_status = current["status"] if current else ""
+            current_status = store.topic_status(category_id) or ""
             status = ("delivery_uncertain" if current_status == "delivering" else
                       current_status if current_status in {"backgrounded", "delivery_uncertain"} else "retry_wait")
             _update(store, category_id, status=status, last_error=f"{type(exc).__name__}: {exc}"[:1000])

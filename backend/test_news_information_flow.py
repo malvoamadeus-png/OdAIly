@@ -21,6 +21,12 @@ def _store(root: Path) -> SystemInformationStore:
     return store
 
 
+def _refresh_task_times(source: Path, task_ids: tuple[int, ...]) -> None:
+    stamp = datetime.now(UTC).isoformat()
+    with sqlite3.connect(source) as conn:
+        conn.executemany("UPDATE tasks SET created_at=?,updated_at=? WHERE id=?", [(stamp, stamp, task_id) for task_id in task_ids])
+
+
 def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: Path) -> None:
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp() * 1000)
@@ -42,25 +48,37 @@ def test_status_retention_preserves_active_tasks_and_model_responses(tmp_path: P
     assert store.detail('active')['timeline']
 
 
-def test_readable_search_index_rebuild_keeps_article_text_and_excludes_technical_json(tmp_path: Path) -> None:
+def test_sqlite_information_feed_does_not_build_search_postings(tmp_path: Path) -> None:
     store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
     snapshot = {'item_id': 'searchable', 'business_key': 'x', 'source': 'x', 'source_id': '1',
                 'title': '新闻标题', 'summary': '已完成', 'status': 'published', 'result': 'direct_publish',
-                'source_database': 'fixture', 'source_table': 'tasks', 'source_row_id': '1'}
+                'created_at_ms': now, 'updated_at_ms': now,
+                'source_database': 'fixture', 'source_table': 'tasks', 'source_row_id': '1', 'news_visible': True}
     evidence = {'task': {'content': '来源正文', 'raw_payload': '{"private_technical":"技术长串"}'},
                 'pipeline': {'writer_output': json.dumps({'raw_output': json.dumps({'title': '初稿标题', 'content': '初稿正文'})}),
                              'final_content': '定稿正文', 'search_result': '比较细节'}}
     store.upsert_snapshot(snapshot, evidence)
-    assert store.query({'q': '来源正文'})['total'] == 1
-    assert store.query({'q': '初稿正文'})['total'] == 1
-    assert store.query({'q': '定稿正文'})['total'] == 1
-    assert store.query({'q': '技术长串'})['total'] == 0
+    assert store.query({'q': '不存在的关键词'})['total'] == 1
     with store.connect() as conn:
-        conn.execute("INSERT OR IGNORE INTO system_information_search VALUES('技术','searchable')")
-    assert store.compact_search_index()['scanned'] == 1
-    with store.connect() as conn:
-        assert conn.execute("SELECT 1 FROM system_information_search WHERE term='技术' AND item_id='searchable'").fetchone() is None
-    assert store.compact_search_index()['done'] == 1
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_information_search'").fetchone() is None
+
+
+def test_news_pagination_stays_inside_six_hour_window_and_ignores_search(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    for item_id, stamp in (("new", now - 1_000), ("next", now - 2_000), ("old", now - 7 * 60 * 60 * 1000)):
+        store.upsert_snapshot({
+            'item_id': item_id, 'business_key': 'x', 'source': 'x', 'title': item_id,
+            'status': 'published', 'result': 'direct_publish', 'created_at_ms': stamp,
+            'updated_at_ms': stamp, 'source_database': 'fixture', 'source_table': 'tasks',
+            'source_row_id': item_id, 'news_visible': True,
+        }, None)
+    page = store.query({'view': 'news', 'q': 'no-match', 'limit': 1})
+    assert page['total'] == 2
+    assert [row['item_id'] for row in page['items']] == ['new']
+    next_page = store.query({'view': 'news', 'q': 'still-no-match', 'limit': 1, 'cursor': page['next_cursor']})
+    assert [row['item_id'] for row in next_page['items']] == ['next']
 
 
 def test_search_detail_retention_keeps_target_and_active_tasks(tmp_path: Path) -> None:
@@ -153,8 +171,7 @@ def test_task_evidence_retention_preserves_draft_and_source_link(tmp_path: Path)
     assert detail['source_url'] == 'https://example.com/1'
     assert detail['evidence']['task'] == {}
     assert detail['evidence']['pipeline'] == {'final_content': '定稿正文', 'writer_output': '完整初稿'}
-    assert store.query({'q': '源原文'})['total'] == 0
-    assert store.query({'q': '定稿正文'})['total'] == 1
+    assert store.query({'q': '任意关键词'})['total'] == 0
 
 
 def test_candidate_retention_keeps_live_candidates_and_links(tmp_path: Path) -> None:
@@ -262,6 +279,7 @@ def test_news_view_hides_low_value_and_technical_rows_but_keeps_search_first_dup
         conn.execute('ALTER TABLE x_task_pipeline ADD COLUMN search_result TEXT')
         conn.execute("INSERT INTO tasks VALUES(4,'blockbeats','dup-4','https://example/4','已有新闻','正文','duplicate','2026-01-01',NULL,'{}')")
         conn.execute('INSERT INTO x_task_pipeline(task_id,search_result) VALUES(4,?)', (json.dumps({'duplicate_target': {'title': '命中稿件', 'target_id': '123'}}),))
+    _refresh_task_times(source, (1, 2, 3, 4))
     store = _store(tmp_path)
     MainTaskProjector(source, store).run_once()
     page = store.query({'view': 'news'})
@@ -269,8 +287,8 @@ def test_news_view_hides_low_value_and_technical_rows_but_keeps_search_first_dup
     duplicate = next(row for row in page['items'] if row['task_id'] == 4)
     assert duplicate['admission'] == 'duplicate'
     assert duplicate['duplicate_target']['title'] == '命中稿件'
-    assert store.query({'view': 'news', 'q': '未知来源'})['total'] == 0
-    assert store.query({'view': 'diagnostic', 'q': '未知来源'})['total'] == 1
+    assert store.query({'view': 'news', 'q': '未知来源'})['total'] == 3
+    assert store.query({'view': 'diagnostic', 'q': '未知来源'})['total'] == 4
     assert next(row for row in page['items'] if row['task_id'] == 2)['result'] == 'processing'
 
 
@@ -284,24 +302,31 @@ def test_deduped_is_a_passed_prerequisite_not_duplicate() -> None:
 def test_latest_phase_time_wins_and_clock_refresh_does_not_append_history(tmp_path: Path) -> None:
     source = tmp_path / 'source.sqlite'
     _source_db(source)
+    _refresh_task_times(source, (1, 2, 3))
     with sqlite3.connect(source) as conn:
-        conn.execute("UPDATE tasks SET updated_at='2026-01-01T00:00:00Z' WHERE id=1")
-        conn.execute("UPDATE x_task_pipeline SET write_completed_at='2026-01-02T00:00:00Z' WHERE task_id=1")
+        now = datetime.now(UTC)
+        task_time = (now - timedelta(minutes=2)).isoformat()
+        first_phase = now.isoformat()
+        conn.execute("UPDATE tasks SET updated_at=? WHERE id=1", (task_time,))
+        conn.execute("UPDATE tasks SET updated_at=? WHERE id=2", ((now - timedelta(minutes=3)).isoformat(),))
+        conn.execute("UPDATE tasks SET updated_at=? WHERE id=3", ((now - timedelta(minutes=4)).isoformat(),))
+        conn.execute("UPDATE x_task_pipeline SET write_completed_at=? WHERE task_id=1", (first_phase,))
     store = _store(tmp_path)
     projector = MainTaskProjector(source, store)
     projector.run_once()
     detail = store.detail('task:x:post-1')
-    assert detail['updated_at_ms'] == timestamp_ms('2026-01-02T00:00:00Z')
+    assert detail['updated_at_ms'] == timestamp_ms(first_phase)
     events = len(detail['timeline'])
     evidence = detail['evidence_ref']
     with sqlite3.connect(source) as conn:
-        conn.execute("UPDATE x_task_pipeline SET write_completed_at='2026-01-03T00:00:00Z' WHERE task_id=1")
+        later_phase = datetime.now(UTC).isoformat()
+        conn.execute("UPDATE x_task_pipeline SET write_completed_at=? WHERE task_id=1", (later_phase,))
     projector.run_once()
     detail = store.detail('task:x:post-1')
-    assert detail['updated_at_ms'] == timestamp_ms('2026-01-03T00:00:00Z')
+    assert detail['updated_at_ms'] == timestamp_ms(later_phase)
     assert len(detail['timeline']) == events
     assert detail['evidence_ref'] == evidence
-    assert store.query({'view': 'news', 'limit': 1})['items'][0]['task_id'] == 1
+    assert store.query({'view': 'news', 'business': 'x', 'limit': 3})['items'][0]['task_id'] == 1
 
 
 def test_numeric_title_uses_source_text_instead_of_internal_id(tmp_path: Path) -> None:
@@ -389,7 +414,7 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
         store.append_event(item_id='news:1', event_id='failure', event_type='stage_attempt', stage='写作', status='failed',
                            result='failed', happened_at_ms=old, summary='失败', reason='HTTP 503 privatefailureword', details={'attempt_id': 7})
     # The API hides expired material before the bounded physical sweep finishes.
-    assert store.query({'q': 'privatefailureword'})['total'] == 0
+    assert store.query({'q': 'privatefailureword'})['total'] == 1
     assert 'privatefailureword' not in json.dumps(store.detail('news:1'))
     cleanup_observation_errors(store, now_ms=now)
     detail = store.detail('news:1')
@@ -397,7 +422,7 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
     assert detail['summary'] == ''
     assert detail['evidence']['task']['content'] == '真实原文'
     assert 'privatefailureword' not in json.dumps(detail)
-    assert store.query({'q': 'privatefailureword'})['total'] == 0
+    assert store.query({'q': 'privatefailureword'})['total'] == 1
     for file in store.evidence_dir.glob('*/*.json.gz'):
         import gzip
         assert b'privatefailureword' not in gzip.decompress(file.read_bytes())
@@ -459,6 +484,7 @@ def test_public_list_defaults_to_news_and_technical_view_is_explicit(tmp_path: P
     from packages.editor_plugin_api import EditorPluginNewsGenService
     source = tmp_path / 'source.sqlite'
     _source_db(source)
+    _refresh_task_times(source, (1, 2, 3))
     store = _store(tmp_path)
     MainTaskProjector(source, store).run_once()
     service = SimpleNamespace(system_information=store)
@@ -466,6 +492,65 @@ def test_public_list_defaults_to_news_and_technical_view_is_explicit(tmp_path: P
     assert {row['task_id'] for row in result['items']} == {1, 2}
     result = EditorPluginNewsGenService.execute_system_information(service, None, {'action': 'list', 'view': 'diagnostic'})
     assert {row['task_id'] for row in result['items']} == {1, 2, 3}
+
+
+def test_capture_outbox_preserves_account_and_latest_final_status(tmp_path: Path) -> None:
+    source = tmp_path / 'main.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE x_capture_attempts(id INTEGER PRIMARY KEY,username_lower TEXT,status TEXT,started_at TEXT,finished_at TEXT,error_message TEXT)')
+        conn.execute("INSERT INTO x_capture_attempts VALUES(1,'alice','running','2026-11-19T00:00:00Z',NULL,NULL)")
+    spec = next(spec for spec in TABLE_SPECS if spec.table == 'x_capture_attempts')
+    from packages.system_observability.projector import SourceAuditInstaller
+    SourceAuditInstaller().install(source, (spec,))
+    with sqlite3.connect(source) as conn:
+        conn.execute("UPDATE x_capture_attempts SET status='success',finished_at='2026-11-19T00:01:00Z' WHERE id=1")
+        conn.execute("UPDATE x_capture_attempts SET status='fetch_failed',finished_at='2026-11-19T00:02:00Z',error_message='HTTP 503' WHERE id=1")
+        payloads = [json.loads(row[0]) for row in conn.execute('SELECT payload_json FROM odaily_observability_outbox ORDER BY seq')]
+    assert all(payload['username_lower'] == 'alice' for payload in payloads)
+
+    store = _store(tmp_path)
+    projector = MainTaskProjector(source, store, additional_databases={'main': source}, table_specs=(spec,))
+    imported, changed = projector._project_source_outbox('main', source, [spec], int(datetime.now(UTC).timestamp() * 1000))
+    assert imported == 2
+    assert changed >= 1
+    current = store.detail('main:x_capture_attempts:1')
+    assert current['source_name'] == 'alice'
+    assert current['status'] == 'fetch_failed'
+    assert current['result'] == 'failed'
+
+
+def test_capture_retention_preserves_inspection_references_and_recent_samples(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    old = now - 7 * 60 * 60 * 1000
+    for item_id in ('referenced', 'sampled', 'ordinary'):
+        stamp = now - 60_000 if item_id == 'sampled' else old
+        store.upsert_snapshot({
+            'item_id': item_id, 'business_key': 'x', 'source': 'x_capture', 'source_name': item_id,
+            'source_table': 'x_capture_attempts', 'source_database': 'fixture', 'source_row_id': item_id,
+            'status': 'success', 'result': 'capture_success', 'created_at_ms': stamp,
+            'updated_at_ms': stamp,
+        }, None)
+    with store.connect() as conn:
+        conn.execute("CREATE TABLE system_review_items(item_key TEXT PRIMARY KEY,scope_json TEXT,evidence_json TEXT,counter_evidence_json TEXT)")
+        conn.execute("INSERT INTO system_review_items VALUES('review','{}',?, '{}')", (json.dumps([{'stream_item_id': 'referenced'}]),))
+        conn.execute("INSERT INTO system_information_decision_samples(sample_key,sample_date,sampled_at_ms,raw_expires_at_ms,item_id,business_key,source,stage,status,result) VALUES('sample','today',?,?,'sampled','x','x_capture','采集','success','capture_success')", (now, now + 14 * 86_400_000))
+    result = store.trim_information_items(now_ms=now)
+    assert result == {'scanned': 1, 'removed': 1, 'protected': 0}
+    assert store.has_item('referenced')
+    assert store.has_item('sampled')
+    assert not store.has_item('ordinary')
+
+
+def test_capture_outbox_fixture_without_account_keeps_row_identity(tmp_path: Path) -> None:
+    from packages.system_observability.projector import _generic_snapshot
+    spec = next(spec for spec in TABLE_SPECS if spec.table == 'x_capture_attempts')
+    snapshot, _ = _generic_snapshot(spec, tmp_path / 'main.sqlite', {
+        'id': 9, '__obs_rowid__': '9', 'status': 'success', 'started_at': '2026-11-19T00:00:00Z',
+        'finished_at': '2026-11-19T00:00:01Z',
+    }, int(datetime.now(UTC).timestamp() * 1000), 0)
+    assert snapshot['item_id'] == 'main:x_capture_attempts:9'
+    assert snapshot['source_name'] == ''
 
 
 def test_legacy_maintenance_preserves_business_history_and_pending_work(tmp_path: Path) -> None:

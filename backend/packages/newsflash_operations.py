@@ -390,7 +390,6 @@ class NewsflashOperationsRepository:
                         (_normalize_alias(alias), alias, person_key),
                     )
             conn.commit()
-
     def execute(self, action: str, payload: dict[str, Any], *, actor_email: str) -> Any:
         handlers = {
             "list": self.list_newsflashes,
@@ -2124,6 +2123,17 @@ class NewsflashOperationsRepository:
             for shift_key, person_key in zip(shift_keys, people, strict=True):
                 self.save_assignment({"date": duty_date.isoformat(), "shift_key": shift_key, "person_key": person_key}, actor_email=actor_email)
         self.save_week_month({"week_start": week_start.isoformat(), "report_month": "2026-07"}, actor_email=actor_email)
+
+
+def create_newsflash_operations_repository(path: Path | None = None):
+    from packages.common.storage import load_storage_settings
+
+    settings = load_storage_settings()
+    if settings.backend == "postgres":
+        from packages.postgres_newsflash_operations import PostgresNewsflashOperationsRepository
+
+        return PostgresNewsflashOperationsRepository(path or settings.sqlite_path)
+    return NewsflashOperationsRepository(path or settings.sqlite_path)
 
 
 def xlsx_fingerprint(path: Path) -> str:

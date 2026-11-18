@@ -41,6 +41,13 @@ def _time(value: Any) -> datetime | None:
 
 
 class HtmlDiscoveryStore:
+    def __new__(cls, path: Path):
+        from packages.common.storage import load_storage_settings
+        if cls is HtmlDiscoveryStore and load_storage_settings().backend == "postgres":
+            from .postgres_html_store import PostgresHtmlDiscoveryStore
+            return PostgresHtmlDiscoveryStore()
+        return super().__new__(cls)
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
@@ -119,6 +126,24 @@ class HtmlDiscoveryStore:
         with self.connect() as con:
             con.execute("INSERT INTO html_scan_runs(feed,scanned_at,status,error) VALUES (?,?,'failed',?)",
                         (feed, now.astimezone(UTC).isoformat(), error[:1000]))
+
+    def pending_topics(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            con.execute("UPDATE html_topics SET status='delivery_uncertain',last_error='投递期间进程中断，需人工核查' WHERE status='delivering'")
+            return [dict(row) for row in con.execute("SELECT * FROM html_topics WHERE status IN ('pending','retry_wait') ORDER BY first_seen_at")]
+
+    def update_topic(self, category_id: str, values: dict[str, Any]) -> None:
+        if not values:
+            return
+        if not values.keys() <= {"status", "reason", "detail_json", "writer_json", "final_title", "final_content", "push_result", "last_error", "updated_at"}:
+            raise ValueError("invalid update field")
+        with self.connect() as con:
+            con.execute("UPDATE html_topics SET " + ",".join(f"{key}=?" for key in values) + " WHERE category_id=?", (*values.values(), category_id))
+
+    def topic_status(self, category_id: str) -> str | None:
+        with self.connect() as con:
+            row = con.execute("SELECT status FROM html_topics WHERE category_id=?", (category_id,)).fetchone()
+        return row["status"] if row else None
 
 
 def scan_once(store: HtmlDiscoveryStore, *, fetch: Callable[[str], dict[str, Any]] = fetch_feed,

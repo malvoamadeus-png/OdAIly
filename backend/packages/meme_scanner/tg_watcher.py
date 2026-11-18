@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
 from packages.common.paths import get_paths
+from packages.common.storage import load_storage_settings
 
 from .telegram_helpers import (
     display_name,
@@ -69,6 +70,13 @@ def forward_key(message: Any, address: str) -> str:
 
 class MentionStore:
     def __init__(self, path: Path) -> None:
+        self._postgres = None
+        if load_storage_settings().backend == "postgres":
+            from .postgres_store import PostgresMemeStore
+
+            self._postgres = PostgresMemeStore(path)
+            self.conn = None
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, timeout=30)
         self.conn.row_factory = sqlite3.Row
@@ -108,6 +116,9 @@ class MentionStore:
         self.conn.commit()
 
     def close(self) -> None:
+        if self._postgres is not None:
+            self._postgres.close()
+            return
         self.conn.close()
 
     def record(
@@ -125,6 +136,20 @@ class MentionStore:
         chain: str = "evm",
         source_chat: str | None = None,
     ) -> bool:
+        if self._postgres is not None:
+            inserted = self._postgres.record_mention(
+                address=address,
+                chat_id=chat_id,
+                message_id=message_id,
+                sender_key=sender_key,
+                sent_at=sent_at.isoformat(),
+                text_excerpt=text[:1000],
+                dedupe_key=dedupe_key,
+                created_at=now_iso(),
+            )
+            if not inserted:
+                return False
+            return self._maybe_create_candidate(address, window_minutes, cooldown_hours, chain, source_chat)
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO ca_mentions(
               address, chat_id, message_id, sender_key, sent_at, text_excerpt, dedupe_key, created_at
@@ -139,6 +164,22 @@ class MentionStore:
     def _maybe_create_candidate(self, address: str, window_minutes: int, cooldown_hours: int, chain: str, source_chat: str | None) -> bool:
         detected_at = datetime.now(UTC)
         window_start = detected_at - timedelta(minutes=window_minutes)
+        if self._postgres is not None:
+            stats = self._postgres.mention_window_stats(address=address, since=window_start.isoformat())
+            mentions, chats, senders = stats["mentions"], stats["chats"], stats["senders"]
+            if mentions < MIN_MENTIONS or senders < MIN_SENDERS:
+                return False
+            cooldown_start = detected_at - timedelta(hours=cooldown_hours)
+            if self._postgres.has_recent_tg_candidate(address=address, since=cooldown_start.isoformat()):
+                return False
+            evidence = {"messages": list(reversed(self._postgres.mention_evidence(address=address, since=window_start.isoformat())))}
+            self._postgres.insert_tg_candidate(
+                address=address, chain=chain, source_chat=source_chat,
+                detected_at=detected_at.isoformat(), window_start=window_start.isoformat(),
+                mention_count=mentions, chat_count=chats, sender_count=senders,
+                evidence_json=json.dumps(evidence, ensure_ascii=False), updated_at=detected_at.isoformat(),
+            )
+            return True
         stats = self.conn.execute(
             """SELECT COUNT(*) AS mentions, COUNT(DISTINCT chat_id) AS chats,
               COUNT(DISTINCT sender_key) AS senders
@@ -183,6 +224,8 @@ class MentionStore:
 
     def prune(self, retention_days: int) -> int:
         cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
+        if self._postgres is not None:
+            return self._postgres.prune_mentions(cutoff)
         cursor = self.conn.execute("DELETE FROM ca_mentions WHERE sent_at<?", (cutoff,))
         self.conn.commit()
         return cursor.rowcount

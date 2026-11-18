@@ -16,8 +16,9 @@
 
 ## 标的与播报步长
 
-运行时配置唯一来源是 Linux 本地
-`data/runtime/gate_market.sqlite`：
+运行时配置唯一来源是活动存储 backend。SQLite 模式使用 Linux 本地
+`data/runtime/gate_market.sqlite`；PostgreSQL 模式使用 `gate` schema，
+不得同时读写两套运行状态：
 
 | 代码 | 中文名 | 播报步长 | 单位 |
 |---|---|---:|---|
@@ -30,8 +31,8 @@
 | `XAUUSD` | 黄金 | 50 | 美元/盎司 |
 | `XAGUSD` | 白银 | 3 | 美元/盎司 |
 
-代码内的同值配置只用于首次建库。建库后 worker 和控制台都读取
-SQLite，不再从旧 Gate JSON 配置读取。
+代码内的同值配置只用于首次建库。worker 和控制台都读取活动 backend，
+不再从旧 Gate JSON 配置读取。
 
 ## 触发状态机
 
@@ -101,11 +102,12 @@ SQLite，不再从旧 Gate JSON 配置读取。
 - SQLite 先原子写入事件和已消耗网格状态，再调用发布接口。进程在请求
   前后崩溃都不会自动重发同一事件。
 
-## SQLite 与保留
+## 存储与保留
 
-默认路径为 `data/runtime/gate_market.sqlite`，可通过
-`GATE_MARKET_DB_PATH` 覆盖。数据库使用 WAL、30秒 busy timeout 和
-短连接事务。
+SQLite 默认路径为 `data/runtime/gate_market.sqlite`，可通过
+`GATE_MARKET_DB_PATH` 覆盖。PostgreSQL 使用原生 `gate` schema 和每项操作
+短连接；inventory 仅调用 `PostgresGateMarketStore.initialize_schema()` 建表，
+导入确认后由正常 worker 初始化默认设置及默认标的。
 
 - `settings`：当前模式和轮询周期。
 - `symbol_config`：标的、阈值、显示精度和单位。
@@ -118,7 +120,8 @@ SQLite，不再从旧 Gate JSON 配置读取。
 - `trigger_events`：仅保留最近100条诊断结果。
 - `alert_state`：Telegram 故障告警去重与恢复状态。
 
-不保存每分钟原始 JSON，行情、触发和配置只写独立本地 SQLite。
+旧发布模式状态在合并到共享触发状态前存入 `legacy_symbol_state`，保留原始值。
+不保存每分钟原始 JSON。迁移完成和内容核验前保留 SQLite 源文件。
 
 ## CLI
 
@@ -165,9 +168,8 @@ SQLite/worker 异常和磁盘剩余空间低于默认500MB时发送 Telegram 系
 ## 控制台
 
 控制台新增只读一级页面 `Gate行情播报`，通过
-`GET /console/gate-market/get` 读取 SQLite 快照。接口继续使用现有
-本地操作者 session 校验，但返回的业务数据
-完全来自 Linux SQLite。
+`GET /console/gate-market/get` 读取活动 backend 快照。接口继续使用现有
+本地操作者 session 校验。
 
 页面只展示运行模式、轮询周期、8个标的的阈值/现价/状态、四类文本模板
 和最近触发结果，不提供修改、启停或发布按钮。页面仅在首次进入或点击

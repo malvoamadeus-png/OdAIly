@@ -66,6 +66,25 @@ def test_due_account_queue_is_not_limited_by_worker_count(service: HotTopicServi
     assert len(due) == 300
 
 
+def test_aggregate_advances_due_topic_lifecycle_without_new_inbox_rows(service: HotTopicService) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    service.aggregator.connection.execute(
+        "INSERT INTO topics(topic_id,working_title,canonical_subject,core_entities_json,event_or_issue,started_at,first_seen_at,"
+        "seed_expires_at,matching_status,visibility) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        ("topic:expired-seed", "Old seed", "Old seed", "[]", "event", now.isoformat(), now.isoformat(),
+         (now - timedelta(seconds=1)).isoformat(), "seed", "hidden"),
+    )
+    service.aggregator.connection.commit()
+
+    result = service.aggregate()
+
+    assert result is not None
+    assert service.aggregator.connection.execute(
+        "SELECT matching_status FROM topics WHERE topic_id='topic:expired-seed'"
+    ).fetchone()[0] == "archived"
+    assert result["metrics"]["lifecycle_refresh_count"] == 1
+
+
 def test_due_account_poll_can_roll_through_bounded_batches(service: HotTopicService, monkeypatch) -> None:
     service.seed_accounts([{"screen_name": f"account{index}"} for index in range(300)])
     monkeypatch.setattr("packages.hottopic.service.scan_account", lambda account, **kwargs: ([], None, None))
@@ -302,7 +321,7 @@ def test_ai_brief_generation_does_not_hold_the_sqlite_write_lock(service: HotTop
         return {"title": "Shared event", "brief": "A confirmed shared event.", "source_claim_ids": ["claim:brief"]}
 
     service.aggregator.brief_writer = blocking_writer
-    service.aggregator._refresh_all_topics = lambda _at: {"transitions": {}, "affected_topic_ids": []}  # type: ignore[method-assign]
+    service.aggregator._refresh_all_topics = lambda _at, **_kwargs: {"transitions": {}, "affected_topic_ids": [], "refreshed_count": 0}  # type: ignore[method-assign]
     with service.aggregator.connection:
         service.aggregator.connection.execute(
             "INSERT INTO content_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -457,7 +476,7 @@ def test_rate_limit_backoff_only_changes_the_failing_account(service: HotTopicSe
         "SELECT next_due_at FROM hottopic_accounts WHERE screen_name_lower='bob'"
     ).fetchone()[0]
     assert after == before
-    assert shared_cooldowns == []
+    assert shared_cooldowns == [900.0]
 
 
 def test_collection_failures_back_off_per_account(service: HotTopicService) -> None:

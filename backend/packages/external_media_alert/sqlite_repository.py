@@ -63,14 +63,22 @@ class SQLiteExternalMediaAlertRepository:
             conn.commit()
 
     def claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds, task_id=None)
+
+    def claim_task_by_id(self, stage: AlertStage, *, task_id: int, worker_id: str, lock_seconds: int = 300) -> TaskRecord | None:
+        return self._claim_task(stage, worker_id=worker_id, lock_seconds=lock_seconds, task_id=task_id)
+
+    def _claim_task(self, stage: AlertStage, *, worker_id: str, lock_seconds: int, task_id: int | None) -> TaskRecord | None:
         spec = STAGE_SPECS[stage]
         sources = ALERT_NOTIFY_TASK_SOURCES if stage == "notify" else DOMAIN_WORKER_TASK_SOURCES
         now = _now()
         with connect_sqlite(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            task_filter = " AND id=?" if task_id is not None else ""
+            params = (*sources, spec.claim_status, spec.processing_status, now.isoformat(), *((task_id,) if task_id is not None else ()))
             row = conn.execute(
-                f"SELECT * FROM tasks WHERE source IN ({','.join('?' for _ in sources)}) AND status IN (?,?) AND (locked_until IS NULL OR locked_until<?) ORDER BY created_at,id LIMIT 1",
-                (*sources, spec.claim_status, spec.processing_status, now.isoformat()),
+                f"SELECT * FROM tasks WHERE source IN ({','.join('?' for _ in sources)}) AND status IN (?,?) AND (locked_until IS NULL OR locked_until<?){task_filter} ORDER BY created_at,id LIMIT 1",
+                params,
             ).fetchone()
             if row is None:
                 conn.commit(); return None

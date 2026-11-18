@@ -117,6 +117,25 @@ def _safe_text(value: Any) -> str | None:
 class FailureDiagnosticsStore:
     """Read-only adapter joining business task, queue and worker evidence for one task."""
 
+    def __new__(cls, database_path: Path, queue_path: Path, **kwargs):
+        if cls is FailureDiagnosticsStore:
+            from packages.common.storage import load_storage_settings
+
+            if load_storage_settings().backend == "postgres":
+                return PostgresFailureDiagnosticsStore(database_path, queue_path, **kwargs)
+        return super().__new__(cls)
+
+    def __init__(self, database_path: Path, queue_path: Path, **kwargs) -> None:
+        self.database_path = database_path
+        self.queue_path = queue_path
+        self.storage_epoch = kwargs["storage_epoch"]
+        self.task_stuck_minutes = kwargs.get("task_stuck_minutes") or _env_int(
+            "PIPELINE_SUPERVISOR_TASK_STUCK_MINUTES", 10
+        )
+        self.heartbeat_stale_minutes = kwargs.get("heartbeat_stale_minutes") or _env_int(
+            "PIPELINE_SUPERVISOR_HEARTBEAT_STALE_MINUTES", 10
+        )
+
     def __init__(
         self,
         database_path: Path,
@@ -357,3 +376,107 @@ def _env_int(name: str, default: int) -> int:
         return max(1, int(os.getenv(name) or default))
     except (TypeError, ValueError):
         return default
+
+
+class PostgresFailureDiagnosticsStore:
+    """Read-only diagnostics over the native business and queue schemas."""
+
+    def __init__(
+        self,
+        database_path: Path,
+        queue_path: Path,
+        *,
+        storage_epoch: str,
+        task_stuck_minutes: int | None = None,
+        heartbeat_stale_minutes: int | None = None,
+    ) -> None:
+        self.storage_epoch = storage_epoch
+        self.task_stuck_minutes = task_stuck_minutes or _env_int("PIPELINE_SUPERVISOR_TASK_STUCK_MINUTES", 10)
+        self.heartbeat_stale_minutes = heartbeat_stale_minutes or _env_int(
+            "PIPELINE_SUPERVISOR_HEARTBEAT_STALE_MINUTES", 10
+        )
+
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        from packages.common.pg_native import connect_postgres
+
+        with connect_postgres(schema="main", application_name="odaily-failure-diagnostics-task") as conn:
+            task_row = conn.execute(
+                """SELECT id,source,source_item_id,title,status,created_at,updated_at,
+                          attempt_count,locked_by,locked_until FROM main.tasks WHERE id=%s""",
+                (task_id,),
+            ).fetchone()
+            if task_row is None:
+                return None
+            task = dict(task_row)
+            preferred = "external_media_alert_pipeline" if task["source"] in ALERT_SOURCES else "x_task_pipeline"
+            pipeline = None
+            for table in (preferred, "x_task_pipeline", "external_media_alert_pipeline"):
+                exists = conn.execute("SELECT to_regclass(%s) AS table_name", (f"main.{table}",)).fetchone()
+                if not exists or exists["table_name"] is None:
+                    continue
+                row = conn.execute(f"SELECT * FROM main.{table} WHERE task_id=%s", (task_id,)).fetchone()
+                if row is not None:
+                    pipeline = dict(row)
+                    break
+            heartbeat_row = conn.execute(
+                """SELECT component,worker_id,status,last_seen_at,last_success_at,last_error,metadata
+                   FROM main.pipeline_worker_heartbeats WHERE component='local_pipeline'
+                   ORDER BY last_seen_at DESC LIMIT 1"""
+            ).fetchone()
+            heartbeat = dict(heartbeat_row) if heartbeat_row else None
+
+        with connect_postgres(schema="local_pipeline", application_name="odaily-failure-diagnostics-queue") as conn:
+            queue_row = conn.execute(
+                """SELECT id,job_type,source,source_item_id,status,attempt_count,last_error,
+                          next_attempt_at,created_at,updated_at
+                   FROM local_pipeline_jobs WHERE task_id=%s AND storage_epoch=%s
+                   ORDER BY id DESC LIMIT 1""",
+                (task_id, self.storage_epoch),
+            ).fetchone()
+            queue = dict(queue_row) if queue_row else None
+
+        status = str(task["status"] or "")
+        pipeline_error = _safe_text((pipeline or {}).get("last_error"))
+        queue_error = _safe_text((queue or {}).get("last_error"))
+        error = pipeline_error or queue_error
+        classification_status = status
+        if status == "publisher_failed" and (pipeline or {}).get("publisher_reason_code") == "model_failed":
+            classification_status = "write_failed"
+        classification = classify_failure(error, status=classification_status)
+        kind = "failure" if status in FAILURE_STATUSES else "processing" if status in PROCESSING_STATUSES else "none"
+        worker = FailureDiagnosticsStore._worker_payload(self, heartbeat)
+        processing_state = FailureDiagnosticsStore._processing_state(self, task, worker) if kind == "processing" else None
+        evidence = _extract_evidence(error or "")
+        model = FailureDiagnosticsStore._pipeline_model(pipeline, status)
+        if model and "model" not in evidence:
+            evidence["model"] = model
+        diagnosis = {
+            "kind": kind,
+            "stage": status,
+            "stage_label": stage_label_for_status(status),
+            "code": classification.code if kind == "failure" else None,
+            "category": classification.category if kind == "failure" else None,
+            "category_label": classification.category_label if kind == "failure" else None,
+            "reason": classification.reason if kind == "failure" else processing_state,
+            "action_hint": classification.action_hint if kind == "failure" else FailureDiagnosticsStore._processing_action(processing_state),
+            "raw_error": _redact_error(error),
+            "evidence": evidence,
+            "retryable": None if queue is None else str(queue.get("status")) != "exhausted",
+        }
+        response = {
+            "available": True,
+            "task": {
+                "id": int(task["id"]), "source": str(task["source"]),
+                "source_item_id": str(task["source_item_id"]), "title": _safe_text(task.get("title")),
+                "status": status, "created_at": task.get("created_at"), "updated_at": task.get("updated_at"),
+                "attempt_count": int(task.get("attempt_count") or 0), "locked_by": _safe_text(task.get("locked_by")),
+                "locked_until": task.get("locked_until"),
+            },
+            "diagnosis": diagnosis,
+            "queue": FailureDiagnosticsStore._queue_payload(queue),
+            "worker": worker,
+            "handoff_summary": FailureDiagnosticsStore._handoff_summary(
+                task, diagnosis, FailureDiagnosticsStore._queue_payload(queue),
+            ),
+        }
+        return response

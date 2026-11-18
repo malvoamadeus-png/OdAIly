@@ -46,5 +46,10 @@ class SQLiteMaintenanceRepository:
 
 
 def create_maintenance_repository(database_url: str | None = None) -> SQLiteMaintenanceRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        from .repository import PostgresMaintenanceRepository
+
+        return PostgresMaintenanceRepository()
     return SQLiteMaintenanceRepository(load_storage_settings().sqlite_path)

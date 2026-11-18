@@ -9,7 +9,15 @@ CREATE TABLE IF NOT EXISTS investment_leads_meta (
   capture_started_at TEXT NOT NULL,
   worker_last_seen_at TEXT,
   last_maintenance_at TEXT,
+  maintenance_next_at TEXT,
   model_error TEXT
+);
+CREATE TABLE IF NOT EXISTS investment_lead_maintenance_progress (
+  stage TEXT PRIMARY KEY CHECK(stage IN ('events','materials')),
+  cursor_time TEXT NOT NULL,
+  cursor_id TEXT NOT NULL,
+  cursor_value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS investment_lead_materials (
   material_id TEXT NOT NULL,
@@ -26,6 +34,8 @@ CREATE TABLE IF NOT EXISTS investment_lead_materials (
 );
 CREATE INDEX IF NOT EXISTS idx_investment_material_recent
   ON investment_lead_materials(posted_at DESC,material_id);
+CREATE INDEX IF NOT EXISTS idx_investment_material_expiry
+  ON investment_lead_materials(last_observed_at,material_id,content_hash);
 CREATE TABLE IF NOT EXISTS investment_lead_observations (
   material_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
@@ -61,6 +71,8 @@ CREATE TABLE IF NOT EXISTS investment_lead_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_investment_tasks_due
   ON investment_lead_tasks(stage,status,next_attempt_at,created_at);
+CREATE INDEX IF NOT EXISTS idx_investment_tasks_expiry
+  ON investment_lead_tasks(status,created_at,id);
 CREATE TABLE IF NOT EXISTS investment_lead_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   material_id TEXT NOT NULL,
@@ -81,6 +93,8 @@ CREATE TABLE IF NOT EXISTS investment_lead_events (
 );
 CREATE INDEX IF NOT EXISTS idx_investment_events_recent
   ON investment_lead_events(created_at DESC,subject);
+CREATE INDEX IF NOT EXISTS idx_investment_events_expiry
+  ON investment_lead_events(created_at,id);
 CREATE TABLE IF NOT EXISTS investment_leads (
   id TEXT PRIMARY KEY,
   subject TEXT NOT NULL,
@@ -159,6 +173,8 @@ CREATE TABLE IF NOT EXISTS investment_lead_identity_searches (
 );
 CREATE INDEX IF NOT EXISTS idx_investment_identity_search_due
   ON investment_lead_identity_searches(status,next_attempt_at,created_at);
+CREATE INDEX IF NOT EXISTS idx_investment_identity_search_expiry
+  ON investment_lead_identity_searches(status,created_at,id);
 CREATE TABLE IF NOT EXISTS investment_lead_scheduler_cursor (
   stage TEXT PRIMARY KEY CHECK(stage IN ('scan','derive','identity_search')),
   account_lower TEXT NOT NULL
@@ -174,6 +190,8 @@ def ensure_schema(connection: sqlite3.Connection, *, capture_started_at: str) ->
     meta_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_leads_meta)").fetchall()}
     if "model_error" not in meta_columns:
         connection.execute("ALTER TABLE investment_leads_meta ADD COLUMN model_error TEXT")
+    if "maintenance_next_at" not in meta_columns:
+        connection.execute("ALTER TABLE investment_leads_meta ADD COLUMN maintenance_next_at TEXT")
     connection.execute(
         "INSERT OR IGNORE INTO investment_leads_meta(singleton_key,capture_started_at) VALUES('global',?)",
         (capture_started_at,),

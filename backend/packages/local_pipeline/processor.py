@@ -16,6 +16,7 @@ from packages.external_media_alert import create_external_media_alert_repository
 from packages.external_media_alert.models import (
     AI_SOURCE_ALERT_TASK_SOURCE,
     ALERT_TASK_SOURCE,
+    MAINSTREAM_MEDIA_TASK_SOURCE,
 )
 from packages.external_media_alert.worker import ExternalMediaAlertWorker, HandledStageError as AlertHandledStageError
 from packages.x_capture.repository import create_x_capture_repository
@@ -34,7 +35,6 @@ from packages.x_processing.models import (
 from packages.x_processing.repository import create_x_processing_repository
 from packages.x_processing.odaily_reference_source import fetch_odaily_reference_documents_from_api
 from packages.x_processing.searcher import SearchCache
-from packages.x_processing.worker import HandledStageError as XHandledStageError
 from packages.x_processing import XProcessingWorker
 
 from .queue import LocalPipelineJob
@@ -250,14 +250,10 @@ class LocalPipelineProcessor:
             if worker._expire_task_if_stale(task):
                 task = self.x_repository.get_task(job.task_id)
                 return LocalPipelineRunResult(task.id, task.status, "expired")
-            try:
-                worker._process_task(task)
-            except XHandledStageError as exc:
+            result = worker.process_claimed_task(task)
+            if result.failed:
                 task = self.x_repository.get_task(job.task_id)
-                raise RuntimeError(str(exc) or task.status) from exc
-            except Exception as exc:
-                self.x_repository.fail_task(task.id, stage=stage, error=str(exc))
-                raise
+                raise RuntimeError(result.message or task.status)
         task = self.x_repository.get_task(job.task_id)
         return LocalPipelineRunResult(task.id, task.status, "write_flow completed")
 
@@ -271,14 +267,18 @@ class LocalPipelineProcessor:
             if task.status in ALERT_TERMINAL_STATUSES:
                 return LocalPipelineRunResult(task.id, task.status, f"stopped at {task.status}")
             worker = self._alert_worker(stage)
+            claimed_task = self.alert_repository.claim_task_by_id(
+                stage, task_id=task.id, worker_id=worker.worker_id,
+            )
+            if claimed_task is None or claimed_task.id != task.id:
+                raise RuntimeError(f"task {task.id} stage {stage} could not be claimed")
             try:
-                worker._process_task(task)
+                result = worker.process_claimed_task(claimed_task)
+                if result.failed:
+                    raise RuntimeError(result.message)
             except AlertHandledStageError as exc:
                 task = self.alert_repository.get_task(job.task_id)
                 raise RuntimeError(str(exc) or task.status) from exc
-            except Exception as exc:
-                self.alert_repository.fail_task(task.id, stage=stage, error=str(exc))
-                raise
         task = self.alert_repository.get_task(job.task_id)
         return LocalPipelineRunResult(task.id, task.status, "alert_only completed")
 

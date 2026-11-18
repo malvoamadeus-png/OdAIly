@@ -6,17 +6,19 @@ from typing import Any
 
 from packages.common.paths import get_paths
 from packages.common.storage import load_hyperliquid_storage_path, load_storage_settings
-from .store import NewsStore, encode
+from .store import create_news_store, encode
 
 
 def run_command(args: Any) -> int:
     path = load_hyperliquid_storage_path()
-    pipeline_path = load_storage_settings().sqlite_path
-    store = NewsStore(path)
+    storage = load_storage_settings()
+    storage_backend = getattr(storage, 'backend', 'sqlite')
+    pipeline_path = storage.sqlite_path
+    store = create_news_store(path)
     action = args.hyperliquid_action
     if action == 'init':
-        from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
-        repo = SQLiteXProcessingRepository(pipeline_path)
+        from packages.x_processing.repository import create_x_processing_repository
+        repo = create_x_processing_repository(None)
         repo.init_schema()
         repo.seed_prompt_templates(root_dir=get_paths().root_dir)
         store.initialize()
@@ -49,10 +51,13 @@ def run_command(args: Any) -> int:
             store.save_global('production_account_profit', policy, [])
             store.save_global('account_leaderboard_checked_ms', 0, [])
             # Wake existing unqualified addresses; qualified profit baselines survive.
-            from packages.common.storage import connect_sqlite
-            with connect_sqlite(path) as conn:
-                conn.execute("UPDATE hl_news_account_pool SET next_poll_ms=MIN(next_poll_ms,?) WHERE qualified=0",
-                             (policy['loss_started_ms'],))
+            if storage_backend == 'postgres':
+                store.wake_unqualified_accounts(policy['loss_started_ms'])
+            else:
+                from packages.common.storage import connect_sqlite
+                with connect_sqlite(path) as conn:
+                    conn.execute("UPDATE hl_news_account_pool SET next_poll_ms=MIN(next_poll_ms,?) WHERE qualified=0",
+                                 (policy['loss_started_ms'],))
         print(encode(policy))
     elif action in ('enable-seven-scenarios', 'enable-approved-scenarios'):
         import time
@@ -71,9 +76,12 @@ def run_command(args: Any) -> int:
         policy.setdefault('scenario_started_ms', now)
         store.save_global('production_account_profit', policy, [])
         if not {'large_pnl','asset_win_rate','reversal','loss_addition','realized'}.issubset(existing):
-            from packages.common.storage import connect_sqlite
-            with connect_sqlite(path) as conn:
-                conn.execute('DELETE FROM hl_news_normal_state')
+            if storage_backend == 'postgres':
+                store.reset_normal_states()
+            else:
+                from packages.common.storage import connect_sqlite
+                with connect_sqlite(path) as conn:
+                    conn.execute('DELETE FROM hl_news_normal_state')
         print(encode(policy))
     elif action == 'prune-tested-cases':
         from .test_cases import prune_tested_cases
@@ -147,14 +155,14 @@ def run_command(args: Any) -> int:
         print(encode(activate_writer_prompt(pipeline_path, get_paths().root_dir, template_key=args.template_key)))
     elif action == 'preview':
         from packages.common.config import load_x_processing_settings
-        from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
+        from packages.x_processing.repository import create_x_processing_repository
         from packages.x_processing.worker import XProcessingWorker
         from packages.x_processing.models import HYPERLIQUID_SOURCE
         from .preview import generate_preview
         from .eligibility import news_eligibility
         if not 1 <= len(args.task_ids) <= 10:
             raise ValueError('Preview requires 1..10 task IDs')
-        repo = SQLiteXProcessingRepository(pipeline_path)
+        repo = create_x_processing_repository(None)
         tasks = [repo.get_task(task_id) for task_id in args.task_ids]
         if any(task.source != HYPERLIQUID_SOURCE for task in tasks):
             raise ValueError('Only Hyperliquid tasks support this preview')
@@ -203,7 +211,7 @@ def run_command(args: Any) -> int:
             limit=args.limit, event_keys=args.event_keys)))
     elif action == 'run-naming':
         import time
-        from .naming import NamingWorker, NamingStore, DEFAULT_MODEL
+        from .naming import NamingWorker, create_naming_store, DEFAULT_MODEL
         from packages.common.config import load_x_processing_settings
         from packages.x_processing.ai_client import OpenAIResponsesClient
         settings = load_x_processing_settings()
@@ -213,7 +221,7 @@ def run_command(args: Any) -> int:
         client = OpenAIResponsesClient(api_key=settings.openai_api_key, base_url=str(settings.openai_base_url),
             api_style=settings.openai_api_style, timeout_seconds=settings.writer_request_timeout_seconds,
             max_attempts=settings.retry.max_attempts, backoff_seconds=settings.retry.backoff_seconds)
-        worker = NamingWorker(store, NamingStore(path), ai_client=client, model=DEFAULT_MODEL, batch_size=args.batch_size)
+        worker = NamingWorker(store, create_naming_store(path), ai_client=client, model=DEFAULT_MODEL, batch_size=args.batch_size)
         while True:
             report = worker.run_once()
             print(encode(report), flush=True)
@@ -222,18 +230,46 @@ def run_command(args: Any) -> int:
             time.sleep(1 if report['checked'] else args.interval_seconds)
     elif action == 'status':
         from .dashboard import dashboard
-        print(encode(dashboard(store, pipeline_database_path=pipeline_path, page=args.page)))
+        print(encode(dashboard(store, pipeline_database_path=None if storage_backend == 'postgres' else pipeline_path, page=args.page)))
     return 0
 
 
 def activate_writer_prompt(path: Path, root: Path, *, template_key: str = 'hyperliquid_writer') -> dict[str, Any]:
     """Publish the dedicated file as a new full version without rewriting history."""
-    from packages.common.storage import connect_sqlite
+    from packages.common.storage import connect_sqlite, load_storage_settings
     from packages.x_processing.repository import PROMPT_SEEDS
     seed = PROMPT_SEEDS.get(template_key)
     if not template_key.startswith('hyperliquid_') or seed is None:
         raise ValueError('Unknown Hyperliquid writer prompt template')
     content = (root / seed[1]).read_text(encoding='utf-8')
+    if load_storage_settings().backend == 'postgres':
+        from packages.x_processing.repository import PostgresXProcessingRepository
+
+        repository = PostgresXProcessingRepository()
+        with repository._connect() as conn:
+            active = conn.execute(
+                "SELECT v.* FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id "
+                "WHERE t.template_key=%s AND v.deleted_at IS NULL FOR UPDATE OF t",
+                (template_key,),
+            ).fetchone()
+            if active is None:
+                raise ValueError('Initialize Hyperliquid writer prompt before activation')
+            if active['content'] == content:
+                return {'version_number': active['version_number'], 'changed': False}
+            version = conn.execute(
+                "SELECT COALESCE(MAX(version_number),0)+1 AS version FROM prompt_template_versions WHERE template_key=%s",
+                (template_key,),
+            ).fetchone()['version']
+            inserted = conn.execute(
+                "INSERT INTO prompt_template_versions(template_key,version_number,content,note,published_at) "
+                "VALUES (%s,%s,%s,%s,CURRENT_TIMESTAMP) RETURNING id",
+                (template_key, version, content, 'approved scenario wording and factual footer'),
+            ).fetchone()
+            conn.execute(
+                "UPDATE prompt_templates SET active_version_id=%s,updated_at=CURRENT_TIMESTAMP WHERE template_key=%s",
+                (inserted['id'], template_key),
+            )
+            return {'version_number': version, 'changed': True}
     with connect_sqlite(path) as conn:
         conn.execute('BEGIN IMMEDIATE')
         active = conn.execute("SELECT v.* FROM prompt_templates t JOIN prompt_template_versions v ON v.id=t.active_version_id WHERE t.template_key=? AND v.deleted_at IS NULL", (template_key,)).fetchone()

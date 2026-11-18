@@ -141,15 +141,27 @@ def representative_cases(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def initialize_cases(store: NewsStore) -> None:
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        return
     with connect_sqlite(store.path) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS hl_news_test_cases (
             event_key TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, payload TEXT NOT NULL,
             preview TEXT, created_ms INTEGER NOT NULL)''')
 
 
+def _test_case_payloads(store: NewsStore) -> list[dict[str, Any]]:
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        return [row['payload'] for row in store.test_case_rows()]
+    with connect_sqlite(store.path) as conn:
+        return [json.loads(row['payload']) for row in
+                conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC')]
+
+
 def clear_test_cases(store: NewsStore) -> dict[str, int]:
     """Clear test records and their previews, preserving live previews and source caches."""
     initialize_cases(store)
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        return store.clear_test_cases()
     with connect_sqlite(store.path) as conn:
         event_keys={row['event_key'] for row in conn.execute('SELECT event_key FROM hl_news_test_cases')}
         previews=[row['key'] for row in conn.execute(
@@ -166,6 +178,11 @@ def clear_test_cases(store: NewsStore) -> dict[str, int]:
 def save_cases(store: NewsStore, events: list[dict[str, Any]]) -> None:
     initialize_cases(store)
     now = int(time.time()*1000)
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        for event in events:
+            event['test_scenarios'] = case_scenarios(event)
+            store.upsert_test_case(event)
+        return
     with connect_sqlite(store.path) as conn:
         for event in events:
             event['test_scenarios'] = case_scenarios(event)
@@ -202,6 +219,8 @@ def prune_replayed_cases(store: NewsStore, address: str, events: list[dict[str, 
     keep = {event['key'] for event in events}
     removed = 0
     initialize_cases(store)
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        return store.prune_replayed_test_cases(address.lower(), keep)
     with connect_sqlite(store.path) as conn:
         rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
         for row in rows:
@@ -221,6 +240,8 @@ def prune_tested_cases(store: NewsStore) -> dict[str, int]:
     """Remove reviewed directions and retain evidence for unresolved test directions."""
     store.initialize()
     initialize_cases(store)
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        return store.prune_test_cases(case_scenarios, PRODUCTION_SCENARIOS, EXPERIMENTAL_SCENARIOS)
     with connect_sqlite(store.path) as conn:
         rows=conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
         removed=0
@@ -251,11 +272,14 @@ def prune_tested_cases(store: NewsStore) -> dict[str, int]:
 def enrich_cached_case_records(store: NewsStore) -> int:
     """Attach address trading stats from cached fills available before each event."""
     initialize_cases(store)
-    with connect_sqlite(store.path) as conn:
-        rows=conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        rows = store.test_case_rows()
+    else:
+        with connect_sqlite(store.path) as conn:
+            rows=conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
     enriched=0
     for row in rows:
-        event=json.loads(row['payload'])
+        event=row['payload'] if isinstance(row['payload'], dict) else json.loads(row['payload'])
         evidence=event.get('evidence',{})
         history=evidence.get('history') or {}
         if history.get('fills',0):
@@ -289,10 +313,15 @@ def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
     initialize_cases(store)
     updated = 0
     rules = Rules()
-    with connect_sqlite(store.path) as conn:
-        rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
-        for row in rows:
-            event = json.loads(row['payload'])
+    postgres = getattr(store, 'backend', 'sqlite') == 'postgres'
+    if postgres:
+        rows = store.test_case_rows()
+    else:
+        with connect_sqlite(store.path) as conn:
+            rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases').fetchall()
+    changed = []
+    for row in rows:
+            event = row['payload'] if isinstance(row['payload'], dict) else json.loads(row['payload'])
             e = event['evidence']
             labels = list(e.get('highlights', []))
             kinds = list(event.get('kinds', []))
@@ -328,9 +357,15 @@ def revalidate_test_cases(store: NewsStore) -> dict[str, int]:
             if not e['highlights']:
                 event['kinds'] = [kind for kind in event['kinds'] if kind != 'highlighted_address_action']
             event['test_scenarios'] = case_scenarios(event)
-            conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?', (encode(event),row['event_key']))
-            conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+row['event_key'],))
+            if postgres:
+                changed.append((row['event_key'], event))
+            else:
+                with connect_sqlite(store.path) as conn:
+                    conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?', (encode(event),row['event_key']))
+                    conn.execute('DELETE FROM hl_news_metadata WHERE key=?', ('editorial_preview:'+row['event_key'],))
             updated += 1
+    if postgres and changed:
+        store.replace_test_case_payloads(changed)
     return {'updated': updated}
 
 
@@ -480,6 +515,9 @@ def low_threshold_snapshot_cases(store: NewsStore, *, rules: Rules, profile: str
     if profile == 'standard':
         return []
     initialize_cases(store)
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        snapshots = store.test_position_snapshots(coins=coins)
+        return _low_threshold_cases_from_snapshots(snapshots, rules=rules, profile=profile)
     snapshots: dict[tuple[str, str], dict[str, Any]] = {}
     with connect_sqlite(store.path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -497,6 +535,42 @@ def low_threshold_snapshot_cases(store: NewsStore, *, rules: Rules, profile: str
                             'state': state, 'history': history, 'coin': coin, 'position': position}
                     if key not in snapshots or item['observed_ms'] > snapshots[key]['observed_ms']:
                         snapshots[key] = item
+    cases = []
+    for item in snapshots.values():
+        address, coin, observed = item['address'], item['coin'], item['observed_ms']
+        state, position, history = item['state'], item['position'], item['history']
+        pnl = number(position.get('unrealized_pnl', '0'))
+        peak = number(state.get('peaks', {}).get(coin, '0'))
+        kinds = []
+        evidence: dict[str, Any] = {'position': position, 'previous_position': None,
+                                     'history': history, 'highlights': [],
+                                     'threshold_rules': {**asdict(rules), 'profile': profile},
+                                     'test_replay': {'mode': 'low_threshold_position_snapshot',
+                                         'threshold_profile': profile, 'thresholds_are_experimental': True,
+                                         'source_observed_ms': observed}}
+        if peak >= rules.pnl_line(coin) and peak > pnl and peak - pnl >= peak * rules.giveback_fraction:
+            kinds.append('profit_giveback')
+            evidence['episode_peak_unrealized_pnl'] = str(peak)
+            evidence['episode_peak_ms'] = state.get('peak_times', {}).get(coin)
+        liquidation = position.get('liquidation')
+        mark = number(position.get('mark', '0'))
+        if liquidation is not None and mark > 0:
+            distance = abs(mark - number(liquidation)) / mark
+            evidence['liquidation_distance'] = str(distance)
+            if number(position.get('notional', '0')) >= rules.action and distance <= rules.liquidation_distance:
+                kinds.append('near_liquidation')
+        for kind in kinds:
+            digest = hashlib.sha256(encode({'address': address, 'coin': coin,
+                'observed_ms': observed, 'kind': kind, 'profile': profile}).encode()).hexdigest()
+            event = {'key': f'test-threshold:{profile}:{digest}', 'observed_ms': observed,
+                     'addresses': [address], 'coin': coin, 'kinds': [kind], 'evidence': dict(evidence)}
+            event['test_scenarios'] = case_scenarios(event)
+            cases.append(event)
+    return representative_cases(cases)
+
+
+def _low_threshold_cases_from_snapshots(snapshots: dict[tuple[str, str], dict[str, Any]],
+                                        *, rules: Rules, profile: str) -> list[dict[str, Any]]:
     cases = []
     for item in snapshots.values():
         address, coin, observed = item['address'], item['coin'], item['observed_ms']
@@ -562,9 +636,13 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
     # Existing reporting is only an address discovery seed, never proof of a rule.
     import re
     reported=[]
-    with connect_sqlite(store.path) as conn:
-        for row in conn.execute("SELECT title,content FROM tasks WHERE source!='hyperliquid_news' AND (lower(content) LIKE '%hyperliquid%' OR lower(title) LIKE '%hyperliquid%') ORDER BY id DESC LIMIT 1500"):
-            reported.extend(re.findall(r'0x[0-9a-fA-F]{40}', (row['title'] or '')+' '+row['content']))
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        source_rows = store.hyperliquid_news_task_sources()
+    else:
+        with connect_sqlite(store.path) as conn:
+            source_rows = conn.execute("SELECT title,content FROM tasks WHERE source!='hyperliquid_news' AND (lower(content) LIKE '%hyperliquid%' OR lower(title) LIKE '%hyperliquid%') ORDER BY id DESC LIMIT 1500").fetchall()
+    for row in source_rows:
+        reported.extend(re.findall(r'0x[0-9a-fA-F]{40}', (row['title'] or '')+' '+row['content']))
     from .client import address_key
     seeds = [address_key(a) for a in addresses] if addresses else [a.lower() for a in reported]+mixed+selected
     selected=list(dict.fromkeys(asset_seeds + seeds))[:address_limit]
@@ -600,13 +678,11 @@ def mine_cases(store: NewsStore, *, address_limit: int = 40, per_side: int = 12,
         save_cases(store, snapshot_cases)
         report['snapshot_cases_added'] = len(snapshot_cases)
     report['official_account_totals'] = enrich_test_account_totals(store)
-    with connect_sqlite(store.path) as conn:
-        all_cases=[json.loads(r[0]) for r in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    all_cases = _test_case_payloads(store)
     eligible_coverage={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
     capped=prune_tested_cases(store)
     report['statistics_enriched']=enrich_cached_case_records(store)
-    with connect_sqlite(store.path) as conn:
-        all_cases=[json.loads(r[0]) for r in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    all_cases = _test_case_payloads(store)
     report['eligible_coverage']=eligible_coverage
     report['coverage']={s[0]:sum(s[0] in case_scenarios(e) for e in all_cases) for s in SCENARIOS}
     report['cases_retained']=capped['retained']
@@ -619,6 +695,7 @@ def preview_cases(store: NewsStore, *, limit: int = 30, repository_template: boo
     """Choose representative real cases and write review copy without tasks/push."""
     from packages.common.config import load_x_processing_settings
     from packages.common.paths import get_paths
+    from packages.x_processing.repository import create_x_processing_repository
     from packages.x_processing.sqlite_repository import SQLiteXProcessingRepository
     from packages.x_processing.worker import XProcessingWorker
     from packages.x_processing.models import TaskRecord, HYPERLIQUID_SOURCE, PromptTemplateVersion
@@ -630,11 +707,16 @@ def preview_cases(store: NewsStore, *, limit: int = 30, repository_template: boo
     capped=prune_tested_cases(store)
     statistics_enriched=enrich_cached_case_records(store)
     account_totals=enrich_test_account_totals(store)
-    with connect_sqlite(store.path) as conn:
-        rows=conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
-    events=[json.loads(r[0]) for r in rows]
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        rows = store.test_case_rows()
+        events = [row['payload'] for row in rows]
+    else:
+        with connect_sqlite(store.path) as conn:
+            rows=conn.execute('SELECT payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
+        events=[json.loads(r[0]) for r in rows]
     settings=load_x_processing_settings()
-    worker=XProcessingWorker(stage='write',repository=SQLiteXProcessingRepository(store.path),settings=settings)
+    repository = create_x_processing_repository(None) if getattr(store, 'backend', 'sqlite') == 'postgres' else SQLiteXProcessingRepository(store.path)
+    worker=XProcessingWorker(stage='write',repository=repository,settings=settings)
     selected=select_preview_cases(events)[:limit]
     selected_scenarios={e['key']:set(case_scenarios(e)).intersection(PREVIEW_SCENARIOS) for e in selected}
     counts={scenario:sum(scenario in covered for covered in selected_scenarios.values())
@@ -775,26 +857,30 @@ def replay_cached_cases(store: NewsStore, *, reset: bool = False) -> dict[str, A
     reset_result = clear_test_cases(store) if reset else None
     if not reset:
         revalidate_test_cases(store)
-    with connect_sqlite(store.path) as conn:
-        rows=conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'").fetchall()
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        keys = store.metadata_keys('test_fills:')
+        cached_rows = [(key, store.metadata(key, {})) for key in keys]
+    else:
+        with connect_sqlite(store.path) as conn:
+            cached_rows=[(row['key'], json.loads(row['payload'])) for row in
+                         conn.execute("SELECT key,payload FROM hl_news_metadata WHERE key LIKE 'test_fills:%'")]
+    rows = [(key, value) for key, value in cached_rows]
     report={'addresses':len(rows),'cases':0,'failed':{},'reset':reset_result}
-    for row in rows:
-        address=row['key'].split(':',1)[1]
+    for key, cache in rows:
+        address=key.split(':',1)[1]
         try:
-            fills=json.loads(row['payload'])['fills']
+            fills=cache['fills']
             cases=representative_cases(replay_fills(address,fills)+replay_execution_prices(address,fills)+replay_test_startup(address,fills))
             save_cases(store,cases);report['cases']+=len(cases)
             prune_replayed_cases(store,address,cases)
             print(encode({'address':address,'cases':len(cases),'mode':'cached_test_replay'}),flush=True)
         except Exception as exc:report['failed'][address]=str(exc)
-    with connect_sqlite(store.path) as conn:
-        all_cases=[json.loads(row[0]) for row in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    all_cases = _test_case_payloads(store)
     report['eligible_scenario_counts']={key:sum(key in case_scenarios(event) for event in all_cases)
                                         for key in PREVIEW_SCENARIOS}
     capped=prune_tested_cases(store)
     report['statistics_enriched']=enrich_cached_case_records(store)
-    with connect_sqlite(store.path) as conn:
-        all_cases=[json.loads(row[0]) for row in conn.execute('SELECT payload FROM hl_news_test_cases')]
+    all_cases = _test_case_payloads(store)
     report['scenario_counts']={key:sum(key in case_scenarios(event) for event in all_cases)
                                for key in PREVIEW_SCENARIOS}
     report['cases_retained']=capped['retained']
@@ -849,11 +935,14 @@ def replay_test_startup(address: str, fills: list[dict], *, rules: Rules | None 
 def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]:
     """Historical official portfolio PnL before the action; no future leaderboard."""
     rules=Rules();client=NewsClient();now=int(time.time()*1000)
-    with connect_sqlite(store.path) as conn:
-        rows=conn.execute("SELECT payload FROM hl_news_test_cases WHERE json_extract(payload,'$.evidence.actions') IS NOT NULL ORDER BY observed_ms DESC").fetchall()
+    if getattr(store, 'backend', 'sqlite') == 'postgres':
+        rows = [row for row in store.test_case_rows() if row['payload'].get('evidence', {}).get('actions')]
+    else:
+        with connect_sqlite(store.path) as conn:
+            rows=conn.execute("SELECT payload FROM hl_news_test_cases WHERE json_extract(payload,'$.evidence.actions') IS NOT NULL ORDER BY observed_ms DESC").fetchall()
     groups={}
     for r in rows:
-        e=json.loads(r[0])
+        e=r['payload'] if isinstance(r['payload'], dict) else json.loads(r['payload'])
         if e['evidence']['test_replay'].get('simulated_monitor_start'):continue
         change=snapshot_net_change(e['evidence'])
         if change and number(change['estimated_value'])>=rules.account_profit_action:
@@ -886,8 +975,11 @@ def enrich_account_cases(store: NewsStore, *, limit: int = 20) -> dict[str, Any]
                 if 'highlighted_address_action' not in event['kinds']:event['kinds'].append('highlighted_address_action')
                 event['evidence']['test_replay']['official_pnl_cutoff_ms']=cutoff
                 event['test_scenarios']=case_scenarios(event)
-                with connect_sqlite(store.path) as conn:
-                    conn.execute('UPDATE hl_news_test_cases SET payload=? WHERE event_key=?',(encode(event),event['key']))
+                if getattr(store, 'backend', 'sqlite') == 'postgres':
+                    store.replace_test_case_payloads([(event['key'], event)])
+                else:
+                    with connect_sqlite(store.path) as conn:
+                        conn.execute('UPDATE hl_news_test_cases SET payload=? WHERE event_key=?',(encode(event),event['key']))
                 report['added']+=1
             report['processed']+=1
             print(encode({'address':address,**report}),flush=True)
@@ -900,11 +992,13 @@ def enrich_test_account_totals(store: NewsStore, *, limit: int = 200) -> dict[st
     from .account_monitor import portfolio_all_time_at
     client = NewsClient()
     now = int(time.time() * 1000)
-    with connect_sqlite(store.path) as conn:
-        rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
+    rows = store.test_case_rows() if getattr(store, 'backend', 'sqlite') == 'postgres' else None
+    if rows is None:
+        with connect_sqlite(store.path) as conn:
+            rows = conn.execute('SELECT event_key,payload FROM hl_news_test_cases ORDER BY observed_ms DESC').fetchall()
     groups: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     for row in rows:
-        event = json.loads(row['payload'])
+        event = row['payload'] if isinstance(row['payload'], dict) else json.loads(row['payload'])
         for address in event.get('addresses', []):
             groups.setdefault(address.lower(), []).append((row['event_key'], event))
     report: dict[str, Any] = {'addresses': min(len(groups), limit), 'enriched': 0, 'failed': {}}
@@ -929,11 +1023,14 @@ def enrich_test_account_totals(store: NewsStore, *, limit: int = 200) -> dict[st
                     continue
                 history['official_account_total_pnl'] = sample
                 event.setdefault('evidence', {}).setdefault('test_replay', {})['official_total_pnl_cutoff_ms'] = cutoff
-                with connect_sqlite(store.path) as conn:
-                    conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?',
-                                 (encode(event), event_key))
-                    conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
-                                 ('editorial_preview:' + event_key,))
+                if getattr(store, 'backend', 'sqlite') == 'postgres':
+                    store.replace_test_case_payloads([(event_key, event)])
+                else:
+                    with connect_sqlite(store.path) as conn:
+                        conn.execute('UPDATE hl_news_test_cases SET payload=?,preview=NULL WHERE event_key=?',
+                                     (encode(event), event_key))
+                        conn.execute('DELETE FROM hl_news_metadata WHERE key=?',
+                                     ('editorial_preview:' + event_key,))
                 report['enriched'] += 1
             print(encode({'address': address, **report}), flush=True)
         except Exception as exc:

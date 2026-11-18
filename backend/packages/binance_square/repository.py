@@ -194,4 +194,10 @@ class BinanceSquareRepository:
 
 
 def create_binance_square_repository(path: Path | None = None) -> BinanceSquareRepository:
-    return BinanceSquareRepository(path or load_storage_settings().sqlite_path)
+    if path is not None:
+        return BinanceSquareRepository(path)
+    if load_storage_settings().backend == "postgres":
+        from .postgres_repository import PostgresBinanceSquareRepository
+
+        return PostgresBinanceSquareRepository()
+    return BinanceSquareRepository(load_storage_settings().sqlite_path)

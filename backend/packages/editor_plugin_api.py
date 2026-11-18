@@ -28,8 +28,7 @@ from packages.common.editor_plugin_auth import (
 )
 from packages.common.paths import ensure_runtime_dirs, get_paths
 from packages.common.text import normalize_multiline_text
-from packages.business_news.repository import BusinessNewsRepository
-from packages.business_news.storage import business_news_path
+from packages.business_news.repository import create_business_news_repository
 from packages.ai_text_self_upgrade import (
     AITextSelfUpgradeRepository,
     AITextSelfUpgradeService,
@@ -50,16 +49,15 @@ from packages.macro_newsflash.settings import load_macro_newsflash_settings
 from packages.macro_newsflash.store import MacroNewsflashStore
 from packages.hottopic import HotTopicService
 from packages.meme_dashboard import MemeDashboardStore
-from packages.newsflash_operations import NewsflashOperationsRepository
-from packages.system_observability import MainTaskProjector, ProjectionWorker, SystemInformationStore
-from packages.system_observability.projector import table_specs_for_business_path
+from packages.newsflash_operations import create_newsflash_operations_repository
+from packages.system_observability import ProjectionWorker, create_system_observability_runtime
 from packages.system_observability.error_policy import expire_external_errors
 from packages.system_observability.store import timestamp_ms
-from packages.system_observability.reviews import SystemReviewRepository, SystemReviewService, SystemReviewWorker
+from packages.system_observability.reviews import SystemReviewWorker
 from packages.system_observability.registry import BUSINESS_REGISTRY
 from packages.system_observability.runtime import system_observability_directory
 from packages.pipeline_timing import (
-    PipelineTimingLocalStore,
+    create_pipeline_timing_store,
     PipelineTimingSnapshotService,
     create_pipeline_timing_repository,
 )
@@ -396,17 +394,21 @@ class EditorPluginNewsGenService:
 
         self.console_auth_repository = create_console_auth_repository(database_url)
         self.console_auth_repository.init_schema()
-        self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         storage_settings = load_storage_settings()
+        if load_storage_settings().backend == "postgres":
+            from packages.editor_plugin_postgres_local_store import PostgresEditorPluginLocalStore
+
+            self.local_store = PostgresEditorPluginLocalStore()
+        else:
+            self.local_store = LocalEditorPluginStore(self.paths.runtime_dir / "editor_plugin_local.sqlite")
         self.console_data = ConsoleDataApi(storage_settings.sqlite_path)
-        business_database = business_news_path()
-        self.business_news = BusinessNewsRepository(business_database)
+        self.business_news = create_business_news_repository()
         self.failure_diagnostics = FailureDiagnosticsStore(
             storage_settings.sqlite_path,
             self.paths.runtime_dir / "local_pipeline.sqlite",
             storage_epoch=storage_settings.epoch,
         )
-        self.pipeline_timing_store = PipelineTimingLocalStore(self.paths.runtime_dir / "pipeline_timing.sqlite")
+        self.pipeline_timing_store = create_pipeline_timing_store(self.paths.runtime_dir / "pipeline_timing.sqlite")
         self.gate_market_store = GateMarketStore(load_gate_market_settings().database_path)
         self.gate_market_store.initialize()
         self.stock_market_store = StockMarketStore(load_stock_market_settings().database_path)
@@ -418,46 +420,39 @@ class EditorPluginNewsGenService:
         self.x_context_client = FXTwitterClient()
         self.x_repository = create_x_processing_repository(database_url)
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
-        self.newsflash_operations = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+        self.newsflash_operations = create_newsflash_operations_repository(load_storage_settings().sqlite_path)
         self.hottopic = HotTopicService()
         self.system_observability_dir = system_observability_directory(self.paths.runtime_dir)
         self.system_observability_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.system_observability_dir.chmod(0o700)
         system_information_database = self.system_observability_dir / "system_information.sqlite"
-        self.system_information = SystemInformationStore(system_information_database)
-        self.system_information.initialize()
-        self.system_information_projector = ProjectionWorker(
-            MainTaskProjector(
-                storage_settings.sqlite_path,
-                self.system_information,
-                additional_databases={
-                    "main": storage_settings.sqlite_path,
-                    "hyperliquid": load_hyperliquid_storage_path(),
-                    "hot": self.hottopic.path,
-                    "meme": self.meme_dashboard_store.path,
-                    "gate": self.gate_market_store.path,
-                    "stock": self.stock_market_store.path,
-                    "queue": self.paths.runtime_dir / "local_pipeline.sqlite",
-                    **({"business": business_database} if business_database != storage_settings.sqlite_path else {}),
-                },
-                table_specs=table_specs_for_business_path(separate=business_database != storage_settings.sqlite_path),
-            ),
-            interval_seconds=5,
+        self.system_observability = create_system_observability_runtime(
+            primary_database_path=storage_settings.sqlite_path,
+            system_observability_dir=self.system_observability_dir,
+            additional_databases={
+                "main": storage_settings.sqlite_path,
+                "hyperliquid": load_hyperliquid_storage_path(),
+                "hot": self.hottopic.path,
+                "meme": getattr(self.meme_dashboard_store, "path", self.paths.runtime_dir / "meme_scanner.sqlite3"),
+                "gate": load_gate_market_settings().database_path,
+                "stock": load_stock_market_settings().database_path,
+                "queue": self.paths.runtime_dir / "local_pipeline.sqlite",
+            },
         )
-        self.system_review_repository = SystemReviewRepository(system_information_database)
-        self.system_review_service = SystemReviewService(
-            storage_settings.sqlite_path,
-            self.system_review_repository,
-            model_settings=self.x_settings,
-            competitor_database_path=storage_settings.sqlite_path,
-            evidence_database_path=storage_settings.sqlite_path,
-            local_pipeline_database_path=self.paths.runtime_dir / "local_pipeline.sqlite",
-        )
+        self.system_information = self.system_observability.information_store
+        self.system_information_projector = ProjectionWorker(self.system_observability.projector, interval_seconds=5)
+        self.system_review_repository = self.system_observability.review_repository
+        self.system_review_service = self.system_observability.review_service
         self.system_review_enabled = os.getenv("SYSTEM_REVIEW_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
         self.system_review_worker = SystemReviewWorker(self.system_review_service)
-        self.ai_text_self_upgrade_repository = AITextSelfUpgradeRepository(
-            self.system_observability_dir / "ai_text_self_upgrade.sqlite"
-        )
+        if storage_settings.backend == "postgres":
+            from packages.ai_text_self_upgrade import PostgresAITextSelfUpgradeRepository
+
+            self.ai_text_self_upgrade_repository = PostgresAITextSelfUpgradeRepository()
+        else:
+            self.ai_text_self_upgrade_repository = AITextSelfUpgradeRepository(
+                self.system_observability_dir / "ai_text_self_upgrade.sqlite"
+            )
 
         self.authenticator = LocalEditorPluginAuthenticator(
             settings=api_settings,
@@ -625,6 +620,10 @@ class EditorPluginNewsGenService:
             item = self.system_information.detail(item_id)
             if item is None:
                 raise EditorPluginApiError("处理记录不存在")
+            sort_value = item.get('updated_at_ms') or item.get('created_at_ms')
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            if sort_value is None or int(sort_value) < now_ms - 6 * 60 * 60 * 1000 or int(sort_value) >= now_ms:
+                raise EditorPluginApiError("处理记录不在最近六小时内")
             return {"item": item}
         if action == "registry":
             coverage = self.system_information.coverage()
@@ -642,15 +641,26 @@ class EditorPluginNewsGenService:
         coverage = self.system_information.coverage()
         workers: list[dict[str, Any]] = []
         try:
-            with connect_sqlite_readonly(self.system_review_service.primary_database_path, timeout_seconds=5) as conn:
-                conn.row_factory = sqlite3.Row
-                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_worker_heartbeats'").fetchone()
-                if exists:
-                    workers = [dict(row) for row in conn.execute(
-                        "SELECT component,worker_id,status,last_seen_at,last_success_at,last_error,metadata "
-                        "FROM pipeline_worker_heartbeats ORDER BY component,worker_id"
-                    )]
-        except sqlite3.Error as exc:
+            if load_storage_settings().backend == "postgres":
+                from packages.common.pg_native import connect_postgres
+
+                with connect_postgres(schema="main", application_name="odaily-editor-health") as conn:
+                    exists = conn.execute("SELECT to_regclass('main.pipeline_worker_heartbeats') AS table_name").fetchone()
+                    if exists and exists["table_name"]:
+                        workers = [dict(row) for row in conn.execute(
+                            "SELECT component,worker_id,status,last_seen_at,last_success_at,last_error,metadata "
+                            "FROM main.pipeline_worker_heartbeats ORDER BY component,worker_id"
+                        )]
+            else:
+                with connect_sqlite_readonly(self.system_review_service.primary_database_path, timeout_seconds=5) as conn:
+                    conn.row_factory = sqlite3.Row
+                    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pipeline_worker_heartbeats'").fetchone()
+                    if exists:
+                        workers = [dict(row) for row in conn.execute(
+                            "SELECT component,worker_id,status,last_seen_at,last_success_at,last_error,metadata "
+                            "FROM pipeline_worker_heartbeats ORDER BY component,worker_id"
+                        )]
+        except Exception as exc:
             coverage["worker_read_error"] = type(exc).__name__
         try:
             from packages.tasks.registry import TASKS
@@ -1009,9 +1019,9 @@ class EditorPluginNewsGenService:
     def get_hyperliquid_news(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
         from packages.hyperliquid_news.dashboard import dashboard
-        from packages.hyperliquid_news.store import NewsStore
+        from packages.hyperliquid_news.store import create_news_store
         storage = load_storage_settings()
-        return dashboard(NewsStore(load_hyperliquid_storage_path()), pipeline_database_path=storage.sqlite_path,
+        return dashboard(create_news_store(load_hyperliquid_storage_path()), pipeline_database_path=storage.sqlite_path,
                          page=int(payload.get('page', 0)),
                          scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
                          view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
@@ -1020,26 +1030,26 @@ class EditorPluginNewsGenService:
     def get_hyperliquid_address_naming_details(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
         from packages.hyperliquid_news.dashboard import address_naming_details
-        from packages.hyperliquid_news.store import NewsStore
+        from packages.hyperliquid_news.store import create_news_store
         address = str(payload.get('address') or '')
-        return address_naming_details(NewsStore(load_hyperliquid_storage_path()), address)
+        return address_naming_details(create_news_store(load_hyperliquid_storage_path()), address)
 
     def save_hyperliquid_address_block(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         from packages.common.storage import load_hyperliquid_storage_path
-        from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_hyperliquid_storage_path()).save_address_block(
+        from packages.hyperliquid_news.store import create_news_store
+        return create_news_store(load_hyperliquid_storage_path()).save_address_block(
             payload.get('address'), payload.get('blocked'), updated_by=actor.email)
 
     def save_hyperliquid_address_note(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         from packages.common.storage import load_hyperliquid_storage_path
-        from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_hyperliquid_storage_path()).save_address_note(
+        from packages.hyperliquid_news.store import create_news_store
+        return create_news_store(load_hyperliquid_storage_path()).save_address_note(
             payload.get('address'), payload.get('note'), updated_by=actor.email)
 
     def add_hyperliquid_address(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         from packages.common.storage import load_hyperliquid_storage_path
-        from packages.hyperliquid_news.store import NewsStore
-        return NewsStore(load_hyperliquid_storage_path()).add_manual_address(
+        from packages.hyperliquid_news.store import create_news_store
+        return create_news_store(load_hyperliquid_storage_path()).add_manual_address(
             payload.get('address'), now_ms=int(datetime.now(UTC).timestamp() * 1000), updated_by=actor.email)
 
     def get_gate_market(self, actor: AuthenticatedEditor) -> dict[str, Any]:
@@ -1063,6 +1073,20 @@ class EditorPluginNewsGenService:
     def get_meme_narrative_detail(self, actor: AuthenticatedEditor, job_id: int) -> dict[str, Any] | None:
         del actor
         return self.meme_dashboard_store.narrative_detail(job_id)
+
+    def reconcile_meme_delivery(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            job_id = int(payload.get("job_id"))
+        except (TypeError, ValueError):
+            raise EditorPluginApiError(HTTPStatus.BAD_REQUEST, "缺少有效的 Meme job id") from None
+        resolution = payload.get("resolution")
+        if resolution not in {"confirmed_published", "confirmed_not_published"}:
+            raise EditorPluginApiError(HTTPStatus.BAD_REQUEST, "无效的核对结果")
+        changed = self.meme_dashboard_store.reconcile_uncertain_delivery(job_id, resolution)
+        if not changed:
+            raise EditorPluginApiError(HTTPStatus.CONFLICT, "任务已变化或不处于投递结果待核对状态")
+        return {"job_id": job_id, "resolution": resolution, "updated": True}
 
     def get_runtime_rules(self, actor: AuthenticatedEditor) -> dict[str, Any]:
         del actor
@@ -1541,6 +1565,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/hyperliquid-news/address-block/save",
         "/console/hyperliquid-news/address-add",
         "/console/meme/get",
+        "/console/meme/reconcile-delivery",
         "/console/predict-html/get",
         "/console/runtime-rules/get",
         "/console/known-title-subjects/get",
@@ -1931,6 +1956,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/meme/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_meme_dashboard(actor)})
+                    return
+                if self.path == "/console/meme/reconcile-delivery":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.reconcile_meme_delivery(actor, self._read_json())})
                     return
                 if self.path == "/console/predict-html/get":
                     from packages.predict_market_discovery.html_dashboard import dashboard

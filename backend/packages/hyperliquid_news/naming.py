@@ -15,7 +15,7 @@ from packages.common.storage import connect_sqlite, load_hyperliquid_storage_pat
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 
 from .client import address_key
-from .store import NewsStore, encode
+from .store import NewsStore, create_news_store, encode
 
 REVIEW_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_MODEL = "gpt-6-luna"
@@ -247,6 +247,22 @@ class NamingStore:
         return value
 
 
+def create_naming_store(path=None):
+    from packages.common.storage import load_hyperliquid_storage_path, load_storage_settings
+
+    settings = load_storage_settings()
+    configured_path = load_hyperliquid_storage_path()
+    selected_path = path or configured_path
+    if settings.backend == "postgres":
+        if selected_path.resolve() != configured_path:
+            raise ValueError("PostgreSQL Hyperliquid naming does not accept a custom SQLite path")
+        from .postgres_naming import PostgresNamingStore
+        from .store import create_news_store
+
+        return PostgresNamingStore(create_news_store(configured_path))
+    return NamingStore(selected_path)
+
+
 def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, Any]:
     address = address_key(address)
     profile: dict[str, Any] = {"address": address, "as_of_ms": now_ms, "dimensions": {}}
@@ -293,13 +309,17 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
          "data": official or {}, "observed_ms": account.get("state", {}).get("account_history_checked_ms") or normal.get("state", {}).get("history_last_queried_ms"),
          "missing": None if official else "无官方账户周期 PnL 样本"},
     ]
-    with connect_sqlite(store.path) as conn:
-        rows = conn.execute("""SELECT c.payload FROM hl_news_candidate_addresses a
-            JOIN hl_news_candidates c ON c.event_key=a.event_key WHERE a.address_lower=?
-            ORDER BY a.observed_ms DESC LIMIT 8""", (address.lower(),)).fetchall()
+    if getattr(store, "backend", "sqlite") == "postgres":
+        recent_events = create_news_store(store.path).candidates_for_address(address, limit=8)
+    else:
+        with connect_sqlite(store.path) as conn:
+            rows = conn.execute("""SELECT c.payload FROM hl_news_candidate_addresses a
+                JOIN hl_news_candidates c ON c.event_key=a.event_key WHERE a.address_lower=?
+                ORDER BY a.observed_ms DESC LIMIT 8""", (address.lower(),)).fetchall()
+        recent_events = [_json(row[0]) for row in rows]
     recent = []
-    for row in rows:
-        event = _json(row[0]); ev = event.get("evidence") or {}
+    for event in recent_events:
+        ev = event.get("evidence") or {}
         pos = ev.get("position") or {}; previous = ev.get("previous_position") or {}
         recent.append({"observed_ms": event.get("observed_ms"), "coin": event.get("coin"), "kinds": event.get("kinds", []),
                        "highlights": ev.get("highlights", []), "position_size": pos.get("size"),
@@ -318,7 +338,7 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
          "data": address[:4], "observed_ms": now_ms, "missing": None},
     ])
     profile["dimensions"] = dimensions
-    previous_name = NamingStore(store.path).get(address)
+    previous_name = create_naming_store(store.path).get(address)
     profile["previous_name"] = ({"name": previous_name.get("current_name"), "kind": previous_name.get("kind"),
         "reason": previous_name.get("reason"), "status": previous_name.get("status"), "checked_ms": previous_name.get("checked_ms")} if previous_name else None)
     profile["prompt_version"] = PROMPT_VERSION
@@ -330,11 +350,8 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
 def naming_details(store: NewsStore, address: str, *, now_ms: int | None = None) -> dict[str, Any]:
     address = address_key(address)
     now_ms = now_ms or _now()
-    names = NamingStore(store.path)
-    with connect_sqlite(store.path) as conn:
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hl_news_address_names'").fetchone()
-    if not exists:
-        raise ValueError("Naming review has not been initialized")
+    names = create_naming_store(store.path)
+    names.initialize()
     row = names.get(address)
     if row is None:
         raise ValueError("Unknown monitored address")
@@ -462,5 +479,5 @@ class NamingWorker:
 
 
 def run_naming_once(*, batch_size: int = 4, now_ms: int | None = None, ai_client: TextGenerationClient | None = None) -> dict[str, Any]:
-    path = load_hyperliquid_storage_path(); store = NewsStore(path); store.initialize(); naming_store = NamingStore(path); naming_store.initialize()
+    path = load_hyperliquid_storage_path(); store = create_news_store(path); store.initialize(); naming_store = create_naming_store(path); naming_store.initialize()
     return NamingWorker(store, naming_store, ai_client=ai_client, model=DEFAULT_MODEL, batch_size=batch_size).run_once(now_ms=now_ms)

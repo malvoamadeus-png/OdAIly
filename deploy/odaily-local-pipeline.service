@@ -13,6 +13,9 @@ Environment=ODAILY_SYSTEM_OBSERVABILITY_DIR=/data/OdAIly/system-observability
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py local-pipeline-server --host 127.0.0.1 --port 8776
 Restart=always
 RestartSec=10
+TimeoutStopSec=900
+KillSignal=SIGTERM
+SendSIGKILL=no
 
 [Install]
 WantedBy=multi-user.target

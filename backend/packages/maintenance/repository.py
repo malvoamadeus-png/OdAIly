@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
+from packages.common.pipeline_schema import PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.storage import load_storage_settings
 
 
 @dataclass(frozen=True)
@@ -23,22 +27,30 @@ class PostgresMaintenanceRepository:
     )
 
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresMaintenanceRepository is retired; use create_maintenance_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
         self.application_name = "odaily-maintenance"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+    def init_schema(self) -> None:
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="maintenance",
+                migrations=(PostgresMigration(
+                    1, "maintenance_initial", sha256(PIPELINE_MONITORING_SCHEMA_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(PIPELINE_MONITORING_SCHEMA_SQL),
+                ),),
+            )
 
     def cleanup(
         self,
@@ -212,11 +224,6 @@ class PostgresMaintenanceRepository:
                 dry_run=dry_run,
             )
 
-            if dry_run:
-                conn.rollback()
-            else:
-                conn.commit()
-
         return MaintenanceCleanupResult(
             dry_run=dry_run,
             retention_days=retention_days,
@@ -227,7 +234,7 @@ class PostgresMaintenanceRepository:
         )
 
     def _table_exists(self, conn, table: str) -> bool:
-        row = conn.execute("SELECT to_regclass(%s) AS table_oid", (f"public.{table}",)).fetchone()
+        row = conn.execute("SELECT to_regclass(%s) AS table_oid", (f"main.{table}",)).fetchone()
         return row is not None and row["table_oid"] is not None
 
     def _delete_or_count(
@@ -273,7 +280,7 @@ class PostgresMaintenanceRepository:
             """
             SELECT column_name
             FROM information_schema.columns
-            WHERE table_schema = 'public'
+            WHERE table_schema = 'main'
               AND table_name = %s
               AND column_name = ANY(%s)
             """,

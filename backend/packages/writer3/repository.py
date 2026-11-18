@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import COMPETITOR_FILTER_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL, WRITER3_SCHEMA_SQL
-from packages.x_processing.repository import _import_psycopg, get_database_url
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
+from packages.common.storage import load_storage_settings
 
 from .models import ContextResult, OdailyReference, Writer3Candidate, Writer3Task
 
@@ -54,27 +57,34 @@ class Writer3Repository(Protocol):
 
 class PostgresWriter3Repository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresWriter3Repository is retired; use create_writer3_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-writer3"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + WRITER3_SCHEMA_SQL)
-            conn.commit()
+        schema_sql = PIPELINE_MONITORING_SCHEMA_SQL + COMPETITOR_FILTER_SCHEMA_SQL + WRITER3_SCHEMA_SQL
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="writer3",
+                migrations=(PostgresMigration(
+                    1, "writer3_initial", sha256(schema_sql.encode()).hexdigest(),
+                    lambda connection: connection.execute(schema_sql),
+                ),),
+            )
 
     def claim_task(
         self,
@@ -169,7 +179,6 @@ class PostgresWriter3Repository:
                         lock_until,
                     ),
                 ).fetchone()
-            conn.commit()
         task = _row_to_task(row)
         return _replace_task_context_id(task, int(context_row["id"]) if context_row else task.context_id)
 
@@ -218,7 +227,6 @@ class PostgresWriter3Repository:
                     ),
                 )
                 count += 1
-            conn.commit()
         return count
 
     def complete_skipped(self, task: Writer3Task, *, reason: str, metadata: dict[str, Any] | None = None) -> None:
@@ -236,7 +244,6 @@ class PostgresWriter3Repository:
                 """,
                 (reason, self._Jsonb(metadata or {}), _context_id(task)),
             )
-            conn.commit()
 
     def complete_sent(
         self,
@@ -284,7 +291,6 @@ class PostgresWriter3Repository:
                     _context_id(task),
                 ),
             )
-            conn.commit()
 
     def complete_failed(self, task: Writer3Task, *, error: str) -> None:
         with self._connect() as conn:
@@ -300,7 +306,6 @@ class PostgresWriter3Repository:
                 """,
                 (error[:2000], _context_id(task)),
             )
-            conn.commit()
 
     def reset_task(self, task_id: int) -> bool:
         with self._connect() as conn:
@@ -313,12 +318,11 @@ class PostgresWriter3Repository:
                     last_error = NULL,
                     skip_reason = NULL,
                     updated_at = now()
-                WHERE task_id = %s
+                WHERE (task_id = %s OR id = %s)
                   AND status IN ('failed', 'skipped', 'processing')
                 """,
-                (task_id,),
+                (task_id, task_id),
             )
-            conn.commit()
             return bool(cursor.rowcount)
 
     def record_worker_heartbeat(
@@ -351,7 +355,6 @@ class PostgresWriter3Repository:
                 """,
                 (component, worker_id, status, success, error, self._Jsonb(metadata or {}), success),
             )
-            conn.commit()
 
 
 def _row_to_task(row: dict[str, Any]) -> Writer3Task:

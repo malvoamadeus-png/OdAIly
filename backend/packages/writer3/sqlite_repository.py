@@ -114,5 +114,10 @@ class SQLiteWriter3Repository:
 
 
 def create_writer3_repository(database_url: str | None = None) -> SQLiteWriter3Repository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        from .repository import PostgresWriter3Repository
+
+        return PostgresWriter3Repository()
     return SQLiteWriter3Repository(load_storage_settings().sqlite_path)

@@ -5,16 +5,19 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite, load_storage_settings
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 
 
 PIPELINE_TIMING_WINDOWS = (24, 72, 168)
 PIPELINE_TIMING_SOURCES = ("x", "blockbeats", "panews", "jinse", "non_mainstream_media", "ai_source", "jin10")
 PIPELINE_TIMING_RETENTION_DAYS = 14
+PIPELINE_TIMING_PAGE_SIZE = 500
 
 STAGE_LABELS: dict[str, str] = {
     "judge": "判断",
@@ -277,6 +280,65 @@ class PipelineTimingLocalStore:
             conn.commit()
 
 
+class PostgresPipelineTimingLocalStore:
+    def __init__(self) -> None:
+        self.init_schema()
+
+    def _connect(self):
+        return connect_postgres(schema="pipeline_timing", application_name="odaily-pipeline-timing-store")
+
+    def init_schema(self) -> None:
+        self.initialize_schema()
+
+    @staticmethod
+    def initialize_schema() -> None:
+        with connect_postgres(schema="pipeline_timing", application_name="odaily-pipeline-timing-migrate") as conn:
+            apply_schema_migrations(
+                conn,
+                schema="pipeline_timing",
+                component="pipeline_timing",
+                migrations=(PostgresMigration(
+                    1,
+                    "pipeline_timing_initial",
+                    sha256(POSTGRES_PIPELINE_TIMING_SCHEMA.encode()).hexdigest(),
+                    lambda connection: connection.execute(POSTGRES_PIPELINE_TIMING_SCHEMA),
+                ),),
+            )
+    def latest(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM pipeline_timing_snapshots ORDER BY generated_at DESC,id DESC LIMIT 1"
+            ).fetchone()
+        return row["payload_json"] if row else None
+
+    def latest_generated_at(self) -> datetime | None:
+        latest = self.latest()
+        return parse_iso_datetime(latest.get("generated_at")) if latest else None
+
+    def save(self, payload: dict[str, Any]) -> None:
+        generated_at = parse_iso_datetime(payload.get("generated_at"))
+        if generated_at is None:
+            raise ValueError("Pipeline timing snapshot requires a valid generated_at")
+        with self._connect() as conn:
+            with postgres_transaction(conn):
+                conn.execute(
+                    "INSERT INTO pipeline_timing_snapshots(generated_at,payload_json) VALUES(%s,%s)",
+                    (generated_at, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
+                )
+
+    def prune_old(self, *, retention_days: int = PIPELINE_TIMING_RETENTION_DAYS) -> None:
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        with self._connect() as conn:
+            with postgres_transaction(conn):
+                conn.execute("DELETE FROM pipeline_timing_snapshots WHERE generated_at < %s", (cutoff,))
+
+
+def create_pipeline_timing_store(path: Path | None = None):
+    if load_storage_settings().backend == "postgres":
+        return PostgresPipelineTimingLocalStore()
+    return PipelineTimingLocalStore(path or (load_storage_settings().sqlite_path.parent / "pipeline_timing.sqlite"))
+
+
 class SQLitePipelineTimingRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -287,20 +349,32 @@ class SQLitePipelineTimingRepository:
     def list_recent_rows(self, *, max_hours: int = max(PIPELINE_TIMING_WINDOWS)) -> list[PipelineTimingRow]:
         cutoff = (datetime.now(UTC) - timedelta(hours=max_hours)).isoformat()
         placeholders = ",".join("?" for _ in PIPELINE_TIMING_SOURCES)
-        with connect_sqlite(self.path) as conn:
-            rows = conn.execute(
-                f"SELECT t.id task_id,t.source,t.status,t.created_at,t.metadata,p.news_type,p.publisher_decision,p.judge_completed_at,p.search_completed_at,p.write_completed_at,p.format_completed_at,p.publisher_decided_at,p.publish_completed_at FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id WHERE julianday(t.created_at)>=julianday(?) AND t.source IN ({placeholders}) ORDER BY julianday(t.created_at) DESC,t.id DESC",
-                (cutoff, *PIPELINE_TIMING_SOURCES),
-            ).fetchall()
-        return [PipelineTimingRow(
-            task_id=int(row["task_id"]), source=str(row["source"]), status=str(row["status"]),
-            created_at=parse_iso_datetime(row["created_at"]) or datetime.now(UTC),
-            metadata=json.loads(row["metadata"] or "{}"), news_type=row["news_type"],
-            publisher_decision=row["publisher_decision"], judge_completed_at=parse_iso_datetime(row["judge_completed_at"]),
-            search_completed_at=parse_iso_datetime(row["search_completed_at"]), write_completed_at=parse_iso_datetime(row["write_completed_at"]),
-            format_completed_at=parse_iso_datetime(row["format_completed_at"]), publisher_decided_at=parse_iso_datetime(row["publisher_decided_at"]),
-            publish_completed_at=parse_iso_datetime(row["publish_completed_at"]),
-        ) for row in rows]
+        result: list[PipelineTimingRow] = []
+        cursor: tuple[str, int] | None = None
+        while True:
+            seek = " AND (julianday(t.created_at) < julianday(?) OR (julianday(t.created_at) = julianday(?) AND t.id < ?))" if cursor else ""
+            params: tuple[Any, ...] = (cutoff, *PIPELINE_TIMING_SOURCES)
+            if cursor:
+                params += (cursor[0], cursor[0], cursor[1])
+            params += (PIPELINE_TIMING_PAGE_SIZE,)
+            with connect_sqlite(self.path) as conn:
+                rows = conn.execute(
+                    f"""SELECT t.id task_id,t.source,t.status,t.created_at,t.metadata,p.news_type,p.publisher_decision,
+                               p.judge_completed_at,p.search_completed_at,p.write_completed_at,p.format_completed_at,
+                               p.publisher_decided_at,p.publish_completed_at
+                        FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id
+                        WHERE julianday(t.created_at)>=julianday(?) AND t.source IN ({placeholders}) {seek}
+                        ORDER BY julianday(t.created_at) DESC,t.id DESC LIMIT ?""",
+                    params,
+                ).fetchall()
+            if not rows:
+                break
+            result.extend(_timing_row(row) for row in rows)
+            last = rows[-1]
+            cursor = (str(last["created_at"]), int(last["task_id"]))
+            if len(rows) < PIPELINE_TIMING_PAGE_SIZE:
+                break
+        return result
 
     def archive_dashboard(self, payload: dict[str, Any]) -> None:
         return None
@@ -308,7 +382,105 @@ class SQLitePipelineTimingRepository:
 
 def create_pipeline_timing_repository(database_url: str | None = None):
     del database_url
+    if load_storage_settings().backend == "postgres":
+        return PostgresPipelineTimingRepository()
     return SQLitePipelineTimingRepository(load_storage_settings().sqlite_path)
+
+
+def _timing_row(row: Any) -> PipelineTimingRow:
+    metadata = row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata or "{}")
+    return PipelineTimingRow(
+        task_id=int(row["task_id"]), source=str(row["source"]), status=str(row["status"]),
+        created_at=parse_iso_datetime(row["created_at"]) or datetime.now(UTC), metadata=metadata or {},
+        news_type=row["news_type"], publisher_decision=row["publisher_decision"],
+        judge_completed_at=parse_iso_datetime(row["judge_completed_at"]),
+        search_completed_at=parse_iso_datetime(row["search_completed_at"]),
+        write_completed_at=parse_iso_datetime(row["write_completed_at"]),
+        format_completed_at=parse_iso_datetime(row["format_completed_at"]),
+        publisher_decided_at=parse_iso_datetime(row["publisher_decided_at"]),
+        publish_completed_at=parse_iso_datetime(row["publish_completed_at"]),
+    )
+
+
+POSTGRES_PIPELINE_TIMING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pipeline_timing_snapshots (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    generated_at timestamptz NOT NULL,
+    payload_json jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_timing_snapshots_generated
+    ON pipeline_timing_snapshots(generated_at DESC, id DESC);
+"""
+
+
+class PostgresPipelineTimingRepository:
+    def __init__(self) -> None:
+        self.init_schema()
+
+    def _connect(self):
+        return connect_postgres(schema="pipeline_timing", application_name="odaily-pipeline-timing")
+
+    def init_schema(self) -> None:
+        with self._connect() as conn:
+            apply_schema_migrations(
+                conn,
+                schema="pipeline_timing",
+                component="pipeline_timing",
+                migrations=(PostgresMigration(
+                    1,
+                    "pipeline_timing_initial",
+                    sha256(POSTGRES_PIPELINE_TIMING_SCHEMA.encode()).hexdigest(),
+                    lambda connection: connection.execute(POSTGRES_PIPELINE_TIMING_SCHEMA),
+                ),),
+            )
+        with connect_postgres(schema="main", application_name="odaily-pipeline-timing-index") as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="pipeline_timing_source_index",
+                migrations=(PostgresMigration(
+                    1,
+                    "pipeline_timing_source_index_initial",
+                    sha256(b"CREATE INDEX IF NOT EXISTS idx_tasks_pipeline_timing_created ON tasks(created_at DESC,id DESC)").hexdigest(),
+                    lambda connection: connection.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_tasks_pipeline_timing_created ON tasks(created_at DESC,id DESC)"
+                    ),
+                ),),
+            )
+
+    def list_recent_rows(self, *, max_hours: int = max(PIPELINE_TIMING_WINDOWS)) -> list[PipelineTimingRow]:
+        cutoff = datetime.now(UTC) - timedelta(hours=max_hours)
+        result: list[PipelineTimingRow] = []
+        cursor: tuple[datetime, int] | None = None
+        while True:
+            seek = " AND (t.created_at,t.id) < (%s,%s)" if cursor else ""
+            params: tuple[Any, ...] = (cutoff, list(PIPELINE_TIMING_SOURCES))
+            if cursor:
+                params += cursor
+            params += (PIPELINE_TIMING_PAGE_SIZE,)
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""SELECT t.id AS task_id,t.source,t.status,t.created_at,t.metadata,
+                              p.news_type,p.publisher_decision,p.judge_completed_at,p.search_completed_at,
+                              p.write_completed_at,p.format_completed_at,p.publisher_decided_at,p.publish_completed_at
+                       FROM tasks t LEFT JOIN x_task_pipeline p ON p.task_id=t.id
+                       WHERE t.created_at >= %s AND t.source = ANY(%s) {seek}
+                       ORDER BY t.created_at DESC,t.id DESC LIMIT %s""",
+                    params,
+                ).fetchall()
+            if not rows:
+                break
+            result.extend(_timing_row(row) for row in rows)
+            cursor = (rows[-1]["created_at"], int(rows[-1]["task_id"]))
+            if len(rows) < PIPELINE_TIMING_PAGE_SIZE:
+                break
+        return result
+
+    def archive_dashboard(self, payload: dict[str, Any]) -> None:
+        del payload
 
 
 class PipelineTimingSnapshotService:
@@ -316,7 +488,7 @@ class PipelineTimingSnapshotService:
         self,
         *,
         local_store: PipelineTimingLocalStore,
-        repository: SQLitePipelineTimingRepository,
+        repository: SQLitePipelineTimingRepository | PostgresPipelineTimingRepository,
         refresh_interval_seconds: float = 3600.0,
     ) -> None:
         self.local_store = local_store

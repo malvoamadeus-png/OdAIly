@@ -588,56 +588,62 @@ class XProcessingWorker:
         self._wake_event.set()
 
     def run_once(self) -> StageRunResult:
-        task: TaskRecord | None = None
-        attempt_id: int | None = None
+        task = self.repository.claim_task(self.stage, worker_id=self.worker_id)
+        if task is None:
+            result = StageRunResult(0, self.stage, 0, 0, "no task")
+            self._record_heartbeat(result)
+            return result
+        result = self.process_claimed_task(task)
+        self._record_heartbeat(result)
+        return result
+
+    def process_claimed_task(self, task: TaskRecord) -> StageRunResult:
+        """Run the complete attempt lifecycle for a task claimed by any queue owner."""
         try:
-            task = self.repository.claim_task(self.stage, worker_id=self.worker_id)
-            if task is None:
-                result = StageRunResult(0, self.stage, 0, 0, "no task")
-                self._record_heartbeat(result)
-                return result
+            claim_context = getattr(self.repository, "set_claim_context", None)
+            if callable(claim_context):
+                claim_context(task)
             task = self._resolve_task_author_name(task)
             start_attempt = getattr(self.repository, "start_stage_attempt", None)
             if callable(start_attempt):
                 content_bytes = task.content.encode("utf-8")
-                attempt_id = start_attempt(
+                self._current_attempt_id = start_attempt(
                     task.id,
                     stage=str(getattr(self.stage, "value", self.stage)),
                     executor=self.worker_id,
                     input_evidence={
-                        "source": task.source, "source_item_id": task.source_item_id, "source_url": task.source_url,
-                        "title": task.title, "content_sha256": hashlib.sha256(content_bytes).hexdigest(),
+                        "source": task.source,
+                        "source_item_id": task.source_item_id,
+                        "source_url": task.source_url,
+                        "title": task.title,
+                        "content_sha256": hashlib.sha256(content_bytes).hexdigest(),
                         "content_bytes": len(content_bytes),
                     },
                     rule_evidence={"stage": str(self.stage), "code_revision": os.getenv("ODAILY_CODE_REVISION")},
                 )
-                self._current_attempt_id = attempt_id
             if self._expire_task_if_stale(task):
-                result = StageRunResult(0, self.stage, 1, 0, f"expired task {task.id}")
-                self._record_heartbeat(result)
-                self._current_attempt_id = None
-                return result
+                return StageRunResult(0, self.stage, 1, 0, f"expired task {task.id}")
             self._process_task(task)
             complete_attempt = getattr(self.repository, "complete_stage_attempt", None)
             if self._current_attempt_id is not None and callable(complete_attempt):
                 complete_attempt(self._current_attempt_id, result={"status": "processed"})
-            result = StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
+            return StageRunResult(0, self.stage, 1, 0, f"processed task {task.id}")
         except HandledStageError as exc:
             fail_attempt = getattr(self.repository, "fail_stage_attempt", None)
-            if self._current_attempt_id is not None and callable(fail_attempt):
+            checker = getattr(self.repository, "owns_task_claim", None)
+            owns_claim = not callable(checker) or checker(task)
+            if self._current_attempt_id is not None and callable(fail_attempt) and owns_claim:
                 fail_attempt(self._current_attempt_id, str(exc), error_code=type(exc).__name__)
-            task_label = str(task.id) if task is not None else "unknown"
-            result = StageRunResult(1, self.stage, 0, 1, f"failed task {task_label}: {exc}")
+            return StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
         except Exception as exc:
-            if task is not None:
+            checker = getattr(self.repository, "owns_task_claim", None)
+            owns_claim = not callable(checker) or checker(task)
+            if owns_claim:
                 self.repository.fail_task(task.id, stage=self.stage, error=str(exc))
                 self._release_local_candidate_for_task(task.id, release_reason=STAGE_SPECS[self.stage].failure_status)
-                result = StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
-            else:
-                result = StageRunResult(1, self.stage, 0, 1, f"worker failed before claim: {exc}")
-        self._current_attempt_id = None
-        self._record_heartbeat(result)
-        return result
+            return StageRunResult(1, self.stage, 0, 1, f"failed task {task.id}: {exc}")
+        finally:
+            self._current_attempt_id = None
 
     def _record_attempt_context(self, *, input_evidence: dict[str, Any], rule_evidence: dict[str, Any]) -> None:
         recorder = getattr(self.repository, "record_stage_attempt_context", None)
@@ -689,8 +695,8 @@ class XProcessingWorker:
         if task.source != HYPERLIQUID_SOURCE:
             return False
         from packages.common.storage import load_hyperliquid_storage_path
-        from packages.hyperliquid_news.store import NewsStore
-        blocked = NewsStore(load_hyperliquid_storage_path()).event_blocked(task.raw_payload)
+        from packages.hyperliquid_news.store import create_news_store
+        blocked = create_news_store(load_hyperliquid_storage_path()).event_blocked(task.raw_payload)
         if blocked:
             self.repository.fail_task(task.id, stage=self.stage, error='hyperliquid_address_blocked', status='discarded')
         return blocked
@@ -1225,8 +1231,8 @@ class XProcessingWorker:
             return
         if task.source == HYPERLIQUID_SOURCE:
             from packages.common.storage import load_hyperliquid_storage_path
-            from packages.hyperliquid_news.store import NewsStore
-            task = replace(task, raw_payload=NewsStore(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload))
+            from packages.hyperliquid_news.store import create_news_store
+            task = replace(task, raw_payload=create_news_store(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload))
         pipeline = self.repository.get_pipeline(task.id)
         template_key = None
         metadata_template_key = task.metadata.get("writer_template_key")
@@ -1323,8 +1329,8 @@ class XProcessingWorker:
             if task.source == HYPERLIQUID_SOURCE:
                 from packages.hyperliquid_news.copy import format_news
                 from packages.common.storage import load_hyperliquid_storage_path
-                from packages.hyperliquid_news.store import NewsStore
-                event = NewsStore(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload)
+                from packages.hyperliquid_news.store import create_news_store
+                event = create_news_store(load_hyperliquid_storage_path()).with_address_notes(task.raw_payload)
                 final = format_news(draft, event)
             else:
                 final = format_brief(
@@ -1352,6 +1358,7 @@ class XProcessingWorker:
             return
         if self._event_tracking_cancelled(task.id):
             return
+        self._assert_current_claim(task)
         pipeline = self.repository.get_pipeline(task.id)
         decided_at = datetime.now(UTC)
         publisher_channel = resolve_publisher_channel(task)
@@ -1523,6 +1530,7 @@ class XProcessingWorker:
         context_output["newsflash_priority"] = priority_payload
         if self._hyperliquid_blocked(task):
             return
+        self._assert_current_claim(task)
         delivery_key = f"odaily-task-{task.id}"
         push_result = self.push_client.push(
             title=pipeline.final_title,
@@ -1644,6 +1652,7 @@ class XProcessingWorker:
             return
         if task.source == EVENT_TRACKING_SOURCE and self._event_tracking_cancelled(task.id):
             return
+        self._assert_current_claim(task)
         push_result = self.push_client.push(
             title=pipeline.final_title or task.title or "",
             content=pipeline.final_content or task.content,
@@ -1741,7 +1750,15 @@ class XProcessingWorker:
         return result
 
     def _send_publish_notice(self, *, task: TaskRecord, pipeline: PipelineRecord):
+        self._assert_current_claim(task)
         return skipped_telegram_result("business publish notice disabled; use editor plugin feed")
+
+    def _assert_current_claim(self, task: TaskRecord) -> None:
+        checker = getattr(self.repository, "owns_task_claim", None)
+        if not callable(checker):
+            return
+        if not checker(task):
+            raise HandledStageError("task claim expired or was replaced")
 
     def _write_newsflash_feed(
         self,

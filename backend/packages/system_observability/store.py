@@ -181,13 +181,6 @@ class SystemInformationStore:
                     state_value TEXT NOT NULL,
                     updated_at_ms INTEGER NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS system_information_search (
-                    term TEXT NOT NULL,
-                    item_id TEXT NOT NULL REFERENCES system_information_items(item_id) ON DELETE CASCADE,
-                    PRIMARY KEY(term, item_id)
-                ) WITHOUT ROWID;
-                CREATE INDEX IF NOT EXISTS idx_system_information_search_item
-                    ON system_information_search(item_id);
                 CREATE TABLE IF NOT EXISTS system_information_evidence (
                     evidence_ref TEXT PRIMARY KEY,
                     path TEXT NOT NULL,
@@ -230,30 +223,6 @@ class SystemInformationStore:
                     ON system_information_decision_samples(sampled_at_ms DESC, business_key, source, result);
                 """
             )
-            legacy_position_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_information_search_positions'"
-            ).fetchone()
-            started = conn.execute(
-                "SELECT state_value FROM system_information_state WHERE state_key='search_bigrams_rebuild_started'"
-            ).fetchone()
-            done = conn.execute(
-                "SELECT state_value FROM system_information_state WHERE state_key='search_bigrams_rebuild_done'"
-            ).fetchone()
-            if started is None:
-                ready = not legacy_position_table
-                conn.execute(
-                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?)",
-                    ("search_bigrams_rebuild_started", "1" if ready else "0", int(datetime.now(UTC).timestamp() * 1000)),
-                )
-                conn.execute(
-                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?)",
-                    ("search_bigrams_rebuild_done", "1" if ready else "0", int(datetime.now(UTC).timestamp() * 1000)),
-                )
-            elif done is None:
-                conn.execute(
-                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?)",
-                    ("search_bigrams_rebuild_done", "0", int(datetime.now(UTC).timestamp() * 1000)),
-                )
         if not self.get_state("observability_started_at"):
             self.set_state("observability_started_at", int(datetime.now(UTC).timestamp() * 1000))
         with self.connect() as conn:
@@ -1075,9 +1044,6 @@ class SystemInformationStore:
                                 ref, path, size = self._write_evidence_file(conn, evidence)
                                 conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
                                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
-                                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
-                                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
-                                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
                                 changed += 1
                     continue
                 if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}:
@@ -1130,34 +1096,12 @@ class SystemInformationStore:
                 ref, path, size = self._write_evidence_file(conn, evidence)
                 conn.execute('UPDATE system_information_items SET evidence_ref=? WHERE rowid=? AND evidence_ref=?', (ref, row['rowid'], row['evidence_ref']))
                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
-                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
-                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
-                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
                 changed += 1
             conn.execute("INSERT INTO system_information_state VALUES('task_evidence_retention_cursor',?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(rows[-1]['rowid'] if rows else 0), now))
         return {'scanned': len(rows), 'changed': changed}
 
     def compact_search_index(self, *, now_ms: int | None = None, limit: int = 25) -> dict[str, int]:
-        now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-        if self.get_state('readable_search_reindex_done') == '1':
-            return {'scanned': 0, 'done': 1}
-        cursor = int(self.get_state('readable_search_reindex_cursor', '0') or 0)
-        with self.connect() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            rows = conn.execute(
-                'SELECT i.rowid,i.item_id,i.title,i.summary,i.source,i.source_id,i.source_url,i.evidence_ref,e.path '
-                'FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref '
-                'WHERE i.rowid>? ORDER BY i.rowid LIMIT ?', (cursor, max(1, min(limit, 100))),
-            ).fetchall()
-            for row in rows:
-                evidence = self._read_evidence_file(row['path'], row['evidence_ref']) if row['path'] else None
-                searchable = _searchable_text(tuple(row[key] for key in ('title', 'summary', 'source', 'source_id', 'source_url')), evidence)
-                conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
-                conn.executemany('INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES(?,?)', ((term, row['item_id']) for term in _search_terms(searchable)))
-            key = 'readable_search_reindex_cursor' if rows else 'readable_search_reindex_done'
-            value = str(rows[-1]['rowid']) if rows else '1'
-            conn.execute('INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms', (key, value, now))
-        return {'scanned': len(rows), 'done': int(not rows)}
+        return {'scanned': 0, 'done': 1}
 
     def _upsert_snapshot_in_connection(
         self, conn: sqlite3.Connection, snapshot: dict[str, Any], evidence: Any, observed: int,
@@ -1172,8 +1116,12 @@ class SystemInformationStore:
         fingerprint = _fingerprint({key: value for key, value in snapshot.items() if key != 'updated_at_ms'})
         item_id = str(snapshot["item_id"])
         previous = conn.execute(
-            "SELECT fingerprint,title,summary,source_url,stage,status,result FROM system_information_items WHERE item_id=?", (item_id,),
+            "SELECT fingerprint,title,summary,source_url,stage,status,result,updated_at_ms FROM system_information_items WHERE item_id=?", (item_id,),
         ).fetchone()
+        if (previous is not None and snapshot.get('source_table') == 'x_capture_attempts'
+                and previous['updated_at_ms'] is not None and snapshot.get('updated_at_ms') is not None
+                and int(snapshot['updated_at_ms']) < int(previous['updated_at_ms'])):
+            return False
         if previous is not None and previous["fingerprint"] == fingerprint:
             conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?),observed_at_ms=? WHERE item_id=? AND COALESCE(updated_at_ms,0)<?',
                          (snapshot.get('updated_at_ms') or 0, observed, item_id, snapshot.get('updated_at_ms') or 0))
@@ -1208,21 +1156,12 @@ class SystemInformationStore:
                 str(snapshot["source_row_id"]), evidence_ref, fingerprint, int(snapshot.get("legacy_history", True)),
             ),
         )
-        conn.execute("DELETE FROM system_information_search WHERE item_id=?", (item_id,))
         conn.execute("UPDATE system_information_items SET news_visible=?,admission=?,parent_item_id=?,duplicate_json=?,source_name=CASE WHEN ?='' AND source_table IN ('x_capture_attempts','binance_square_attempts') THEN source_name ELSE ? END,source_updated_at_ms=? WHERE item_id=?",
                      (int(snapshot.get('news_visible', True)), snapshot.get('admission', 'unassessed'),
                       snapshot.get('parent_item_id'), json.dumps(snapshot.get('duplicate_target'), ensure_ascii=False), snapshot.get('source_name') or '', snapshot.get('source_name') or '', snapshot.get('source_updated_at_ms'), item_id))
         if snapshot.get('parent_item_id'):
             conn.execute('UPDATE system_information_items SET updated_at_ms=MAX(COALESCE(updated_at_ms,0),?) WHERE item_id=?',
                          (snapshot.get('updated_at_ms') or 0, snapshot['parent_item_id']))
-        searchable = _searchable_text(
-            tuple(snapshot.get(key) for key in ("title", "summary", "source", "source_id", "source_url")),
-            _safe_json(evidence) if evidence is not None else None,
-        )
-        conn.executemany(
-            "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)",
-            ((term, item_id) for term in _search_terms(searchable)),
-        )
         event_id = hashlib.sha256(f"{item_id}:{fingerprint}".encode()).hexdigest()
         state_changed = previous is not None and any(
             previous[key] != (snapshot.get(key) or ("" if key in {"title", "summary", "source_url"} else None))
@@ -1336,7 +1275,7 @@ class SystemInformationStore:
         for entry in entries:
             safe = _safe_json(entry.get('evidence'))
             payload = json.dumps(safe, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
-            if self._is_small_capture(safe, len(payload)):
+            if entry['snapshot'].get('source_table') != 'x_capture_attempts' and self._is_small_capture(safe, len(payload)):
                 small_payloads[hashlib.sha256(payload).hexdigest()] = gzip.compress(payload, compresslevel=6, mtime=0)
         with self.connect() as conn:
             prepared = set()
@@ -1353,6 +1292,12 @@ class SystemInformationStore:
             for entry in entries:
                 snapshot = entry["snapshot"]
                 item_id = str(snapshot["item_id"])
+                existing_entry = snapshots.get(item_id)
+                if snapshot.get('source_table') == 'x_capture_attempts' and existing_entry is not None:
+                    incoming_time = int(snapshot.get('updated_at_ms') or 0)
+                    existing_time = int(existing_entry['snapshot'].get('updated_at_ms') or 0)
+                    if incoming_time <= existing_time:
+                        continue
                 if entry.get("only_if_newer"):
                     previous = conn.execute(
                         "SELECT updated_at_ms FROM system_information_items WHERE item_id=?", (item_id,),
@@ -1402,6 +1347,8 @@ class SystemInformationStore:
             for entry in entries:
                 snapshot = entry["snapshot"]
                 item_id = str(snapshot["item_id"])
+                if snapshot.get('source_table') == 'x_capture_attempts':
+                    continue
                 self._append_event_in_connection(
                     conn,
                     observed=observed,
@@ -1467,79 +1414,66 @@ class SystemInformationStore:
             ).fetchone() is not None
 
     def rebuild_search_index(self, limit: int = 100) -> int:
-        if self.get_state("search_bigrams_rebuild_done") == "1":
-            return 0
+        return 0
 
-        now = int(datetime.now(UTC).timestamp() * 1000)
+    def trim_information_items(self, *, now_ms: int | None = None, limit: int = 500) -> dict[str, int]:
+        """Remove expired information-feed copies while preserving daily review inputs and references."""
+        now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+        cutoff = now - 6 * 60 * 60 * 1000
+        batch = max(1, min(int(limit), 2000))
         with self.connect() as conn:
-            started = self.get_state("search_bigrams_rebuild_started") == "1"
-            if not started:
-                conn.execute("DELETE FROM system_information_search")
-                conn.execute("DROP TABLE IF EXISTS system_information_search_positions")
-                for key, value in (
-                    ("search_bigrams_rebuild_started", "1"),
-                    ("search_bigrams_rebuild_cursor", ""),
-                    ("search_bigrams_rebuild_done", "0"),
-                    ("search_positions_rebuild_done", "0"),
-                    ("search_positions_rebuild_cursor", ""),
-                ):
-                    conn.execute(
-                        "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
-                        "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
-                        (key, value, now),
-                    )
-                conn.commit()
-            cursor = self.get_state("search_bigrams_rebuild_cursor")
-            batch_size = max(1, min(limit, 100))
+            review_refs: set[str] = set()
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_review_items'").fetchone():
+                for review in conn.execute("SELECT scope_json,evidence_json,counter_evidence_json FROM system_review_items"):
+                    for document in review:
+                        try:
+                            decoded = json.loads(document or "{}")
+                        except (TypeError, ValueError):
+                            continue
+                        stack = [decoded]
+                        while stack:
+                            value = stack.pop()
+                            if isinstance(value, dict):
+                                item_id = value.get('stream_item_id')
+                                if item_id:
+                                    review_refs.add(str(item_id))
+                                item_ids = value.get('stream_item_ids')
+                                if isinstance(item_ids, list):
+                                    review_refs.update(str(item_id) for item_id in item_ids if item_id)
+                                stack.extend(value.values())
+                            elif isinstance(value, list):
+                                stack.extend(value)
             rows = conn.execute(
-                "SELECT i.item_id,i.title,i.summary,i.source,i.source_id,i.source_url,i.evidence_ref,e.path AS evidence_path "
-                "FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref "
-                "WHERE i.item_id>? ORDER BY i.item_id LIMIT ?",
-                (cursor, batch_size),
+                "SELECT i.item_id,i.evidence_ref,i.updated_at_ms,i.status,i.result FROM system_information_items i "
+                "WHERE i.source_table='x_capture_attempts' AND i.updated_at_ms<? "
+                "AND NOT EXISTS (SELECT 1 FROM system_information_decision_samples d WHERE d.item_id=i.item_id) "
+                "AND NOT EXISTS (SELECT 1 FROM system_information_evidence_pins p WHERE p.evidence_ref=i.evidence_ref) "
+                "AND NOT EXISTS (SELECT 1 FROM system_review_items r WHERE "
+                "instr(COALESCE(r.scope_json,''),i.item_id)>0 OR instr(COALESCE(r.evidence_json,''),i.item_id)>0 "
+                "OR instr(COALESCE(r.counter_evidence_json,''),i.item_id)>0) "
+                "ORDER BY i.updated_at_ms,i.item_id LIMIT ?", (cutoff, batch),
             ).fetchall()
-            if not rows:
-                conn.execute("DROP TABLE IF EXISTS system_information_search_positions")
-                conn.execute(
-                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
-                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
-                    ("search_bigrams_rebuild_done", "1", now),
-                )
-                return 0
-
-        for offset in range(0, len(rows), 10):
-            indexed: list[tuple[str, str]] = []
-            group = rows[offset:offset + 10]
-            for row in group:
-                evidence = None
-                evidence_path = row["evidence_path"]
-                if evidence_path:
-                    try:
-                        evidence = self._read_evidence_file(evidence_path, row['evidence_ref'])
-                    except (OSError, EOFError, json.JSONDecodeError):
-                        evidence = None
-                searchable = _searchable_text(
-                    tuple(row[key] for key in ("title", "summary", "source", "source_id", "source_url")),
-                    evidence,
-                )
-                indexed.extend((term, str(row["item_id"])) for term in _search_terms(searchable))
-            with self.connect() as conn:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO system_information_search(term,item_id) VALUES (?,?)",
-                    indexed,
-                )
-                next_cursor = str(group[-1]["item_id"])
-                conn.execute(
-                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(?,?,?) "
-                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
-                    ("search_bigrams_rebuild_cursor", next_cursor, now),
-                )
-        return len(rows)
+            removed = 0
+            protected = 0
+            for row in rows:
+                item_id = str(row['item_id'])
+                if item_id in review_refs:
+                    protected += 1
+                    continue
+                removed += conn.execute("DELETE FROM system_information_items WHERE item_id=?", (item_id,)).rowcount
+        return {'scanned': len(rows), 'removed': removed, 'protected': protected}
 
     def query(self, payload: dict[str, Any]) -> dict[str, Any]:
-        limit = max(1, min(int(payload.get("limit") or 50), 100))
+        limit = max(1, min(int(payload.get("limit") or 50), 50))
         sort = "created_at_ms" if payload.get("sort") == "created" else "updated_at_ms"
         clauses: list[str] = []
         params: list[Any] = []
+        now = int(datetime.now(UTC).timestamp() * 1000)
+        requested_until = timestamp_ms(payload.get("until"))
+        until = min(now, requested_until) if requested_until is not None else now
+        since = max(now - 6 * 60 * 60 * 1000, until - 6 * 60 * 60 * 1000)
+        clauses.extend([f"i.{sort}>=?", f"i.{sort}<?"])
+        params.extend([since, until])
         if payload.get('view') == 'news':
             clauses.extend(['i.news_visible=1', 'i.parent_item_id IS NULL'])
         for key, column in (("business", "business_key"), ("source", "source"), ("stage", "stage"), ("status", "status"), ("result", "result"), ("failure_category", "failure_category")):
@@ -1557,30 +1491,6 @@ class SystemInformationStore:
                 else:
                     clauses.append(f"i.{column}=?")
                     params.append(value)
-        since = timestamp_ms(payload.get("since"))
-        until = timestamp_ms(payload.get("until"))
-        if since is not None:
-            clauses.append(f"i.{sort}>=?")
-            params.append(since)
-        if until is not None:
-            clauses.append(f"i.{sort}<?")
-            params.append(until)
-        keyword = str(payload.get("q") or "").strip().casefold()
-        if keyword:
-            if len(keyword) < 2:
-                raise ValueError("关键词至少需要两个字符")
-            ordered_terms = sorted(_search_terms(keyword))
-            if not ordered_terms:
-                raise ValueError("关键词至少需要两个字符")
-            if len(ordered_terms) > 400:
-                raise ValueError("关键词最多支持 400 个字符")
-            clauses.append(
-                "i.item_id IN (SELECT item_id FROM system_information_search WHERE term IN ("
-                + ",".join("?" for _ in ordered_terms)
-                + ") GROUP BY item_id HAVING COUNT(*)=?)"
-            )
-            params.extend(ordered_terms)
-            params.append(len(ordered_terms))
         base_where = " WHERE " + " AND ".join(clauses) if clauses else ""
         base_params = list(params)
         cursor = payload.get("cursor")
@@ -1599,60 +1509,16 @@ class SystemInformationStore:
         # chooses parent_item_id=NULL and scans every technical row before sorting.
         news_index = " INDEXED BY idx_system_information_news_activity" if payload.get('view') == 'news' else ""
         with self.connect() as conn:
-            if keyword:
-                rows = conn.execute(
-                    f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
-                        i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
-                        i.evidence_ref,i.legacy_history,i.admission,i.duplicate_json,i.source_name,i.source_updated_at_ms,e.path AS evidence_path
-                        FROM system_information_items i LEFT JOIN system_information_evidence e ON e.evidence_ref=i.evidence_ref
-                        {base_where}
-                        ORDER BY i.{sort} DESC,i.item_id DESC""",
-                    base_params,
-                ).fetchall()
-                total = 0
-                items = []
-                cursor_id = str(cursor.get("id") or "") if isinstance(cursor, dict) else ""
-                for row in rows:
-                    evidence = None
-                    if row["evidence_path"]:
-                        try:
-                            evidence = json.loads(gzip.decompress(Path(row["evidence_path"]).read_bytes()))
-                        except (OSError, EOFError, json.JSONDecodeError):
-                            evidence = None
-                    visible = expire_external_errors({'item': dict(row), 'evidence': evidence}, row['updated_at_ms'])
-                    searchable = _searchable_text(
-                        tuple(visible['item'][key] for key in ("title", "summary", "source", "source_id", "source_url")),
-                        visible['evidence'],
-                    )
-                    if keyword not in searchable:
-                        continue
-                    total += 1
-                    if isinstance(cursor, dict):
-                        cursor_time = cursor.get("time")
-                        row_time = row[sort]
-                        if cursor_time is None:
-                            if row_time is not None or str(row["item_id"]) >= cursor_id:
-                                continue
-                        elif row_time is not None:
-                            cursor_time = int(cursor_time)
-                            row_time = int(row_time)
-                            if not (row_time < cursor_time or (row_time == cursor_time and str(row["item_id"]) < cursor_id)):
-                                continue
-                    if len(items) < limit + 1:
-                        item = dict(row)
-                        item.pop("evidence_path", None)
-                        items.append(item)
-            else:
-                total = conn.execute(f"SELECT COUNT(*) FROM system_information_items i{news_index}{base_where}", base_params).fetchone()[0]
-                rows = conn.execute(
+            total = conn.execute(f"SELECT COUNT(*) FROM system_information_items i{news_index}{base_where}", base_params).fetchone()[0]
+            rows = conn.execute(
                     f"""SELECT i.item_id,i.business_key,i.source,i.source_id,i.task_id,i.title,i.summary,i.source_url,
                         i.stage,i.status,i.result,i.failure_category,i.created_at_ms,i.updated_at_ms,i.observed_at_ms,
                         i.evidence_ref,i.legacy_history,i.admission,i.duplicate_json,i.source_name,i.source_updated_at_ms
                         FROM system_information_items i{news_index}{where}
                         ORDER BY i.{sort} DESC,i.item_id DESC LIMIT ?""",
                     [*params, limit + 1],
-                ).fetchall()
-                items = [dict(row) for row in rows]
+            ).fetchall()
+            items = [dict(row) for row in rows]
             more = len(items) > limit
             items = items[:limit]
             for item in items:
@@ -1667,12 +1533,9 @@ class SystemInformationStore:
                 next_cursor = {"time": last.get(sort), "id": last["item_id"]}
             lag = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='main_tasks_lag' ").fetchone()
             sync = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='main_tasks_last_success' ").fetchone()
-            search_ready = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='search_bigrams_rebuild_done'").fetchone()
         return {
             "items": items, "total": int(total), "limit": limit, "next_cursor": next_cursor,
             "index": {"generated_at_ms": int(sync["state_value"]) if sync else None, "lag": int(lag["state_value"]) if lag else None},
-            "search_scope": "已登记的标题、正文摘要、来源、ID与URL；已清理原文不会被补搜。",
-            "search_index_ready": bool(search_ready and search_ready["state_value"] == "1"),
         }
 
     def detail(self, item_id: str) -> dict[str, Any] | None:

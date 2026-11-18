@@ -6,6 +6,7 @@ OdAIly X capture repository or writes to the main application database.
 from __future__ import annotations
 
 import csv
+from dataclasses import asdict
 import hashlib
 import heapq
 import json
@@ -13,6 +14,7 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import UTC, datetime, timedelta
 from functools import wraps
@@ -20,7 +22,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from packages.common.paths import ensure_runtime_dirs, get_paths
-from packages.common.storage import connect_sqlite_readonly
+from packages.common.storage import connect_sqlite_readonly, load_postgres_settings, load_storage_settings
+from packages.common.pg_native import connect_postgres
 from packages.x_agent import XAgentAnalyzer, is_relevant
 from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.investment_leads.schema import ensure_schema as ensure_investment_leads_schema
@@ -29,11 +32,15 @@ from packages.investment_leads.service import (
     cancel_ineligible_jobs,
     persist_capture_materials,
 )
+from packages.investment_leads.postgres_repository import InvestmentLeadPostgresRepository
 
 from .capture import AccountRow, ContentItem, fetch_account_identity_snapshot, scan_account
 from .event_tracking import EventTracker, EventTrackingAI, EventTrackingTaskDispatcher
 from .topic_aggregator import ModelBriefWriter, TopicCandidateResolver, TopicClaimReviewer, TopicVisibleMergeReviewer, TopicAggregator
 from .yesterday_hot_discussion import YesterdayHotDiscussion
+from .postgres_repository import HotTopicPostgresRepository
+from .postgres_event_tracking import PostgresEventTrackingRepository
+from .collector_spool import CollectorSpool, SpoolFullError, SpoolRecordTooLarge
 
 
 POLL_INTERVAL_SECONDS = 600
@@ -257,6 +264,10 @@ class CollectRequestPacer:
                     return
             time.sleep(min(delay, 0.5))
 
+    def defer(self, seconds: float) -> None:
+        with self._lock:
+            self._next_request_at = max(self._next_request_at, time.monotonic() + max(0.0, seconds))
+
 def _serialized(method: Any) -> Any:
     """Serialize access to the long-lived SQLite connection in the console process."""
     @wraps(method)
@@ -277,19 +288,46 @@ class HotTopicService:
         event_tracking_ai: EventTrackingAI | None = None,
         event_tracking_dispatcher: EventTrackingTaskDispatcher | None = None,
         semantic_reviewer: Any | None = None,
+        postgres_repository: HotTopicPostgresRepository | None = None,
     ) -> None:
         paths = get_paths()
-        ensure_runtime_dirs(paths)
+        if postgres_repository is None and load_storage_settings().backend == "postgres":
+            postgres_repository = HotTopicPostgresRepository(settings=load_postgres_settings())
+        if postgres_repository is None:
+            ensure_runtime_dirs(paths)
         self.path = database_path or paths.runtime_dir / "hottopic.sqlite"
         self.workers = max(1, workers)
-        self.db = open_worker_database(self.path)
-        self.db.executescript(SCHEMA)
-        ensure_investment_leads_schema(self.db, capture_started_at=iso(utc_now()))
-        self._migrate_x_agent_schema()
+        self.postgres_repository = postgres_repository
+        self.collector_spool = None
+        if self.postgres_repository is not None:
+            spool_directory = Path(os.getenv("ODAILY_COLLECT_SPOOL_DIR") or "/data/OdAIly/collector-spool")
+            spool_directory = spool_directory.expanduser().resolve()
+            if not spool_directory.is_relative_to(Path("/data")):
+                raise ValueError("ODAILY_COLLECT_SPOOL_DIR must be an absolute path under /data")
+            self.collector_spool = CollectorSpool(
+                spool_directory,
+                max_bytes=int(os.getenv("ODAILY_COLLECT_SPOOL_MAX_BYTES") or str(512 * 1024 * 1024)),
+                max_record_bytes=int(os.getenv("ODAILY_COLLECT_SPOOL_MAX_RECORD_BYTES") or str(4 * 1024 * 1024)),
+            )
+        if self.postgres_repository is not None:
+            self.postgres_repository.initialize()
+            self.db = None
+        else:
+            self.db = open_worker_database(self.path)
+            self.db.executescript(SCHEMA)
+            ensure_investment_leads_schema(self.db, capture_started_at=iso(utc_now()))
+            self._migrate_x_agent_schema()
+        investment_repository = None
+        if self.postgres_repository is not None:
+            investment_repository = InvestmentLeadPostgresRepository(
+                schema=self.postgres_repository.schema, settings=self.postgres_repository.settings,
+            )
         self.investment_lead_queries = InvestmentLeadService(
-            self.path, connection=self.db, reader_only=True
+            self.path, connection=self.db if investment_repository is None else None,
+            reader_only=True, postgres_repository=investment_repository,
         )
-        self._init_meta()
+        if self.db is not None:
+            self._init_meta()
         writer = None
         configured_model = model or os.getenv("HOTTOPIC_MODEL") or "gpt-6-luna"
         configured_fallback_model = os.getenv("HOTTOPIC_FALLBACK_MODEL") or "gpt-6-luna"
@@ -353,19 +391,28 @@ class HotTopicService:
                     return []
 
             visible_merge_reviewer = DisabledVisibleMergeReviewer()
-        self.aggregator = TopicAggregator(
-            self.path,
-            brief_writer=writer,
-            resolver=candidate_resolver,
-            semantic_reviewer=semantic_reviewer,
-            visible_merge_reviewer=visible_merge_reviewer,
-            semantic_review_batch_size=configured_integer(
-                "HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100
-            ),
-            semantic_review_backfill_limit=configured_integer(
-                "HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000
-            ),
-        )
+        if self.db is None:
+            self.aggregator = TopicAggregator(
+                self.path, postgres_repository=self.postgres_repository, brief_writer=writer,
+                resolver=candidate_resolver, semantic_reviewer=semantic_reviewer,
+                visible_merge_reviewer=visible_merge_reviewer,
+                semantic_review_batch_size=configured_integer("HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100),
+                semantic_review_backfill_limit=configured_integer("HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000),
+            )
+        else:
+            self.aggregator = TopicAggregator(
+                self.path,
+                brief_writer=writer,
+                resolver=candidate_resolver,
+                semantic_reviewer=semantic_reviewer,
+                visible_merge_reviewer=visible_merge_reviewer,
+                semantic_review_batch_size=configured_integer(
+                    "HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100
+                ),
+                semantic_review_backfill_limit=configured_integer(
+                    "HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000
+                ),
+            )
         # The console HTTP server is threaded while this service intentionally
         # owns one long-lived SQLite connection. All exposed read/write methods
         # therefore use this re-entrant lock around their SQLite work.
@@ -383,23 +430,45 @@ class HotTopicService:
         event_primary_database = primary_database_path
         if event_primary_database is None:
             event_primary_database = paths.primary_database_path if database_path is None else self.path.parent / "odaily.sqlite"
-        self.event_tracker = EventTracker(
-            open_worker_database(self.path),
-            primary_database_path=event_primary_database,
-            ai=event_tracking_ai,
-            dispatcher=event_tracking_dispatcher,
-            feed_writer=LocalEditorPluginFeedWriter(),
-            account_identity_fetcher=self._fetch_event_account_identity,
-            owns_connection=True,
-        )
-        from packages.ai_review import AIReviewService
+        if self.db is None:
+            event_repository = PostgresEventTrackingRepository(
+                schema=self.postgres_repository.schema, settings=self.postgres_repository.settings,
+            )
+            self.event_tracker = EventTracker(
+                None, primary_database_path=event_primary_database,
+                ai=event_tracking_ai, dispatcher=event_tracking_dispatcher,
+                feed_writer=LocalEditorPluginFeedWriter(),
+                account_identity_fetcher=self._fetch_event_account_identity,
+                postgres_repository=event_repository,
+            )
+            from packages.ai_review import AIReviewService
 
-        self.ai_review = AIReviewService(
-            database_path=paths.runtime_dir / "ai_review.sqlite",
-            primary_database_path=event_primary_database,
-            hottopic_database_path=self.path,
-        )
-        self.yesterday_hot_discussion = YesterdayHotDiscussion(self.db)
+            self.ai_review = AIReviewService(
+                database_path=paths.runtime_dir / "ai_review.sqlite",
+                primary_database_path=event_primary_database,
+                hottopic_database_path=self.path,
+            )
+            self.yesterday_hot_discussion = YesterdayHotDiscussion(
+                postgres_repository=self.postgres_repository,
+            )
+        else:
+            self.event_tracker = EventTracker(
+                open_worker_database(self.path),
+                primary_database_path=event_primary_database,
+                ai=event_tracking_ai,
+                dispatcher=event_tracking_dispatcher,
+                feed_writer=LocalEditorPluginFeedWriter(),
+                account_identity_fetcher=self._fetch_event_account_identity,
+                owns_connection=True,
+            )
+            from packages.ai_review import AIReviewService
+
+            self.ai_review = AIReviewService(
+                database_path=paths.runtime_dir / "ai_review.sqlite",
+                primary_database_path=event_primary_database,
+                hottopic_database_path=self.path,
+            )
+            self.yesterday_hot_discussion = YesterdayHotDiscussion(self.db)
         self.rate_limit_cooldown_seconds = configured_seconds(
             "HOTTOPIC_RATE_LIMIT_COOLDOWN_SECONDS",
             DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
@@ -418,11 +487,15 @@ class HotTopicService:
             self.x_agent_analyzer_error = f"{type(exc).__name__}: {exc}"
 
     def close(self) -> None:
-        self.ai_review.close()
+        if self.ai_review is not None:
+            self.ai_review.close()
         self.investment_lead_queries.close()
-        self.event_tracker.close()
-        self.aggregator.close()
-        self.db.close()
+        if self.event_tracker is not None:
+            self.event_tracker.close()
+        if self.aggregator is not None:
+            self.aggregator.close()
+        if self.db is not None:
+            self.db.close()
 
     def _init_meta(self) -> None:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(hottopic_meta)")}
@@ -578,11 +651,16 @@ class HotTopicService:
 
     @_serialized
     def deployment_started_at(self, database: sqlite3.Connection | None = None) -> str:
+        if self.postgres_repository is not None and database is None:
+            return self.postgres_repository.deployment_started_at().isoformat()
         db = database if database is not None else self.db
         return str(db.execute("SELECT deployment_started_at FROM hottopic_meta WHERE singleton_key='global'").fetchone()[0])
 
     @_serialized
     def event(self, kind: str, detail: dict[str, Any], database: sqlite3.Connection | None = None) -> None:
+        if self.postgres_repository is not None and database is None:
+            self.postgres_repository.log_event(kind, detail, iso(utc_now()))
+            return
         db = database if database is not None else self.db
         with db:
             db.execute(
@@ -593,6 +671,8 @@ class HotTopicService:
     @_serialized
     def seed_accounts(self, rows: Iterable[dict[str, str]]) -> int:
         now = iso(utc_now())
+        if self.postgres_repository is not None:
+            return self.postgres_repository.seed_accounts(rows, now=now)
         inserted = 0
         with self.db:
             for row in rows:
@@ -615,6 +695,8 @@ class HotTopicService:
 
     @_serialized
     def list_accounts(self, *, query: str = "", status: str = "all") -> list[dict[str, Any]]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.list_accounts(query=query, status=status)
         clauses, params = [], []
         if status in {"followed", "unfollowed", "blacklisted"}:
             clauses.append("status=?")
@@ -640,6 +722,8 @@ class HotTopicService:
     def add_account(self, handle: str, display_name: str = "") -> dict[str, Any]:
         normalized = normalize_handle(handle)
         lower, now = normalized.lower(), iso(utc_now())
+        if self.postgres_repository is not None:
+            return self.postgres_repository.add_account(normalized, display_name, now=now)
         with self.db:
             self.db.execute(
                 "INSERT INTO hottopic_accounts(screen_name,screen_name_lower,display_name,status,next_due_at,hot_topic_enabled,"
@@ -657,6 +741,11 @@ class HotTopicService:
             raise ValueError("不支持的账号状态")
         lower = normalize_handle(handle).lower()
         now = iso(utc_now())
+        if self.postgres_repository is not None:
+            row = self.postgres_repository.set_account_status(lower, status, now=now)
+            if row is None:
+                raise ValueError("账号不存在")
+            return row
         with self.db:
             row = self.db.execute("SELECT * FROM hottopic_accounts WHERE screen_name_lower=?", (lower,)).fetchone()
             if row is None:
@@ -683,6 +772,10 @@ class HotTopicService:
         return self._account(lower)
 
     def _account(self, lower: str) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            row = self.postgres_repository.get_account(lower)
+            assert row is not None
+            return row
         row = self.db.execute("SELECT * FROM hottopic_accounts WHERE screen_name_lower=?", (lower,)).fetchone()
         assert row is not None
         return dict(row)
@@ -692,6 +785,9 @@ class HotTopicService:
         """Add an account to the shared X Agent directory with HotTopic enabled."""
         normalized = normalize_handle(handle)
         lower, now = normalized.lower(), iso(utc_now())
+        if self.postgres_repository is not None:
+            row = self.postgres_repository.add_account(normalized, display_name, now=now)
+            return self._x_agent_account_payload(row)
         with self.db:
             existing = self.db.execute(
                 "SELECT screen_name_lower FROM hottopic_accounts WHERE screen_name_lower=?", (lower,)
@@ -722,6 +818,12 @@ class HotTopicService:
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            result = self.postgres_repository.list_x_agent_accounts(
+                query=query, module=module, enabled=enabled, availability=availability, offset=offset, limit=limit,
+            )
+            result["items"] = [self._x_agent_account_payload(row) for row in result["items"]]
+            return result
         column_by_module = {
             "hot_topic": "hot_topic_enabled",
             "market_sentiment": "market_sentiment_enabled",
@@ -779,6 +881,9 @@ class HotTopicService:
         if len(lowered) > 500:
             raise ValueError("单次最多更新 500 个账号")
         now = iso(utc_now())
+        if self.postgres_repository is not None:
+            rows = self.postgres_repository.set_x_agent_subscriptions(lowered, changes, now=now)
+            return [self._x_agent_account_payload(row) for row in rows]
         updated: list[dict[str, Any]] = []
         with self.db:
             marks = ",".join("?" for _ in lowered)
@@ -880,6 +985,8 @@ class HotTopicService:
         if not isinstance(rows, list):
             raise ValueError("筛选报告缺少 accounts 数组")
         now = utc_now()
+        if self.postgres_repository is not None:
+            return self.postgres_repository.import_x_agent_screening_rows(rows, apply_suggestions=apply_suggestions, now=now)
         inserted = updated = skipped = 0
         with self.db:
             for index, raw in enumerate(rows):
@@ -954,6 +1061,10 @@ class HotTopicService:
             raise ValueError("--since 必须包含时区")
         safe_since = iso(parsed_since)
         safe_limit = min(500, max(1, int(limit)))
+        if self.postgres_repository is not None:
+            return self.postgres_repository.backfill_x_agent_inbox(
+                module=module, since=parsed_since, limit=safe_limit, apply=apply,
+            )
         rows = self.db.execute(
             "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i "
             "JOIN hottopic_accounts a ON a.screen_name_lower=i.screen_name_lower "
@@ -991,6 +1102,8 @@ class HotTopicService:
     @_serialized
     def process_account_cleanup_jobs(self, *, job_limit: int = 1) -> dict[str, int]:
         """Process small, resumable blacklist cleanups outside console requests."""
+        if self.postgres_repository is not None:
+            return self.postgres_repository.process_account_cleanup_jobs(job_limit=job_limit)
         rows = self.db.execute(
             "SELECT screen_name_lower FROM hottopic_account_cleanup ORDER BY queued_at LIMIT ?",
             (max(1, job_limit),),
@@ -1073,6 +1186,13 @@ class HotTopicService:
         *,
         limit: int | None = None,
     ) -> list[AccountRow]:
+        if self.postgres_repository is not None and database is None:
+            rows = self.postgres_repository.due_accounts(at=utc_now(), limit=limit)
+            return [AccountRow(
+                screen_name=row["screen_name"], name=row.get("display_name") or "", description="",
+                followers_count=0, statuses_count=0, protected=bool(row.get("protected")),
+                url=f"https://x.com/{row['screen_name']}",
+            ) for row in rows]
         db = database if database is not None else self.db
         query = (
             "SELECT screen_name,display_name,protected FROM hottopic_accounts "
@@ -1113,6 +1233,12 @@ class HotTopicService:
         )
 
     def _advance_event_tracking(self, *, poll_accounts: bool) -> dict[str, Any]:
+        if self.event_tracker is None:
+            return {"discovery": {"discovered": 0, "failed": 0, "bound": 0},
+                    "polling": {"polled": 0, "accepted": 0, "errors": 0},
+                    "updates": {"classified": 0, "material": 0, "failed": 0},
+                    "outbox": {"submitted": 0, "failed": 0, "duplicate": 0, "published": 0},
+                    "lifecycle": {"ended": 0}}
         discovery = self.event_tracker.discover_official_accounts()
         polling = self.event_tracker.poll_due_accounts(self._scan_event_account, workers=self.workers) if poll_accounts else {
             "polled": 0, "accepted": 0, "errors": 0,
@@ -1128,6 +1254,7 @@ class HotTopicService:
         *,
         limit: int | None = None,
     ) -> dict[str, int]:
+        self._replay_collector_spool()
         db = database if database is not None else self.db
         accounts = self._due_accounts(db, limit=limit)
         if not accounts:
@@ -1135,14 +1262,25 @@ class HotTopicService:
 
         cutoff = datetime.fromisoformat(self.deployment_started_at(db))
         accepted = errors = 0
-        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor:
+        polled_accounts: set[str] = set()
+        reservation_deferred = False
+        spool_failure: str | None = None
+        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="hottopic") as executor, ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="hottopic-spool",
+        ) as persister:
             account_iter = iter(accounts)
             futures = {}
+            persistence_futures: dict[Any, tuple[str, dict[str, Any]]] = {}
             delayed_retries: list[tuple[float, int, AccountRow, int]] = []
             retry_sequence = 0
             max_in_flight = self.workers * 2
 
-            def submit(account: AccountRow, retry_count: int) -> None:
+            def submit(account: AccountRow, retry_count: int) -> bool:
+                reservation = None
+                if self.postgres_repository is not None and self.collector_spool is not None:
+                    reservation = self.collector_spool.reserve()
+                    if reservation is None:
+                        return False
                 future = executor.submit(
                     scan_account,
                     account,
@@ -1152,7 +1290,8 @@ class HotTopicService:
                     before_request=self.collect_request_pacer.wait,
                     include_investment_materials=True,
                 )
-                futures[future] = (account, retry_count)
+                futures[future] = (account, retry_count, reservation)
+                return True
 
             def submit_new_accounts() -> None:
                 while len(futures) < max_in_flight:
@@ -1160,19 +1299,43 @@ class HotTopicService:
                         account = next(account_iter)
                     except StopIteration:
                         return
-                    submit(account, 0)
+                    if not submit(account, 0):
+                        return
 
             submit_new_accounts()
-            while futures or delayed_retries:
+            while futures or delayed_retries or persistence_futures:
+                for persist_future in [future for future in persistence_futures if future.done()]:
+                    reservation, record = persistence_futures.pop(persist_future)
+                    try:
+                        persist_future.result()
+                    except SpoolRecordTooLarge as exc:
+                        spool_failure = str(exc)
+                        errors += 1
+                        reservation_deferred = True
+                    except Exception:
+                        time.sleep(COLLECT_RETRY_DELAY_SECONDS)
+                        persistence_futures[persister.submit(
+                            self.collector_spool.append_reserved_retrying,
+                            reservation, record, attempts=8, delay_seconds=0.1,
+                        )] = (reservation, record)
+
                 now_monotonic = time.monotonic()
                 while delayed_retries and delayed_retries[0][0] <= now_monotonic and len(futures) < max_in_flight:
-                    _ready_at, _sequence, account, retry_count = heapq.heappop(delayed_retries)
-                    submit(account, retry_count)
-                submit_new_accounts()
+                    ready_at, sequence, account, retry_count = heapq.heappop(delayed_retries)
+                    if not submit(account, retry_count):
+                        reservation_deferred = True
+                        delayed_retries.clear()
+                        break
+                if not reservation_deferred:
+                    submit_new_accounts()
 
                 if not futures:
                     if delayed_retries:
+                        if reservation_deferred:
+                            break
                         time.sleep(max(0.0, delayed_retries[0][0] - time.monotonic()))
+                    elif persistence_futures:
+                        wait(persistence_futures, timeout=0.1, return_when=FIRST_COMPLETED)
                     continue
 
                 timeout = None
@@ -1183,13 +1346,16 @@ class HotTopicService:
                     continue
 
                 for future in completed:
-                    account, retry_count = futures.pop(future)
+                    account, retry_count, reservation = futures.pop(future)
+                    polled_accounts.add(account.screen_name.lower())
                     try:
                         items, _latest, error = future.result()
                     except Exception as exc:
                         items, error = [], {"kind": "exception", "error": str(exc)}
 
                     if error and error.get("retryable") and retry_count < 1:
+                        if reservation and self.collector_spool is not None:
+                            self.collector_spool.release_reservation(reservation)
                         retry_sequence += 1
                         heapq.heappush(
                             delayed_retries,
@@ -1203,11 +1369,55 @@ class HotTopicService:
                         continue
 
                     now = iso(utc_now())
-                    accepted += self._store_poll(account, items, error, now, database=db)
+                    if self.postgres_repository is not None and self.collector_spool is not None:
+                        if reservation is None:
+                            raise RuntimeError("PostgreSQL collection result has no spool reservation")
+                        record = {
+                                "spool_id": f"{account.screen_name.lower()}:{now}:{uuid.uuid4().hex}",
+                                "account": account.screen_name.lower(),
+                                "items": [asdict(item) for item in items], "error": error, "at": now,
+                            }
+                        persistence_futures[persister.submit(
+                            self.collector_spool.append_reserved_retrying,
+                            reservation, record, attempts=8, delay_seconds=0.1,
+                        )] = (reservation, record)
+                    else:
+                        accepted += self._store_poll(account, items, error, now, database=db)
                     errors += int(error is not None)
-        return {"polled": len(accounts), "accepted": accepted, "errors": errors}
+            if self.postgres_repository is not None and self.collector_spool is not None and spool_failure is None:
+                accepted = self._replay_collector_spool()
+        if spool_failure:
+            self.postgres_repository.log_event(
+                "collector_spool_record_too_large", {"error": spool_failure}, iso(utc_now()),
+            )
+        return {"polled": len(polled_accounts), "accepted": accepted, "errors": errors}
+
+    def _replay_collector_spool(self) -> int:
+        if self.postgres_repository is None or self.collector_spool is None:
+            return 0
+        replayed = 0
+        for record in self.collector_spool.pending():
+            account_lower = str(record.get("account") or "")
+            account = self.postgres_repository.get_account(account_lower)
+            if account is None:
+                raise RuntimeError(f"collector spool references missing account: {account_lower}")
+            now = str(record.get("at") or iso(utc_now()))
+            failures = int(account.get("consecutive_failures") or 0) + int(record.get("error") is not None)
+            self.postgres_repository.store_poll(
+                account_lower=account_lower, posts=list(record.get("items") or []), error=record.get("error"),
+                now=now, deployment_started_at=self.deployment_started_at(),
+                poll_delay_seconds=self._next_poll_delay_seconds(record.get("error"), failures),
+                spool_id=str(record["spool_id"]),
+            )
+            self.collector_spool.acknowledge(str(record["spool_id"]))
+            replayed += 1
+        return replayed
 
     def poll_once(self, *, collect_baseline_accounts: bool = True) -> dict[str, Any]:
+        if self.postgres_repository is not None and (
+            self.aggregator is None or self.event_tracker is None or self.yesterday_hot_discussion is None
+        ):
+            raise RuntimeError("PostgreSQL HotTopic worker is unavailable until native aggregation, event tracking, and yesterday discussion are initialized")
         ai_review = self._run_ai_review_if_due()
         # Existing events first: their 1-minute schedule has priority over the
         # broad baseline account pool while sharing the same FXTwitter pacer.
@@ -1266,6 +1476,19 @@ class HotTopicService:
         *,
         database: sqlite3.Connection | None = None,
     ) -> int:
+        if self.postgres_repository is not None and database is None:
+            rows = [asdict(item) for item in items]
+            failures = 0 if error is None else (int((self.postgres_repository.get_account(account.screen_name.lower()) or {}).get("consecutive_failures") or 0) + 1)
+            accepted = self.postgres_repository.store_poll(
+                account_lower=account.screen_name.lower(), posts=rows, error=error, now=at,
+                deployment_started_at=self.deployment_started_at(),
+                poll_delay_seconds=self._next_poll_delay_seconds(error, failures),
+            )
+            if error:
+                self.event("collect_error", {"account": account.screen_name, "error": error})
+                if self._is_rate_limited(error):
+                    self.collect_request_pacer.defer(self._retry_after_seconds(error))
+            return accepted
         db = database if database is not None else self.db
         lower = account.screen_name.lower()
         deployment_started = datetime.fromisoformat(self.deployment_started_at(db))
@@ -1328,6 +1551,8 @@ class HotTopicService:
             )
         if error:
             self.event("collect_error", {"account": account.screen_name, "error": error}, database=db)
+            if self._is_rate_limited(error):
+                self.collect_request_pacer.defer(self._retry_after_seconds(error))
         return accepted
 
     @staticmethod
@@ -1367,29 +1592,40 @@ class HotTopicService:
         )
 
     def aggregate(self) -> dict[str, Any] | None:
+        if self.aggregator is None:
+            raise RuntimeError("PostgreSQL HotTopic aggregation repository is not initialized")
         with self.lock:
-            rows = self.db.execute(
-                "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i JOIN hottopic_accounts a "
-                "ON a.screen_name_lower=i.screen_name_lower WHERE i.processed_at IS NULL AND a.hot_topic_enabled=1 "
-                "ORDER BY i.collected_at LIMIT ?",
-                (AGGREGATION_BATCH_SIZE,),
-            ).fetchall()
-        if not rows:
+            if self.postgres_repository is not None:
+                rows = self.postgres_repository.pending_inbox(limit=AGGREGATION_BATCH_SIZE)
+            else:
+                rows = self.db.execute(
+                    "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i JOIN hottopic_accounts a "
+                    "ON a.screen_name_lower=i.screen_name_lower WHERE i.processed_at IS NULL AND a.hot_topic_enabled=1 "
+                    "ORDER BY i.collected_at LIMIT ?",
+                    (AGGREGATION_BATCH_SIZE,),
+                ).fetchall()
+        now = utc_now()
+        if not rows and not self.aggregator.has_due_topic_refresh(now):
             return None
         try:
             payloads = [json.loads(row["payload_json"]) for row in rows]
-            result = self.aggregator.process_batch(payloads, utc_now())
+            result = self.aggregator.process_batch(payloads, now)
             self.scan_visible_topic_merges()
-            self.event_tracker.reconcile_topic_merges()
+            if self.event_tracker is not None:
+                self.event_tracker.reconcile_topic_merges()
             with self.lock:
-                with self.db:
-                    self.db.executemany("UPDATE hottopic_inbox SET processed_at=? WHERE tweet_id=?", [(iso(utc_now()), row["tweet_id"]) for row in rows])
+                if self.postgres_repository is not None:
+                    self.postgres_repository.mark_inbox_processed([row["tweet_id"] for row in rows], at=utc_now())
+                else:
+                    with self.db:
+                        self.db.executemany("UPDATE hottopic_inbox SET processed_at=? WHERE tweet_id=?", [(iso(utc_now()), row["tweet_id"]) for row in rows])
                 self._refresh_hot_topic_counts()
             self.event("aggregate_ok", result.get("metrics", {}))
             # Task 1 only sees deterministic, successfully aggregated HotTopic
             # state. Its own model calls are deliberately outside the HotTopic
             # aggregation transaction.
-            self.event_tracker.observe_topics()
+            if self.event_tracker is not None:
+                self.event_tracker.observe_topics()
             return result
         except Exception as exc:
             self._record_worker_failure("aggregate_error", exc)
@@ -1411,6 +1647,8 @@ class HotTopicService:
 
     def process_x_agent_jobs(self) -> int:
         """Claim a bounded batch, call models outside SQLite, then persist results."""
+        if self.postgres_repository is not None:
+            return self._process_x_agent_jobs_postgres()
         analyzer = self.x_agent_analyzer
         now = iso(utc_now())
         with self.lock:
@@ -1473,6 +1711,48 @@ class HotTopicService:
                 completed += 1
         return completed
 
+    def _process_x_agent_jobs_postgres(self) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now = utc_now()
+        claimed = repository.claim_x_agent_jobs(
+            now=now, batch_size=X_AGENT_ANALYSIS_BATCH_SIZE,
+            max_attempts=X_AGENT_ANALYSIS_MAX_ATTEMPTS, processing_lease=X_AGENT_PROCESSING_LEASE,
+        )
+        if not claimed:
+            return 0
+        analyzer = self.x_agent_analyzer
+
+        def analyze_job(job: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+            source = job["payload_json"]
+            try:
+                if analyzer is None:
+                    raise RuntimeError(self.x_agent_analyzer_error or "X Agent 模型路由不可用")
+                text = self._x_agent_analysis_text(source)
+                if text is None or not is_relevant(str(job["module"]), text):
+                    return job, None, None
+                result = analyzer.analyze(str(job["module"]), source)
+                return job, {
+                    "actual_model": result.actual_model, "fallback_reason": result.fallback_reason,
+                    "items": result.items,
+                }, None
+            except Exception as exc:
+                return job, None, f"{type(exc).__name__}: {exc}"
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=self.analysis_workers, thread_name_prefix="x-agent") as executor:
+            futures = [executor.submit(analyze_job, job) for job in claimed]
+            for future in as_completed(futures):
+                job, result, error = future.result()
+                repository.finish_x_agent_job(
+                    job["id"], module=str(job["module"]), source=job["payload_json"], result=result,
+                    error=error, attempts=int(job["attempts"]), now=utc_now(),
+                    claim_updated_at=job.get("claim_updated_at"),
+                    retry_delay=X_AGENT_RETRY_DELAY, max_attempts=X_AGENT_ANALYSIS_MAX_ATTEMPTS,
+                )
+                completed += 1
+        return completed
+
     def _reclaim_stale_x_agent_jobs(self, now: str) -> None:
         """Return abandoned worker claims to the queue without resetting attempts."""
         cutoff = iso(datetime.fromisoformat(now) - X_AGENT_PROCESSING_LEASE)
@@ -1524,6 +1804,19 @@ class HotTopicService:
 
     @_serialized
     def _finish_x_agent_job(self, job: dict[str, Any], result: Any, error: Exception | None) -> None:
+        if self.postgres_repository is not None:
+            source = job.get("payload_json") or {}
+            result_payload = None if result is None else {
+                "actual_model": result.actual_model, "fallback_reason": result.fallback_reason,
+                "items": result.items,
+            }
+            self.postgres_repository.finish_x_agent_job(
+                job["id"], module=str(job["module"]), source=source, result=result_payload,
+                error=f"{type(error).__name__}: {error}" if error else None,
+                attempts=int(job["attempts"]), now=utc_now(), retry_delay=X_AGENT_RETRY_DELAY,
+                max_attempts=X_AGENT_ANALYSIS_MAX_ATTEMPTS,
+            )
+            return
         at = iso(utc_now())
         source = json.loads(job["payload_json"])
         account = str(source.get("account_screen_name") or "").lower()
@@ -1658,6 +1951,8 @@ class HotTopicService:
 
     @_serialized
     def retry_failed_x_agent_jobs(self, *, module: str = "", limit: int = 100) -> int:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.retry_failed_x_agent_jobs(module=module, limit=limit, now=utc_now())
         if module and module not in {"market_sentiment", "project_promotion"}:
             raise ValueError("不支持的 X Agent 模块")
         safe_limit = min(500, max(1, int(limit)))
@@ -1676,6 +1971,21 @@ class HotTopicService:
 
     @_serialized
     def x_agent_dashboard(self) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            counts = self.postgres_repository.x_agent_dashboard_counts()
+            investment = self.investment_lead_queries.dashboard()
+            return {
+                "generatedAt": iso(utc_now()),
+                "accounts": {
+                    "total": counts["total"], "hotTopicEnabled": counts["hot_topic_enabled"],
+                    "marketSentimentEnabled": counts["market_sentiment_enabled"],
+                    "projectPromotionEnabled": counts["project_promotion_enabled"],
+                    "investmentLeadsEnabled": int(investment["accounts"]["investmentLeadsEnabled"] or 0),
+                    "errors": counts["errors"],
+                },
+                "jobs": {"pending": counts["pending"], "failed": counts["failed"]},
+                "investmentLeads": investment,
+            }
         accounts = self.db.execute(
             "SELECT COUNT(*) total,SUM(hot_topic_enabled=1) hot_topic_enabled,"
             "SUM(market_sentiment_enabled=1) market_sentiment_enabled,"
@@ -1741,6 +2051,10 @@ class HotTopicService:
     ) -> dict[str, Any]:
         cutoff = self._window_cutoff(window, {"1h": timedelta(hours=1), "24h": timedelta(hours=24), "7d": timedelta(days=7)})
         safe_offset, safe_limit = self._page(offset, limit)
+        if self.postgres_repository is not None:
+            return self.postgres_repository.list_market_sentiment(
+                cutoff=cutoff, query=query, sentiment=sentiment, offset=safe_offset, limit=safe_limit,
+            )
         filters: list[str] = []
         params: list[Any] = [cutoff]
         if query.strip():
@@ -1795,6 +2109,8 @@ class HotTopicService:
 
     @_serialized
     def market_sentiment_history(self, instrument_key: str, *, limit: int = 120) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.market_sentiment_history(instrument_key, limit=limit)
         if not instrument_key.strip():
             raise ValueError("instrument_key 不能为空")
         safe_limit = min(240, max(1, int(limit)))
@@ -1825,6 +2141,12 @@ class HotTopicService:
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            cutoff = self._window_cutoff(window, {"1h": timedelta(hours=1), "24h": timedelta(hours=24), "7d": timedelta(days=7)})
+            safe_offset, safe_limit = self._page(offset, limit)
+            return self.postgres_repository.market_sentiment_detail(
+                instrument_key, cutoff=cutoff, offset=safe_offset, limit=safe_limit,
+            )
         if not instrument_key.strip():
             raise ValueError("instrument_key 不能为空")
         cutoff = self._window_cutoff(window, {"1h": timedelta(hours=1), "24h": timedelta(hours=24), "7d": timedelta(days=7)})
@@ -1855,6 +2177,13 @@ class HotTopicService:
     ) -> dict[str, Any]:
         cutoff = self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)})
         safe_offset, safe_limit = self._page(offset, limit)
+        if self.postgres_repository is not None:
+            result = self.postgres_repository.list_project_promotions(
+                cutoff=cutoff, query=query, offset=safe_offset, limit=safe_limit,
+            )
+            for row in result["items"]:
+                row["operationAdvice"] = self._project_operation_advice(row["operationAdvice"])
+            return result
         params: list[Any] = [cutoff]
         conditions: list[str] = []
         if query.strip():
@@ -1915,6 +2244,8 @@ class HotTopicService:
     def _project_json_object(value: str | None) -> dict[str, Any] | None:
         if not value:
             return None
+        if isinstance(value, dict):
+            return value
         try:
             parsed = json.loads(value)
         except (TypeError, ValueError):
@@ -1975,6 +2306,11 @@ class HotTopicService:
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            return self.postgres_repository.project_promotion_detail(
+                identity_key, window=window, offset=offset, limit=limit,
+                cutoff=self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}),
+            )
         if not identity_key.strip():
             raise ValueError("identity_key 不能为空")
         cutoff = self._window_cutoff(window, {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)})
@@ -2053,6 +2389,9 @@ class HotTopicService:
 
     @_serialized
     def _refresh_hot_topic_counts(self) -> None:
+        if self.postgres_repository is not None:
+            self.postgres_repository.refresh_hot_topic_counts()
+            return
         with self.db:
             self.db.execute(
                 "WITH participation_counts AS MATERIALIZED ("
@@ -2124,15 +2463,43 @@ class HotTopicService:
             return None
 
     def scan_visible_topic_merges(self, *, force: bool = False) -> dict[str, Any] | None:
+        if self.aggregator is None:
+            raise RuntimeError("PostgreSQL HotTopic aggregation repository is not initialized")
         result = self.aggregator.scan_visible_topics(utc_now(), force=force)
         if result and result.get("error"):
             self.event("topic_merge_scan_failed", {"scan_id": result["scan_id"], "error": result["error"]})
         if result and result.get("merges"):
-            self.event_tracker.reconcile_topic_merges()
+            if self.event_tracker is not None:
+                self.event_tracker.reconcile_topic_merges()
             self._refresh_hot_topic_counts()
         return result
 
     def _maintain(self, *, force: bool) -> dict[str, int] | None:
+        if self.postgres_repository is not None:
+            current = utc_now()
+            reconciled = self.aggregator.reconcile_recent_topics(current) if force or current - self.postgres_repository.last_maintenance_at() >= MAINTENANCE_INTERVAL else {"topic_merges": []}
+            state = self.postgres_repository.prune_transient_state(
+                at=current, retention_hours=TRANSIENT_RETENTION_HOURS, batch_size=100,
+            )
+            with connect_postgres(
+                schema=self.postgres_repository.schema,
+                application_name="odaily-hottopic-maintenance",
+                settings=self.postgres_repository.settings,
+            ) as connection:
+                connection.execute(
+                    "UPDATE hottopic_meta SET last_maintenance_at=%s,retention_prune_pending=%s WHERE singleton_key='global'",
+                    (current, bool(state.get("has_more"))),
+                )
+            if self.aggregator:
+                self._refresh_hot_topic_counts()
+            return {
+                "deleted_topics": int(state.get("deleted_topics", 0)),
+                "deleted_content_items": int(state.get("deleted_content_items", 0)),
+                "deleted_claims": int(state.get("deleted_claims", 0)),
+                "retention_prune_pending": int(bool(state.get("has_more"))),
+                "merged_topics": len(reconciled.get("topic_merges", [])),
+                "semantic_review_pending": self.aggregator._count_pending_claim_reviews() if self.aggregator else 0,
+            }
         with self.lock:
             row = self.db.execute(
                 "SELECT last_maintenance_at,retention_prune_pending FROM hottopic_meta WHERE singleton_key='global'"
@@ -2234,6 +2601,28 @@ class HotTopicService:
 
     @_serialized
     def health(self) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            counts = self.postgres_repository.topic_health_counts()
+            return {
+                "deploymentStartedAt": self.deployment_started_at(),
+                "accounts": counts["accounts"], "inboxPending": counts["inboxPending"],
+                "topics": counts["topics"], "databasePath": "postgresql",
+                "candidateResolverEnabled": bool(self.aggregator and self.aggregator.resolver),
+                "candidateResolverError": self.candidate_resolver_error,
+                "semanticReviewEnabled": bool(self.aggregator and self.aggregator.semantic_reviewer),
+                "semanticReviewError": self.semantic_reviewer_error,
+                "semanticReviewPending": self.aggregator._count_pending_claim_reviews() if self.aggregator else None,
+                "topicMergeReviewError": self.topic_merge_reviewer_error,
+                "topicMergeReviewPending": self.postgres_repository.topic_merge_review_pending_count(),
+                "collectorTiming": counts["collectorTiming"],
+                "collectorTimingUncertainty": counts["collectorTiming"]["timestampUncertainty"],
+                "collectorSpool": {
+                    "blocked": bool(self.collector_spool and self.collector_spool.blocked_error),
+                    "error": self.collector_spool.blocked_error if self.collector_spool else None,
+                    "failedRecordCount": len(self.collector_spool.failed_records()) if self.collector_spool else 0,
+                    "failedRecordIds": [row.get("spool_id") for row in self.collector_spool.failed_records()] if self.collector_spool else [],
+                },
+            }
         counts = self.db.execute(
             "SELECT COUNT(*) total,SUM(status='followed') followed,SUM(status='unfollowed') unfollowed,SUM(status='blacklisted') blacklisted,"
             "SUM(last_error IS NOT NULL AND last_error NOT LIKE '%HTTP Error 404%' "
@@ -2255,6 +2644,21 @@ class HotTopicService:
 
     @_serialized
     def dashboard(self) -> dict[str, Any]:
+        if self.postgres_repository is not None:
+            rows = self.postgres_repository.topic_dashboard_rows(limit=100)
+            topics = [{
+                "id": row["topic_id"], "title": row["title"] or row["working_title"],
+                "brief": self._display_brief(row["brief"]), "startedAt": row["started_at"].isoformat(),
+                "firstSeenAt": row["first_seen_at"].isoformat(), "firstGeneratedAt": row["first_seen_at"].isoformat(),
+                "lastEvidenceAt": row["last_evidence_at"].isoformat() if row["last_evidence_at"] else None,
+                "lastUpdatedAt": (row["last_evidence_at"] or row["first_seen_at"]).isoformat(),
+                "lastParticipationAt": row["last_participation_at"].isoformat() if row["last_participation_at"] else None,
+                "hotness": row["hotness_score"], "briefGeneratedAt": row["generated_at"].isoformat() if row["generated_at"] else None,
+                "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"],
+                                 "twentyFourHours": row["participant_count_24h"], "velocity": row["participant_velocity"]},
+            } for row in rows]
+            return {"generatedAt": iso(utc_now()), "health": self.health(), "topics": topics,
+                    "yesterdayHotDiscussion": self.yesterday_hot_discussion.dashboard_status()}
         rows = self.db.execute(
             "SELECT t.topic_id,t.working_title,t.started_at,t.first_seen_at,t.last_evidence_at,t.last_participation_at,"
             "t.participant_count_1h,t.participant_count_6h,t.participant_count_24h,t.participant_velocity,t.hotness_score,"
@@ -2285,6 +2689,23 @@ class HotTopicService:
 
     @_serialized
     def topic_detail(self, topic_id: str) -> dict[str, Any] | None:
+        if self.postgres_repository is not None:
+            row, speakers = self.postgres_repository.topic_detail_rows(topic_id)
+            if row is None:
+                return None
+            return {
+                "id": row["topic_id"], "title": row["title"] or row["working_title"],
+                "brief": self._display_brief(row["brief"]),
+                "firstGeneratedAt": row["first_seen_at"].isoformat(),
+                "lastUpdatedAt": (row["last_evidence_at"] or row["first_seen_at"]).isoformat(),
+                "hotness": row["hotness_score"],
+                "participants": {"oneHour": row["participant_count_1h"], "sixHours": row["participant_count_6h"],
+                                 "twentyFourHours": row["participant_count_24h"]},
+                "autoNewsflashAssessment": self.event_tracker.topic_assessment_status(topic_id, first_seen_at=row["first_seen_at"].isoformat()),
+                "speakers": [{"account": item["activity_account"],
+                              "lastParticipationAt": item["last_participation_at"].isoformat(),
+                              "sourceUrl": item["source_url"]} for item in speakers],
+            }
         row = self.db.execute(
             "SELECT t.*,b.title,b.brief,b.generated_at FROM topics t LEFT JOIN brief_revisions b ON b.topic_id=t.topic_id "
             "AND b.revision=(SELECT MAX(x.revision) FROM brief_revisions x WHERE x.topic_id=t.topic_id) "

@@ -118,6 +118,7 @@ class TaskRecord:
     status: str = "pending"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    claim_token: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_item_id", normalize_inline_text(self.source_item_id))

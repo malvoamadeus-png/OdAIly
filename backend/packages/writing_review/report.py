@@ -140,6 +140,10 @@ def load_ai_written_items(
     limit: int | None = None,
 ) -> list[WritingReviewItem]:
     """Read completed writer outputs without changing the production database."""
+    from packages.common.storage import load_storage_settings
+
+    if load_storage_settings().backend == "postgres":
+        return _load_ai_written_items_postgres(since=since, until=until, limit=limit)
     if not database_path.exists():
         raise FileNotFoundError(f"SQLite database does not exist: {database_path}")
     query = """
@@ -200,6 +204,50 @@ def load_ai_written_items(
                 is_final=is_final,
             )
         )
+    return result
+
+
+def _load_ai_written_items_postgres(
+    *, since: datetime, until: datetime, limit: int | None = None,
+) -> list[WritingReviewItem]:
+    from packages.common.pg_native import connect_postgres
+
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be >= 1")
+    query = """
+        SELECT t.id AS task_id, t.source, t.source_item_id, t.source_url, t.created_at,
+               t.title AS original_title, t.content AS original_content,
+               p.write_completed_at, p.writer_model, p.draft_title, p.draft_content,
+               p.final_title, p.final_content
+        FROM main.tasks t
+        JOIN main.x_task_pipeline p ON p.task_id = t.id
+        WHERE p.write_completed_at IS NOT NULL
+          AND p.writer_model IS NOT NULL AND btrim(p.writer_model) <> ''
+          AND p.write_completed_at >= %s AND p.write_completed_at <= %s
+          AND btrim(COALESCE(p.final_content, p.draft_content, '')) <> ''
+        ORDER BY p.write_completed_at DESC, t.id DESC
+    """
+    params: list[Any] = [since.astimezone(UTC), until.astimezone(UTC)]
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(limit)
+    with connect_postgres(schema="main", application_name="odaily-writing-review") as conn:
+        rows = conn.execute(query, params).fetchall()
+    result: list[WritingReviewItem] = []
+    for row in rows:
+        final_title = _clean_text(row["final_title"])
+        final_content = _clean_text(row["final_content"])
+        draft_title = _clean_text(row["draft_title"])
+        draft_content = _clean_text(row["draft_content"])
+        result.append(WritingReviewItem(
+            task_id=int(row["task_id"]), source=str(row["source"] or ""),
+            source_item_id=str(row["source_item_id"] or ""), source_url=row["source_url"],
+            created_at=row["created_at"], write_completed_at=row["write_completed_at"],
+            writer_model=row["writer_model"], original_title=_clean_text(row["original_title"]),
+            original_content=_clean_text(row["original_content"]),
+            title=final_title or draft_title, content=final_content or draft_content,
+            is_final=bool(final_content),
+        ))
     return result
 
 

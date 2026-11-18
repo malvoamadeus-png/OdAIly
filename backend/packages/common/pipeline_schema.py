@@ -36,40 +36,6 @@ CREATE TABLE IF NOT EXISTS console_admins (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE OR REPLACE FUNCTION is_console_admin()
-RETURNS boolean
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-    SELECT EXISTS (
-        SELECT 1
-        FROM public.console_admins
-        WHERE lower(email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
-    );
-$$;
-
-ALTER TABLE console_admins ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS console_admins_authenticated_self_select ON console_admins;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON console_admins FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT ON console_admins TO authenticated;
-        EXECUTE 'CREATE POLICY console_admins_authenticated_self_select ON console_admins
-            FOR SELECT TO authenticated
-            USING (lower(email) = lower(COALESCE(auth.jwt() ->> ''email'', '''')))';
-    END IF;
-END
-$$;
 """
 
 
@@ -170,11 +136,11 @@ RETURNS boolean
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
     SELECT EXISTS (
         SELECT 1
-        FROM public.editor_plugin_users
+        FROM main.editor_plugin_users
         WHERE enabled = true
           AND lower(email) = lower(COALESCE(auth.jwt() ->> 'email', ''))
     );
@@ -189,7 +155,7 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
 BEGIN
     IF NOT is_editor_plugin_user() THEN
@@ -221,7 +187,7 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
 DECLARE
     v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
@@ -263,7 +229,7 @@ CREATE OR REPLACE FUNCTION editor_plugin_mark_seen(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
 DECLARE
     v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
@@ -291,7 +257,7 @@ CREATE OR REPLACE FUNCTION editor_plugin_submit_feedback(
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
 DECLARE
     v_email text := lower(COALESCE(auth.jwt() ->> 'email', ''));
@@ -363,7 +329,7 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = main, pg_catalog
 AS $$
 DECLARE
     parts text[] := ARRAY[]::text[];
@@ -403,7 +369,7 @@ BEGIN
     END IF;
     v_source_candidate_limit := GREATEST(p_limit, 40);
 
-    IF to_regclass('public.x_task_pipeline') IS NOT NULL AND to_regclass('public.tasks') IS NOT NULL THEN
+    IF to_regclass('main.x_task_pipeline') IS NOT NULL AND to_regclass('main.tasks') IS NOT NULL THEN
         parts := array_append(parts, $newsflash$
             SELECT *
             FROM (
@@ -486,7 +452,7 @@ BEGIN
         $newsflash$);
     END IF;
 
-    IF to_regclass('public.auditor_checks') IS NOT NULL THEN
+    IF to_regclass('main.auditor_checks') IS NOT NULL THEN
         parts := array_append(parts, $auditor$
             SELECT *
             FROM (
@@ -522,7 +488,7 @@ BEGIN
         $auditor$);
     END IF;
 
-    IF to_regclass('public.external_media_alert_pipeline') IS NOT NULL AND to_regclass('public.tasks') IS NOT NULL THEN
+    IF to_regclass('main.external_media_alert_pipeline') IS NOT NULL AND to_regclass('main.tasks') IS NOT NULL THEN
         parts := array_append(parts, $external_media_alert$
             SELECT *
             FROM (
@@ -571,7 +537,7 @@ BEGIN
         $external_media_alert$);
     END IF;
 
-    IF to_regclass('public.writer3_contexts') IS NOT NULL THEN
+    IF to_regclass('main.writer3_contexts') IS NOT NULL THEN
         parts := array_append(parts, $writer3$
             SELECT *
             FROM (
@@ -615,7 +581,7 @@ BEGIN
         $writer3$);
     END IF;
 
-    IF to_regclass('public.whale_watch_activities') IS NOT NULL AND to_regclass('public.whale_watch_addresses') IS NOT NULL THEN
+    IF to_regclass('main.whale_watch_activities') IS NOT NULL AND to_regclass('main.whale_watch_addresses') IS NOT NULL THEN
         parts := array_append(parts, $whale$
             SELECT *
             FROM (
@@ -650,7 +616,7 @@ BEGIN
         $whale$);
     END IF;
 
-    IF to_regclass('public.whale_watch_hyperliquid_activities') IS NOT NULL AND to_regclass('public.whale_watch_hyperliquid_addresses') IS NOT NULL THEN
+    IF to_regclass('main.whale_watch_hyperliquid_activities') IS NOT NULL AND to_regclass('main.whale_watch_hyperliquid_addresses') IS NOT NULL THEN
         parts := array_append(parts, $hyper$
             SELECT *
             FROM (
@@ -835,37 +801,6 @@ $$;
 CREATE INDEX IF NOT EXISTS idx_source_exclusion_rule_groups_enabled
 ON source_exclusion_rule_groups(enabled, updated_at DESC);
 
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
-VALUES (
-    'ripple-xrp-commercial-content',
-    'Ripple / XRP 商务稿',
-    '从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。',
-    ARRAY['crypto_source']::text[],
-    ARRAY['Ripple', 'XRP', 'RLUSD']::text[],
-    'title',
-    true
-)
-ON CONFLICT (rule_key) DO NOTHING;
-
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
-VALUES (
-    'competitor-magne-ai',
-    'MAGNE.AI 竞品屏蔽',
-    '从竞品入口屏蔽标题或正文出现 MAGNE.AI 的内容。',
-    ARRAY['competitor']::text[],
-    ARRAY['MAGNE.AI']::text[],
-    'all',
-    true
-)
-ON CONFLICT (rule_key) DO UPDATE
-SET name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    scopes = EXCLUDED.scopes,
-    terms = EXCLUDED.terms,
-    match_target = EXCLUDED.match_target,
-    enabled = EXCLUDED.enabled,
-    updated_at = now();
-
 CREATE TABLE IF NOT EXISTS competitor_filter_keywords (
     id bigserial PRIMARY KEY,
     term text NOT NULL UNIQUE,
@@ -898,76 +833,6 @@ ON competitor_filter_keywords(enabled, term_normalized);
 CREATE UNIQUE INDEX IF NOT EXISTS competitor_filter_keywords_term_normalized_key
 ON competitor_filter_keywords(term_normalized);
 
-INSERT INTO competitor_filter_keywords (term, term_normalized, enabled)
-VALUES
-    ('跌破', '跌破', true),
-    ('突破', '突破', true),
-    ('爆仓', '爆仓', true),
-    ('Bitget', 'bitget', true)
-ON CONFLICT (term_normalized) DO UPDATE
-SET term = EXCLUDED.term,
-    updated_at = now();
-
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
-SELECT
-    'legacy-competitor-enabled',
-    '旧版竞品排除词',
-    '由旧 competitor_filter_keywords 中启用词迁移。',
-    ARRAY['competitor']::text[],
-    array_agg(term ORDER BY length(term) DESC, term ASC),
-    'title',
-    true
-FROM competitor_filter_keywords
-WHERE enabled = true
-HAVING count(*) > 0
-ON CONFLICT (rule_key) DO NOTHING;
-
-INSERT INTO source_exclusion_rule_groups (rule_key, name, description, scopes, terms, match_target, enabled)
-SELECT
-    'legacy-competitor-disabled',
-    '旧版已停用竞品排除词',
-    '由旧 competitor_filter_keywords 中停用词迁移，迁移后保持停用。',
-    ARRAY['competitor']::text[],
-    array_agg(term ORDER BY length(term) DESC, term ASC),
-    'title',
-    false
-FROM competitor_filter_keywords
-WHERE enabled = false
-HAVING count(*) > 0
-ON CONFLICT (rule_key) DO NOTHING;
-
-ALTER TABLE source_exclusion_rule_groups ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE competitor_filter_keywords ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS competitor_filter_keywords_anon_all ON competitor_filter_keywords;
-DROP POLICY IF EXISTS competitor_filter_keywords_console_admin_all ON competitor_filter_keywords;
-DROP POLICY IF EXISTS source_exclusion_rule_groups_anon_all ON source_exclusion_rule_groups;
-DROP POLICY IF EXISTS source_exclusion_rule_groups_console_admin_all ON source_exclusion_rule_groups;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON source_exclusion_rule_groups FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE source_exclusion_rule_groups_id_seq FROM anon;
-        REVOKE ALL PRIVILEGES ON competitor_filter_keywords FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE competitor_filter_keywords_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON source_exclusion_rule_groups TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE source_exclusion_rule_groups_id_seq TO authenticated;
-        GRANT SELECT, INSERT, UPDATE, DELETE ON competitor_filter_keywords TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE competitor_filter_keywords_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY source_exclusion_rule_groups_console_admin_all ON source_exclusion_rule_groups
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY competitor_filter_keywords_console_admin_all ON competitor_filter_keywords
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-    END IF;
-END
-$$;
 """
 
 
@@ -977,6 +842,7 @@ CREATE TABLE IF NOT EXISTS newsflash_items (
     source text NOT NULL,
     source_item_id text NOT NULL,
     source_url text,
+    source_url_key text,
     title text,
     content text NOT NULL,
     content_hash text NOT NULL,
@@ -984,8 +850,22 @@ CREATE TABLE IF NOT EXISTS newsflash_items (
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     published_at timestamptz,
     first_seen_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (source, source_item_id)
+);
+
+ALTER TABLE newsflash_items ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_newsflash_items_source_url_key
+ON newsflash_items(source_url_key);
+
+CREATE TABLE IF NOT EXISTS newsflash_event_exclusions (
+    source text NOT NULL,
+    source_item_id text NOT NULL,
+    title text,
+    matched_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (source, source_item_id)
 );
 
 CREATE TABLE IF NOT EXISTS newsflash_events (
@@ -995,6 +875,7 @@ CREATE TABLE IF NOT EXISTS newsflash_events (
     event_time timestamptz,
     first_source text,
     first_published_at timestamptz,
+    first_sources text[] NOT NULL DEFAULT '{}'::text[],
     source_count integer NOT NULL DEFAULT 0,
     competitor_source_count integer NOT NULL DEFAULT 0,
     has_odaily boolean NOT NULL DEFAULT false,
@@ -1004,6 +885,8 @@ CREATE TABLE IF NOT EXISTS newsflash_events (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE newsflash_events ADD COLUMN IF NOT EXISTS first_sources text[] NOT NULL DEFAULT '{}'::text[];
 
 CREATE TABLE IF NOT EXISTS newsflash_event_sources (
     id bigserial PRIMARY KEY,
@@ -1041,21 +924,6 @@ ON newsflash_event_sources(event_id);
 CREATE INDEX IF NOT EXISTS idx_newsflash_event_sources_item
 ON newsflash_event_sources(item_id);
 
-CREATE OR REPLACE FUNCTION assert_newsflash_event_has_source()
-RETURNS trigger AS $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM newsflash_events e WHERE e.event_id = NEW.event_id)
-       AND NOT EXISTS (
-           SELECT 1
-           FROM newsflash_event_sources s
-           WHERE s.event_id = NEW.event_id
-       ) THEN
-        RAISE EXCEPTION 'newsflash event % has no linked source item', NEW.event_id;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 CREATE OR REPLACE FUNCTION prune_empty_newsflash_event_after_source_change()
 RETURNS trigger AS $$
 BEGIN
@@ -1070,13 +938,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_newsflash_event_requires_source ON newsflash_events;
-CREATE CONSTRAINT TRIGGER trg_newsflash_event_requires_source
-AFTER INSERT OR UPDATE ON newsflash_events
-DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW
-EXECUTE FUNCTION assert_newsflash_event_has_source();
-
 DROP TRIGGER IF EXISTS trg_newsflash_event_prune_empty_after_source_change ON newsflash_event_sources;
 CREATE CONSTRAINT TRIGGER trg_newsflash_event_prune_empty_after_source_change
 AFTER DELETE OR UPDATE OF event_id ON newsflash_event_sources
@@ -1084,38 +945,6 @@ DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW
 EXECUTE FUNCTION prune_empty_newsflash_event_after_source_change();
 
-ALTER TABLE newsflash_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE newsflash_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE newsflash_event_sources ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS newsflash_items_anon_select ON newsflash_items;
-DROP POLICY IF EXISTS newsflash_events_anon_select ON newsflash_events;
-DROP POLICY IF EXISTS newsflash_event_sources_anon_select ON newsflash_event_sources;
-DROP POLICY IF EXISTS newsflash_items_console_admin_select ON newsflash_items;
-DROP POLICY IF EXISTS newsflash_events_console_admin_select ON newsflash_events;
-DROP POLICY IF EXISTS newsflash_event_sources_console_admin_select ON newsflash_event_sources;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON newsflash_items, newsflash_events, newsflash_event_sources FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE newsflash_event_sources_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT ON newsflash_items, newsflash_events, newsflash_event_sources TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE newsflash_event_sources_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY newsflash_items_console_admin_select ON newsflash_items
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY newsflash_events_console_admin_select ON newsflash_events
-            FOR SELECT TO authenticated USING (is_console_admin())';
-        EXECUTE 'CREATE POLICY newsflash_event_sources_console_admin_select ON newsflash_event_sources
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """
 
 
@@ -1132,6 +961,7 @@ CREATE TABLE IF NOT EXISTS writer3_contexts (
     status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'skipped', 'sent', 'failed')),
     locked_by text,
     locked_until timestamptz,
+    claim_token text,
     attempt_count integer NOT NULL DEFAULT 0,
     analysis_model text,
     writer_model text,
@@ -1239,29 +1069,22 @@ ON writer3_contexts(sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_writer3_contexts_current_published
 ON writer3_contexts(current_published_at DESC NULLS LAST);
 
-ALTER TABLE writer3_contexts ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS writer3_contexts_anon_select ON writer3_contexts;
-DROP POLICY IF EXISTS writer3_contexts_console_admin_select ON writer3_contexts;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON writer3_contexts FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT ON writer3_contexts TO authenticated;
-        EXECUTE 'CREATE POLICY writer3_contexts_console_admin_select ON writer3_contexts
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """
 
 
 AUDITOR_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS odaily_reference_items (
+    source_item_id text PRIMARY KEY,
+    source_url text,
+    title text,
+    content text NOT NULL,
+    raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    published_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS auditor_checks (
     id bigserial PRIMARY KEY,
     source_item_id text NOT NULL,
@@ -1297,23 +1120,4 @@ ON auditor_checks(source_item_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_auditor_checks_published
 ON auditor_checks(published_at DESC NULLS LAST);
 
-ALTER TABLE auditor_checks ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS auditor_checks_anon_select ON auditor_checks;
-DROP POLICY IF EXISTS auditor_checks_console_admin_select ON auditor_checks;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON auditor_checks FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT ON auditor_checks TO authenticated;
-        EXECUTE 'CREATE POLICY auditor_checks_console_admin_select ON auditor_checks
-            FOR SELECT TO authenticated USING (is_console_admin())';
-    END IF;
-END
-$$;
 """

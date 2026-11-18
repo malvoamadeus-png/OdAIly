@@ -167,6 +167,8 @@ def dependency_error_totals(path: Path) -> list[dict[str, Any]]:
 
 def cleanup_observation_errors(store: Any, *, now_ms: int | None = None, limit: int = 200) -> dict[str, int]:
     """Sweep legacy observation copies too; never aggregate them as additional failures."""
+    if hasattr(store, "cleanup_external_errors"):
+        return store.cleanup_external_errors(now_ms=now_ms, limit=limit)
     cutoff = day_start_ms(now_ms)
     changed = 0
     delete_files: set[Path] = set()
@@ -224,13 +226,6 @@ def cleanup_observation_errors(store: Any, *, now_ms: int | None = None, limit: 
                 else:
                     replace_ref(row.get('evidence_ref'))
                     conn.execute("UPDATE system_information_items SET summary='',failure_category=NULL,fingerprint='' WHERE item_id=?", (row['item_id'],))
-                    conn.execute('DELETE FROM system_information_search WHERE item_id=?', (row['item_id'],))
-                    # Reindex only surviving material; deleted error terms must not be searchable.
-                    from .store import _search_terms, _searchable_text
-                    item = conn.execute('SELECT * FROM system_information_items WHERE item_id=?', (row['item_id'],)).fetchone()
-                    cleaned_evidence = scrub_external_errors(evidence)
-                    text = _searchable_text(tuple(item[k] for k in ('title', 'source', 'source_id', 'source_url')), cleaned_evidence)
-                    conn.executemany('INSERT OR IGNORE INTO system_information_search VALUES(?,?)', ((term, row['item_id']) for term in _search_terms(text)))
                 changed += 1
             new_cursor = int(rows[-1]['__rowid__']) if rows else cursor
             conn.execute('INSERT INTO system_information_state VALUES(?,?,?) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms',

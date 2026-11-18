@@ -18,8 +18,7 @@ from packages.publisher import PushClient
 from packages.x_processing.ai_client import OpenAIResponsesClient, TextGenerationClient
 from packages.x_processing.formatter import format_brief, parse_draft_output
 
-from .repository import BusinessNewsRepository
-from .storage import business_news_path
+from .repository import create_business_news_repository
 
 
 BUSINESS_NEWS_JSON_SCHEMA = {
@@ -440,7 +439,7 @@ def build_business_telegram_worker() -> BusinessTelegramWorker:
     settings = load_x_processing_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OpenAI-compatible API key is required for Business Writer4")
-    repository = BusinessNewsRepository(business_news_path())
+    repository = create_business_news_repository()
     ai_client = OpenAIResponsesClient(
         api_key=settings.openai_api_key,
         base_url=str(settings.openai_base_url),

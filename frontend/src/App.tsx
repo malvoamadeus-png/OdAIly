@@ -58,6 +58,7 @@ import {
   getMemeDashboard,
   getPredictHtmlDashboard,
   getMemeNarrativeDetail,
+  reconcileMemeDelivery,
   getBlockbeatsKeyConfig,
   getPipelineTimingDashboard,
   getTaskFailureDiagnostics,
@@ -3761,6 +3762,19 @@ function MemeDashboardPanel({ dashboard, loading }: { dashboard: MemeDashboard |
                   ? '验证源与 Dexscreener 的市值偏差超过 15%，已停止写作。'
                   : item.reason.includes('market_verification_unavailable') ? '暂无有效验证市值，本次未写作。' : item.reason || '任务仍在处理中。'}</p>}
               </div>
+              {item.delivery_reconciliation_available && <div className="memeDeliveryReconcile">
+                <span>投递结果不确定，请先核对后台草稿。</span>
+                <button type="button" className="secondaryButton" onClick={async () => {
+                  if (!window.confirm('已确认上游没有创建该草稿？确认后任务会重新进入重试队列。')) return;
+                  await reconcileMemeDelivery(item.id, 'confirmed_not_published');
+                  window.location.reload();
+                }}>确认未创建并重试</button>
+                <button type="button" className="secondaryButton" onClick={async () => {
+                  if (!window.confirm('已确认上游已创建该草稿？')) return;
+                  await reconcileMemeDelivery(item.id, 'confirmed_published');
+                  window.location.reload();
+                }}>确认已创建</button>
+              </div>}
               <MemeNarrativeAudit item={item} />
             </article>
           );

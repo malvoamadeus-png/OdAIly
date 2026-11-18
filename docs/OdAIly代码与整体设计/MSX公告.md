@@ -2,7 +2,7 @@
 
 ## 模块职责
 
-`msx-notices` 是一个只读、可重复执行的 MSX 中文公告获取命令。生产收集由 `msx-notice-worker` 完成：它写入主 SQLite 的 `tasks` 并提交现有本地流水线，不直接调用 Push Data API。
+`msx-notices` 是一个只读、可重复执行的 MSX 中文公告获取命令。生产收集由 `msx-notice-worker` 完成：它写入主存储的 `tasks` 并提交现有本地流水线，不直接调用 Push Data API。SQLite 模式下基线/已见记录与主库共用 SQLite，或可通过 `ODAILY_MSX_NOTICE_SQLITE_PATH` 使用已经迁移验证的独立 SQLite 文件；PostgreSQL 模式将采集基线、已见记录、任务和 worker 心跳全部写入 PostgreSQL `main` schema，任务队列仍由 `local_pipeline` 自身的 PostgreSQL 后端负责。构造 worker 不会读取或初始化 SQLite 状态文件。
 
 ## 官方接口
 

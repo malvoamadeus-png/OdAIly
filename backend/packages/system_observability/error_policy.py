@@ -21,12 +21,23 @@ def day_start_ms(now_ms: int | None = None) -> int:
 
 
 def failure_category(message: Any) -> str | None:
+    sqlstate = str(getattr(message, 'sqlstate', '') or '').upper()
+    exception_name = type(message).__name__.casefold()
+    if sqlstate in {'40P01', '55P03', '53300', '57014', '57P01'} or 'pooltimeout' in exception_name:
+        return 'local_storage'
     text = str(message or '').casefold()
     if not text.strip():
         return None
     if text in EXTERNAL_CATEGORIES:
         return text
-    if any(term in text for term in ('database is locked', 'database table is locked', 'disk is full', 'no space left', 'disk i/o', 'unable to open database')):
+    if any(term in text for term in (
+        'database is locked', 'database table is locked', 'disk is full', 'no space left', 'disk i/o',
+        'unable to open database', 'deadlock detected', 'lock not available',
+        'canceling statement due to lock timeout', 'canceling statement due to statement timeout',
+        'too many clients',
+        'remaining connection slots', 'connection pool checkout', 'connection pool timeout',
+        'pool timeout', 'idle in transaction timeout',
+    )):
         return 'local_storage'
     if any(term in text for term in ('freshness', 'no target-author posts', 'no_target_author', 'no new posts', 'empty_result')):
         return 'expected_result'

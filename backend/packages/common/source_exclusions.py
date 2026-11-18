@@ -7,6 +7,8 @@ import json
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
+from packages.common.pipeline_schema import COMPETITOR_FILTER_SCHEMA_SQL
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres
 from packages.common.storage import connect_sqlite, load_storage_settings
 
 
@@ -159,9 +161,83 @@ class SQLiteSourceExclusionRepository:
         ]
 
 
-def create_source_exclusion_repository(database_url: str | None = None) -> SourceExclusionRepository:
-    del database_url
-    return SQLiteSourceExclusionRepository(load_storage_settings().sqlite_path)
+class PostgresSourceExclusionRepository:
+    def __init__(self) -> None:
+        self.application_name = "odaily-source-exclusions"
+
+    def init_schema(self) -> None:
+        import hashlib
+
+        with connect_postgres(schema="main", application_name=self.application_name) as connection:
+            apply_schema_migrations(
+                connection,
+                schema="main",
+                component="source_exclusions",
+                migrations=(PostgresMigration(
+                    1, "source_exclusions_initial", hashlib.sha256(COMPETITOR_FILTER_SCHEMA_SQL.encode()).hexdigest(),
+                    lambda conn: conn.execute(COMPETITOR_FILTER_SCHEMA_SQL),
+                ),),
+            )
+            with connection.transaction():
+                connection.execute(
+                    """INSERT INTO source_exclusion_rule_groups(
+                        rule_key,name,description,scopes,terms,match_target,enabled
+                    ) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(rule_key) DO NOTHING""",
+                    ("ripple-xrp-commercial-content", "Ripple / XRP 商务稿",
+                     "从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。",
+                     ["crypto_source"], ["Ripple", "XRP", "RLUSD"], "title", True),
+                )
+                connection.execute(
+                    """INSERT INTO source_exclusion_rule_groups(
+                        rule_key,name,description,scopes,terms,match_target,enabled
+                    ) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(rule_key) DO NOTHING""",
+                    ("competitor-magne-ai", "MAGNE.AI 竞品屏蔽",
+                     "从竞品入口屏蔽标题或正文出现 MAGNE.AI 的内容。",
+                     ["competitor"], ["MAGNE.AI"], "all", True),
+                )
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO competitor_filter_keywords(term,term_normalized,enabled) VALUES(%s,%s,true) ON CONFLICT(term_normalized) DO NOTHING",
+                        ((term, term.casefold()) for term in ("跌破", "突破", "爆仓", "Bitget")),
+                    )
+                has_fact_rules = connection.execute(
+                    "SELECT 1 FROM source_exclusion_rule_groups WHERE 'fact_auditor'=ANY(scopes) LIMIT 1"
+                ).fetchone()
+                if not has_fact_rules:
+                    rules = connection.execute(
+                        "SELECT rule_key,name,description,terms,match_target,enabled FROM source_exclusion_rule_groups "
+                        "WHERE 'competitor'=ANY(scopes) ORDER BY name,rule_key"
+                    ).fetchall()
+                    for row in rules:
+                        connection.execute(
+                            """INSERT INTO source_exclusion_rule_groups(
+                                rule_key,name,description,scopes,terms,match_target,enabled
+                            ) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(rule_key) DO NOTHING""",
+                            (f"fact-auditor-copy-{row['rule_key']}", f"事实审核者 · {row['name']}",
+                             f"从竞品规则复制的初始词表。{row['description'] or ''}".strip(),
+                             ["fact_auditor"], row["terms"], row["match_target"], row["enabled"]),
+                        )
+
+    def list_enabled_rule_groups(self) -> list[SourceExclusionRuleGroup]:
+        self.init_schema()
+        with connect_postgres(schema="main", application_name=self.application_name) as connection:
+            rows = connection.execute(
+                "SELECT rule_key,name,description,scopes,terms,match_target,enabled "
+                "FROM source_exclusion_rule_groups WHERE enabled=true ORDER BY name,rule_key"
+            ).fetchall()
+        return [SourceExclusionRuleGroup(
+            rule_key=str(row["rule_key"]), name=str(row["name"]), description=str(row["description"] or ""),
+            scopes=tuple(str(value) for value in row["scopes"]), terms=tuple(str(value) for value in row["terms"]),
+            match_target=normalize_exclusion_match_target(row["match_target"]), enabled=bool(row["enabled"]),
+        ) for row in rows]
+
+
+def create_source_exclusion_repository(database_url: str | None = None, *, path=None) -> SourceExclusionRepository:
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresSourceExclusionRepository()
+    return SQLiteSourceExclusionRepository(path or load_storage_settings().sqlite_path)
 
 
 class SourceExclusionMatcher:

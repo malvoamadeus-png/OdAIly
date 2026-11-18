@@ -41,6 +41,11 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
         raise ValueError('Invalid address search')
     if scenario:
         scenario_condition(scenario, dataset=dataset)
+    if getattr(store, "backend", "sqlite") == "postgres":
+        pipeline_database_path = None
+        return _postgres_dashboard(store, page=page, page_size=page_size, scenario=scenario,
+                                    dataset=dataset, view=view, address_query=address_query,
+                                    address_status=address_status)
     if not store.path.exists():
         return {'initialized': False, 'events': [], 'addresses': [], 'rules': asdict(Rules()), 'labels': KIND_LABELS,
                 'last_pass': {}, 'has_next': False, 'page': page, 'counts': {}, 'scenarios': scenario_cards(dataset=dataset), 'scenario': scenario, 'dataset': dataset, 'view': view}
@@ -185,3 +190,126 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
 def address_naming_details(store: NewsStore, address: str) -> dict[str, Any]:
     from .naming import naming_details
     return naming_details(store, address)
+
+
+def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | None,
+                        dataset: str, view: str, address_query: str, address_status: str) -> dict[str, Any]:
+    """Bounded PostgreSQL dashboard read path; no SQLite SQL or ATTACH fallback."""
+    import json
+    with store._connect(autocommit=True) as conn:
+        source = "hl_news_candidates" if dataset == "live" else "hl_news_test_cases"
+        exists = conn.execute("SELECT to_regclass(%s) AS relation", (f"hyperliquid_news.{source}",)).fetchone()
+        if not exists or exists["relation"] is None:
+            return {"initialized": False, "events": [], "addresses": [], "rules": asdict(Rules()), "labels": KIND_LABELS,
+                    "last_pass": {}, "has_next": False, "page": page, "counts": {}, "scenarios": scenario_cards(dataset=dataset),
+                    "scenario": scenario, "dataset": dataset, "view": view}
+        if view == "addresses":
+            address_like = f"%{address_query.strip().lower()}%" if address_query.strip() else "%"
+            address_rows = conn.execute("""SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
+                m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,
+                n.manual_locked AS name_manual_locked,n.coin AS name_coin,n.side AS name_side,n.checked_ms AS name_checked_ms,n.next_check_ms AS name_next_check_ms
+                FROM hl_news_addresses a LEFT JOIN hl_news_metadata m ON m.key='address_note:'||a.address
+                LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address LEFT JOIN hl_news_address_names n USING(address)
+                WHERE a.address ILIKE %s AND (%s='all' OR (%s='blocked' AND COALESCE(b.payload->>'blocked','false')='true')
+                    OR (%s='active' AND COALESCE(b.payload->>'blocked','false')<>'true'))
+                ORDER BY (lower(a.address)=lower(%s)) DESC,a.last_polled_ms DESC,a.address LIMIT 100""",
+                (address_like,address_status,address_status,address_status,address_query.strip())).fetchall()
+            addresses = []
+            for row in address_rows:
+                item = dict(row)
+                note = item.pop("note_payload") or {}
+                block = item.pop("block_payload") or {}
+                if isinstance(note,str): note=json.loads(note)
+                if isinstance(block,str): block=json.loads(block)
+                item["note"] = note.get("note","")
+                item["blocked"] = bool(block.get("blocked"))
+                item["name_manual_locked"] = bool(item.get("name_manual_locked"))
+                item["display_name"] = item["note"] if item["name_manual_locked"] else (item.get("current_name") or f"{item['address'][:4].lower()}地址")
+                addresses.append(item)
+            return {"initialized": True,"events": [],"addresses": addresses,"rules": asdict(Rules()),"labels": KIND_LABELS,
+                "last_pass": {},"has_next": False,"page": page,"counts": {"addresses": int(conn.execute("SELECT count(*) AS n FROM hl_news_addresses").fetchone()["n"])},
+                "scenarios": scenario_cards(dataset=dataset),"scenario": scenario,"dataset": dataset,"view": view,
+                "publication_mode": "backend_only","account_pool": store.account_pool_stats(int(time.time()*1000))}
+        if view == "rules":
+            return {"initialized": True,"events": [],"addresses": [],"rules": asdict(Rules()),"labels": KIND_LABELS,
+                "last_pass": {},"has_next": False,"page": page,"counts": {},"scenarios": scenario_cards(dataset=dataset),
+                "scenario": scenario,"dataset": dataset,"view": view,"publication_mode": "backend_only"}
+        scenario_filter = ""
+        params: list[Any] = []
+        if scenario:
+            if dataset == "test":
+                scenario_filter = " AND c.payload->'test_scenarios' ? %s"
+            else:
+                scenario_filter = " AND EXISTS (SELECT 1 FROM hl_news_candidate_scenarios cs WHERE cs.event_key=c.event_key AND cs.scenario_key=%s)"
+            params.append(scenario)
+        if view == "timeline":
+            address_query_value = address_query.strip().lower()
+            timeline_filter = ""
+            timeline_params: list[Any] = []
+            if address_query_value:
+                exact = len(address_query_value) == 42 and address_query_value.startswith("0x")
+                timeline_filter = "WHERE a.address_lower=%s" if exact else "WHERE a.address_lower LIKE %s"
+                timeline_params.append(address_query_value if exact else address_query_value.replace("%", "\\%").replace("_", "\\_") + "%")
+            rows = conn.execute(f"""SELECT e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,
+                    COALESCE((SELECT jsonb_agg(cs.scenario_key ORDER BY cs.scenario_key) FROM hl_news_candidate_scenarios cs WHERE cs.event_key=e.event_key),'[]'::jsonb) AS scenario_keys,
+                    d.status AS dispatch_status,d.task_id,t.status AS task_status,p.draft_title,p.draft_content,p.final_title,p.final_content,
+                    p.write_completed_at,p.format_completed_at,p.publish_completed_at
+                FROM hl_news_candidate_timeline e LEFT JOIN hl_news_candidate_addresses a ON a.event_key=e.event_key
+                LEFT JOIN hl_news_dispatch d ON d.event_key=e.event_key LEFT JOIN main.tasks t ON t.id=d.task_id
+                LEFT JOIN main.x_task_pipeline p ON p.task_id=t.id {timeline_filter}
+                GROUP BY e.event_key,e.observed_ms,e.coin,e.kinds,e.addresses,d.status,d.task_id,t.status,p.draft_title,p.draft_content,p.final_title,p.final_content,p.write_completed_at,p.format_completed_at,p.publish_completed_at
+                ORDER BY e.observed_ms DESC,e.event_key LIMIT %s OFFSET %s""",
+                (*timeline_params,page_size+1,page*page_size)).fetchall()
+        else:
+            pipeline_join = "LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key LEFT JOIN main.tasks t ON t.id=d.task_id LEFT JOIN main.x_task_pipeline p ON p.task_id=t.id LEFT JOIN main.prompt_template_versions v ON v.id=p.prompt_version_id" if dataset == "live" else ""
+            pipeline_columns = ",d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code" if dataset == "live" else ",NULL AS task_id"
+            rows = conn.execute(f"SELECT c.event_key,c.observed_ms,c.coin,c.payload{pipeline_columns} FROM {source} c {pipeline_join} WHERE true{scenario_filter} ORDER BY c.observed_ms DESC,c.event_key LIMIT %s OFFSET %s",
+                                (*params, page_size + 1, page * page_size)).fetchall()
+        events = []
+        for row in rows[:page_size]:
+            if view == "timeline":
+                addresses_for_event = row["addresses"] if isinstance(row["addresses"],list) else json.loads(row["addresses"])
+                scenario_keys = row["scenario_keys"] if isinstance(row["scenario_keys"],list) else json.loads(row["scenario_keys"])
+                events.append({"key":row["event_key"],"observed_ms":row["observed_ms"],"addresses":addresses_for_event,"coin":row["coin"],
+                    "kinds":row["kinds"] if isinstance(row["kinds"],list) else json.loads(row["kinds"]),"scenario_keys":scenario_keys,
+                    "pipeline":{key:row[key] for key in ("dispatch_status","task_id","task_status","draft_title","draft_content","final_title","final_content","write_completed_at","format_completed_at","publish_completed_at")},
+                    "source_url":"https://hyperbot.network/trader/"+(addresses_for_event[0] if addresses_for_event else "")})
+                continue
+            payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"])
+            pipeline = {key:row[key] for key in row.keys() if key not in ("event_key","observed_ms","coin","payload")}
+            for key in ("search_result","push_result"):
+                if isinstance(pipeline.get(key),str): pipeline[key]=json.loads(pipeline[key])
+            payload["pipeline"] = pipeline
+            payload["news_eligibility"] = news_eligibility(payload)
+            preview = conn.execute("SELECT payload FROM hl_news_metadata WHERE key=%s", ("editorial_preview:" + row["event_key"],)).fetchone()
+            if preview:
+                payload["editorial_preview"] = preview["payload"] if isinstance(preview["payload"], dict) else json.loads(preview["payload"])
+            payload["source_url"] = "https://hyperbot.network/trader/" + payload.get("addresses", [""])[0]
+            events.append(payload)
+        addresses = []
+        for row in conn.execute("""SELECT a.*,m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,n.manual_locked AS name_manual_locked
+            FROM hl_news_addresses a LEFT JOIN hl_news_metadata m ON m.key='address_note:'||a.address
+            LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address LEFT JOIN hl_news_address_names n USING(address)
+            WHERE a.address ILIKE %s AND (%s='all' OR (%s='blocked' AND COALESCE(b.payload->>'blocked','false')='true')
+                OR (%s='active' AND COALESCE(b.payload->>'blocked','false')<>'true')) ORDER BY a.last_polled_ms DESC,a.address LIMIT %s""",
+            (f"%{address_query.strip().lower()}%" if address_query.strip() else "%",address_status,address_status,address_status,100 if view != "timeline" else 1 if address_query.strip() else 0)).fetchall():
+            note = row["note_payload"] if isinstance(row["note_payload"], dict) else json.loads(row["note_payload"] or "{}")
+            block = row["block_payload"] if isinstance(row["block_payload"], dict) else json.loads(row["block_payload"] or "{}")
+            if address_status == "blocked" and not block.get("blocked"): continue
+            if address_status == "active" and block.get("blocked"): continue
+            item = dict(row); item["note"] = note.get("note", ""); item["blocked"] = bool(block.get("blocked")); item["display_name"] = item["note"] if item.get("name_manual_locked") else (item.get("current_name") or f"{item['address'][:4].lower()}地址")
+            addresses.append(item)
+        counts = {"addresses": int(conn.execute("SELECT count(*) AS n FROM hl_news_addresses").fetchone()["n"]), "events": int(conn.execute(f"SELECT count(*) AS n FROM {source}").fetchone()["n"])}
+        counts["test_cases"] = int(conn.execute("SELECT count(*) AS n FROM hl_news_test_cases").fetchone()["n"]) if dataset == "live" else counts["events"]
+        visible = {card['key'] for card in scenario_cards(dataset=dataset)}
+        selected = [item for item in SCENARIOS if item[0] in visible]
+        scenario_counts = {}
+        for item in selected:
+            card_filter = "payload->'test_scenarios' ? %s" if dataset == "test" else "EXISTS (SELECT 1 FROM hl_news_candidate_scenarios cs WHERE cs.event_key=c.event_key AND cs.scenario_key=%s)"
+            scenario_counts[item[0]] = int(conn.execute(f"SELECT count(*) AS n FROM {source} c WHERE {card_filter}", (item[0],)).fetchone()["n"])
+    scenarios = scenario_cards(scenario_counts, dataset=dataset)
+    return {"initialized": True, "events": events, "addresses": addresses, "rules": asdict(Rules()), "labels": KIND_LABELS,
+            "last_pass": store.metadata("last_pass", {}) if view != "timeline" else {}, "has_next": len(rows) > page_size,
+            "page": page, "counts": counts, "scenarios": scenarios, "scenario": scenario,
+            "dataset": dataset, "view": view, "publication_mode": "backend_only", "production": store.metadata("production_account_profit", None),
+            "account_pool": store.account_pool_stats(int(time.time()*1000)), "flow": ["硬规则命中", "内部行为防重", "搜索者（跨来源查重）", "编写者1（独立Prompt）", "编写者2", "固定数据组装", "挂后台"]}

@@ -206,4 +206,9 @@ class SQLiteEditorPluginAuthRepository:
 
 def create_editor_plugin_auth_repository(database_url: str | None = None):
     del database_url
-    return SQLiteEditorPluginAuthRepository(load_storage_settings().sqlite_path)
+    settings = load_storage_settings()
+    if settings.backend == "postgres":
+        from .postgres_editor_plugin_auth import PostgresEditorPluginAuthRepository
+
+        return PostgresEditorPluginAuthRepository()
+    return SQLiteEditorPluginAuthRepository(settings.sqlite_path)

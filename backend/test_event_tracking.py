@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -127,6 +128,19 @@ class FakeAI:
                 ),
                 model=model,
             )
+        if "X 账号身份判断器" in prompt:
+            accounts = json.loads(prompt.rsplit("账号简介与近期原创帖子：", 1)[1])
+            decisions = []
+            for account in accounts:
+                official = account["handle"].lower() == "giwaofficial"
+                decisions.append({
+                    "handle": account["handle"],
+                    "decision": "subject" if official else "third_party",
+                    "entity": "GIWA" if official else account["display_name"],
+                    "role": "official_project" if official else "third_party",
+                    "reason": "项目官方账号" if official else "第三方观察账号",
+                })
+            return self._result(json.dumps({"accounts": decisions}, ensure_ascii=False), model=model)
         raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
     def web_search_json(self, *, model: str, prompt: str) -> EventModelResult:
@@ -209,6 +223,15 @@ def _tracker(
         ai=ai or FakeAI(),
         dispatcher=dispatcher,
         feed_writer=feed_writer,
+        account_identity_fetcher=lambda handle: {
+            "status": "succeeded",
+            "profile": {
+                "handle": handle,
+                "display_name": "GIWA" if handle.lower() == "giwaofficial" else handle,
+                "bio": "Official project account" if handle.lower() == "giwaofficial" else "Third-party observer",
+                "posts": [{"tweet_id": "1", "text": "We continue investigating the bridge incident."}],
+            },
+        },
         now=clock,
     )
     return tracker, connection, clock, dispatcher
@@ -310,7 +333,7 @@ def test_official_only_discovery_material_progress_outbox_and_silence_lifecycle(
         connection.close()
 
 
-def test_account_candidates_do_not_require_citations_or_official_identity(tmp_path: Path) -> None:
+def test_account_candidates_do_not_require_citations_but_require_official_identity(tmp_path: Path) -> None:
     ai = FakeAI(include_citations=False, include_third_party=True)
     tracker, connection, clock, _dispatcher = _tracker(tmp_path, ai=ai)
     try:
@@ -318,10 +341,10 @@ def test_account_candidates_do_not_require_citations_or_official_identity(tmp_pa
         tracker.observe_topics(["topic:giwa"])
         outcome = tracker.discover_official_accounts()
 
-        assert outcome == {"discovered": 1, "failed": 0, "bound": 2}
+        assert outcome == {"discovered": 1, "failed": 0, "bound": 1}
         assert ai.web_search_calls == 1
-        assert [row[0] for row in connection.execute("SELECT handle_lower FROM event_tracking_accounts ORDER BY handle_lower")] == ["giwaofficial", "lookonchain"]
-        assert connection.execute("SELECT COUNT(*) FROM event_tracking_bindings").fetchone()[0] == 2
+        assert [row[0] for row in connection.execute("SELECT handle_lower FROM event_tracking_accounts ORDER BY handle_lower")] == ["giwaofficial"]
+        assert connection.execute("SELECT COUNT(*) FROM event_tracking_bindings").fetchone()[0] == 1
         assert connection.execute("SELECT status FROM event_tracking_events").fetchone()[0] == "active"
         assert connection.execute("SELECT COUNT(*) FROM event_tracking_account_discoveries WHERE status='succeeded'").fetchone()[0] == 1
         discovery = connection.execute(
@@ -329,8 +352,8 @@ def test_account_candidates_do_not_require_citations_or_official_identity(tmp_pa
         ).fetchone()
         assert json.loads(discovery[0])[0]["type"] == "web_search_call"
         assert json.loads(discovery[1]) == []
-        assert [item["handle"] for item in json.loads(discovery[2])["accounts"]] == ["lookonchain", "GIWAofficial"]
-        assert connection.execute("SELECT official_relation FROM event_tracking_accounts WHERE handle_lower='lookonchain'").fetchone()[0] == "official_project"
+        assert [item["handle"] for item in json.loads(discovery[2])["accounts"]] == ["GIWAofficial"]
+        assert connection.execute("SELECT 1 FROM event_tracking_accounts WHERE handle_lower='lookonchain'").fetchone() is None
     finally:
         connection.close()
 
@@ -456,6 +479,91 @@ def test_operator_tracking_starts_after_automatic_rejection_and_survives_rescan(
         assert connection.execute("SELECT status FROM event_tracking_events WHERE event_id=?", (event_id,)).fetchone()[0] == "discovering"
         assert connection.execute("SELECT actual_model FROM event_tracking_topic_assessments WHERE topic_id='topic:giwa'").fetchone()[0] == "operator_override"
         assert tracker.discover_official_accounts(event_id=event_id)["bound"] == 1
+    finally:
+        connection.close()
+
+
+def test_unchanged_topic_observation_releases_its_write_transaction(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    probe = sqlite3.connect(tmp_path / "hottopic.sqlite", timeout=0.05)
+    try:
+        _seed_topic(connection, clock)
+        assert tracker.observe_topics(["topic:giwa"]) == {"assessed": 1, "tracked": 1, "failed": 0}
+
+        assert tracker.observe_topics(["topic:giwa"]) == {"assessed": 0, "tracked": 0, "failed": 0}
+        assert connection.in_transaction is False
+        assert tracker.observe_topics(["topic:giwa"]) == {"assessed": 0, "tracked": 0, "failed": 0}
+        assert connection.in_transaction is False
+
+        probe.execute("INSERT INTO hottopic_inbox(tweet_id) VALUES('concurrent-probe')")
+        probe.commit()
+        assert probe.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE tweet_id='concurrent-probe'").fetchone()[0] == 1
+    finally:
+        probe.close()
+        connection.close()
+
+
+def test_unchanged_observation_leaves_web_search_boundary_writable(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    probe = sqlite3.connect(tmp_path / "hottopic.sqlite", timeout=0.05)
+    original_search = tracker.ai.web_search_json
+
+    def search_with_concurrent_write(*, model: str, prompt: str):
+        assert connection.in_transaction is False
+        probe.execute("INSERT INTO hottopic_inbox(tweet_id) VALUES('during-search')")
+        probe.commit()
+        return original_search(model=model, prompt=prompt)
+
+    tracker.ai.web_search_json = search_with_concurrent_write  # type: ignore[method-assign]
+    try:
+        _seed_topic(connection, clock)
+        tracker.observe_topics(["topic:giwa"])
+        tracker.observe_topics(["topic:giwa"])
+
+        result = tracker.discover_official_accounts()
+
+        assert result == {"discovered": 1, "failed": 0, "bound": 1}
+        assert connection.execute("SELECT status FROM event_tracking_events").fetchone()[0] == "active"
+        assert probe.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE tweet_id='during-search'").fetchone()[0] == 1
+    finally:
+        probe.close()
+        connection.close()
+
+
+def test_observation_result_helper_preserves_callers_transaction(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    try:
+        _seed_topic(connection, clock)
+        tracker.observe_topics(["topic:giwa"])
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO hottopic_inbox(tweet_id) VALUES('caller-owned')")
+
+        tracker._save_topic_observation_result("topic:giwa", "track", clock().isoformat())
+
+        assert connection.in_transaction is True
+        connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE tweet_id='caller-owned'").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_observe_topics_rejects_an_active_caller_transaction(tmp_path: Path) -> None:
+    tracker, connection, clock, _dispatcher = _tracker(tmp_path)
+    try:
+        _seed_topic(connection, clock)
+        connection.execute("BEGIN")
+        connection.execute("INSERT INTO hottopic_inbox(tweet_id) VALUES('caller-owned')")
+
+        try:
+            tracker.observe_topics(["topic:giwa"])
+        except RuntimeError as exc:
+            assert "requires transaction ownership" in str(exc)
+        else:
+            raise AssertionError("observe_topics must not commit or cross an external call with a caller transaction")
+
+        assert connection.in_transaction is True
+        connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM hottopic_inbox WHERE tweet_id='caller-owned'").fetchone()[0] == 0
     finally:
         connection.close()
 

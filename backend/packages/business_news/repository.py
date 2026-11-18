@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from packages.common.storage import connect_sqlite
+from packages.common.storage import connect_sqlite, load_storage_settings
 
 
 def _now() -> datetime:
@@ -25,6 +25,7 @@ def _cursor_key(bot_id: str | None) -> str:
 class BusinessNewsRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
+        self.backend = "sqlite"
         self.initialize()
 
     def initialize(self) -> None:
@@ -407,6 +408,21 @@ class BusinessNewsRepository:
         if row is None:
             raise ValueError("群尚未由 Telegram 自动发现")
         return dict(row)
+
+
+def create_business_news_repository(database_path: Path | None = None):
+    settings = load_storage_settings()
+    if settings.backend == "postgres":
+        if database_path is not None:
+            raise ValueError("PostgreSQL business repository does not accept a SQLite path")
+        from .postgres_repository import PostgresBusinessNewsRepository
+
+        return PostgresBusinessNewsRepository()
+    if database_path is None:
+        from .storage import business_news_path
+
+        database_path = business_news_path()
+    return BusinessNewsRepository(database_path)
 
 
 def _without_urls(text: str) -> str:

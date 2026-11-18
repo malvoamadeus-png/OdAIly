@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from packages.auditor.repository import calculate_content_hash
-from packages.common.storage import connect_sqlite_readonly
+from packages.common.storage import connect_sqlite_readonly, load_storage_settings
 from packages.common.text import normalize_multiline_text
 from packages.x_processing.ai_client import TextGenerationClient
 from packages.x_processing.formatter import ODAILY_PREFIX, _normalize_content_spaces
@@ -17,10 +17,37 @@ from .repository import AITextSelfUpgradeRepository
 
 
 def _decode(value: Any, default: Any) -> Any:
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
     try:
         return json.loads(str(value)) if value not in (None, "") else default
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def _fetch_postgres_pages(
+    connect: Any,
+    query: str,
+    params: tuple[Any, ...],
+    *,
+    key_columns: tuple[str, str],
+    page_size: int = 500,
+) -> list[Any]:
+    rows: list[Any] = []
+    last_key: tuple[Any, Any] | None = None
+    while True:
+        page_query = f"SELECT * FROM ({query}) AS source_page"
+        page_params = params
+        if last_key is not None:
+            page_query += f" WHERE ({key_columns[0]}, {key_columns[1]}) < (%s, %s)"
+            page_params += last_key
+        page_query += f" ORDER BY {key_columns[0]} DESC, {key_columns[1]} DESC LIMIT %s"
+        with connect() as conn:
+            page = conn.execute(page_query, (*page_params, page_size)).fetchall()
+        if not page:
+            return rows
+        rows.extend(page)
+        last_key = (page[-1][key_columns[0]], page[-1][key_columns[1]])
 
 
 def case_key(source_type: str, source_item_id: str, content_hash: str) -> str:
@@ -121,19 +148,89 @@ class AITextSelfUpgradeService:
         self.repository.finish_run(run_key, status="failed", error=error)
 
     def _discover_cases(self, *, since: str | None = None, until: str | None = None) -> tuple[list[dict[str, Any]], int]:
-        if not self.primary_database_path.exists():
-            return [], 0
         unlinked = 0
-        with connect_sqlite_readonly(self.primary_database_path, timeout_seconds=10) as conn:
-            conn.row_factory = sqlite3.Row
-            tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            required = {"newsflash_production_metadata", "x_task_pipeline", "tasks"}
-            if not required <= tables:
+        text_since = since or self.repository.enabled_at()
+        fact_since = since or self.repository.fact_enabled_at()
+        trigger_rows: list[Any] = []
+        task_rows: list[Any] = []
+        if load_storage_settings().backend == "postgres":
+            from packages.common.pg_native import connect_postgres
+
+            source_queries: list[tuple[str, tuple[Any, ...], tuple[str, str]]] = []
+            with connect_postgres(schema="main", application_name="odaily-ai-text-upgrade-source") as conn:
+                required = conn.execute(
+                    """SELECT to_regclass('main.newsflash_production_metadata') AS metadata,
+                              to_regclass('main.x_task_pipeline') AS pipeline,
+                              to_regclass('main.tasks') AS tasks"""
+                ).fetchone()
+                if not required or not all(required[key] is not None for key in ("metadata", "pipeline", "tasks")):
+                    return [], 0
+                tables = {str(row["table_name"]) for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+                ).fetchall()}
+                if "auditor_checks" in tables:
+                    query = """SELECT 'text_auditor' AS source_type,a.id AS auditor_check_id,NULL::bigint AS fact_check_id,
+                        a.source_item_id,a.content_hash,a.title AS audited_title,a.content AS audited_content,
+                        a.source_url AS audit_source_url,a.published_at,a.prompt_version AS audit_prompt_version,
+                        a.model AS audit_model,a.audit_result,NULL::text AS policy_version,NULL::text AS fact_status,
+                        NULL::text AS fact_reason,NULL::text AS fact_summary,NULL::jsonb AS fact_result,
+                        NULL::text AS fact_original_text,NULL::text AS fact_original_url,NULL::timestamptz AS fact_completed_at,
+                        COALESCE(a.alerted_at,a.created_at) AS reviewed_at
+                    FROM main.auditor_checks a
+                    WHERE a.status='flagged' AND COALESCE(a.alerted_at,a.created_at) >= %s::timestamptz
+                        AND (%s::timestamptz IS NULL OR COALESCE(a.alerted_at,a.created_at) < %s::timestamptz)
+                    ORDER BY COALESCE(a.alerted_at,a.created_at) DESC,a.id DESC"""
+                    source_queries.append((query, (text_since, until, until), ("reviewed_at", "auditor_check_id")))
+                if {"fact_checks", "fact_check_runs"} <= tables:
+                    query = """SELECT 'fact_auditor' AS source_type,0::bigint AS auditor_check_id,f.id AS fact_check_id,
+                        f.source_item_id,f.content_hash,f.title AS audited_title,f.content AS audited_content,
+                        f.source_url AS audit_source_url,f.published_at,NULL::text AS audit_prompt_version,
+                        f.model AS audit_model,NULL::jsonb AS audit_result,f.policy_version,f.status AS fact_status,
+                        f.reason AS fact_reason,f.summary AS fact_summary,f.result_json AS fact_result,
+                        f.original_text AS fact_original_text,f.original_url AS fact_original_url,
+                        r.completed_at AS fact_completed_at,r.completed_at AS reviewed_at
+                    FROM main.fact_checks f JOIN LATERAL (
+                        SELECT latest.id,latest.status,latest.completed_at FROM main.fact_check_runs latest
+                        WHERE latest.check_id=f.id ORDER BY latest.id DESC LIMIT 1
+                    ) r ON TRUE
+                    WHERE f.status='flagged' AND r.status='flagged' AND r.completed_at >= %s::timestamptz
+                        AND (%s::timestamptz IS NULL OR r.completed_at < %s::timestamptz)
+                    ORDER BY r.completed_at DESC,r.id DESC"""
+                    source_queries.append((query, (fact_since, until, until), ("reviewed_at", "fact_check_id")))
+            for query, query_params, key_columns in source_queries:
+                trigger_rows.extend(_fetch_postgres_pages(
+                    lambda: connect_postgres(schema="main", application_name="odaily-ai-text-upgrade-source"),
+                    query, query_params, key_columns=key_columns,
+                ))
+            if trigger_rows:
+                publication_times = [str(row["published_at"]) for row in trigger_rows if row["published_at"]]
+                if publication_times:
+                    query = """SELECT p.task_id,p.writer_model,p.prompt_template_key,p.prompt_version_id,
+                                p.draft_title,p.draft_content,p.final_title,p.final_content,p.write_completed_at,
+                                p.publish_completed_at,t.source_url AS task_source_url,t.title AS source_title,
+                                t.content AS source_content,m.title AS metadata_title,m.odaily_id,m.id_match_status
+                            FROM main.x_task_pipeline p JOIN main.tasks t ON t.id=p.task_id
+                            LEFT JOIN main.newsflash_production_metadata m ON m.delivery_key='odaily-task-' || p.task_id::text
+                            WHERE p.writer_model IS NOT NULL AND p.write_completed_at IS NOT NULL
+                                AND p.publish_completed_at IS NOT NULL
+                                AND p.publish_completed_at >= %s::timestamptz - interval '2 days'
+                                AND p.publish_completed_at <= %s::timestamptz + interval '2 days'"""
+                    task_rows = _fetch_postgres_pages(
+                        lambda: connect_postgres(schema="main", application_name="odaily-ai-text-upgrade-source"),
+                        query, (min(publication_times), max(publication_times)),
+                        key_columns=("publish_completed_at", "task_id"),
+                    )
+        else:
+            if not self.primary_database_path.exists():
                 return [], 0
-            since = since or self.repository.enabled_at()
-            trigger_rows: list[sqlite3.Row] = []
-            if "auditor_checks" in tables:
-                trigger_rows.extend(conn.execute(
+            with connect_sqlite_readonly(self.primary_database_path, timeout_seconds=10) as conn:
+                conn.row_factory = sqlite3.Row
+                tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                required = {"newsflash_production_metadata", "x_task_pipeline", "tasks"}
+                if not required <= tables:
+                    return [], 0
+                if "auditor_checks" in tables:
+                    trigger_rows.extend(conn.execute(
                     """SELECT 'text_auditor' AS source_type,a.id AS auditor_check_id,NULL AS fact_check_id,
                         a.source_item_id,a.content_hash,a.title AS audited_title,a.content AS audited_content,
                         a.source_url AS audit_source_url,a.published_at,a.prompt_version AS audit_prompt_version,
@@ -145,10 +242,10 @@ class AITextSelfUpgradeService:
                     WHERE a.status='flagged' AND julianday(COALESCE(a.alerted_at,a.created_at))>=julianday(?)
                         AND (? IS NULL OR julianday(COALESCE(a.alerted_at,a.created_at))<julianday(?))
                     ORDER BY julianday(COALESCE(a.alerted_at,a.created_at)) DESC,a.id DESC""",
-                    (since, until, until),
-                ).fetchall())
-            if {"fact_checks", "fact_check_runs"} <= tables:
-                trigger_rows.extend(conn.execute(
+                    (text_since, until, until),
+                    ).fetchall())
+                if {"fact_checks", "fact_check_runs"} <= tables:
+                    trigger_rows.extend(conn.execute(
                     """SELECT 'fact_auditor' AS source_type,0 AS auditor_check_id,f.id AS fact_check_id,
                         f.source_item_id,f.content_hash,f.title AS audited_title,f.content AS audited_content,
                         f.source_url AS audit_source_url,f.published_at,NULL AS audit_prompt_version,
@@ -164,15 +261,14 @@ class AITextSelfUpgradeService:
                     WHERE f.status='flagged' AND r.status='flagged' AND julianday(r.completed_at)>=julianday(?)
                         AND (? IS NULL OR julianday(r.completed_at)<julianday(?))
                     ORDER BY julianday(r.completed_at) DESC,r.id DESC""",
-                    (since, until, until),
-                ).fetchall())
-            if not trigger_rows:
-                return [], 0
+                    (fact_since, until, until),
+                    ).fetchall())
+                if not trigger_rows:
+                    return [], 0
 
-            publication_times = [str(row["published_at"]) for row in trigger_rows if row["published_at"]]
-            task_rows: list[sqlite3.Row] = []
-            if publication_times:
-                task_rows = conn.execute(
+                publication_times = [str(row["published_at"]) for row in trigger_rows if row["published_at"]]
+                if publication_times:
+                    task_rows = conn.execute(
                     """SELECT p.task_id,p.writer_model,p.prompt_template_key,p.prompt_version_id,
                         p.draft_title,p.draft_content,p.final_title,p.final_content,p.write_completed_at,
                         p.publish_completed_at,t.source_url AS task_source_url,t.title AS source_title,
@@ -184,7 +280,7 @@ class AITextSelfUpgradeService:
                         AND julianday(p.publish_completed_at)>=julianday(?) - 2
                         AND julianday(p.publish_completed_at)<=julianday(?) + 2""",
                     (min(publication_times), max(publication_times)),
-                ).fetchall()
+                    ).fetchall()
 
         tasks_by_hash: dict[str, list[sqlite3.Row]] = {}
         for task in task_rows:

@@ -61,6 +61,7 @@ Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 - 接口：`GET /console/meme/get?column=digest|daily_hot|all`。省略column保留旧接口全部记录行为，前端两个标签分别传digest/daily_hot；服务端先筛选栏目再限制条数。
 - 鉴权：复用控制台本地操作者 Bearer session。
 - 数据源：OdAIly 的 `data/processed/meme_scanner.sqlite3`，接口以 SQLite `mode=ro` 打开。
+- PostgreSQL 迁移中，`ODAILY_STORAGE_BACKEND=postgres` 时控制台从本机 PostgreSQL `meme` schema 的原生只读查询读取任务、Telegram 候选和活跃行情；Telegram watcher 的提及去重与候选写入也使用同一 schema。Scanner 队列、Grok 请求和今日热门写入路径尚未切换前，不应删除或清理原 SQLite 数据库。
 - 默认生产路径：`/opt/OdAIly/data/processed/meme_scanner.sqlite3`。
 - 覆盖变量：`MEME_SCANNER_DB_PATH`。
 - 返回所选栏目最近 100 条 `jobs`，并为 `tg_burst` 关联 `tg_candidates` 的命中数、群数和发送者数。

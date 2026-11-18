@@ -76,5 +76,6 @@
 
 - 按 `docs/OdAIly代码与整体设计/控制台.md` 等控制台文档说明，AI 可以操作前端。
 - 按 `docs/OdAIly代码与整体设计/完整程序架构.md` 及各模块文档说明，AI 可以操作后端。
-- 当前生产版本唯一活动存储后端是 Linux 本地 SQLite；AI 默认不得读取 `SUPABASE_DB_URL`、`DATABASE_URL`，不得把 Supabase 当作生产状态、心跳、任务或配置的查询入口。
+- 当前生产仍使用 Linux 本地 SQLite。用户已授权低峰停机迁移至 OdAIly 官方服务器上的本机 PostgreSQL，迁移实施中、尚未部署；实施阶段以 ADR `docs/adr/0003-local-postgresql-primary-storage.md` 和 `docs/讨论与修改日志/调研与测试/2026-11-18-PostgreSQL全面迁移实施清单.md` 为目标契约。完成所有业务域、数据导入/校验和停机切换演练后，按该授权执行迁移；在部署切换前，生产证据仍来自 SQLite。
+- 新 PostgreSQL 仅使用专用 `ODAILY_POSTGRES_DSN` 和本机连接池。新运行代码不得读取 `SUPABASE_DB_URL` 或 `DATABASE_URL`；旧 Supabase/Postgres helper 仅限冻结旧库的一次性迁移、灾难回切审计或用户明确要求的历史核查。
 - Supabase 相关文档、旧诊断脚本和 `storage-import-legacy` 只保留给冻结旧库的一次性迁移、灾难回切审计或用户明确要求的历史核查；执行这些操作必须显式说明 legacy 范围，不得改变当前 SQLite 运行路径。

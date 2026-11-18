@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager
+from hashlib import sha256
 from typing import Any, Protocol
+from uuid import uuid4
 
 from packages.common.pipeline_schema import AUDITOR_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
-from packages.x_processing.repository import _import_psycopg, get_database_url
-
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from .models import AuditorTask
 
 
@@ -46,27 +48,40 @@ class AuditorRepository(Protocol):
 
 class PostgresAuditorRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresAuditorRepository is retired; use create_auditor_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-auditor"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(PIPELINE_MONITORING_SCHEMA_SQL + AUDITOR_SCHEMA_SQL)
-            conn.commit()
+        schema_sql = PIPELINE_MONITORING_SCHEMA_SQL + AUDITOR_SCHEMA_SQL
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="auditor",
+                migrations=(PostgresMigration(
+                    1, "auditor_initial", sha256(schema_sql.encode()).hexdigest(),
+                    lambda connection: connection.execute(schema_sql),
+                ), PostgresMigration(
+                    2, "auditor_claim_token", sha256(b"ALTER TABLE auditor_checks ADD COLUMN IF NOT EXISTS claim_token text").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE auditor_checks ADD COLUMN IF NOT EXISTS claim_token text"),
+                ), PostgresMigration(
+                    3, "auditor_external_error_counter", sha256(b"ALTER TABLE auditor_checks ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE auditor_checks ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
+                )),
+            )
 
     def claim_task(
         self,
@@ -78,6 +93,7 @@ class PostgresAuditorRepository:
     ) -> AuditorTask | None:
         cutoff = datetime.now(UTC) - timedelta(minutes=lookback_minutes)
         lock_until = datetime.now(UTC) + timedelta(seconds=lock_seconds)
+        claim_token = uuid4().hex
         with self._connect() as conn:
             with conn.transaction():
                 row = conn.execute(
@@ -108,8 +124,8 @@ class PostgresAuditorRepository:
                           )
                       )
                     ORDER BY r.published_at ASC, r.source_item_id ASC
-                    FOR UPDATE OF r SKIP LOCKED
                     LIMIT 1
+                    FOR UPDATE OF r SKIP LOCKED
                     """,
                     {"prompt_version": prompt_version, "cutoff": cutoff},
                 ).fetchone()
@@ -119,10 +135,10 @@ class PostgresAuditorRepository:
                     """
                     INSERT INTO auditor_checks (
                         source_item_id, source_url, title, content, content_hash, published_at,
-                        prompt_version, status, locked_by, locked_until, attempt_count,
+                        prompt_version, status, locked_by, locked_until, claim_token, attempt_count,
                         metadata, created_at, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'processing', %s, %s, 1, %s, now(), now())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'processing', %s, %s, %s, 1, %s, now(), now())
                     ON CONFLICT (source_item_id, content_hash, prompt_version) DO UPDATE SET
                         source_url = EXCLUDED.source_url,
                         title = EXCLUDED.title,
@@ -131,6 +147,7 @@ class PostgresAuditorRepository:
                         status = 'processing',
                         locked_by = EXCLUDED.locked_by,
                         locked_until = EXCLUDED.locked_until,
+                        claim_token = EXCLUDED.claim_token,
                         attempt_count = auditor_checks.attempt_count + 1,
                         last_error = NULL,
                         metadata = EXCLUDED.metadata,
@@ -147,11 +164,11 @@ class PostgresAuditorRepository:
                         prompt_version,
                         worker_id,
                         lock_until,
+                        claim_token,
                         self._Jsonb(row.get("metadata") or {}),
                     ),
                 ).fetchone()
-            conn.commit()
-        return _row_to_task({**dict(row), "id": check_row["id"]})
+        return _row_to_task({**dict(row), "id": check_row["id"], "claim_token": claim_token})
 
     def complete_passed(self, task: AuditorTask, *, model: str, prompt_version: str, raw_output: str, result: dict[str, Any]) -> None:
         self._complete(
@@ -215,7 +232,7 @@ class PostgresAuditorRepository:
                     locked_until = NULL,
                     last_error = CASE WHEN %s THEN NULL ELSE %s END,
                     updated_at = now()
-                WHERE id = %s
+                WHERE id = %s AND claim_token = %s AND locked_until > now()
                 """,
                 (
                     status,
@@ -229,9 +246,9 @@ class PostgresAuditorRepository:
                     bool(telegram_result.get("ok", True)),
                     telegram_result.get("error"),
                     task.id,
+                    task.claim_token,
                 ),
             )
-            conn.commit()
 
     def complete_failed(self, task: AuditorTask, *, error: str) -> None:
         with self._connect() as conn:
@@ -243,11 +260,10 @@ class PostgresAuditorRepository:
                     locked_by = NULL,
                     locked_until = NULL,
                     updated_at = now()
-                WHERE id = %s
+                WHERE id = %s AND claim_token = %s AND locked_until > now()
                 """,
-                (error[:2000], task.id),
+                (error[:2000], task.id, task.claim_token),
             )
-            conn.commit()
 
     def record_worker_heartbeat(
         self,
@@ -279,7 +295,6 @@ class PostgresAuditorRepository:
                 """,
                 (component, worker_id, status, success, error, self._Jsonb(metadata or {}), success),
             )
-            conn.commit()
 
 
 def calculate_content_hash(title: str | None, content: str) -> str:
@@ -298,4 +313,5 @@ def _row_to_task(row: dict[str, Any]) -> AuditorTask:
         content_hash=str(row["content_hash"]),
         published_at=row.get("published_at"),
         metadata=row.get("metadata") or {},
+        claim_token=row.get("claim_token"),
     )

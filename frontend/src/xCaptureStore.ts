@@ -1291,8 +1291,6 @@ export type SystemInformationPage = {
   limit: number;
   next_cursor: { time: number | null; id: string } | null;
   index: { generated_at_ms: number | null; lag: number | null };
-  search_scope: string;
-  search_index_ready: boolean;
 };
 
 export type SystemInformationEvidence = {
@@ -1338,7 +1336,6 @@ export type SystemInformationRegistry = {
 
 export async function listSystemInformation(filters: {
   view?: 'news' | 'diagnostic';
-  q?: string;
   business?: string;
   source?: string;
   stage?: string;
@@ -2247,6 +2244,7 @@ export type MemeDashboardItem = {
   chat_count: number | null;
   sender_count: number | null;
   status: string;
+  delivery_reconciliation_available?: boolean;
   reason: string;
   title: string;
   content: string;
@@ -2340,6 +2338,10 @@ export type MemeNarrativeDetail = {
 
 export async function getMemeNarrativeDetail(jobId: number): Promise<MemeNarrativeDetail> {
   return consoleApiGet<MemeNarrativeDetail>(`/console/meme/detail?id=${encodeURIComponent(jobId)}`);
+}
+
+export async function reconcileMemeDelivery(jobId: number, resolution: 'confirmed_published' | 'confirmed_not_published'): Promise<{job_id: number; resolution: string; updated: boolean}> {
+  return consoleApiPost('/console/meme/reconcile-delivery', { job_id: jobId, resolution });
 }
 
 export async function getRuntimeRules(): Promise<RuntimeRulesPayload> {

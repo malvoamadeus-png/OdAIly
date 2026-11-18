@@ -10,6 +10,15 @@ from .models import MarketObservation
 
 
 class PredictMarketStore:
+    def __new__(cls, database_path: Path):
+        from packages.common.storage import load_storage_settings
+
+        if cls is PredictMarketStore and load_storage_settings().backend == "postgres":
+            from .postgres_store import PostgresPredictMarketStore
+
+            return PostgresPredictMarketStore(database_path)
+        return super().__new__(cls)
+
     def __init__(self, database_path: Path) -> None:
         self.path = database_path
 

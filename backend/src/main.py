@@ -1066,7 +1066,7 @@ def local_pipeline_server_command(args: argparse.Namespace) -> int:
 
 
 def ai_text_self_upgrade_replay_command(args: argparse.Namespace) -> int:
-    from packages.ai_text_self_upgrade import AITextSelfUpgradeRepository, AITextSelfUpgradeService
+    from packages.ai_text_self_upgrade import AITextSelfUpgradeRepository, PostgresAITextSelfUpgradeRepository, AITextSelfUpgradeService
     from packages.common.storage import load_storage_settings
     from packages.editor_plugin_api import load_editor_plugin_api_settings
     from packages.system_observability.runtime import system_observability_directory
@@ -1097,9 +1097,13 @@ def ai_text_self_upgrade_replay_command(args: argparse.Namespace) -> int:
     storage = load_storage_settings()
     paths = get_paths()
     observability_dir = system_observability_directory(paths.runtime_dir)
-    repository = AITextSelfUpgradeRepository(
-        observability_dir / "ai_text_self_upgrade.sqlite",
-        recover_inflight=False,
+    repository = (
+        PostgresAITextSelfUpgradeRepository(recover_inflight=False)
+        if storage.backend == "postgres"
+        else AITextSelfUpgradeRepository(
+            observability_dir / "ai_text_self_upgrade.sqlite",
+            recover_inflight=False,
+        )
     )
     service = AITextSelfUpgradeService(storage.sqlite_path, repository, client)
     run_key = f"replay:{since.isoformat()}:{until.isoformat()}:{datetime.now(UTC).isoformat()}"
@@ -1127,11 +1131,11 @@ def local_pipeline_skip_legacy_command(args: argparse.Namespace) -> int:
 
 
 def local_pipeline_exhaust_command(args: argparse.Namespace) -> int:
-    from packages.local_pipeline.queue import LocalPipelineQueue
+    from packages.local_pipeline.postgres_queue import create_local_pipeline_queue
 
     paths = get_paths()
     settings = load_local_pipeline_settings()
-    queue = LocalPipelineQueue(paths.runtime_dir / "local_pipeline.sqlite", max_attempts=settings.max_attempts)
+    queue = create_local_pipeline_queue(paths.runtime_dir / "local_pipeline.sqlite", max_attempts=settings.max_attempts)
     candidates = queue.list_over_limit_jobs()
     if not args.execute:
         print(
@@ -1461,12 +1465,11 @@ def competitor_init_db_command(args: argparse.Namespace) -> int:
 
 
 def newsflash_ops_init_db_command(args: argparse.Namespace) -> int:
-    from packages.common.storage import load_storage_settings
-    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.newsflash_operations import create_newsflash_operations_repository
     from packages.x_processing.repository import create_x_processing_repository
 
     create_x_processing_repository(None).init_schema()
-    NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    create_newsflash_operations_repository()
     print("[odaily] newsflash operations database schema initialized")
     return 0
 
@@ -1474,12 +1477,11 @@ def newsflash_ops_init_db_command(args: argparse.Namespace) -> int:
 def newsflash_ops_import_xlsx_command(args: argparse.Namespace) -> int:
     from datetime import date
 
-    from packages.common.storage import load_storage_settings
-    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.newsflash_operations import create_newsflash_operations_repository
     from packages.x_processing.repository import create_x_processing_repository
 
     create_x_processing_repository(None).init_schema()
-    repository = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    repository = create_newsflash_operations_repository()
     result = repository.import_xlsx(
         Path(args.path).expanduser().resolve(),
         start_date=date.fromisoformat(args.start_date),
@@ -1496,12 +1498,11 @@ def newsflash_ops_import_xlsx_command(args: argparse.Namespace) -> int:
 
 
 def newsflash_ops_seed_confirmed_week_command(args: argparse.Namespace) -> int:
-    from packages.common.storage import load_storage_settings
-    from packages.newsflash_operations import NewsflashOperationsRepository
+    from packages.newsflash_operations import create_newsflash_operations_repository
     from packages.x_processing.repository import create_x_processing_repository
 
     create_x_processing_repository(None).init_schema()
-    repository = NewsflashOperationsRepository(load_storage_settings().sqlite_path)
+    repository = create_newsflash_operations_repository()
     repository.seed_confirmed_week()
     print("[odaily] confirmed duty schedule seeded week_start=2026-07-20 report_month=2026-07")
     return 0
@@ -1833,8 +1834,8 @@ def fact_auditor_command(args: argparse.Namespace) -> int:
     from packages.fact_auditor.settings import load_settings as load_fact_settings
     if args.command == "fact-auditor-retry":
         from packages.common.storage import load_storage_settings
-        from packages.fact_auditor.repository import FactReviewRepository
-        result = FactReviewRepository(load_storage_settings().sqlite_path).retry(args.check_id)
+        from packages.fact_auditor.repository import create_fact_review_repository
+        result = create_fact_review_repository(load_storage_settings().sqlite_path).retry(args.check_id)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     settings = load_fact_settings()
@@ -1854,9 +1855,9 @@ def fact_auditor_command(args: argparse.Namespace) -> int:
         print(output)
         return 1 if result["status"] == "failed" else 0
     from packages.common.storage import load_storage_settings
-    from packages.fact_auditor.repository import FactReviewRepository
+    from packages.fact_auditor.repository import create_fact_review_repository
     from packages.fact_auditor.worker import FactAuditorWorker
-    worker = FactAuditorWorker(FactReviewRepository(load_storage_settings().sqlite_path), settings)
+    worker = FactAuditorWorker(create_fact_review_repository(load_storage_settings().sqlite_path), settings)
     if args.once:
         result = worker.run_once()
         print(json.dumps(result or {"status": "idle"}, ensure_ascii=False))

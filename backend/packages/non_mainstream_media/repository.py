@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import contextmanager
 from datetime import datetime
+from hashlib import sha256
 from typing import Any, Protocol
 
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
+from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
-from packages.x_capture.repository import _import_psycopg, get_database_url, utc_now
+from packages.x_capture.repository import utc_now
+from packages.system_observability.postgres_schema import SourceStateTriggerSpec, ensure_source_state_schema, install_source_state_trigger
 
 from .models import (
     DISCOVERY_MODE_DIRECT,
@@ -133,27 +137,48 @@ def _row_to_source(row: dict[str, Any]) -> NonMainstreamMediaSource:
 
 class PostgresNonMainstreamMediaRepository:
     def __init__(self, database_url: str | None = None) -> None:
-        raise RuntimeError("PostgresNonMainstreamMediaRepository is retired; use create_non_mainstream_media_repository() for SQLite storage")
-        self.database_url = database_url or get_database_url()
-        self._psycopg, self._dict_row, self._Jsonb = _import_psycopg()
+        if database_url is not None:
+            raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+        from psycopg.types.json import Jsonb
+
+        self._Jsonb = Jsonb
         self.application_name = "odaily-non-mainstream-media"
 
+    @contextmanager
     def _connect(self, *, autocommit: bool = False):
-        from packages.common.postgres import build_psycopg_connect_kwargs
-
-        return self._psycopg.connect(
-            self.database_url,
-            **build_psycopg_connect_kwargs(
-                row_factory=self._dict_row,
-                autocommit=autocommit,
-                application_name=self.application_name,
-            ),
-        )
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            if autocommit:
+                yield conn
+            else:
+                with postgres_transaction(conn):
+                    yield conn
 
     def init_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(SCHEMA_SQL)
-            conn.commit()
+        with connect_postgres(schema="main", application_name=self.application_name) as conn:
+            trigger_spec = ("non_mainstream_media_sources", ("id",), (
+                "site_key", "display_name", "homepage_url", "capture_method", "pipeline_mode",
+                "source_group", "discovery_mode", "interval_seconds", "enabled", "last_error",
+            ))
+            def apply(connection):
+                connection.execute(SCHEMA_SQL)
+                ensure_source_state_schema(connection)
+                install_source_state_trigger(connection, SourceStateTriggerSpec(
+                    schema="main",
+                    table=trigger_spec[0],
+                    row_id_columns=trigger_spec[1],
+                    payload_columns=trigger_spec[2],
+                ))
+
+            apply_schema_migrations(
+                conn,
+                schema="main",
+                component="non_mainstream_media",
+                migrations=(PostgresMigration(
+                    1, "non_mainstream_media_initial",
+                    sha256((SCHEMA_SQL + repr(trigger_spec)).encode()).hexdigest(),
+                    apply,
+                ),),
+            )
 
     def sync_sources(self, site_definitions: list[SiteDefinition]) -> None:
         if not site_definitions:
@@ -193,12 +218,10 @@ class PostgresNonMainstreamMediaRepository:
                         site.interval_seconds,
                     ),
                 )
-            conn.commit()
 
     def notify_config_changed(self) -> None:
         with self._connect() as conn:
             conn.execute("SELECT pg_notify(%s, %s)", (CONFIG_NOTIFY_CHANNEL, "manual"))
-            conn.commit()
 
     def get_settings(self) -> NonMainstreamMediaSettings:
         with self._connect() as conn:
@@ -214,7 +237,6 @@ class PostgresNonMainstreamMediaRepository:
                 row = conn.execute(
                     "SELECT * FROM non_mainstream_media_settings WHERE singleton_key = 'global'"
                 ).fetchone()
-            conn.commit()
             return _row_to_settings(row)
 
     def update_settings(
@@ -244,7 +266,6 @@ class PostgresNonMainstreamMediaRepository:
                     "jitter_seconds": jitter_seconds if jitter_seconds is not None else current.jitter_seconds,
                 },
             ).fetchone()
-            conn.commit()
             return _row_to_settings(row)
 
     def list_sources(self, *, include_disabled: bool = False) -> list[NonMainstreamMediaSource]:
@@ -283,7 +304,6 @@ class PostgresNonMainstreamMediaRepository:
             ).fetchone()
             if row is None:
                 raise ValueError(f"non mainstream media source not found: {source_id}")
-            conn.commit()
             return _row_to_source(row)
 
     def mark_source_seeded(self, source: NonMainstreamMediaSource, source_item_ids: list[str]) -> None:
@@ -306,7 +326,6 @@ class PostgresNonMainstreamMediaRepository:
                 """,
                 (source.id,),
             )
-            conn.commit()
 
     def mark_seen(self, source: NonMainstreamMediaSource, source_item_id: str, *, seeded: bool) -> bool:
         with self._connect() as conn:
@@ -319,7 +338,6 @@ class PostgresNonMainstreamMediaRepository:
                 """,
                 (source.site_key, source_item_id, seeded),
             ).fetchone()
-            conn.commit()
             return row is not None
 
     def unseen_source_item_ids(self, site_key: str, source_item_ids: list[str]) -> set[str]:
@@ -403,7 +421,6 @@ class PostgresNonMainstreamMediaRepository:
                     "metadata": self._Jsonb(metadata),
                 },
             ).fetchone()
-            conn.commit()
             return int(row["id"]) if row is not None else None
 
     def save_alert_task(
@@ -479,7 +496,6 @@ class PostgresNonMainstreamMediaRepository:
                     "metadata": self._Jsonb(metadata),
                 },
             ).fetchone()
-            conn.commit()
             return int(row["id"]) if row is not None else None
 
     def record_source_run(self, stats: SourceRunStats, *, started_at: datetime, finished_at: datetime) -> None:
@@ -501,7 +517,6 @@ class PostgresNonMainstreamMediaRepository:
                     "source_id": stats.source.id,
                 },
             )
-            conn.commit()
 
     def record_worker_heartbeat(
         self,
@@ -541,11 +556,13 @@ class PostgresNonMainstreamMediaRepository:
                     success,
                 ),
             )
-            conn.commit()
 
 
 def create_non_mainstream_media_repository(database_url: str | None = None) -> NonMainstreamMediaRepository:
-    del database_url
+    if database_url is not None:
+        raise ValueError("Configure ODAILY_POSTGRES_DSN instead of passing a database URL")
+    if load_storage_settings().backend == "postgres":
+        return PostgresNonMainstreamMediaRepository()
     from .sqlite_repository import SQLiteNonMainstreamMediaRepository
     return SQLiteNonMainstreamMediaRepository(load_storage_settings().sqlite_path)
 
@@ -840,10 +857,6 @@ CREATE TABLE IF NOT EXISTS non_mainstream_media_settings (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-INSERT INTO non_mainstream_media_settings (singleton_key)
-VALUES ('global')
-ON CONFLICT (singleton_key) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS non_mainstream_media_sources (
     id bigserial PRIMARY KEY,
     site_key text NOT NULL UNIQUE,
@@ -946,31 +959,4 @@ CREATE TRIGGER trg_non_mainstream_media_sources_notify
 AFTER INSERT OR DELETE OR UPDATE OF display_name, homepage_url, capture_method, pipeline_mode, source_group, discovery_mode, interval_seconds, enabled ON non_mainstream_media_sources
 FOR EACH ROW EXECUTE FUNCTION notify_non_mainstream_media_config_changed();
 
-ALTER TABLE non_mainstream_media_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE non_mainstream_media_sources ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS non_mainstream_media_settings_anon_all ON non_mainstream_media_settings;
-DROP POLICY IF EXISTS non_mainstream_media_sources_anon_all ON non_mainstream_media_sources;
-DROP POLICY IF EXISTS non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings;
-DROP POLICY IF EXISTS non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources;
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-        REVOKE ALL PRIVILEGES ON non_mainstream_media_settings, non_mainstream_media_sources FROM anon;
-        REVOKE ALL PRIVILEGES ON SEQUENCE non_mainstream_media_sources_id_seq FROM anon;
-    END IF;
-
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-        GRANT USAGE ON SCHEMA public TO authenticated;
-        GRANT SELECT, INSERT, UPDATE ON non_mainstream_media_settings, non_mainstream_media_sources TO authenticated;
-        GRANT USAGE, SELECT ON SEQUENCE non_mainstream_media_sources_id_seq TO authenticated;
-
-        EXECUTE 'CREATE POLICY non_mainstream_media_settings_console_admin_all ON non_mainstream_media_settings
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-        EXECUTE 'CREATE POLICY non_mainstream_media_sources_console_admin_all ON non_mainstream_media_sources
-            FOR ALL TO authenticated USING (is_console_admin()) WITH CHECK (is_console_admin())';
-    END IF;
-END
-$$;
 """
