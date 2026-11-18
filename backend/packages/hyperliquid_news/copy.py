@@ -453,25 +453,26 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     names = event.get('evidence', {}).get('address_names', {})
     first_address = event.get('addresses', [''])[0]
     display_name = names.get(first_address)
-    if display_name and len(event.get('addresses', [])) == 1:
+    if len(event.get('addresses', [])) == 1:
         labels = set(evidence.get('highlights', []))
         operation = _highlight_action_description(evidence, contract)
         if ('highlighted_address_action' in event.get('kinds', []) and operation and
                 not set(event.get('kinds', [])).intersection({'large_realized_result', 'actual_liquidation',
                     'near_liquidation', 'large_reversal', 'large_profit', 'large_loss',
                     'profit_giveback', 'profit_to_loss', 'pnl_sign_flip', 'loss_addition'})):
-            title = display_name + normalize_display_numbers(operation).replace(' ', '')
+            title = (display_name or '某地址') + normalize_display_numbers(operation).replace(' ', '')
         total = _account_total_sample(evidence.get('history', {}), as_of_ms=event.get('observed_ms'))
         total_time = total.get('observed_ms', total.get('history_sample_ms')) if total else None
         if (labels.intersection({'official_account_high_profit', 'account_high_profit', 'historical_loss'}) and
                 total_time is not None and event.get('observed_ms') is not None and
                 0 <= int(event['observed_ms']) - int(total_time) <= ACCOUNT_PNL_MAX_AGE_MS):
             body = re.sub(r'(?:其|该地址)(?:的)?(?:合约)?账户(?:累计|总)(?:亏损|盈利|收益)[^。！？]*[。！？]', '', body)
-        body = re.sub(r'(?:某地址|该地址)', lambda _: display_name, body, count=1)
-        title = re.sub(r'(?:某地址|该地址)', lambda _: display_name, title, count=1)
-        explanation = naming_explanation(event.get('evidence', {}).get('address_name_evidence', {}).get(first_address), event)
-        if explanation and not naming_explanation_already_present(body, explanation):
-            body = body.rstrip('。！？') + '。' + explanation
+        if display_name:
+            body = re.sub(r'(?:某地址|该地址)', lambda _: display_name, body, count=1)
+            title = re.sub(r'(?:某地址|该地址)', lambda _: display_name, title, count=1)
+            explanation = naming_explanation(event.get('evidence', {}).get('address_name_evidence', {}).get(first_address), event)
+            if explanation and not naming_explanation_already_present(body, explanation):
+                body = body.rstrip('。！？') + '。' + explanation
     return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))
 
 

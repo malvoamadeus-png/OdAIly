@@ -61,3 +61,13 @@ def test_named_asset_win_rate_title_does_not_repeat_feature():
     result = format_news(DraftBrief(title='某地址增持BTC多单', content='某地址增持约498万美元BTC多单，近期BTC胜率80%。'), event)
     assert result.title.startswith('近期BTC高胜率交易员0x1f增持')
     assert result.content.count('胜率80%') == 1
+
+
+def test_manual_or_unavailable_name_uses_plain_subject_without_old_prefix():
+    event = named_event()
+    event['evidence']['address_names'] = {}
+    event['evidence']['address_name_evidence'] = {}
+    result = format_news(DraftBrief(title='总亏损约3544万美元，某地址增持约498万美元BTC多单',
+        content='某地址增持77.04枚BTC多单，净增持价值约498万美元。其合约账户累计亏损约3544万美元。'), event)
+    assert result.title == '某地址增持约498万美元BTC多单'
+    assert result.content.count('亏损') == 1
