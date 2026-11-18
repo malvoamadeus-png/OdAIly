@@ -205,6 +205,7 @@ class PostgresSystemInformationStore:
         *,
         source_schema_map: dict[str, str],
         max_batch: int = 2000,
+        skip_identities: set[tuple[str, str, str]] | None = None,
     ) -> int:
         """Register legacy item identities during import using an explicit DB-to-schema map."""
         normalized_map = {str(key): str(value) for key, value in source_schema_map.items()}
@@ -214,6 +215,8 @@ class PostgresSystemInformationStore:
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema):
                 raise ValueError(f"unsupported PostgreSQL source schema: {schema!r}")
         prepared: dict[tuple[str, str, str], str] = {}
+        conflicts = skip_identities if skip_identities is not None else set()
+        new_conflicts: set[tuple[str, str, str]] = set()
         basename_map: dict[str, str] = {}
         for legacy_path, schema in normalized_map.items():
             basename = legacy_path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
@@ -237,12 +240,23 @@ class PostgresSystemInformationStore:
                 raise ValueError("imported source identity requires item_id, source_table and source_row_id")
             existing = prepared.get(identity)
             if existing is not None and existing != item_id:
-                raise ValueError(f"conflicting imported item IDs for source identity {identity!r}")
+                conflicts.add(identity)
+                new_conflicts.add(identity)
+                prepared.pop(identity, None)
+                continue
+            if identity in conflicts:
+                continue
             prepared[identity] = item_id
         inserted = 0
         with self.connect() as conn:
             with conn.transaction():
                 identities = list(prepared)
+                if new_conflicts:
+                    with conn.cursor() as cursor:
+                        cursor.executemany(
+                            "DELETE FROM system_information_source_identity WHERE source_schema=%s AND source_table=%s AND source_row_id=%s",
+                            list(new_conflicts),
+                        )
                 existing_rows = conn.execute(
                     "SELECT source_schema,source_table,source_row_id,item_id FROM system_information_source_identity "
                     "WHERE (source_schema,source_table,source_row_id) IN "
@@ -252,7 +266,16 @@ class PostgresSystemInformationStore:
                 for row in existing_rows:
                     key = (str(row["source_schema"]), str(row["source_table"]), str(row["source_row_id"]))
                     if str(row["item_id"]) != prepared[key]:
-                        raise ValueError(f"source identity {key[0]}.{key[1]}/{key[2]} already maps to {row['item_id']!r}")
+                        conflicts.add(key)
+                        new_conflicts.add(key)
+                if new_conflicts:
+                    prepared = {key: value for key, value in prepared.items() if key not in new_conflicts}
+                if new_conflicts:
+                    with conn.cursor() as cursor:
+                        cursor.executemany(
+                            "DELETE FROM system_information_source_identity WHERE source_schema=%s AND source_table=%s AND source_row_id=%s",
+                            list(new_conflicts),
+                        )
                 rows = [(*identity, item_id, _now_ms()) for identity, item_id in prepared.items()]
                 if rows:
                     with conn.cursor() as cursor:

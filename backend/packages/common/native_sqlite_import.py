@@ -250,6 +250,47 @@ def _manifest_native_sources() -> dict[str, SourceMapping]:
 NATIVE_SOURCES.update(_manifest_native_sources())
 
 
+def register_native_imported_source_identities(*, source_path: Path, batch_size: int = 2000) -> dict[str, Any]:
+    """Rebuild imported source identity indexes without reimporting native tables."""
+    path = source_path.expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    from packages.system_observability.postgres_store import PostgresSystemInformationStore
+
+    store = PostgresSystemInformationStore()
+    skipped: set[tuple[str, str, str]] = set()
+    registered = 0
+    conflict_count = 0
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as source:
+        source.row_factory = sqlite3.Row
+        batch: list[dict[str, Any]] = []
+        cursor = source.execute(
+            "SELECT source_database,source_table,source_row_id,item_id FROM system_information_items "
+            "WHERE source_database IS NOT NULL AND source_table IS NOT NULL "
+            "AND source_row_id IS NOT NULL AND item_id IS NOT NULL ORDER BY item_id"
+        )
+        while rows := cursor.fetchmany(max(1, min(5000, batch_size))):
+            batch.extend(dict(row) for row in rows)
+            if len(batch) < max(1, min(5000, batch_size)):
+                continue
+            before = len(skipped)
+            registered += store.register_imported_source_identities(
+                batch, source_schema_map=_observability_source_schema_map(), max_batch=batch_size,
+                skip_identities=skipped,
+            )
+            conflict_count += len(skipped) - before
+            batch.clear()
+        if batch:
+            before = len(skipped)
+            registered += store.register_imported_source_identities(
+                batch, source_schema_map=_observability_source_schema_map(), max_batch=batch_size,
+                skip_identities=skipped,
+            )
+            conflict_count += len(skipped) - before
+    return {"source_path": str(path), "registered": registered,
+            "skipped_conflicting_identities": conflict_count}
+
+
 def import_native_sqlite_source(
     *, source_key: str, source_path: Path, batch_size: int = 2000,
     source_mapping: SourceMapping | None = None, max_batch_bytes: int = 16 * 1024 * 1024,
@@ -593,15 +634,21 @@ def import_native_sqlite_source(
                 "AND source_row_id IS NOT NULL AND item_id IS NOT NULL ORDER BY item_id"
             )
             identity_count = 0
+            identity_conflicts: set[tuple[str, str, str]] = set()
+            identity_conflict_count = 0
             while rows := identity_cursor.fetchmany(2000):
+                before_conflicts = len(identity_conflicts)
                 identity_count += store.register_imported_source_identities(
                     (dict(row) for row in rows),
                     source_schema_map=_observability_source_schema_map(),
                     max_batch=2000,
+                    skip_identities=identity_conflicts,
                 )
+                identity_conflict_count += len(identity_conflicts) - before_conflicts
             return {"source_key": source_key, "source_path": str(path), "tables": reports,
                     "table_count": len(reports), "foreign_key_audits": fk_audits,
-                    "source_identities_registered": identity_count}
+                    "source_identities_registered": identity_count,
+                    "source_identity_conflicts_skipped": identity_conflict_count}
         return {"source_key": source_key, "source_path": str(path), "tables": reports,
                 "table_count": len(reports), "foreign_key_audits": fk_audits}
     finally:
@@ -802,6 +849,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--initialize-schemas", action="store_true",
                         help="install all registered PostgreSQL schemas without runtime seed data")
+    parser.add_argument("--register-identities-only", action="store_true",
+                        help="rebuild imported source identity indexes without reimporting source tables")
     parser.add_argument("--batch-size", type=int, default=2000)
     parser.add_argument("--max-batch-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--max-row-bytes", type=int, default=64 * 1024 * 1024)
@@ -810,6 +859,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.source_key or args.source_path or args.preflight:
             parser.error("--initialize-schemas does not accept source arguments or --preflight")
         result = initialize_native_schemas()
+        print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
+        return 0
+    if args.register_identities_only:
+        if args.source_key != "system_information" or args.preflight:
+            parser.error("--register-identities-only requires source_key system_information and does not accept --preflight")
+        result = register_native_imported_source_identities(source_path=args.source_path, batch_size=args.batch_size)
         print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
         return 0
     if not args.source_key or args.source_path is None:

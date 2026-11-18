@@ -450,6 +450,34 @@ def test_postgres_x_capture_attempts_project_to_latest_account_snapshot(postgres
     assert len([event for event in current["timeline"] if event["event_type"] == "source_state_change"]) == 1
     with store.connect() as conn:
         conn.execute("DROP SCHEMA " + Identifier(schema).as_string(conn) + " CASCADE")
+
+
+def test_imported_source_identity_conflict_is_skipped_without_losing_items(postgres_information_store) -> None:
+    store = postgres_information_store
+    identity = str(91_000 + int(uuid.uuid4().hex[:4], 16))
+    item_a = f"identity-a:{uuid.uuid4().hex}"
+    item_b = f"identity-b:{uuid.uuid4().hex}"
+    imported = []
+    for item_id in (item_a, item_b):
+        snapshot = _snapshot(item_id)
+        snapshot.update({"source_table": "hl_news_dispatch", "source_row_id": identity,
+                         "source_database": "/data/OdAIly/hyperliquid/hyperliquid.sqlite"})
+        assert store.upsert_snapshot(snapshot, {"history": item_id})
+        imported.append({"source_table": "hl_news_dispatch", "source_row_id": identity,
+                         "source_database": "/data/OdAIly/hyperliquid/hyperliquid.sqlite",
+                         "item_id": item_id})
+
+    skipped = set()
+    source_map = {"/data/OdAIly/hyperliquid/hyperliquid.sqlite": "hyperliquid_news"}
+    assert store.register_imported_source_identities(
+        imported[:1], source_schema_map=source_map, skip_identities=skipped,
+    ) == 1
+    assert store.register_imported_source_identities(
+        imported[1:], source_schema_map=source_map, skip_identities=skipped,
+    ) == 0
+    assert skipped == {("hyperliquid_news", "hl_news_dispatch", identity)}
+    assert store.resolve_source_item_id("hyperliquid_news", "hl_news_dispatch", identity, "fallback") == "fallback"
+    assert store.has_item(item_a) and store.has_item(item_b)
 def test_postgres_external_observation_cleanup_counts_and_redacts_old_errors(postgres_information_store) -> None:
     store = postgres_information_store
     item_id = f"pg-store-test:{uuid.uuid4().hex}"
