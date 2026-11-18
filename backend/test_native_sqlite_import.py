@@ -504,6 +504,30 @@ def test_native_import_preserves_prompt_active_version_queue_state_json_null_and
         assert next_id > 41
 
 
+def test_native_import_verifies_date_primary_key(native_import_target, tmp_path) -> None:
+    from packages.common.native_sqlite_import import SourceMapping, TableMapping, import_native_sqlite_source
+
+    schema = native_import_target
+    source_path = tmp_path / "date-key.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE daily_state(day DATE PRIMARY KEY, value TEXT NOT NULL)")
+        source.execute("INSERT INTO daily_state VALUES('2026-11-19','ready')")
+    mapping = SourceMapping("date_fixture", schema, (
+        TableMapping("daily_state", schema, "daily_state"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.daily_state(day date PRIMARY KEY,value text NOT NULL)").format(Identifier(schema)))
+
+    report = import_native_sqlite_source(
+        source_key="date_fixture", source_path=source_path, source_mapping=mapping, batch_size=1
+    )
+    assert report["tables"][0]["source_rows"] == 1
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert conn.execute(SQL("SELECT day,value FROM {}.daily_state").format(Identifier(schema))).fetchall() == [
+            (datetime(2026, 11, 19).date(), "ready")
+        ]
+
+
 def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(
     native_import_target, tmp_path, monkeypatch
 ) -> None:

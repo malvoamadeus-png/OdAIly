@@ -356,7 +356,7 @@ def import_native_sqlite_source(
                 _ensure_legacy_target(spec, table_map)
             with _connect_native_import_postgres(schema=table_map.target_schema, application_name="odaily-native-sqlite-import") as conn:
                 target_columns = conn.execute(
-                    "SELECT column_name,is_nullable,column_default,udt_name,is_identity FROM information_schema.columns "
+                    "SELECT column_name,is_nullable,column_default,udt_name,udt_schema,is_identity FROM information_schema.columns "
                     "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
                     (table_map.target_schema, table_map.target_table),
                 ).fetchall()
@@ -539,7 +539,13 @@ def import_native_sqlite_source(
                     while source_verify_batch := source_verify_bounded.fetch(batch_size, max_batch_bytes, max_row_bytes):
                         identities = [tuple(row[key] for key in source_pk) for row in source_verify_batch]
                         key_columns = sql.SQL(",").join(sql.Identifier(name) for name in destination_pk)
-                        key_row = sql.SQL("(") + sql.SQL(",").join(sql.Placeholder() for _ in destination_pk) + sql.SQL(")")
+                        key_row = sql.SQL("(") + sql.SQL(",").join(
+                            sql.SQL("CAST({} AS {})").format(
+                                sql.Placeholder(),
+                                sql.Identifier(target_by_name[name]["udt_schema"], target_by_name[name]["udt_name"]),
+                            )
+                            for name in destination_pk
+                        ) + sql.SQL(")")
                         key_values = sql.SQL(",").join(key_row for _ in identities)
                         identity_params = tuple(value for identity in identities for value in identity)
                         verify_cursor.execute(
