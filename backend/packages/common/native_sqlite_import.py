@@ -493,18 +493,27 @@ def import_native_sqlite_source(
                     )
                     if json_names:
                         columns_sql = sql.SQL("{},{}").format(columns_sql, json_null_flags)
+                    target_columns_sql = sql.SQL(",").join(sql.Identifier("target", name) for name in destination_pk)
                     while source_verify_batch := source_verify_bounded.fetch(batch_size, max_batch_bytes, max_row_bytes):
                         identities = [tuple(row[key] for key in source_pk) for row in source_verify_batch]
-                        identity_predicates = sql.SQL(" OR ").join(
-                            sql.SQL("({})").format(sql.SQL(" AND ").join(
-                                sql.SQL("{}=%s").format(sql.Identifier(target_name.get(key, key))) for key in source_pk
-                            )) for _identity in identities
-                        )
+                        key_columns = sql.SQL(",").join(sql.Identifier(name) for name in destination_pk)
+                        key_row = sql.SQL("(") + sql.SQL(",").join(sql.Placeholder() for _ in destination_pk) + sql.SQL(")")
+                        key_values = sql.SQL(",").join(key_row for _ in identities)
                         identity_params = tuple(value for identity in identities for value in identity)
                         verify_cursor.execute(
-                            sql.SQL("SELECT {} FROM {} WHERE {} ORDER BY {}").format(
-                                columns_sql, target_identifier, identity_predicates,
-                                sql.SQL(",").join(sql.Identifier(name) for name in destination_pk),
+                            sql.SQL("WITH verify_keys ({}) AS (VALUES {}) SELECT {} FROM {} AS target "
+                                    "JOIN verify_keys USING ({}) ORDER BY {}").format(
+                                key_columns, key_values,
+                                sql.SQL(",").join(
+                                    sql.SQL("target.{}::text AS {}").format(sql.Identifier(name), sql.Identifier(name))
+                                    if target_by_name[name]["udt_name"] in {"json", "jsonb"}
+                                    else sql.SQL("target.{} AS {}").format(sql.Identifier(name), sql.Identifier(name))
+                                    for name in destination_columns
+                                ) + (sql.SQL(",") + sql.SQL(",").join(
+                                    sql.SQL("(target.{} IS NULL) AS {}").format(sql.Identifier(name), sql.Identifier(f"__is_null_{name}"))
+                                    for name in json_names
+                                ) if json_names else sql.SQL("")),
+                                target_identifier, key_columns, target_columns_sql,
                             ), identity_params,
                         )
                         destination_rows = verify_cursor.fetchall()
