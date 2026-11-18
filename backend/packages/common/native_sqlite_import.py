@@ -334,6 +334,11 @@ def import_native_sqlite_source(
                 raise RuntimeError(f"Mapped source table is absent: {source_key}/{table}")
             spec = source_tables[table]
             source_columns = tuple(column[1] for column in spec["columns"])
+            if source_key == "main" and table == "hl_news_metadata":
+                reports.append(_import_hl_news_metadata_streaming(
+                    sqlite, source_key, spec, table_map, batch_size=batch_size,
+                ))
+                continue
             target_name = dict(table_map.column_map)
             if table_map.transform == "search_postings":
                 report = _import_search_postings(
@@ -423,7 +428,10 @@ def import_native_sqlite_source(
                 full_source_fingerprint = checkpoint["source_rows"] is not None
                 source_cursor = sqlite.execute(f"SELECT * FROM {quoted_table} ORDER BY {identity_sql}")
                 def source_row_digest(row) -> int:
-                    values = _convert_row(row, source_columns, effective, target_by_name)
+                    values = _convert_source_row(
+                        row, source_key=source_key, table=table, source_pk=source_pk,
+                        source_columns=source_columns, mapping=effective, target_columns=target_by_name,
+                    )
                     return int.from_bytes(hashlib.sha256(
                         _canonical_json(_canonical_converted(destination_columns, values, effective, target_by_name)).encode()
                     ).digest(), "big")
@@ -464,7 +472,10 @@ def import_native_sqlite_source(
                     break
                 converted = []
                 for row in batch:
-                    values = _convert_row(row, source_columns, effective, target_by_name)
+                    values = _convert_source_row(
+                        row, source_key=source_key, table=table, source_pk=source_pk,
+                        source_columns=source_columns, mapping=effective, target_columns=target_by_name,
+                    )
                     converted.append(values)
                     canonical = _canonical_json(_canonical_converted(destination_columns, values, effective, target_by_name)).encode()
                     digest_sum = (digest_sum + int.from_bytes(hashlib.sha256(canonical).digest(), "big")) % (1 << 256)
@@ -899,6 +910,168 @@ def _row_size(row: sqlite3.Row | tuple[Any, ...]) -> int:
     return total
 
 
+_HL_METADATA_CHUNK_CHARS = 256 * 1024
+
+
+def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: str,
+                                       source_spec: dict[str, Any], mapping: TableMapping,
+                                       *, batch_size: int) -> dict[str, Any]:
+    """Preserve legacy Hyperliquid TEXT metadata without materializing huge rows."""
+    if tuple(column[1] for column in source_spec["columns"]) != ("key", "payload"):
+        raise RuntimeError("Unexpected hl_news_metadata source schema")
+    if not mapping.legacy_typed:
+        raise RuntimeError("hl_news_metadata streaming import requires a legacy typed target")
+    target = sql.Identifier(mapping.target_schema, mapping.target_table)
+    checkpoint_table = sql.Identifier(mapping.target_schema, "native_sqlite_stream_import_checkpoints")
+    checkpoint = None
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-schema") as conn:
+        _ensure_legacy_target(source_spec, mapping)
+        conn.execute(sql.SQL(
+            "CREATE TABLE IF NOT EXISTS {}(source_key text NOT NULL,source_table text NOT NULL,"
+            "schema_sha256 text NOT NULL,last_identity text,imported_rows bigint NOT NULL DEFAULT 0,"
+            "digest_sum text NOT NULL DEFAULT '0',source_rows bigint,source_digest_sum text,"
+            "destination_base_count bigint NOT NULL DEFAULT 0,PRIMARY KEY(source_key,source_table))"
+        ).format(checkpoint_table))
+        columns = conn.execute(
+            "SELECT column_name,is_nullable,column_default,udt_name,is_identity FROM information_schema.columns "
+            "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
+            (mapping.target_schema, mapping.target_table),
+        ).fetchall()
+        if [(row["column_name"], row["udt_name"]) for row in columns] != [("key", "text"), ("payload", "text")]:
+            raise RuntimeError("Unexpected legacy_main.hl_news_metadata target schema")
+        before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+        checkpoint = conn.execute(sql.SQL(
+            "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
+        ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+        schema_sha = hashlib.sha256(json.dumps({"schema": source_spec, "mapping": mapping}, sort_keys=True, default=str).encode()).hexdigest()
+        if checkpoint and checkpoint["schema_sha256"] != schema_sha:
+            raise RuntimeError("Source schema changed during streamed legacy import")
+        imported = int(checkpoint["imported_rows"]) if checkpoint else 0
+        last_key = checkpoint["last_identity"] if checkpoint else None
+        digest_sum = int(checkpoint["digest_sum"] or "0") if checkpoint else 0
+        base_count = int(checkpoint["destination_base_count"]) if checkpoint else before
+        if before != base_count + imported:
+            raise RuntimeError("Streamed legacy target changed during import")
+        if checkpoint is None and before:
+            raise RuntimeError("Streamed legacy target is not empty before first import")
+        if checkpoint is None:
+            conn.execute(sql.SQL(
+                "INSERT INTO {}(source_key,source_table,schema_sha256,destination_base_count) VALUES(%s,%s,%s,%s)"
+            ).format(checkpoint_table), (source_key, "hl_news_metadata", schema_sha, before))
+
+    checkpoint_last_key = last_key
+    source_count = 0
+    source_digest_sum = 0
+    verified_prefix_count = 0
+    prefix_digest = 0
+    rows = sqlite.execute('SELECT "key", length("payload") FROM "hl_news_metadata" ORDER BY "key"')
+    for key, char_count in rows:
+        key = str(key)
+        hasher = hashlib.sha256()
+        # Keep the generic row digest definition: SHA256(canonical JSON object).
+        hasher.update(b'{"key":')
+        hasher.update(_canonical_json(key).encode("utf-8"))
+        hasher.update(b',"payload":')
+        hasher.update(b'null' if char_count is None else b'"')
+        offset = 1
+        while char_count is not None and offset <= char_count:
+            chunk = sqlite.execute(
+                'SELECT substr("payload", ?, ?) FROM "hl_news_metadata" WHERE "key"=?',
+                (offset, _HL_METADATA_CHUNK_CHARS, key),
+            ).fetchone()[0]
+            if chunk is None or not chunk:
+                raise RuntimeError(f"Source payload changed while streaming hl_news_metadata/{key}")
+            hasher.update(_canonical_json_string_fragment(str(chunk)).encode("utf-8"))
+            offset += len(chunk)
+        if char_count is not None:
+            hasher.update(b'"')
+        hasher.update(b'}')
+        row_digest = int.from_bytes(hasher.digest(), "big")
+        source_count += 1
+        source_digest_sum = (source_digest_sum + row_digest) % (1 << 256)
+        if checkpoint_last_key is not None and key <= checkpoint_last_key:
+            verified_prefix_count += 1
+            prefix_digest = (prefix_digest + row_digest) % (1 << 256)
+        if key == checkpoint_last_key and (verified_prefix_count != imported or prefix_digest != digest_sum):
+            raise RuntimeError("Streamed legacy checkpoint prefix mismatch")
+        if checkpoint_last_key is not None and key <= checkpoint_last_key:
+            continue
+
+        with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-copy") as conn:
+            with conn.transaction():
+                conn.execute("CREATE TEMP TABLE hl_metadata_stage (key text NOT NULL, part_index bigint NOT NULL, chunk text, PRIMARY KEY(key,part_index)) ON COMMIT DROP")
+                # Fetch source chunks again and let PostgreSQL append them in order.
+                offset = 1
+                part_index = 0
+                while char_count is not None and offset <= char_count:
+                    chunk = sqlite.execute(
+                        'SELECT substr("payload", ?, ?) FROM "hl_news_metadata" WHERE "key"=?',
+                        (offset, _HL_METADATA_CHUNK_CHARS, key),
+                    ).fetchone()[0]
+                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,%s,%s)", (key, part_index, str(chunk)))
+                    offset += len(chunk)
+                    part_index += 1
+                if char_count is None:
+                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,0,NULL)", (key,))
+                elif char_count == 0:
+                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,0,'')", (key,))
+                conn.execute(sql.SQL(
+                    "INSERT INTO {}(key,payload) SELECT key,string_agg(chunk,'' ORDER BY part_index) "
+                    "FROM hl_metadata_stage WHERE key=%s GROUP BY key"
+                ).format(target), (key,))
+                imported += 1
+                last_key = key
+                digest_sum = (digest_sum + row_digest) % (1 << 256)
+                conn.execute(sql.SQL(
+                    "INSERT INTO {}(source_key,source_table,schema_sha256,last_identity,imported_rows,digest_sum,destination_base_count) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(source_key,source_table) DO UPDATE SET "
+                    "last_identity=excluded.last_identity,imported_rows=excluded.imported_rows,digest_sum=excluded.digest_sum"
+                ).format(checkpoint_table), (source_key, "hl_news_metadata", schema_sha, last_key, imported, str(digest_sum), base_count))
+
+    if checkpoint_last_key is not None and verified_prefix_count != int(checkpoint["imported_rows"]):
+        raise RuntimeError("Streamed legacy checkpoint identity is absent from source")
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-verify") as conn:
+        after = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+        target_rows = conn.execute(sql.SQL("SELECT key,length(payload) AS chars FROM {} ORDER BY key").format(target))
+        target_digest_sum = 0
+        verified_rows = 0
+        for target_row in target_rows:
+            key, char_count = target_row["key"], target_row["chars"]
+            hasher = hashlib.sha256()
+            hasher.update(b'{"key":')
+            hasher.update(_canonical_json(str(key)).encode("utf-8"))
+            hasher.update(b',"payload":')
+            hasher.update(b'null' if char_count is None else b'"')
+            offset = 1
+            while char_count is not None and offset <= char_count:
+                chunk = conn.execute(sql.SQL("SELECT substr(payload,%s,%s) AS chunk FROM {} WHERE key=%s").format(target),
+                                     (offset, _HL_METADATA_CHUNK_CHARS, key)).fetchone()["chunk"]
+                hasher.update(_canonical_json_string_fragment(str(chunk)).encode("utf-8"))
+                offset += len(chunk)
+            if char_count is not None:
+                hasher.update(b'"')
+            hasher.update(b'}')
+            target_digest_sum = (target_digest_sum + int.from_bytes(hasher.digest(), "big")) % (1 << 256)
+            verified_rows += 1
+        if (source_count != imported or after != base_count + imported or verified_rows != source_count
+                or source_digest_sum != digest_sum or target_digest_sum != digest_sum):
+            raise RuntimeError(f"Streamed legacy verification failed main/hl_news_metadata: source={source_count} imported={imported}")
+        if checkpoint and checkpoint["source_rows"] is not None and (
+                int(checkpoint["source_rows"]) != source_count or checkpoint["source_digest_sum"] != str(source_digest_sum)):
+            raise RuntimeError("Source rows changed during streamed legacy import")
+        conn.execute(sql.SQL("UPDATE {} SET source_rows=%s,source_digest_sum=%s WHERE source_key=%s AND source_table=%s").format(checkpoint_table),
+                     (source_count, str(source_digest_sum), source_key, "hl_news_metadata"))
+    return {"source_table": "hl_news_metadata", "target_schema": mapping.target_schema,
+            "target_table": mapping.target_table, "source_rows": source_count, "imported_rows": imported,
+            "destination_before": before, "destination_after": after, "last_identity": last_key,
+            "source_digest_sum": digest_sum.to_bytes(32, "big").hex(), "streamed_payload": True}
+
+
+def _canonical_json_string_fragment(value: str) -> str:
+    # Escape each Unicode scalar independently; JSON escaping has no cross-character state.
+    return "".join(json.dumps(char, ensure_ascii=False)[1:-1] for char in value)
+
+
 class _BoundedCursor:
     def __init__(self, cursor: sqlite3.Cursor) -> None:
         self.cursor = cursor
@@ -1017,6 +1190,14 @@ def _decode_json(value: Any) -> Any:
     return value
 
 
+def _is_invalid_json(value: str) -> bool:
+    try:
+        _decode_json(value)
+        return False
+    except (json.JSONDecodeError, ValueError):
+        return True
+
+
 def _canonical_converted(columns: tuple[str, ...], converted: tuple[Any, ...], mapping: TableMapping,
                          target_columns: dict[str, Any]) -> dict[str, Any]:
     result = {}
@@ -1058,6 +1239,22 @@ def _convert_row(row: sqlite3.Row, source_columns: tuple[str, ...], mapping: Tab
         return str(row["ref"]), compressed, len(content), created_at
     names = dict(mapping.column_map)
     return tuple(_convert(row[name], name, mapping, target_columns[names.get(name, name)]) for name in source_columns)
+
+
+def _convert_source_row(row: sqlite3.Row, *, source_key: str, table: str, source_pk: tuple[str, ...],
+                        source_columns: tuple[str, ...], mapping: TableMapping,
+                        target_columns: dict[str, Any]) -> tuple[Any, ...]:
+    try:
+        return _convert_row(row, source_columns, mapping, target_columns)
+    except json.JSONDecodeError as exc:
+        identity = tuple(row[key] for key in source_pk)
+        column = next((name for name in source_columns
+                       if name in mapping.json_columns and isinstance(row[name], str)
+                       and _is_invalid_json(row[name])), "unknown")
+        raise ValueError(
+            f"Invalid JSON source value at {source_key}/{table} identity={identity!r} "
+            f"column={column!r}: {exc.msg} at char {exc.pos}"
+        ) from exc
 
 
 def _canonical_json(value: Any) -> str:

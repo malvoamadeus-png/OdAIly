@@ -245,6 +245,22 @@ def test_compound_primary_key_keyset_query_uses_index_range(tmp_path) -> None:
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
+def test_invalid_json_diagnostic_names_source_table_identity_and_column() -> None:
+    from packages.common.native_sqlite_import import TableMapping, _convert_source_row
+
+    row = {"chat_id": "chat-1", "message_id": 42, "push_result": ""}
+    mapping = TableMapping("business_message_inbox", "business_news", "business_message_inbox",
+                           json_columns=("push_result",))
+    target_columns = {"chat_id": {"udt_name": "text"}, "message_id": {"udt_name": "int8"},
+                      "push_result": {"udt_name": "jsonb"}}
+
+    with pytest.raises(ValueError, match=r"business_news/business_message_inbox identity=\('chat-1', 42\) column='push_result'"):
+        _convert_source_row(row, source_key="business_news", table="business_message_inbox",
+                            source_pk=("chat_id", "message_id"),
+                            source_columns=("chat_id", "message_id", "push_result"),
+                            mapping=mapping, target_columns=target_columns)
+
+
 def test_compound_primary_key_import_resumes_from_last_identity(native_import_target, tmp_path, monkeypatch) -> None:
     from packages.common import native_sqlite_import as importer
 
@@ -477,6 +493,41 @@ def test_native_import_preserves_prompt_active_version_queue_state_json_null_and
         assert queue[0][3].astimezone(UTC) == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         next_id = conn.execute(SQL("INSERT INTO {}.queue(status,payload,created_at) VALUES('pending',NULL,now()) RETURNING id").format(Identifier(schema))).fetchone()[0]
         assert next_id > 41
+
+
+def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(
+    native_import_target, tmp_path, monkeypatch
+) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    schema = native_import_target
+    source_path = tmp_path / "main.sqlite"
+    payloads = {
+        "large": ('中文"\\\n' + "x" * 73 + "😀"),
+        "empty": "",
+    }
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE hl_news_metadata(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        source.executemany("INSERT INTO hl_news_metadata VALUES(?,?)", payloads.items())
+    monkeypatch.setattr(importer, "_HL_METADATA_CHUNK_CHARS", 9)
+    mapping = importer.SourceMapping("main", schema, (
+        importer.TableMapping("hl_news_metadata", "legacy_main", "hl_news_metadata", legacy_typed=True),
+    ))
+
+    report = importer.import_native_sqlite_source(
+        source_key="main", source_path=source_path, source_mapping=mapping, batch_size=1,
+    )
+
+    assert report["tables"][0]["streamed_payload"] is True
+    assert report["tables"][0]["source_rows"] == 2
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier("legacy_main"))).fetchall() == sorted(payloads.items())
+        checkpoint = conn.execute(SQL(
+            "SELECT imported_rows,source_rows,digest_sum,source_digest_sum FROM {}.native_sqlite_stream_import_checkpoints "
+            "WHERE source_key='main' AND source_table='hl_news_metadata'"
+        ).format(Identifier("legacy_main"))).fetchone()
+        assert checkpoint[0] == checkpoint[1] == 2
+        assert checkpoint[2] == checkpoint[3]
 
 
 def test_small_evidence_cross_source_import_remains_readable_after_sqlite_sources_removed(
