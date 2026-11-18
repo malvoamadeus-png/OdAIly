@@ -1310,7 +1310,10 @@ def _convert(value: Any, column: str, mapping: TableMapping, target_column: dict
         if value is None:
             return Jsonb(None, dumps=_canonical_json)
         if isinstance(value, str):
-            decoded = _decode_json(value)
+            try:
+                decoded = _decode_json(value)
+            except json.JSONDecodeError:
+                decoded = value
             return Jsonb(decoded, dumps=_canonical_json)
         return Jsonb(value, dumps=_canonical_json)
     if column in mapping.timestamp_columns and isinstance(value, str):

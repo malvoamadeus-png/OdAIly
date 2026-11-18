@@ -245,7 +245,7 @@ def test_compound_primary_key_keyset_query_uses_index_range(tmp_path) -> None:
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
-def test_invalid_json_diagnostic_names_source_table_identity_and_column() -> None:
+def test_invalid_json_is_preserved_without_decode_error() -> None:
     from packages.common.native_sqlite_import import TableMapping, _convert_source_row
 
     row = {"chat_id": "chat-1", "message_id": 42, "push_result": ""}
@@ -254,11 +254,20 @@ def test_invalid_json_diagnostic_names_source_table_identity_and_column() -> Non
     target_columns = {"chat_id": {"udt_name": "text"}, "message_id": {"udt_name": "int8"},
                       "push_result": {"udt_name": "jsonb"}}
 
-    with pytest.raises(ValueError, match=r"business_news/business_message_inbox identity=\('chat-1', 42\) column='push_result'"):
-        _convert_source_row(row, source_key="business_news", table="business_message_inbox",
-                            source_pk=("chat_id", "message_id"),
-                            source_columns=("chat_id", "message_id", "push_result"),
-                            mapping=mapping, target_columns=target_columns)
+    converted = _convert_source_row(row, source_key="business_news", table="business_message_inbox",
+                                    source_pk=("chat_id", "message_id"),
+                                    source_columns=("chat_id", "message_id", "push_result"),
+                                    mapping=mapping, target_columns=target_columns)
+    assert converted[2].obj == ""
+
+
+def test_invalid_json_is_preserved_as_json_string_for_jsonb_target() -> None:
+    from packages.common.native_sqlite_import import TableMapping, _convert
+
+    mapping = TableMapping("business_message_inbox", "business_news", "business_message_inbox",
+                           json_columns=("push_result",))
+    converted = _convert("legacy raw result", "push_result", mapping, {"udt_name": "jsonb"})
+    assert converted.obj == "legacy raw result"
 
 
 def test_compound_primary_key_import_resumes_from_last_identity(native_import_target, tmp_path, monkeypatch) -> None:

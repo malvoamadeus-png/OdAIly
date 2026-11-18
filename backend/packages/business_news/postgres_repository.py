@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS business_telegram_state(state_key text PRIMARY KEY,st
 
 def _as_json(value):
     if value is None:return None
-    return value if isinstance(value,dict) else json.loads(value) if isinstance(value,str) else value
+    if not isinstance(value,str):return value
+    try:return json.loads(value)
+    except json.JSONDecodeError:return value
 
 
 class PostgresBusinessNewsRepository:
@@ -96,7 +98,9 @@ class PostgresBusinessNewsRepository:
     def adjacent_urls(self,item):
         with self._connect() as c:
             p=c.execute('SELECT sender_id,urls_json FROM business_telegram_recent_messages WHERE chat_id=%s AND message_id<%s AND expires_at>=now() ORDER BY message_id DESC LIMIT 1',(item['chat_id'],item['message_id'])).fetchone(); n=c.execute('SELECT sender_id,urls_json FROM business_telegram_recent_messages WHERE chat_id=%s AND message_id>%s AND expires_at>=now() ORDER BY message_id LIMIT 1',(item['chat_id'],item['message_id'])).fetchone()
-        return ( _as_json(p['urls_json']) if p and p['sender_id']==item['sender_id'] else [], _as_json(n['urls_json']) if n and n['sender_id']==item['sender_id'] else [])
+        previous = _as_json(p['urls_json']) if p and p['sender_id']==item['sender_id'] else []
+        following = _as_json(n['urls_json']) if n and n['sender_id']==item['sender_id'] else []
+        return (previous if isinstance(previous, list) else [], following if isinstance(following, list) else [])
     def update_message(self,inbox_id,**fields):
         allowed={'classification','classification_reason','writing_style','writer4_title','writer4_content','writer2_title','writer2_content','source_url','status','status_reason','push_result','plugin_notice_result','raw_text'}; updates={k:v for k,v in fields.items() if k in allowed}
         if not updates:return
