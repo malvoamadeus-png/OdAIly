@@ -68,14 +68,15 @@ def inspect_frozen_sources(
                     item.update({"ready": False, "reason": "source audit schema missing"})
                 else:
                     mapped = {spec.table for spec in specs}
-                    unknown = sorted({str(row[0]) for row in conn.execute(
-                        "SELECT DISTINCT table_name FROM odaily_observability_outbox"
-                    ).fetchall() if str(row[0]) not in mapped})
                     maximum = int(conn.execute("SELECT COALESCE(MAX(seq),0) AS n FROM odaily_observability_outbox").fetchone()["n"])
+                    watermark = int(projector.store.get_state(f"source_audit_{database_key}_watermark", "0") or 0)
+                    unknown = sorted({str(row[0]) for row in conn.execute(
+                        "SELECT DISTINCT table_name FROM odaily_observability_outbox WHERE seq>? AND seq<=?",
+                        (watermark, maximum),
+                    ).fetchall() if str(row[0]) not in mapped})
                     version = conn.execute("SELECT meta_value FROM odaily_observability_meta WHERE meta_key=?",
                                             (f"source_audit_trigger_version:{database_key}",)).fetchone()
                     trigger_version = str(version["meta_value"]) if version else None
-                    watermark = int(projector.store.get_state(f"source_audit_{database_key}_watermark", "0") or 0)
                     item.update({"outbox_max_sequence": maximum, "projected_watermark": watermark,
                                  "trigger_version": trigger_version,
                                  "unknown_outbox_tables": unknown,

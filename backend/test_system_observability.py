@@ -1696,6 +1696,28 @@ def test_frozen_cutover_readiness_rejects_unknown_outbox_table(tmp_path) -> None
         run_frozen_cutover_drain(projector, sources={"meme": source}, source_writes_stopped=True)
 
 
+def test_frozen_cutover_readiness_ignores_unknown_rows_at_or_below_watermark(tmp_path) -> None:
+    from packages.system_observability.native_import_cutover import inspect_frozen_sources
+
+    source = tmp_path / "source.sqlite"
+    with sqlite3.connect(source) as conn:
+        conn.executescript("CREATE TABLE jobs(id INTEGER PRIMARY KEY,title TEXT,status TEXT,last_error TEXT,updated_at TEXT);")
+    spec = TableSpec("meme", "jobs", "meme", "meme_scanner")
+    SourceAuditInstaller().install(source, (spec,))
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO odaily_observability_outbox(event_id,table_name,source_row_id,operation,happened_at_ms,payload_json) VALUES('old-unknown','removed_table','1','insert',1,'{}')")
+    store = SystemInformationStore(tmp_path / "information.sqlite")
+    store.initialize()
+    store.set_state("source_audit_meme_watermark", "1")
+    projector = MainTaskProjector(source, store, additional_databases={"meme": source}, table_specs=(spec,))
+
+    report = inspect_frozen_sources({"meme": source}, projector=projector)
+
+    assert report["ready"] is True
+    assert report["sources"]["meme"]["unknown_outbox_tables"] == []
+    assert report["sources"]["meme"]["pending_at_snapshot"] == 0
+
+
 def test_frozen_cutover_requires_nonempty_mapped_source_set(tmp_path) -> None:
     from packages.system_observability.native_import_cutover import inspect_frozen_sources
 

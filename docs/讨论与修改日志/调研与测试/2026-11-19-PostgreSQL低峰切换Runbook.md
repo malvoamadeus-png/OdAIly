@@ -78,6 +78,47 @@ python scripts/verify_postgres_evidence_closure.py \
 
 在所有会写入所列 SQLite 的 services、timers 和手工进程都停止并确认 owner 退出后、且在 system_information 原生导入之前执行 drain。drain 目标是现有 SQLite system-information 目录，不是 PostgreSQL；其投影行与最终 watermark 必须由后续 system_information native import 一并导入。source 清单必须来自本次生产只读核验：只列真实配置存在且由 projector 映射的物理 SQLite 库；一个物理文件只列一次。drain 命令中的 key 是 projector `database_key`（例如独立 HotTopic 文件 key 为 `hot`），不是 native importer key `hottopic`。配置了但文件不存在、映射为空、审计 schema/trigger 版本不匹配或 outbox 含未知表都会失败关闭。不要为可选源猜路径或传入不存在的路径。
 
+若只需生产只读 readiness 检查，不要调用 drain 脚本：它会初始化/写入 system-information。以下命令直接以 `mode=ro` 读取八个来源和现有 system-information watermark，不创建目录、不初始化数据库、不推进水位；退出码 0 表示当前冻结区间通过，2 表示有来源未就绪：
+
+```bash
+cd /opt/OdAIly
+PYTHONPATH=backend python - <<'PY'
+import json, sqlite3
+from pathlib import Path
+from types import SimpleNamespace
+from packages.system_observability.projector import table_specs_for_business_path
+from packages.system_observability.native_import_cutover import inspect_frozen_sources
+
+class ReadOnlyState:
+    def __init__(self, path): self.path = Path(path)
+    def get_state(self, key, default=''):
+        uri = self.path.resolve().as_uri() + '?mode=ro'
+        with sqlite3.connect(uri, uri=True) as conn:
+            row = conn.execute('SELECT state_value FROM system_information_state WHERE state_key=?', (key,)).fetchone()
+        return str(row[0]) if row else default
+
+sources = {
+    'main': Path('/opt/OdAIly/data/database/odaily.sqlite'),
+    'hyperliquid': Path('/data/OdAIly/hyperliquid/hyperliquid.sqlite'),
+    'hot': Path('/opt/OdAIly/data/runtime/hottopic.sqlite'),
+    'meme': Path('/opt/OdAIly/data/processed/meme_scanner.sqlite3'),
+    'gate': Path('/opt/OdAIly/data/runtime/gate_market.sqlite'),
+    'stock': Path('/opt/OdAIly/data/runtime/stock_market.sqlite'),
+    'queue': Path('/opt/OdAIly/data/runtime/local_pipeline.sqlite'),
+    'business': Path('/opt/OdAIly/data/runtime/business_news.sqlite'),
+}
+projector = SimpleNamespace(
+    table_specs=table_specs_for_business_path(separate=True),
+    store=ReadOnlyState('/data/OdAIly/system-observability/system_information.sqlite'),
+)
+report = inspect_frozen_sources(sources, projector=projector)
+print(json.dumps(report, ensure_ascii=False, indent=2))
+raise SystemExit(0 if report['ready'] else 2)
+PY
+```
+
+该检查只验证各 source audit schema、trigger version、映射表名及当前 watermark 后待处理区间内是否含未知表；它不冻结写者、不代表最终 drain target，也不能替代停写后的 drain。路径必须先按本次生产核验结果修正。若命令返回失败，保持切换阻塞并依据逐库 `reason` 排查。
+
 从仓库根目录使用 `PYTHONPATH=backend`，逐个传入完整 source 清单与现有 system-observability 目标目录：
 
 ```bash
@@ -85,11 +126,18 @@ PYTHONPATH=backend python scripts/drain_frozen_source_outboxes.py \
   --source-writes-stopped \
   --observability-dir /data/OdAIly/system-observability \
   --source 'main=/opt/OdAIly/data/database/odaily.sqlite' \
+  --source 'hyperliquid=/data/OdAIly/hyperliquid/hyperliquid.sqlite' \
   --source 'hot=/opt/OdAIly/data/runtime/hottopic.sqlite' \
-  --source 'meme=/opt/OdAIly/data/processed/meme_scanner.sqlite3'
+  --source 'meme=/opt/OdAIly/data/processed/meme_scanner.sqlite3' \
+  --source 'gate=/opt/OdAIly/data/runtime/gate_market.sqlite' \
+  --source 'stock=/opt/OdAIly/data/runtime/stock_market.sqlite' \
+  --source 'queue=/opt/OdAIly/data/runtime/local_pipeline.sqlite' \
+  --source 'business=/opt/OdAIly/data/runtime/business_news.sqlite'
 ```
 
-示例路径仅说明参数格式，执行时必须替换为本次核验的完整来源集合。命令要求显式 `--source-writes-stopped`，只读取来源 outbox 并将投影事务/水位写入目标观测库；它不安装/重建触发器、不跑全量快照、不复制或备份源文件、不运行 retention/cleanup，也不启动服务。输出中的每个 `target` 是停止写入后捕获的 outbox 最大序号；只有进程退出码为 0、`complete=true` 且每个来源的最终 watermark 达到对应 target，才算 drain 完成。失败或非零退出时保持停机并排查，不得继续切换。
+代码中当前 projector database_key 为 `main`、`hyperliquid`、`gate`、`stock`、`hot`、`meme`、`queue`、`business`。独立商务路径已在模块文档和既有生产切换记录中确认为 `/opt/OdAIly/data/runtime/business_news.sqlite`。runtime 仅把 `business_message_inbox` 从 `main` 改映射为 `business`；其他 `main` 表仍属于 `main`，不得把整个主库 key 改成 `business`。独立库中的其他商务表不在当前 projector 审计 allowlist 内，因此 `business` 来源的 outbox `table_name` 应只包含 `business_message_inbox`。不要传 importer key `hottopic` 或 `local_pipeline`，它们不是 projector key。命令中的其余路径仍是候选值，不是本轮生产核实结果；执行前逐项按精确 service Environment/EnvironmentFile、CLI、仓储 path resolver 核实源真实存在、路径一致，一个物理文件只列一次。`inspect_frozen_sources` 要求每个来源都已有 outbox/meta 表、当前 trigger version、outbox 表名均映射；尤其如果这些历史库从未由当前 projector 安装审计 trigger，命令会对 missing schema/version fail closed。不得通过删除未就绪源来绕过；先确认该物理库是否确实有需纳入的 audited tables，若有则必须有相同冻结版本 trigger/outbox 水位，否则保持切换阻塞。
+
+命令要求显式 `--source-writes-stopped`，只读取来源 outbox 并将投影事务/水位写入目标观测库；它不安装/重建触发器、不跑全量快照、不复制或备份源文件、不运行 retention/cleanup，也不启动服务。输出中的每个 `target` 是停止写入后捕获的 outbox 最大序号；只有进程退出码为 0、`complete=true` 且每个来源的最终 watermark 达到对应 target，才算 drain 完成。失败或非零退出时保持停机并排查，不得继续切换。
 
 ### local-pipeline epoch 接管
 
