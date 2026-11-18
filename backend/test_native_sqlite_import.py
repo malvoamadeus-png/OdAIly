@@ -106,6 +106,38 @@ def test_import_postgres_connection_uses_migration_timeouts(monkeypatch) -> None
     assert "300000ms" in statements[0][1]
 
 
+def test_native_import_does_not_run_full_source_foreign_key_check(tmp_path, monkeypatch) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    source_path = tmp_path / "source.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+
+    traced_sql = []
+    sqlite_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = sqlite_connect(*args, **kwargs)
+        connection.set_trace_callback(traced_sql.append)
+        return connection
+
+    def stop_after_source_schema(_connection, _mappings):
+        raise RuntimeError("stop after source schema inspection")
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    monkeypatch.setattr(importer, "_order_by_foreign_keys", stop_after_source_schema)
+    mapping = importer.SourceMapping(
+        "fixture", "fixture", (importer.TableMapping("items", "fixture", "items"),)
+    )
+
+    with pytest.raises(RuntimeError, match="stop after source schema inspection"):
+        importer.import_native_sqlite_source(
+            source_key="fixture", source_path=source_path, source_mapping=mapping
+        )
+
+    assert not any(statement.strip().lower().startswith("pragma foreign_key_check") for statement in traced_sql)
+
+
 def test_sqlite_temp_directory_is_explicit_and_validated(tmp_path, monkeypatch) -> None:
     from packages.common import native_sqlite_import as importer
 
@@ -174,6 +206,15 @@ def test_native_import_resumes_committed_batches_and_preserves_fk_identity(
 
     schema = native_import_target
     source_path = tmp_path / "source.sqlite"
+    traced_sql = []
+    sqlite_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = sqlite_connect(*args, **kwargs)
+        connection.set_trace_callback(traced_sql.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
     with sqlite3.connect(source_path) as source:
         source.executescript(
             """
@@ -212,6 +253,7 @@ def test_native_import_resumes_committed_batches_and_preserves_fk_identity(
     )
     assert report["table_count"] == 2
     assert len(report["foreign_key_audits"]) == 1
+    assert not any(statement.strip().lower().startswith("pragma foreign_key_check") for statement in traced_sql)
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
         assert conn.execute(SQL("SELECT id,name FROM {}.parent").format(Identifier(schema))).fetchall() == [
             (7, "preserve-primary-key")

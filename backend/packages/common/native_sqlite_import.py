@@ -280,9 +280,6 @@ def import_native_sqlite_source(
         sqlite.execute("BEGIN")
         schema = _schema(sqlite)
         source_tables = {table["name"]: table for table in schema}
-        source_orphans = sqlite.execute("PRAGMA foreign_key_check").fetchmany(1)
-        if source_orphans:
-            raise RuntimeError(f"SQLite source has a foreign-key violation: {tuple(source_orphans[0])}")
         allowed = {table.source_table for table in mapping.tables} | set(mapping.retired_tables)
         unknown = sorted(set(source_tables) - allowed)
         if unknown:
