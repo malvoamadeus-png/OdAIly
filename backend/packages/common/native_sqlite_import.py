@@ -929,7 +929,8 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         raise RuntimeError("Unexpected hl_news_metadata source schema")
     if not mapping.legacy_typed and source_key != "hyperliquid":
         raise RuntimeError("hl_news_metadata streaming import requires an approved target mapping")
-    target = sql.Identifier(mapping.target_schema, mapping.target_table)
+    target_table = "hl_news_metadata_large" if source_key == "hyperliquid" else mapping.target_table
+    target = sql.Identifier(mapping.target_schema, target_table)
     checkpoint_table = sql.Identifier(mapping.target_schema, "native_sqlite_stream_import_checkpoints")
     checkpoint = None
     with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-schema") as conn:
@@ -946,9 +947,20 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
             "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
             (mapping.target_schema, mapping.target_table),
         ).fetchall()
+        if source_key == "hyperliquid":
+            large_columns = conn.execute(
+                "SELECT column_name,udt_name FROM information_schema.columns WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
+                (mapping.target_schema, target_table),
+            ).fetchall()
+            if not large_columns:
+                conn.execute(sql.SQL("CREATE TABLE IF NOT EXISTS {}(key text PRIMARY KEY,payload text NOT NULL)").format(target))
+                large_columns = conn.execute(
+                    "SELECT column_name,udt_name FROM information_schema.columns WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
+                    (mapping.target_schema, target_table),
+                ).fetchall()
+            columns = large_columns
         target_types = [(row["column_name"], row["udt_name"]) for row in columns]
-        if target_types not in ([ ("key", "text"), ("payload", "text") ],
-                                [ ("key", "text"), ("payload", "jsonb") ]):
+        if target_types != [("key", "text"), ("payload", "text")]:
             raise RuntimeError("Unexpected hl_news_metadata target schema")
         payload_udt = dict(target_types)["payload"]
         before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
@@ -956,6 +968,7 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
             "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
         ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
         generic_checkpoint = None
+        generic_bridge_needed = False
         if checkpoint is None:
             generic_table = sql.Identifier(mapping.target_schema, "native_sqlite_import_checkpoints")
             generic_exists = conn.execute(
@@ -967,21 +980,7 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
                     "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
                 ).format(generic_table), (source_key, "hl_news_metadata")).fetchone()
             if generic_checkpoint:
-                generic_identity = generic_checkpoint["last_identity"]
-                if isinstance(generic_identity, list):
-                    generic_identity = generic_identity[0] if generic_identity else None
-                conn.execute(sql.SQL(
-                    "INSERT INTO {}(source_key,source_table,schema_sha256,last_identity,imported_rows,digest_sum,"
-                    "source_rows,source_digest_sum,destination_base_count) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
-                ).format(checkpoint_table), (
-                    source_key, "hl_news_metadata", generic_checkpoint["schema_sha256"], generic_identity,
-                    generic_checkpoint["imported_rows"], generic_checkpoint["digest_sum"],
-                    generic_checkpoint["source_rows"], generic_checkpoint["source_digest_sum"],
-                    generic_checkpoint["destination_base_count"],
-                ))
-                checkpoint = conn.execute(sql.SQL(
-                    "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
-                ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+                    generic_bridge_needed = True
         schema_sha = hashlib.sha256(json.dumps({"schema": source_spec, "mapping": mapping,
                                                "stream_protocol": _HL_METADATA_STREAM_PROTOCOL},
                                               sort_keys=True, default=str).encode()).hexdigest()
@@ -1002,6 +1001,20 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
                 "INSERT INTO {}(source_key,source_table,schema_sha256,destination_base_count) VALUES(%s,%s,%s,%s)"
             ).format(checkpoint_table), (source_key, "hl_news_metadata", schema_sha, before))
 
+    if generic_bridge_needed:
+        _bridge_hl_metadata_generic_checkpoint(
+            sqlite, source_key, source_spec, mapping, target_table, checkpoint_table,
+            generic_checkpoint,
+        )
+        with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-bridge-read") as conn:
+            checkpoint = conn.execute(sql.SQL(
+                "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
+            ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+            before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            imported = int(checkpoint["imported_rows"])
+            last_key = checkpoint["last_identity"]
+            digest_sum = int(checkpoint["digest_sum"])
+            base_count = int(checkpoint["destination_base_count"])
     checkpoint_last_key = last_key
     source_count = 0
     source_digest_sum = 0
@@ -1024,12 +1037,13 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
                 remaining -= len(raw)
             decoder.decode(b"", final=True)
         payload_digest = payload_hash.hexdigest()
-        if payload_udt == "jsonb":
-            payload_digest = _hl_metadata_source_jsonb_digest(sqlite, int(rowid), key, mapping)
         row_digest = _hl_metadata_row_digest(key, payload_digest)
         old_row_digest = None
         if upgrade_checkpoint and checkpoint_last_key is not None and key <= checkpoint_last_key:
-            old_row_digest = _hl_metadata_legacy_row_digest(sqlite, int(rowid), key, payload_udt)
+            old_row_digest = _hl_metadata_legacy_row_digest(
+                sqlite, int(rowid), key,
+                "jsonb" if source_key == "hyperliquid" else payload_udt,
+            )
         source_count += 1
         source_digest_sum = (source_digest_sum + row_digest) % (1 << 256)
         if checkpoint_last_key is not None and key <= checkpoint_last_key:
@@ -1106,8 +1120,8 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
     with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-verify") as conn:
         after = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
         target_rows = conn.execute(sql.SQL(
-            "SELECT key,md5({}::text) AS payload_md5 FROM {} ORDER BY key"
-        ).format(sql.Identifier("payload"), target))
+            "SELECT key,md5(payload) AS payload_md5 FROM {} ORDER BY key"
+        ).format(target))
         target_digest_sum = 0
         verified_rows = 0
         for target_row in target_rows:
@@ -1118,7 +1132,7 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         # jsonb normalizes JSON text, so its server-side textual digest is not
         # byte-identical to SQLite's raw UTF-8 digest. Row count and source
         # digest remain authoritative; target_digest_sum is diagnostic there.
-        digest_mismatch = payload_udt == "text" and target_digest_sum != digest_sum
+        digest_mismatch = target_digest_sum != digest_sum
         if (source_count != imported or after != base_count + imported or verified_rows != source_count
                 or source_digest_sum != digest_sum or digest_mismatch):
             raise RuntimeError(f"Streamed legacy verification failed main/hl_news_metadata: source={source_count} imported={imported}")
@@ -1137,6 +1151,102 @@ def _hl_metadata_row_digest(key: str, payload_md5: str) -> int:
     return int.from_bytes(hashlib.sha256(
         _canonical_json({"key": key, "payload_md5": payload_md5}).encode("utf-8")
     ).digest(), "big")
+
+
+def _bridge_hl_metadata_generic_checkpoint(sqlite: sqlite3.Connection, source_key: str,
+                                          source_spec: dict[str, Any], mapping: TableMapping,
+                                          target_table: str, checkpoint_table,
+                                          generic_checkpoint) -> None:
+    """Validate generic-imported Hyperliquid rows, then relocate them atomically."""
+    imported = int(generic_checkpoint["imported_rows"] or 0)
+    if imported <= 0:
+        raise RuntimeError("Generic metadata checkpoint has no committed rows")
+    identity = generic_checkpoint["last_identity"]
+    if isinstance(identity, list):
+        identity = identity[0] if identity else None
+    if identity is None:
+        raise RuntimeError("Generic metadata checkpoint is missing last identity")
+    legacy_digest_sum = 0
+    prefix_count = 0
+    source_rows = sqlite.execute('SELECT rowid,"key" FROM "hl_news_metadata" WHERE "key"<=? ORDER BY "key"', (identity,))
+    source_v2 = 0
+    for rowid, key in source_rows:
+        source_v2 = (source_v2 + _hl_metadata_row_digest(
+            str(key), _hl_metadata_source_raw_md5(sqlite, int(rowid)),
+        )) % (1 << 256)
+        legacy_digest_sum = (legacy_digest_sum + _hl_metadata_legacy_row_digest(
+            sqlite, int(rowid), str(key), "jsonb",
+        )) % (1 << 256)
+        prefix_count += 1
+    expected_digest = int(generic_checkpoint["digest_sum"] or "0")
+    if prefix_count != imported:
+        raise RuntimeError("Generic checkpoint row count does not match SQLite prefix")
+    if legacy_digest_sum != expected_digest:
+        raise RuntimeError("Generic checkpoint digest does not match SQLite prefix")
+    if generic_checkpoint["source_rows"] is not None and (
+            int(generic_checkpoint["source_rows"]) != prefix_count
+            or int(generic_checkpoint["source_digest_sum"] or "0") != expected_digest
+            or legacy_digest_sum != expected_digest):
+        raise RuntimeError("Generic checkpoint source fingerprint does not match SQLite prefix")
+
+    target = sql.Identifier(mapping.target_schema, target_table)
+    source_table = sql.Identifier(mapping.target_schema, mapping.target_table)
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-bridge") as conn:
+        with conn.transaction():
+            target_before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            if target_before:
+                raise RuntimeError("Overflow metadata target already has rows before generic checkpoint bridge")
+            target_count = 0
+            target_count = int(conn.execute(sql.SQL(
+                "SELECT count(*) AS n FROM {} WHERE key<=%s"
+            ).format(source_table), (identity,)).fetchone()["n"])
+            if target_count != imported:
+                raise RuntimeError("Generic checkpoint target row count does not match committed prefix")
+            # Generic imports normalized JSON through jsonb. Rebuild the original
+            # SQLite text after confirming the stored value still represents it.
+            for rowid, key in sqlite.execute(
+                    'SELECT rowid,"key" FROM "hl_news_metadata" WHERE "key"<=? ORDER BY "key"',
+                    (identity,)):
+                source_payload = sqlite.execute(
+                    'SELECT "payload" FROM "hl_news_metadata" WHERE rowid=?', (rowid,)
+                ).fetchone()[0]
+                stored = conn.execute(sql.SQL("SELECT payload FROM {} WHERE key=%s").format(source_table),
+                                      (str(key),)).fetchone()
+                stored_value = stored["payload"] if stored is not None else None
+                if stored is None or stored_value != _decode_json(source_payload):
+                    raise RuntimeError("Generic checkpoint target payload does not match SQLite source")
+                conn.execute(sql.SQL("INSERT INTO {}(key,payload) VALUES(%s,%s)").format(target),
+                             (str(key), source_payload))
+            moved = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            if moved != imported:
+                raise RuntimeError("Overflow metadata relocation count mismatch")
+            conn.execute(sql.SQL("DELETE FROM {} WHERE key<=%s").format(source_table), (identity,))
+            count_after = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            digest_after = 0
+            for row in conn.execute(sql.SQL(
+                "SELECT key,md5(payload) AS payload_md5 FROM {} ORDER BY key"
+            ).format(target)):
+                digest_after = (digest_after + _hl_metadata_row_digest(str(row["key"]), str(row["payload_md5"]))) % (1 << 256)
+            if count_after != imported or digest_after != source_v2:
+                raise RuntimeError("Overflow metadata relocation digest check failed")
+            schema_sha = hashlib.sha256(json.dumps({
+                "schema": source_spec, "mapping": mapping,
+                "stream_protocol": _HL_METADATA_STREAM_PROTOCOL,
+            }, sort_keys=True, default=str).encode()).hexdigest()
+            conn.execute(sql.SQL(
+                "INSERT INTO {}(source_key,source_table,schema_sha256,last_identity,imported_rows,digest_sum,"
+                "destination_base_count) VALUES(%s,%s,%s,%s,%s,%s,0) ON CONFLICT(source_key,source_table) DO UPDATE SET "
+                "schema_sha256=excluded.schema_sha256,last_identity=excluded.last_identity,"
+                "imported_rows=excluded.imported_rows,digest_sum=excluded.digest_sum,destination_base_count=0"
+            ).format(checkpoint_table), (source_key, "hl_news_metadata", schema_sha, identity, imported, str(source_v2)))
+
+
+def _hl_metadata_source_raw_md5(sqlite: sqlite3.Connection, rowid: int) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with sqlite.blobopen("hl_news_metadata", "payload", rowid, readonly=True) as blob:
+        while chunk := blob.read(_HL_METADATA_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _hl_metadata_legacy_row_digest(sqlite: sqlite3.Connection, rowid: int, key: str, payload_udt: str) -> int:

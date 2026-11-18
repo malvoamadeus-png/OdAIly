@@ -635,8 +635,8 @@ def test_hyperliquid_metadata_stream_imports_jsonb_payload(native_import_target,
 
     assert report["tables"][0]["source_rows"] == 2
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
-        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier(schema))).fetchall() == [
-            ("empty", {}), ("large", {"nested": [1, 2], "text": "中文"})
+        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata_large ORDER BY key").format(Identifier(schema))).fetchall() == [
+            ("empty", "{}"), ("large", '{ "nested" : [1, 2], "text": "中文" }')
         ]
 
 
@@ -662,6 +662,7 @@ def test_hl_news_metadata_import_bridges_generic_checkpoint(native_import_target
     ).encode()).hexdigest()
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
         conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload jsonb NOT NULL)").format(Identifier(schema)))
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata_large(key text PRIMARY KEY,payload text NOT NULL)").format(Identifier(schema)))
         conn.execute(SQL(
             "CREATE TABLE {}.native_sqlite_import_checkpoints(source_key text NOT NULL,source_table text NOT NULL,"
             "schema_sha256 text NOT NULL,last_identity jsonb,imported_rows bigint NOT NULL,digest_sum text NOT NULL,"
@@ -679,8 +680,8 @@ def test_hl_news_metadata_import_bridges_generic_checkpoint(native_import_target
 
     assert report["tables"][0]["imported_rows"] == 2
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
-        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier(schema))).fetchall() == [
-            ("alpha", {"nested": [1, 2], "text": "中文"}), ("beta", {"next": True})
+        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata_large ORDER BY key").format(Identifier(schema))).fetchall() == [
+            ("alpha", payloads[0][1]), ("beta", payloads[1][1])
         ]
         cp = conn.execute(SQL(
             "SELECT imported_rows,last_identity FROM {}.native_sqlite_stream_import_checkpoints "
@@ -704,12 +705,13 @@ def test_hl_news_metadata_generic_checkpoint_with_null_fingerprint_bridges_all_r
     spec = importer._schema(sqlite3.connect(source_path))[0]
     generic_sum = sum(int.from_bytes(hashlib.sha256(
         importer._canonical_json({"key": key, "payload": {"type": "json", "value": importer._decode_json(payload)}}).encode()
-    ).digest(), "big") for key, payload in payloads)
+    ).digest(), "big") for key, payload in payloads) % (1 << 256)
     old_schema_sha = hashlib.sha256(json.dumps(
         {"schema": spec, "mapping": mapping}, sort_keys=True, default=str
     ).encode()).hexdigest()
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
         conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload jsonb NOT NULL)").format(Identifier(schema)))
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata_large(key text PRIMARY KEY,payload text NOT NULL)").format(Identifier(schema)))
         conn.execute(SQL(
             "CREATE TABLE {}.native_sqlite_import_checkpoints(source_key text NOT NULL,source_table text NOT NULL,"
             "schema_sha256 text NOT NULL,last_identity jsonb,imported_rows bigint NOT NULL,digest_sum text NOT NULL,"
@@ -727,7 +729,7 @@ def test_hl_news_metadata_generic_checkpoint_with_null_fingerprint_bridges_all_r
 
     assert report["tables"][0]["imported_rows"] == 3
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
-        assert conn.execute(SQL("SELECT count(*) FROM {}.hl_news_metadata").format(Identifier(schema))).fetchone()[0] == 3
+        assert conn.execute(SQL("SELECT count(*) FROM {}.hl_news_metadata_large").format(Identifier(schema))).fetchone()[0] == 3
         cp = conn.execute(SQL(
             "SELECT imported_rows,last_identity FROM {}.native_sqlite_stream_import_checkpoints WHERE source_key='hyperliquid'"
         ).format(Identifier(schema))).fetchone()

@@ -116,7 +116,9 @@ class PostgresNewsStore:
         with connect_postgres(schema="hyperliquid_news", application_name="odaily-hyperliquid-news-migrate") as conn:
             apply_schema_migrations(conn, schema="hyperliquid_news", component="hyperliquid_news",
                 migrations=(PostgresMigration(1, "hyperliquid_news_initial", SCHEMA_CHECKSUM,
-                    lambda connection: connection.execute(SCHEMA_SQL)),))
+                    lambda connection: connection.execute(SCHEMA_SQL)),
+                    PostgresMigration(2, "hyperliquid_news_large_metadata", sha256(b"CREATE TABLE IF NOT EXISTS hl_news_metadata_large(key text PRIMARY KEY,payload text NOT NULL)").hexdigest(),
+                    lambda connection: connection.execute("CREATE TABLE IF NOT EXISTS hl_news_metadata_large(key text PRIMARY KEY,payload text NOT NULL)")),))
     def initialize(self) -> None:
         """Keep the SQLite store's public startup contract without rebuilding indexes."""
         self.init_schema()
@@ -155,7 +157,7 @@ class PostgresNewsStore:
             if self.blocked(address, conn=conn):
                 return False
             row = conn.execute("SELECT sources FROM hl_news_addresses WHERE address=%s", (address,)).fetchone()
-            if row is None and limit is not None and conn.execute("SELECT count(*) AS count FROM hl_news_addresses WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_addresses.address AND b.payload->>'blocked'='true')").fetchone()["count"] >= limit:
+            if row is None and limit is not None and conn.execute("SELECT count(*) AS count FROM hl_news_addresses WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_addresses.address AND (b.payload::jsonb)->>'blocked'='true')").fetchone()["count"] >= limit:
                 return False
             sources = row["sources"] if row else []
             if isinstance(sources, str):
@@ -192,9 +194,9 @@ class PostgresNewsStore:
     def addresses(self, limit: int, *, normal_schedule: bool = False) -> list[dict[str, Any]]:
         with self._connect() as conn:
             if normal_schedule:
-                rows = conn.execute("SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address) WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND b.payload->>'blocked'='true') ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s", (limit,)).fetchall()
+                rows = conn.execute("SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address) WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND (b.payload::jsonb)->>'blocked'='true') ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s", (limit,)).fetchall()
             else:
-                rows = conn.execute("SELECT a.* FROM hl_news_addresses a WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND b.payload->>'blocked'='true') ORDER BY a.last_polled_ms,a.address LIMIT %s", (limit,)).fetchall()
+                rows = conn.execute("SELECT a.* FROM hl_news_addresses a WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND (b.payload::jsonb)->>'blocked'='true') ORDER BY a.last_polled_ms,a.address LIMIT %s", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     def load(self, address: str, *, state_table: str = "hl_news_state") -> dict[str, Any] | None:
@@ -248,10 +250,21 @@ class PostgresNewsStore:
 
     def _metadata_in_transaction(self, conn, key: str, default: Any) -> Any:
         row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key=%s", (key,)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT payload FROM hl_news_metadata_large WHERE key=%s", (key,)).fetchone()
         if not row:
             return default
         value = row["payload"]
         return json.loads(value) if isinstance(value, str) else value
+
+    @staticmethod
+    def _save_metadata_in_transaction(conn, key: str, payload: str) -> None:
+        if len(payload.encode("utf-8")) > 200 * 1024 * 1024:
+            conn.execute("DELETE FROM hl_news_metadata WHERE key=%s", (key,))
+            conn.execute("INSERT INTO hl_news_metadata_large(key,payload) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload", (key, payload))
+        else:
+            conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s", (key,))
+            conn.execute("INSERT INTO hl_news_metadata(key,payload) VALUES(%s,%s::jsonb) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload", (key, payload))
 
     def compact_fills(self, address: str, *, cutoff_ms: int, batch_size: int = 5000) -> dict[str, Any]:
         """Build bounded compact batches outside the address lock and fence commit."""
@@ -374,7 +387,7 @@ class PostgresNewsStore:
 
     def metadata_keys(self, prefix: str) -> list[str]:
         with self._connect() as conn:
-            return [row["key"] for row in conn.execute("SELECT key FROM hl_news_metadata WHERE key LIKE %s ORDER BY key", (prefix + "%",)).fetchall()]
+            return [row["key"] for row in conn.execute("SELECT key FROM (SELECT key FROM hl_news_metadata UNION SELECT key FROM hl_news_metadata_large) m WHERE key LIKE %s ORDER BY key", (prefix + "%",)).fetchall()]
 
     def hyperliquid_news_task_sources(self) -> list[dict[str, Any]]:
         with connect_postgres(schema="main", application_name="odaily-hyperliquid-test-seeds") as conn:
@@ -387,12 +400,12 @@ class PostgresNewsStore:
         with self._connect() as conn:
             for event in candidates:
                 self._insert_candidate(conn, event)
-            conn.execute("INSERT INTO hl_news_metadata(key,payload) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload", (key, json.dumps(value, ensure_ascii=False)))
+            self._save_metadata_in_transaction(conn, key, json.dumps(value, ensure_ascii=False))
 
     def recent_states(self, since_ms: int, *, state_table: str = "hl_news_state") -> dict[str, dict[str, Any]]:
         table = self._state_table(state_table)
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT address,state,history FROM {table} WHERE observed_ms>=%s AND NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || {table}.address AND b.payload->>'blocked'='true')", (since_ms,)).fetchall()
+            rows = conn.execute(f"SELECT address,state,history FROM {table} WHERE observed_ms>=%s AND NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || {table}.address AND (b.payload::jsonb)->>'blocked'='true')", (since_ms,)).fetchall()
         return {row["address"]: {"state": row["state"], "history": row["history"]} for row in rows}
 
     def candidates(self) -> list[dict[str, Any]]:
@@ -530,7 +543,7 @@ class PostgresNewsStore:
     def account_due(self, now_ms: int, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
-        blocked = "NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_account_pool.address AND b.payload->>'blocked'='true')"
+        blocked = "NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_account_pool.address AND (b.payload::jsonb)->>'blocked'='true')"
         with self._connect() as conn:
             probe = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT 1", (now_ms,)).fetchall()
             active = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=true AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT %s", (now_ms, limit-len(probe))).fetchall()
@@ -612,7 +625,8 @@ class PostgresNewsStore:
             previous = self._metadata_in_transaction(conn, "address_block:" + address, {})
             was_blocked = bool(previous.get("blocked"))
             value["last_blocked_ms"] = now_ms if blocked or was_blocked else int(previous.get("last_blocked_ms", -1))
-            conn.execute("INSERT INTO hl_news_metadata(key,payload) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload", ("address_block:"+address, json.dumps(value)))
+            self._save_metadata_in_transaction(conn, "address_block:"+address, json.dumps(value))
+            conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s", ("address_block:"+address,))
             if blocked:
                 conn.execute("DELETE FROM hl_news_account_pool WHERE address=%s", (address,))
                 rows = conn.execute("SELECT event_key FROM hl_news_candidates WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload->'addresses') a(value) WHERE lower(a.value)=%s)", (address,)).fetchall()
@@ -671,7 +685,7 @@ class PostgresNewsStore:
             expected = 1 if name["side"] == "long" else -1
             if not position or size == 0 or (1 if size > 0 else -1) != expected:
                 conn.execute("UPDATE hl_news_address_names SET status='expired',current_name=NULL,reason='position_changed_or_closed',next_check_ms=%s,retry_after_ms=0,inflight_token=NULL,inflight_started_ms=NULL WHERE address=%s AND manual_locked=false AND kind='position'", (now_ms,address))
-                conn.execute("DELETE FROM hl_news_metadata WHERE key=%s AND payload->>'origin'='auto'", ("address_note:"+address,))
+                conn.execute("DELETE FROM hl_news_metadata WHERE key=%s AND (payload::jsonb)->>'origin'='auto'", ("address_note:"+address,))
 
     def wake_unqualified_accounts(self, now_ms: int) -> int:
         with self._connect() as conn:

@@ -70,6 +70,7 @@ class PostgresNamingStore:
             rows=conn.execute("""SELECT n.* FROM hl_news_address_names n JOIN hl_news_addresses a USING(address)
                 WHERE n.manual_locked=false AND n.status<>'blocked' AND n.inflight_token IS NULL AND n.next_check_ms<=%s AND n.retry_after_ms<=%s
                 AND NOT EXISTS(SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:'||n.address AND b.payload->>'blocked'='true')
+                AND NOT EXISTS(SELECT 1 FROM hl_news_metadata_large b WHERE b.key='address_block:'||n.address AND (b.payload::jsonb)->>'blocked'='true')
                 ORDER BY n.next_check_ms,n.address FOR UPDATE OF n SKIP LOCKED LIMIT %s""",(now_ms,now_ms,max(1,min(limit,20)))).fetchall()
             addresses=[row["address"] for row in rows]
             if addresses:
@@ -133,7 +134,7 @@ class PostgresNamingStore:
             if saved.rowcount==1:
                 manual=self.store._metadata_in_transaction(conn,"address_note:"+address,{})
                 if manual.get("origin")!="manual":
-                    conn.execute("INSERT INTO hl_news_metadata(key,payload) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload",("address_note:"+address,json.dumps({"address":address,"note":name,"origin":"auto","updated_at":datetime.fromtimestamp(now_ms/1000,UTC).isoformat()})))
+                    self.store._save_metadata_in_transaction(conn, "address_note:"+address, json.dumps({"address":address,"note":name,"origin":"auto","updated_at":datetime.fromtimestamp(now_ms/1000,UTC).isoformat()}))
             return saved.rowcount==1
 
     def set_manual(self,address: str,note: str,*,updated_by: str)->dict[str,Any]:
@@ -146,7 +147,7 @@ class PostgresNamingStore:
             if not conn.execute("SELECT 1 FROM hl_news_addresses WHERE address=%s",(address,)).fetchone():
                 raise ValueError("Unknown monitored address")
             value={"address":address,"note":note,"origin":"manual","updated_by":updated_by,"updated_at":now.isoformat()}
-            conn.execute("INSERT INTO hl_news_metadata(key,payload) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload",("address_note:"+address,json.dumps(value)))
+            self.store._save_metadata_in_transaction(conn, "address_note:"+address, json.dumps(value))
             conn.execute("INSERT INTO hl_news_address_names(address,current_name,manual_locked,next_check_ms) VALUES(%s,%s,true,%s) ON CONFLICT(address) DO UPDATE SET current_name=excluded.current_name,manual_locked=true,inflight_token=NULL,inflight_started_ms=NULL,status='active'",(address,note or None,now_ms+7*24*60*60*1000))
         return value
     def invalidate_position(self,address: str,*,coin: str|None=None,side: str|None=None,reason: str="position_evidence_invalidated",now_ms: int|None=None)->int:
@@ -159,6 +160,7 @@ class PostgresNamingStore:
             result=conn.execute("UPDATE hl_news_address_names SET status='expired',current_name=NULL,next_check_ms=%s,inflight_token=NULL,inflight_started_ms=NULL,reason=%s WHERE "+" AND ".join(clauses),params)
             if result.rowcount:
                 conn.execute("DELETE FROM hl_news_metadata WHERE key=%s AND payload->>'origin'='auto'",("address_note:"+address,))
+                conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s", ("address_note:"+address,))
             return result.rowcount or 0
 
     def get(self,address: str)->dict[str,Any]|None:
