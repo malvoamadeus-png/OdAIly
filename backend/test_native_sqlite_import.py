@@ -138,6 +138,57 @@ def test_native_import_does_not_run_full_source_foreign_key_check(tmp_path, monk
     assert not any(statement.strip().lower().startswith("pragma foreign_key_check") for statement in traced_sql)
 
 
+def test_native_import_initial_pass_does_not_count_or_digest_scan_before_copy(
+    native_import_target, tmp_path, monkeypatch
+) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    source_path = tmp_path / "source.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE items(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        source.executemany("INSERT INTO items VALUES(?,?)", [(index, f"value-{index}") for index in range(1, 5)])
+
+    traced_sql = []
+    sqlite_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = sqlite_connect(*args, **kwargs)
+        connection.set_trace_callback(traced_sql.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    mapping = importer.SourceMapping("fixture", native_import_target, (
+        importer.TableMapping("items", native_import_target, "items"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.items(id bigint PRIMARY KEY,value text NOT NULL)").format(Identifier(native_import_target)))
+
+    report = importer.import_native_sqlite_source(
+        source_key="fixture", source_path=source_path, source_mapping=mapping, batch_size=2
+    )
+
+    normalized = [statement.strip().lower() for statement in traced_sql]
+    data_reads = [statement for statement in normalized if statement.startswith('select * from "items"')]
+    assert data_reads
+    assert data_reads[0].endswith("limit 2")
+    assert not any(statement.startswith('select count(*) from "items"') for statement in normalized)
+    assert sum(statement.startswith('select * from "items" order by "id"') for statement in data_reads) == 2
+    assert report["tables"][0]["source_rows"] == 4
+
+
+def test_checkpoint_prefix_validation_rejects_changed_source_rows() -> None:
+    from packages.common.native_sqlite_import import _validate_checkpoint_source_prefix
+
+    rows = [{"id": 1, "value": "same"}, {"id": 2, "value": "changed"}]
+    digest = lambda row: int.from_bytes(hashlib.sha256(row["value"].encode()).digest(), "big")
+    expected = digest(rows[0]) + digest({"id": 2, "value": "old"})
+    with pytest.raises(RuntimeError, match="checkpoint prefix mismatch"):
+        _validate_checkpoint_source_prefix(
+            rows=rows, source_pk=("id",), last_identity=(2,), imported_rows=2,
+            digest_sum=expected, row_digest=digest,
+        )
+
+
 def test_sqlite_temp_directory_is_explicit_and_validated(tmp_path, monkeypatch) -> None:
     from packages.common import native_sqlite_import as importer
 

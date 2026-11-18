@@ -367,27 +367,45 @@ def import_native_sqlite_source(
                     raise RuntimeError(f"Source schema changed during native import: {source_key}/{table}")
             identity_sql = ",".join(_sqlite_identifier(key) for key in source_pk)
             quoted_table = _sqlite_identifier(table)
-            source_count = int(sqlite.execute(f"SELECT count(*) FROM {quoted_table}").fetchone()[0])
-            source_digest_sum = 0
-            source_cursor = sqlite.execute(f"SELECT * FROM {quoted_table} ORDER BY {identity_sql}")
-            source_bounded = _BoundedCursor(source_cursor)
-            while source_batch := source_bounded.fetch(batch_size, max_batch_bytes, max_row_bytes):
-                for row in source_batch:
-                    values = _convert_row(row, source_columns, effective, target_by_name)
-                    canonical = _canonical_json(_canonical_converted(destination_columns, values, effective, target_by_name)).encode()
-                    source_digest_sum = (source_digest_sum + int.from_bytes(hashlib.sha256(canonical).digest(), "big")) % (1 << 256)
+            source_count: int | None = None
+            source_digest_sum: int | None = None
             schema_sha = hashlib.sha256(json.dumps({"schema": spec, "mapping": table_map},sort_keys=True,default=str).encode()).hexdigest()
-            if checkpoint and checkpoint["source_rows"] is not None and (
-                int(checkpoint["source_rows"]) != source_count
-                or checkpoint["source_digest_sum"] != str(source_digest_sum)
-            ):
-                raise RuntimeError(f"Source rows changed during native import: {source_key}/{table}")
             last_identity = tuple(checkpoint["last_identity"]) if checkpoint and checkpoint["last_identity"] else None
             imported = int(checkpoint["imported_rows"]) if checkpoint else 0
             digest_sum = int(checkpoint["digest_sum"] or "0") if checkpoint else 0
             destination_base_count = int(checkpoint["destination_base_count"]) if checkpoint else before
             if before != destination_base_count + imported:
                 raise RuntimeError(f"Native target changed during import: {table_map.target_schema}.{table_map.target_table}")
+            if checkpoint:
+                source_count = 0
+                source_digest_sum = 0
+                full_source_fingerprint = checkpoint["source_rows"] is not None
+                source_cursor = sqlite.execute(f"SELECT * FROM {quoted_table} ORDER BY {identity_sql}")
+                def source_row_digest(row) -> int:
+                    values = _convert_row(row, source_columns, effective, target_by_name)
+                    return int.from_bytes(hashlib.sha256(
+                        _canonical_json(_canonical_converted(destination_columns, values, effective, target_by_name)).encode()
+                    ).digest(), "big")
+                if not full_source_fingerprint:
+                    prefix_rows = []
+                    for row in source_cursor:
+                        if last_identity is not None:
+                            prefix_rows.append(row)
+                            if tuple(row[key] for key in source_pk) == last_identity:
+                                break
+                    _validate_checkpoint_source_prefix(
+                        rows=prefix_rows, source_pk=source_pk, last_identity=last_identity,
+                        imported_rows=imported, digest_sum=digest_sum, row_digest=source_row_digest,
+                    )
+                    source_count = None
+                    source_digest_sum = None
+                else:
+                    for row in source_cursor:
+                        source_count += 1
+                        source_digest_sum = (source_digest_sum + source_row_digest(row)) % (1 << 256)
+                    if (int(checkpoint["source_rows"]) != source_count
+                            or checkpoint["source_digest_sum"] != str(source_digest_sum)):
+                        raise RuntimeError(f"Source rows changed during native import: {source_key}/{table}")
             while True:
                 if last_identity is None:
                     batch_cursor = sqlite.execute(
@@ -443,8 +461,18 @@ def import_native_sqlite_source(
                             "source_rows=excluded.source_rows,source_digest_sum=excluded.source_digest_sum,"
                             "destination_base_count=excluded.destination_base_count"
                         ).format(sql.Identifier(table_map.target_schema, "native_sqlite_import_checkpoints")),
-                            (source_key,table,schema_sha,Jsonb([_json_value(value) for value in last_identity]),imported,str(digest_sum),source_count,str(source_digest_sum),destination_base_count),
+                            (source_key,table,schema_sha,Jsonb([_json_value(value) for value in last_identity]),imported,str(digest_sum),source_count,str(source_digest_sum) if source_digest_sum is not None else None,destination_base_count),
                         )
+            if source_count is None:
+                source_count = imported
+                source_digest_sum = digest_sum
+            if checkpoint is None or checkpoint["source_rows"] is None:
+                with _connect_native_import_postgres(schema=table_map.target_schema, application_name="odaily-native-sqlite-checkpoint") as conn:
+                    conn.execute(sql.SQL(
+                        "UPDATE {} SET source_rows=%s,source_digest_sum=%s WHERE source_key=%s AND source_table=%s"
+                    ).format(sql.Identifier(table_map.target_schema, "native_sqlite_import_checkpoints")),
+                        (source_count, str(source_digest_sum), source_key, table),
+                    )
             with _connect_native_import_postgres(schema=table_map.target_schema, application_name="odaily-native-sqlite-verify") as conn:
                 after = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target_identifier)).fetchone()["n"])
                 verify_digest = 0
@@ -845,6 +873,26 @@ def _fetch_bounded(cursor: sqlite3.Cursor, row_limit: int, byte_limit: int,
                    max_row_bytes: int, *, state: _BoundedCursor | None = None) -> list[sqlite3.Row]:
     bounded = state or _BoundedCursor(cursor)
     return bounded.fetch(row_limit, byte_limit, max_row_bytes)
+
+
+def _validate_checkpoint_source_prefix(*, rows, source_pk: tuple[str, ...], last_identity: tuple[Any, ...] | None,
+                                       imported_rows: int, digest_sum: int, row_digest) -> tuple[int, int]:
+    if last_identity is None:
+        if imported_rows != 0 or digest_sum != 0:
+            raise RuntimeError("Source rows changed during native import: checkpoint has no committed identity")
+        return 0, 0
+    prefix_count = prefix_digest = 0
+    matched = False
+    for row in rows:
+        if matched:
+            break
+        prefix_count += 1
+        prefix_digest = (prefix_digest + int(row_digest(row))) % (1 << 256)
+        if tuple(row[key] for key in source_pk) == last_identity:
+            matched = True
+    if not matched or prefix_count != imported_rows or prefix_digest != digest_sum:
+        raise RuntimeError(f"Source rows changed during native import: checkpoint prefix mismatch")
+    return prefix_count, prefix_digest
 
 
 def _sqlite_identifier(value: str) -> str:
