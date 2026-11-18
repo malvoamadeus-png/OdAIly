@@ -1517,6 +1517,36 @@ def _convert_source_row(row: sqlite3.Row, *, source_key: str, table: str, source
             f"Invalid JSON source value at {source_key}/{table} identity={identity!r} "
             f"column={column!r}: {exc.msg} at char {exc.pos}"
         ) from exc
+    except ValueError as exc:
+        if "Invalid SQLite timestamp" not in str(exc):
+            raise
+        identity = tuple(row[key] for key in source_pk)
+        column = next((name for name in source_columns if name in mapping.timestamp_columns
+                       and row[name] is not None and _timestamp_conversion_fails(row[name])), "unknown")
+        raise ValueError(
+            f"Invalid timestamp source value at {source_key}/{table} identity={identity!r} "
+            f"column={column!r}: {row[column]!r}"
+        ) from exc
+
+
+def _timestamp_conversion_fails(value: Any) -> bool:
+    try:
+        _sqlite_timestamp(value)
+        return False
+    except (ValueError, OverflowError, OSError):
+        return True
+
+
+def _sqlite_timestamp(value: Any) -> datetime:
+    if isinstance(value, (int, float, Decimal)) or (isinstance(value, str) and value.strip().lstrip("+-").isdigit()):
+        stamp = float(value)
+        if abs(stamp) >= 100_000_000_000:
+            stamp /= 1000
+        return datetime.fromtimestamp(stamp, UTC)
+    if isinstance(value, str):
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return result.replace(tzinfo=UTC) if result.tzinfo is None else result
+    raise ValueError(f"Invalid SQLite timestamp: {value!r}")
 
 
 def _canonical_json(value: Any) -> str:
@@ -1578,12 +1608,11 @@ def _convert(value: Any, column: str, mapping: TableMapping, target_column: dict
                 decoded = value
             return Jsonb(decoded, dumps=_canonical_json)
         return Jsonb(value, dumps=_canonical_json)
-    if column in mapping.timestamp_columns and isinstance(value, str):
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if result.tzinfo is None:
-            from datetime import UTC
-            result = result.replace(tzinfo=UTC)
-        return result
+    if column in mapping.timestamp_columns:
+        try:
+            return _sqlite_timestamp(value)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ValueError(f"Invalid SQLite timestamp in {mapping.source_table}.{column}: {value!r}") from exc
     if target_column["udt_name"] == "bool":
         if value not in (0, 1, False, True):
             raise ValueError(f"Invalid SQLite boolean in {mapping.source_table}.{column}: {value!r}")

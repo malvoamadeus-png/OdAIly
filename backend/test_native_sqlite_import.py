@@ -528,6 +528,34 @@ def test_native_import_verifies_date_primary_key(native_import_target, tmp_path)
         ]
 
 
+def test_native_import_converts_unix_second_and_millisecond_timestamps(native_import_target, tmp_path) -> None:
+    from packages.common.native_sqlite_import import SourceMapping, TableMapping, import_native_sqlite_source
+
+    schema = native_import_target
+    source_path = tmp_path / "timestamp-values.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE events(id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL)")
+        source.executemany("INSERT INTO events VALUES(?,?)", [
+            (1, "1782485793"),
+            (2, "1782485793000"),
+            (3, "2026-06-26T14:56:33+00:00"),
+        ])
+    mapping = SourceMapping("timestamp_fixture", schema, (
+        TableMapping("events", schema, "events"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.events(id bigint PRIMARY KEY,occurred_at timestamptz NOT NULL)").format(Identifier(schema)))
+
+    report = import_native_sqlite_source(
+        source_key="timestamp_fixture", source_path=source_path, source_mapping=mapping, batch_size=2
+    )
+    assert report["tables"][0]["source_rows"] == 3
+    expected = datetime.fromtimestamp(1782485793, UTC)
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        rows = conn.execute(SQL("SELECT id,occurred_at FROM {}.events ORDER BY id").format(Identifier(schema))).fetchall()
+    assert rows == [(1, expected), (2, expected), (3, expected)]
+
+
 def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(
     native_import_target, tmp_path, monkeypatch
 ) -> None:
