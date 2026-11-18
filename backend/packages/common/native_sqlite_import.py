@@ -955,6 +955,33 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         checkpoint = conn.execute(sql.SQL(
             "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
         ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+        generic_checkpoint = None
+        if checkpoint is None:
+            generic_table = sql.Identifier(mapping.target_schema, "native_sqlite_import_checkpoints")
+            generic_exists = conn.execute(
+                "SELECT to_regclass(%s) AS name",
+                (f'{mapping.target_schema}.native_sqlite_import_checkpoints',),
+            ).fetchone()["name"]
+            if generic_exists:
+                generic_checkpoint = conn.execute(sql.SQL(
+                    "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
+                ).format(generic_table), (source_key, "hl_news_metadata")).fetchone()
+            if generic_checkpoint:
+                generic_identity = generic_checkpoint["last_identity"]
+                if isinstance(generic_identity, list):
+                    generic_identity = generic_identity[0] if generic_identity else None
+                conn.execute(sql.SQL(
+                    "INSERT INTO {}(source_key,source_table,schema_sha256,last_identity,imported_rows,digest_sum,"
+                    "source_rows,source_digest_sum,destination_base_count) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                ).format(checkpoint_table), (
+                    source_key, "hl_news_metadata", generic_checkpoint["schema_sha256"], generic_identity,
+                    generic_checkpoint["imported_rows"], generic_checkpoint["digest_sum"],
+                    generic_checkpoint["source_rows"], generic_checkpoint["source_digest_sum"],
+                    generic_checkpoint["destination_base_count"],
+                ))
+                checkpoint = conn.execute(sql.SQL(
+                    "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
+                ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
         schema_sha = hashlib.sha256(json.dumps({"schema": source_spec, "mapping": mapping,
                                                "stream_protocol": _HL_METADATA_STREAM_PROTOCOL},
                                               sort_keys=True, default=str).encode()).hexdigest()
@@ -1002,7 +1029,7 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         row_digest = _hl_metadata_row_digest(key, payload_digest)
         old_row_digest = None
         if upgrade_checkpoint and checkpoint_last_key is not None and key <= checkpoint_last_key:
-            old_row_digest = _hl_metadata_legacy_row_digest(sqlite, int(rowid), key)
+            old_row_digest = _hl_metadata_legacy_row_digest(sqlite, int(rowid), key, payload_udt)
         source_count += 1
         source_digest_sum = (source_digest_sum + row_digest) % (1 << 256)
         if checkpoint_last_key is not None and key <= checkpoint_last_key:
@@ -1012,7 +1039,20 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         valid_checkpoint_digests = {prefix_digest}
         if upgrade_checkpoint:
             valid_checkpoint_digests.add(old_prefix_digest)
-        if key == checkpoint_last_key and (verified_prefix_count != imported or digest_sum not in valid_checkpoint_digests):
+        if key == checkpoint_last_key and verified_prefix_count != imported:
+            raise RuntimeError("Streamed legacy checkpoint prefix mismatch")
+        if key == checkpoint_last_key and upgrade_checkpoint and generic_checkpoint:
+            generic_digest = int(generic_checkpoint["digest_sum"] or "0")
+            if generic_checkpoint["source_rows"] is not None:
+                generic_source_digest = int(generic_checkpoint["source_digest_sum"] or "0")
+                if generic_source_digest != generic_digest:
+                    raise RuntimeError("Generic checkpoint source fingerprint is inconsistent")
+                if generic_digest not in valid_checkpoint_digests:
+                    raise RuntimeError("Generic checkpoint prefix digest does not match SQLite")
+            # Generic importer checkpoints start from the existing target baseline;
+            # the streamed target audit below verifies the complete imported prefix.
+            digest_sum = prefix_digest
+        elif key == checkpoint_last_key and digest_sum not in valid_checkpoint_digests:
             raise RuntimeError("Streamed legacy checkpoint prefix mismatch")
         if key == checkpoint_last_key and upgrade_checkpoint:
             if not _verify_hl_metadata_target_prefix(
@@ -1099,22 +1139,36 @@ def _hl_metadata_row_digest(key: str, payload_md5: str) -> int:
     ).digest(), "big")
 
 
-def _hl_metadata_legacy_row_digest(sqlite: sqlite3.Connection, rowid: int, key: str) -> int:
+def _hl_metadata_legacy_row_digest(sqlite: sqlite3.Connection, rowid: int, key: str, payload_udt: str) -> int:
     """Reproduce the old whole-row canonical digest while reading TEXT incrementally."""
     hasher = hashlib.sha256()
     hasher.update(b'{"key":')
     hasher.update(_canonical_json(key).encode("utf-8"))
     hasher.update(b',"payload":')
-    hasher.update(b'"')
+    if payload_udt == "jsonb":
+        raw_parts = []
+    else:
+        hasher.update(b'"')
     decoder = codecs.getincrementaldecoder("utf-8")()
     with sqlite.blobopen("hl_news_metadata", "payload", rowid, readonly=True) as blob:
         while raw := blob.read(_HL_METADATA_CHUNK_BYTES):
             text = decoder.decode(raw, final=False)
             if text:
-                hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
+                if payload_udt == "jsonb":
+                    raw_parts.append(text)
+                else:
+                    hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
         text = decoder.decode(b"", final=True)
         if text:
-            hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
+            if payload_udt == "jsonb":
+                raw_parts.append(text)
+            else:
+                hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
+    if payload_udt == "jsonb":
+        canonical = _canonical_json({
+            "key": key, "payload": {"type": "json", "value": _decode_json("".join(raw_parts))},
+        }).encode("utf-8")
+        return int.from_bytes(hashlib.sha256(canonical).digest(), "big")
     hasher.update(b'"}')
     return int.from_bytes(hasher.digest(), "big")
 
