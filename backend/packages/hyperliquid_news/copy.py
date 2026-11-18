@@ -83,7 +83,7 @@ def normalize_display_numbers(text: str) -> str:
 
     text = amount_pattern.sub(normalize_amount, text)
     quantity_pattern = re.compile(
-        r'(?P<amount>[\d,]+(?:\.\d{3,})?)(?P<space>\s*)(?P<unit>枚?\s*)(?P<coin>BTC|ETH)\b')
+        r'(?<![\d.,])(?P<amount>[\d,]+(?:\.\d+)?)(?P<space>\s*)(?P<unit>枚?\s*)(?P<coin>BTC|ETH)\b')
 
     def normalize_quantity(match: re.Match[str]) -> str:
         quantity = number(match.group('amount').replace(',', ''))
@@ -314,7 +314,8 @@ def _ensure_account_action_amounts(title: str, content: str, event: dict[str, An
     action_pattern = re.compile(
         r'(?:开仓|加仓|平仓|减仓|减持|开多|开空|平掉)[^。；，,]{0,50}?(?:多单|空单|开多|开空)(?:后再开[多空])?')
     has_amount = re.compile(r'(?:开仓|加仓|平仓|减仓|减持|增持|减少|开多|开空|平掉)[约\d,.\s]+(?:万美元|亿美元)')
-    if not has_amount.search(content):
+    has_net_amount = re.compile(r'(?:净)?(?:增持|减持|增加|减少|加仓|减仓)[^。；]{0,80}?(?:价值|金额|估值)[约\d,.\s]+(?:万美元|亿美元)')
+    if not has_amount.search(content) and not has_net_amount.search(content):
         if action_pattern.search(content):
             content = action_pattern.sub(detail, content, count=1)
         else:
@@ -453,9 +454,69 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     first_address = event.get('addresses', [''])[0]
     display_name = names.get(first_address)
     if display_name and len(event.get('addresses', [])) == 1:
+        labels = set(evidence.get('highlights', []))
+        operation = _highlight_action_description(evidence, contract)
+        if ('highlighted_address_action' in event.get('kinds', []) and operation and
+                not set(event.get('kinds', [])).intersection({'large_realized_result', 'actual_liquidation',
+                    'near_liquidation', 'large_reversal', 'large_profit', 'large_loss',
+                    'profit_giveback', 'profit_to_loss', 'pnl_sign_flip', 'loss_addition'})):
+            title = display_name + normalize_display_numbers(operation).replace(' ', '')
+        total = _account_total_sample(evidence.get('history', {}), as_of_ms=event.get('observed_ms'))
+        total_time = total.get('observed_ms', total.get('history_sample_ms')) if total else None
+        if (labels.intersection({'official_account_high_profit', 'account_high_profit', 'historical_loss'}) and
+                total_time is not None and event.get('observed_ms') is not None and
+                0 <= int(event['observed_ms']) - int(total_time) <= ACCOUNT_PNL_MAX_AGE_MS):
+            body = re.sub(r'(?:其|该地址)(?:的)?(?:合约)?账户(?:累计|总)(?:亏损|盈利|收益)[^。！？]*[。！？]', '', body)
         body = re.sub(r'(?:某地址|该地址)', lambda _: display_name, body, count=1)
         title = re.sub(r'(?:某地址|该地址)', lambda _: display_name, title, count=1)
+        explanation = naming_explanation(event.get('evidence', {}).get('address_name_evidence', {}).get(first_address), event)
+        if explanation and not naming_explanation_already_present(body, explanation):
+            body = body.rstrip('。！？') + '。' + explanation
     return DraftBrief(title=title, content=ODAILY_PREFIX + PREFIX + body + '\n' + footer(event))
+
+
+def naming_explanation(row: dict[str, Any] | None, event: dict[str, Any]) -> str | None:
+    """Explain only a verifiable, pre-event asset highlight from the saved naming snapshot."""
+    if not row or row.get('kind') != 'stable':
+        return None
+    checked, observed = row.get('checked_ms'), event.get('observed_ms')
+    if not checked or not observed or not 0 <= int(observed) - int(checked) <= 7 * 86400000:
+        return None
+    selected = (row.get('evidence') or {}).get('selected_dimension')
+    if selected not in ('asset_profit', 'asset_win_rate'):
+        return None
+    dimensions = (row.get('coverage') or {}).get('dimensions', [])
+    dimension = next((d for d in dimensions if d.get('evidence_id') == selected and d.get('available')), None)
+    if not dimension:
+        return None
+    name = str(row.get('current_name') or '')
+    matches = [(coin, asset) for coin, asset in (dimension.get('data') or {}).items()
+               if isinstance(asset, dict) and coin.rsplit(':', 1)[-1] in name]
+    if len(matches) != 1:
+        return None
+    coin, asset = matches[0]
+    end = asset.get('last_observed_fill_ms') or asset.get('window_end_ms') or dimension.get('window_end_ms')
+    start = asset.get('first_observed_fill_ms') or asset.get('window_start_ms') or dimension.get('window_start_ms')
+    if not start or not end or int(end) > int(observed) or int(start) > int(end):
+        return None
+    interval = f'{timestamp(start)[:10]}至{timestamp(end)[:10]}'
+    short_coin = coin.rsplit(':', 1)[-1]
+    if selected == 'asset_profit' and asset.get('closed_pnl_less_fees') is not None and number(asset['closed_pnl_less_fees']) > 0:
+        return f'在{interval}观察到的成交中，其{short_coin}交易净盈利{money(asset["closed_pnl_less_fees"]).replace(" ", "")}（扣手续费，不含资金费）。'
+    if selected == 'asset_win_rate' and asset.get('win_rate') is not None and int(asset.get('rounds') or 0) > 0:
+        rate, approximate = rounded_percent(asset['win_rate'], fraction=True)
+        return f'在{interval}观察到的成交中，其{short_coin}完成{asset["rounds"]}个完整交易轮，胜率{"约" if approximate else ""}{rate}%。'
+    return None
+
+
+def naming_explanation_already_present(body: str, explanation: str) -> bool:
+    if '胜率' in explanation:
+        rate = re.search(r'胜率约?\d+%', explanation)
+        return bool(rate and re.sub(r'\s+', '', rate.group()) in re.sub(r'\s+', '', body))
+    amount = re.search(r'(?:约)?[\d,.]+(?:万|亿)美元', explanation)
+    coin = re.search(r'其([A-Za-z0-9]+)交易净盈利', explanation)
+    return bool(amount and coin and '盈利' in body and coin.group(1) in body and
+                amount.group() in re.sub(r'\s+', '', body))
 
 
 def normalize_position_words(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
@@ -739,6 +800,11 @@ def writer_material(event: dict[str, Any]) -> dict[str, Any]:
     loss_addition_context='loss_addition' in kind_set and not kind_set.intersection(pnl_kinds)
     show_pnl = bool(kind_set.intersection(pnl_kinds | {'near_liquidation'}))
     facts: dict[str, Any] = {'position': _position_material(e.get('position'), include_pnl=show_pnl)}
+    addresses = event.get('addresses', [])
+    if len(addresses) == 1 and addresses[0] in e.get('address_names', {}):
+        explanation = naming_explanation(e.get('address_name_evidence', {}).get(addresses[0]), event)
+        if explanation:
+            facts['address_naming_evidence'] = explanation
     if e.get('previous_position'):
         facts['previous_position'] = _position_material(
             e['previous_position'], include_pnl=show_pnl or loss_addition_context)

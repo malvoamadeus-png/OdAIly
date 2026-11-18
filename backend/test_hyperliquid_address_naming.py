@@ -108,13 +108,15 @@ def test_automatic_name_is_used_once_in_namespace_and_details_are_read_only(tmp_
     store, names = setup(tmp_path)
     names.initialize()
     claim = names.claim_due(now_ms=T, limit=1)[0]
-    result = {"name": "近期高胜率交易员0x12", "kind": "stable", "reason": "近期窗口", "selected_dimension": "asset_win_rate", "evidence_refs": ["asset_win_rate"],
-              "coverage": {"dimensions": [{"evidence_id": "asset_win_rate", "label": "胜率", "available": True, "data": {"rounds": 12, "win_rate": "0.8"}}]}}
+    result = {"name": "近期BTC高胜率交易员0x12", "kind": "stable", "reason": "近期窗口", "selected_dimension": "asset_win_rate", "evidence_refs": ["asset_win_rate"],
+              "coverage": {"dimensions": [{"evidence_id": "asset_win_rate", "label": "胜率", "available": True, "data": {"BTC": {"rounds": 12, "win_rate": "0.8", "window_start_ms": T-100, "window_end_ms": T-1}}}]}}
     assert names.save_result(A, token=claim["claim_token"], result=result, now_ms=T, model="gpt-6-luna")
     event = {"addresses": [A], "coin": "xyz:BRENTOIL", "kinds": [], "observed_ms": T, "evidence": {"position": {"size": "1"}, "address_names": {}}}
     event = store.with_address_notes(event)
-    assert event["evidence"]["address_names"][A] == "近期高胜率交易员0x12"
+    assert event["evidence"]["address_names"][A] == "近期BTC高胜率交易员0x12"
     assert event["evidence"]["address_notes"][A] == ""
+    older = {**event, 'observed_ms': T-1}
+    assert A not in store.with_address_notes(older)['evidence']['address_names']
     from packages.hyperliquid_news.naming import naming_details
     before = names.get(A)
     details = naming_details(store, A, now_ms=T+1)
