@@ -413,20 +413,10 @@ def import_native_sqlite_source(
                     )
                     batch = _BoundedCursor(batch_cursor).fetch(batch_size, max_batch_bytes, max_row_bytes)
                 else:
-                    comparison = " OR ".join(
-                        "(" + " AND ".join(
-                            [*(f"{_sqlite_identifier(source_pk[index])}=?" for index in range(prefix)),
-                             f"{_sqlite_identifier(source_pk[prefix])}>?"]
-                        ) + ")"
-                        for prefix in range(len(source_pk))
-                    )
-                    comparison_params = tuple(
-                        value for prefix in range(len(source_pk))
-                        for value in (*last_identity[:prefix], last_identity[prefix])
-                    )
+                    comparison = "(" + identity_sql + ")>(" + ",".join("?" for _ in source_pk) + ")"
                     batch_cursor = sqlite.execute(
                         f"SELECT * FROM {quoted_table} WHERE {comparison} ORDER BY {identity_sql} LIMIT ?",
-                        (*comparison_params, batch_size),
+                        (*last_identity, batch_size),
                     )
                     batch = _BoundedCursor(batch_cursor).fetch(batch_size, max_batch_bytes, max_row_bytes)
                 if not batch:

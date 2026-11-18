@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -187,6 +188,121 @@ def test_checkpoint_prefix_validation_rejects_changed_source_rows() -> None:
             rows=rows, source_pk=("id",), last_identity=(2,), imported_rows=2,
             digest_sum=expected, row_digest=digest,
         )
+
+
+def test_fact_checks_keyset_queries_use_rowid_without_sorting(tmp_path) -> None:
+    source_path = tmp_path / "fact-checks.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute(
+            "CREATE TABLE fact_checks(id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)"
+        )
+        source.executemany(
+            "INSERT INTO fact_checks(payload) VALUES (?)",
+            [(f"payload-{index}",) for index in range(1, 101)],
+        )
+
+        first_batch_plan = [
+            row[3].upper()
+            for row in source.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM fact_checks ORDER BY id LIMIT ?", (20,)
+            )
+        ]
+        next_batch_plan = [
+            row[3].upper()
+            for row in source.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM fact_checks WHERE id>? ORDER BY id LIMIT ?",
+                (40, 20),
+            )
+        ]
+
+    assert any("SCAN FACT_CHECKS" in detail for detail in first_batch_plan)
+    assert not any("TEMP B-TREE" in detail for detail in first_batch_plan)
+    assert any("SEARCH FACT_CHECKS USING INTEGER PRIMARY KEY (ROWID>?)" in detail for detail in next_batch_plan)
+    assert not any("TEMP B-TREE" in detail for detail in next_batch_plan)
+
+
+def test_compound_primary_key_keyset_query_uses_index_range(tmp_path) -> None:
+    source_path = tmp_path / "compound-key.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute(
+            "CREATE TABLE items(site_key TEXT NOT NULL, source_item_id TEXT NOT NULL, payload TEXT, "
+            "PRIMARY KEY(site_key, source_item_id))"
+        )
+        source.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [(f"site-{site}", f"item-{item}", "payload") for site in range(4) for item in range(20)],
+        )
+        plan = [
+            row[3].upper()
+            for row in source.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM items WHERE (site_key,source_item_id)>(?,?) "
+                "ORDER BY site_key,source_item_id LIMIT ?",
+                ("site-1", "item-10", 10),
+            )
+        ]
+
+    assert any("SEARCH ITEMS USING INDEX SQLITE_AUTOINDEX_ITEMS_1" in detail for detail in plan)
+    assert not any("TEMP B-TREE" in detail for detail in plan)
+
+
+def test_compound_primary_key_import_resumes_from_last_identity(native_import_target, tmp_path, monkeypatch) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    source_path = tmp_path / "compound-resume.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute(
+            "CREATE TABLE items(site_key TEXT NOT NULL, source_item_id TEXT NOT NULL, payload TEXT, "
+            "PRIMARY KEY(site_key, source_item_id))"
+        )
+        source.executemany(
+            "INSERT INTO items VALUES (?, ?, ?)",
+            [("site-a", f"item-{index}", f"payload-{index}") for index in range(5)],
+        )
+
+    mapping = importer.SourceMapping("fixture", native_import_target, (
+        importer.TableMapping("items", native_import_target, "items"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.items(site_key text NOT NULL,source_item_id text NOT NULL,payload text,PRIMARY KEY(site_key,source_item_id))").format(Identifier(native_import_target)))
+
+    original_connect = importer._connect_native_import_postgres
+    copy_count = 0
+    @contextmanager
+    def interrupt_after_first_batch(*, schema, application_name):
+        nonlocal copy_count
+        with original_connect(schema=schema, application_name=application_name) as conn:
+            yield conn
+        if application_name == "odaily-native-sqlite-import":
+            copy_count += 1
+            if copy_count == 1:
+                raise RuntimeError("fixture interruption")
+    monkeypatch.setattr(importer, "_connect_native_import_postgres", interrupt_after_first_batch)
+
+    with pytest.raises(RuntimeError, match="fixture interruption"):
+        importer.import_native_sqlite_source(
+            source_key="fixture", source_path=source_path, source_mapping=mapping, batch_size=2
+        )
+
+    monkeypatch.setattr(importer, "_connect_native_import_postgres", original_connect)
+    traced_sql = []
+    sqlite_connect = sqlite3.connect
+    def traced_connect(*args, **kwargs):
+        connection = sqlite_connect(*args, **kwargs)
+        connection.set_trace_callback(traced_sql.append)
+        return connection
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    importer.import_native_sqlite_source(
+        source_key="fixture", source_path=source_path, source_mapping=mapping, batch_size=2
+    )
+
+    resume_reads = [statement.strip().lower() for statement in traced_sql
+                    if statement.strip().lower().startswith('select * from "items" where')]
+    assert resume_reads
+    assert all('("site_key","source_item_id")>(' in statement for statement in resume_reads)
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert conn.execute(SQL("SELECT site_key,source_item_id,payload FROM {}.items ORDER BY site_key,source_item_id").format(Identifier(native_import_target))).fetchall() == [
+            ("site-a", f"item-{index}", f"payload-{index}") for index in range(5)
+        ]
 
 
 def test_sqlite_temp_directory_is_explicit_and_validated(tmp_path, monkeypatch) -> None:
