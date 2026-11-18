@@ -764,6 +764,64 @@ def test_hl_news_metadata_generic_checkpoint_with_null_fingerprint_bridges_all_r
         assert cp == (3, "gamma")
 
 
+def test_hl_news_metadata_resumes_legacy_jsonb_stream_checkpoint(native_import_target, tmp_path) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    schema = native_import_target
+    source_path = tmp_path / "hyperliquid-legacy-stream-checkpoint.sqlite"
+    payloads = [(f"key-{index:02d}", json.dumps({"index": index, "padding": "x" * (index + 1)}))
+                for index in range(18)]
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE hl_news_metadata(key TEXT PRIMARY KEY,payload TEXT NOT NULL)")
+        source.executemany("INSERT INTO hl_news_metadata VALUES(?,?)", payloads)
+    mapping = importer.SourceMapping("hyperliquid", schema, (
+        importer.TableMapping("hl_news_metadata", schema, "hl_news_metadata"),
+    ))
+    spec = importer._schema(sqlite3.connect(source_path))[0]
+    old_schema_sha = hashlib.sha256(json.dumps({
+        "schema": spec, "mapping": mapping, "stream_protocol": "utf8-md5-payload-v2",
+    }, sort_keys=True, default=str).encode()).hexdigest()
+    old_digest = 0
+    for key, payload in payloads[:17]:
+        old_digest = (old_digest + importer._hl_metadata_row_digest(
+            key, hashlib.md5(payload.encode("utf-8"), usedforsecurity=False).hexdigest(),
+        )) % (1 << 256)
+
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload jsonb NOT NULL)").format(Identifier(schema)))
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata_large(key text PRIMARY KEY,payload text NOT NULL)").format(Identifier(schema)))
+        conn.execute(SQL(
+            "CREATE TABLE {}.native_sqlite_stream_import_checkpoints(source_key text NOT NULL,source_table text NOT NULL,"
+            "schema_sha256 text NOT NULL,last_identity text,imported_rows bigint NOT NULL,digest_sum text NOT NULL,"
+            "source_rows bigint,source_digest_sum text,destination_base_count bigint NOT NULL DEFAULT 0,"
+            "PRIMARY KEY(source_key,source_table))"
+        ).format(Identifier(schema)))
+        for key, payload in payloads[:17]:
+            conn.execute(SQL("INSERT INTO {}.hl_news_metadata VALUES(%s,%s::jsonb)").format(Identifier(schema)),
+                         (key, payload))
+        conn.execute(SQL(
+            "INSERT INTO {}.native_sqlite_stream_import_checkpoints VALUES('hyperliquid','hl_news_metadata',%s,%s,17,%s,NULL,NULL,0)"
+        ).format(Identifier(schema)), (old_schema_sha, "key-16", str(old_digest)))
+
+    report = importer.import_native_sqlite_source(
+        source_key="hyperliquid", source_path=source_path, source_mapping=mapping, batch_size=2,
+    )
+
+    assert report["tables"][0]["imported_rows"] == len(payloads)
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        large_rows = conn.execute(SQL(
+            "SELECT key,payload FROM {}.hl_news_metadata_large ORDER BY key"
+        ).format(Identifier(schema))).fetchall()
+        assert large_rows == payloads
+        assert conn.execute(SQL("SELECT count(*) FROM {}.hl_news_metadata").format(Identifier(schema))).fetchone()[0] == 0
+        cp = conn.execute(SQL(
+            "SELECT imported_rows,last_identity,schema_sha256 FROM {}.native_sqlite_stream_import_checkpoints "
+            "WHERE source_key='hyperliquid'"
+        ).format(Identifier(schema))).fetchone()
+        assert cp[0:2] == (len(payloads), "key-17")
+        assert cp[2] != old_schema_sha
+
+
 def test_small_evidence_cross_source_import_remains_readable_after_sqlite_sources_removed(
     native_import_target, tmp_path
 ) -> None:

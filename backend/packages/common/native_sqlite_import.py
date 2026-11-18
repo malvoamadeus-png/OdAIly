@@ -918,7 +918,7 @@ def _row_size(row: sqlite3.Row | tuple[Any, ...]) -> int:
 
 
 _HL_METADATA_CHUNK_BYTES = 1024 * 1024
-_HL_METADATA_STREAM_PROTOCOL = "utf8-md5-payload-v2"
+_HL_METADATA_STREAM_PROTOCOL = "utf8-md5-payload-v3-overflow"
 
 
 def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: str,
@@ -967,6 +967,20 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         checkpoint = conn.execute(sql.SQL(
             "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
         ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+        if (source_key == "hyperliquid" and checkpoint
+                and checkpoint["schema_sha256"] != hashlib.sha256(json.dumps({
+                    "schema": source_spec, "mapping": mapping,
+                    "stream_protocol": _HL_METADATA_STREAM_PROTOCOL,
+                }, sort_keys=True, default=str).encode()).hexdigest()
+                and before == 0):
+            _bridge_hl_metadata_stream_checkpoint(
+                sqlite, source_key, source_spec, mapping, target_table,
+                checkpoint_table, checkpoint,
+            )
+            checkpoint = conn.execute(sql.SQL(
+                "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
+            ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+            before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
         generic_checkpoint = None
         generic_bridge_needed = False
         if checkpoint is None:
@@ -1239,6 +1253,70 @@ def _bridge_hl_metadata_generic_checkpoint(sqlite: sqlite3.Connection, source_ke
                 "schema_sha256=excluded.schema_sha256,last_identity=excluded.last_identity,"
                 "imported_rows=excluded.imported_rows,digest_sum=excluded.digest_sum,destination_base_count=0"
             ).format(checkpoint_table), (source_key, "hl_news_metadata", schema_sha, identity, imported, str(source_v2)))
+
+
+def _bridge_hl_metadata_stream_checkpoint(sqlite: sqlite3.Connection, source_key: str,
+                                          source_spec: dict[str, Any], mapping: TableMapping,
+                                          target_table: str, checkpoint_table,
+                                          checkpoint) -> None:
+    """Move a prior streamed JSONB prefix to overflow and upgrade its checkpoint."""
+    imported = int(checkpoint["imported_rows"] or 0)
+    identity = checkpoint["last_identity"]
+    if imported <= 0 or identity is None:
+        raise RuntimeError("Legacy Hyperliquid stream checkpoint is incomplete")
+    expected_old_digest = int(checkpoint["digest_sum"] or "0")
+    count = digest = v2_digest = 0
+    rows = sqlite.execute(
+        'SELECT rowid,"key" FROM "hl_news_metadata" WHERE "key"<=? ORDER BY "key"',
+        (identity,),
+    )
+    source_prefix = []
+    for rowid, key in rows:
+        key = str(key)
+        old_digest = _hl_metadata_row_digest(key, _hl_metadata_source_raw_md5(sqlite, int(rowid)))
+        digest = (digest + old_digest) % (1 << 256)
+        count += 1
+        source_prefix.append((int(rowid), key))
+    if count != imported or digest != expected_old_digest:
+        raise RuntimeError("Legacy Hyperliquid stream checkpoint does not match SQLite prefix")
+
+    source_table = sql.Identifier(mapping.target_schema, mapping.target_table)
+    target = sql.Identifier(mapping.target_schema, target_table)
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-checkpoint-bridge") as conn:
+        with conn.transaction():
+            overflow_count = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            legacy_count = int(conn.execute(sql.SQL(
+                "SELECT count(*) AS n FROM {} WHERE key<=%s"
+            ).format(source_table), (identity,)).fetchone()["n"])
+            if overflow_count:
+                raise RuntimeError("Overflow metadata target is not empty during legacy checkpoint upgrade")
+            if legacy_count != imported:
+                raise RuntimeError("Legacy Hyperliquid checkpoint target prefix count mismatch")
+            for rowid, key in source_prefix:
+                payload = sqlite.execute(
+                    'SELECT "payload" FROM "hl_news_metadata" WHERE rowid=?', (rowid,)
+                ).fetchone()[0]
+                stored = conn.execute(sql.SQL("SELECT payload FROM {} WHERE key=%s").format(source_table),
+                                      (key,)).fetchone()
+                if stored is None or stored["payload"] != _decode_json(payload):
+                    raise RuntimeError("Legacy Hyperliquid checkpoint target payload mismatch")
+                conn.execute(sql.SQL("INSERT INTO {}(key,payload) VALUES(%s,%s)").format(target),
+                             (key, payload))
+                v2_digest = (v2_digest + _hl_metadata_row_digest(
+                    key, hashlib.md5(payload.encode("utf-8"), usedforsecurity=False).hexdigest(),
+                )) % (1 << 256)
+            conn.execute(sql.SQL("DELETE FROM {} WHERE key<=%s").format(source_table), (identity,))
+            moved = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
+            if moved != imported:
+                raise RuntimeError("Legacy Hyperliquid checkpoint relocation count mismatch")
+            schema_sha = hashlib.sha256(json.dumps({
+                "schema": source_spec, "mapping": mapping,
+                "stream_protocol": _HL_METADATA_STREAM_PROTOCOL,
+            }, sort_keys=True, default=str).encode()).hexdigest()
+            conn.execute(sql.SQL(
+                "UPDATE {} SET schema_sha256=%s,digest_sum=%s,source_rows=NULL,source_digest_sum=NULL "
+                "WHERE source_key=%s AND source_table=%s"
+            ).format(checkpoint_table), (schema_sha, str(v2_digest), source_key, "hl_news_metadata"))
 
 
 def _hl_metadata_source_raw_md5(sqlite: sqlite3.Connection, rowid: int) -> str:
