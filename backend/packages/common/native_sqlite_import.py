@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import argparse
+import codecs
 import gzip
 import json
 import math
@@ -334,7 +335,7 @@ def import_native_sqlite_source(
                 raise RuntimeError(f"Mapped source table is absent: {source_key}/{table}")
             spec = source_tables[table]
             source_columns = tuple(column[1] for column in spec["columns"])
-            if source_key == "main" and table == "hl_news_metadata":
+            if source_key in {"main", "hyperliquid"} and table == "hl_news_metadata":
                 reports.append(_import_hl_news_metadata_streaming(
                     sqlite, source_key, spec, table_map, batch_size=batch_size,
                 ))
@@ -916,7 +917,8 @@ def _row_size(row: sqlite3.Row | tuple[Any, ...]) -> int:
     return total
 
 
-_HL_METADATA_CHUNK_CHARS = 256 * 1024
+_HL_METADATA_CHUNK_BYTES = 1024 * 1024
+_HL_METADATA_STREAM_PROTOCOL = "utf8-md5-payload-v2"
 
 
 def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: str,
@@ -925,13 +927,14 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
     """Preserve legacy Hyperliquid TEXT metadata without materializing huge rows."""
     if tuple(column[1] for column in source_spec["columns"]) != ("key", "payload"):
         raise RuntimeError("Unexpected hl_news_metadata source schema")
-    if not mapping.legacy_typed:
-        raise RuntimeError("hl_news_metadata streaming import requires a legacy typed target")
+    if not mapping.legacy_typed and source_key != "hyperliquid":
+        raise RuntimeError("hl_news_metadata streaming import requires an approved target mapping")
     target = sql.Identifier(mapping.target_schema, mapping.target_table)
     checkpoint_table = sql.Identifier(mapping.target_schema, "native_sqlite_stream_import_checkpoints")
     checkpoint = None
     with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-schema") as conn:
-        _ensure_legacy_target(source_spec, mapping)
+        if mapping.legacy_typed:
+            _ensure_legacy_target(source_spec, mapping)
         conn.execute(sql.SQL(
             "CREATE TABLE IF NOT EXISTS {}(source_key text NOT NULL,source_table text NOT NULL,"
             "schema_sha256 text NOT NULL,last_identity text,imported_rows bigint NOT NULL DEFAULT 0,"
@@ -943,14 +946,21 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
             "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
             (mapping.target_schema, mapping.target_table),
         ).fetchall()
-        if [(row["column_name"], row["udt_name"]) for row in columns] != [("key", "text"), ("payload", "text")]:
-            raise RuntimeError("Unexpected legacy_main.hl_news_metadata target schema")
+        target_types = [(row["column_name"], row["udt_name"]) for row in columns]
+        if target_types not in ([ ("key", "text"), ("payload", "text") ],
+                                [ ("key", "text"), ("payload", "jsonb") ]):
+            raise RuntimeError("Unexpected hl_news_metadata target schema")
+        payload_udt = dict(target_types)["payload"]
         before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
         checkpoint = conn.execute(sql.SQL(
             "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
         ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
-        schema_sha = hashlib.sha256(json.dumps({"schema": source_spec, "mapping": mapping}, sort_keys=True, default=str).encode()).hexdigest()
-        if checkpoint and checkpoint["schema_sha256"] != schema_sha:
+        schema_sha = hashlib.sha256(json.dumps({"schema": source_spec, "mapping": mapping,
+                                               "stream_protocol": _HL_METADATA_STREAM_PROTOCOL},
+                                              sort_keys=True, default=str).encode()).hexdigest()
+        upgrade_checkpoint = bool(checkpoint and checkpoint["schema_sha256"] != schema_sha)
+        legacy_checkpoint_upgrade = upgrade_checkpoint
+        if upgrade_checkpoint and int(checkpoint["imported_rows"] or 0) == 0:
             raise RuntimeError("Source schema changed during streamed legacy import")
         imported = int(checkpoint["imported_rows"]) if checkpoint else 0
         last_key = checkpoint["last_identity"] if checkpoint else None
@@ -970,59 +980,76 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
     source_digest_sum = 0
     verified_prefix_count = 0
     prefix_digest = 0
-    rows = sqlite.execute('SELECT "key", length("payload") FROM "hl_news_metadata" ORDER BY "key"')
-    for key, char_count in rows:
+    old_prefix_digest = 0
+    rows = sqlite.execute('SELECT rowid,"key",length(CAST("payload" AS BLOB)) FROM "hl_news_metadata" ORDER BY "key"')
+    for rowid, key, byte_count in rows:
         key = str(key)
-        hasher = hashlib.sha256()
-        # Keep the generic row digest definition: SHA256(canonical JSON object).
-        hasher.update(b'{"key":')
-        hasher.update(_canonical_json(key).encode("utf-8"))
-        hasher.update(b',"payload":')
-        hasher.update(b'null' if char_count is None else b'"')
-        offset = 1
-        while char_count is not None and offset <= char_count:
-            chunk = sqlite.execute(
-                'SELECT substr("payload", ?, ?) FROM "hl_news_metadata" WHERE "key"=?',
-                (offset, _HL_METADATA_CHUNK_CHARS, key),
-            ).fetchone()[0]
-            if chunk is None or not chunk:
-                raise RuntimeError(f"Source payload changed while streaming hl_news_metadata/{key}")
-            hasher.update(_canonical_json_string_fragment(str(chunk)).encode("utf-8"))
-            offset += len(chunk)
-        if char_count is not None:
-            hasher.update(b'"')
-        hasher.update(b'}')
-        row_digest = int.from_bytes(hasher.digest(), "big")
+        payload_hash = hashlib.md5(usedforsecurity=False)
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        with sqlite.blobopen("hl_news_metadata", "payload", int(rowid), readonly=True) as blob:
+            remaining = len(blob)
+            while remaining:
+                raw = blob.read(min(_HL_METADATA_CHUNK_BYTES, remaining))
+                if not raw:
+                    raise RuntimeError(f"Source payload changed while streaming hl_news_metadata/{key}")
+                payload_hash.update(raw)
+                decoder.decode(raw, final=False)
+                remaining -= len(raw)
+            decoder.decode(b"", final=True)
+        payload_digest = payload_hash.hexdigest()
+        if payload_udt == "jsonb":
+            payload_digest = _hl_metadata_source_jsonb_digest(sqlite, int(rowid), key, mapping)
+        row_digest = _hl_metadata_row_digest(key, payload_digest)
+        old_row_digest = None
+        if upgrade_checkpoint and checkpoint_last_key is not None and key <= checkpoint_last_key:
+            old_row_digest = _hl_metadata_legacy_row_digest(sqlite, int(rowid), key)
         source_count += 1
         source_digest_sum = (source_digest_sum + row_digest) % (1 << 256)
         if checkpoint_last_key is not None and key <= checkpoint_last_key:
             verified_prefix_count += 1
             prefix_digest = (prefix_digest + row_digest) % (1 << 256)
-        if key == checkpoint_last_key and (verified_prefix_count != imported or prefix_digest != digest_sum):
+            old_prefix_digest = (old_prefix_digest + int(old_row_digest or 0)) % (1 << 256)
+        valid_checkpoint_digests = {prefix_digest}
+        if upgrade_checkpoint:
+            valid_checkpoint_digests.add(old_prefix_digest)
+        if key == checkpoint_last_key and (verified_prefix_count != imported or digest_sum not in valid_checkpoint_digests):
             raise RuntimeError("Streamed legacy checkpoint prefix mismatch")
+        if key == checkpoint_last_key and upgrade_checkpoint:
+            if not _verify_hl_metadata_target_prefix(
+                    sqlite, int(rowid), key, mapping, payload_udt,
+                    expected_v2_digest=prefix_digest, expected_count=imported):
+                raise RuntimeError("Existing streamed checkpoint target does not match its SQLite source")
+            with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-upgrade") as conn:
+                conn.execute(sql.SQL(
+                    "UPDATE {} SET schema_sha256=%s,digest_sum=%s WHERE source_key=%s AND source_table=%s"
+                ).format(checkpoint_table), (schema_sha, str(prefix_digest), source_key, "hl_news_metadata"))
+            digest_sum = prefix_digest
+            upgrade_checkpoint = False
         if checkpoint_last_key is not None and key <= checkpoint_last_key:
             continue
 
         with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-copy") as conn:
             with conn.transaction():
                 conn.execute("CREATE TEMP TABLE hl_metadata_stage (key text NOT NULL, part_index bigint NOT NULL, chunk text, PRIMARY KEY(key,part_index)) ON COMMIT DROP")
-                # Fetch source chunks again and let PostgreSQL append them in order.
-                offset = 1
-                part_index = 0
-                while char_count is not None and offset <= char_count:
-                    chunk = sqlite.execute(
-                        'SELECT substr("payload", ?, ?) FROM "hl_news_metadata" WHERE "key"=?',
-                        (offset, _HL_METADATA_CHUNK_CHARS, key),
-                    ).fetchone()[0]
-                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,%s,%s)", (key, part_index, str(chunk)))
-                    offset += len(chunk)
-                    part_index += 1
-                if char_count is None:
-                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,0,NULL)", (key,))
-                elif char_count == 0:
-                    conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,0,'')", (key,))
+                with sqlite.blobopen("hl_news_metadata", "payload", int(rowid), readonly=True) as blob:
+                    decoder = codecs.getincrementaldecoder("utf-8")()
+                    remaining = len(blob)
+                    part_index = 0
+                    while remaining:
+                        raw = blob.read(min(_HL_METADATA_CHUNK_BYTES, remaining))
+                        text_chunk = decoder.decode(raw, final=False)
+                        if text_chunk:
+                            conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,%s,%s)", (key, part_index, text_chunk))
+                            part_index += 1
+                        remaining -= len(raw)
+                    text_chunk = decoder.decode(b"", final=True)
+                    if text_chunk:
+                        conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,%s,%s)", (key, part_index, text_chunk))
+                    if part_index == 0 and not text_chunk:
+                        conn.execute("INSERT INTO hl_metadata_stage VALUES(%s,0,'')", (key,))
+                payload_expr = "string_agg(chunk,'' ORDER BY part_index)" + ("::jsonb" if payload_udt == "jsonb" else "")
                 conn.execute(sql.SQL(
-                    "INSERT INTO {}(key,payload) SELECT key,string_agg(chunk,'' ORDER BY part_index) "
+                    "INSERT INTO {}(key,payload) SELECT key," + payload_expr + " "
                     "FROM hl_metadata_stage WHERE key=%s GROUP BY key"
                 ).format(target), (key,))
                 imported += 1
@@ -1038,31 +1065,24 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         raise RuntimeError("Streamed legacy checkpoint identity is absent from source")
     with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-verify") as conn:
         after = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target)).fetchone()["n"])
-        target_rows = conn.execute(sql.SQL("SELECT key,length(payload) AS chars FROM {} ORDER BY key").format(target))
+        target_rows = conn.execute(sql.SQL(
+            "SELECT key,md5({}::text) AS payload_md5 FROM {} ORDER BY key"
+        ).format(sql.Identifier("payload"), target))
         target_digest_sum = 0
         verified_rows = 0
         for target_row in target_rows:
-            key, char_count = target_row["key"], target_row["chars"]
-            hasher = hashlib.sha256()
-            hasher.update(b'{"key":')
-            hasher.update(_canonical_json(str(key)).encode("utf-8"))
-            hasher.update(b',"payload":')
-            hasher.update(b'null' if char_count is None else b'"')
-            offset = 1
-            while char_count is not None and offset <= char_count:
-                chunk = conn.execute(sql.SQL("SELECT substr(payload,%s,%s) AS chunk FROM {} WHERE key=%s").format(target),
-                                     (offset, _HL_METADATA_CHUNK_CHARS, key)).fetchone()["chunk"]
-                hasher.update(_canonical_json_string_fragment(str(chunk)).encode("utf-8"))
-                offset += len(chunk)
-            if char_count is not None:
-                hasher.update(b'"')
-            hasher.update(b'}')
-            target_digest_sum = (target_digest_sum + int.from_bytes(hasher.digest(), "big")) % (1 << 256)
+            key, payload_md5 = target_row["key"], target_row["payload_md5"]
+            row_digest = _hl_metadata_row_digest(str(key), str(payload_md5))
+            target_digest_sum = (target_digest_sum + row_digest) % (1 << 256)
             verified_rows += 1
+        # jsonb normalizes JSON text, so its server-side textual digest is not
+        # byte-identical to SQLite's raw UTF-8 digest. Row count and source
+        # digest remain authoritative; target_digest_sum is diagnostic there.
+        digest_mismatch = payload_udt == "text" and target_digest_sum != digest_sum
         if (source_count != imported or after != base_count + imported or verified_rows != source_count
-                or source_digest_sum != digest_sum or target_digest_sum != digest_sum):
+                or source_digest_sum != digest_sum or digest_mismatch):
             raise RuntimeError(f"Streamed legacy verification failed main/hl_news_metadata: source={source_count} imported={imported}")
-        if checkpoint and checkpoint["source_rows"] is not None and (
+        if checkpoint and not legacy_checkpoint_upgrade and checkpoint["source_rows"] is not None and (
                 int(checkpoint["source_rows"]) != source_count or checkpoint["source_digest_sum"] != str(source_digest_sum)):
             raise RuntimeError("Source rows changed during streamed legacy import")
         conn.execute(sql.SQL("UPDATE {} SET source_rows=%s,source_digest_sum=%s WHERE source_key=%s AND source_table=%s").format(checkpoint_table),
@@ -1073,9 +1093,81 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
             "source_digest_sum": digest_sum.to_bytes(32, "big").hex(), "streamed_payload": True}
 
 
+def _hl_metadata_row_digest(key: str, payload_md5: str) -> int:
+    return int.from_bytes(hashlib.sha256(
+        _canonical_json({"key": key, "payload_md5": payload_md5}).encode("utf-8")
+    ).digest(), "big")
+
+
+def _hl_metadata_legacy_row_digest(sqlite: sqlite3.Connection, rowid: int, key: str) -> int:
+    """Reproduce the old whole-row canonical digest while reading TEXT incrementally."""
+    hasher = hashlib.sha256()
+    hasher.update(b'{"key":')
+    hasher.update(_canonical_json(key).encode("utf-8"))
+    hasher.update(b',"payload":')
+    hasher.update(b'"')
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    with sqlite.blobopen("hl_news_metadata", "payload", rowid, readonly=True) as blob:
+        while raw := blob.read(_HL_METADATA_CHUNK_BYTES):
+            text = decoder.decode(raw, final=False)
+            if text:
+                hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
+        text = decoder.decode(b"", final=True)
+        if text:
+            hasher.update(_canonical_json_string_fragment(text).encode("utf-8"))
+    hasher.update(b'"}')
+    return int.from_bytes(hasher.digest(), "big")
+
+
 def _canonical_json_string_fragment(value: str) -> str:
-    # Escape each Unicode scalar independently; JSON escaping has no cross-character state.
     return "".join(json.dumps(char, ensure_ascii=False)[1:-1] for char in value)
+
+
+def _hl_metadata_source_jsonb_digest(sqlite: sqlite3.Connection, rowid: int, key: str,
+                                     mapping: TableMapping) -> str:
+    target = sql.Identifier(mapping.target_schema, mapping.target_table)
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-jsonb-digest") as conn:
+        with conn.transaction():
+            conn.execute("CREATE TEMP TABLE hl_metadata_jsonb_digest_stage (part_index bigint PRIMARY KEY, chunk text) ON COMMIT DROP")
+            with sqlite.blobopen("hl_news_metadata", "payload", rowid, readonly=True) as blob:
+                decoder = codecs.getincrementaldecoder("utf-8")()
+                remaining = len(blob)
+                index = 0
+                while remaining:
+                    raw = blob.read(min(_HL_METADATA_CHUNK_BYTES, remaining))
+                    text = decoder.decode(raw, final=False)
+                    if text:
+                        conn.execute("INSERT INTO hl_metadata_jsonb_digest_stage VALUES(%s,%s)", (index, text))
+                        index += 1
+                    remaining -= len(raw)
+                text = decoder.decode(b"", final=True)
+                if text:
+                    conn.execute("INSERT INTO hl_metadata_jsonb_digest_stage VALUES(%s,%s)", (index, text))
+                if index == 0 and not text:
+                    conn.execute("INSERT INTO hl_metadata_jsonb_digest_stage VALUES(0,'')")
+            return str(conn.execute(
+                "SELECT md5((string_agg(chunk,'' ORDER BY part_index))::jsonb::text) AS digest "
+                "FROM hl_metadata_jsonb_digest_stage"
+            ).fetchone()["digest"])
+
+
+def _verify_hl_metadata_target_prefix(sqlite: sqlite3.Connection, rowid: int, key: str,
+                                      mapping: TableMapping, payload_udt: str,
+                                      *, expected_v2_digest: int, expected_count: int) -> bool:
+    """Compare the full committed prefix against the source before checkpoint upgrade."""
+    target = sql.Identifier(mapping.target_schema, mapping.target_table)
+    with _connect_native_import_postgres(schema=mapping.target_schema, application_name="odaily-native-stream-prefix-audit") as conn:
+        destination_rows = conn.execute(sql.SQL(
+            "SELECT key,md5(payload::text) AS digest FROM {} WHERE key<=%s ORDER BY key"
+        ).format(target), (key,))
+        target_digest = 0
+        target_count = 0
+        for destination in destination_rows:
+            target_digest = (target_digest + _hl_metadata_row_digest(str(destination["key"]), str(destination["digest"]))) % (1 << 256)
+            target_count += 1
+        if target_count != expected_count or target_digest != expected_v2_digest:
+            return False
+        return True
 
 
 class _BoundedCursor:

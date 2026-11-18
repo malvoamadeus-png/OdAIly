@@ -542,9 +542,9 @@ def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(
     with sqlite3.connect(source_path) as source:
         source.execute("CREATE TABLE hl_news_metadata(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         source.executemany("INSERT INTO hl_news_metadata VALUES(?,?)", payloads.items())
-    monkeypatch.setattr(importer, "_HL_METADATA_CHUNK_CHARS", 9)
+    monkeypatch.setattr(importer, "_HL_METADATA_CHUNK_BYTES", 9)
     mapping = importer.SourceMapping("main", schema, (
-        importer.TableMapping("hl_news_metadata", "legacy_main", "hl_news_metadata", legacy_typed=True),
+        importer.TableMapping("hl_news_metadata", schema, "hl_news_metadata", legacy_typed=True),
     ))
 
     report = importer.import_native_sqlite_source(
@@ -554,13 +554,90 @@ def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(
     assert report["tables"][0]["streamed_payload"] is True
     assert report["tables"][0]["source_rows"] == 2
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
-        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier("legacy_main"))).fetchall() == sorted(payloads.items())
+        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier(schema))).fetchall() == sorted(payloads.items())
         checkpoint = conn.execute(SQL(
             "SELECT imported_rows,source_rows,digest_sum,source_digest_sum FROM {}.native_sqlite_stream_import_checkpoints "
             "WHERE source_key='main' AND source_table='hl_news_metadata'"
-        ).format(Identifier("legacy_main"))).fetchone()
+        ).format(Identifier(schema))).fetchone()
         assert checkpoint[0] == checkpoint[1] == 2
         assert checkpoint[2] == checkpoint[3]
+
+
+def test_hl_news_metadata_stream_upgrades_legacy_checkpoint_without_replacing_rows(
+    native_import_target, tmp_path, monkeypatch
+) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    schema = native_import_target
+    source_path = tmp_path / "main-legacy-checkpoint.sqlite"
+    payloads = [("alpha", '{"nested": [1, 2], "text": "中文"}'), ("beta", "second payload")]
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE hl_news_metadata(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        source.executemany("INSERT INTO hl_news_metadata VALUES(?,?)", payloads)
+    mapping = importer.SourceMapping("main", schema, (
+        importer.TableMapping("hl_news_metadata", schema, "hl_news_metadata", legacy_typed=True),
+    ))
+    spec = importer._schema(sqlite3.connect(source_path))[0]
+    legacy_sum = 0
+    for key, payload in payloads[:1]:
+        canonical = importer._canonical_json({"key": key, "payload": payload}).encode()
+        legacy_sum += int.from_bytes(hashlib.sha256(canonical).digest(), "big")
+    schema_sha_v1 = hashlib.sha256(json.dumps(
+        {"schema": spec, "mapping": mapping}, sort_keys=True, default=str
+    ).encode()).hexdigest()
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload text NOT NULL)").format(Identifier(schema)))
+        conn.execute(SQL(
+            "CREATE TABLE {}.native_sqlite_stream_import_checkpoints(source_key text NOT NULL,source_table text NOT NULL,"
+            "schema_sha256 text NOT NULL,last_identity text,imported_rows bigint NOT NULL DEFAULT 0,digest_sum text NOT NULL DEFAULT '0',"
+            "source_rows bigint,source_digest_sum text,destination_base_count bigint NOT NULL DEFAULT 0,PRIMARY KEY(source_key,source_table))"
+        ).format(Identifier(schema)))
+        conn.execute(SQL("INSERT INTO {}.hl_news_metadata VALUES(%s,%s)").format(Identifier(schema)), payloads[0])
+        conn.execute(SQL(
+            "INSERT INTO {}.native_sqlite_stream_import_checkpoints(source_key,source_table,schema_sha256,last_identity,imported_rows,digest_sum,destination_base_count) "
+            "VALUES('main','hl_news_metadata',%s,'alpha',1,%s,0)"
+        ).format(Identifier(schema)), (schema_sha_v1, str(legacy_sum)))
+
+    report = importer.import_native_sqlite_source(
+        source_key="main", source_path=source_path, source_mapping=mapping, batch_size=1,
+    )
+
+    assert report["tables"][0]["imported_rows"] == 2
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        rows = conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier(schema))).fetchall()
+        assert rows == sorted(payloads)
+        checkpoint = conn.execute(SQL(
+            "SELECT imported_rows,last_identity,schema_sha256 FROM {}.native_sqlite_stream_import_checkpoints WHERE source_key='main'"
+        ).format(Identifier(schema))).fetchone()
+        assert checkpoint[0:2] == (2, "beta")
+        assert checkpoint[2] != schema_sha_v1
+
+
+def test_hyperliquid_metadata_stream_imports_jsonb_payload(native_import_target, tmp_path, monkeypatch) -> None:
+    from packages.common import native_sqlite_import as importer
+
+    schema = native_import_target
+    source_path = tmp_path / "hyperliquid.sqlite"
+    payloads = [("large", '{ "nested" : [1, 2], "text": "中文" }'), ("empty", "{}")]
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE hl_news_metadata(key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        source.executemany("INSERT INTO hl_news_metadata VALUES(?,?)", payloads)
+    monkeypatch.setattr(importer, "_HL_METADATA_CHUNK_BYTES", 7)
+    mapping = importer.SourceMapping("hyperliquid", schema, (
+        importer.TableMapping("hl_news_metadata", schema, "hl_news_metadata"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload jsonb NOT NULL)").format(Identifier(schema)))
+
+    report = importer.import_native_sqlite_source(
+        source_key="hyperliquid", source_path=source_path, source_mapping=mapping, batch_size=1,
+    )
+
+    assert report["tables"][0]["source_rows"] == 2
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert conn.execute(SQL("SELECT key,payload FROM {}.hl_news_metadata ORDER BY key").format(Identifier(schema))).fetchall() == [
+            ("empty", {}), ("large", {"nested": [1, 2], "text": "中文"})
+        ]
 
 
 def test_small_evidence_cross_source_import_remains_readable_after_sqlite_sources_removed(
