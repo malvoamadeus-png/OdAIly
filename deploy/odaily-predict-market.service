@@ -1,13 +1,16 @@
 [Unit]
 Description=OdAIly Predict.fun market discovery worker
-After=network-online.target
+After=network-online.target postgresql.service
+Requires=postgresql.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
+EnvironmentFile=/etc/odaily/postgresql.env
 Environment=PYTHONUNBUFFERED=1
+Environment=ODAILY_STORAGE_BACKEND=postgres
 ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py predict-market run
 Restart=always
 RestartSec=10
