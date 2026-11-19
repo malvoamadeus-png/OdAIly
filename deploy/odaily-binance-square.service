@@ -1,12 +1,15 @@
 [Unit]
 Description=OdAIly experimental Binance Square account monitor
-After=network-online.target odaily-local-pipeline.service
+After=network-online.target odaily-local-pipeline.service postgresql.service
+Requires=postgresql.service
 Wants=network-online.target odaily-local-pipeline.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/OdAIly
 EnvironmentFile=-/opt/OdAIly/.env
+EnvironmentFile=/etc/odaily/postgresql.env
+Environment=ODAILY_STORAGE_BACKEND=postgres
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1440x900x24" /opt/OdAIly/.venv/bin/python backend/src/main.py binance-square-worker
 Restart=always
