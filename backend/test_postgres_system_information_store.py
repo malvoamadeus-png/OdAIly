@@ -58,6 +58,29 @@ def _snapshot(item_id: str) -> dict:
     }
 
 
+def test_information_retention_removes_old_feed_copies_and_preserves_protected(postgres_information_store):
+    store = postgres_information_store
+    now = int(time.time() * 1000)
+    old = now - 30 * 60 * 60 * 1000
+    recent = now - 60 * 1000
+    for name, stamp in (("old", old), ("recent", recent), ("sampled", old), ("pinned", old), ("reviewed", old)):
+        snapshot = _snapshot(name)
+        snapshot.update(created_at_ms=stamp, updated_at_ms=stamp, task_id=None, source_row_id=name)
+        store.upsert_snapshot(snapshot, {"name": name})
+    store.append_event(item_id="old", event_id="old-event", event_type="state", stage="write", status="done", result="done", happened_at_ms=old, summary="old")
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_decision_samples(sample_key,sample_date,sampled_at_ms,raw_expires_at_ms,item_id,business_key,source,stage,status,result) VALUES ('sample','today',%s,%s,'sampled','x','x','write','done','done')", (now, now + 1))
+        conn.execute("INSERT INTO system_information_evidence_pins(pin_key,evidence_ref,pinned_at_ms) SELECT 'pin',evidence_ref,%s FROM system_information_items WHERE item_id='pinned'", (now,))
+        conn.execute("CREATE TABLE system_review_items(scope_json text,evidence_json text,counter_evidence_json text)")
+        conn.execute("INSERT INTO system_review_items VALUES (%s,'[]','[]')", ('{"stream_item_ids":["reviewed"]}',))
+    result = store.trim_information_items(now_ms=now, limit=100)
+    assert result["removed"] == 1
+    assert not store.has_item("old")
+    assert all(store.has_item(name) for name in ("recent", "sampled", "pinned", "reviewed"))
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM system_information_events WHERE item_id='old'").fetchone()["n"] == 0
+
+
 def test_postgres_information_snapshot_event_and_query(postgres_information_store) -> None:
     store = postgres_information_store
     item_id = f"pg-store-test:{uuid.uuid4().hex}"
@@ -428,15 +451,15 @@ def test_postgres_x_capture_attempts_project_to_latest_account_snapshot(postgres
     assert accounts[0]["result"] == "capture_success"
     detail = store.detail(accounts[0]["item_id"])
     assert detail is not None
-    assert len([event for event in detail["timeline"] if event["event_type"] == "source_state_change"]) == 1
+    assert [event for event in detail["timeline"] if event["event_type"] == "source_state_change"] == []
     with store.connect() as conn:
         identities = conn.execute("SELECT source_row_id,item_id FROM system_information_source_identity WHERE source_schema=%s AND source_table='x_capture_attempts' ORDER BY source_row_id", (schema,)).fetchall()
-        assert [(row["source_row_id"], row["item_id"]) for row in identities] == [("1", "main:x_capture_attempts:alice"), ("2", "main:x_capture_attempts:alice")]
+        assert [(row["source_row_id"], row["item_id"]) for row in identities] == [("alice", "main:x_capture_attempts:alice")]
 
     # A replay of an older source attempt cannot extend or roll back the timeline.
     older = dict(_snapshot("ignored"))
     older.update({"item_id": "ignored", "source_schema": schema, "source_table": "x_capture_attempts",
-                  "source_identity_row_id": "1", "source_row_id": "1", "source_id": "alice",
+                  "source_identity_row_id": "alice", "source_row_id": "1", "source_id": "alice",
                   "source_database": schema, "updated_at_ms": accounts[0]["updated_at_ms"] - 60_000,
                   "status": "fetch_failed", "result": "failed", "stage": "采集", "business_key": "x",
                   "source": "x_capture", "title": "alice", "source_name": "alice"})
@@ -447,7 +470,7 @@ def test_postgres_x_capture_attempts_project_to_latest_account_snapshot(postgres
     store.apply_source_audit_batch([older_entry], watermark_key="test_x_attempt_replay", watermark=1)
     current = store.detail("main:x_capture_attempts:alice")
     assert current is not None and current["status"] == "success" and current["result"] == "capture_success"
-    assert len([event for event in current["timeline"] if event["event_type"] == "source_state_change"]) == 1
+    assert [event for event in current["timeline"] if event["event_type"] == "source_state_change"] == []
     with store.connect() as conn:
         conn.execute("DROP SCHEMA " + Identifier(schema).as_string(conn) + " CASCADE")
 

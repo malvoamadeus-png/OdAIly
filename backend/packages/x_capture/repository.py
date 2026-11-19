@@ -14,6 +14,7 @@ from packages.common.attempt_sampling import (
 from packages.common.pipeline_schema import CONSOLE_AUTH_SCHEMA_SQL, PIPELINE_MONITORING_SCHEMA_SQL
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
+from packages.system_observability.postgres_schema import ensure_source_state_schema
 
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
@@ -21,6 +22,16 @@ from .naming import choose_effective_author_name, normalize_lookup_username, nor
 
 
 CONFIG_NOTIFY_CHANNEL = "x_capture_config_changed"
+
+X_CAPTURE_SOURCE_TRIGGER_SQL = """CREATE TRIGGER trg_odaily_x_capture_attempts
+AFTER INSERT OR UPDATE ON main.x_capture_attempts FOR EACH ROW
+EXECUTE FUNCTION main.odaily_capture_source_state('1','id','username_lower','status','source',
+'candidate_count','seeded_count','new_count','saved_count','error','started_at','finished_at')"""
+
+
+def _install_capture_attempt_trigger(connection) -> None:
+    ensure_source_state_schema(connection)
+    connection.execute(X_CAPTURE_SOURCE_TRIGGER_SQL)
 
 
 class XCaptureRepository(Protocol):
@@ -168,6 +179,9 @@ class PostgresXCaptureRepository:
                 ), PostgresMigration(
                     2, "x_capture_external_error_counter", sha256(b"ALTER TABLE x_capture_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0").hexdigest(),
                     lambda connection: connection.execute("ALTER TABLE x_capture_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
+                ), PostgresMigration(
+                    3, "x_capture_information_projection", sha256(X_CAPTURE_SOURCE_TRIGGER_SQL.encode()).hexdigest(),
+                    _install_capture_attempt_trigger,
                 )),
             )
 

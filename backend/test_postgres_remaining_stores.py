@@ -28,6 +28,18 @@ def isolated_pg(monkeypatch):
         admin.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(database_name)))
 
 
+def test_x_capture_attempts_are_projected_without_retention_delete_events(isolated_pg):
+    from packages.x_capture.repository import PostgresXCaptureRepository
+
+    PostgresXCaptureRepository.initialize_schema()
+    with psycopg.connect(os.environ["ODAILY_POSTGRES_DSN"]) as conn:
+        conn.execute("INSERT INTO main.x_capture_attempts(username_lower,status,started_at,finished_at) VALUES('alice','success',now(),now())")
+        row = conn.execute("SELECT operation,payload FROM main.odaily_source_state_outbox WHERE source_table='x_capture_attempts'").fetchone()
+        assert row == ('INSERT', {'username_lower': 'alice', 'status': 'success', 'source': 'fxtwitter', 'candidate_count': 0, 'seeded_count': 0, 'new_count': 0, 'saved_count': 0, 'error': None, 'started_at': row[1]['started_at'], 'finished_at': row[1]['finished_at']})
+        conn.execute("DELETE FROM main.x_capture_attempts WHERE username_lower='alice'")
+        assert conn.execute("SELECT count(*) FROM main.odaily_source_state_outbox WHERE source_table='x_capture_attempts'").fetchone()[0] == 1
+
+
 def test_msx_native_store_preserves_seen_tasks_and_heartbeat(isolated_pg):
     from packages.postgres_msx_notice_store import PostgresMSXNoticeStore
 

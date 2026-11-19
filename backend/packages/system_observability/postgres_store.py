@@ -100,6 +100,9 @@ SEARCH_POSTINGS_MIGRATION_CHECKSUM = hashlib.sha256(SEARCH_POSTINGS_MIGRATION_SQ
 SEARCH_POSTINGS_RETIREMENT_SQL = "DROP TABLE IF EXISTS system_information_search_legacy; ALTER TABLE system_information_items DROP COLUMN IF EXISTS search_key CASCADE;"
 SEARCH_POSTINGS_RETIREMENT_CHECKSUM = hashlib.sha256(SEARCH_POSTINGS_RETIREMENT_SQL.encode()).hexdigest()
 
+SOURCE_IDENTITY_ITEM_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_system_information_identity_item ON system_information_source_identity(item_id)"
+SOURCE_IDENTITY_ITEM_INDEX_CHECKSUM = hashlib.sha256(SOURCE_IDENTITY_ITEM_INDEX_SQL.encode()).hexdigest()
+
 
 def _allow_shared_source_identity_items(connection) -> None:
     constraint = connection.execute(
@@ -161,7 +164,9 @@ class PostgresSystemInformationStore:
                             PostgresMigration(2, "external error retention ledger", EXTERNAL_ERROR_LEDGER_CHECKSUM, _install_external_error_ledger),
                             PostgresMigration(3, "preserve imported search postings", SEARCH_POSTINGS_MIGRATION_CHECKSUM, _install_search_postings_schema),
                             PostgresMigration(4, "allow shared source identity items", SOURCE_IDENTITY_FANIN_CHECKSUM, _allow_shared_source_identity_items),
-                            PostgresMigration(5, "retire legacy search postings", SEARCH_POSTINGS_RETIREMENT_CHECKSUM, _retire_search_postings_schema)),
+                            PostgresMigration(5, "retire legacy search postings", SEARCH_POSTINGS_RETIREMENT_CHECKSUM, _retire_search_postings_schema),
+                            PostgresMigration(6, "index source identity item references", SOURCE_IDENTITY_ITEM_INDEX_CHECKSUM,
+                                              lambda connection: connection.execute(SOURCE_IDENTITY_ITEM_INDEX_SQL))),
             )
         PostgresSmallEvidenceStore(schema=schema).initialize()
 
@@ -1007,6 +1012,36 @@ class PostgresSystemInformationStore:
     def compact_search_index(self, *, now_ms: int | None = None, limit: int = 25) -> dict[str,int]:
         del now_ms, limit
         return {"scanned": 0, "done": 1}
+
+    def trim_information_items(self, *, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
+        now = now_ms if now_ms is not None else _now_ms()
+        cutoff = now - 6 * 60 * 60 * 1000
+        review_cutoff = now - 24 * 60 * 60 * 1000
+        batch = max(1, min(int(limit), 10000))
+        with self.connect() as conn:
+            with conn.transaction():
+                rows = conn.execute("""
+                    SELECT i.item_id FROM system_information_items i
+                    WHERE i.updated_at_ms < %s AND COALESCE(i.created_at_ms, 0) < %s
+                      AND (i.updated_at_ms < %s OR i.source_table = 'x_capture_attempts'
+                           OR i.result NOT IN ('normal_stop', 'no_candidate', 'discarded', 'ignored'))
+                      AND NOT EXISTS (SELECT 1 FROM system_information_decision_samples d WHERE d.item_id=i.item_id)
+                      AND NOT EXISTS (SELECT 1 FROM system_information_evidence_pins p WHERE p.evidence_ref=i.evidence_ref)
+                      AND NOT EXISTS (SELECT 1 FROM system_information_events e
+                          JOIN system_information_evidence_pins p ON p.evidence_ref=e.evidence_ref WHERE e.item_id=i.item_id)
+                      AND NOT EXISTS (SELECT 1 FROM system_information_events e WHERE e.item_id=i.item_id
+                          AND COALESCE(e.happened_at_ms,e.observed_at_ms) >= %s)
+                      AND NOT EXISTS (SELECT 1 FROM system_information_items child
+                          WHERE child.parent_item_id=i.item_id AND child.updated_at_ms >= %s)
+                      AND NOT EXISTS (SELECT 1 FROM system_review_items r WHERE
+                          strpos(COALESCE(r.scope_json,''),i.item_id)>0 OR
+                          strpos(COALESCE(r.evidence_json,''),i.item_id)>0 OR
+                          strpos(COALESCE(r.counter_evidence_json,''),i.item_id)>0)
+                    ORDER BY i.updated_at_ms,i.item_id LIMIT %s FOR UPDATE OF i SKIP LOCKED
+                """, (cutoff, cutoff, review_cutoff, cutoff, cutoff, batch)).fetchall()
+                ids = [row["item_id"] for row in rows]
+                removed = conn.execute("DELETE FROM system_information_items WHERE item_id=ANY(%s)", (ids,)).rowcount if ids else 0
+        return {"scanned": len(rows), "removed": removed}
 
     def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000, max_queued: int = 50) -> dict[str,int]:
         now=now_ms or _now_ms(); cutoff=now-86_400_000; cursor=self.get_state("status_retention_cursor")

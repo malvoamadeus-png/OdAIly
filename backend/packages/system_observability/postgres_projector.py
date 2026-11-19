@@ -171,6 +171,12 @@ class PostgresSourceStateProjector:
         if now_ms - last < 60_000:
             return
         try:
+            items = self.store.trim_information_items(now_ms=now_ms, limit=5000)
+            self.store.set_state("information_item_retention_last_result", json.dumps(items, separators=(",", ":")))
+            self.store.set_state("information_item_retention_error", "")
+        except Exception as exc:
+            self.store.set_state("information_item_retention_error", f"{type(exc).__name__}: {exc}"[:500])
+        try:
             errors = self.store.cleanup_external_errors(now_ms=now_ms, limit=500)
             self.store.set_state("postgres_external_error_retention_last_result", json.dumps(errors, separators=(",", ":")))
             self.store.set_state("postgres_external_error_retention_error", "")
@@ -241,7 +247,7 @@ class PostgresSourceStateProjector:
         identity_row_id = row_id
         if table == "x_capture_attempts":
             account = str(_first(row, "username_lower") or row_id)
-            snapshot["source_identity_row_id"] = row_id
+            snapshot["source_identity_row_id"] = account
             attempt_status = str(row.get("status") or "unknown").casefold()
             if attempt_status in {"success", "ok"}:
                 snapshot["result"] = "capture_success"
@@ -280,7 +286,7 @@ class PostgresSourceStateProjector:
             snapshot["item_id"] = str(source_identity["item_id"])
         if table == "x_capture_attempts":
             snapshot["item_id"] = f"main:x_capture_attempts:{snapshot.get('source_id') or row_id}"
-            snapshot["source_identity_row_id"] = row_id
+            snapshot["source_identity_row_id"] = str(snapshot.get('source_id') or row_id)
             if deleted:
                 previous = conn.execute("SELECT * FROM system_information_items WHERE item_id=%s", (snapshot["item_id"],)).fetchone()
                 if previous:
@@ -314,7 +320,7 @@ class PostgresSourceStateProjector:
                 **({"previous_evidence": previous_evidence} if previous_evidence is not None else {}),
             },
             "event_id": f"source-state:{schema}:{int(event['event_id'])}",
-            "skip_timeline": table == "x_capture_attempts" and row is not None and str(row.get("id")) != row_id,
+            "skip_timeline": table == "x_capture_attempts",
             "happened_at_ms": timestamp_ms(row.get("finished_at")) if table == "x_capture_attempts" else timestamp_ms(event["occurred_at"]) or now,
             "status": event_status,
             "result": event_result,
