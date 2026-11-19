@@ -61,6 +61,9 @@ class PostgresSourceStateProjector:
             (LOGICAL_TO_PHYSICAL_SCHEMA.get(spec.database_key, spec.database_key), spec.table): spec
             for spec in table_specs
         }
+        business_inbox = self.specs.get(("main", "business_message_inbox"))
+        if business_inbox is not None:
+            self.specs.setdefault(("business_news", "business_message_inbox"), business_inbox)
         self.identity_columns = {
             ("main", "tasks"): (("id", "bigint"),),
             ("main", "x_task_pipeline"): (("task_id", "bigint"),),
@@ -177,6 +180,14 @@ class PostgresSourceStateProjector:
         except Exception as exc:
             self.store.set_state("information_item_retention_error", f"{type(exc).__name__}: {exc}"[:500])
         try:
+            with self.store.connect() as conn:
+                from .postgres_schema import prune_projected_source_events
+                removed = prune_projected_source_events(conn, outbox_schema=self.outbox_schema)
+            self.store.set_state("source_outbox_retention_last_result", removed)
+            self.store.set_state("source_outbox_retention_error", "")
+        except Exception as exc:
+            self.store.set_state("source_outbox_retention_error", f"{type(exc).__name__}: {exc}"[:500])
+        try:
             errors = self.store.cleanup_external_errors(now_ms=now_ms, limit=500)
             self.store.set_state("postgres_external_error_retention_last_result", json.dumps(errors, separators=(",", ":")))
             self.store.set_state("postgres_external_error_retention_error", "")
@@ -245,6 +256,13 @@ class PostgresSourceStateProjector:
         snapshot_spec = spec if snapshot_table == table else TableSpec(spec.database_key, snapshot_table, spec.business_key, spec.source, spec.record_kind)
         snapshot, _ = _generic_snapshot(snapshot_spec, Path(schema), row, now, 0)
         identity_row_id = row_id
+        event_time = timestamp_ms(event["occurred_at"]) or now
+        if snapshot["created_at_ms"] is None:
+            snapshot["created_at_ms"] = event_time
+        if snapshot["updated_at_ms"] is None:
+            snapshot["updated_at_ms"] = event_time
+        if snapshot_table != "tasks" and table != "x_capture_attempts":
+            snapshot["item_id"] = f"{logical_schema}:{table}:{row_id}"
         if table == "x_capture_attempts":
             account = str(_first(row, "username_lower") or row_id)
             snapshot["source_identity_row_id"] = account
@@ -308,6 +326,12 @@ class PostgresSourceStateProjector:
         event_status = "deleted" if operation == "DELETE" else str(payload.get("status") or payload.get("state") or snapshot["status"])
         event_result = "unknown" if operation == "DELETE" else _result(event_status, snapshot["business_key"], payload)
         summary = str(reason or ("记录已删除" if operation == "DELETE" else "状态变更：" + event_status))
+        from .postgres_sources import BUSINESS_SOURCES
+        compact_spec = next((source for source in BUSINESS_SOURCES if (source.schema, source.table) == (schema, table)), None)
+        evidence_row = row
+        if compact_spec:
+            fields = {*compact_spec.row_id_columns, *compact_spec.payload_columns, "created_at", "updated_at", "source_url"}
+            evidence_row = {key: value for key, value in row.items() if key in fields}
         return {
             "snapshot": snapshot,
             "evidence": {
@@ -316,7 +340,7 @@ class PostgresSourceStateProjector:
                 "source_table": table,
                 "source_row_id": row_id,
                 "payload": payload,
-                "current_row": row,
+                "current_row": evidence_row,
                 **({"previous_evidence": previous_evidence} if previous_evidence is not None else {}),
             },
             "event_id": f"source-state:{schema}:{int(event['event_id'])}",

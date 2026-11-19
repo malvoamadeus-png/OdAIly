@@ -58,24 +58,94 @@ def _snapshot(item_id: str) -> dict:
     }
 
 
+def test_business_source_trigger_tracks_changes_but_not_polling_or_deletes(postgres_information_store):
+    from packages.system_observability.postgres_schema import SourceStateTriggerSpec
+    from packages.system_observability.postgres_sources import ensure_business_source_triggers
+
+    store = postgres_information_store
+    schema = store.schema
+    table = Identifier(schema, "business_message_inbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {table} (id bigint PRIMARY KEY, status text, updated_at timestamptz)")
+    spec = SourceStateTriggerSpec(schema, "business_message_inbox", ("id",), ("status",), "trg_feed_test")
+    ensure_business_source_triggers(specs=(spec,))
+    ensure_business_source_triggers(specs=(spec,))
+    with store.connect() as conn:
+        conn.execute(f"INSERT INTO {table} VALUES (1, 'pending', now())")
+        conn.execute(f"UPDATE {table} SET updated_at=now() WHERE id=1")
+        conn.execute(f"UPDATE {table} SET status='done' WHERE id=1")
+        conn.execute(f"DELETE FROM {table} WHERE id=1")
+        rows = conn.execute("SELECT operation,payload FROM main.odaily_source_state_outbox WHERE source_schema=%s AND source_table='business_message_inbox' ORDER BY event_id", (schema,)).fetchall()
+        assert [(row["operation"], row["payload"]) for row in rows] == [("INSERT", {"status": "pending"}), ("UPDATE", {"status": "done"})]
+        conn.execute("DELETE FROM main.odaily_source_state_outbox WHERE source_schema=%s", (schema,))
+
+
+def test_source_outbox_cleanup_preserves_pending_and_recent(postgres_information_store):
+    from packages.system_observability.postgres_schema import prune_projected_source_events
+
+    store = postgres_information_store
+    relation = Identifier(store.schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint PRIMARY KEY, projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {relation} VALUES (1, now()-interval '25 hours'), (2, now()), (3, NULL)")
+        assert prune_projected_source_events(conn, outbox_schema=store.schema, limit=10) == 1
+        assert [row["event_id"] for row in conn.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [2, 3]
+
+
+def test_business_inbox_postgres_schema_keeps_business_mapping():
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    projector = PostgresSourceStateProjector(object())
+    assert projector.specs[("business_news", "business_message_inbox")].business_key == "business_news"
+
+
+def test_source_projection_keeps_distinct_rows_and_supplies_missing_times(postgres_information_store, monkeypatch):
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+    from packages.system_observability.projector import TableSpec
+    from packages.system_observability.postgres_schema import SourceStateTriggerSpec
+    from packages.system_observability import postgres_sources
+
+    store = postgres_information_store
+    schema = store.schema
+    qualified = Identifier(schema).as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {qualified}.test_jobs (id bigint PRIMARY KEY, source_item_id text, status text, raw_payload text)")
+        conn.execute(f"CREATE TABLE {qualified}.odaily_source_state_outbox (event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, source_schema text NOT NULL, source_table text NOT NULL, source_row_id text NOT NULL, operation text NOT NULL, payload jsonb NOT NULL, occurred_at timestamptz NOT NULL DEFAULT clock_timestamp(), projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {qualified}.test_jobs VALUES (1,'same','pending','large raw data'),(2,'same','done','large raw data')")
+        conn.execute(f"INSERT INTO {qualified}.odaily_source_state_outbox(source_schema,source_table,source_row_id,operation,payload) VALUES (%s,'test_jobs','1','INSERT','{{}}'),(%s,'test_jobs','2','INSERT','{{}}')", (schema, schema))
+    store.set_state("postgres_retention_last_ms", int(time.time() * 1000))
+    monkeypatch.setattr(postgres_sources, "BUSINESS_SOURCES", (SourceStateTriggerSpec(schema, "test_jobs", ("id",), ("status",)),))
+    projector = PostgresSourceStateProjector(store, outbox_schema=schema, table_specs=(TableSpec(schema, "test_jobs", "meme", "meme_scanner"),))
+    assert projector.run_once()["read"] == 2
+    with store.connect() as conn:
+        rows = conn.execute("SELECT item_id,created_at_ms,updated_at_ms,status FROM system_information_items WHERE source_table='test_jobs' ORDER BY item_id").fetchall()
+    assert len(rows) == 2
+    assert {row["status"] for row in rows} == {"pending", "done"}
+    assert all(row["created_at_ms"] and row["updated_at_ms"] for row in rows)
+    detail = store.detail(rows[0]["item_id"])
+    assert "raw_payload" not in detail["evidence"]["current_row"]
+
+
 def test_information_retention_removes_old_feed_copies_and_preserves_protected(postgres_information_store):
     store = postgres_information_store
     now = int(time.time() * 1000)
     old = now - 30 * 60 * 60 * 1000
     recent = now - 60 * 1000
-    for name, stamp in (("old", old), ("recent", recent), ("sampled", old), ("pinned", old), ("reviewed", old)):
+    for name, stamp in (("old", old), ("old-no-time", old), ("recent", recent), ("sampled", old), ("pinned", old), ("reviewed", old)):
         snapshot = _snapshot(name)
         snapshot.update(created_at_ms=stamp, updated_at_ms=stamp, task_id=None, source_row_id=name)
         store.upsert_snapshot(snapshot, {"name": name})
     store.append_event(item_id="old", event_id="old-event", event_type="state", stage="write", status="done", result="done", happened_at_ms=old, summary="old")
     with store.connect() as conn:
+        conn.execute("UPDATE system_information_items SET updated_at_ms=NULL,observed_at_ms=%s WHERE item_id='old-no-time'", (old,))
         conn.execute("INSERT INTO system_information_decision_samples(sample_key,sample_date,sampled_at_ms,raw_expires_at_ms,item_id,business_key,source,stage,status,result) VALUES ('sample','today',%s,%s,'sampled','x','x','write','done','done')", (now, now + 1))
         conn.execute("INSERT INTO system_information_evidence_pins(pin_key,evidence_ref,pinned_at_ms) SELECT 'pin',evidence_ref,%s FROM system_information_items WHERE item_id='pinned'", (now,))
         conn.execute("CREATE TABLE system_review_items(scope_json text,evidence_json text,counter_evidence_json text)")
         conn.execute("INSERT INTO system_review_items VALUES (%s,'[]','[]')", ('{"stream_item_ids":["reviewed"]}',))
     result = store.trim_information_items(now_ms=now, limit=100)
-    assert result["removed"] == 1
+    assert result["removed"] == 2
     assert not store.has_item("old")
+    assert not store.has_item("old-no-time")
     assert all(store.has_item(name) for name in ("recent", "sampled", "pinned", "reviewed"))
     with store.connect() as conn:
         assert conn.execute("SELECT count(*) AS n FROM system_information_events WHERE item_id='old'").fetchone()["n"] == 0

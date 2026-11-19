@@ -62,6 +62,9 @@ def create_system_observability_runtime(
         information_store.initialize()
         if settings.backend == "postgres":
             review_repository.initialize()
+            if postgres_schema == "system_observability" and table_specs is None:
+                from .postgres_sources import ensure_business_source_triggers
+                ensure_business_source_triggers()
     return SystemObservabilityRuntime(information_store, projector, review_repository, review_service)
 
 

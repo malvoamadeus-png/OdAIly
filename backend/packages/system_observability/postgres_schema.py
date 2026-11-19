@@ -128,13 +128,15 @@ class SourceStateTriggerSpec:
     trigger_name: str | None = None
 
 
-def install_source_state_trigger(connection: Connection, spec: SourceStateTriggerSpec) -> None:
+def install_source_state_trigger(connection: Connection, spec: SourceStateTriggerSpec, *, operations: tuple[str, ...] = ("INSERT", "UPDATE", "DELETE")) -> None:
     """Install a same-transaction outbox trigger with an explicit payload allowlist."""
     for value in (spec.schema, spec.table, *spec.row_id_columns, *spec.payload_columns):
         if not IDENTIFIER_PATTERN.fullmatch(value):
             raise ValueError(f"Unsupported source audit identifier: {value!r}")
     if not spec.row_id_columns:
         raise ValueError("source state triggers require at least one row identity column")
+    if not operations or len(set(operations)) != len(operations) or any(op not in {"INSERT", "UPDATE", "DELETE"} for op in operations):
+        raise ValueError("unsupported source audit operations")
     if len(set(spec.payload_columns)) != len(spec.payload_columns):
         raise ValueError("source state payload columns must be unique")
     name = spec.trigger_name or f"trg_odaily_source_state_{spec.table}"
@@ -145,7 +147,7 @@ def install_source_state_trigger(connection: Connection, spec: SourceStateTrigge
     argument_sql = ",".join(argument.as_string(connection) for argument in arguments)
     trigger_sql = (
         f"CREATE TRIGGER {Identifier(name).as_string(connection)} "
-        f"AFTER INSERT OR UPDATE OR DELETE ON {Identifier(spec.schema, spec.table).as_string(connection)} "
+        f"AFTER {' OR '.join(operations)} ON {Identifier(spec.schema, spec.table).as_string(connection)} "
         "FOR EACH ROW EXECUTE FUNCTION main.odaily_capture_source_state(" + argument_sql + ")"
     )
     connection.execute(f"DROP TRIGGER IF EXISTS {Identifier(name).as_string(connection)} ON {Identifier(spec.schema, spec.table).as_string(connection)}")
@@ -177,5 +179,17 @@ def acknowledge_source_state_events(connection: Connection, event_ids: Sequence[
         f"UPDATE {Identifier(outbox_schema, 'odaily_source_state_outbox').as_string(connection)} SET projected_at=clock_timestamp() "
         "WHERE event_id=ANY(%s) AND projected_at IS NULL",
         (list(event_ids),),
+    )
+    return result.rowcount or 0
+
+
+def prune_projected_source_events(connection: Connection, *, outbox_schema: str = "main", limit: int = 5000) -> int:
+    if not IDENTIFIER_PATTERN.fullmatch(outbox_schema) or not 1 <= limit <= 5000:
+        raise ValueError("unsupported source outbox cleanup parameters")
+    relation = Identifier(outbox_schema, "odaily_source_state_outbox").as_string(connection)
+    result = connection.execute(
+        f"DELETE FROM {relation} WHERE event_id IN (SELECT event_id FROM {relation} "
+        "WHERE projected_at < clock_timestamp() - interval '24 hours' "
+        "ORDER BY event_id LIMIT %s FOR UPDATE SKIP LOCKED)", (limit,),
     )
     return result.rowcount or 0

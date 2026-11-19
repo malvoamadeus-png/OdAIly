@@ -1020,6 +1020,14 @@ class PostgresSystemInformationStore:
         batch = max(1, min(int(limit), 10000))
         with self.connect() as conn:
             with conn.transaction():
+                conn.execute("""
+                    UPDATE system_information_items SET updated_at_ms=observed_at_ms
+                    WHERE item_id IN (
+                        SELECT item_id FROM system_information_items
+                        WHERE updated_at_ms IS NULL AND observed_at_ms < %s
+                        ORDER BY item_id LIMIT %s FOR UPDATE SKIP LOCKED
+                    )
+                """, (cutoff, batch))
                 rows = conn.execute("""
                     SELECT i.item_id FROM system_information_items i
                     WHERE i.updated_at_ms < %s AND COALESCE(i.created_at_ms, 0) < %s
