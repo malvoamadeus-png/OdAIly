@@ -25,6 +25,7 @@ ALLOWED_TABLES = {
 }
 FILTER_OPERATORS = {"eq": "=", "neq": "!=", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<"}
 READ_ONLY_TABLES = {"console_admins", "binance_square_attempts"}
+CONSOLE_ADMIN_COLUMNS = {"email", "created_at", "updated_at"}
 
 
 def _identifier(value: Any) -> str:
@@ -86,11 +87,13 @@ class ConsoleDataApi:
             return self._mutate(table, operation, payload)
         raise ValueError("unsupported console data operation")
 
-    def _where(self, payload: dict[str, Any]) -> tuple[str, list[Any]]:
+    def _where(self, payload: dict[str, Any], *, allowed_columns: set[str] | None = None) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         for item in payload.get("filters") or []:
             column = _identifier(item.get("column"))
+            if allowed_columns is not None and column not in allowed_columns:
+                raise ValueError("column is not exposed to the console")
             op = str(item.get("op"))
             value = item.get("value")
             if op in FILTER_OPERATORS:
@@ -119,16 +122,31 @@ class ConsoleDataApi:
         raw_select = str(payload.get("select") or "*")
         include_pipeline = table == "tasks" and "x_task_pipeline(" in raw_select
         base_select = raw_select.split(",x_task_pipeline(", 1)[0] if include_pipeline else raw_select
-        columns = "*" if base_select == "*" else ",".join(_identifier(value.strip()) for value in base_select.split(",") if value.strip())
-        where, params = self._where(payload)
+        admin_projection = table == "console_admins" and self.backend == "postgres"
+        if admin_projection:
+            if base_select == "*":
+                columns = ",".join(sorted(CONSOLE_ADMIN_COLUMNS))
+            else:
+                selected_columns = [_identifier(value.strip()) for value in base_select.split(",") if value.strip()]
+                if any(column not in CONSOLE_ADMIN_COLUMNS for column in selected_columns):
+                    raise ValueError("column is not exposed to the console")
+                columns = ",".join(selected_columns)
+        else:
+            columns = "*" if base_select == "*" else ",".join(_identifier(value.strip()) for value in base_select.split(",") if value.strip())
+        where, params = self._where(payload, allowed_columns=CONSOLE_ADMIN_COLUMNS if admin_projection else None)
+        source_table = "local_auth_users" if admin_projection else table
+        if admin_projection:
+            where = " WHERE enabled = true" + (f" AND {where[len(' WHERE '):]}" if where else "")
         order_parts = []
         for item in payload.get("orders") or []:
             column = _identifier(item.get("column"))
+            if admin_projection and column not in CONSOLE_ADMIN_COLUMNS:
+                raise ValueError("column is not exposed to the console")
             # Tasks contain both SQLite CURRENT_TIMESTAMP values and ISO-8601
             # values with a `T` separator. Normalize them before pagination.
             expression = "datetime(created_at)" if self.backend == "sqlite" and table == "tasks" and column == "created_at" else column
             order_parts.append(f"{expression} {'ASC' if item.get('ascending', True) else 'DESC'}")
-        sql = f"SELECT {columns} FROM {table}{where}"
+        sql = f"SELECT {columns} FROM {source_table}{where}"
         if order_parts:
             sql += " ORDER BY " + ",".join(order_parts)
         offset = max(0, int(payload.get("offset") or 0))
