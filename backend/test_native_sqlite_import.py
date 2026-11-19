@@ -7,7 +7,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import pytest
 from psycopg import connect
@@ -554,6 +554,29 @@ def test_native_import_converts_unix_second_and_millisecond_timestamps(native_im
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
         rows = conn.execute(SQL("SELECT id,occurred_at FROM {}.events ORDER BY id").format(Identifier(schema))).fetchall()
     assert rows == [(1, expected), (2, expected), (3, expected)]
+
+
+def test_native_import_canonicalizes_time_with_microsecond_precision(native_import_target, tmp_path) -> None:
+    from packages.common.native_sqlite_import import SourceMapping, TableMapping, _canonical_json, import_native_sqlite_source
+
+    schema = native_import_target
+    source_path = tmp_path / "time-values.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE schedules(id INTEGER PRIMARY KEY,run_at TEXT NOT NULL)")
+        source.execute("INSERT INTO schedules VALUES(1,'07:08:09.123456')")
+    mapping = SourceMapping("time_fixture", schema, (
+        TableMapping("schedules", schema, "schedules"),
+    ))
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.schedules(id bigint PRIMARY KEY,run_at time NOT NULL)").format(Identifier(schema)))
+
+    report = import_native_sqlite_source(
+        source_key="time_fixture", source_path=source_path, source_mapping=mapping, batch_size=1
+    )
+    assert report["tables"][0]["source_rows"] == 1
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert conn.execute(SQL("SELECT run_at FROM {}.schedules WHERE id=1").format(Identifier(schema))).fetchone()[0].isoformat() == "07:08:09.123456"
+    assert _canonical_json(time(7, 8, 9, 123456)) == '"07:08:09.123456"'
 
 
 def test_hl_news_metadata_stream_import_preserves_chunked_text_and_checkpoint(

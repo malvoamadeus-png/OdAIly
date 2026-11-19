@@ -10,7 +10,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -1663,6 +1663,8 @@ def _canonical_json(value: Any) -> str:
     if isinstance(value, bytes):
         return _canonical_json({"blob_hex": value.hex()})
     if isinstance(value, datetime):
+        return _canonical_json(value.isoformat())
+    if isinstance(value, time):
         return _canonical_json(value.isoformat())
     raise TypeError(f"Unsupported canonical JSON value: {type(value).__name__}")
 
