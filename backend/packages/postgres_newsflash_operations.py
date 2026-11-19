@@ -557,7 +557,7 @@ class PostgresNewsflashOperationsRepository:
                 item["text_review"]={"status":text_status,"label":TEXT_REVIEW_LABELS[text_status],"summary":str(audit.get("summary") or ""),"updated_at":item.pop("text_updated_at",None)}
                 item["read_status"]="not_synced"
                 item["fact_review"]={"id":item.pop("fact_check_id"),"status":item.pop("fact_status") or "unreviewed","reason":item.pop("fact_reason") or "","summary":item.pop("fact_summary") or "","updated_at":item.pop("fact_updated_at")}
-                item["id"]=item.pop("source_item_id")
+                item["id"]=item["source_item_id"]
                 item.update(self._metadata_for_reference(conn,item))
                 item.pop("created_at",None)
                 data.append(item)

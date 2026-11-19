@@ -39,11 +39,13 @@ def test_postgres_newsflash_operations_native_crud(monkeypatch) -> None:
             "source_item_id": source_id, "operator_raw": "Zoey", "view_count": 25,
             "is_pushed": 1, "published_at": now.isoformat(),
         }]) == {"read": 1, "matched": 1, "skipped": 0, "skipped_existing": 0, "reconciled_odaily": 0}
-        updated = repository.update_newsflash({
-            "source_item_id": source_id,
+        listed_before = repository.execute("list", {"search": source_id}, actor_email="test@example.com")
+        updated = repository.execute("update", {
+            "source_item_id": listed_before["items"][0].get("source_item_id"),
             "patch": {"is_contribution": True, "contributor_person_key": "zoey", "contribution_type": "regular"},
         }, actor_email="test@example.com")
         assert updated["id"] == source_id
+        assert updated["source_item_id"] == source_id
         assert updated["publisher_kind"] == "human"
         assert updated["is_contribution"] is True
         listed = repository.list_newsflashes({"search": source_id})
