@@ -520,7 +520,7 @@ class PostgresSystemInformationStore:
         clauses: list[str] = []
         params: list[Any] = []
         if payload.get("view") == "news":
-            clauses.extend(["i.news_visible", "i.parent_item_id IS NULL"])
+            clauses.extend(["i.news_visible", "i.parent_item_id IS NULL", "i.source_table <> 'newsflash_items'"])
         # Native X capture writes one stable account snapshot; older imported
         # per-attempt copies are excluded while retention removes them.
         clauses.append("(i.source_table <> 'x_capture_attempts' OR (i.source_id IS NOT NULL AND i.item_id='main:x_capture_attempts:' || i.source_id))")
@@ -583,10 +583,25 @@ class PostgresSystemInformationStore:
             item = conn.execute("SELECT * FROM system_information_items WHERE item_id=%s", (item_id,)).fetchone()
             if item is None:
                 return None
-            events = conn.execute("SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=%s OR item_id IN (SELECT item_id FROM system_information_items WHERE parent_item_id=%s) ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,event_id", (item_id,item_id)).fetchall()
+            child_ids = [str(row["item_id"]) for row in conn.execute(
+                "SELECT item_id FROM system_information_items WHERE parent_item_id=%s", (item_id,)
+            ).fetchall()]
+            event_item_ids = [item_id, *child_ids]
+            events = conn.execute(
+                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json "
+                "FROM system_information_events WHERE item_id=ANY(%s) "
+                "ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,event_id",
+                (event_item_ids,),
+            ).fetchall()
+            evidence_refs = {str(row["evidence_ref"]) for row in [item, *events] if row["evidence_ref"]}
+            evidence = {
+                reference: self._load_evidence_in_connection(conn, reference)
+                for reference in evidence_refs
+            }
+
         result = dict(item)
         result["duplicate_target"] = result.pop("duplicate_json")
-        result["evidence"] = self.load_evidence(result.get("evidence_ref"))
+        result["evidence"] = evidence.get(str(result["evidence_ref"])) if result.get("evidence_ref") else None
         result["timeline"] = []
         for row in events:
             event = dict(row)
@@ -596,7 +611,7 @@ class PostgresSystemInformationStore:
                     event["details"] = json.loads(event["details"])
                 except ValueError:
                     event["details"] = {}
-            event["evidence"] = self.load_evidence(event.get("evidence_ref"))
+            event["evidence"] = evidence.get(str(event["evidence_ref"])) if event.get("evidence_ref") else None
             if isinstance(event["details"], dict) and "_inline_evidence" in event["details"]:
                 event["evidence"] = event["details"].pop("_inline_evidence")
             result["timeline"].append(event)

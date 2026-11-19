@@ -15,11 +15,12 @@ from .projector import (
     STATUS_LABELS,
     TABLE_SPECS,
     TableSpec,
-    _decode,
     _first,
     _generic_snapshot,
+    _pipeline_event_status,
     _result,
     _stage,
+    _task_reason,
 )
 from .registry import SOURCE_TO_BUSINESS
 from .store import timestamp_ms
@@ -291,7 +292,18 @@ class PostgresSourceStateProjector:
         if snapshot_table == "tasks":
             self._project_task(snapshot, row, row_id)
         elif table == "newsflash_items":
-            snapshot["news_visible"] = bool(_first(row, "title", "content"))
+            # This table is the source archive. The task row owns the news
+            # workflow and is the only record that belongs in the news view.
+            snapshot["news_visible"] = False
+            snapshot["status"] = "collected"
+            snapshot["result"] = "processing"
+            snapshot["stage"] = "已收集"
+            snapshot["admission"] = "unassessed"
+            snapshot["summary"] = "原始来源记录，处理状态见关联任务"
+            matching_tasks = self._matching_newsflash_tasks(conn, row)
+            if len(matching_tasks) == 1:
+                task = matching_tasks[0]
+                snapshot["parent_item_id"] = self._task_item_id(task)
         if deleted:
             snapshot.update({"status": "deleted", "result": "unknown", "news_visible": False})
         identity_table = "tasks" if table == "x_task_pipeline" else table
@@ -321,9 +333,15 @@ class PostgresSourceStateProjector:
                     snapshot["updated_at_ms"] = timestamp_ms(event["occurred_at"]) or now
                     snapshot["news_visible"] = False
         changed_fields = [f"{key}={value}" for key, value in payload.items() if value is not None]
-        reason = _first(payload, "last_error", "error_message", "failure_reason", "status_reason", "reason")
+        pipeline = {
+            key.removeprefix("pipeline_"): value
+            for key, value in row.items()
+            if key.startswith("pipeline_")
+        }
         label = spec.source
-        event_status = "deleted" if operation == "DELETE" else str(payload.get("status") or payload.get("state") or snapshot["status"])
+        fallback_status = str(payload.get("status") or payload.get("state") or snapshot["status"])
+        event_status = "deleted" if operation == "DELETE" else _pipeline_event_status(payload, fallback_status) if table == "x_task_pipeline" else fallback_status
+        reason = _task_reason(pipeline, event_status) if snapshot_table == "tasks" else _first(payload, "last_error", "error_message", "failure_reason", "status_reason", "reason")
         event_result = "unknown" if operation == "DELETE" else _result(event_status, snapshot["business_key"], payload)
         summary = str(reason or ("记录已删除" if operation == "DELETE" else "状态变更：" + event_status))
         from .postgres_sources import BUSINESS_SOURCES
@@ -414,6 +432,26 @@ class PostgresSourceStateProjector:
         return dict(value) if isinstance(value, dict) else {}
 
     @staticmethod
+    def _task_item_id(row: dict[str, Any]) -> str:
+        source = str(row.get("source") or "unknown")
+        source_item_id = str(row.get("source_item_id") or row.get("id") or "")
+        return f"task:{source}:{source_item_id}"
+
+    @classmethod
+    def _matching_newsflash_tasks(cls, conn, row: dict[str, Any]) -> list[dict[str, Any]]:
+        source = str(row.get("source") or "")
+        source_item_id = str(row.get("source_item_id") or "")
+        if not source or not source_item_id:
+            return []
+        if not conn.execute("SELECT to_regclass('main.tasks') AS relation").fetchone()["relation"]:
+            return []
+        return [dict(task) for task in conn.execute(
+            "SELECT id,source,source_item_id FROM main.tasks "
+            "WHERE source=%s AND source_item_id=%s ORDER BY id LIMIT 2",
+            (source, source_item_id),
+        ).fetchall()]
+
+    @staticmethod
     def _project_task(snapshot: dict[str, Any], row: dict[str, Any], row_id: str) -> None:
         source = str(row.get("source") or "unknown")
         status = str(row.get("status") or "unknown")
@@ -421,7 +459,7 @@ class PostgresSourceStateProjector:
         pipeline = {key.removeprefix("pipeline_"): value for key, value in row.items() if key.startswith("pipeline_")}
         metadata = json_object(row.get("metadata"))
         error = pipeline.get("last_error")
-        reason = error or _first(_decode(pipeline.get("publisher_output")) or {}, "reason") or _first(_decode(pipeline.get("writer_output")) or {}, "reason")
+        reason = _task_reason(pipeline, status)
         admission = task_admission(status, pipeline, source)
         created = timestamp_ms(row.get("created_at"))
         updated_values = [timestamp_ms(row.get("updated_at")), created]

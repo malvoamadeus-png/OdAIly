@@ -1475,7 +1475,7 @@ class SystemInformationStore:
         clauses.extend([f"i.{sort}>=?", f"i.{sort}<?"])
         params.extend([since, until])
         if payload.get('view') == 'news':
-            clauses.extend(['i.news_visible=1', 'i.parent_item_id IS NULL'])
+            clauses.extend(['i.news_visible=1', 'i.parent_item_id IS NULL', "i.source_table <> 'newsflash_items'"])
         for key, column in (("business", "business_key"), ("source", "source"), ("stage", "stage"), ("status", "status"), ("result", "result"), ("failure_category", "failure_category")):
             value = str(payload.get(key) or "").strip()
             if value and value != "all":

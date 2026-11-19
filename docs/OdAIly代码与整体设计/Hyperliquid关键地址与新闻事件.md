@@ -394,4 +394,4 @@ systemctl restart odaily-hyperliquid-account-profit.service odaily-local-pipelin
 
 Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。普通监测的地址来源和候选派发兼容 PostgreSQL JSONB 返回的对象以及 SQLite 返回的 JSON 文本。PostgreSQL 服务初始化只应用版本化 schema，不在每次启动时重建候选索引或全量遍历命名记录；导入器负责保留并核验既有数据与主键。PostgreSQL 地址名称的唯一名分配在短事务中串行化。
 
-2026-11-19 独立 Hyperliquid SQLite 已导入并按业务核验后删除文件组。地址、基线、派发及地址备注和拉黑配置已核对，主库启用中的 Hyperliquid Prompt 与旧库一致；PostgreSQL 监测、普通监测和派发完成一轮。历史成交压缩与主库遗留的 Hyperliquid 历史表空间治理另行处理，不影响独立库切换。
+2026-11-19 独立 Hyperliquid SQLite 已导入并按业务核验后删除文件组。地址、基线、派发及地址备注和拉黑配置已核对，主库启用中的 Hyperliquid Prompt 与旧库一致；PostgreSQL 监测、普通监测和派发完成一轮。同日按用户要求删除主库历史导入表 `legacy_main.hl_news_fills`，当前业务使用 `hyperliquid_news.hl_news_fills`；历史主库导入检查点不再表示该旧表仍保留，不应重跑该表导入。当前业务成交压缩另行处理。

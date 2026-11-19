@@ -73,7 +73,7 @@ def test_observability_source_identity_map_covers_known_file_basenames() -> None
     assert source_map["/opt/OdAIly/data/database/odaily.sqlite"] == "main"
     assert source_map["/opt/OdAIly/data/runtime/hottopic.sqlite"] == "hottopic"
     assert source_map["/data/OdAIly/system-observability/system_information.sqlite"] == "system_observability"
-    assert source_map["/data/OdAIly/hyperliquid/hyperliquid.sqlite"] == "hyperliquid_news"
+    assert source_map["/data/OdAIly/hyperliquid/hyperliquid.sqlite"] == "main"
     expected = {
         "odaily.sqlite": "main",
         "hottopic.sqlite": "hottopic",
@@ -83,6 +83,15 @@ def test_observability_source_identity_map_covers_known_file_basenames() -> None
     }
     for basename, schema in expected.items():
         assert source_map[basename] == schema
+
+
+def test_hyperliquid_observability_identity_uses_dispatch_primary_key() -> None:
+    from packages.common.native_sqlite_import import _stable_imported_identity
+
+    first = _stable_imported_identity({"source_table": "hl_news_dispatch", "source_row_id": "953", "source_id": "event-a", "item_id": "main:hl_news_dispatch:event-a"})
+    second = _stable_imported_identity({"source_table": "hl_news_dispatch", "source_row_id": "953", "source_id": "event-b", "item_id": "main:hl_news_dispatch:event-b"})
+    assert first["source_row_id"] == "event-a"
+    assert second["source_row_id"] == "event-b"
 
 
 def test_import_postgres_connection_uses_migration_timeouts(monkeypatch) -> None:
@@ -175,6 +184,17 @@ def test_native_import_initial_pass_does_not_count_or_digest_scan_before_copy(
     assert not any(statement.startswith('select count(*) from "items"') for statement in normalized)
     assert sum(statement.startswith('select * from "items" order by "id"') for statement in data_reads) == 2
     assert report["tables"][0]["source_rows"] == 4
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        checkpoint = conn.execute(SQL("SELECT completed,source_rows,imported_rows FROM {}.native_sqlite_import_checkpoints WHERE source_key='fixture' AND source_table='items'").format(Identifier(native_import_target))).fetchone()
+    assert checkpoint == (True, 4, 4)
+
+    traced_sql.clear()
+    resumed = importer.import_native_sqlite_source(
+        source_key="fixture", source_path=source_path, source_mapping=mapping,
+        batch_size=2, trust_completed_checkpoints=True,
+    )
+    assert resumed["tables"][0]["completed_checkpoint_skipped"] is True
+    assert not any(statement.strip().lower().startswith('select * from "items"') for statement in traced_sql)
 
 
 def test_checkpoint_prefix_validation_rejects_changed_source_rows() -> None:

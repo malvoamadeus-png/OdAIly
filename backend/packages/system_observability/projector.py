@@ -22,7 +22,7 @@ from .error_policy import failure_category
 STATUS_LABELS = {
     'judging': ('价值判断中', 'processing'), 'deduping': ('查重中', 'processing'),
     'writing': ('写作中', 'processing'), 'formatting': ('稿件整理中', 'processing'), 'publishing': ('投递中', 'processing'),
-    "pending": ("已收集", "processing"), "judged": ("价值判断完成", "processing"),
+    "pending": ("已收集", "processing"), "collected": ("已收集", "processing"), "judged": ("价值判断完成", "processing"),
     "searched": ("查重完成", "processing"), "deduped": ("已通过查重及前置判断", "processing"),
     "duplicate": ("发现重复，停止写作", "stopped"), "discarded": ("判断后停止", "stopped"),
     "written": ("已生成草稿", "processing"), "formatted": ("已整理稿件", "processing"),
@@ -300,17 +300,67 @@ def _result(status: str, business_key: str, row: dict[str, Any]) -> str:
         return "internal_complete" if business_key == "x_agent" else "direct_publish"
     if value in {"ignored", "discarded", "duplicate", "skipped", "ended", "exempt"}:
         return "stopped"
-    if value in {"pending", "queued", "processing", "running", "retry", "waiting", "deferred", "deduped", "publisher_pending", 'judging', 'deduping', 'writing', 'formatting', 'publishing'}:
+    if value in {"pending", "collected", "queued", "processing", "running", "retry", "waiting", "deferred", "judged", "deduped", "searched", "written", "formatted", "publisher_pending", 'judging', 'deduping', 'writing', 'formatting', 'publishing'}:
         return "processing"
     return "unknown"
 
 
+def _task_reason(pipeline: dict[str, Any], status: str = "") -> str | None:
+    """Extract a persisted workflow reason from the task's stage payloads."""
+    error = _first(pipeline, "last_error", "error", "error_message", "failure_reason")
+    if error:
+        return str(error)[:1200]
+    value = status.casefold()
+    if value in {"discarded", "ignored", "off_topic", "expired"}:
+        order = ("judge_output", "search_result", "publisher_output", "writer_output")
+    elif value in {"duplicate", "searched", "deduping", "deduped"}:
+        order = ("search_result", "judge_output", "publisher_output", "writer_output")
+    else:
+        order = ("publisher_output", "writer_output", "search_result", "judge_output")
+    for key in order:
+        result = json_object(pipeline.get(key))
+        reason = _first(result, "reason", "status_reason", "failure_reason", "error", "message")
+        if reason:
+            return str(reason)[:1200]
+        if key == "judge_output" and str(result.get("route") or "").casefold() == "discard":
+            discard_type = str(result.get("discard_type") or result.get("decision") or "未通过价值判断")
+            labels = {"non_crypto_ai": "非 Crypto/AI 内容", "non_crypto": "非 Crypto 内容"}
+            return f"价值判断停止：{labels.get(discard_type, discard_type)}"
+    return None
+
+
+def _pipeline_event_status(payload: dict[str, Any], fallback: str) -> str:
+    """Name the stage represented by an x_task_pipeline outbox update."""
+    explicit = str(payload.get("status") or payload.get("state") or "").strip()
+    if explicit:
+        return explicit
+    judge = json_object(payload.get("judge_output"))
+    if judge:
+        return "discarded" if str(judge.get("route") or "").casefold() == "discard" else "judged"
+    search = json_object(payload.get("search_result"))
+    if search:
+        return "duplicate" if search.get("is_duplicate") is True or search.get("duplicate") is True else "searched"
+    if any(key in payload for key in ("writer_output", "write_completed_at")):
+        return "written"
+    if any(key in payload for key in ("final_title", "final_content", "format_completed_at")):
+        return "formatted"
+    if "publish_completed_at" in payload:
+        return fallback if fallback in {"auto_published", "published", "ready_review", "discarded"} else "published"
+    if any(key in payload for key in ("publisher_output", "publisher_decided_at", "push_result")):
+        return "publishing"
+    return fallback
+
+
 def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any], observed_at_ms: int, started_at_ms: int) -> tuple[dict[str, Any], dict[str, Any]]:
     raw_status = str(_first(row, "status", "state", "result_status") or "unknown")
+    if spec.table == "newsflash_items" and raw_status == "unknown":
+        raw_status = "collected"
     if spec.record_kind == "configuration":
         raw_status = "enabled" if row.get("enabled") in (1, True, "1", "true") else "disabled" if "enabled" in row else "configured"
     title = str(_first(row, "title", "writer4_title", "writer2_title", "project_name", "instrument_name", "display_name", "username", "slug", "site_key", "template_key", "group_name", "symbol", "coin", "address", "tx_hash", "event_key", "tweet_id") or f"{spec.source} {row.get('id', row.get('__obs_rowid__', ''))}")
     summary = str(_first(row, "status_reason", "reason", "summary", "last_error", "error", "classification_reason", "result", "kind", "status") or "")
+    if spec.table == "newsflash_items" and not summary:
+        summary = "原始来源记录，处理状态见关联任务"
     if spec.record_kind == "configuration":
         fields = [
             f"{key}={value}" for key, value in row.items()
@@ -351,6 +401,7 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         if spec.table == "tasks"
         else f"{source_database_key}:{spec.table}:{identity}"
     )
+    source_row_id = source_id if spec.table == "hl_news_dispatch" else row.get("id", row.get("__obs_rowid__"))
     snapshot = {
         "item_id": item_id,
         "business_key": business_key, "source": source_value, "source_id": source_id or None,
@@ -360,7 +411,7 @@ def _generic_snapshot(spec: TableSpec, source_database: Path, row: dict[str, Any
         "failure_category": failure_category(_first(row, 'last_error', 'error', 'error_message')) if _result(raw_status, spec.business_key, row) == 'failed' else None,
         "created_at_ms": created_ms, "updated_at_ms": updated_ms,
         "source_database": str(source_database), "source_table": spec.table,
-        "source_row_id": str(row.get("id", row.get("__obs_rowid__"))),
+        "source_row_id": str(source_row_id),
         "legacy_history": created_ms is None or created_ms < started_at_ms,
         "reason": summary[:1200] or None, "error_code": str(_first(row, "error_code") or "unknown") if _first(row, "last_error", "error") else None,
         "search_extra": " ".join(str(value) for key, value in row.items() if key != "__obs_rowid__" and isinstance(value, (str, int, float))),
@@ -516,14 +567,9 @@ class MainTaskProjector:
                     status = str(value.get("status") or "unknown")
                     label, result = STATUS_LABELS.get(status, (status.replace("_", " "), "failed" if status.endswith("failed") else "unknown"))
                     title = news_title(value.get('pipeline_final_title'), value.get('pipeline_draft_title'), value.get('title'), value.get('content'))
-                    writer_output = _decode(value.get("pipeline_writer_output"))
-                    publisher_output = _decode(value.get("pipeline_publisher_output"))
-                    reason = None
-                    if isinstance(publisher_output, dict):
-                        reason = publisher_output.get("reason")
-                    if not reason and isinstance(writer_output, dict):
-                        reason = writer_output.get("reason")
+                    pipeline = {key.removeprefix('pipeline_'): value[key] for key in value if key.startswith('pipeline_')}
                     error = value.get("pipeline_last_error")
+                    reason = _task_reason(pipeline, status)
                     summary = str(error or reason or label)
                     created_at_ms = timestamp_ms(value.get("created_at"))
                     updated_at_ms = max(
@@ -534,7 +580,6 @@ class MainTaskProjector:
                         ) if timestamp_ms(value.get(f"pipeline_{key}")) is not None],
                         default=None,
                     )
-                    pipeline = {key.removeprefix('pipeline_'): value[key] for key in value if key.startswith('pipeline_')}
                     admission = task_admission(status, pipeline, source)
                     metadata = json_object(value.get('metadata'))
                     task_id = int(value["id"])

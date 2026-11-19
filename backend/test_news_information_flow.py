@@ -10,7 +10,7 @@ from packages.system_observability import MainTaskProjector, SystemInformationSt
 from packages.system_observability.error_policy import day_start_ms, failure_category
 from packages.system_observability.error_retention import cleanup_dependency_errors, cleanup_observation_errors, dependency_error_totals
 from packages.system_observability.news import task_admission
-from packages.system_observability.projector import TABLE_SPECS
+from packages.system_observability.projector import TABLE_SPECS, TableSpec, _generic_snapshot, _pipeline_event_status, _result, _task_reason
 from packages.system_observability.store import timestamp_ms
 from test_system_observability import _source_db
 
@@ -297,6 +297,29 @@ def test_deduped_is_a_passed_prerequisite_not_duplicate() -> None:
     assert task_admission('searched', {}, 'blockbeats') == 'unassessed'
     assert task_admission('duplicate', {}, 'blockbeats') == 'duplicate'
     assert task_admission('discarded', {'judge_output': {'route': 'discard'}}, 'x') == 'rejected'
+
+
+def test_workflow_results_and_reasons_are_kept_for_intermediate_and_stopped_tasks() -> None:
+    assert _result('searched', 'unmapped_source', {}) == 'processing'
+    assert _result('written', 'unmapped_source', {}) == 'processing'
+    assert _pipeline_event_status({'search_result': {'reason': 'different_event'}}, 'discarded') == 'searched'
+    assert _pipeline_event_status({'judge_output': {'route': 'discard'}}, 'discarded') == 'discarded'
+    assert _task_reason({'judge_output': {'route': 'discard', 'discard_type': 'non_crypto_ai'}}, 'discarded') == '价值判断停止：非 Crypto/AI 内容'
+    assert _task_reason({'search_result': {'reason': 'same_event_new_facts'}}, 'searched') == 'same_event_new_facts'
+
+
+def test_newsflash_source_snapshot_is_collected_diagnostic_record() -> None:
+    snapshot, _ = _generic_snapshot(
+        TableSpec('main', 'newsflash_items', 'crypto_media', 'competitor_news'),
+        Path('main'),
+        {'id': 9, 'source': 'blockbeats', 'source_item_id': 'bb-9', 'title': '原始快讯'},
+        1_000,
+        0,
+    )
+    assert snapshot['status'] == 'collected'
+    assert snapshot['result'] == 'processing'
+    assert snapshot['summary'] == '原始来源记录，处理状态见关联任务'
+    assert snapshot['news_visible'] is False
 
 
 def test_latest_phase_time_wins_and_clock_refresh_does_not_append_history(tmp_path: Path) -> None:

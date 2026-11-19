@@ -266,12 +266,12 @@ def register_native_imported_source_identities(*, source_path: Path, batch_size:
         source.row_factory = sqlite3.Row
         batch: list[dict[str, Any]] = []
         cursor = source.execute(
-            "SELECT source_database,source_table,source_row_id,item_id FROM system_information_items "
+            "SELECT source_database,source_table,source_row_id,item_id,source_id FROM system_information_items "
             "WHERE source_database IS NOT NULL AND source_table IS NOT NULL "
             "AND source_row_id IS NOT NULL AND item_id IS NOT NULL ORDER BY item_id"
         )
         while rows := cursor.fetchmany(max(1, min(5000, batch_size))):
-            batch.extend(dict(row) for row in rows)
+            batch.extend(_stable_imported_identity(dict(row)) for row in rows)
             if len(batch) < max(1, min(5000, batch_size)):
                 continue
             before = len(skipped)
@@ -295,7 +295,7 @@ def register_native_imported_source_identities(*, source_path: Path, batch_size:
 def import_native_sqlite_source(
     *, source_key: str, source_path: Path, batch_size: int = 2000,
     source_mapping: SourceMapping | None = None, max_batch_bytes: int = 16 * 1024 * 1024,
-    max_row_bytes: int = 64 * 1024 * 1024,
+    max_row_bytes: int = 64 * 1024 * 1024, trust_completed_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Import an explicitly mapped SQLite file into native PostgreSQL tables.
 
@@ -338,6 +338,7 @@ def import_native_sqlite_source(
             if source_key in {"main", "hyperliquid"} and table == "hl_news_metadata":
                 reports.append(_import_hl_news_metadata_streaming(
                     sqlite, source_key, spec, table_map, batch_size=batch_size,
+                    trust_completed_checkpoints=trust_completed_checkpoints,
                 ))
                 continue
             target_name = dict(table_map.column_map)
@@ -395,23 +396,34 @@ def import_native_sqlite_source(
                 )
                 target_identifier = sql.Identifier(table_map.target_schema, table_map.target_table)
                 checkpoint_identifier = sql.Identifier(table_map.target_schema, "native_sqlite_import_checkpoints")
-                before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target_identifier)).fetchone()["n"])
                 conn.execute(sql.SQL(
                     "CREATE TABLE IF NOT EXISTS {}("
                     "source_key text NOT NULL,source_table text NOT NULL,schema_sha256 text NOT NULL,"
                     "last_identity jsonb,imported_rows bigint NOT NULL DEFAULT 0,digest_sum text NOT NULL DEFAULT '0',"
                     "source_rows bigint,source_digest_sum text,destination_base_count bigint NOT NULL DEFAULT 0,"
+                    "completed boolean NOT NULL DEFAULT false,completed_at timestamptz,"
                     "PRIMARY KEY(source_key,source_table))"
                 ).format(checkpoint_identifier))
                 conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS source_rows bigint").format(checkpoint_identifier))
                 conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS source_digest_sum text").format(checkpoint_identifier))
                 conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS destination_base_count bigint NOT NULL DEFAULT 0").format(checkpoint_identifier))
+                conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS completed boolean NOT NULL DEFAULT false").format(checkpoint_identifier))
+                conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS completed_at timestamptz").format(checkpoint_identifier))
                 checkpoint = conn.execute(sql.SQL(
-                    "SELECT schema_sha256,last_identity,imported_rows,digest_sum,source_rows,source_digest_sum,destination_base_count "
+                    "SELECT schema_sha256,last_identity,imported_rows,digest_sum,source_rows,source_digest_sum,destination_base_count,completed,completed_at "
                     "FROM {} WHERE source_key=%s AND source_table=%s"
                 ).format(checkpoint_identifier), (source_key, table)).fetchone()
                 if checkpoint and checkpoint["schema_sha256"] != hashlib.sha256(json.dumps({"schema": spec, "mapping": table_map},sort_keys=True,default=str).encode()).hexdigest():
                     raise RuntimeError(f"Source schema changed during native import: {source_key}/{table}")
+                if checkpoint and checkpoint["completed"] and trust_completed_checkpoints:
+                    reports.append({"source_table": table, "target_schema": table_map.target_schema,
+                                    "target_table": table_map.target_table,
+                                    "source_rows": checkpoint["source_rows"],
+                                    "imported_rows": checkpoint["imported_rows"],
+                                    "completed_checkpoint_skipped": True,
+                                    "completed_at": checkpoint["completed_at"]})
+                    continue
+                before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target_identifier)).fetchone()["n"])
             identity_sql = ",".join(_sqlite_identifier(key) for key in source_pk)
             quoted_table = _sqlite_identifier(table)
             source_count: int | None = None
@@ -613,6 +625,13 @@ def import_native_sqlite_source(
                             "destination_after": after, "last_identity": list(last_identity) if last_identity else None,
                             "source_sequence_high_water": sequence_value,
                             "source_digest_sum": digest_sum.to_bytes(32,"big").hex()})
+            with _connect_native_import_postgres(schema=table_map.target_schema, application_name="odaily-native-sqlite-checkpoint") as conn:
+                conn.execute(sql.SQL(
+                    "UPDATE {} SET completed=true,completed_at=clock_timestamp() "
+                    "WHERE source_key=%s AND source_table=%s"
+                ).format(sql.Identifier(table_map.target_schema, "native_sqlite_import_checkpoints")),
+                    (source_key, table),
+                )
         mapping_by_source = {table.source_table: table for table in mapping.tables}
         fk_audits = []
         for child in mapping.tables:
@@ -651,7 +670,7 @@ def import_native_sqlite_source(
             store = PostgresSystemInformationStore()
             sqlite.row_factory = sqlite3.Row
             identity_cursor = sqlite.execute(
-                "SELECT source_database,source_table,source_row_id,item_id FROM system_information_items "
+                "SELECT source_database,source_table,source_row_id,item_id,source_id FROM system_information_items "
                 "WHERE source_database IS NOT NULL AND source_table IS NOT NULL "
                 "AND source_row_id IS NOT NULL AND item_id IS NOT NULL ORDER BY item_id"
             )
@@ -661,7 +680,7 @@ def import_native_sqlite_source(
             while rows := identity_cursor.fetchmany(2000):
                 before_conflicts = len(identity_conflicts)
                 identity_count += store.register_imported_source_identities(
-                    (dict(row) for row in rows),
+                    (_stable_imported_identity(dict(row)) for row in rows),
                     source_schema_map=_observability_source_schema_map(),
                     max_batch=2000,
                     skip_identities=identity_conflicts,
@@ -779,7 +798,10 @@ def _observability_source_schema_map() -> dict[str, str]:
         "/opt/OdAIly/data/database/odaily.sqlite": "main",
         "/data/OdAIly/system-observability/system_information.sqlite": "system_observability",
         "/opt/OdAIly/data/runtime/hottopic.sqlite": "hottopic",
-        "/data/OdAIly/hyperliquid/hyperliquid.sqlite": "hyperliquid_news",
+        # Observability item identities follow the projector's logical source
+        # namespace. Hyperliquid business tables live in hyperliquid_news, but
+        # their source-state observations intentionally use the main namespace.
+        "/data/OdAIly/hyperliquid/hyperliquid.sqlite": "main",
         "/data/OdAIly/hottopic/hottopic.sqlite": "hottopic",
         "/data/OdAIly/meme/meme.sqlite": "meme",
         "/data/OdAIly/business/business.sqlite": "business_news",
@@ -793,7 +815,7 @@ def _observability_source_schema_map() -> dict[str, str]:
         "ai_text_self_upgrade.sqlite": "system_observability",
         "odaily.sqlite": "main",
         "system_information.sqlite": "system_observability",
-        "hyperliquid.sqlite": "hyperliquid_news",
+        "hyperliquid.sqlite": "main",
         "hottopic.sqlite": "hottopic",
         "meme_scanner.sqlite3": "meme",
         "business_news.sqlite": "business_news",
@@ -811,6 +833,14 @@ def _observability_source_schema_map() -> dict[str, str]:
         "competitor_monitor.sqlite": "main",
         "writer3.sqlite": "main",
     }
+
+
+def _stable_imported_identity(item: dict[str, Any]) -> dict[str, Any]:
+    # Hyperliquid dispatch rows can reuse SQLite rowids after deletion. Their
+    # event_key (projected as source_id) is the stable source primary key.
+    if item.get("source_table") == "hl_news_dispatch" and item.get("source_id"):
+        return {**item, "source_row_id": str(item["source_id"])}
+    return item
 
 
 def _remove_known_source_exclusion_seeds(conn, table_map: TableMapping, sqlite: sqlite3.Connection) -> int:
@@ -924,6 +954,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=2000)
     parser.add_argument("--max-batch-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--max-row-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--trust-completed-checkpoints", action="store_true",
+                        help="skip full verification for explicitly completed table checkpoints")
     args = parser.parse_args(argv)
     if args.initialize_schemas:
         if args.source_key or args.source_path or args.preflight:
@@ -942,7 +974,8 @@ def main(argv: list[str] | None = None) -> int:
     result = (preflight_native_sqlite_source(source_key=args.source_key, source_path=args.source_path)
               if args.preflight else import_native_sqlite_source(
                   source_key=args.source_key, source_path=args.source_path, batch_size=args.batch_size,
-                  max_batch_bytes=args.max_batch_bytes, max_row_bytes=args.max_row_bytes))
+                  max_batch_bytes=args.max_batch_bytes, max_row_bytes=args.max_row_bytes,
+                  trust_completed_checkpoints=args.trust_completed_checkpoints))
     print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
     return 0 if (not args.preflight or result["ready_for_import"]) else 1
 
@@ -975,7 +1008,7 @@ _HL_METADATA_STREAM_PROTOCOL = "utf8-md5-payload-v3-overflow"
 
 def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: str,
                                        source_spec: dict[str, Any], mapping: TableMapping,
-                                       *, batch_size: int) -> dict[str, Any]:
+                                       *, batch_size: int, trust_completed_checkpoints: bool = False) -> dict[str, Any]:
     """Preserve legacy Hyperliquid TEXT metadata without materializing huge rows."""
     if tuple(column[1] for column in source_spec["columns"]) != ("key", "payload"):
         raise RuntimeError("Unexpected hl_news_metadata source schema")
@@ -992,8 +1025,11 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
             "CREATE TABLE IF NOT EXISTS {}(source_key text NOT NULL,source_table text NOT NULL,"
             "schema_sha256 text NOT NULL,last_identity text,imported_rows bigint NOT NULL DEFAULT 0,"
             "digest_sum text NOT NULL DEFAULT '0',source_rows bigint,source_digest_sum text,"
-            "destination_base_count bigint NOT NULL DEFAULT 0,PRIMARY KEY(source_key,source_table))"
+            "destination_base_count bigint NOT NULL DEFAULT 0,completed boolean NOT NULL DEFAULT false,"
+            "completed_at timestamptz,PRIMARY KEY(source_key,source_table))"
         ).format(checkpoint_table))
+        conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS completed boolean NOT NULL DEFAULT false").format(checkpoint_table))
+        conn.execute(sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS completed_at timestamptz").format(checkpoint_table))
         columns = conn.execute(
             "SELECT column_name,is_nullable,column_default,udt_name,is_identity FROM information_schema.columns "
             "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
@@ -1019,6 +1055,11 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         checkpoint = conn.execute(sql.SQL(
             "SELECT * FROM {} WHERE source_key=%s AND source_table=%s"
         ).format(checkpoint_table), (source_key, "hl_news_metadata")).fetchone()
+        if checkpoint and checkpoint["completed"] and trust_completed_checkpoints:
+            return {"source_table": "hl_news_metadata", "target_schema": mapping.target_schema,
+                    "target_table": target_table, "source_rows": checkpoint["source_rows"],
+                    "imported_rows": checkpoint["imported_rows"], "completed_checkpoint_skipped": True,
+                    "completed_at": checkpoint["completed_at"], "streamed_payload": True}
         if (source_key == "hyperliquid" and checkpoint
                 and checkpoint["schema_sha256"] != hashlib.sha256(json.dumps({
                     "schema": source_spec, "mapping": mapping,
@@ -1205,7 +1246,7 @@ def _import_hl_news_metadata_streaming(sqlite: sqlite3.Connection, source_key: s
         if checkpoint and not legacy_checkpoint_upgrade and checkpoint["source_rows"] is not None and (
                 int(checkpoint["source_rows"]) != source_count or checkpoint["source_digest_sum"] != str(source_digest_sum)):
             raise RuntimeError("Source rows changed during streamed legacy import")
-        conn.execute(sql.SQL("UPDATE {} SET source_rows=%s,source_digest_sum=%s WHERE source_key=%s AND source_table=%s").format(checkpoint_table),
+        conn.execute(sql.SQL("UPDATE {} SET source_rows=%s,source_digest_sum=%s,completed=true,completed_at=clock_timestamp() WHERE source_key=%s AND source_table=%s").format(checkpoint_table),
                      (source_count, str(source_digest_sum), source_key, "hl_news_metadata"))
     return {"source_table": "hl_news_metadata", "target_schema": mapping.target_schema,
             "target_table": mapping.target_table, "source_rows": source_count, "imported_rows": imported,
