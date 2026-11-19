@@ -153,6 +153,78 @@ def test_hottopic_worker_once_uses_postgres_service_factory(monkeypatch, tmp_pat
     assert '"backend": "postgres"' in capsys.readouterr().out
 
 
+def test_hottopic_postgres_collector_loop_does_not_open_sqlite(monkeypatch, tmp_path) -> None:
+    from packages.hottopic import service as service_module
+
+    stop_requested = False
+
+    class FakeService:
+        postgres_repository = object()
+        path = tmp_path / "unused.sqlite"
+
+        def __init__(self, *_args, **_kwargs):
+            self.calls = 0
+            self.closed = False
+
+        def list_accounts(self):
+            return [object()]
+
+        def poll_due_accounts_once(self, database, *, limit):
+            assert database is None
+            assert limit == 2
+            return {"polled": 0}
+
+        def event(self, kind, detail):
+            assert kind == "collect_loop_error"
+            raise AssertionError("unexpected collector error")
+
+        def poll_once(self, *, collect_baseline_accounts):
+            assert collect_baseline_accounts is False
+            raise StopCollector
+
+        def close(self):
+            self.closed = True
+
+    class StopCollector(Exception):
+        pass
+
+    class FakeEvent:
+        def is_set(self):
+            return stop_requested
+
+        def set(self):
+            nonlocal stop_requested
+            stop_requested = True
+
+        def wait(self, _seconds):
+            self.set()
+            return True
+
+    class FakeThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+        def join(self):
+            pass
+
+    monkeypatch.setattr(service_module, "HotTopicService", FakeService)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: None)
+    monkeypatch.setattr(service_module.threading, "Event", FakeEvent)
+    monkeypatch.setattr(service_module.threading, "Thread", FakeThread)
+    monkeypatch.setattr(service_module, "open_worker_database", lambda *_a, **_kw: (_ for _ in ()).throw(
+        AssertionError("PG collector loop opened SQLite")
+    ))
+    monkeypatch.setattr(service_module.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopCollector))
+
+    try:
+        service_module.run_worker(model="fixture", workers=1)
+    except StopCollector:
+        pass
+
+
 def test_postgres_transient_prune_preserves_permanent_evidence(postgres_settings, hottopic_schema) -> None:
     from datetime import UTC, datetime, timedelta
     from packages.common.pg_native import connect_postgres
