@@ -136,6 +136,18 @@ def test_postgres_runtime_does_not_generate_or_rebuild_search_index(postgres_inf
     assert store.compact_search_index() == {"scanned": 0, "done": 1}
 
 
+def test_postgres_query_uses_account_snapshot_over_imported_attempts(postgres_information_store) -> None:
+    store = postgres_information_store
+    now = int(time.time() * 1000)
+    for item_id, stamp in (("main:x_capture_attempts:alice", now - 2000), ("legacy-attempt", now - 1000)):
+        snapshot = _snapshot(item_id)
+        snapshot.update(source_table="x_capture_attempts", source_id="alice", source_row_id=item_id,
+                        task_id=None, created_at_ms=stamp, updated_at_ms=stamp)
+        store.upsert_snapshot(snapshot, None)
+    result = store.query({"view": "diagnostic"})
+    assert [item["item_id"] for item in result["items"]] == ["main:x_capture_attempts:alice"]
+
+
 def test_postgres_query_enforces_six_hour_window_and_stable_cursor(postgres_information_store) -> None:
     store = postgres_information_store
     now_ms = int(time.time() * 1000)

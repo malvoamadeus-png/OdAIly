@@ -521,9 +521,9 @@ class PostgresSystemInformationStore:
         params: list[Any] = []
         if payload.get("view") == "news":
             clauses.extend(["i.news_visible", "i.parent_item_id IS NULL"])
-        # Older imports may contain one row per X poll attempt. Collapse those
-        # at read time as well, so only the account's newest result is visible.
-        clauses.append("(i.source_table <> 'x_capture_attempts' OR (i.source_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM system_information_items newer WHERE newer.source_table='x_capture_attempts' AND newer.source_id=i.source_id AND (COALESCE(newer.updated_at_ms,0)>COALESCE(i.updated_at_ms,0) OR (COALESCE(newer.updated_at_ms,0)=COALESCE(i.updated_at_ms,0) AND newer.item_id>i.item_id)))))")
+        # Native X capture writes one stable account snapshot; older imported
+        # per-attempt copies are excluded while retention removes them.
+        clauses.append("(i.source_table <> 'x_capture_attempts' OR (i.source_id IS NOT NULL AND i.item_id='main:x_capture_attempts:' || i.source_id))")
         for key, column in (("business", "business_key"), ("source", "source"), ("stage", "stage"), ("status", "status"), ("result", "result"), ("failure_category", "failure_category")):
             value = str(payload.get(key) or "").strip()
             if not value or value == "all":
