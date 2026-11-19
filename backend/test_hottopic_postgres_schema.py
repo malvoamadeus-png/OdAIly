@@ -53,6 +53,21 @@ def test_hottopic_and_investment_schemas_apply_in_dependency_order(postgres_sett
         assert conn.execute("SELECT singleton_key FROM hottopic_meta").fetchone() is None
 
 
+def test_hottopic_postgres_repository_reads_optional_maintenance_timestamp(postgres_settings, hottopic_schema) -> None:
+    from datetime import UTC, datetime
+    from packages.common.pg_native import connect_postgres
+    from packages.hottopic.postgres_repository import HotTopicPostgresRepository
+
+    repository = HotTopicPostgresRepository(schema=hottopic_schema, settings=postgres_settings)
+    repository.initialize()
+    assert repository.last_maintenance_at() is None
+    expected = datetime(2026, 11, 19, 4, 0, tzinfo=UTC)
+    with connect_postgres(schema=hottopic_schema, application_name="odaily-hottopic-maintenance-test", settings=postgres_settings) as conn:
+        with conn.transaction():
+            conn.execute("UPDATE hottopic_meta SET last_maintenance_at=%s WHERE singleton_key='global'", (expected,))
+    assert repository.last_maintenance_at() == expected
+
+
 def test_hottopic_public_reads_use_postgres_repository(postgres_settings, hottopic_schema, monkeypatch, tmp_path) -> None:
     from packages.hottopic import service as service_module
     from packages.hottopic.postgres_repository import HotTopicPostgresRepository

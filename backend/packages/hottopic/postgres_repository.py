@@ -885,6 +885,13 @@ class HotTopicPostgresRepository:
                 "SELECT deployment_started_at FROM hottopic_meta WHERE singleton_key='global'"
             ).fetchone()["deployment_started_at"]
 
+    def last_maintenance_at(self) -> datetime | None:
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            row = connection.execute(
+                "SELECT last_maintenance_at FROM hottopic_meta WHERE singleton_key='global'"
+            ).fetchone()
+            return row["last_maintenance_at"] if row else None
+
     def log_event(self, kind: str, detail: dict[str, Any], at: str) -> None:
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
             with connection.transaction():

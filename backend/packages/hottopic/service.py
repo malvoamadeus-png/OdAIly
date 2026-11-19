@@ -2477,7 +2477,8 @@ class HotTopicService:
     def _maintain(self, *, force: bool) -> dict[str, int] | None:
         if self.postgres_repository is not None:
             current = utc_now()
-            reconciled = self.aggregator.reconcile_recent_topics(current) if force or current - self.postgres_repository.last_maintenance_at() >= MAINTENANCE_INTERVAL else {"topic_merges": []}
+            last_maintenance = self.postgres_repository.last_maintenance_at()
+            reconciled = self.aggregator.reconcile_recent_topics(current) if force or not last_maintenance or current - last_maintenance >= MAINTENANCE_INTERVAL else {"topic_merges": []}
             state = self.postgres_repository.prune_transient_state(
                 at=current, retention_hours=TRANSIENT_RETENTION_HOURS, batch_size=100,
             )
