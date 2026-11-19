@@ -46,7 +46,7 @@ def isolated_pg():
           content text not null,role text not null,metadata jsonb not null,created_at timestamptz not null,updated_at timestamptz not null,
           unique(candidate_id,task_id));
         CREATE TABLE main.x_task_pipeline(task_id bigint primary key references main.tasks(id),candidate_id bigint references main.search_event_candidates(id),
-          prompt_template_key text,prompt_version_id bigint,judge_output jsonb not null,search_result jsonb not null,
+          prompt_template_key text,prompt_version_id bigint,writer_feature_mode_enabled boolean,judge_output jsonb not null,search_result jsonb not null,
           writer_output jsonb not null,publisher_output jsonb not null,push_result jsonb not null,telegram_result jsonb not null,
           created_at timestamptz not null,updated_at timestamptz not null);
         CREATE TABLE main.x_processing_attempts(id bigint primary key,task_id bigint not null references main.tasks(id),stage text not null,
@@ -87,7 +87,7 @@ def _sources(tmp_path: Path):
           CREATE TABLE x_capture_attempts(id integer primary key,account_id integer,username_lower text,status text,source text,
             candidate_count integer,seeded_count integer,new_count integer,saved_count integer,error text,started_at text,finished_at text,metadata text);
           CREATE TABLE x_capture_accounts(id integer primary key);
-          CREATE TABLE x_task_pipeline(task_id integer primary key,candidate_id integer,prompt_template_key text,prompt_version_id integer,
+          CREATE TABLE x_task_pipeline(task_id integer primary key,candidate_id integer,prompt_template_key text,prompt_version_id integer,writer_feature_mode_enabled integer,
             judge_output text,search_result text,writer_output text,publisher_output text,push_result text,telegram_result text,created_at text,updated_at text);
           CREATE TABLE x_processing_attempts(id integer primary key,task_id integer,stage text,attempt_no integer,executor text,status text,
             started_at text,response_received_at text,finished_at text,input_json text,rule_json text,response_gzip blob,response_sha256 text,
@@ -100,7 +100,7 @@ def _sources(tmp_path: Path):
         """)
         db.execute("INSERT INTO tasks VALUES(1,'msx','msx:1',null,'t','body',null,'{}','{}','ready_review','2026-01-01','2026-01-01',null,null,3)")
         db.execute("INSERT INTO tasks VALUES(2,'x','tweet',null,'pending','body',null,'{}','{}','pending','2026-01-01','2026-01-01',null,null,0)")
-        db.execute("INSERT INTO x_task_pipeline VALUES(1,7,'tpl',9,'{}','{}','{}','{}','{}','{}','2026-01-01','2026-01-01')")
+        db.execute("INSERT INTO x_task_pipeline VALUES(1,7,'tpl',9,0,'{}','{}','{}','{}','{}','{}','2026-01-01','2026-01-01')")
         db.execute("INSERT INTO search_event_candidates VALUES(7,1,'active','t','body','hash','{}',null,'2026-01-01','2026-01-01')")
         db.execute("INSERT INTO search_event_sources VALUES(8,7,1,'msx','msx:1',null,'t','body','primary','{}','2026-01-01','2026-01-01')")
         db.execute("INSERT INTO x_processing_attempts VALUES(10,1,'format_publish',1,'worker','succeeded','2026-01-01',null,'2026-01-01','{}','{}',null,null,null,null,null,null,'{}',null,null,0)")

@@ -12,6 +12,8 @@ from pathlib import Path
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from packages.common.native_sqlite_import import _convert
+
 
 TABLES = {
     ("main", "newsflash_items"): ("main", ("source", "source_item_id"), ("raw_payload", "metadata")),
@@ -30,20 +32,16 @@ def _sqlite(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _pg_value(value, json_column: bool):
-    if json_column and isinstance(value, str):
-        try:
-            return Jsonb(json.loads(value))
-        except json.JSONDecodeError:
-            return Jsonb(value)
-    if isinstance(value, int) and value in (0, 1):
-        return value
-    return value
-
-
 def _insert(connection, schema: str, table: str, row: dict, target_columns: set[str], json_columns: tuple[str, ...]):
     columns = [name for name in row if name in target_columns]
-    values = [_pg_value(row[name], name in json_columns) for name in columns]
+    target_types = {item["column_name"]: item for item in connection.execute(
+        "SELECT column_name,udt_name,udt_schema FROM information_schema.columns WHERE table_schema=%s AND table_name=%s",
+        (schema, table)).fetchall()}
+    mapping = type("ImportMapping", (), {"source_table": table, "json_columns": json_columns,
+                                         "timestamp_columns": tuple(
+                                             name for name, target in target_types.items()
+                                             if target["udt_name"] in ("timestamp", "timestamptz"))})()
+    values = [_convert(row[name], name, mapping, target_types[name]) for name in columns]
     connection.execute(sql.SQL("INSERT INTO {}.{} ({}) VALUES ({})").format(
         sql.Identifier(schema), sql.Identifier(table),
         sql.SQL(",").join(map(sql.Identifier, columns)),
