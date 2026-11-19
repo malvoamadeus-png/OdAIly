@@ -1543,9 +1543,16 @@ class SystemInformationStore:
             item = conn.execute("SELECT * FROM system_information_items WHERE item_id=?", (item_id,)).fetchone()
             if item is None:
                 return None
+            child_ids = [str(row['item_id']) for row in conn.execute(
+                "SELECT item_id FROM system_information_items WHERE parent_item_id=?", (item_id,),
+            ).fetchall()]
+            event_item_ids = [item_id, *child_ids]
+            placeholders = ','.join('?' for _ in event_item_ids)
             events = conn.execute(
-                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json FROM system_information_events WHERE item_id=? OR item_id IN (SELECT item_id FROM system_information_items WHERE parent_item_id=?) ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,rowid",
-                (item_id, item_id),
+                "SELECT event_id,event_type,stage,status,result,happened_at_ms,observed_at_ms,summary,reason,error_code,evidence_ref,details_json "
+                f"FROM system_information_events WHERE item_id IN ({placeholders}) "
+                "ORDER BY COALESCE(happened_at_ms,observed_at_ms),observed_at_ms,rowid",
+                event_item_ids,
             ).fetchall()
             references = list({row['evidence_ref'] for row in [item, *events] if row['evidence_ref']})
             paths: dict[str, str] = {}

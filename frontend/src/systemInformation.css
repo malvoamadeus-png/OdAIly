@@ -159,6 +159,7 @@
 }
 
 .result-direct_publish { border-color: #27845f; color: #216b4d; }
+.result-notified { border-color: #477e9f; color: #396b87; }
 .result-backoffice { border-color: #477e9f; color: #396b87; }
 .result-failed { border-color: #c84c47; color: #a73732; }
 .result-stopped { border-color: #ac8731; color: #80651f; }

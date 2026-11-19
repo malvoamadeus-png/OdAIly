@@ -17,6 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
   pending: '处理中', judged: '处理中', searched: '处理中', written: '处理中', formatted: '处理中',
   judging: '价值判断中', deduping: '查重中', writing: '写作中', formatting: '稿件整理中', publishing: '投递中',
   publisher_pending: '等待投递', ready_review: '挂后台', auto_published: '直发', published: '已发布',
+  notified: '已通知', expired: '已过期', legacy_skipped: '旧任务已跳过', active: '运行中',
   discarded: '正常停止', deduped: '已通过前置判断', duplicate: '重复停止', failed: '失败',
   enabled: '已启用', disabled: '已停用', configured: '已配置',
 };
@@ -150,10 +151,10 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
           <option value="all">全部环节</option><option>已收集</option><option>判断</option><option>查重</option><option>写作</option><option>稿件整理</option><option>投递</option><option>业务停止</option>
         </select></label>
         <label><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value)}>
-          <option value="all">全部状态</option><option value="processing">处理中</option><option value="backoffice">挂后台</option><option value="direct_publish">直发</option><option value="normal_stop">正常停止</option><option value="failed">失败</option>
+          <option value="all">全部状态</option><option value="processing">处理中</option><option value="backoffice">挂后台</option><option value="direct_publish">直发</option><option value="notified">已通知</option><option value="normal_stop">正常停止</option><option value="failed">失败</option>
         </select></label>
         <label><span>结果</span><select value={result} onChange={(event) => setResult(event.target.value)}>
-          <option value="all">全部结果</option><option value="processing">处理中</option><option value="backoffice">挂后台</option><option value="direct_publish">直发</option><option value="stopped">正常停止</option><option value="failed">失败</option>
+          <option value="all">全部结果</option><option value="processing">处理中</option><option value="backoffice">挂后台</option><option value="direct_publish">直发</option><option value="notified">已通知</option><option value="stopped">正常停止</option><option value="failed">失败</option>
         </select></label>
         <label><span>故障类别</span><select value={failure} onChange={(event) => setFailure(event.target.value)}>
           <option value="all">全部</option><option value="local_storage">本地存储</option><option value="upstream_timeout">上游超时</option><option value="upstream_http">上游接口</option><option value="upstream_auth">上游权限或额度</option><option value="program_or_unknown">程序或未知</option>
@@ -258,7 +259,7 @@ function DeferredDetails({ label, className, children }: { label: string; classN
 
 function resultLabel(result: string): string {
   const labels: Record<string, string> = {
-    processing: '处理中', backoffice: '挂后台', direct_publish: '已直发', capture_success: '采集成功', stopped: '正常停止', failed: '失败', unknown: '结果未知', configuration_change: '配置生效变更',
+    processing: '处理中', backoffice: '挂后台', direct_publish: '已直发', notified: '已通知', internal_complete: '已完成', capture_success: '采集成功', stopped: '正常停止', failed: '失败', unknown: '结果未知', configuration_change: '配置生效变更',
   };
   return labels[result] || result;
 }

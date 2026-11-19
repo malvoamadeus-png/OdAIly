@@ -28,6 +28,8 @@ STATUS_LABELS = {
     "written": ("已生成草稿", "processing"), "formatted": ("已整理稿件", "processing"),
     "publisher_pending": ("等待投递", "processing"), "ready_review": ("挂后台", "backoffice"),
     "auto_published": ("已直发", "direct_publish"), "published": ("已发布", "direct_publish"),
+    "notified": ("已通知", "notified"), "expired": ("已过期", "stopped"),
+    "legacy_skipped": ("旧任务已跳过", "stopped"), "active": ("运行中", "processing"),
 }
 
 ADDITIONAL_PROJECTION_INTERVAL_MS = 15_000
@@ -298,6 +300,14 @@ def _result(status: str, business_key: str, row: dict[str, Any]) -> str:
         return "backoffice"
     if value in {"auto_published", "published", "sent", "sent_success", "success", "succeeded"}:
         return "internal_complete" if business_key == "x_agent" else "direct_publish"
+    if value == "notified":
+        return "notified"
+    if value in {"expired", "legacy_skipped"}:
+        return "stopped"
+    if value in {"completed", "finished", "passed"}:
+        return "internal_complete"
+    if value in {"active", "processing"}:
+        return "processing"
     if value in {"ignored", "discarded", "duplicate", "skipped", "ended", "exempt"}:
         return "stopped"
     if value in {"pending", "collected", "queued", "processing", "running", "retry", "waiting", "deferred", "judged", "deduped", "searched", "written", "formatted", "publisher_pending", 'judging', 'deduping', 'writing', 'formatting', 'publishing'}:
@@ -326,6 +336,12 @@ def _task_reason(pipeline: dict[str, Any], status: str = "") -> str | None:
             discard_type = str(result.get("discard_type") or result.get("decision") or "未通过价值判断")
             labels = {"non_crypto_ai": "非 Crypto/AI 内容", "non_crypto": "非 Crypto 内容"}
             return f"价值判断停止：{labels.get(discard_type, discard_type)}"
+    if value == "notified":
+        return "已完成提醒投递"
+    if value == "expired":
+        return "处理窗口已过期"
+    if value == "legacy_skipped":
+        return "旧任务已跳过"
     return None
 
 
