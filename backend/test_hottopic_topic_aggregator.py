@@ -5,7 +5,12 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, TopicClaimReviewer, TopicEventMergeReviewer, stable_id
+from packages.hottopic.topic_aggregator import ContentItem, EventIdentity, ModelBriefWriter, TopicAggregator, TopicClaimReviewer, TopicEventMergeReviewer, dt, stable_id
+
+
+def test_datetime_helper_accepts_postgres_datetime() -> None:
+    value = datetime(2026, 11, 19, 4, 0, tzinfo=UTC)
+    assert dt(value) == value
 
 
 def profile(

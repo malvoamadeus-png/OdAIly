@@ -125,8 +125,14 @@ def iso(value: datetime | str) -> str:
     return dt.astimezone(UTC).isoformat()
 
 
-def dt(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+def dt(value: str | datetime) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def stable_id(prefix: str, *parts: object, length: int = 16) -> str:

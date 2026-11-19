@@ -2760,25 +2760,28 @@ def run_worker(*, database_path: Path | None = None, seed_path: Path | None = No
         stop_collector = threading.Event()
 
         def collect_loop() -> None:
-            database = open_worker_database(service.path)
+            # PG collection uses the native repository for both account
+            # claiming and poll persistence; do not pass it a SQLite handle.
+            database = None if service.postgres_repository is not None else open_worker_database(service.path)
             try:
                 while not stop_collector.is_set():
                     try:
                         result = service.poll_due_accounts_once(database, limit=service.workers * 2)
                     except Exception as exc:
                         try:
-                            service.event(
-                                "collect_loop_error",
-                                {"error": f"{type(exc).__name__}: {exc}"},
-                                database=database,
-                            )
+                            detail = {"error": f"{type(exc).__name__}: {exc}"}
+                            if database is None:
+                                service.event("collect_loop_error", detail)
+                            else:
+                                service.event("collect_loop_error", detail, database=database)
                         except Exception as log_exc:
                             print(f"HotTopic collector error: {exc}; log error: {log_exc}", flush=True)
                         stop_collector.wait(2)
                     else:
                         stop_collector.wait(0.05 if result["polled"] else 2)
             finally:
-                database.close()
+                if database is not None:
+                    database.close()
 
         collector = threading.Thread(target=collect_loop, name="hottopic-collector", daemon=True)
         collector.start()
