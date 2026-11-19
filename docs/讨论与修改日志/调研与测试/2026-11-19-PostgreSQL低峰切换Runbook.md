@@ -157,6 +157,22 @@ print(report)
 
 重复执行原则：导入只允许使用相同 source key、路径和 checkpoint 重入；导入前后不自动启动 services。service start/restart 必须在确认前一实例已停止、旧 owner 已退出后逐个执行；不要为“重试”同时启动第二个 consumer。切换后复核 scheduler/系统重启是否会拉起本地 enable 状态以外的 unit，必要时仅对已核验 unit 执行 enable 状态检查。
 
+### 冻结混合写入增量对账
+
+若某个已完成的混合写入窗口需要把少量 SQLite 源行补到 PostgreSQL，使用 `scripts/reconcile_frozen_increment.py`。工具仅处理显式 outbox 序号区间和四张业务表：`main.newsflash_items`、`main.tasks`、`main.x_capture_attempts`、`hottopic.x_agent_analysis_jobs`，以及这些行直接依赖的 `x_task_pipeline`、`x_processing_attempts`、`x_processing_attempt_events`、`search_event_candidates`、`search_event_sources` 和 HotTopic `hottopic_inbox`。它读取 SQLite 当前值，以 id 和业务唯一键检查 PostgreSQL；任一冲突会阻止整个事务，已有 PostgreSQL 行不更新，源侧已删除行只报告。执行前必须以冻结源上的 dry-run 计划逐行核对依赖和终态。默认 apply 遇到 pending task 会拒绝；只有明确接受这些行进入 PostgreSQL 后可能被 worker 领取时，才可增加 `--allow-pending-tasks`。该工具不会调用 worker、发布接口或外部服务。
+
+先在本地冻结源文件写入并确定准确路径及已核准的上界。默认命令只做只读 dry-run；确认报告无冲突且缺行集合正确后，才可显式 apply。`x_capture_attempts` 若引用的账号缺失会由 PG 外键拒绝并回滚；需先单独核实账号缺口，不在此工具中自动补父行。
+
+```bash
+PYTHONPATH=backend python scripts/reconcile_frozen_increment.py \
+  --source 'main=/path/to/odaily.sqlite' \
+  --source 'hottopic=/path/to/hottopic.sqlite' \
+  --seq 'main=1965044:MAIN_FROZEN_MAX' \
+  --seq 'hottopic=135565:HOTTOPIC_FROZEN_MAX'
+```
+
+`MAIN_FROZEN_MAX` 与 `HOTTOPIC_FROZEN_MAX` 必须替换为冻结后分别读取到的真实 outbox 最大序号；不可直接假设两个来源已停写或把旧值作为上界。apply 命令增加 `--apply --source-writes-stopped`；只有经业务确认 pending task 可恢复领取时才额外增加 `--allow-pending-tasks`。必须先审查完整 JSON 计划，确认所有 identity 匹配、关联父行和 sequence 处理无冲突。源 SQLite 与 PG 均保留，apply 后复核相关表、attempt/event 链和序列值；不要启动 worker 作为验证手段。
+
 ## 回切
 
 任何数据核验未过、PG-only 服务无法恢复、队列重复副作用或 SQLite 旁路出现时，停止所有已启动的新写服务，记录错误和 PG 审计。只有源库尚完整保留时，才按已演练的导出/恢复流程回切；不得假设有备份，不把 DSN 改回 Supabase，也不让 SQLite 与 PostgreSQL 同时写入/消费。
