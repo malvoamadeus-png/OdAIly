@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Callable
 
 SCAN_PROMPT_VERSION = "investment_leads_scan_v4"
@@ -14,6 +15,12 @@ DERIVE_PROMPT_VERSION = "investment_leads_derive_v5"
 IDENTITY_SEARCH_PROMPT_VERSION = "investment_leads_identity_search_v1"
 MAX_SCAN_BATCH = 10
 MAX_SEGMENT_CHARS = 4_800
+
+
+def _json_prompt_default(value: Any) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
 @dataclass(frozen=True)
@@ -459,7 +466,7 @@ def _derive_prompt(candidate: dict[str, Any], related_events: list[dict[str, Any
         "现有线索 ID 只用于同一事件的同一驱动；新增来源本身不能改写实质更新时间。"
     )
     evidence = {"candidate": candidate, "related_events": related_events[:20], "existing_leads": existing_leads[:30]}
-    return f"{rules}\n只返回 JSON：{json.dumps(shape, ensure_ascii=False)}\n输入：{json.dumps(evidence, ensure_ascii=False)}"
+    return f"{rules}\n只返回 JSON：{json.dumps(shape, ensure_ascii=False)}\n输入：{json.dumps(evidence, ensure_ascii=False, default=_json_prompt_default)}"
 
 
 def _identity_search_prompt(asset_name: str, context: dict[str, Any]) -> str:

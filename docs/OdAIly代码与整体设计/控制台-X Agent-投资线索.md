@@ -6,6 +6,8 @@
 
 存储切换由 `ODAILY_STORAGE_BACKEND` 统一选择。`odaily-investment-leads.service` 的 worker 启动入口在 `postgres` 模式创建 `InvestmentLeadPostgresRepository`，服务不会打开参数指定的 SQLite 文件；`sqlite` 模式继续使用共享 HotTopic SQLite。`InvestmentLeadService` 注入 PostgreSQL repository 后，扫描、推导、补充、身份搜索、任务维护、usage、dashboard、列表、详情及失败重试均走 PostgreSQL adapter。模型/Web Search/补充抓取发生在连接归还后，提交事务按 task attempts 与 lease 时间校验 owner，并复核账号资格。PG 投资线索表以 JSONB 存储结构化内容，schema 通过 `hottopic` schema 内版本化迁移创建。HotTopic collector 的生产路径仍须按其独立迁移状态判断；worker backend 选择不代表 X Agent 采集路径已全部切换。
 
+PostgreSQL 查询返回的 `date` / `datetime` 进入推导 Prompt 时统一序列化为 ISO 8601 字符串，避免数据库驱动类型导致 JSON 序列化失败；SQLite 中已保存的字符串时间保持原样。
+
 系统分别保存来源材料、原帖主张和模型推导。写作 Prompt 要保留测试、拟议、预计、条件、方向和原文时间，不能把计划改成已发生。帖子、附件文字、搜索结果和外链文本都视作不可信输入，不执行其中的指令。
 
 ## 账号资格与采集起点
