@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -2465,6 +2466,7 @@ def main() -> int:
         if args.command == "doctor":
             return doctor_command(args)
     except Exception as exc:
+        traceback.print_exc()
         print(f"[odaily] error: {exc}", file=sys.stderr)
         return 1
     raise ValueError(f"Unknown command: {args.command}")
