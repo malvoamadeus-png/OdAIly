@@ -782,10 +782,13 @@ def test_hl_news_metadata_resumes_legacy_jsonb_stream_checkpoint(native_import_t
         "schema": spec, "mapping": mapping, "stream_protocol": "utf8-md5-payload-v2",
     }, sort_keys=True, default=str).encode()).hexdigest()
     old_digest = 0
-    for key, payload in payloads[:17]:
-        old_digest = (old_digest + importer._hl_metadata_row_digest(
-            key, hashlib.md5(payload.encode("utf-8"), usedforsecurity=False).hexdigest(),
-        )) % (1 << 256)
+    with sqlite3.connect(source_path) as source:
+        source.row_factory = sqlite3.Row
+        for row in source.execute('SELECT rowid,"key" FROM hl_news_metadata WHERE "key"<=? ORDER BY "key"',
+                                  ("key-16",)):
+            old_digest = (old_digest + importer._hl_metadata_row_digest(
+                row["key"], importer._hl_metadata_source_jsonb_digest(source, row["rowid"], row["key"], mapping.tables[0]),
+            )) % (1 << 256)
 
     with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
         conn.execute(SQL("CREATE TABLE {}.hl_news_metadata(key text PRIMARY KEY,payload jsonb NOT NULL)").format(Identifier(schema)))

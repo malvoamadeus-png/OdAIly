@@ -1273,7 +1273,9 @@ def _bridge_hl_metadata_stream_checkpoint(sqlite: sqlite3.Connection, source_key
     source_prefix = []
     for rowid, key in rows:
         key = str(key)
-        old_digest = _hl_metadata_row_digest(key, _hl_metadata_source_raw_md5(sqlite, int(rowid)))
+        old_digest = _hl_metadata_row_digest(
+            key, _hl_metadata_source_jsonb_digest(sqlite, int(rowid), key, mapping),
+        )
         digest = (digest + old_digest) % (1 << 256)
         count += 1
         source_prefix.append((int(rowid), key))
