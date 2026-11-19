@@ -392,4 +392,4 @@ systemctl restart odaily-hyperliquid-account-profit.service odaily-local-pipelin
 独立命名worker使用 `gpt-6-luna`，覆盖全部已发现、未拉黑且未人工锁定的地址，存量逐批命名，新增自动进入队列，每七天复核。稳定特长优先，状态称谓在对应仓位反手或清仓时立即停用并重新命名。人工保存备注后永久接管，包括清空；模型请求期间人工编辑也不能被覆盖。命名不改变十个方向的新闻准入，也不阻塞监测、派发或写稿。取数、事务保护、运行命令、失败处理和控制台分析契约见 `Hyperliquid地址自动称谓.md`。
 # PostgreSQL 迁移实现状态
 
-Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。SQLite 仍是当前生产来源，只有完整导入和验收后才允许切换。PostgreSQL 服务初始化只应用版本化 schema，不在每次启动时重建候选索引或全量遍历命名记录；导入器负责保留并核验既有数据与主键。PostgreSQL 地址名称的唯一名分配在短事务中串行化。
+Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。候选派发兼容 PostgreSQL JSONB 返回的对象和 SQLite 返回的 JSON 文本。PostgreSQL 服务初始化只应用版本化 schema，不在每次启动时重建候选索引或全量遍历命名记录；导入器负责保留并核验既有数据与主键。PostgreSQL 地址名称的唯一名分配在短事务中串行化。

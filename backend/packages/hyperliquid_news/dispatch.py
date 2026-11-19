@@ -79,7 +79,8 @@ class EventDispatcher:
             if len(results) >= limit:
                 break
             import json
-            event = json.loads(row['payload'])
+            payload = row['payload']
+            event = payload if isinstance(payload, dict) else json.loads(payload)
             if not production_allowed(event, policy):
                 continue
             result = self._create_task(event)
