@@ -113,8 +113,8 @@ class PostgresLocalPipelineQueue:
         """
         if not source_writes_stopped:
             raise RuntimeError("confirm all SQLite local_pipeline writers are stopped before epoch adoption")
-        if source_epoch != "sqlite-primary":
-            raise ValueError("only the frozen sqlite-primary epoch can be adopted")
+        if not source_epoch.startswith("sqlite-"):
+            raise ValueError("source epoch must use the frozen sqlite-* namespace")
         if source_epoch == self.storage_epoch:
             raise ValueError("source and destination storage epochs must differ")
         with self._connect("epoch-adopt") as conn:

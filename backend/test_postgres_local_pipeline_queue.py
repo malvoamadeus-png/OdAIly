@@ -120,6 +120,57 @@ def test_postgres_queue_concurrent_claim_and_lease_fencing(queue_settings, monke
             cleanup.execute("DROP SCHEMA IF EXISTS " + Identifier(schema).as_string(cleanup) + " CASCADE")
 
 
+def test_postgres_queue_adopts_explicit_frozen_sqlite_epoch(queue_settings, monkeypatch) -> None:
+    from packages.common.pg_native import connect_postgres
+    from packages.local_pipeline.postgres_queue import PostgresLocalPipelineQueue
+    from psycopg.sql import Identifier
+
+    schema = "test_lp_adopt_" + uuid.uuid4().hex[:10]
+    monkeypatch.setattr("packages.local_pipeline.postgres_queue.load_storage_settings",
+                        lambda: type("Storage", (), {"epoch": "postgres-cutover-test"})())
+    monkeypatch.setattr("packages.local_pipeline.postgres_queue.load_postgres_settings", lambda: queue_settings)
+    original_connect = connect_postgres
+    monkeypatch.setattr(
+        "packages.local_pipeline.postgres_queue.connect_postgres",
+        lambda *, schema, application_name=None, settings=None: original_connect(
+            schema=schema, application_name=application_name, settings=settings or queue_settings
+        ),
+    )
+    try:
+        queue = PostgresLocalPipelineQueue(schema=schema)
+        with connect_postgres(schema=schema, settings=queue_settings) as conn:
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO local_pipeline_jobs(job_type,task_id,source,source_item_id,payload,storage_epoch,status,next_attempt_at,updated_at) "
+                    "VALUES('write_flow',%s,'fixture',%s,'{}'::jsonb,%s,%s,now(),now())",
+                    [(1, "pending", "sqlite-20260802", "pending"),
+                     (2, "exhausted", "sqlite-20260802", "exhausted"),
+                     (3, "done", "sqlite-20260802", "succeeded"),
+                     (4, "legacy", "postgres-legacy", "pending")],
+                )
+
+        report = queue.adopt_frozen_sqlite_epoch(
+            source_epoch="sqlite-20260802", source_writes_stopped=True,
+        )
+        assert report["adopted"] == 3
+        assert report["source_status_counts"] == {"exhausted": 1, "pending": 1, "succeeded": 1}
+        assert report["destination_epoch"] == "postgres-cutover-test"
+        with connect_postgres(schema=schema, settings=queue_settings) as conn:
+            counts = conn.execute(
+                "SELECT storage_epoch,status,count(*) AS n FROM local_pipeline_jobs GROUP BY storage_epoch,status ORDER BY storage_epoch,status"
+            ).fetchall()
+        assert [(row["storage_epoch"], row["status"], row["n"]) for row in counts] == [
+            ("postgres-cutover-test", "exhausted", 1),
+            ("postgres-cutover-test", "pending", 1),
+            ("postgres-cutover-test", "succeeded", 1),
+            ("postgres-legacy", "pending", 1),
+        ]
+    finally:
+        with connect_postgres(schema="main", application_name="odaily-local-pipeline-test-cleanup", settings=queue_settings) as cleanup:
+            cleanup.execute("DELETE FROM main._odaily_schema_migrations WHERE schema_name=%s AND component='local_pipeline'", (schema,))
+            cleanup.execute("DROP SCHEMA IF EXISTS " + Identifier(schema).as_string(cleanup) + " CASCADE")
+
+
 def test_postgres_local_pipeline_http_job_is_processed(queue_settings, monkeypatch) -> None:
     from packages.common.pg_native import connect_postgres
     from packages.local_pipeline.postgres_queue import PostgresLocalPipelineQueue

@@ -141,19 +141,19 @@ PYTHONPATH=backend python scripts/drain_frozen_source_outboxes.py \
 
 ### local-pipeline epoch 接管
 
-Native import 保留 `local_pipeline_jobs.storage_epoch` 原值。导入到 PostgreSQL 后，SQLite 的 `sqlite-primary` 队列行不会被 PostgreSQL 默认 epoch worker 领取。所有 SQLite writer 已冻结、全量导入及主键/状态/租约核验通过后，必须在 PG-only 单写窗口执行一次显式 epoch adoption；禁止把 adoption 放入应用/schema 初始化流程。
+Native import 保留 `local_pipeline_jobs.storage_epoch` 原值。导入到 PostgreSQL 后，SQLite 的 `sqlite-*` 队列行不会被 PostgreSQL 默认 epoch worker 领取。所有 SQLite writer 已冻结、全量导入及主键/状态/租约核验通过后，必须在 PG-only 单写窗口执行一次显式 epoch adoption；禁止把 adoption 放入应用/schema 初始化流程。
 
-adoption 前先选定非空的切换 epoch（例如 `postgres-2026-11-cutover1`），校验符合 `ODAILY_STORAGE_EPOCH` 字符限制，并将它同时写入 `/etc/odaily/postgresql.env` 的 `ODAILY_STORAGE_EPOCH`，确保目标服务与执行 adoption 的命令读取同一值。值必须与 `sqlite-primary` 不同，且本次写入 PG 的应用服务都使用同一 epoch；adoption 返回的 `destination_epoch` 必须与该值一致，`adopted` 与冻结 SQLite `storage_epoch='sqlite-primary'` 行数相同。重复执行预期 `adopted=0`。此时仍保持消费者停止，完成计数核验后再启动 local-pipeline。
+adoption 前先选定非空的切换 epoch（例如 `postgres-2026-11-cutover1`），校验符合 `ODAILY_STORAGE_EPOCH` 字符限制，并将它同时写入 `/etc/odaily/postgresql.env` 的 `ODAILY_STORAGE_EPOCH`，确保目标服务与执行 adoption 的命令读取同一值。源 epoch 必须显式从冻结 SQLite 行统计得出并以 `sqlite-` 开头；当前生产观测值为 `sqlite-20260802`，不可假定为 `sqlite-primary`。目标值必须与源 epoch 不同，且本次写入 PG 的应用服务都使用同一目标 epoch；adoption 返回的 `destination_epoch` 必须与该值一致，`adopted` 与冻结 SQLite 对应源 epoch 行数相同。重复执行预期 `adopted=0`。此时仍保持消费者停止，完成计数核验后再启动 local-pipeline。
 
 ```python
 from packages.local_pipeline.postgres_queue import PostgresLocalPipelineQueue
 
 queue = PostgresLocalPipelineQueue()
-report = queue.adopt_frozen_sqlite_epoch(source_writes_stopped=True)
+report = queue.adopt_frozen_sqlite_epoch(source_epoch="sqlite-20260802", source_writes_stopped=True)
 print(report)
 ```
 
-方法只接管 `sqlite-primary` 到当前 `ODAILY_STORAGE_EPOCH`，以事务更新 epoch，不改变 job status、attempt、payload、时间戳、lease owner/token 或 next-attempt。返回按源状态计数及接管行数；首次执行后核对计数，重复执行只应返回 `adopted=0`。其余 epoch 保持原样。`running` job 的 lease 不会被立即清除或重放；沿用 worker 启动时的 30 分钟 stale lease recovery，旧 lease token 仍由 completion/failure fencing 拒绝。只有在核实原 owner 已退出且 recovery 判 stale 后，任务才重新进入 retry 流程，以降低重复外部副作用风险。队列状态计数不一致时保持服务停止并调查，不手工覆盖状态。
+方法只接管显式指定的 `sqlite-*` 源 epoch 到当前 `ODAILY_STORAGE_EPOCH`，以事务更新 epoch，不改变 job status、attempt、payload、时间戳、lease owner/token 或 next-attempt。返回按源状态计数及接管行数；首次执行后核对计数，重复执行只应返回 `adopted=0`。其他 epoch（包括 `postgres-legacy`）保持原样。`running` job 的 lease 不会被立即清除或重放；沿用 worker 启动时的 30 分钟 stale lease recovery，旧 lease token 仍由 completion/failure fencing 拒绝。只有在核实原 owner 已退出且 recovery 判 stale 后，任务才重新进入 retry 流程，以降低重复外部副作用风险。队列状态计数不一致时保持服务停止并调查，不手工覆盖状态。
 
 重复执行原则：导入只允许使用相同 source key、路径和 checkpoint 重入；导入前后不自动启动 services。service start/restart 必须在确认前一实例已停止、旧 owner 已退出后逐个执行；不要为“重试”同时启动第二个 consumer。切换后复核 scheduler/系统重启是否会拉起本地 enable 状态以外的 unit，必要时仅对已核验 unit 执行 enable 状态检查。
 
