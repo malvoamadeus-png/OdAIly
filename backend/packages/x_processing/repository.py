@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from contextlib import contextmanager
 from contextvars import ContextVar
 from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -1642,7 +1643,10 @@ class PostgresXProcessingRepository:
                     status,
                     success,
                     (error or "")[:2000] if error else None,
-                    self._Jsonb(metadata or {}),
+                    self._Jsonb(metadata or {}, dumps=lambda value: json.dumps(
+                        value, ensure_ascii=False,
+                        default=lambda item: item.isoformat() if isinstance(item, datetime) else str(item),
+                    )),
                     success,
                 ),
             )

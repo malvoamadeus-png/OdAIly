@@ -9,6 +9,7 @@ from typing import Any
 
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
 from packages.common.storage import load_storage_settings
+from psycopg.types.json import Jsonb
 from .repository import _cursor_key, _date_boundary, _iso, _without_urls
 
 SCHEMA_SQL = """
@@ -29,6 +30,18 @@ def _as_json(value):
     if not isinstance(value,str):return value
     try:return json.loads(value)
     except json.JSONDecodeError:return value
+
+
+def _jsonb_param(value):
+    """Bind JSON text and scalar strings as valid JSONB values."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return Jsonb(value)
 
 
 class PostgresBusinessNewsRepository:
@@ -106,7 +119,7 @@ class PostgresBusinessNewsRepository:
         if not updates:return
         updates['updated_at']=datetime.now(UTC)
         for key in ('push_result','plugin_notice_result'):
-            if key in updates and isinstance(updates[key],(dict,list)):updates[key]=json.dumps(updates[key],ensure_ascii=False)
+            if key in updates:updates[key]=_jsonb_param(updates[key])
         cols=list(updates)
         with self._connect() as c:c.execute(f"UPDATE business_message_inbox SET {','.join(k+'=%s' for k in cols)} WHERE id=%s",(*[updates[k] for k in cols],inbox_id))
     def list_dashboard(self,payload):

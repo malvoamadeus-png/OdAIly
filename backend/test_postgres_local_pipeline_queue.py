@@ -9,8 +9,69 @@ from http.server import ThreadingHTTPServer
 from threading import Thread
 from urllib.request import Request, urlopen
 import json
+from psycopg.types.json import Jsonb
 
 import pytest
+
+
+def test_worker_heartbeat_jsonb_serializes_datetime_metadata() -> None:
+    from packages.x_processing.repository import PostgresXProcessingRepository
+
+    repository = object.__new__(PostgresXProcessingRepository)
+    from psycopg.types.json import Jsonb as PsycopgJsonb
+    repository._Jsonb = PsycopgJsonb
+    timestamp = datetime.now(UTC)
+    encoded = repository._Jsonb(
+        {"queue_exhausted_jobs": [{"updated_at": timestamp}]},
+        dumps=lambda value: json.dumps(
+            value, ensure_ascii=False,
+            default=lambda item: item.isoformat() if isinstance(item, datetime) else str(item),
+        ),
+    )
+    assert json.loads(encoded.dumps(encoded.obj)) == {
+        "queue_exhausted_jobs": [{"updated_at": timestamp.isoformat()}],
+    }
+
+
+def test_postgres_worker_heartbeat_accepts_datetime_metadata(queue_settings, monkeypatch) -> None:
+    from packages.common.pg_native import connect_postgres
+    from packages.x_processing.repository import PostgresXProcessingRepository
+    from psycopg.sql import Identifier
+
+    schema = "test_lp_heartbeat_" + uuid.uuid4().hex[:10]
+    original_connect = connect_postgres
+    monkeypatch.setattr(
+        "packages.x_processing.repository.connect_postgres",
+        lambda *, schema, application_name=None, settings=None: original_connect(
+            schema=os.getenv("ODAILY_TEST_HEARTBEAT_SCHEMA", "main"),
+            application_name=application_name, settings=settings or queue_settings,
+        ),
+    )
+    try:
+        with original_connect(schema="main", settings=queue_settings) as conn:
+            conn.execute("CREATE SCHEMA " + Identifier(schema).as_string(conn))
+        monkeypatch.setenv("ODAILY_TEST_HEARTBEAT_SCHEMA", schema)
+        with original_connect(schema=schema, settings=queue_settings) as conn:
+            conn.execute(
+                "CREATE TABLE pipeline_worker_heartbeats(component text NOT NULL,worker_id text NOT NULL,"
+                "status text NOT NULL,last_seen_at timestamptz NOT NULL,last_success_at timestamptz,last_error text,"
+                "metadata jsonb NOT NULL DEFAULT '{}'::jsonb,updated_at timestamptz NOT NULL DEFAULT now(),"
+                "PRIMARY KEY(component,worker_id))"
+            )
+        repository = PostgresXProcessingRepository()
+        timestamp = datetime.now(UTC)
+        repository.record_worker_heartbeat(
+            component="local_pipeline", worker_id="datetime-heartbeat", status="running", success=True,
+            metadata={"queue_exhausted_jobs": [{"updated_at": timestamp}]},
+        )
+        with original_connect(schema=schema, settings=queue_settings) as conn:
+            metadata = conn.execute(
+                "SELECT metadata FROM pipeline_worker_heartbeats WHERE component='local_pipeline' AND worker_id='datetime-heartbeat'"
+            ).fetchone()["metadata"]
+        assert metadata["queue_exhausted_jobs"][0]["updated_at"] == timestamp.isoformat()
+    finally:
+        with original_connect(schema="main", settings=queue_settings) as conn:
+            conn.execute("DROP SCHEMA IF EXISTS " + Identifier(schema).as_string(conn) + " CASCADE")
 
 
 @pytest.fixture
