@@ -421,6 +421,10 @@ def import_native_sqlite_source(
             imported = int(checkpoint["imported_rows"]) if checkpoint else 0
             digest_sum = int(checkpoint["digest_sum"] or "0") if checkpoint else 0
             destination_base_count = int(checkpoint["destination_base_count"]) if checkpoint else before
+            if checkpoint is None and table == "source_exclusion_rule_groups" and table_map.target_schema == "main":
+                _remove_known_source_exclusion_seeds(conn, table_map, sqlite)
+                before = int(conn.execute(sql.SQL("SELECT count(*) AS n FROM {}").format(target_identifier)).fetchone()["n"])
+                destination_base_count = before
             if before != destination_base_count + imported:
                 raise RuntimeError(f"Native target changed during import: {table_map.target_schema}.{table_map.target_table}")
             if checkpoint:
@@ -807,6 +811,54 @@ def _observability_source_schema_map() -> dict[str, str]:
         "competitor_monitor.sqlite": "main",
         "writer3.sqlite": "main",
     }
+
+
+def _remove_known_source_exclusion_seeds(conn, table_map: TableMapping, sqlite: sqlite3.Connection) -> int:
+    target = sql.Identifier(table_map.target_schema, table_map.target_table)
+    removed = 0
+    source_rows = sqlite.execute('SELECT * FROM "source_exclusion_rule_groups" ORDER BY id')
+    for source_row in source_rows:
+        source = dict(source_row) if isinstance(source_row, sqlite3.Row) else dict(
+            zip((column[1] for column in sqlite.execute('PRAGMA table_info("source_exclusion_rule_groups")')),
+                source_row, strict=True)
+        )
+        destination = conn.execute(sql.SQL(
+            "SELECT id,rule_key,name,description,scopes,terms,match_target,enabled FROM {} WHERE id=%s"
+        ).format(target), (source["id"],)).fetchone()
+        if destination is None:
+            continue
+        values = dict(destination) if hasattr(destination, "keys") else dict(zip(
+            ("id", "rule_key", "name", "description", "scopes", "terms", "match_target", "enabled"),
+            destination, strict=True,
+        ))
+        scopes = values["scopes"]
+        terms = values["terms"]
+        scopes = list(scopes) if isinstance(scopes, (list, tuple)) else scopes
+        terms = list(terms) if isinstance(terms, (list, tuple)) else terms
+        rule_key = str(values["rule_key"])
+        fixed_seed = (
+            (rule_key == "ripple-xrp-commercial-content"
+             and values["name"] == "Ripple / XRP 商务稿"
+             and values["description"] == "从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。"
+             and scopes == ["crypto_source"] and terms == ["Ripple", "XRP", "RLUSD"]
+             and values["match_target"] == "title" and values["enabled"] is True)
+            or
+            (rule_key == "competitor-magne-ai"
+             and values["name"] == "MAGNE.AI 竞品屏蔽"
+             and values["description"] == "从竞品入口屏蔽标题或正文出现 MAGNE.AI 的内容。"
+             and scopes == ["competitor"] and terms == ["MAGNE.AI"]
+             and values["match_target"] == "all" and values["enabled"] is True)
+        )
+        copied_seed = (
+            rule_key.startswith("fact-auditor-copy-")
+            and values["name"].startswith("事实审核者 · ")
+            and values["description"].startswith("从竞品规则复制的初始词表。")
+            and scopes == ["fact_auditor"]
+        )
+        if fixed_seed or copied_seed:
+            conn.execute(sql.SQL("DELETE FROM {} WHERE id=%s").format(target), (source["id"],))
+            removed += 1
+    return removed
 
 
 def _initialize_system_information_schema() -> None:

@@ -556,6 +556,24 @@ def test_native_import_converts_unix_second_and_millisecond_timestamps(native_im
     assert rows == [(1, expected), (2, expected), (3, expected)]
 
 
+def test_known_source_exclusion_seed_cleanup_only_removes_exact_initializer_rows(native_import_target, tmp_path) -> None:
+    from packages.common.native_sqlite_import import TableMapping, _remove_known_source_exclusion_seeds
+
+    schema = native_import_target
+    source_path = tmp_path / "source-exclusions.sqlite"
+    with sqlite3.connect(source_path) as source:
+        source.execute("CREATE TABLE source_exclusion_rule_groups(id INTEGER PRIMARY KEY,rule_key TEXT,name TEXT,description TEXT,scopes TEXT,terms TEXT,match_target TEXT,enabled INTEGER,created_at TEXT,updated_at TEXT)")
+        source.execute("INSERT INTO source_exclusion_rule_groups VALUES(1,'imported-rule','User rule','user-owned','[\"x\"]','[\"custom\"]','all',1,'2026-01-01','2026-01-01')")
+    table_map = TableMapping("source_exclusion_rule_groups", schema, "source_exclusion_rule_groups")
+    with connect(os.environ["ODAILY_TEST_POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(SQL("CREATE TABLE {}.source_exclusion_rule_groups(id bigint PRIMARY KEY,rule_key text,name text,description text,scopes text[] NOT NULL,terms text[] NOT NULL,match_target text,enabled boolean,created_at timestamptz,updated_at timestamptz)").format(Identifier(schema)))
+        conn.execute(SQL("INSERT INTO {}.source_exclusion_rule_groups VALUES(1,'ripple-xrp-commercial-content','Ripple / XRP 商务稿','从 Crypto 信源入口屏蔽 Ripple、XRP、RLUSD 商务稿。',ARRAY['crypto_source'],ARRAY['Ripple','XRP','RLUSD'],'title',true,now(),now()),(2,'user-rule','My own','do not remove',ARRAY['x'],ARRAY['custom'],'all',true,now(),now())").format(Identifier(schema)))
+    with sqlite3.connect(source_path) as source, connect(os.environ["ODAILY_TEST_POSTGRES_DSN"]) as conn:
+        assert _remove_known_source_exclusion_seeds(conn, table_map, source) == 1
+        remaining = conn.execute(SQL("SELECT id,rule_key FROM {}.source_exclusion_rule_groups ORDER BY id").format(Identifier(schema))).fetchall()
+    assert remaining == [(2, "user-rule")]
+
+
 def test_native_import_canonicalizes_time_with_microsecond_precision(native_import_target, tmp_path) -> None:
     from packages.common.native_sqlite_import import SourceMapping, TableMapping, _canonical_json, import_native_sqlite_source
 

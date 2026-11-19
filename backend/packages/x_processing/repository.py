@@ -539,6 +539,8 @@ class PostgresXProcessingRepository:
 
     def init_schema(self) -> None:
         self.initialize_schema()
+        from packages.common.source_exclusions import PostgresSourceExclusionRepository
+        PostgresSourceExclusionRepository().init_schema()
         with connect_postgres(schema="main", application_name="odaily-x-processing-defaults") as conn:
             with postgres_transaction(conn):
                 self._ensure_publisher_defaults(conn)
@@ -567,9 +569,6 @@ class PostgresXProcessingRepository:
                     lambda connection: connection.execute("ALTER TABLE x_processing_attempts ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
                 )),
             )
-        from packages.common.source_exclusions import PostgresSourceExclusionRepository
-        PostgresSourceExclusionRepository().init_schema()
-
     def _ensure_publisher_defaults(self, conn) -> None:
         conn.execute(
             """
