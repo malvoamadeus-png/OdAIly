@@ -54,6 +54,43 @@ def investment_schema(postgres_runtime):
             conn.execute("DROP SCHEMA IF EXISTS " + Identifier(schema).as_string(conn) + " CASCADE")
 
 
+def test_investment_lead_worker_selects_postgres_backend(tmp_path, monkeypatch) -> None:
+    from packages.common.storage import PostgresSettings, StorageSettings
+    from packages.investment_leads import service as service_module
+    import packages.common.storage as storage_module
+
+    settings = PostgresSettings(
+        dsn="postgresql://localhost/test", connect_timeout_seconds=5, statement_timeout_ms=1000,
+        lock_timeout_ms=1000, idle_transaction_timeout_ms=1000, migration_statement_timeout_ms=1000,
+        migration_lock_timeout_ms=1000, migration_idle_transaction_timeout_ms=1000, pool_max_size=1,
+        pool_checkout_timeout_seconds=1, pool_max_waiting=1, application_name="worker-test",
+    )
+    monkeypatch.setattr(storage_module, "load_storage_settings", lambda: StorageSettings(
+        backend="postgres", epoch="test", sqlite_path=tmp_path / "main.sqlite",
+    ))
+    monkeypatch.setattr(storage_module, "load_postgres_settings", lambda: settings)
+    captured = {}
+
+    class FakeService:
+        def __init__(self, path, *, postgres_repository=None):
+            captured["path"] = path
+            captured["repository"] = postgres_repository
+
+        def process_once(self):
+            return {"scanned": 0, "derived": 0, "supplemented": 0, "identitySearched": 0}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(service_module, "InvestmentLeadService", FakeService)
+    sqlite_path = tmp_path / "hottopic.sqlite"
+    assert service_module.run_worker(sqlite_path, once=True) == 0
+    assert captured["path"] == sqlite_path
+    assert isinstance(captured["repository"], service_module.InvestmentLeadPostgresRepository)
+    assert captured["repository"].settings is settings
+    assert not sqlite_path.exists()
+
+
 def test_investment_lead_schema_uses_native_versioned_migration(postgres_runtime, investment_schema) -> None:
     from packages.common.pg_native import connect_postgres
     from packages.investment_leads.postgres_schema import initialize_investment_leads_schema

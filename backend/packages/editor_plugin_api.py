@@ -395,7 +395,8 @@ class EditorPluginNewsGenService:
         self.console_auth_repository = create_console_auth_repository(database_url)
         self.console_auth_repository.init_schema()
         storage_settings = load_storage_settings()
-        if load_storage_settings().backend == "postgres":
+        print(f"[odaily] editor plugin storage backend={storage_settings.backend}")
+        if storage_settings.backend == "postgres":
             from packages.editor_plugin_postgres_local_store import PostgresEditorPluginLocalStore
 
             self.local_store = PostgresEditorPluginLocalStore()
@@ -421,7 +422,15 @@ class EditorPluginNewsGenService:
         self.x_repository = create_x_processing_repository(database_url)
         self.pipeline_timing_repository = create_pipeline_timing_repository(database_url)
         self.newsflash_operations = create_newsflash_operations_repository(load_storage_settings().sqlite_path)
-        self.hottopic = HotTopicService()
+        if storage_settings.backend == "postgres":
+            from packages.common.storage import load_postgres_settings
+            from packages.hottopic.postgres_repository import HotTopicPostgresRepository
+
+            self.hottopic = HotTopicService(
+                postgres_repository=HotTopicPostgresRepository(settings=load_postgres_settings()),
+            )
+        else:
+            self.hottopic = HotTopicService()
         self.system_observability_dir = system_observability_directory(self.paths.runtime_dir)
         self.system_observability_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.system_observability_dir.chmod(0o700)

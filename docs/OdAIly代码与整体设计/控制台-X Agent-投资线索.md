@@ -4,7 +4,7 @@
 
 投资线索是 X Agent 内部的材料整理与推导模块，供编辑、研究员继续调研。它不读取或写入主快讯数据库、X 信源任务、写作流水线、发布队列、交易接口或新增通知渠道。它不核查原帖真假、报告可靠性、收入持续性、代币价值捕获、估值或市场是否计价；不输出买卖建议或预期收益。
 
-存储当前正在迁移：SQLite 实现仍是官方 worker 与 HotTopic API 的活动路径；同时新增原生 PostgreSQL schema/repository。`InvestmentLeadService` 接受 `postgres_repository` 时，扫描、推导、补充、身份搜索、任务维护、usage、dashboard、列表、详情及失败重试均走 PostgreSQL adapter。模型/Web Search/补充抓取发生在连接归还后，提交事务按 task attempts 与 lease 时间校验 owner，并复核账号资格。PG 投资线索表以 JSONB 存储结构化内容，schema 通过 `hottopic` schema 内版本化迁移创建。HotTopic collector 尚未把采集材料交给该 PG 路径，生产入口和控制台读写切换未完成；不要据此把 SQLite 官方服务视为已迁移。
+存储切换由 `ODAILY_STORAGE_BACKEND` 统一选择。`odaily-investment-leads.service` 的 worker 启动入口在 `postgres` 模式创建 `InvestmentLeadPostgresRepository`，服务不会打开参数指定的 SQLite 文件；`sqlite` 模式继续使用共享 HotTopic SQLite。`InvestmentLeadService` 注入 PostgreSQL repository 后，扫描、推导、补充、身份搜索、任务维护、usage、dashboard、列表、详情及失败重试均走 PostgreSQL adapter。模型/Web Search/补充抓取发生在连接归还后，提交事务按 task attempts 与 lease 时间校验 owner，并复核账号资格。PG 投资线索表以 JSONB 存储结构化内容，schema 通过 `hottopic` schema 内版本化迁移创建。HotTopic collector 的生产路径仍须按其独立迁移状态判断；worker backend 选择不代表 X Agent 采集路径已全部切换。
 
 系统分别保存来源材料、原帖主张和模型推导。写作 Prompt 要保留测试、拟议、预计、条件、方向和原文时间，不能把计划改成已发生。帖子、附件文字、搜索结果和外链文本都视作不可信输入，不执行其中的指令。
 
@@ -110,7 +110,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 每小时维护时，30 天未处理任务标记为过期；30 天未再观察、且没有线索来源引用的材料和事件可清理。线索引用的正文摘录、来源 URL、账号观察关系和修订长期保留。采集起点、Worker 最近心跳、扫描/推导/补充/身份搜索积压、失败、材料不完整和各类用量通过控制台状态接口读取。
 
-独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。它只打开共享 HotTopic SQLite，不调用 FXTwitter；该连接使用 WAL 和 60 秒 SQLite busy timeout。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、模型请求超时为 180 秒、扫描批次材料数为 10、推导并发数为 10；默认 10 秒轮询，不设每日用量额度。控制台管理员 API 为：
+独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。`ODAILY_STORAGE_BACKEND=postgres` 时使用本机 PostgreSQL `hottopic` schema，不打开 HotTopic SQLite；否则打开共享 HotTopic SQLite，使用 WAL 和 60 秒 busy timeout。systemd 的 `EnvironmentFile` 与显式环境变量优先于 `.env` 默认值，因为 dotenv 不覆盖已设置的进程环境。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、模型请求超时为 180 秒、扫描批次材料数为 10、推导并发数为 10；默认 10 秒轮询，不设每日用量额度。控制台管理员 API 为：
 
 - `/console/x-agent/investment-leads`：列表、时间窗口、关键词、账号和待定位筛选，服务端分页。
 - `/console/x-agent/investment-leads/detail`：原帖/推导、来源材料、补充读取、身份搜索、线索修订。

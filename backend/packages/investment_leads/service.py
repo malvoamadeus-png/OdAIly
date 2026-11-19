@@ -1917,7 +1917,13 @@ def _has_readable_material(material: dict[str, Any]) -> bool:
 
 def run_worker(database_path: Path, *, once: bool = False) -> int:
     interval = max(1, _env_int("X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS", 10, 1, 60))
-    service = InvestmentLeadService(database_path)
+    from packages.common.storage import load_postgres_settings, load_storage_settings
+
+    storage = load_storage_settings()
+    postgres_repository = None
+    if storage.backend == "postgres":
+        postgres_repository = InvestmentLeadPostgresRepository(settings=load_postgres_settings())
+    service = InvestmentLeadService(database_path, postgres_repository=postgres_repository)
     try:
         if once:
             print(json.dumps(service.process_once(), ensure_ascii=False))
