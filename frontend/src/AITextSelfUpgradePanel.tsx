@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, X, EyeOff } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, X, EyeOff, Trash2 } from 'lucide-react';
 import {
   decideAITextSelfUpgradeItem,
+  deleteAITextSelfUpgradeItem,
   getAITextSelfUpgradeItem,
   listAITextSelfUpgradeItems,
   type AITextSelfUpgradeItem,
@@ -16,6 +17,7 @@ const DECISION_LABELS: Record<string, string> = {
 };
 const VERDICT_LABELS: Record<string, string> = {
   writer1_error: '审核者意见成立，Writer1稿件有误',
+  reviewer_correct_unattributed: '审核者意见成立，作者责任未确认',
   auditor_false_positive: '审核者意见不成立',
   fact_auditor_error: '事实审查者意见不成立',
   inconclusive: '现有证据无法定论',
@@ -68,6 +70,21 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
     setError('');
     try {
       setSelected(await decideAITextSelfUpgradeItem(selected.case_key, decision, note));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeSelected() {
+    if (!selected || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      await deleteAITextSelfUpgradeItem(selected.case_key);
+      setSelected(null);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -134,6 +151,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
               <div><span>{REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {decisionLabel(selected)}</span><h2>{selected.audited_title || '无标题'}</h2></div>
               <a href={auditedUrl} target="_blank" rel="noreferrer" title="打开已发布快讯"><ExternalLink size={16} /></a>
             </header>
+            <button className="secondaryButton" type="button" disabled={saving} onClick={() => void removeSelected()}><Trash2 size={16} /> 删除此案例</button>
             {selected.analysis_status === 'completed' ? (
               <section className="aiTextUpgradeVerdict">
                 <div><strong>{VERDICT_LABELS[selected.verdict || ''] || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'} · {selected.analysis_prompt_version || '未知Prompt版本'}</span></div>

@@ -13,7 +13,8 @@ from typing import Any
 
 from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_readonly
 
-TERMINAL_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified')
+TERMINAL_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified', 'event_tracking_cancelled', 'expired', 'legacy_skipped', 'judge_failed', 'search_failed', 'write_failed', 'format_failed', 'publisher_failed')
+ARCHIVED_PAYLOAD_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified')
 SOURCE_TEXT_TYPES = ('x', 'binance_square', 'blockbeats', 'panews', 'jinse', 'jin10',
                      'non_mainstream_media', 'crypto_source', 'ai_source', 'mixed_source',
                      'mainstream_media', 'external_media_alert', 'ai_source_alert', 'event_tracking')
@@ -91,8 +92,8 @@ def trim_source_text(source: Path, store: Any, *, now_ms: int, limit: int = 100)
 
 
 def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
-    """Retain duplicate identities while dropping old completed-task comparison details."""
-    cutoff = now_ms - 86_400_000
+    """Retain task comparison details throughout the five-day review window."""
+    cutoff = now_ms - 5 * 86_400_000
     cursor = int(store.get_state('search_detail_retention_cursor', '0') or 0)
     keep = {'decision', 'is_duplicate', 'duplicate', 'duplicate_target_type', 'duplicate_target_id', 'target_type', 'target_id'}
     target_keep = {'target_type', 'target_id', 'title', 'target_title', 'source_url', 'candidate_id'}
@@ -136,7 +137,7 @@ def trim_search_details(source: Path, store: Any, *, now_ms: int, limit: int = 1
 
 
 def trim_candidate_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
-    cutoff = now_ms - 86_400_000
+    cutoff = now_ms - 5 * 86_400_000
     source_cutoff = now_ms - 30 * 86_400_000
     cursor = int(store.get_state('candidate_retention_cursor', '0') or 0)
     with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
@@ -198,7 +199,7 @@ def trim_competitor_text(source: Path, store: Any, *, now_ms: int, limit: int = 
 
 
 def trim_attempt_details(source: Path, store: Any, *, now_ms: int, limit: int = 100) -> dict[str, int]:
-    cutoff = now_ms - 86_400_000
+    cutoff = now_ms - 5 * 86_400_000
     cursor = int(store.get_state('attempt_retention_cursor', '0') or 0)
     watermark = int(store.get_state('main_attempt_events_watermark', '0') or 0)
     with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
@@ -267,7 +268,7 @@ def trim_completed_attempt_events(source: Path, store: Any, *, now_ms: int, limi
     if not any(row['event_type'] == 'stage_attempt' and str(row['event_id']).startswith('stage-attempt:')
                and row['source_table'] == 'tasks' and row['source_database'] == str(source)
                and row['item_status'] in TERMINAL_STATUSES and row['updated_at_ms'] is not None
-               and row['updated_at_ms'] < now_ms - 86_400_000
+               and row['updated_at_ms'] < now_ms - 5 * 86_400_000
                and (row['evidence_ref'] or '"input"' in row['details_json'] or '"rules"' in row['details_json']) for row in rows):
         store.set_state('attempt_event_retention_cursor', int(rows[-1]['rowid']))
         return {'scanned': len(rows), 'cleared': 0}
@@ -295,7 +296,7 @@ def trim_completed_attempt_events(source: Path, store: Any, *, now_ms: int, limi
                 if not event_id.isdigit() or int(event_id) > watermark:
                     continue
                 attempt = main.execute("SELECT a.id,a.task_id,a.status,t.status AS task_status,(julianday(t.updated_at)-2440587.5)*86400000 AS age_ms FROM x_processing_attempt_events e JOIN x_processing_attempts a ON a.id=e.attempt_id AND a.task_id=e.task_id JOIN tasks t ON t.id=a.task_id WHERE e.id=?", (int(event_id),)).fetchone()
-                if not attempt or str(attempt['task_id']) != str(event['source_row_id']) or attempt['status'] != 'succeeded' or attempt['task_status'] not in TERMINAL_STATUSES or attempt['age_ms'] is None or attempt['age_ms'] >= now_ms - 86_400_000:
+                if not attempt or str(attempt['task_id']) != str(event['source_row_id']) or attempt['status'] != 'succeeded' or attempt['task_status'] not in TERMINAL_STATUSES or attempt['age_ms'] is None or attempt['age_ms'] >= now_ms - 5 * 86_400_000:
                     continue
                 if _audit_protects(main, active, attempt['task_id']) or main.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (attempt['task_id'],)).fetchone():
                     continue
@@ -451,7 +452,7 @@ def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain
                                 limit: int = 100, dry_run: bool = True) -> dict[str, int]:
     """Keep titles, text, source identity, metadata and all pipeline decisions searchable."""
     cutoff = now_ms - max(1, retain_days) * 86_400_000
-    marks = ','.join('?' for _ in TERMINAL_STATUSES)
+    marks = ','.join('?' for _ in ARCHIVED_PAYLOAD_STATUSES)
     after_id = int(store.get_state('task_payload_retention_cursor', '0') or 0) if not dry_run else 0
     with connect_sqlite_readonly(source, timeout_seconds=2) as conn:
         columns = {str(row['name']) for row in conn.execute('PRAGMA table_info(tasks)')}
@@ -459,7 +460,7 @@ def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain
             return {'cleared': 0, 'protected': 0}
         age = 'COALESCE(updated_at,created_at)' if 'created_at' in columns else 'updated_at'
         rows = conn.execute(f"SELECT id,status,raw_payload,updated_at FROM tasks WHERE id>? AND status IN ({marks}) AND raw_payload IS NOT NULL AND raw_payload NOT IN ('','{{}}','null') AND (julianday({age})-2440587.5)*86400000<? ORDER BY id LIMIT ?",
-                            (after_id, *TERMINAL_STATUSES, cutoff, max(1, min(limit, 500)))).fetchall()
+                            (after_id, *ARCHIVED_PAYLOAD_STATUSES, cutoff, max(1, min(limit, 500)))).fetchall()
     cleared = protected = 0
     for row in rows:
         with store.connect() as archive:
@@ -477,7 +478,7 @@ def trim_archived_task_payloads(source: Path, store: Any, *, now_ms: int, retain
         with sqlite3.connect(source, timeout=2, factory=ClosingSQLiteConnection) as conn:
             conn.execute('PRAGMA busy_timeout=2000')
             cursor = conn.execute(f"UPDATE tasks SET raw_payload='{{}}' WHERE id=? AND raw_payload=? AND updated_at IS ? AND status IN ({marks})",
-                                  (row['id'], row['raw_payload'], row['updated_at'], *TERMINAL_STATUSES))
+                                  (row['id'], row['raw_payload'], row['updated_at'], *ARCHIVED_PAYLOAD_STATUSES))
             cleared += cursor.rowcount
     if not dry_run:
         store.set_state('task_payload_retention_cursor', int(rows[-1]['id']) if rows else 0)

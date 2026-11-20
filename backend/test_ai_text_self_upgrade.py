@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from packages.ai_text_self_upgrade import (
     AITextSelfUpgradeService,
     AITextSelfUpgradeWorker,
 )
-from packages.ai_text_self_upgrade.prompts import parse_output
+from packages.ai_text_self_upgrade.prompts import build_prompt, parse_output
 from packages.ai_text_self_upgrade.worker import current_run_key
 from packages.ai_text_self_upgrade.service import _fetch_postgres_pages
 
@@ -269,6 +270,213 @@ def test_batch_uses_gpt6luna_and_records_decisions_as_history() -> None:
         assert repository.list_items({"status": "ignored"})["total"] == 1
 
 
+def test_deleted_case_is_not_recreated_by_later_discovery() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        primary = root / "main.sqlite"
+        _create_primary_database(primary)
+        repository = AITextSelfUpgradeRepository(root / "review.sqlite")
+        enabled_at = datetime.fromisoformat(repository.fact_enabled_at())
+        _insert_candidate(primary, flagged_at=enabled_at + timedelta(seconds=2))
+        service = AITextSelfUpgradeService(primary, repository, FakeAIClient())
+        first = service.run_batch(run_key="first")
+        assert first["cases_found"] == 1
+        case_key = repository.list_items({"status": "all"})["items"][0]["case_key"]
+        assert repository.delete_case(case_key, actor="editor@example.com")
+        assert not repository.case_exists(case_key)
+        rediscovered, _ = service._discover_cases()
+        candidate = next(item for item in rediscovered if item["case_key"] == case_key)
+        assert not repository.insert_case(candidate)
+        assert repository.list_items({"status": "all"})["total"] == 0
+
+
+def test_sqlite_manual_rejection_requires_exact_writer_snapshot() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        primary = root / "main.sqlite"
+        _create_primary_database(primary)
+        repository = AITextSelfUpgradeRepository(root / "review.sqlite", source_database_path=primary)
+        stamp = datetime.now(UTC).isoformat()
+        title, content = "Published title", "Published body."
+        digest = calculate_content_hash(title, content)
+        with sqlite3.connect(primary) as conn:
+            conn.execute("""CREATE TABLE auditor_checks(
+                id INTEGER PRIMARY KEY,source_item_id TEXT,content_hash TEXT,title TEXT,content TEXT,source_url TEXT,
+                published_at TEXT,prompt_version TEXT,model TEXT,audit_result TEXT,status TEXT)""")
+            conn.execute("INSERT INTO tasks VALUES(12,'x','post-12','https://source.test/item','Source title','Source body','{}')")
+            conn.execute("INSERT INTO newsflash_production_metadata VALUES('odaily-task-12','odaily-12','matched','Published title')")
+            conn.execute("INSERT INTO x_task_pipeline VALUES(12,'writer','{}','brief',3,'Draft title','Draft body',?,?,?,?)",
+                         (title, content, stamp, stamp))
+            conn.execute("INSERT INTO auditor_checks VALUES(41,'odaily-12',?,?,?,'https://source.test/item',?,'audit-v1','reviewer','{}','flagged')",
+                         (digest, title, content, stamp))
+        queue_id = repository.queue_manual_rejection(41, actor="editor@example.com")
+        assert queue_id == "manual-rejection:41"
+        assert repository.list_items({"status": "all"})["total"] == 0
+        assert repository.process_manual_rejection_queue() == {
+            "processed": 1, "completed": 1, "retrying": 0, "deleted": 0,
+        }
+        key = repository.list_items({"status": "all"})["items"][0]["case_key"]
+        case = repository.detail(key)
+        assert case["task_id"] == 12
+        assert case["source_content"] == "Source body"
+        assert case["draft_content"] == "Draft body"
+        assert case["final_content"] == content
+
+
+def test_sqlite_manual_publication_rejection_creates_independent_inconclusive_case() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        primary = root / "main.sqlite"
+        _create_primary_database(primary)
+        stamp = datetime.now(UTC).isoformat()
+        title, content = "Manual published title", "Manual published body."
+        digest = calculate_content_hash(title, content)
+        with sqlite3.connect(primary) as conn:
+            conn.execute("ALTER TABLE newsflash_production_metadata ADD COLUMN outlet_category TEXT")
+            conn.execute(
+                "INSERT INTO newsflash_production_metadata(delivery_key,odaily_id,id_match_status,title,outlet_category) VALUES(?,?,?,?,?)",
+                ("manual:post-77", "odaily-manual-77", "matched", title, "manual"),
+            )
+            conn.execute("""CREATE TABLE auditor_checks(
+                id INTEGER PRIMARY KEY,source_item_id TEXT,content_hash TEXT,title TEXT,content TEXT,source_url TEXT,
+                published_at TEXT,prompt_version TEXT,model TEXT,audit_result TEXT,status TEXT)""")
+            conn.execute(
+                "INSERT INTO auditor_checks VALUES(77,'odaily-manual-77',?,?,?,'https://source.test/manual',?,'audit-v1','reviewer','{}','flagged')",
+                (digest, title, content, stamp),
+            )
+
+        repository = AITextSelfUpgradeRepository(root / "review.sqlite", source_database_path=primary)
+        repository.queue_manual_rejection(77, actor="editor@example.com")
+        assert repository.process_manual_rejection_queue() == {
+            "processed": 1, "completed": 1, "retrying": 0, "deleted": 0,
+        }
+        item = repository.list_items({})["items"][0]
+        case = repository.detail(item["case_key"])
+        assert case["task_id"] is None
+        assert case["writer_model"] is None
+        assert case["draft_content"] is None
+        assert case["final_content"] == content
+        assert case["audit_result"]["manual_rejection"]["authoring_path"] == "manual_publication"
+
+        inconclusive = {
+            "verdict": "inconclusive", "confidence": "low", "rationale": "缺少 Writer1 草稿，无法归因。",
+            "evidence": [{"location": "published_text", "quote": content, "explanation": "仅有已发布稿件。"}],
+        }
+        prompt = build_prompt(case)
+        assert "manual_publication_without_writer1_snapshot" in prompt
+        result = parse_output(json.dumps(inconclusive, ensure_ascii=False), case)
+        repository.complete_analysis(case["case_key"], model="gpt-6-luna", prompt_version="test", result=result)
+        completed = repository.detail(case["case_key"])
+        assert completed["analysis_status"] == "completed"
+        assert completed["verdict"] == "inconclusive"
+        assert repository.manual_rejection_status(77) == "completed"
+
+
+def test_sqlite_rejection_is_snapshotted_when_publication_metadata_is_missing() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        primary = root / "main.sqlite"
+        _create_primary_database(primary)
+        stamp = datetime.now(UTC).isoformat()
+        title, content = "Unknown source title", "Published text contains typoo."
+        digest = calculate_content_hash(title, content)
+        with sqlite3.connect(primary) as conn:
+            conn.execute("DROP TABLE newsflash_production_metadata")
+            conn.execute("""CREATE TABLE auditor_checks(
+                id INTEGER PRIMARY KEY,source_item_id TEXT,content_hash TEXT,title TEXT,content TEXT,source_url TEXT,
+                published_at TEXT,prompt_version TEXT,model TEXT,audit_result TEXT,status TEXT)""")
+            conn.execute(
+                "INSERT INTO auditor_checks VALUES(78,'unknown-78',?,?,?,'https://source.test/unknown',?,'audit-v1','reviewer','{}','flagged')",
+                (digest, title, content, stamp),
+            )
+
+        repository = AITextSelfUpgradeRepository(root / "review.sqlite", source_database_path=primary)
+        repository.queue_manual_rejection(78, actor="editor@example.com")
+        assert repository.process_manual_rejection_queue() == {
+            "processed": 1, "completed": 1, "retrying": 0, "deleted": 0,
+        }
+        item = repository.list_items({})["items"][0]
+        case = repository.detail(item["case_key"])
+        assert case["task_id"] is None
+        assert case["audit_result"]["manual_rejection"]["authoring_path"] == "unknown_publication"
+        assert "unknown_source_without_writer1_snapshot" in build_prompt(case)
+
+        result = parse_output(json.dumps({
+            "verdict": "reviewer_correct_unattributed", "confidence": "medium",
+            "rationale": "审核意见可由已发布文本确认，但来源未知且没有 Writer1 草稿。",
+            "evidence": [{"location": "published_text", "quote": "typoo", "explanation": "正文中存在被指出的拼写错误。"}],
+        }, ensure_ascii=False), case)
+        repository.complete_analysis(case["case_key"], model="gpt-6-luna", prompt_version="test", result=result)
+        completed = repository.detail(case["case_key"])
+        assert completed["analysis_status"] == "completed"
+        assert completed["verdict"] == "reviewer_correct_unattributed"
+        assert repository.manual_rejection_status(78) == "completed"
+
+
+def test_sqlite_existing_review_schema_migrates_task_id_to_nullable() -> None:
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "review.sqlite"
+        from packages.ai_text_self_upgrade import repository as repository_module
+
+        old_schema = repository_module.SCHEMA_SQL.replace("task_id INTEGER,", "task_id INTEGER NOT NULL,").replace(
+            "'writer1_error','auditor_false_positive','reviewer_correct_unattributed'",
+            "'writer1_error','auditor_false_positive'",
+        )
+        with sqlite3.connect(path) as conn:
+            conn.executescript(old_schema)
+        repository = AITextSelfUpgradeRepository(path)
+        with repository.connect() as conn:
+            task_column = next(row for row in conn.execute("PRAGMA table_info(ai_text_self_upgrade_items)") if row["name"] == "task_id")
+            assert task_column["notnull"] == 0
+
+
+def test_manual_rejection_snapshots_ambiguous_link_and_stops_at_tombstone() -> None:
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        primary = root / "main.sqlite"
+        _create_primary_database(primary)
+        repository = AITextSelfUpgradeRepository(root / "review.sqlite", source_database_path=primary)
+        stamp = datetime.now(UTC).isoformat()
+        title, content = "Published title", "Published body."
+        digest = calculate_content_hash(title, content)
+        with sqlite3.connect(primary) as conn:
+            conn.execute("""CREATE TABLE auditor_checks(
+                id INTEGER PRIMARY KEY,source_item_id TEXT,content_hash TEXT,title TEXT,content TEXT,source_url TEXT,
+                published_at TEXT,prompt_version TEXT,model TEXT,audit_result TEXT,status TEXT)""")
+            conn.execute("INSERT INTO tasks VALUES(12,'x','post-12','https://source.test/item','Source title','Source body','{}')")
+            conn.execute("INSERT INTO newsflash_production_metadata VALUES('odaily-task-12','odaily-12','ambiguous','Published title')")
+            conn.execute("INSERT INTO x_task_pipeline VALUES(12,'writer','{}','brief',3,'Draft title','Draft body',?,?,?,?)",
+                         (title, content, stamp, stamp))
+            conn.execute("INSERT INTO auditor_checks VALUES(41,'odaily-12',?,?,?,'https://source.test/item',?,'audit-v1','reviewer','{}','flagged')",
+                         (digest, title, content, stamp))
+        repository.queue_manual_rejection(41, actor="editor@example.com")
+        first = repository.process_manual_rejection_queue()
+        assert first == {"processed": 1, "completed": 1, "retrying": 0, "deleted": 0}
+        item = repository.list_items({})["items"][0]
+        case = repository.detail(item["case_key"])
+        assert case["task_id"] is None
+        assert case["audit_result"]["manual_rejection"]["authoring_path"] == "unknown_publication"
+        with repository.connect() as conn:
+            queued = conn.execute("SELECT status,attempt_count,last_error FROM ai_text_self_upgrade_manual_rejections").fetchone()
+            assert tuple(queued) == ("completed", 1, None)
+        with sqlite3.connect(primary) as conn:
+            conn.execute("INSERT INTO auditor_checks VALUES(42,'odaily-12',?,?,?,'https://source.test/item',?,'audit-v1','reviewer','{}','flagged')",
+                         (digest, title, content, stamp))
+        repository.queue_manual_rejection(42, actor="editor@example.com")
+        with repository.connect() as conn:
+            conn.execute("INSERT INTO ai_text_self_upgrade_deleted_cases(case_key,deleted_by,deleted_at) VALUES(?,?,?)",
+                         (hashlib.sha256(f"odaily-12\n{digest}".encode()).hexdigest(), "admin", stamp))
+        retried = repository.process_manual_rejection_queue()
+        assert retried["deleted"] == 1
+        assert repository.list_items({"status": "all"})["total"] == 1
+        with repository.connect() as conn:
+            assert conn.execute("SELECT status,attempt_count FROM ai_text_self_upgrade_manual_rejections WHERE auditor_check_id=42").fetchone()["status"] == "deleted"
+
+
+def _now_for_test() -> str:
+    return datetime.now(UTC).isoformat()
+
+
 def test_failed_case_is_retried_in_the_next_four_hour_slot() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -297,6 +505,200 @@ def test_failed_case_is_retried_in_the_next_four_hour_slot() -> None:
         assert completed["analysis_status"] == "completed"
         assert completed["attempt_count"] == 2
         assert completed["verdict"] == "fact_auditor_error"
+
+
+def test_worker_processes_manual_rejections_even_when_analysis_slot_is_done() -> None:
+    class Repository:
+        def process_manual_rejection_queue(self):
+            return {"processed": 1, "completed": 1, "retrying": 0, "deleted": 0}
+
+        def has_run(self, run_key):
+            return True
+
+        def start_run(self, run_key):
+            raise AssertionError("existing analysis slot must not start again")
+
+    service = type("Service", (), {"repository": Repository()})()
+    result = AITextSelfUpgradeWorker(service).run_due(now=datetime(2026, 11, 9, 12, tzinfo=ZoneInfo("Asia/Shanghai")))
+    assert result == {
+        "manual_rejections_processed": 1,
+        "manual_rejections_completed": 1,
+        "manual_rejections_retrying": 0,
+        "manual_rejections_deleted": 0,
+    }
+
+
+def test_manual_rejection_processing_rows_are_recovered_after_restart() -> None:
+    with TemporaryDirectory() as directory:
+        repository = AITextSelfUpgradeRepository(Path(directory) / "review.sqlite")
+        repository.queue_manual_rejection(41, actor="editor@example.com")
+        with repository.connect() as conn:
+            conn.execute("UPDATE ai_text_self_upgrade_manual_rejections SET status='processing'")
+        assert repository.recover_manual_rejections() == 1
+        with repository.connect() as conn:
+            row = conn.execute("SELECT status,next_attempt_at FROM ai_text_self_upgrade_manual_rejections").fetchone()
+            assert row["status"] == "pending"
+            assert datetime.fromisoformat(row["next_attempt_at"]) <= datetime.now(UTC)
+
+
+def test_daily_retention_runs_from_always_on_worker_once_and_retries_failures(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from packages import maintenance
+
+    with TemporaryDirectory() as directory:
+        repository = AITextSelfUpgradeRepository(Path(directory) / "review.sqlite")
+        worker = AITextSelfUpgradeWorker(type("Service", (), {"repository": repository})())
+        calls = []
+        outcome = SimpleNamespace(deleted={"runtime": 2}, cleared={"tasks_payloads": 3}, has_more=False)
+
+        class Maintenance:
+            def cleanup_main_pipeline_fields(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise RuntimeError("database temporarily unavailable")
+                return outcome
+
+        monkeypatch.setattr(maintenance, "create_maintenance_repository", lambda: Maintenance())
+        morning = datetime(2026, 11, 20, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        assert worker.run_storage_retention_due(now=morning.replace(hour=5, minute=59)) is None
+        assert worker.run_storage_retention_due(now=morning) == {"failed": 1}
+        assert repository.run_status("storage_retention:2026-11-20:v1") == "failed"
+        assert worker.run_storage_retention_due(now=morning) is None
+        with repository.connect() as conn:
+            conn.execute(
+                "UPDATE ai_text_self_upgrade_runs SET completed_at=? WHERE run_key=?",
+                ((datetime.now(UTC) - timedelta(minutes=6)).isoformat(), "storage_retention:2026-11-20:v1"),
+            )
+        assert worker.run_storage_retention_due(now=morning) == {"runtime": 2, "tasks_payloads": 3}
+        assert worker.run_storage_retention_due(now=morning) is None
+        assert len(calls) == 2
+        assert calls[-1] == {"dry_run": False, "completed_field_retention_days": 5}
+        assert repository.run_status("storage_retention:2026-11-20:v1") == "completed"
+
+
+def test_daily_retention_run_stays_resumable_until_all_batches_are_drained(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from packages import maintenance
+
+    with TemporaryDirectory() as directory:
+        repository = AITextSelfUpgradeRepository(Path(directory) / "review.sqlite")
+        worker = AITextSelfUpgradeWorker(type("Service", (), {"repository": repository})())
+        batches = [True, False]
+        calls = []
+
+        class Maintenance:
+            def cleanup_main_pipeline_fields(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(deleted={}, cleared={"tasks_payloads": 500}, has_more=batches.pop(0))
+
+        monkeypatch.setattr(maintenance, "create_maintenance_repository", lambda: Maintenance())
+        morning = datetime(2026, 11, 20, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        assert worker.run_storage_retention_due(now=morning) == {"tasks_payloads": 500}
+        assert repository.run_status("storage_retention:2026-11-20:v1") == "running"
+        assert worker.run_storage_retention_due(now=morning) == {"tasks_payloads": 500}
+        assert repository.run_status("storage_retention:2026-11-20:v1") == "completed"
+        assert worker.run_storage_retention_due(now=morning) is None
+        assert len(calls) == 2
+
+
+def test_daily_retention_resumes_previous_day_batch(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from packages import maintenance
+
+    with TemporaryDirectory() as directory:
+        repository = AITextSelfUpgradeRepository(Path(directory) / "review.sqlite")
+        worker = AITextSelfUpgradeWorker(type("Service", (), {"repository": repository})())
+        prior_run_key = "storage_retention:2026-11-19:v1"
+        assert repository.start_run(prior_run_key)
+        calls = []
+
+        class Maintenance:
+            def cleanup_main_pipeline_fields(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(deleted={}, cleared={"tasks_payloads": 1}, has_more=False)
+
+        monkeypatch.setattr(maintenance, "create_maintenance_repository", lambda: Maintenance())
+        next_day = datetime(2026, 11, 20, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        assert worker.run_storage_retention_due(now=next_day) == {"tasks_payloads": 1}
+        assert repository.run_status(prior_run_key) == "completed"
+        assert repository.run_status("storage_retention:2026-11-20:v1") is None
+        assert len(calls) == 1
+
+
+def test_retention_exception_does_not_skip_the_worker_analysis_round() -> None:
+    worker = AITextSelfUpgradeWorker(object())
+    calls = []
+
+    def broken_retention():
+        calls.append("retention")
+        raise RuntimeError("cleanup failed")
+
+    def analysis_round():
+        calls.append("analysis")
+        worker._stop.set()
+        return None
+
+    worker.run_storage_retention_due = broken_retention
+    worker.run_due = analysis_round
+    worker._run()
+
+    assert calls == ["retention", "analysis"]
+
+
+def test_worker_compensates_feedback_committed_before_manual_queue_insert() -> None:
+    from types import SimpleNamespace
+
+    class Outbox:
+        status = "pending"
+
+        def pending_manual_rejections(self, *, limit):
+            assert limit == 100
+            return [SimpleNamespace(id=9, auditor_check_id=41, actor_email="editor@example.com", status=self.status)] if self.status in {"pending", "queued"} else []
+
+        def mark_manual_rejection_queued(self, feedback_id):
+            assert feedback_id == 9
+            self.status = "queued"
+
+        def mark_manual_rejection_complete(self, feedback_id, *, deleted=False):
+            assert feedback_id == 9 and not deleted
+            self.status = "completed"
+
+        def mark_manual_rejection_failed(self, feedback_id, *, error):
+            raise AssertionError(error)
+
+    class Repository:
+        status = None
+
+        def queue_manual_rejection(self, auditor_check_id, *, actor):
+            assert auditor_check_id == 41 and actor == "editor@example.com"
+            self.status = "pending"
+            return "manual-rejection:41"
+
+        def process_manual_rejection_queue(self):
+            self.status = "completed"
+            return {"processed": 1, "completed": 1, "retrying": 0, "deleted": 0}
+
+        def manual_rejection_status(self, auditor_check_id):
+            assert auditor_check_id == 41
+            return self.status
+
+        def has_run(self, _run_key):
+            return True
+
+        def start_run(self, _run_key):
+            raise AssertionError("analysis slot is already complete")
+
+    outbox, repository = Outbox(), Repository()
+    service = type("Service", (), {"repository": repository, "manual_rejection_outbox": outbox})()
+    result = AITextSelfUpgradeWorker(service).run_due(
+        now=datetime(2026, 11, 20, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    assert repository.status == "completed"
+    assert outbox.status == "completed"
+    assert result["manual_rejections_outbox_queued"] == 1
 
 
 def test_parser_rejects_evidence_not_found_in_snapshot() -> None:

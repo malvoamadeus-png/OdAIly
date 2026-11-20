@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,9 @@ class PostgresSourceStateProjector:
 
     def run_once(self, *, now_ms: int | None = None) -> dict[str, int]:
         now = now_ms or _now_ms()
+        if self.store.get_state("feed_history_reset_in_progress", "0") == "1":
+            self.reset_projection_at_cutover()
+            return {"read": 0, "changed": 0}
         self._run_retention(now)
         imported = changed = 0
         with self.store.connect() as conn:
@@ -170,6 +174,105 @@ class PostgresSourceStateProjector:
                     raise RuntimeError("source-state outbox acknowledgement count changed inside projection transaction")
         return {"read": imported, "changed": changed}
 
+    def reset_projection_at_cutover(self) -> dict[str, int]:
+        lock_key = "system-information-source-projector"
+        with self.store.connect() as lock_conn:
+            lock_conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (lock_key,))
+            lock_conn.commit()
+            try:
+                return self._reset_projection_locked()
+            finally:
+                lock_conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (lock_key,))
+                lock_conn.commit()
+
+    def _reset_projection_locked(self) -> dict[str, int]:
+        """Reset feed-only history while preserving business-owned evidence and cases."""
+        now = _now_ms()
+        resume = False
+        with self.store.connect() as conn:
+            with conn.transaction():
+                conn.execute("SET LOCAL lock_timeout = '1500ms'")
+                resume = conn.execute("SELECT 1 FROM system_information_state WHERE state_key='feed_history_reset_in_progress'").fetchone() is not None
+                if not resume:
+                    outbox = f"{self.outbox_schema}.odaily_source_state_outbox"
+                    # SHARE lock drains active source writers while capturing a stable sequence barrier.
+                    conn.execute(f"LOCK TABLE {outbox} IN SHARE MODE")
+                    barrier = conn.execute(f"SELECT COALESCE(max(event_id),0) AS value FROM {outbox}").fetchone()["value"]
+                    pending = conn.execute(f"SELECT count(*) AS count FROM {outbox} WHERE projected_at IS NULL AND event_id<=%s", (barrier,)).fetchone()["count"]
+                    reset_tables = ("system_information_events", "system_information_source_identity", "system_information_items", "system_information_evidence_pins", "system_information_decision_samples", "system_review_items", "system_review_decisions", "system_review_analysis_attempts", "system_review_runs")
+                    for table in reset_tables:
+                        conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES(%s,'0',%s) ON CONFLICT(state_key) DO UPDATE SET state_value='0',updated_at_ms=excluded.updated_at_ms", (f"feed_reset_{table}", now))
+                    conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_history_reset_event_id',%s,%s),('feed_history_reset_pending_events',%s,%s),('feed_history_reset_in_progress','1',%s) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms", (str(int(barrier or 0)), now, str(int(pending)), now, now))
+                    conn.execute("DELETE FROM system_information_state WHERE state_key='feed_evidence_cleanup_last_batch'")
+                else:
+                    pending_row = conn.execute("SELECT state_value::bigint AS value FROM system_information_state WHERE state_key='feed_history_reset_pending_events'").fetchone()
+                    pending = int(pending_row["value"] if pending_row else 0)
+
+        def delete_batches(table: str, keys: tuple[str, ...], *, limit: int = 5000) -> int:
+            total = 0
+            key_projection = ",".join(keys)
+            join_predicate = " AND ".join(f"t.{key}=b.{key}" for key in keys)
+            order = ",".join(keys)
+            locked_retries = 0
+            while True:
+                with self.store.connect() as conn:
+                    with conn.transaction():
+                        result = conn.execute(
+                            f"WITH batch AS (SELECT {key_projection} FROM {table} ORDER BY {order} LIMIT %s FOR UPDATE SKIP LOCKED) "
+                            f"DELETE FROM {table} t USING batch b WHERE {join_predicate}", (limit,),
+                        )
+                        removed = result.rowcount or 0
+                        current = conn.execute("SELECT state_value::bigint AS value FROM system_information_state WHERE state_key=%s", (f"feed_reset_{table}",)).fetchone()
+                        conn.execute("UPDATE system_information_state SET state_value=%s,updated_at_ms=%s WHERE state_key=%s", (str(int(current["value"] if current else 0) + removed), now, f"feed_reset_{table}"))
+                total += removed
+                if removed < limit:
+                    with self.store.connect() as conn:
+                        remaining = conn.execute(f"SELECT EXISTS(SELECT 1 FROM {table}) AS yes").fetchone()["yes"]
+                    if not remaining:
+                        return total
+                    locked_retries += 1
+                    if locked_retries >= 100:
+                        raise RuntimeError(f"reset batch blocked by concurrent rows in {table}; resume will retry")
+                    time.sleep(0.02)
+                else:
+                    locked_retries = 0
+
+        removed_counts = {}
+        for table, keys in (("system_information_events", ("event_id",)),
+                            ("system_information_source_identity", ("source_schema", "source_table", "source_row_id")),
+                            ("system_information_items", ("item_id",)),
+                            ("system_information_evidence_pins", ("pin_key",)),
+                            ("system_information_decision_samples", ("sample_key",))):
+            removed_counts[table] = delete_batches(table, keys)
+
+        pins = removed_counts["system_information_evidence_pins"]
+        samples = removed_counts["system_information_decision_samples"]
+        review_items = review_decisions = review_attempts = review_runs = 0
+        with self.store.connect() as conn:
+            with conn.transaction():
+                conn.execute("SET LOCAL lock_timeout = '1500ms'")
+                for key in ("evidence_gc_cursor", "evidence_compaction_cursor", "orphan_evidence_cursor"):
+                    conn.execute("DELETE FROM system_information_state WHERE state_key=%s", (key,))
+        for table, key in (("system_review_decisions", ("id",)), ("system_review_runs", ("run_key",)),
+                           ("system_review_analysis_attempts", ("id",)), ("system_review_items", ("item_key",))):
+            with self.store.connect() as conn:
+                exists = conn.execute("SELECT to_regclass(%s) AS relation", (f"{self.store.schema}.{table}",)).fetchone()["relation"]
+            if exists:
+                delete_batches(table, key)
+        with self.store.connect() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM system_information_state WHERE state_key IN ('feed_history_reset_in_progress','feed_history_reset_pending_events')")
+                counts = {}
+                for table in ("system_information_items", "system_information_evidence_pins", "system_information_decision_samples", "system_review_items", "system_review_decisions", "system_review_analysis_attempts", "system_review_runs"):
+                    row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key=%s", (f"feed_reset_{table}",)).fetchone()
+                    counts[table] = int(row["state_value"]) if row else 0
+                pending_row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='feed_history_reset_pending_events'").fetchone()
+                counts["pending_events"] = int(pending_row["state_value"]) if pending_row else int(pending)
+        return {"items_removed": counts["system_information_items"], "pending_events_skipped": counts["pending_events"],
+                "pins_removed": counts["system_information_evidence_pins"], "decision_samples_removed": counts["system_information_decision_samples"],
+                "review_items_removed": counts["system_review_items"], "review_decisions_removed": counts["system_review_decisions"],
+                "review_attempts_removed": counts["system_review_analysis_attempts"], "review_runs_removed": counts["system_review_runs"]}
+
     def _run_retention(self, now_ms: int) -> None:
         last = int(self.store.get_state("postgres_retention_last_ms", "0") or 0)
         if now_ms - last < 60_000:
@@ -210,11 +313,11 @@ class PostgresSourceStateProjector:
         except Exception as exc:
             self.store.set_state("status_retention_error", f"{type(exc).__name__}: {exc}"[:500])
         try:
-            evidence = self.store.cleanup_expired_evidence(now_ms=now_ms, retain_days=90, limit=200, dry_run=False)
-            self.store.set_state("evidence_gc_last_result", json.dumps(evidence, separators=(",", ":")))
-            self.store.set_state("evidence_gc_error", "")
+            feed_evidence = self.store.prune_feed_history_evidence(limit=10000)
+            self.store.set_state("feed_evidence_gc_last_result", json.dumps(feed_evidence, separators=(",", ":")))
+            self.store.set_state("feed_evidence_gc_error", "")
         except Exception as exc:
-            self.store.set_state("evidence_gc_error", f"{type(exc).__name__}: {exc}"[:500])
+            self.store.set_state("feed_evidence_gc_error", f"{type(exc).__name__}: {exc}"[:500])
         self.store.set_state("postgres_retention_last_ms", now_ms)
 
     def _project_event(self, conn, event: dict[str, Any], now: int) -> dict[str, Any]:

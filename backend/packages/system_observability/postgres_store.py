@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from psycopg.sql import Identifier
+
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres
 from .error_policy import EXTERNAL_CATEGORIES, day_start_ms, error_messages, expire_external_errors, external_error, failure_category, scrub_external_errors
 from .postgres_evidence import PostgresSmallEvidenceStore
@@ -102,6 +104,8 @@ SEARCH_POSTINGS_RETIREMENT_CHECKSUM = hashlib.sha256(SEARCH_POSTINGS_RETIREMENT_
 
 SOURCE_IDENTITY_ITEM_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_system_information_identity_item ON system_information_source_identity(item_id)"
 SOURCE_IDENTITY_ITEM_INDEX_CHECKSUM = hashlib.sha256(SOURCE_IDENTITY_ITEM_INDEX_SQL.encode()).hexdigest()
+EVIDENCE_FILE_GC_SQL = "CREATE TABLE IF NOT EXISTS system_information_evidence_file_gc(evidence_ref text PRIMARY KEY,path text NOT NULL,queued_at_ms bigint NOT NULL)"
+EVIDENCE_FILE_GC_CHECKSUM = hashlib.sha256(EVIDENCE_FILE_GC_SQL.encode()).hexdigest()
 
 
 def _allow_shared_source_identity_items(connection) -> None:
@@ -166,7 +170,9 @@ class PostgresSystemInformationStore:
                             PostgresMigration(4, "allow shared source identity items", SOURCE_IDENTITY_FANIN_CHECKSUM, _allow_shared_source_identity_items),
                             PostgresMigration(5, "retire legacy search postings", SEARCH_POSTINGS_RETIREMENT_CHECKSUM, _retire_search_postings_schema),
                             PostgresMigration(6, "index source identity item references", SOURCE_IDENTITY_ITEM_INDEX_CHECKSUM,
-                                              lambda connection: connection.execute(SOURCE_IDENTITY_ITEM_INDEX_SQL))),
+                                              lambda connection: connection.execute(SOURCE_IDENTITY_ITEM_INDEX_SQL)),
+                            PostgresMigration(7, "recoverable external evidence file GC", EVIDENCE_FILE_GC_CHECKSUM,
+                                              lambda connection: connection.execute(EVIDENCE_FILE_GC_SQL))),
             )
         PostgresSmallEvidenceStore(schema=schema).initialize()
 
@@ -353,6 +359,7 @@ class PostgresSystemInformationStore:
         payload = _json(safe).encode()
         ref = hashlib.sha256(payload).hexdigest()
         self._lock_external_evidence_key(conn, ref)
+        conn.execute("DELETE FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,))
         compressed = gzip.compress(payload, compresslevel=6, mtime=0)
         from .store import SystemInformationStore
         if SystemInformationStore._is_small_capture(safe, len(payload)):
@@ -864,6 +871,11 @@ class PostgresSystemInformationStore:
             return [PostgresSystemInformationStore._compact_evidence(item) for item in value]
         if not isinstance(value, dict):
             return value
+        if value.get("source_table") == "tasks":
+            stamp = value.get("updated_at_ms") or value.get("created_at_ms")
+            now = _now_ms()
+            if stamp is None or int(stamp) >= now - 5 * 86_400_000:
+                return value
         result = {}
         for key, item in value.items():
             normalized = str(key).casefold()
@@ -891,7 +903,22 @@ class PostgresSystemInformationStore:
         for table, column, status_col, result_col in specs:
             if conn.execute("SELECT to_regclass(%s) AS relation", (f"{self.schema}.{table}",)).fetchone()["relation"]:
                 refs.extend(dict(row) for row in conn.execute(f"SELECT %s AS table_name,{status_col} AS status,{result_col} AS result FROM {table} WHERE {column}=%s", (table,reference)).fetchall())
+        # Source attempts live in main, outside this schema's FK graph. They
+        # can still own the evidence after its information-feed item expires.
+        for table in ("x_processing_attempts", "x_processing_attempt_events"):
+            if conn.execute("SELECT to_regclass(%s) AS relation", (f"main.{table}",)).fetchone()["relation"]:
+                refs.extend(dict(row) for row in conn.execute(
+                    f"SELECT %s AS table_name,status,status AS result FROM main.{table} WHERE response_ref=%s",
+                    (table, reference),
+                ).fetchall())
         return refs
+
+    def _has_business_response_reference(self, conn, reference: str) -> bool:
+        for table in ("x_processing_attempts", "x_processing_attempt_events"):
+            if conn.execute("SELECT to_regclass(%s) AS relation", (f"main.{table}",)).fetchone()["relation"]:
+                if conn.execute(f"SELECT 1 FROM main.{table} WHERE response_ref=%s LIMIT 1", (reference,)).fetchone():
+                    return True
+        return False
 
     def _refresh_item_search(self, conn, item_id: str, evidence: Any) -> None:
         # Historical imported postings remain untouched. Runtime evidence
@@ -959,6 +986,106 @@ class PostgresSystemInformationStore:
                     conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('evidence_gc_cursor',%s,%s) ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",(next_cursor,now))
         for path in old_files: self._unlink_if_unregistered(path)
         return {"compacted":compacted,"compacted_bytes":compacted_bytes,"protected":protected,"orphaned":orphaned,"orphaned_bytes":orphaned_bytes,"dry_run":int(dry_run)}
+
+    def prune_feed_history_evidence(self, *, limit: int = 1000) -> dict[str, int]:
+        """Remove feed-only evidence references in bounded batches after the feed reset."""
+        batch = max(1, min(int(limit), 100000))
+        small_refs: list[str] = []
+        paths: list[tuple[str, Path]] = []
+        with self.connect() as conn:
+            with conn.transaction():
+                optional_references = []
+                for relation, column in ((f"{self.schema}.system_review_analysis_attempts", "raw_response_ref"),
+                                         ("main.x_processing_attempts", "response_ref"),
+                                         ("main.x_processing_attempt_events", "response_ref")):
+                    if conn.execute("SELECT to_regclass(%s) AS relation", (relation,)).fetchone()["relation"]:
+                        optional_references.append(f"AND NOT EXISTS (SELECT 1 FROM {relation} r WHERE r.{column}=e.evidence_ref)")
+                rows = conn.execute(
+                    f"""SELECT e.evidence_ref,e.path FROM system_information_evidence e
+                       WHERE NOT EXISTS (SELECT 1 FROM system_information_items i WHERE i.evidence_ref=e.evidence_ref)
+                         AND NOT EXISTS (SELECT 1 FROM system_information_events v WHERE v.evidence_ref=e.evidence_ref)
+                         AND NOT EXISTS (SELECT 1 FROM system_information_decision_samples d WHERE d.evidence_ref=e.evidence_ref)
+                         AND NOT EXISTS (SELECT 1 FROM system_information_evidence_pins p WHERE p.evidence_ref=e.evidence_ref)
+                         {' '.join(optional_references)}
+                       ORDER BY e.evidence_ref LIMIT %s""", (batch,),
+                ).fetchall()
+                candidate_refs = [str(row["evidence_ref"]) for row in rows]
+                if candidate_refs:
+                    for reference in sorted(candidate_refs):
+                        self._lock_external_evidence_key(conn, reference)
+                    rows = conn.execute(
+                        f"""SELECT e.evidence_ref,e.path FROM system_information_evidence e
+                           WHERE e.evidence_ref=ANY(%s)
+                             AND NOT EXISTS (SELECT 1 FROM system_information_items i WHERE i.evidence_ref=e.evidence_ref)
+                             AND NOT EXISTS (SELECT 1 FROM system_information_events v WHERE v.evidence_ref=e.evidence_ref)
+                             AND NOT EXISTS (SELECT 1 FROM system_information_decision_samples d WHERE d.evidence_ref=e.evidence_ref)
+                             AND NOT EXISTS (SELECT 1 FROM system_information_evidence_pins p WHERE p.evidence_ref=e.evidence_ref)
+                             {' '.join(optional_references)}
+                           ORDER BY e.evidence_ref FOR UPDATE OF e SKIP LOCKED""", (candidate_refs,),
+                    ).fetchall()
+                refs = [str(row["evidence_ref"]) for row in rows]
+                if refs:
+                    conn.execute("DELETE FROM system_information_evidence WHERE evidence_ref=ANY(%s)", (refs,))
+                    for row in rows:
+                        path = str(row["path"])
+                        if path.startswith("postgres://small_evidence/"):
+                            small_refs.append(str(row["evidence_ref"]))
+                        else:
+                            paths.append((str(row["evidence_ref"]), Path(path)))
+                    if small_refs:
+                        self.evidence.delete_many_in_transaction(conn, small_refs)
+                    if paths:
+                        with conn.cursor() as cursor:
+                            cursor.executemany(
+                                "INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s) ON CONFLICT(evidence_ref) DO UPDATE SET path=excluded.path,queued_at_ms=excluded.queued_at_ms",
+                                [(ref, str(path), _now_ms()) for ref, path in paths],
+                            )
+                conn.execute(
+                    "INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_evidence_cleanup_last_batch',%s,%s) "
+                    "ON CONFLICT(state_key) DO UPDATE SET state_value=excluded.state_value,updated_at_ms=excluded.updated_at_ms",
+                    (str(len(refs)), _now_ms()),
+                )
+        self._drain_evidence_file_gc(limit=batch)
+        return {"scanned": len(rows), "removed": len(refs)}
+
+    def _drain_evidence_file_gc(self, *, limit: int = 1000) -> int:
+        removed = 0
+        failure = ""
+        with self.connect() as conn:
+            queued = conn.execute("SELECT evidence_ref,path FROM system_information_evidence_file_gc ORDER BY queued_at_ms,evidence_ref LIMIT %s", (max(1, min(limit, 100000)),)).fetchall()
+        for offset in range(0, len(queued), 500):
+            chunk = [(str(row["evidence_ref"]), Path(str(row["path"]))) for row in queued[offset:offset + 500]]
+            try:
+                with self.connect() as conn:
+                    with conn.transaction():
+                        for ref, _path in chunk:
+                            self._lock_external_evidence_key(conn, ref)
+                        refs = [ref for ref, _path in chunk]
+                        predicates = ["NOT EXISTS (SELECT 1 FROM system_information_evidence e WHERE e.evidence_ref=r.ref)"]
+                        for relation, column in ((f"{self.schema}.system_information_items", "evidence_ref"),
+                                                 (f"{self.schema}.system_information_events", "evidence_ref"),
+                                                 (f"{self.schema}.system_information_decision_samples", "evidence_ref"),
+                                                 (f"{self.schema}.system_information_evidence_pins", "evidence_ref"),
+                                                 (f"{self.schema}.system_review_analysis_attempts", "raw_response_ref"),
+                                                 ("main.x_processing_attempts", "response_ref"),
+                                                 ("main.x_processing_attempt_events", "response_ref")):
+                            if conn.execute("SELECT to_regclass(%s) AS relation", (relation,)).fetchone()["relation"]:
+                                schema, table = relation.split(".", 1)
+                                predicates.append(f"NOT EXISTS (SELECT 1 FROM {Identifier(schema, table).as_string(conn)} x WHERE x.{Identifier(column).as_string(conn)}=r.ref)")
+                        safe_refs = {str(row["ref"]) for row in conn.execute(
+                            "SELECT r.ref FROM unnest(%s::text[]) AS r(ref) WHERE " + " AND ".join(predicates), (refs,),
+                        ).fetchall()}
+                        for ref, path in chunk:
+                            if ref in safe_refs and path == self.evidence_dir / ref[:2] / f"{ref}.json.gz":
+                                path.unlink(missing_ok=True)
+                                removed += 1
+                            conn.execute("DELETE FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,))
+            except Exception as exc:
+                # Removed registry rows with leftover files are safe to retry later.
+                failure = f"{type(exc).__name__}: {exc}"[:500]
+                continue
+        self.set_state("evidence_file_gc_error", failure)
+        return removed
 
     def _unlink_if_unregistered(self,path:Path)->bool:
         ref=path.name.removesuffix(".json.gz")
@@ -1029,45 +1156,25 @@ class PostgresSystemInformationStore:
         return {"scanned": 0, "done": 1}
 
     def trim_information_items(self, *, now_ms: int | None = None, limit: int = 2000) -> dict[str, int]:
+        """Delete expired feed copies in bounded batches; business rows own their evidence."""
         now = now_ms if now_ms is not None else _now_ms()
         cutoff = now - 6 * 60 * 60 * 1000
-        review_cutoff = now - 24 * 60 * 60 * 1000
         batch = max(1, min(int(limit), 10000))
         with self.connect() as conn:
             with conn.transaction():
-                conn.execute("""
-                    UPDATE system_information_items SET updated_at_ms=observed_at_ms
-                    WHERE item_id IN (
-                        SELECT item_id FROM system_information_items
-                        WHERE updated_at_ms IS NULL AND observed_at_ms < %s
-                        ORDER BY item_id LIMIT %s FOR UPDATE SKIP LOCKED
-                    )
-                """, (cutoff, batch))
-                rows = conn.execute("""
-                    SELECT i.item_id FROM system_information_items i
-                    WHERE i.updated_at_ms < %s AND COALESCE(i.created_at_ms, 0) < %s
-                      AND (i.updated_at_ms < %s OR i.source_table = 'x_capture_attempts'
-                           OR i.result NOT IN ('normal_stop', 'no_candidate', 'discarded', 'ignored'))
-                      AND NOT EXISTS (SELECT 1 FROM system_information_decision_samples d WHERE d.item_id=i.item_id)
-                      AND NOT EXISTS (SELECT 1 FROM system_information_evidence_pins p WHERE p.evidence_ref=i.evidence_ref)
-                      AND NOT EXISTS (SELECT 1 FROM system_information_events e
-                          JOIN system_information_evidence_pins p ON p.evidence_ref=e.evidence_ref WHERE e.item_id=i.item_id)
-                      AND NOT EXISTS (SELECT 1 FROM system_information_events e WHERE e.item_id=i.item_id
-                          AND COALESCE(e.happened_at_ms,e.observed_at_ms) >= %s)
-                      AND NOT EXISTS (SELECT 1 FROM system_information_items child
-                          WHERE child.parent_item_id=i.item_id AND child.updated_at_ms >= %s)
-                      AND NOT EXISTS (SELECT 1 FROM system_review_items r WHERE
-                          strpos(COALESCE(r.scope_json,''),i.item_id)>0 OR
-                          strpos(COALESCE(r.evidence_json,''),i.item_id)>0 OR
-                          strpos(COALESCE(r.counter_evidence_json,''),i.item_id)>0)
-                    ORDER BY i.updated_at_ms,i.item_id LIMIT %s FOR UPDATE OF i SKIP LOCKED
-                """, (cutoff, cutoff, review_cutoff, cutoff, cutoff, batch)).fetchall()
-                ids = [row["item_id"] for row in rows]
-                removed = conn.execute("DELETE FROM system_information_items WHERE item_id=ANY(%s)", (ids,)).rowcount if ids else 0
+                rows = conn.execute(
+                    "SELECT item_id FROM system_information_items WHERE COALESCE(updated_at_ms,observed_at_ms)<%s "
+                    "ORDER BY COALESCE(updated_at_ms,observed_at_ms),item_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                    (cutoff, batch),
+                ).fetchall()
+                ids = [str(row["item_id"]) for row in rows]
+                removed = conn.execute(
+                    "DELETE FROM system_information_items WHERE item_id=ANY(%s)", (ids,),
+                ).rowcount if ids else 0
         return {"scanned": len(rows), "removed": removed}
 
     def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000, max_queued: int = 50) -> dict[str,int]:
-        now=now_ms or _now_ms(); cutoff=now-86_400_000; cursor=self.get_state("status_retention_cursor")
+        now=now_ms or _now_ms(); cutoff=now-5*86_400_000; cursor=self.get_state("status_retention_cursor")
         removed=scanned=0
         with self.connect() as conn:
             with conn.transaction():
@@ -1075,7 +1182,7 @@ class PostgresSystemInformationStore:
                 for row in rows:
                     scanned+=1
                     stamp=row["happened_at_ms"] or row["observed_at_ms"]
-                    if stamp>=cutoff or row["event_type"]=="stage_attempt" or row["error_code"] or any(s in str(row["status"] or "").casefold() for s in ("fail","error")) or any(s in str(row["result"] or "").casefold() for s in ("fail","error")):
+                    if stamp>=cutoff or row["source_table"]=="tasks" and row["item_status"] not in {"discarded","duplicate","auto_published","published","notified","ready_review","event_tracking_cancelled","expired","legacy_skipped","judge_failed","search_failed","write_failed","format_failed","publisher_failed"} or row["event_type"]=="stage_attempt" or row["error_code"] or any(s in str(row["status"] or "").casefold() for s in ("fail","error")) or any(s in str(row["result"] or "").casefold() for s in ("fail","error")):
                         continue
                     if row["item_status"] not in {"discarded","duplicate","auto_published","published","notified","succeeded","success","completed","finished","skipped","sent"}:
                         continue
@@ -1090,13 +1197,13 @@ class PostgresSystemInformationStore:
 
     def trim_task_evidence(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 100) -> dict[str,int]:
         now=now_ms or _now_ms();cursor=self.get_state("task_evidence_retention_cursor");changed=0
-        terminal={"discarded","duplicate","auto_published","published","notified"}
+        terminal={"discarded","duplicate","auto_published","published","notified","ready_review","event_tracking_cancelled","expired","legacy_skipped","judge_failed","search_failed","write_failed","format_failed","publisher_failed"}
         with self.connect() as conn:
             with conn.transaction():
                 rows=conn.execute("SELECT item_id,source_table,source_row_id,source,evidence_ref,updated_at_ms,created_at_ms,status FROM system_information_items WHERE item_id>%s AND source_table IN ('tasks','newsflash_items') AND evidence_ref IS NOT NULL ORDER BY item_id LIMIT %s FOR UPDATE SKIP LOCKED",(cursor,max(1,min(limit,500)))).fetchall()
                 for row in rows:
                     stamp=row["updated_at_ms"] or row["created_at_ms"]
-                    if row["source_table"]=="tasks" and (row["status"] not in terminal or stamp is None or stamp>=now-86_400_000):continue
+                    if row["source_table"]=="tasks" and (row["status"] not in terminal or stamp is None or stamp>=now-5*86_400_000):continue
                     if row["source_table"]=="newsflash_items" and (stamp is None or stamp>=now-30*86_400_000 or row["source"]=="odaily"):continue
                     if conn.execute("SELECT 1 FROM system_information_evidence_pins WHERE evidence_ref=%s LIMIT 1",(row["evidence_ref"],)).fetchone():continue
                     evidence=self._load_evidence_in_connection(conn,str(row["evidence_ref"]))

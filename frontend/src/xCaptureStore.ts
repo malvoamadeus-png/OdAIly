@@ -815,6 +815,16 @@ export type TaskPipelineSummary = {
   last_error: string | null;
 };
 
+export type TaskReviewRow = {
+  task: Record<string, unknown>;
+  pipeline: Record<string, unknown> | null;
+  external_pipeline?: Record<string, unknown> | null;
+};
+
+export async function listTaskReview(limit = 100): Promise<{ items: TaskReviewRow[] }> {
+  return consoleApiPost<{ items: TaskReviewRow[] }>('/console/task-review', { limit });
+}
+
 export type DuplicateTargetSnapshot = {
   target_type: string;
   target_id: string | null;
@@ -1351,6 +1361,12 @@ export async function listSystemInformation(filters: {
   return consoleApiPost<SystemInformationPage>('/console/system-information', { action: 'list', ...filters });
 }
 
+export async function resetSystemInformationHistory() {
+  return consoleApiPost<{ reset: { items_removed: number; pending_events_skipped: number } }>(
+    '/console/system-information', { action: 'reset_history' },
+  );
+}
+
 export async function getSystemInformationDetail(itemId: string): Promise<SystemInformationDetail> {
   const result = await consoleApiPost<{ item: SystemInformationDetail }>('/console/system-information', {
     action: 'detail', item_id: itemId,
@@ -1511,7 +1527,7 @@ export type AITextSelfUpgradeItem = {
   analysis_status: 'pending' | 'processing' | 'completed' | 'failed';
   analysis_model: string | null;
   analysis_prompt_version: string | null;
-  verdict: 'writer1_error' | 'auditor_false_positive' | 'fact_auditor_error' | 'inconclusive' | null;
+  verdict: 'writer1_error' | 'reviewer_correct_unattributed' | 'auditor_false_positive' | 'fact_auditor_error' | 'inconclusive' | null;
   confidence: 'low' | 'medium' | 'high' | null;
   rationale: string | null;
   evidence: Array<{ location: string; quote: string; explanation: string }>;
@@ -1563,6 +1579,12 @@ export async function decideAITextSelfUpgradeItem(
     action: 'decide', case_key: caseKey, decision, note,
   });
   return result.item;
+}
+
+export async function deleteAITextSelfUpgradeItem(caseKey: string) {
+  return consoleApiPost<{ deleted: boolean }>('/console/ai-text-self-upgrade', {
+    action: 'delete', case_key: caseKey,
+  });
 }
 
 export function onConsoleAuthStateChange(listener: (session: Session | null) => void): () => void {

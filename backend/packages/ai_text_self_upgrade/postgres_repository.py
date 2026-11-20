@@ -34,6 +34,25 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_runs(run_key text PRIMARY KEY,st
 CREATE INDEX IF NOT EXISTS idx_ai_text_upgrade_decisions ON ai_text_self_upgrade_decisions(case_key,id DESC);
 """
 CHECKSUM = hashlib.sha256(SCHEMA_SQL.encode()).hexdigest()
+DELETED_CASES_SQL = "CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_deleted_cases(case_key text PRIMARY KEY,deleted_by text NOT NULL,deleted_at timestamptz NOT NULL DEFAULT clock_timestamp())"
+DELETED_CASES_CHECKSUM = hashlib.sha256(DELETED_CASES_SQL.encode()).hexdigest()
+MANUAL_REJECTIONS_SQL = """CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_manual_rejections (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ auditor_check_id bigint NOT NULL UNIQUE,
+ actor text NOT NULL,
+ status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','deleted')),
+ attempt_count integer NOT NULL DEFAULT 0,
+ next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ case_key text,
+ last_error text,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_text_upgrade_manual_rejections_due
+ ON ai_text_self_upgrade_manual_rejections(status,next_attempt_at,id)"""
+MANUAL_REJECTIONS_CHECKSUM = hashlib.sha256(MANUAL_REJECTIONS_SQL.encode()).hexdigest()
+NULLABLE_TASK_ID_SQL = "ALTER TABLE ai_text_self_upgrade_items ALTER COLUMN task_id DROP NOT NULL"
+NULLABLE_TASK_ID_CHECKSUM = hashlib.sha256(NULLABLE_TASK_ID_SQL.encode()).hexdigest()
 
 
 def _now() -> str:
@@ -83,7 +102,12 @@ class PostgresAITextSelfUpgradeRepository:
                 if statement.strip(): conn.execute(statement)
 
         with connect_postgres(schema=schema, application_name="odaily-ai-text-upgrade-migrate") as conn:
-            apply_schema_migrations(conn, schema=schema, component="ai_text_upgrade", migrations=(PostgresMigration(1, "AI text self-upgrade", CHECKSUM, install),))
+            apply_schema_migrations(conn, schema=schema, component="ai_text_upgrade", migrations=(
+                PostgresMigration(1, "AI text self-upgrade", CHECKSUM, install),
+                PostgresMigration(2, "AI text self-upgrade deletion tombstones", DELETED_CASES_CHECKSUM, lambda connection: connection.execute(DELETED_CASES_SQL)),
+                PostgresMigration(3, "AI text self-upgrade manual rejection queue", MANUAL_REJECTIONS_CHECKSUM, lambda connection: [connection.execute(statement) for statement in MANUAL_REJECTIONS_SQL.split(";") if statement.strip()]),
+                PostgresMigration(4, "AI text self-upgrade independent manual snapshots", NULLABLE_TASK_ID_CHECKSUM, lambda connection: connection.execute(NULLABLE_TASK_ID_SQL)),
+            ))
 
     def initialize(self, *, recover_inflight: bool = True) -> None:
         self.initialize_schema(schema=self.schema)
@@ -100,6 +124,11 @@ class PostgresAITextSelfUpgradeRepository:
                 conn.execute("UPDATE ai_text_self_upgrade_items SET analysis_status='failed',analysis_error=COALESCE(analysis_error,'服务重启时原分析未完成'),updated_at=clock_timestamp() WHERE analysis_status='processing'")
                 conn.execute("UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=clock_timestamp(),error=COALESCE(error,'服务重启时原批次未完成') WHERE status='running'")
 
+    def recover_manual_rejections(self) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute("UPDATE ai_text_self_upgrade_manual_rejections SET status='pending',next_attempt_at=clock_timestamp(),updated_at=clock_timestamp() WHERE status='processing'")
+            return int(cursor.rowcount)
+
     def close(self) -> None: return None
     def enabled_at(self) -> str:
         with self.connect() as conn: row = conn.execute("SELECT state_value FROM ai_text_self_upgrade_state WHERE state_key='enabled_at'").fetchone()
@@ -115,16 +144,219 @@ class PostgresAITextSelfUpgradeRepository:
 
     def insert_case(self, case: dict[str, Any]) -> bool:
         columns = ("case_key,source_type,auditor_check_id,fact_check_id,fact_policy_version,fact_model,fact_status,fact_reason,fact_summary,fact_result_json,fact_original_text,fact_original_url,fact_completed_at,source_item_id,content_hash,audit_prompt_version,audit_model,audited_title,audited_content,audit_result_json,published_at,source_url,source_title,source_content,task_id,writer_model,prompt_template_key,prompt_version_id,draft_title,draft_content,final_title,final_content")
-        values = (case["case_key"],case.get("source_type","fact_auditor"),case["auditor_check_id"],case.get("fact_check_id"),case.get("fact_policy_version"),case.get("fact_model"),case.get("fact_status"),case.get("fact_reason") or "",case.get("fact_summary") or "",_json(case.get("fact_result") or {}),case.get("fact_original_text") or "",case.get("fact_original_url") or "",case.get("fact_completed_at"),case["source_item_id"],case["content_hash"],case.get("audit_prompt_version"),case.get("audit_model"),case.get("audited_title"),case["audited_content"],_json(case.get("audit_result") or {}),case.get("published_at"),case.get("source_url"),case.get("source_title"),case["source_content"],case["task_id"],case.get("writer_model"),case.get("prompt_template_key"),case.get("prompt_version_id"),case.get("draft_title"),case.get("draft_content"),case.get("final_title"),case.get("final_content"))
+        values = (case["case_key"],case.get("source_type","fact_auditor"),case["auditor_check_id"],case.get("fact_check_id"),case.get("fact_policy_version"),case.get("fact_model"),case.get("fact_status"),case.get("fact_reason") or "",case.get("fact_summary") or "",_json(case.get("fact_result") or {}),case.get("fact_original_text") or "",case.get("fact_original_url") or "",case.get("fact_completed_at"),case["source_item_id"],case["content_hash"],case.get("audit_prompt_version"),case.get("audit_model"),case.get("audited_title"),case["audited_content"],_json(case.get("audit_result") or {}),case.get("published_at"),case.get("source_url"),case.get("source_title"),case.get("source_content") or "",case.get("task_id"),case.get("writer_model"),case.get("prompt_template_key"),case.get("prompt_version_id"),case.get("draft_title"),case.get("draft_content"),case.get("final_title"),case.get("final_content"))
         with self.connect() as conn:
-            return bool(conn.execute(f"INSERT INTO ai_text_self_upgrade_items({columns}) VALUES({','.join(['%s']*len(values))}) ON CONFLICT(case_key) DO NOTHING", values).rowcount)
+            with conn.transaction():
+                conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("ai-text-upgrade-case:" + str(case["case_key"]),))
+                if conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=%s FOR KEY SHARE", (case["case_key"],)).fetchone():
+                    return False
+                return bool(conn.execute(f"INSERT INTO ai_text_self_upgrade_items({columns}) VALUES({','.join(['%s']*len(values))}) ON CONFLICT(case_key) DO NOTHING", values).rowcount)
+
+    def queue_manual_rejection(self, auditor_check_id: int, *, actor: str) -> str | None:
+        """Persist a manual rejection for background exact-link resolution."""
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_text_self_upgrade_manual_rejections(auditor_check_id,actor)
+                   VALUES(%s,%s) ON CONFLICT(auditor_check_id) DO UPDATE SET actor=excluded.actor,
+                   status=CASE WHEN ai_text_self_upgrade_manual_rejections.status IN ('completed','deleted')
+                               THEN ai_text_self_upgrade_manual_rejections.status ELSE 'pending' END,
+                   next_attempt_at=CASE WHEN ai_text_self_upgrade_manual_rejections.status IN ('completed','deleted')
+                                        THEN ai_text_self_upgrade_manual_rejections.next_attempt_at ELSE clock_timestamp() END,
+                   updated_at=clock_timestamp()""",
+                (auditor_check_id, actor[:200]),
+            )
+        return f"manual-rejection:{auditor_check_id}"
+
+    def manual_rejection_status(self, auditor_check_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT status FROM ai_text_self_upgrade_manual_rejections WHERE auditor_check_id=%s", (auditor_check_id,)).fetchone()
+            return str(row["status"]) if row else None
+
+    def process_manual_rejection_queue(self, *, limit: int = 10) -> dict[str, int]:
+        with self.connect() as conn:
+            with conn.transaction():
+                rows = conn.execute(
+                    """SELECT * FROM ai_text_self_upgrade_manual_rejections WHERE status='pending'
+                       AND next_attempt_at<=clock_timestamp() ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""",
+                    (max(1, min(int(limit), 100)),),
+                ).fetchall()
+                for row in rows:
+                    conn.execute("UPDATE ai_text_self_upgrade_manual_rejections SET status='processing',attempt_count=attempt_count+1,updated_at=clock_timestamp() WHERE id=%s", (row["id"],))
+        result = {"processed": 0, "completed": 0, "retrying": 0, "deleted": 0}
+        for row in rows:
+            result["processed"] += 1
+            try:
+                case_key = self._create_manual_rejection_case(int(row["auditor_check_id"]), actor=str(row["actor"]))
+                if case_key is None:
+                    status, error = "pending", "精确发布关联尚未就绪"
+                    result["retrying"] += 1
+                elif case_key == "__deleted__":
+                    status, error = "deleted", None
+                    result["deleted"] += 1
+                else:
+                    status, error = "completed", None
+                    result["completed"] += 1
+                attempts = int(row["attempt_count"]) + 1
+                delay = min(6 * 60 * 60, 30 * (2 ** min(attempts - 1, 10)))
+                with self.connect() as conn:
+                    conn.execute(
+                        "UPDATE ai_text_self_upgrade_manual_rejections SET status=%s,case_key=%s,last_error=%s,next_attempt_at=clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() WHERE id=%s",
+                        (status, None if case_key in (None, "__deleted__") else case_key, error, delay, row["id"]),
+                    )
+            except Exception as exc:
+                result["retrying"] += 1
+                attempts = int(row["attempt_count"]) + 1
+                delay = min(6 * 60 * 60, 30 * (2 ** min(attempts - 1, 10)))
+                with self.connect() as conn:
+                    conn.execute(
+                        "UPDATE ai_text_self_upgrade_manual_rejections SET status='pending',last_error=%s,next_attempt_at=clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() WHERE id=%s",
+                        (f"{type(exc).__name__}: {exc}"[:2000], delay, row["id"]),
+                    )
+        return result
+
+    def _create_manual_rejection_case(self, auditor_check_id: int, *, actor: str) -> str | None:
+        """Snapshot a rejection only when its published ID maps to one exact Writer1 version."""
+        from packages.auditor.repository import calculate_content_hash
+
+        with connect_postgres(schema="main", application_name="odaily-ai-text-upgrade-manual-rejection") as source:
+            with source.transaction():
+                row = source.execute("SELECT * FROM auditor_checks WHERE id=%s FOR SHARE", (auditor_check_id,)).fetchone()
+                if row is None:
+                    return "__deleted__"
+                if row["status"] != "flagged":
+                    return "__deleted__"
+                expected_hash = calculate_content_hash(row["title"], str(row["content"] or ""))
+                hash_matches = str(row["content_hash"] or "") == expected_hash
+                source_item_id = str(row["source_item_id"] or f"auditor-check:{auditor_check_id}")
+                rejected_case_key = hashlib.sha256(f"{source_item_id}\n{expected_hash}".encode()).hexdigest()
+                with self.connect() as review_conn:
+                    if review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=%s", (rejected_case_key,)).fetchone():
+                        return "__deleted__"
+                metadata_columns = {str(item["column_name"]) for item in source.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema='main' AND table_name='newsflash_production_metadata'"
+                ).fetchall()}
+                manual_rows = []
+                if {"outlet_category", "odaily_id"} <= metadata_columns:
+                    manual_rows = source.execute(
+                        "SELECT * FROM newsflash_production_metadata WHERE odaily_id=%s AND outlet_category='manual'",
+                        (str(row["source_item_id"]),),
+                    ).fetchall()
+                task = None
+                task_tables = source.execute(
+                    "SELECT to_regclass('main.x_task_pipeline') AS pipeline,to_regclass('main.tasks') AS tasks"
+                ).fetchone()
+                writer_columns = {str(item["table_name"]): set() for item in source.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main' AND table_name IN ('x_task_pipeline','tasks')"
+                ).fetchall()}
+                for item in source.execute(
+                    "SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='main' AND table_name IN ('x_task_pipeline','tasks')"
+                ).fetchall():
+                    writer_columns[str(item["table_name"])].add(str(item["column_name"]))
+                if len(manual_rows) == 1:
+                    metadata = manual_rows[0]
+                    task = {
+                        "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
+                        "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
+                        "final_content": str(row["content"] or ""), "source_url": row["source_url"],
+                        "source_title": str(metadata["title"] or "") if "title" in metadata.keys() else "", "source_content": "",
+                        "authoring_path": "manual_publication",
+                    }
+                elif (hash_matches and {"delivery_key", "odaily_id", "id_match_status"} <= metadata_columns
+                      and task_tables["pipeline"] is not None and task_tables["tasks"] is not None
+                      and {"task_id", "writer_model", "prompt_template_key", "prompt_version_id", "draft_title", "draft_content", "final_title", "final_content", "write_completed_at", "publish_completed_at"} <= writer_columns.get("x_task_pipeline", set())
+                      and {"id", "source_url", "title", "content"} <= writer_columns.get("tasks", set())):
+                    task_rows = source.execute(
+                    """SELECT p.task_id,p.writer_model,p.prompt_template_key,p.prompt_version_id,
+                              p.draft_title,p.draft_content,p.final_title,p.final_content,
+                              t.source_url,t.title AS source_title,t.content AS source_content
+                       FROM newsflash_production_metadata m
+                       JOIN x_task_pipeline p ON m.delivery_key='odaily-task-' || p.task_id::text
+                       JOIN tasks t ON t.id=p.task_id
+                       WHERE m.odaily_id=%s AND m.id_match_status='matched'
+                         AND p.writer_model IS NOT NULL AND p.write_completed_at IS NOT NULL
+                         AND p.publish_completed_at IS NOT NULL""",
+                        (str(row["source_item_id"]),),
+                    ).fetchall()
+                    if len(task_rows) == 1:
+                        candidate = task_rows[0]
+                        if ((candidate["draft_title"] or candidate["draft_content"])
+                                and calculate_content_hash(candidate["final_title"], str(candidate["final_content"] or "")) == expected_hash):
+                            task = candidate
+                if task is None:
+                    task = {
+                        "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
+                        "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
+                        "final_content": str(row["content"] or ""), "source_url": row["source_url"],
+                        "source_title": "", "source_content": "", "authoring_path": "unknown_publication",
+                    }
+                audit_result = _decode(row["audit_result"], {})
+                if not isinstance(audit_result, dict):
+                    audit_result = {}
+                authoring_path = task["authoring_path"] if "authoring_path" in task.keys() else None
+                audit_result["manual_rejection"] = {
+                    "actor": actor[:200], "rejected_at": datetime.now(UTC).isoformat(),
+                    **({"authoring_path": authoring_path, "writer1_snapshot": "unavailable"}
+                       if authoring_path in {"manual_publication", "unknown_publication"} else {}),
+                    **({"audit_snapshot_integrity": "content_hash_mismatch"} if not hash_matches else {}),
+                }
+                key = rejected_case_key
+                case = {
+                    "case_key": key, "source_type": "text_auditor", "auditor_check_id": auditor_check_id,
+                    "source_item_id": source_item_id, "content_hash": expected_hash,
+                    "audit_prompt_version": row["prompt_version"], "audit_model": row["model"],
+                    "audited_title": row["title"], "audited_content": str(row["content"] or ""),
+                    "audit_result": audit_result, "published_at": row["published_at"],
+                    "source_url": task["source_url"] or row["source_url"],
+                    "source_title": task["source_title"],
+                    "source_content": str(task["source_content"] or ""), "task_id": int(task["task_id"]) if task["task_id"] is not None else None,
+                    "writer_model": task["writer_model"],
+                    "prompt_template_key": task["prompt_template_key"],
+                    "prompt_version_id": task["prompt_version_id"],
+                    "draft_title": task["draft_title"], "draft_content": task["draft_content"],
+                    "final_title": task["final_title"], "final_content": task["final_content"],
+                }
+                inserted = self.insert_case(case)
+                if not inserted:
+                    with self.connect() as review_conn:
+                        tombstone = review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=%s", (key,)).fetchone()
+                        if tombstone:
+                            return "__deleted__"
+                        review_conn.execute(
+                            "UPDATE ai_text_self_upgrade_items SET audit_result_json=jsonb_set(audit_result_json,'{manual_rejection}',%s::jsonb,true),updated_at=clock_timestamp() WHERE case_key=%s",
+                            (_json(audit_result["manual_rejection"]), key),
+                        )
+                        exists = review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_items WHERE case_key=%s", (key,)).fetchone()
+                    if not exists:
+                        return None
+                return key
 
     def has_run(self, run_key: str) -> bool:
         with self.connect() as conn: return conn.execute("SELECT 1 FROM ai_text_self_upgrade_runs WHERE run_key=%s", (run_key,)).fetchone() is not None
+    def run_status(self, run_key: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT status FROM ai_text_self_upgrade_runs WHERE run_key=%s", (run_key,)).fetchone()
+            return str(row["status"]) if row else None
+    def oldest_unfinished_storage_retention_run(self) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT run_key FROM ai_text_self_upgrade_runs WHERE run_key LIKE 'storage_retention:%' AND status IN ('running','failed') ORDER BY started_at,run_key LIMIT 1"
+            ).fetchone()
+            return str(row["run_key"]) if row else None
     def start_run(self, run_key: str) -> bool:
         with self.connect() as conn: return bool(conn.execute("INSERT INTO ai_text_self_upgrade_runs(run_key,status,started_at) VALUES(%s,'running',clock_timestamp()) ON CONFLICT DO NOTHING", (run_key,)).rowcount)
+    def retry_failed_run(self, run_key: str, *, retry_after_seconds: int = 300) -> bool:
+        with self.connect() as conn:
+            return bool(conn.execute(
+                "UPDATE ai_text_self_upgrade_runs SET status='running',started_at=clock_timestamp(),completed_at=NULL,error=NULL WHERE run_key=%s AND status='failed' AND completed_at<=clock_timestamp()-(%s * interval '1 second')",
+                (run_key, max(0, int(retry_after_seconds))),
+            ).rowcount)
+    def recover_storage_retention_runs(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute(
+                "UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=clock_timestamp(),error=COALESCE(error,'worker restarted during storage retention') WHERE status='running' AND run_key LIKE 'storage_retention:%'"
+            ).rowcount)
     def finish_run(self, run_key: str, *, status: str, cases_found: int = 0, cases_completed: int = 0, cases_failed: int = 0, cases_unlinked: int = 0, error: str | None = None) -> None:
-        with self.connect() as conn: conn.execute("UPDATE ai_text_self_upgrade_runs SET status=%s,completed_at=clock_timestamp(),cases_found=%s,cases_completed=%s,cases_failed=%s,cases_unlinked=%s,error=%s WHERE run_key=%s", (status,cases_found,cases_completed,cases_failed,cases_unlinked,error[:2000] if error else None,run_key))
+        with self.connect() as conn: conn.execute("UPDATE ai_text_self_upgrade_runs SET status=%s,completed_at=CASE WHEN %s='running' THEN NULL ELSE clock_timestamp() END,cases_found=%s,cases_completed=%s,cases_failed=%s,cases_unlinked=%s,error=%s WHERE run_key=%s", (status,status,cases_found,cases_completed,cases_failed,cases_unlinked,error[:2000] if error else None,run_key))
     def recent_runs(self, limit: int = 12, *, since: str | None = None) -> list[dict[str, Any]]:
         where = "" if since is None else " WHERE started_at >= %s::timestamptz"
         params = (max(1, min(50, limit)),) if since is None else (since, max(1, min(50, limit)))
@@ -179,6 +411,17 @@ class PostgresAITextSelfUpgradeRepository:
             row=conn.execute("SELECT * FROM ai_text_self_upgrade_items WHERE case_key=%s",(case_key,)).fetchone()
             if row is None: raise ValueError("自我审核案例不存在")
             result=_item(row); result["decisions"]=[dict(item) for item in conn.execute("SELECT decision,actor,note,decided_at,1 AS legacy FROM ai_text_self_upgrade_decisions WHERE case_key=%s UNION ALL SELECT decision,actor,note,decided_at,0 AS legacy FROM ai_text_self_upgrade_resolutions WHERE case_key=%s ORDER BY decided_at",(case_key,case_key)).fetchall()]; return result
+
+    def delete_case(self, case_key: str, *, actor: str) -> bool:
+        """Delete the snapshot and leave a tombstone atomically against discovery."""
+        with self.connect() as conn:
+            with conn.transaction():
+                conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("ai-text-upgrade-case:" + case_key,))
+                conn.execute("INSERT INTO ai_text_self_upgrade_deleted_cases(case_key,deleted_by) VALUES(%s,%s) ON CONFLICT(case_key) DO NOTHING", (case_key, actor[:200]))
+                conn.execute("DELETE FROM ai_text_self_upgrade_decisions WHERE case_key=%s", (case_key,))
+                conn.execute("DELETE FROM ai_text_self_upgrade_resolutions WHERE case_key=%s", (case_key,))
+                deleted = conn.execute("DELETE FROM ai_text_self_upgrade_items WHERE case_key=%s", (case_key,)).rowcount
+                return bool(deleted)
 
     def decide(self, case_key: str, *, decision: str, actor: str, note: str = "") -> dict[str, Any]:
         if decision not in {"reviewer_correct","writer_correct","ignored"}: raise ValueError("不支持的人工决定")

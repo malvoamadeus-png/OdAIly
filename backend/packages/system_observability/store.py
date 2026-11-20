@@ -886,7 +886,7 @@ class SystemInformationStore:
     def prune_task_status_events(self, *, source_database: Path | None = None, now_ms: int | None = None, limit: int = 2000, max_queued: int = 50) -> dict[str, int]:
         """Remove old status observations in bounded batches, preserving attempt evidence."""
         now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-        cutoff = now - 86_400_000
+        cutoff = now - 5 * 86_400_000
         with ExitStack() as cleanup, self.connect() as conn:
             conn.execute('PRAGMA busy_timeout=2000')
             row = conn.execute("SELECT state_value FROM system_information_state WHERE state_key='status_retention_cursor'").fetchone()
@@ -947,7 +947,7 @@ class SystemInformationStore:
                 ).fetchone()
                 if not item:
                     continue
-                terminal = {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}
+                terminal = {'discarded', 'duplicate', 'auto_published', 'published', 'notified', 'ready_review', 'event_tracking_cancelled', 'expired', 'legacy_skipped', 'judge_failed', 'search_failed', 'write_failed', 'format_failed', 'publisher_failed'}
                 technical_terminal = {'succeeded', 'success', 'completed', 'finished', 'skipped', 'sent'}
                 if not ((item['source_table'] == 'tasks' and item['status'] in terminal)
                         or (item['source_table'] in {'local_pipeline_jobs', 'x_capture_attempts', 'binance_square_attempts'}
@@ -1046,10 +1046,10 @@ class SystemInformationStore:
                                 conn.execute("UPDATE system_information_events SET evidence_ref=? WHERE item_id=? AND evidence_ref=? AND event_type IN ('legacy_snapshot','observed_change','artifact_update')", (ref, row['item_id'], row['evidence_ref']))
                                 changed += 1
                     continue
-                if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified'}:
+                if row['source_table'] != 'tasks' or row['status'] not in {'discarded', 'duplicate', 'auto_published', 'published', 'notified', 'ready_review', 'event_tracking_cancelled', 'expired', 'legacy_skipped', 'judge_failed', 'search_failed', 'write_failed', 'format_failed', 'publisher_failed'}:
                     continue
                 stamp = row['updated_at_ms'] or row['created_at_ms']
-                if stamp is None or stamp >= now - 86_400_000 or not row['evidence_ref']:
+                if stamp is None or stamp >= now - 5 * 86_400_000 or not row['evidence_ref']:
                     continue
                 if conn.execute("SELECT 1 FROM system_information_items WHERE parent_item_id=? AND result IN ('processing','unknown','backoffice') LIMIT 1", (row['item_id'],)).fetchone():
                     continue
@@ -1065,7 +1065,7 @@ class SystemInformationStore:
                     original_task = source.execute("SELECT status,(julianday(updated_at)-2440587.5)*86400000 AS updated_ms FROM tasks WHERE id=?", (row['source_row_id'],)).fetchone()
                     audits = _active_audits(source, tables)
                     if (not original_task or original_task['status'] not in TERMINAL_STATUSES or original_task['updated_ms'] is None
-                            or original_task['updated_ms'] >= now - 86_400_000 or audits is None
+                            or original_task['updated_ms'] >= now - 5 * 86_400_000 or audits is None
                             or _audit_protects(source, audits, row['source_row_id'])):
                         continue
                     if 'x_processing_attempts' in tables and source.execute("SELECT 1 FROM x_processing_attempts WHERE task_id=? AND status<>'succeeded' LIMIT 1", (row['source_row_id'],)).fetchone():

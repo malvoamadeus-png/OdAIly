@@ -67,6 +67,14 @@ class PendingPluginFeedback:
     extra_json: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class PendingManualRejection:
+    id: int
+    auditor_check_id: int
+    actor_email: str
+    status: str
+
+
 class LocalEditorPluginStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -160,6 +168,10 @@ class LocalEditorPluginStore:
                     sync_status TEXT NOT NULL DEFAULT 'pending',
                     sync_attempt_count INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
+                    manual_rejection_status TEXT NOT NULL DEFAULT 'not_applicable',
+                    manual_rejection_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    manual_rejection_next_attempt_at TEXT,
+                    manual_rejection_last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -170,6 +182,25 @@ class LocalEditorPluginStore:
                 CREATE INDEX IF NOT EXISTS idx_editor_plugin_local_feedbacks_actor_feed
                 ON editor_plugin_local_feedbacks(actor_email, feed_item_id, feed_kind, acted_at DESC, id DESC)
                 """
+            )
+            feedback_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(editor_plugin_local_feedbacks)")}
+            for name, definition in (
+                ("manual_rejection_status", "TEXT NOT NULL DEFAULT 'not_applicable'"),
+                ("manual_rejection_attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("manual_rejection_next_attempt_at", "TEXT"),
+                ("manual_rejection_last_error", "TEXT"),
+            ):
+                if name not in feedback_columns:
+                    conn.execute(f"ALTER TABLE editor_plugin_local_feedbacks ADD COLUMN {name} {definition}")
+            conn.execute(
+                """UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='pending',
+                   manual_rejection_next_attempt_at=created_at
+                   WHERE manual_rejection_status='not_applicable' AND feed_kind='auditor_alert'
+                     AND feedback='reject' AND feed_item_id GLOB 'auditor:[0-9]*'"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_editor_plugin_local_manual_rejections "
+                "ON editor_plugin_local_feedbacks(manual_rejection_status,manual_rejection_next_attempt_at,id)"
             )
             conn.execute(
                 """
@@ -524,15 +555,23 @@ class LocalEditorPluginStore:
             raise ValueError("editor_plugin_feed_item_id_required")
         if clean_feedback not in {"accept", "reject"}:
             raise ValueError("editor_plugin_invalid_feedback")
+        manual_rejection_status = "not_applicable"
+        if clean_feed_kind == "auditor_alert" and clean_feedback == "reject" and clean_feed_item_id.startswith("auditor:"):
+            try:
+                if int(clean_feed_item_id.split(":", 1)[1]) > 0:
+                    manual_rejection_status = "pending"
+            except ValueError:
+                pass
         now = encode_dt()
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO editor_plugin_local_feedbacks (
                     feed_item_id, feed_kind, feedback, actor_user_id, actor_email, actor_display_name,
-                    acted_at, session_id, extra_json, sync_status, created_at, updated_at
+                    acted_at, session_id, extra_json, sync_status, manual_rejection_status,
+                    manual_rejection_next_attempt_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
                 """,
                 (
                     clean_feed_item_id,
@@ -544,12 +583,65 @@ class LocalEditorPluginStore:
                     now,
                     session_id,
                     encode_json(extra_json, {}),
+                    manual_rejection_status,
+                    now if manual_rejection_status == "pending" else None,
                     now,
                     now,
                 ),
             )
             feedback_id = int(cursor.lastrowid or 0)
         return {"ok": True, "local": True, "queued": True, "feedback_id": feedback_id}
+
+    def pending_manual_rejections(self, *, limit: int = 100) -> list[PendingManualRejection]:
+        now = encode_dt()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id,feed_item_id,actor_email,manual_rejection_status
+                   FROM editor_plugin_local_feedbacks
+                   WHERE manual_rejection_status IN ('pending','queued')
+                     AND (manual_rejection_status='queued' OR manual_rejection_next_attempt_at IS NULL
+                          OR julianday(manual_rejection_next_attempt_at)<=julianday(?))
+                   ORDER BY id LIMIT ?""",
+                (now, max(1, min(int(limit), 500))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                audit_id = int(str(row["feed_item_id"]).split(":", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            result.append(PendingManualRejection(int(row["id"]), audit_id, str(row["actor_email"]), str(row["manual_rejection_status"])))
+        return result
+
+    def mark_manual_rejection_queued(self, feedback_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='queued',manual_rejection_last_error=NULL,manual_rejection_next_attempt_at=NULL,updated_at=? WHERE id=? AND manual_rejection_status='pending'",
+                (encode_dt(), feedback_id),
+            )
+
+    def mark_manual_rejection_complete(self, feedback_id: int, *, deleted: bool = False) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE editor_plugin_local_feedbacks SET manual_rejection_status=?,manual_rejection_last_error=NULL,manual_rejection_next_attempt_at=NULL,updated_at=? WHERE id=? AND manual_rejection_status='queued'",
+                ("deleted" if deleted else "completed", encode_dt(), feedback_id),
+            )
+
+    def mark_manual_rejection_failed(self, feedback_id: int, *, error: str) -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT manual_rejection_attempt_count FROM editor_plugin_local_feedbacks WHERE id=?",
+                (feedback_id,),
+            ).fetchone()
+            if row is None:
+                return
+            attempts = int(row["manual_rejection_attempt_count"]) + 1
+            delay = min(6 * 60 * 60, 30 * (2 ** min(attempts - 1, 10)))
+            conn.execute(
+                "UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='pending',manual_rejection_attempt_count=?,manual_rejection_last_error=?,manual_rejection_next_attempt_at=?,updated_at=? WHERE id=?",
+                (attempts, error[:2000], encode_dt(now + timedelta(seconds=delay)), encode_dt(now), feedback_id),
+            )
 
     def list_pending_feedbacks(self, *, limit: int = 50) -> list[PendingPluginFeedback]:
         with self._connect() as conn:
@@ -616,6 +708,7 @@ class LocalEditorPluginStore:
                 DELETE FROM editor_plugin_local_feedbacks
                 WHERE sync_status = 'synced'
                   AND created_at < ?
+                  AND manual_rejection_status NOT IN ('pending','queued')
                 """,
                 (feedback_cutoff,),
             )

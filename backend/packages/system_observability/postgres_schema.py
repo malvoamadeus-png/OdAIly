@@ -163,7 +163,9 @@ def claim_source_state_events(connection: Connection, *, limit: int = 500, outbo
         raise ValueError("unsupported source outbox schema")
     return connection.execute(
         "SELECT event_id,source_schema,source_table,source_row_id,operation,payload,occurred_at "
-        f"FROM {Identifier(outbox_schema, 'odaily_source_state_outbox').as_string(connection)} WHERE projected_at IS NULL "
+        f"FROM {Identifier(outbox_schema, 'odaily_source_state_outbox').as_string(connection)} "
+        "WHERE projected_at IS NULL AND event_id > COALESCE((SELECT state_value::bigint "
+        "FROM system_information_state WHERE state_key='feed_history_reset_event_id'), 0) "
         "ORDER BY event_id FOR UPDATE SKIP LOCKED LIMIT %s",
         (limit,),
     ).fetchall()
@@ -190,6 +192,9 @@ def prune_projected_source_events(connection: Connection, *, outbox_schema: str 
     result = connection.execute(
         f"DELETE FROM {relation} WHERE event_id IN (SELECT event_id FROM {relation} "
         "WHERE projected_at < clock_timestamp() - interval '24 hours' "
+        "OR (projected_at IS NULL AND event_id <= COALESCE((SELECT state_value::bigint "
+        "FROM system_information_state WHERE state_key='feed_history_reset_event_id'),0) "
+        "AND occurred_at < clock_timestamp() - interval '24 hours') "
         "ORDER BY event_id LIMIT %s FOR UPDATE SKIP LOCKED)", (limit,),
     )
     return result.rowcount or 0

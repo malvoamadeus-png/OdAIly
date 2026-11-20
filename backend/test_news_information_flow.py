@@ -174,6 +174,25 @@ def test_task_evidence_retention_preserves_draft_and_source_link(tmp_path: Path)
     assert store.query({'q': '任意关键词'})['total'] == 0
 
 
+def test_task_evidence_is_kept_through_five_day_review_window(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    source = tmp_path / 'source.sqlite'
+    with sqlite3.connect(source) as conn:
+        conn.execute('CREATE TABLE tasks(id INTEGER PRIMARY KEY,content TEXT,raw_payload TEXT,status TEXT,updated_at TEXT)')
+    now = int(datetime.now(UTC).timestamp() * 1000)
+    recent = now - 4 * 86_400_000
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO tasks VALUES(1,'','{}','published',?)", (datetime.fromtimestamp(recent / 1000, UTC).isoformat(),))
+    snapshot = {'item_id': 'recent-task', 'business_key': 'x', 'source': 'x', 'source_id': '1', 'title': '标题',
+                'status': 'published', 'result': 'direct_publish', 'source_url': 'https://example.com/1',
+                'created_at_ms': recent, 'updated_at_ms': recent, 'source_database': str(source),
+                'source_table': 'tasks', 'source_row_id': '1'}
+    store.upsert_snapshot(snapshot, {'task': {'content': '源文'}, 'pipeline': {'search_result': {'duplicate': False}}})
+    result = store.trim_task_evidence(source_database=source, now_ms=now)
+    assert result['changed'] == 0
+    assert store.detail('recent-task')['evidence']['task']['content'] == '源文'
+
+
 def test_candidate_retention_keeps_live_candidates_and_links(tmp_path: Path) -> None:
     from packages.system_observability.business_retention import trim_candidate_details
     source = tmp_path / 'source.sqlite'
@@ -424,7 +443,7 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
     store = _store(tmp_path)
     now = int(datetime.now(UTC).timestamp()*1000)
     old = day_start_ms(now) - 1000
-    # Seed yesterday's data while the policy still considers it current-day.
+    # The prior-day sample is outside both the daily error policy and six-hour list window.
     from unittest.mock import patch
     snapshot = {'item_id': 'news:1', 'business_key': 'x', 'source': 'x', 'title': '真实新闻',
                 'summary': 'HTTP 503 privatefailureword', 'status': 'write_failed', 'result': 'failed',
@@ -436,8 +455,8 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
                            result='unknown', happened_at_ms=old, summary='响应', evidence={'raw_model_response': 'privatefailureword'}, details={'attempt_id': 7})
         store.append_event(item_id='news:1', event_id='failure', event_type='stage_attempt', stage='写作', status='failed',
                            result='failed', happened_at_ms=old, summary='失败', reason='HTTP 503 privatefailureword', details={'attempt_id': 7})
-    # The API hides expired material before the bounded physical sweep finishes.
-    assert store.query({'q': 'privatefailureword'})['total'] == 1
+    # The API's rolling six-hour list window excludes this older material.
+    assert store.query({'q': 'privatefailureword'})['total'] == 0
     assert 'privatefailureword' not in json.dumps(store.detail('news:1'))
     cleanup_observation_errors(store, now_ms=now)
     detail = store.detail('news:1')
@@ -445,7 +464,7 @@ def test_observation_cleanup_removes_error_evidence_index_and_attempt_responses(
     assert detail['summary'] == ''
     assert detail['evidence']['task']['content'] == '真实原文'
     assert 'privatefailureword' not in json.dumps(detail)
-    assert store.query({'q': 'privatefailureword'})['total'] == 1
+    assert store.query({'q': 'privatefailureword'})['total'] == 0
     for file in store.evidence_dir.glob('*/*.json.gz'):
         import gzip
         assert b'privatefailureword' not in gzip.decompress(file.read_bytes())

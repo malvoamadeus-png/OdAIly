@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -90,6 +90,32 @@ def test_business_news_plugin_notice_contains_only_the_customer_sentence(tmp_pat
     assert rows[0]["summary"] == ""
     assert rows[0]["status_label"] is None
     assert rows[0]["badges"] == []
+
+
+def test_manual_rejection_outbox_is_written_with_feedback_and_survives_feedback_pruning(tmp_path: Path) -> None:
+    store = LocalEditorPluginStore(tmp_path / "feedback.sqlite")
+    result = store.record_feedback(
+        feed_item_id="auditor:41", feed_kind="auditor_alert", feedback="reject",
+        actor_user_id="editor", actor_email="editor@example.com", actor_display_name="Editor",
+        session_id=None, extra_json={},
+    )
+    pending = store.pending_manual_rejections()
+    assert [(item.id, item.auditor_check_id, item.actor_email, item.status) for item in pending] == [
+        (result["feedback_id"], 41, "editor@example.com", "pending")
+    ]
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE editor_plugin_local_feedbacks SET sync_status='synced',created_at=? WHERE id=?",
+            ((datetime.now(UTC) - timedelta(days=120)).isoformat(), result["feedback_id"]),
+        )
+    store.prune_old(synced_feedback_retention_days=90)
+    with store._connect() as conn:
+        row = conn.execute("SELECT manual_rejection_status FROM editor_plugin_local_feedbacks WHERE id=?", (result["feedback_id"],)).fetchone()
+        assert row["manual_rejection_status"] == "pending"
+    store.mark_manual_rejection_queued(result["feedback_id"])
+    assert store.pending_manual_rejections()[0].status == "queued"
+    store.mark_manual_rejection_complete(result["feedback_id"])
+    assert store.pending_manual_rejections() == []
 
 
 def test_hyperliquid_completed_draft_uses_existing_plugin_alert_and_console_link(tmp_path, monkeypatch):

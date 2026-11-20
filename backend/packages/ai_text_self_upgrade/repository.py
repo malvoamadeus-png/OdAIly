@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_items (
     source_url TEXT,
     source_title TEXT,
     source_content TEXT NOT NULL,
-    task_id INTEGER NOT NULL,
+    task_id INTEGER,
     writer_model TEXT,
     prompt_template_key TEXT,
     prompt_version_id INTEGER,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_items (
     analysis_status TEXT NOT NULL DEFAULT 'pending' CHECK(analysis_status IN ('pending','processing','completed','failed')),
     analysis_model TEXT,
     analysis_prompt_version TEXT,
-    verdict TEXT CHECK(verdict IS NULL OR verdict IN ('writer1_error','auditor_false_positive')),
+    verdict TEXT CHECK(verdict IS NULL OR verdict IN ('writer1_error','auditor_false_positive','reviewer_correct_unattributed')),
     confidence TEXT CHECK(confidence IS NULL OR confidence IN ('low','medium','high')),
     rationale TEXT,
     evidence_json TEXT NOT NULL DEFAULT '[]',
@@ -98,6 +98,25 @@ CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_runs (
     cases_unlinked INTEGER NOT NULL DEFAULT 0,
     error TEXT
 );
+CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_deleted_cases (
+    case_key TEXT PRIMARY KEY,
+    deleted_by TEXT NOT NULL,
+    deleted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_text_self_upgrade_manual_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    auditor_check_id INTEGER NOT NULL UNIQUE,
+    actor TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','deleted')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    case_key TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_text_upgrade_manual_rejections_due
+ON ai_text_self_upgrade_manual_rejections(status,next_attempt_at,id);
 """
 
 
@@ -132,8 +151,9 @@ def _item(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class AITextSelfUpgradeRepository:
-    def __init__(self, path: Path, *, recover_inflight: bool = True) -> None:
+    def __init__(self, path: Path, *, source_database_path: Path | None = None, recover_inflight: bool = True) -> None:
         self.path = path
+        self.source_database_path = source_database_path
         self.initialize(recover_inflight=recover_inflight)
 
     def connect(self) -> sqlite3.Connection:
@@ -170,6 +190,15 @@ class AITextSelfUpgradeRepository:
                 "VALUES('enabled_at',COALESCE((SELECT state_value FROM ai_text_self_upgrade_state WHERE state_key='fact_enabled_at'),?),?)",
                 (_now(), _now()),
             )
+            task_id_column = next(
+                (row for row in conn.execute("PRAGMA table_info(ai_text_self_upgrade_items)") if row["name"] == "task_id"),
+                None,
+            )
+            table_sql = str(conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_text_self_upgrade_items'"
+            ).fetchone()["sql"])
+            if (task_id_column is not None and task_id_column["notnull"]) or "reviewer_correct_unattributed" not in table_sql:
+                self._migrate_nullable_task_id(conn)
             if recover_inflight:
                 conn.execute(
                     "UPDATE ai_text_self_upgrade_items SET analysis_status='failed',analysis_error=COALESCE(analysis_error,'服务重启时原分析未完成'),updated_at=? WHERE analysis_status='processing'",
@@ -179,6 +208,48 @@ class AITextSelfUpgradeRepository:
                     "UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=?,error=COALESCE(error,'服务重启时原批次未完成') WHERE status='running'",
                     (_now(),),
                 )
+
+    @staticmethod
+    def _migrate_nullable_task_id(conn: sqlite3.Connection) -> None:
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            table_sql = str(conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_text_self_upgrade_items'"
+            ).fetchone()["sql"]).replace(
+                "CREATE TABLE ai_text_self_upgrade_items", "CREATE TABLE ai_text_self_upgrade_items_nullable", 1
+            ).replace("task_id INTEGER NOT NULL", "task_id INTEGER", 1).replace(
+                "'writer1_error','auditor_false_positive'",
+                "'writer1_error','auditor_false_positive','reviewer_correct_unattributed'",
+                1,
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(table_sql)
+            columns = [str(row["name"]) for row in conn.execute("PRAGMA table_info(ai_text_self_upgrade_items)")]
+            column_list = ",".join(columns)
+            conn.execute(
+                f"INSERT INTO ai_text_self_upgrade_items_nullable({column_list}) SELECT {column_list} FROM ai_text_self_upgrade_items"
+            )
+            conn.execute("DROP TABLE ai_text_self_upgrade_items")
+            conn.execute("ALTER TABLE ai_text_self_upgrade_items_nullable RENAME TO ai_text_self_upgrade_items")
+            conn.execute("CREATE INDEX idx_ai_text_self_upgrade_queue ON ai_text_self_upgrade_items(analysis_status,created_at,id)")
+            conn.execute("CREATE INDEX idx_ai_text_self_upgrade_decisions ON ai_text_self_upgrade_items(human_decision,created_at DESC,id DESC)")
+            conn.execute("CREATE INDEX idx_ai_text_self_upgrade_source_queue ON ai_text_self_upgrade_items(source_type,analysis_status,created_at,id)")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
+
+    def recover_manual_rejections(self) -> int:
+        now = _now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE ai_text_self_upgrade_manual_rejections SET status='pending',next_attempt_at=?,updated_at=? WHERE status='processing'",
+                (now, now),
+            )
+            return int(cursor.rowcount)
 
     def enabled_at(self) -> str:
         with self.connect() as conn:
@@ -201,6 +272,10 @@ class AITextSelfUpgradeRepository:
     def insert_case(self, case: dict[str, Any]) -> bool:
         now = _now()
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=?", (case["case_key"],)).fetchone():
+                conn.rollback()
+                return False
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO ai_text_self_upgrade_items(
                     case_key,source_type,auditor_check_id,fact_check_id,fact_policy_version,fact_model,fact_status,
@@ -222,19 +297,220 @@ class AITextSelfUpgradeRepository:
                     case["source_item_id"], case["content_hash"],
                     case.get("audit_prompt_version"), case.get("audit_model"), case.get("audited_title"),
                     case["audited_content"], _json(case.get("audit_result") or {}), case.get("published_at"),
-                    case.get("source_url"), case.get("source_title"), case["source_content"], case["task_id"],
+                    case.get("source_url"), case.get("source_title"), case["source_content"], case.get("task_id"),
                     case.get("writer_model"), case.get("prompt_template_key"), case.get("prompt_version_id"),
                     case.get("draft_title"), case.get("draft_content"), case.get("final_title"),
                     case.get("final_content"), now, now,
                 ),
             )
+            conn.commit()
             return cursor.rowcount == 1
+
+    def queue_manual_rejection(self, auditor_check_id: int, *, actor: str) -> str | None:
+        """Persist a manual rejection for background exact-link resolution."""
+        now = _now()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO ai_text_self_upgrade_manual_rejections(
+                    auditor_check_id,actor,status,next_attempt_at,created_at,updated_at
+                ) VALUES(?,?,'pending',?,?,?)
+                ON CONFLICT(auditor_check_id) DO UPDATE SET
+                    actor=excluded.actor,
+                    status=CASE WHEN ai_text_self_upgrade_manual_rejections.status IN ('completed','deleted')
+                                THEN ai_text_self_upgrade_manual_rejections.status ELSE 'pending' END,
+                    next_attempt_at=CASE WHEN ai_text_self_upgrade_manual_rejections.status IN ('completed','deleted')
+                                         THEN ai_text_self_upgrade_manual_rejections.next_attempt_at ELSE excluded.next_attempt_at END,
+                    updated_at=excluded.updated_at""",
+                (auditor_check_id, actor[:200], now, now, now),
+            )
+        return f"manual-rejection:{auditor_check_id}"
+
+    def manual_rejection_status(self, auditor_check_id: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM ai_text_self_upgrade_manual_rejections WHERE auditor_check_id=?",
+                (auditor_check_id,),
+            ).fetchone()
+        return str(row["status"]) if row else None
+
+    def process_manual_rejection_queue(self, *, limit: int = 10) -> dict[str, int]:
+        now = _now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT * FROM ai_text_self_upgrade_manual_rejections WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT ?",
+                (now, max(1, min(int(limit), 100))),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE ai_text_self_upgrade_manual_rejections SET status='processing',attempt_count=attempt_count+1,updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+            conn.commit()
+        result = {"processed": 0, "completed": 0, "retrying": 0, "deleted": 0}
+        for row in rows:
+            result["processed"] += 1
+            try:
+                case_key = self._create_manual_rejection_case(int(row["auditor_check_id"]), actor=str(row["actor"]))
+                if case_key is None:
+                    status = "pending"
+                    result["retrying"] += 1
+                    error = "精确发布关联尚未就绪"
+                elif case_key == "__deleted__":
+                    status = "deleted"
+                    result["deleted"] += 1
+                    error = None
+                else:
+                    status = "completed"
+                    result["completed"] += 1
+                    error = None
+                attempts = int(row["attempt_count"]) + 1
+                delay = min(6 * 60 * 60, 30 * (2 ** min(attempts - 1, 10)))
+                next_attempt = (datetime.now(UTC).timestamp() + delay)
+                retry_at = datetime.fromtimestamp(next_attempt, UTC).isoformat()
+                with self.connect() as conn:
+                    conn.execute(
+                        "UPDATE ai_text_self_upgrade_manual_rejections SET status=?,case_key=?,last_error=?,next_attempt_at=?,updated_at=? WHERE id=?",
+                        (status, None if case_key in (None, "__deleted__") else case_key, error, retry_at, _now(), row["id"]),
+                    )
+            except Exception as exc:
+                result["retrying"] += 1
+                attempts = int(row["attempt_count"]) + 1
+                delay = min(6 * 60 * 60, 30 * (2 ** min(attempts - 1, 10)))
+                retry_at = datetime.fromtimestamp(datetime.now(UTC).timestamp() + delay, UTC).isoformat()
+                with self.connect() as conn:
+                    conn.execute(
+                        "UPDATE ai_text_self_upgrade_manual_rejections SET status='pending',last_error=?,next_attempt_at=?,updated_at=? WHERE id=?",
+                        (f"{type(exc).__name__}: {exc}"[:2000], retry_at, _now(), row["id"]),
+                    )
+        return result
+
+    def _create_manual_rejection_case(self, auditor_check_id: int, *, actor: str) -> str | None:
+        """Snapshot a rejected text audit with one exact Writer1 publication."""
+        from packages.auditor.repository import calculate_content_hash
+        from packages.common.storage import connect_sqlite_readonly, load_storage_settings
+        from .service import case_key
+
+        source_path = self.source_database_path or load_storage_settings().sqlite_path
+        with connect_sqlite_readonly(source_path, timeout_seconds=10) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM auditor_checks WHERE id=? AND status='flagged'", (auditor_check_id,)).fetchone()
+            if row is None:
+                return "__deleted__"
+            expected_hash = calculate_content_hash(row["title"], str(row["content"] or ""))
+            hash_matches = str(row["content_hash"] or "") == expected_hash
+            source_item_id = str(row["source_item_id"] or f"auditor-check:{auditor_check_id}")
+            rejected_case_key = case_key("text_auditor", source_item_id, expected_hash)
+            with self.connect() as review_conn:
+                if review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=?", (rejected_case_key,)).fetchone():
+                    return "__deleted__"
+            source_tables = {str(item[0]) for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            metadata_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(newsflash_production_metadata)")}
+            manual_rows = []
+            if {"outlet_category", "odaily_id"} <= metadata_columns:
+                manual_rows = conn.execute(
+                    "SELECT * FROM newsflash_production_metadata WHERE odaily_id=? AND outlet_category='manual'",
+                    (str(row["source_item_id"]),),
+                ).fetchall()
+            task = None
+            if len(manual_rows) == 1:
+                metadata = manual_rows[0]
+                task = {
+                    "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
+                    "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
+                    "final_content": str(row["content"] or ""), "source_url": row["source_url"],
+                    "source_title": str(metadata["title"] or "") if "title" in metadata.keys() else "", "source_content": "",
+                    "authoring_path": "manual_publication",
+                }
+            pipeline_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(x_task_pipeline)")}
+            task_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(tasks)")}
+            can_read_writer_snapshot = hash_matches and (
+                {"newsflash_production_metadata", "x_task_pipeline", "tasks"} <= source_tables
+                and {"delivery_key", "odaily_id", "id_match_status"} <= metadata_columns
+                and {"task_id", "writer_model", "prompt_template_key", "prompt_version_id", "draft_title", "draft_content", "final_title", "final_content", "write_completed_at", "publish_completed_at"} <= pipeline_columns
+                and {"id", "source_url", "title", "content"} <= task_columns
+            )
+            if task is None and can_read_writer_snapshot:
+                tasks = conn.execute(
+                """SELECT p.task_id,p.writer_model,p.prompt_template_key,p.prompt_version_id,
+                          p.draft_title,p.draft_content,p.final_title,p.final_content,
+                          t.source_url,t.title AS source_title,t.content AS source_content
+                   FROM newsflash_production_metadata m
+                   JOIN x_task_pipeline p ON m.delivery_key='odaily-task-' || CAST(p.task_id AS TEXT)
+                   JOIN tasks t ON t.id=p.task_id
+                   WHERE m.odaily_id=? AND m.id_match_status='matched'
+                     AND p.writer_model IS NOT NULL AND p.write_completed_at IS NOT NULL
+                     AND p.publish_completed_at IS NOT NULL""",
+                    (str(row["source_item_id"]),),
+                ).fetchall()
+                if len(tasks) == 1:
+                    candidate = tasks[0]
+                    if ((candidate["draft_title"] or candidate["draft_content"])
+                            and calculate_content_hash(candidate["final_title"], str(candidate["final_content"] or "")) == expected_hash):
+                        task = candidate
+            if task is None:
+                task = {
+                    "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
+                    "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
+                    "final_content": str(row["content"] or ""), "source_url": row["source_url"],
+                    "source_title": "", "source_content": "", "authoring_path": "unknown_publication",
+                }
+            audit_result = _decode(row["audit_result"], {})
+            if not isinstance(audit_result, dict):
+                audit_result = {}
+            authoring_path = task["authoring_path"] if "authoring_path" in task.keys() else None
+            audit_result["manual_rejection"] = {
+                "actor": actor[:200], "rejected_at": _now(),
+                **({"authoring_path": authoring_path, "writer1_snapshot": "unavailable"}
+                   if authoring_path in {"manual_publication", "unknown_publication"} else {}),
+                **({"audit_snapshot_integrity": "content_hash_mismatch"} if not hash_matches else {}),
+            }
+            case = {
+                "case_key": rejected_case_key,
+                "source_type": "text_auditor", "auditor_check_id": auditor_check_id,
+                "source_item_id": source_item_id, "content_hash": expected_hash,
+                "audit_prompt_version": row["prompt_version"], "audit_model": row["model"],
+                "audited_title": row["title"], "audited_content": str(row["content"] or ""),
+                "audit_result": audit_result, "published_at": row["published_at"],
+                "source_url": task["source_url"] or row["source_url"], "source_title": task["source_title"],
+                "source_content": str(task["source_content"] or ""), "task_id": int(task["task_id"]) if task["task_id"] is not None else None,
+                "writer_model": task["writer_model"], "prompt_template_key": task["prompt_template_key"],
+                "prompt_version_id": task["prompt_version_id"], "draft_title": task["draft_title"],
+                "draft_content": task["draft_content"], "final_title": task["final_title"],
+                "final_content": task["final_content"],
+            }
+        inserted = self.insert_case(case)
+        if not inserted:
+            with self.connect() as review_conn:
+                tombstone = review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_deleted_cases WHERE case_key=?", (case["case_key"],)).fetchone()
+                if tombstone:
+                    return "__deleted__"
+                review_conn.execute(
+                    "UPDATE ai_text_self_upgrade_items SET audit_result_json=json_set(audit_result_json,'$.manual_rejection',json(?)),updated_at=? WHERE case_key=?",
+                    (_json(audit_result["manual_rejection"]), _now(), case["case_key"]),
+                )
+                exists = review_conn.execute("SELECT 1 FROM ai_text_self_upgrade_items WHERE case_key=?", (case["case_key"],)).fetchone()
+            if not exists:
+                return None
+        return case["case_key"]
 
     def has_run(self, run_key: str) -> bool:
         with self.connect() as conn:
             return conn.execute(
                 "SELECT 1 FROM ai_text_self_upgrade_runs WHERE run_key=?", (run_key,)
             ).fetchone() is not None
+
+    def run_status(self, run_key: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT status FROM ai_text_self_upgrade_runs WHERE run_key=?", (run_key,)).fetchone()
+            return str(row["status"]) if row else None
+
+    def oldest_unfinished_storage_retention_run(self) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT run_key FROM ai_text_self_upgrade_runs WHERE run_key LIKE 'storage_retention:%' AND status IN ('running','failed') ORDER BY started_at,run_key LIMIT 1"
+            ).fetchone()
+            return str(row["run_key"]) if row else None
 
     def start_run(self, run_key: str) -> bool:
         with self.connect() as conn:
@@ -243,6 +519,27 @@ class AITextSelfUpgradeRepository:
                 (run_key, _now()),
             )
             return cursor.rowcount == 1
+
+    def retry_failed_run(self, run_key: str, *, retry_after_seconds: int = 300) -> bool:
+        now = datetime.now(UTC)
+        cutoff = (now - timedelta(seconds=max(0, retry_after_seconds))).isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE ai_text_self_upgrade_runs SET status='running',started_at=?,completed_at=NULL,error=NULL
+                   WHERE run_key=? AND status='failed' AND completed_at IS NOT NULL AND completed_at<=?""",
+                (now.isoformat(), run_key, cutoff),
+            )
+            return cursor.rowcount == 1
+
+    def recover_storage_retention_runs(self) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE ai_text_self_upgrade_runs SET status='failed',completed_at=?,
+                   error=COALESCE(error,'worker restarted during storage retention')
+                   WHERE status='running' AND run_key LIKE 'storage_retention:%'""",
+                (_now(),),
+            )
+            return int(cursor.rowcount)
 
     def finish_run(
         self,
@@ -257,9 +554,9 @@ class AITextSelfUpgradeRepository:
     ) -> None:
         with self.connect() as conn:
             conn.execute(
-                """UPDATE ai_text_self_upgrade_runs SET status=?,completed_at=?,cases_found=?,cases_completed=?,
+                """UPDATE ai_text_self_upgrade_runs SET status=?,completed_at=CASE WHEN ?='running' THEN NULL ELSE ? END,cases_found=?,cases_completed=?,
                     cases_failed=?,cases_unlinked=?,error=? WHERE run_key=?""",
-                (status, _now(), cases_found, cases_completed, cases_failed, cases_unlinked,
+                (status, status, _now(), cases_found, cases_completed, cases_failed, cases_unlinked,
                  error[:2000] if error else None, run_key),
             )
 
@@ -400,3 +697,14 @@ class AITextSelfUpgradeRepository:
                 (case_key, decision, actor[:200], note[:2000], stamp),
             )
         return self.detail(case_key)
+
+    def delete_case(self, case_key: str, *, actor: str) -> bool:
+        stamp = _now()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT OR IGNORE INTO ai_text_self_upgrade_deleted_cases(case_key,deleted_by,deleted_at) VALUES(?,?,?)", (case_key, actor[:200], stamp))
+            conn.execute("DELETE FROM ai_text_self_upgrade_decisions WHERE case_key=?", (case_key,))
+            conn.execute("DELETE FROM ai_text_self_upgrade_resolutions WHERE case_key=?", (case_key,))
+            deleted = conn.execute("DELETE FROM ai_text_self_upgrade_items WHERE case_key=?", (case_key,)).rowcount
+            conn.commit()
+            return bool(deleted)

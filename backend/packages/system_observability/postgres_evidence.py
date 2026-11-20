@@ -147,15 +147,19 @@ class PostgresSmallEvidenceStore:
                     ("system_information_decision_samples", "evidence_ref"),
                     ("system_information_evidence_pins", "evidence_ref"),
                     ("system_review_analysis_attempts", "raw_response_ref"),
+                    ("main.x_processing_attempts", "response_ref"),
+                    ("main.x_processing_attempt_events", "response_ref"),
                 )
                 existing_tables = [
                     (table, column) for table, column in reference_tables
-                    if connection.execute("SELECT to_regclass(%s) AS relation", (f"{self.schema}.{table}",)).fetchone()["relation"]
+                    if connection.execute("SELECT to_regclass(%s) AS relation", (
+                        f"{table}" if table.startswith("main.") else f"{self.schema}.{table}",
+                    )).fetchone()["relation"]
                 ]
                 references = None
                 if existing_tables:
                     union = " UNION ALL ".join(
-                        f"SELECT 1 FROM {Identifier(self.schema, table).as_string(connection)} WHERE {Identifier(column).as_string(connection)}=%s"
+                        f"SELECT 1 FROM {Identifier(*(table.split('.'))).as_string(connection)} WHERE {Identifier(column).as_string(connection)}=%s"
                         for table, column in existing_tables
                     )
                     references = connection.execute(
@@ -165,3 +169,36 @@ class PostgresSmallEvidenceStore:
                 if references:
                     return False
                 return bool(connection.execute("DELETE FROM small_evidence WHERE evidence_ref=%s", (evidence_ref,)).rowcount)
+
+    def delete_many_if_unreferenced(self, evidence_refs: list[str]) -> int:
+        refs = list(dict.fromkeys(evidence_refs))
+        if not refs:
+            return 0
+        with connect_postgres(schema=self.schema, application_name="odaily-observability-evidence-delete") as connection:
+            with connection.transaction():
+                return self.delete_many_in_transaction(connection, refs)
+
+    def delete_many_in_transaction(self, connection, evidence_refs: list[str]) -> int:
+        _require_transaction(connection, "delete_many_in_transaction")
+        refs = list(dict.fromkeys(evidence_refs))
+        if not refs:
+            return 0
+        reference_tables = (
+            (f"{self.schema}.system_information_items", "evidence_ref"),
+            (f"{self.schema}.system_information_events", "evidence_ref"),
+            (f"{self.schema}.system_information_decision_samples", "evidence_ref"),
+            (f"{self.schema}.system_information_evidence_pins", "evidence_ref"),
+            (f"{self.schema}.system_review_analysis_attempts", "raw_response_ref"),
+            ("main.x_processing_attempts", "response_ref"),
+            ("main.x_processing_attempt_events", "response_ref"),
+        )
+        connection.execute("SELECT evidence_ref FROM small_evidence WHERE evidence_ref=ANY(%s) ORDER BY evidence_ref FOR UPDATE", (refs,)).fetchall()
+        predicates = []
+        for relation, column in reference_tables:
+            if connection.execute("SELECT to_regclass(%s) AS relation", (relation,)).fetchone()["relation"]:
+                schema, table = relation.split(".", 1)
+                predicates.append(f"NOT EXISTS (SELECT 1 FROM {Identifier(schema, table).as_string(connection)} r WHERE r.{Identifier(column).as_string(connection)}=e.evidence_ref)")
+        if not predicates:
+            return 0
+        result = connection.execute("DELETE FROM small_evidence e WHERE e.evidence_ref=ANY(%s) AND " + " AND ".join(predicates), (refs,))
+        return result.rowcount or 0

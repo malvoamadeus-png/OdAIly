@@ -102,11 +102,13 @@ class AITextSelfUpgradeService:
         ai_client: TextGenerationClient,
         *,
         model: str = MODEL,
+        manual_rejection_outbox: Any | None = None,
     ) -> None:
         self.primary_database_path = primary_database_path
         self.repository = repository
         self.ai_client = ai_client
         self.model = model
+        self.manual_rejection_outbox = manual_rejection_outbox
 
     def run_batch(self, *, run_key: str, since: str | None = None, until: str | None = None) -> dict[str, int]:
         discovered, unlinked = self._discover_cases(since=since, until=until)

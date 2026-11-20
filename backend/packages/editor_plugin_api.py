@@ -460,7 +460,8 @@ class EditorPluginNewsGenService:
             self.ai_text_self_upgrade_repository = PostgresAITextSelfUpgradeRepository()
         else:
             self.ai_text_self_upgrade_repository = AITextSelfUpgradeRepository(
-                self.system_observability_dir / "ai_text_self_upgrade.sqlite"
+                self.system_observability_dir / "ai_text_self_upgrade.sqlite",
+                source_database_path=storage_settings.sqlite_path,
             )
 
         self.authenticator = LocalEditorPluginAuthenticator(
@@ -483,6 +484,7 @@ class EditorPluginNewsGenService:
             storage_settings.sqlite_path,
             self.ai_text_self_upgrade_repository,
             self.search_ai_client,
+            manual_rejection_outbox=self.local_store,
         )
         self.ai_text_self_upgrade_worker = AITextSelfUpgradeWorker(self.ai_text_self_upgrade_service)
         self.embedding_service = self._build_embedding_service()
@@ -618,7 +620,6 @@ class EditorPluginNewsGenService:
             raise EditorPluginApiError(str(exc)) from exc
 
     def execute_system_information(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
-        del actor
         action = str(payload.get("action") or "list")
         if action == "list":
             return self.system_information.query({**payload, 'view': payload.get('view') or 'news'})
@@ -643,6 +644,13 @@ class EditorPluginNewsGenService:
             return coverage
         if action == "health":
             return self.get_system_health()
+        if action == "reset_history":
+            if self.console_auth_repository.get_admin(actor.email) is None:
+                raise EditorPluginApiError("只有控制台管理员可以重置信息流历史")
+            projector = getattr(self.system_observability, "projector", None)
+            if projector is None or not hasattr(projector, "reset_projection_at_cutover"):
+                raise EditorPluginApiError("当前存储后端不支持信息流历史重置")
+            return {"reset": projector.reset_projection_at_cutover()}
         raise EditorPluginApiError("不支持的全量信息流操作")
 
     def get_system_health(self) -> dict[str, Any]:
@@ -749,6 +757,10 @@ class EditorPluginNewsGenService:
                     actor=actor.email,
                     note=str(payload.get("note") or ""),
                 )}
+            if action == "delete":
+                if self.console_auth_repository.get_admin(actor.email) is None:
+                    raise EditorPluginApiError("只有控制台管理员可以删除 AI 自我升级案例")
+                return {"deleted": self.ai_text_self_upgrade_repository.delete_case(case_key, actor=actor.email)}
             raise EditorPluginApiError("不支持的AI文本自我升级操作")
         except ValueError as exc:
             raise EditorPluginApiError(str(exc)) from exc
@@ -1169,9 +1181,18 @@ class EditorPluginNewsGenService:
         return data
 
     def submit_feedback(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> Any:
+        item_id = str(payload.get("p_feed_item_id") or "")
+        kind = str(payload.get("p_feed_kind") or "")
+        manual_rejection = kind == "auditor_alert" and item_id.startswith("auditor:") and str(payload.get("p_feedback") or "") == "reject"
+        if manual_rejection:
+            try:
+                if int(item_id.split(":", 1)[1]) <= 0:
+                    raise ValueError("invalid id")
+            except (TypeError, ValueError) as exc:
+                raise EditorPluginApiError("文本审查反馈缺少有效审核记录 ID") from exc
         result = self.local_store.record_feedback(
-            feed_item_id=str(payload.get("p_feed_item_id") or ""),
-            feed_kind=str(payload.get("p_feed_kind") or ""),
+            feed_item_id=item_id,
+            feed_kind=kind,
             feedback=str(payload.get("p_feedback") or ""),
             actor_user_id=actor.user_id,
             actor_email=actor.email,
@@ -1180,6 +1201,13 @@ class EditorPluginNewsGenService:
             extra_json=payload.get("p_extra_json") if isinstance(payload.get("p_extra_json"), dict) else {},
         )
         self.feed_syncer.wake()
+        if manual_rejection:
+            feedback_id = result.get("feedback_id") if isinstance(result, dict) else None
+            return {
+                **(result if isinstance(result, dict) else {"result": result}),
+                "queued": True,
+                "queue_id": f"manual-rejection-feedback:{feedback_id}",
+            }
         return result
 
     @staticmethod

@@ -7,7 +7,7 @@ from typing import Any
 
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres
 from packages.common.storage import load_storage_settings
-from packages.editor_plugin_local_store import LocalPluginSession, PendingPluginFeedback, normalize_feed_lane
+from packages.editor_plugin_local_store import LocalPluginSession, PendingManualRejection, PendingPluginFeedback, normalize_feed_lane
 
 
 SCHEMA_SQL = """
@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS editor_plugin_local_reads (
  UNIQUE(feed_item_id,feed_kind,actor_email,content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_editor_plugin_local_reads_delivery ON editor_plugin_local_reads(delivery_key,last_seen_at DESC);
+"""
+MANUAL_REJECTION_OUTBOX_SQL = """
+ALTER TABLE editor_plugin_local_feedbacks ADD COLUMN IF NOT EXISTS manual_rejection_status text NOT NULL DEFAULT 'not_applicable';
+ALTER TABLE editor_plugin_local_feedbacks ADD COLUMN IF NOT EXISTS manual_rejection_attempt_count integer NOT NULL DEFAULT 0;
+ALTER TABLE editor_plugin_local_feedbacks ADD COLUMN IF NOT EXISTS manual_rejection_next_attempt_at timestamptz;
+ALTER TABLE editor_plugin_local_feedbacks ADD COLUMN IF NOT EXISTS manual_rejection_last_error text;
+CREATE INDEX IF NOT EXISTS idx_editor_plugin_local_manual_rejections ON editor_plugin_local_feedbacks(manual_rejection_status,manual_rejection_next_attempt_at,id);
+UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='pending',manual_rejection_next_attempt_at=created_at WHERE manual_rejection_status='not_applicable' AND feed_kind='auditor_alert' AND feedback='reject' AND feed_item_id ~ '^auditor:[1-9][0-9]*$'
 """
 
 
@@ -78,6 +86,8 @@ class PostgresEditorPluginLocalStore:
             apply_schema_migrations(conn, schema='main', component='editor_plugin_local', migrations=(
                 PostgresMigration(1, 'editor plugin local store', hashlib.sha256(SCHEMA_SQL.encode()).hexdigest(),
                                   lambda connection: connection.execute(SCHEMA_SQL)),
+                PostgresMigration(2, 'editor plugin manual rejection outbox', hashlib.sha256(MANUAL_REJECTION_OUTBOX_SQL.encode()).hexdigest(),
+                                  lambda connection: [connection.execute(statement) for statement in MANUAL_REJECTION_OUTBOX_SQL.split(';') if statement.strip()]),
             ))
 
     def upsert_session(self, *, token_hash: str, user_id: str | None, email: str, display_name: str | None, expires_at: datetime) -> None:
@@ -162,10 +172,39 @@ class PostgresEditorPluginLocalStore:
         item_id=feed_item_id.strip(); kind=feed_kind.strip(); vote=feedback.strip()
         if not item_id:raise ValueError('editor_plugin_feed_item_id_required')
         if vote not in {'accept','reject'}:raise ValueError('editor_plugin_invalid_feedback')
+        manual_status='not_applicable'
+        if kind=='auditor_alert' and vote=='reject' and item_id.startswith('auditor:'):
+            try:
+                if int(item_id.split(':',1)[1])>0:manual_status='pending'
+            except ValueError:pass
         now=_now()
         with connect_postgres(schema='main', application_name='odaily-editor-local-feedback') as conn:
-            row=conn.execute("INSERT INTO editor_plugin_local_feedbacks(feed_item_id,feed_kind,feedback,actor_user_id,actor_email,actor_display_name,acted_at,session_id,extra_json,sync_status,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s) RETURNING id",(item_id,kind,vote,actor_user_id,actor_email.strip().lower(),actor_display_name,now,session_id,json.dumps(extra_json,ensure_ascii=False),now,now)).fetchone()
+            row=conn.execute("INSERT INTO editor_plugin_local_feedbacks(feed_item_id,feed_kind,feedback,actor_user_id,actor_email,actor_display_name,acted_at,session_id,extra_json,sync_status,manual_rejection_status,manual_rejection_next_attempt_at,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,CASE WHEN %s='pending' THEN %s END,%s,%s) RETURNING id",(item_id,kind,vote,actor_user_id,actor_email.strip().lower(),actor_display_name,now,session_id,json.dumps(extra_json,ensure_ascii=False),manual_status,manual_status,now,now,now)).fetchone()
         return {'ok':True,'local':True,'queued':True,'feedback_id':row['id']}
+
+    def pending_manual_rejections(self, *, limit: int = 100) -> list[PendingManualRejection]:
+        with connect_postgres(schema='main', application_name='odaily-editor-manual-rejection-outbox') as conn:
+            rows=conn.execute("SELECT id,feed_item_id,actor_email,manual_rejection_status FROM editor_plugin_local_feedbacks WHERE manual_rejection_status IN ('pending','queued') AND (manual_rejection_status='queued' OR manual_rejection_next_attempt_at IS NULL OR manual_rejection_next_attempt_at<=clock_timestamp()) ORDER BY id LIMIT %s",(max(1,min(int(limit),500)),)).fetchall()
+        result=[]
+        for row in rows:
+            try:audit_id=int(str(row['feed_item_id']).split(':',1)[1])
+            except (IndexError,ValueError):continue
+            result.append(PendingManualRejection(int(row['id']),audit_id,str(row['actor_email']),str(row['manual_rejection_status'])))
+        return result
+
+    def mark_manual_rejection_queued(self, feedback_id: int) -> None:
+        with connect_postgres(schema='main', application_name='odaily-editor-manual-rejection-outbox') as conn:
+            conn.execute("UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='queued',manual_rejection_last_error=NULL,manual_rejection_next_attempt_at=NULL,updated_at=clock_timestamp() WHERE id=%s AND manual_rejection_status='pending'",(feedback_id,))
+
+    def mark_manual_rejection_complete(self, feedback_id: int, *, deleted: bool = False) -> None:
+        status='deleted' if deleted else 'completed'
+        with connect_postgres(schema='main', application_name='odaily-editor-manual-rejection-outbox') as conn:
+            conn.execute("UPDATE editor_plugin_local_feedbacks SET manual_rejection_status=%s,manual_rejection_last_error=NULL,manual_rejection_next_attempt_at=NULL,updated_at=clock_timestamp() WHERE id=%s AND manual_rejection_status='queued'",(status,feedback_id))
+
+    def mark_manual_rejection_failed(self, feedback_id: int, *, error: str) -> None:
+        now=_now()
+        with connect_postgres(schema='main', application_name='odaily-editor-manual-rejection-outbox') as conn:
+            row=conn.execute("UPDATE editor_plugin_local_feedbacks SET manual_rejection_status='pending',manual_rejection_attempt_count=manual_rejection_attempt_count+1,manual_rejection_last_error=%s,manual_rejection_next_attempt_at=clock_timestamp()+(LEAST(21600,30*power(2,LEAST(manual_rejection_attempt_count,10))) * interval '1 second'),updated_at=%s WHERE id=%s RETURNING id",(error[:2000],now,feedback_id)).fetchone()
 
     def list_pending_feedbacks(self, *, limit: int = 50) -> list[PendingPluginFeedback]:
         with connect_postgres(schema='main', application_name='odaily-editor-local-feedback') as conn:rows=conn.execute("SELECT id,feed_item_id,feed_kind,feedback,actor_email,session_id,extra_json FROM editor_plugin_local_feedbacks WHERE sync_status IN ('pending','failed') ORDER BY created_at,id LIMIT %s",(max(1,min(limit,200)),)).fetchall()
@@ -182,7 +221,7 @@ class PostgresEditorPluginLocalStore:
         with connect_postgres(schema='main', application_name='odaily-editor-local-prune') as conn:
             with conn.transaction():
                 conn.execute('DELETE FROM editor_plugin_local_feed_items WHERE occurred_at<%s',(now-timedelta(hours=feed_retention_hours),))
-                conn.execute("DELETE FROM editor_plugin_local_feedbacks WHERE sync_status='synced' AND created_at<%s",(now-timedelta(days=synced_feedback_retention_days),))
+                conn.execute("DELETE FROM editor_plugin_local_feedbacks WHERE sync_status='synced' AND created_at<%s AND manual_rejection_status NOT IN ('pending','queued')",(now-timedelta(days=synced_feedback_retention_days),))
                 conn.execute('DELETE FROM editor_plugin_local_sessions WHERE expires_at<=%s',(now,))
 
     def stats(self, *, max_age_hours: int = 2) -> dict[str,Any]:

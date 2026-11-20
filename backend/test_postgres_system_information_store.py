@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from threading import Event
+from threading import Event, Thread
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from psycopg.sql import Identifier
@@ -86,10 +86,242 @@ def test_source_outbox_cleanup_preserves_pending_and_recent(postgres_information
     store = postgres_information_store
     relation = Identifier(store.schema, "odaily_source_state_outbox").as_string()
     with store.connect() as conn:
-        conn.execute(f"CREATE TABLE {relation} (event_id bigint PRIMARY KEY, projected_at timestamptz)")
-        conn.execute(f"INSERT INTO {relation} VALUES (1, now()-interval '25 hours'), (2, now()), (3, NULL)")
-        assert prune_projected_source_events(conn, outbox_schema=store.schema, limit=10) == 1
-        assert [row["event_id"] for row in conn.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [2, 3]
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint PRIMARY KEY, occurred_at timestamptz NOT NULL, projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {relation} VALUES (1,now()-interval '25 hours',now()-interval '25 hours'), (2,now(),now()), (3,now()-interval '25 hours',NULL), (4,now()-interval '25 hours',NULL)")
+        conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_history_reset_event_id','3',%s)", (int(time.time() * 1000),))
+        assert prune_projected_source_events(conn, outbox_schema=store.schema, limit=10) == 2
+        assert [row["event_id"] for row in conn.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [2, 4]
+
+
+def test_source_outbox_reset_barrier_cleanup_resumes_in_bounded_batches(postgres_information_store):
+    from packages.system_observability.postgres_schema import prune_projected_source_events
+
+    store = postgres_information_store
+    relation = Identifier(store.schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint PRIMARY KEY, occurred_at timestamptz NOT NULL, projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {relation} VALUES "
+                     "(1,now()-interval '30 hours',NULL),(2,now()-interval '29 hours',NULL),"
+                     "(3,now()-interval '28 hours',NULL),(4,now(),NULL),(5,now()-interval '30 hours',NULL)")
+        conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_history_reset_event_id','3',%s)", (int(time.time() * 1000),))
+        assert prune_projected_source_events(conn, outbox_schema=store.schema, limit=2) == 2
+        assert [row["event_id"] for row in conn.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [3, 4, 5]
+        assert prune_projected_source_events(conn, outbox_schema=store.schema, limit=2) == 1
+        assert [row["event_id"] for row in conn.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [4, 5]
+
+
+def test_source_outbox_cleanup_skips_rows_locked_by_active_writer(postgres_information_store):
+    from packages.system_observability.postgres_schema import prune_projected_source_events
+
+    store = postgres_information_store
+    relation = Identifier(store.schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint PRIMARY KEY, occurred_at timestamptz NOT NULL, projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {relation} VALUES (1,now()-interval '30 hours',NULL),(2,now()-interval '29 hours',NULL),(3,now()-interval '28 hours',NULL)")
+        conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_history_reset_event_id','3',%s)", (int(time.time() * 1000),))
+    with store.connect() as locked:
+        with locked.transaction():
+            locked.execute(f"SELECT event_id FROM {relation} WHERE event_id=1 FOR UPDATE")
+            with store.connect() as cleanup:
+                assert prune_projected_source_events(cleanup, outbox_schema=store.schema, limit=2) == 2
+            assert [row["event_id"] for row in locked.execute(f"SELECT event_id FROM {relation} ORDER BY event_id").fetchall()] == [1]
+
+
+def test_projection_cutover_discards_feed_and_review_history_preserving_business_cases(postgres_information_store):
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    store = postgres_information_store
+    schema = store.schema
+    relation = Identifier(schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_items').as_string()}(item_key text PRIMARY KEY)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_items').as_string()} VALUES('preserve-me')")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_decisions').as_string()}(id bigint PRIMARY KEY,item_key text)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_decisions').as_string()} VALUES(1,'preserve-me')")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_analysis_attempts').as_string()}(id bigint PRIMARY KEY,item_key text,raw_response_ref text,status text)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_analysis_attempts').as_string()} VALUES(1,'preserve-me',NULL,'completed')")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_runs').as_string()}(run_key text PRIMARY KEY)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_runs').as_string()} VALUES('old-run')")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_state').as_string()}(state_key text PRIMARY KEY,state_value text,updated_at text)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_state').as_string()} VALUES('config','keep','now')")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_usage').as_string()}(usage_date text PRIMARY KEY,calls integer)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_usage').as_string()} VALUES('today',3)")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'system_review_channel_observations').as_string()}(component text,worker_id text,last_bucket text,consecutive_failures integer)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_review_channel_observations').as_string()} VALUES('worker','one','bucket',2)")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'ai_text_self_upgrade_items').as_string()}(case_key text PRIMARY KEY)")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'ai_text_self_upgrade_items').as_string()} VALUES('preserve-upgrade')")
+        conn.execute("CREATE TABLE IF NOT EXISTS main.x_processing_attempts(id bigint PRIMARY KEY,status text,response_ref text)")
+        conn.execute("CREATE TABLE IF NOT EXISTS main.x_processing_attempt_events(id bigint PRIMARY KEY,status text,response_ref text)")
+        conn.execute("TRUNCATE main.x_processing_attempts,main.x_processing_attempt_events")
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, source_schema text, source_table text, source_row_id text, operation text, payload jsonb, occurred_at timestamptz DEFAULT now(), projected_at timestamptz)")
+        conn.execute(f"INSERT INTO {relation}(source_schema,source_table,source_row_id,operation,payload,occurred_at) VALUES ('main','test_jobs','1','INSERT','{{}}',now())")
+    evidence_ref = store.save_evidence({"response": "business-owned response"})
+    with store.connect() as conn:
+        conn.execute("INSERT INTO main.x_processing_attempts VALUES(101,'succeeded',%s)", (evidence_ref,))
+        conn.execute("INSERT INTO main.x_processing_attempt_events VALUES(101,'succeeded',%s)", (evidence_ref,))
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_information_evidence_pins').as_string()} VALUES('old-pin',%s,%s)", (evidence_ref, int(time.time() * 1000)))
+        conn.execute(f"INSERT INTO {Identifier(schema, 'system_information_decision_samples').as_string()} VALUES('sample','2026-11-20',%s,%s,'cutover-item','x','x','id','writing','published','completed','','v1',%s,1)", (int(time.time() * 1000), int(time.time() * 1000) + 86_400_000, evidence_ref))
+    store.upsert_snapshot({**_snapshot("cutover-item"), "source_table": "test_jobs", "status": "write_failed", "result": "failed", "evidence_ref": evidence_ref}, {"kept": True})
+    projector = PostgresSourceStateProjector(store, outbox_schema=schema)
+    result = projector.reset_projection_at_cutover()
+    assert result == {"items_removed": 1, "pending_events_skipped": 1, "pins_removed": 1, "decision_samples_removed": 1,
+                      "review_items_removed": 1, "review_decisions_removed": 1, "review_attempts_removed": 1, "review_runs_removed": 1}
+    assert not store.has_item("cutover-item")
+    with store.connect() as conn:
+        assert conn.execute(f"SELECT projected_at IS NULL AS pending FROM {relation} WHERE event_id=1").fetchone()["pending"]
+        assert conn.execute("SELECT count(*) AS n FROM system_information_items").fetchone()["n"] == 0
+        assert conn.execute(f"SELECT count(*) AS n FROM {Identifier(schema, 'system_review_items').as_string()}").fetchone()["n"] == 0
+        assert conn.execute(f"SELECT count(*) AS n FROM {Identifier(schema, 'system_review_decisions').as_string()}").fetchone()["n"] == 0
+        assert conn.execute(f"SELECT count(*) AS n FROM {Identifier(schema, 'system_review_analysis_attempts').as_string()}").fetchone()["n"] == 0
+        assert conn.execute(f"SELECT count(*) AS n FROM {Identifier(schema, 'system_review_runs').as_string()}").fetchone()["n"] == 0
+        assert conn.execute(f"SELECT state_value FROM {Identifier(schema, 'system_review_state').as_string()} WHERE state_key='config'").fetchone()["state_value"] == "keep"
+        assert conn.execute(f"SELECT calls FROM {Identifier(schema, 'system_review_usage').as_string()} WHERE usage_date='today'").fetchone()["calls"] == 3
+        assert conn.execute(f"SELECT consecutive_failures FROM {Identifier(schema, 'system_review_channel_observations').as_string()} WHERE worker_id='one'").fetchone()["consecutive_failures"] == 2
+        assert conn.execute(f"SELECT count(*) AS n FROM {Identifier(schema, 'ai_text_self_upgrade_items').as_string()} WHERE case_key='preserve-upgrade'").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM main.x_processing_attempts WHERE response_ref=%s", (evidence_ref,)).fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM system_information_evidence WHERE evidence_ref=%s", (evidence_ref,)).fetchone()["n"] == 1
+    assert store.load_evidence(evidence_ref) == {"response": "business-owned response"}
+    feed_ref = store.save_evidence({"feed-only": "discard after reset"})
+    gc = store.prune_feed_history_evidence(limit=100)
+    assert gc["removed"] >= 1
+    assert store.load_evidence(evidence_ref) == {"response": "business-owned response"}
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 FROM system_information_evidence WHERE evidence_ref=%s", (feed_ref,)).fetchone() is None
+        assert conn.execute("SELECT 1 FROM small_evidence WHERE evidence_ref=%s", (feed_ref,)).fetchone() is None
+
+
+def test_projection_cutover_reprojects_events_committed_after_barrier(postgres_information_store):
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    store = postgres_information_store
+    schema = store.schema
+    relation = Identifier(schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"DELETE FROM {Identifier(schema, 'system_information_events').as_string()}")
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, source_schema text, source_table text, source_row_id text, operation text, payload jsonb, occurred_at timestamptz DEFAULT now(), projected_at timestamptz)")
+        conn.execute(f"CREATE TABLE {Identifier(schema, 'test_jobs').as_string()} (id bigint PRIMARY KEY, status text, updated_at timestamptz DEFAULT now())")
+        conn.execute(f"INSERT INTO {Identifier(schema, 'test_jobs').as_string()} VALUES (1,'ready')")
+        conn.execute(f"INSERT INTO {relation}(source_schema,source_table,source_row_id,operation,payload,occurred_at) VALUES (%s,'test_jobs','1','UPDATE','{{}}',now())", (schema,))
+    store.upsert_snapshot({**_snapshot("before-cutover"), "source_table": "test_jobs", "status": "published", "result": "completed"}, {})
+    projector = PostgresSourceStateProjector(store, outbox_schema=schema)
+    projector.reset_projection_at_cutover()
+    with store.connect() as conn:
+        conn.execute(f"INSERT INTO {relation}(source_schema,source_table,source_row_id,operation,payload,occurred_at) VALUES (%s,'test_jobs','1','UPDATE','{{}}',now())", (schema,))
+    projector.specs[(schema, "test_jobs")] = __import__("packages.system_observability.projector", fromlist=["TableSpec"]).TableSpec(schema, "test_jobs", "x", "x_capture")
+    result = projector.run_once()
+    assert result["read"] == 1
+    with store.connect() as conn:
+        assert conn.execute("SELECT status FROM system_information_items WHERE item_id='before-cutover'").fetchone() is None
+        assert conn.execute("SELECT count(*) AS n FROM system_information_items WHERE source_table='test_jobs'").fetchone()["n"] == 1
+
+
+def test_projection_cutover_waits_for_delayed_outbox_writer(postgres_information_store):
+    from packages.common.pg_native import connect_postgres
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+    store = postgres_information_store
+    schema = store.schema
+    relation = Identifier(schema, "odaily_source_state_outbox").as_string()
+    with store.connect() as conn:
+        conn.execute(f"CREATE TABLE {relation} (event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, source_schema text, source_table text, source_row_id text, operation text, payload jsonb, occurred_at timestamptz DEFAULT now(), projected_at timestamptz)")
+    writer_open = Event()
+    release_writer = Event()
+
+    def delayed_writer():
+        with connect_postgres(schema="main", application_name="test-delayed-outbox-writer") as conn:
+            with conn.transaction():
+                conn.execute(f"INSERT INTO {relation}(source_schema,source_table,source_row_id,operation,payload) VALUES (%s,'test_jobs','1','UPDATE','{{}}')", (schema,))
+                writer_open.set()
+                assert release_writer.wait(3)
+
+    writer = Thread(target=delayed_writer, daemon=True)
+    writer.start()
+    assert writer_open.wait(3)
+    projector = PostgresSourceStateProjector(store, outbox_schema=schema)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(projector.reset_projection_at_cutover)
+        time.sleep(0.15)
+        assert not future.done()
+        release_writer.set()
+        result = future.result(timeout=3)
+    writer.join(timeout=3)
+    assert result["pending_events_skipped"] == 1
+    with store.connect() as conn:
+        assert conn.execute(f"SELECT state_value FROM system_information_state WHERE state_key='feed_history_reset_event_id'").fetchone()["state_value"] == "1"
+
+
+def test_projection_cutover_resumes_after_interrupted_batch(postgres_information_store):
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    store = postgres_information_store
+    store.upsert_snapshot(_snapshot("resume-a"), {})
+    store.upsert_snapshot(_snapshot("resume-b"), {})
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_state(state_key,state_value,updated_at_ms) VALUES('feed_history_reset_in_progress','1',%s),('feed_reset_system_information_items','1',%s)", (int(time.time() * 1000), int(time.time() * 1000)))
+        conn.execute("DELETE FROM system_information_items WHERE item_id='resume-a'")
+    projector = PostgresSourceStateProjector(store)
+    result = projector.run_once()
+    assert result == {"read": 0, "changed": 0}
+    assert store.get_state("feed_history_reset_in_progress", "0") == "0"
+    assert store.get_state("feed_reset_system_information_items") == "2"
+    assert not store.has_item("resume-b")
+
+
+def test_feed_evidence_gc_batches_and_preserves_business_references(postgres_information_store):
+    store = postgres_information_store
+    protected = store.save_evidence({"response": "business reference"})
+    orphaned = [store.save_evidence({"orphan": index}) for index in range(12)]
+    with store.connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS main.x_processing_attempts(id bigint PRIMARY KEY,status text,response_ref text)")
+        conn.execute("INSERT INTO main.x_processing_attempts VALUES(9901,'succeeded',%s)", (protected,))
+    first = store.prune_feed_history_evidence(limit=5)
+    assert first["scanned"] == 5
+    second = store.prune_feed_history_evidence(limit=20)
+    assert second["removed"] >= 7
+    assert store.load_evidence(protected) == {"response": "business reference"}
+    with store.connect() as conn:
+        remaining = conn.execute("SELECT count(*) AS n FROM system_information_evidence WHERE evidence_ref=ANY(%s)", (orphaned,)).fetchone()["n"]
+        assert remaining == 0
+
+
+def test_external_evidence_file_gc_queue_recovers_after_interruption(postgres_information_store):
+    store = postgres_information_store
+    import hashlib
+    ref = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+    path = store.evidence_dir / ref[:2] / f"{ref}.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"orphan")
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)", (ref, str(path), int(time.time() * 1000)))
+    assert store._drain_evidence_file_gc(limit=10) == 1, store.get_state("evidence_file_gc_error")
+    assert not path.exists()
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,)).fetchone() is None
+
+    protected = store.save_evidence({"response": "still referenced"})
+    protected_path = store.evidence_dir / protected[:2] / f"{protected}.json.gz"
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)", (protected, str(protected_path), int(time.time() * 1000)))
+    store._drain_evidence_file_gc(limit=10)
+    assert store.load_evidence(protected) == {"response": "still referenced"}
+    assert protected_path.exists()
+
+
+def test_projection_cutover_removes_historical_pins_and_samples(postgres_information_store):
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    store = postgres_information_store
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES(%s,%s,1,%s)", ("a" * 64, "postgres://fixture", int(time.time() * 1000)))
+    snapshot = {**_snapshot("pinned-cutover"), "evidence_ref": "a" * 64}
+    store.upsert_snapshot(snapshot, {})
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_evidence_pins VALUES('fixture-pin',%s,%s)", ("a" * 64, int(time.time() * 1000)))
+    projector = PostgresSourceStateProjector(store)
+    result = projector.reset_projection_at_cutover()
+    assert result["items_removed"] == 1
+    assert not store.has_item("pinned-cutover")
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM system_information_evidence_pins").fetchone()["n"] == 0
 
 
 def test_business_inbox_postgres_schema_keeps_business_mapping():
@@ -126,7 +358,7 @@ def test_source_projection_keeps_distinct_rows_and_supplies_missing_times(postgr
     assert "raw_payload" not in detail["evidence"]["current_row"]
 
 
-def test_information_retention_removes_old_feed_copies_and_preserves_protected(postgres_information_store):
+def test_information_retention_removes_old_feed_copies_regardless_of_legacy_protection(postgres_information_store):
     store = postgres_information_store
     now = int(time.time() * 1000)
     old = now - 30 * 60 * 60 * 1000
@@ -143,12 +375,44 @@ def test_information_retention_removes_old_feed_copies_and_preserves_protected(p
         conn.execute("CREATE TABLE system_review_items(scope_json text,evidence_json text,counter_evidence_json text)")
         conn.execute("INSERT INTO system_review_items VALUES (%s,'[]','[]')", ('{"stream_item_ids":["reviewed"]}',))
     result = store.trim_information_items(now_ms=now, limit=100)
-    assert result["removed"] == 2
+    assert result["removed"] == 5
     assert not store.has_item("old")
     assert not store.has_item("old-no-time")
-    assert all(store.has_item(name) for name in ("recent", "sampled", "pinned", "reviewed"))
+    assert store.has_item("recent")
+    assert all(not store.has_item(name) for name in ("sampled", "pinned", "reviewed"))
     with store.connect() as conn:
         assert conn.execute("SELECT count(*) AS n FROM system_information_events WHERE item_id='old'").fetchone()["n"] == 0
+
+
+def test_postgres_task_evidence_retention_waits_five_days(postgres_information_store):
+    store = postgres_information_store
+    now = int(time.time() * 1000)
+    created = now - 4 * 86_400_000
+    schema = "test_task_source_" + uuid.uuid4().hex[:10]
+    with store.connect() as conn:
+        qualified = Identifier(schema).as_string(conn)
+        conn.execute(f"CREATE SCHEMA {qualified}")
+        conn.execute(f"CREATE TABLE {qualified}.tasks(id bigint PRIMARY KEY,content text,raw_payload jsonb)")
+        conn.execute(f"INSERT INTO {qualified}.tasks VALUES(17,'','{{}}')")
+    snapshot = _snapshot("recent-task-evidence")
+    snapshot.update(source_database=schema, source_table="tasks", source_row_id="17", status="published", result="direct_publish", evidence_ref=None,
+                    created_at_ms=created, updated_at_ms=created)
+    store.upsert_snapshot(snapshot, {"task": {"content": "source copy"}, "pipeline": {"search_result": {"duplicate": False}}})
+    result = store.trim_task_evidence(now_ms=now)
+    assert result["changed"] == 0
+    assert store.detail("recent-task-evidence")["evidence"]["task"]["content"] == "source copy"
+
+
+def test_postgres_feed_retention_removes_expired_items_including_active_states(postgres_information_store):
+    store = postgres_information_store
+    now = int(time.time() * 1000)
+    old = now - 7 * 60 * 60 * 1000
+    snapshot = _snapshot("expired-active-feed")
+    snapshot.update(status="processing", result="processing", created_at_ms=old, updated_at_ms=old)
+    store.upsert_snapshot(snapshot, {"detail": "feed-only"})
+    result = store.trim_information_items(now_ms=now)
+    assert result["removed"] == 1
+    assert not store.has_item("expired-active-feed")
 
 
 def test_postgres_information_snapshot_event_and_query(postgres_information_store) -> None:

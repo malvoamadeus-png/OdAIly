@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowDownWideNarrow, ArrowUpWideNarrow, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, Search } from 'lucide-react';
+import { ArrowDownWideNarrow, ArrowUpWideNarrow, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, Search, Trash2 } from 'lucide-react';
 import {
   getSystemInformationDetail,
   getSystemInformationRegistry,
   listSystemInformation,
+  resetSystemInformationHistory,
   type SystemInformationDetail,
   type SystemInformationItem,
   type SystemInformationPage,
@@ -53,6 +54,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   const businessLabels = useMemo(() => new Map((registry?.registry || []).map((item) => [item.key, item.label])), [registry]);
   const sourceOptions = useMemo(() => {
@@ -124,6 +126,25 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
     void loadPage(next);
   }
 
+  async function resetHistory() {
+    if (resetting || !window.confirm('重置当前信息流展示历史？主业务、巡检和 AI 自我升级案例不会删除。')) return;
+    setResetting(true);
+    setError('');
+    try {
+      await resetSystemInformationHistory();
+      setDetail(null);
+      setPreviousCursors([]);
+      setCursor(null);
+      const endMs = Date.now();
+      setWindowEnd(endMs);
+      await loadPage(null, sort, view, endMs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResetting(false);
+    }
+  }
+
   function changeSort(next: 'created' | 'activity') {
     setSort(next);
     setPreviousCursors([]);
@@ -168,6 +189,7 @@ export default function SystemInformationPanel({ refreshToken = 0, onOpenBusines
         <span>最近六小时 · {fmtDate(windowEnd - 6 * 60 * 60 * 1000)} 至 {fmtDate(windowEnd)}</span>
         <span>{loading ? '索引状态读取中' : page?.index.generated_at_ms ? `索引 ${fmtDate(page.index.generated_at_ms)}` : page ? '索引尚无成功记录' : '索引状态未知'}</span>
         <span>{loading ? '积压状态读取中' : page ? page.index.lag ? `主流程积压 ${page.index.lag} 条` : '主流程索引已追平' : '积压状态未知'}</span>
+        <button className="iconButton" type="button" title="重置信息流展示历史" aria-label="重置信息流展示历史" disabled={resetting} onClick={() => void resetHistory()}><Trash2 size={16} /></button>
         <div className="systemInformationSort" role="group" aria-label="排序方式">
           <button type="button" className={sort === 'created' ? 'active' : ''} onClick={() => changeSort('created')}><ArrowDownWideNarrow size={15} /> 创建时间</button>
           <button type="button" className={sort === 'activity' ? 'active' : ''} onClick={() => changeSort('activity')}><ArrowUpWideNarrow size={15} /> 最后处理时间</button>

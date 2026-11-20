@@ -21,6 +21,34 @@ from packages.x_processing.models import PromptTemplateVersion
 from packages.x_capture.client import FXTwitterClient
 
 
+def test_manual_text_rejection_is_persisted_even_when_case_cannot_be_linked():
+    class LocalStore:
+        def __init__(self):
+            self.recorded = None
+
+        def record_feedback(self, **kwargs):
+            self.recorded = kwargs
+            return {"ok": True, "local": True, "queued": True, "feedback_id": 9}
+
+    class FeedSyncer:
+        def wake(self):
+            pass
+
+    service = object.__new__(EditorPluginNewsGenService)
+    local_store = LocalStore()
+    service.local_store = local_store
+    service.feed_syncer = FeedSyncer()
+    service.ai_text_self_upgrade_repository = object()
+    actor = AuthenticatedEditor("operator", "operator@example.com", "operator")
+    result = service.submit_feedback(actor, {
+        "p_feed_item_id": "auditor:41", "p_feed_kind": "auditor_alert", "p_feedback": "reject",
+    })
+    assert local_store.recorded["feed_item_id"] == "auditor:41"
+    assert result["feedback_id"] == 9
+    assert result["queued"] is True
+    assert result["queue_id"] == "manual-rejection-feedback:9"
+
+
 @pytest.mark.parametrize('method,path', [('POST', '/console/system-information'),
     ('GET', '/console/meme/get?column=digest'), ('GET', '/console/meme/detail?id=1')])
 def test_information_http_compresses_details_and_caches_preflight(method, path):
