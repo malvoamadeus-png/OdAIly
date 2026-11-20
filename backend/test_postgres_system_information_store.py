@@ -283,6 +283,31 @@ def test_feed_evidence_gc_batches_and_preserves_business_references(postgres_inf
         assert remaining == 0
 
 
+def test_short_feed_evidence_uses_postgres_storage_and_gc_reports_physical_unlinks(postgres_information_store):
+    store = postgres_information_store
+    value = {"feed": "ordinary status", "sequence": 123}
+    ref = store.save_evidence(value)
+    with store.connect() as conn:
+        row = conn.execute("SELECT path FROM system_information_evidence WHERE evidence_ref=%s", (ref,)).fetchone()
+        assert row["path"] == f"postgres://small_evidence/{ref}"
+        assert conn.execute("SELECT 1 FROM small_evidence WHERE evidence_ref=%s", (ref,)).fetchone()
+    assert store.load_evidence(ref) == value
+
+    import hashlib
+    unlinked_ref = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+    missing_ref = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+    path = store.evidence_dir / unlinked_ref[:2] / f"{unlinked_ref}.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"orphan")
+    with store.connect() as conn:
+        conn.executemany(
+            "INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)",
+            [(unlinked_ref, str(path), int(time.time() * 1000)),
+             (missing_ref, str(store.evidence_dir / missing_ref[:2] / f"{missing_ref}.json.gz"), int(time.time() * 1000))],
+        )
+    assert store._drain_evidence_file_gc(limit=10) == 1
+
+
 def test_projector_retention_caps_feed_evidence_gc_batch():
     from packages.system_observability.postgres_projector import PostgresSourceStateProjector
 
@@ -318,6 +343,28 @@ def test_projector_retention_caps_feed_evidence_gc_batch():
     projector._run_retention(now_ms=60_000)
 
     assert store.feed_gc_limit == 1000
+
+
+def test_projector_drains_file_gc_independently_with_a_fixed_bound():
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    class Store:
+        def __init__(self):
+            self.limit = None
+            self.states = {}
+
+        def _drain_evidence_file_gc(self, *, limit):
+            self.limit = limit
+            return 17
+
+        def set_state(self, key, value):
+            self.states[key] = value
+
+    store = Store()
+    PostgresSourceStateProjector(store)._drain_file_gc()
+    assert store.limit == 1000
+    assert store.states["evidence_file_gc_last_unlinked"] == 17
+    assert store.states["evidence_file_gc_error"] == ""
 
 
 def test_external_evidence_file_gc_queue_recovers_after_interruption(postgres_information_store):

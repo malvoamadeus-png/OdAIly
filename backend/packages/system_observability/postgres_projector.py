@@ -120,6 +120,7 @@ class PostgresSourceStateProjector:
 
     def run_once(self, *, now_ms: int | None = None) -> dict[str, int]:
         now = now_ms or _now_ms()
+        self._drain_file_gc()
         if self.store.get_state("feed_history_reset_in_progress", "0") == "1":
             self.reset_projection_at_cutover()
             return {"read": 0, "changed": 0}
@@ -173,6 +174,17 @@ class PostgresSourceStateProjector:
                 if acknowledged != len(events):
                     raise RuntimeError("source-state outbox acknowledgement count changed inside projection transaction")
         return {"read": imported, "changed": changed}
+
+    def _drain_file_gc(self) -> None:
+        try:
+            drain = getattr(self.store, "_drain_evidence_file_gc", None)
+            if drain is None:
+                return
+            removed = drain(limit=1000)
+            self.store.set_state("evidence_file_gc_last_unlinked", removed)
+            self.store.set_state("evidence_file_gc_error", "")
+        except Exception as exc:
+            self.store.set_state("evidence_file_gc_error", f"{type(exc).__name__}: {exc}"[:500])
 
     def reset_projection_at_cutover(self) -> dict[str, int]:
         lock_key = "system-information-source-projector"

@@ -361,11 +361,20 @@ class PostgresSystemInformationStore:
         self._lock_external_evidence_key(conn, ref)
         conn.execute("DELETE FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,))
         compressed = gzip.compress(payload, compresslevel=6, mtime=0)
-        from .store import SystemInformationStore
-        if SystemInformationStore._is_small_capture(safe, len(payload)):
+        # Keep short feed evidence in PostgreSQL. A file per small event adds
+        # directory and inode churn without improving read or retention semantics.
+        if len(payload) <= 8192:
             self.evidence.put_in_transaction(conn, ref, compressed, uncompressed_size=len(payload))
             path = f"postgres://small_evidence/{ref}"
-            conn.execute("INSERT INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES(%s,%s,%s,%s) ON CONFLICT(evidence_ref) DO UPDATE SET created_at_ms=GREATEST(system_information_evidence.created_at_ms,excluded.created_at_ms)", (ref, path, len(payload), _now_ms()))
+            previous = conn.execute("SELECT path FROM system_information_evidence WHERE evidence_ref=%s", (ref,)).fetchone()
+            previous_path = str(previous["path"] or "") if previous else ""
+            if previous_path and not previous_path.startswith("postgres://"):
+                conn.execute(
+                    "INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s) "
+                    "ON CONFLICT(evidence_ref) DO UPDATE SET path=excluded.path,queued_at_ms=excluded.queued_at_ms",
+                    (ref, previous_path, _now_ms()),
+                )
+            conn.execute("INSERT INTO system_information_evidence(evidence_ref,path,byte_size,created_at_ms) VALUES(%s,%s,%s,%s) ON CONFLICT(evidence_ref) DO UPDATE SET path=excluded.path,byte_size=excluded.byte_size,created_at_ms=GREATEST(system_information_evidence.created_at_ms,excluded.created_at_ms)", (ref, path, len(payload), _now_ms()))
             return ref
         directory = self.evidence_dir / ref[:2]
         file_path = directory / f"{ref}.json.gz"
@@ -1073,12 +1082,16 @@ class PostgresSystemInformationStore:
                                 schema, table = relation.split(".", 1)
                                 predicates.append(f"NOT EXISTS (SELECT 1 FROM {Identifier(schema, table).as_string(conn)} x WHERE x.{Identifier(column).as_string(conn)}=r.ref)")
                         safe_refs = {str(row["ref"]) for row in conn.execute(
-                            "SELECT r.ref FROM unnest(%s::text[]) AS r(ref) WHERE " + " AND ".join(predicates), (refs,),
+                            "SELECT r.ref FROM unnest(%s::text[]) AS r(ref) WHERE "
+                            "(EXISTS (SELECT 1 FROM system_information_evidence e JOIN small_evidence s ON s.evidence_ref=e.evidence_ref "
+                            "WHERE e.evidence_ref=r.ref AND e.path=('postgres://small_evidence/' || r.ref)) OR ("
+                            + " AND ".join(predicates) + "))", (refs,),
                         ).fetchall()}
                         for ref, path in chunk:
                             if ref in safe_refs and path == self.evidence_dir / ref[:2] / f"{ref}.json.gz":
+                                existed = path.exists()
                                 path.unlink(missing_ok=True)
-                                removed += 1
+                                removed += int(existed)
                             conn.execute("DELETE FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,))
             except Exception as exc:
                 # Removed registry rows with leftover files are safe to retry later.
