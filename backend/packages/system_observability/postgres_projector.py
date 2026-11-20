@@ -369,7 +369,9 @@ class PostgresSourceStateProjector:
             "stage": _stage(event_status),
             "summary": (summary or label)[:1200],
             "reason": str(reason)[:1200] if reason else None,
-            "error_code": str(_first(payload, "error_code") or "unknown") if reason else None,
+            "error_code": str(_first(payload, "error_code") or "unknown")
+            if _first(payload, "error_code") or event_result == "failed" or event_status == "failed" or event_status.endswith("_failed")
+            else None,
             "details": {"operation": operation, "source_schema": schema, "source_table": table, "source_row_id": row_id,
                         "changed_fields": changed_fields[:100]},
         }
