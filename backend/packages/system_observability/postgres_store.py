@@ -1081,11 +1081,12 @@ class PostgresSystemInformationStore:
                             if conn.execute("SELECT to_regclass(%s) AS relation", (relation,)).fetchone()["relation"]:
                                 schema, table = relation.split(".", 1)
                                 predicates.append(f"NOT EXISTS (SELECT 1 FROM {Identifier(schema, table).as_string(conn)} x WHERE x.{Identifier(column).as_string(conn)}=r.ref)")
+                        queued_paths = [str(path) for _ref, path in chunk]
                         safe_refs = {str(row["ref"]) for row in conn.execute(
-                            "SELECT r.ref FROM unnest(%s::text[]) AS r(ref) WHERE "
+                            "SELECT r.ref FROM unnest(%s::text[],%s::text[]) AS r(ref,path) WHERE "
                             "(EXISTS (SELECT 1 FROM system_information_evidence e JOIN small_evidence s ON s.evidence_ref=e.evidence_ref "
-                            "WHERE e.evidence_ref=r.ref AND e.path=('postgres://small_evidence/' || r.ref)) OR ("
-                            + " AND ".join(predicates) + "))", (refs,),
+                            "WHERE e.evidence_ref=r.ref AND e.path=('postgres://small_evidence/' || r.ref) AND e.path<>r.path) OR ("
+                            + " AND ".join(predicates) + "))", (refs, queued_paths),
                         ).fetchall()}
                         for ref, path in chunk:
                             if ref in safe_refs and path == self.evidence_dir / ref[:2] / f"{ref}.json.gz":

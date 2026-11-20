@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from pathlib import Path
 from threading import Event, Thread
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -300,11 +301,10 @@ def test_short_feed_evidence_uses_postgres_storage_and_gc_reports_physical_unlin
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"orphan")
     with store.connect() as conn:
-        conn.executemany(
-            "INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)",
-            [(unlinked_ref, str(path), int(time.time() * 1000)),
-             (missing_ref, str(store.evidence_dir / missing_ref[:2] / f"{missing_ref}.json.gz"), int(time.time() * 1000))],
-        )
+        conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)",
+                     (unlinked_ref, str(path), int(time.time() * 1000)))
+        conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)",
+                     (missing_ref, str(store.evidence_dir / missing_ref[:2] / f"{missing_ref}.json.gz"), int(time.time() * 1000)))
     assert store._drain_evidence_file_gc(limit=10) == 1
 
 
@@ -381,13 +381,45 @@ def test_external_evidence_file_gc_queue_recovers_after_interruption(postgres_in
     with store.connect() as conn:
         assert conn.execute("SELECT 1 FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,)).fetchone() is None
 
-    protected = store.save_evidence({"response": "still referenced"})
+    protected = store.save_evidence({"response": "still referenced" + "x" * 9000})
     protected_path = store.evidence_dir / protected[:2] / f"{protected}.json.gz"
     with store.connect() as conn:
         conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)", (protected, str(protected_path), int(time.time() * 1000)))
     store._drain_evidence_file_gc(limit=10)
-    assert store.load_evidence(protected) == {"response": "still referenced"}
+    assert store.load_evidence(protected) == {"response": "still referenced" + "x" * 9000}
     assert protected_path.exists()
+
+
+def test_external_evidence_file_gc_keeps_queue_after_transient_unlink_failure(postgres_information_store, monkeypatch):
+    store = postgres_information_store
+    import hashlib
+    ref = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
+    path = store.evidence_dir / ref[:2] / f"{ref}.json.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"retry-me")
+    with store.connect() as conn:
+        conn.execute("INSERT INTO system_information_evidence_file_gc(evidence_ref,path,queued_at_ms) VALUES(%s,%s,%s)",
+                     (ref, str(path), int(time.time() * 1000)))
+
+    unlink = Path.unlink
+
+    def fail_once(target, *args, **kwargs):
+        if target == path:
+            raise OSError("temporary filesystem error")
+        return unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_once)
+    assert store._drain_evidence_file_gc(limit=1) == 0
+    assert path.exists()
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,)).fetchone()
+    assert "temporary filesystem error" in store.get_state("evidence_file_gc_error")
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert store._drain_evidence_file_gc(limit=1) == 1
+    assert not path.exists()
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 FROM system_information_evidence_file_gc WHERE evidence_ref=%s", (ref,)).fetchone() is None
 
 
 def test_projection_cutover_removes_historical_pins_and_samples(postgres_information_store):
