@@ -283,6 +283,43 @@ def test_feed_evidence_gc_batches_and_preserves_business_references(postgres_inf
         assert remaining == 0
 
 
+def test_projector_retention_caps_feed_evidence_gc_batch():
+    from packages.system_observability.postgres_projector import PostgresSourceStateProjector
+
+    class Store:
+        def __init__(self):
+            self.feed_gc_limit = None
+
+        def get_state(self, key, default=""):
+            return "0" if key == "postgres_retention_last_ms" else default
+
+        def set_state(self, key, value):
+            return None
+
+        def trim_information_items(self, **kwargs):
+            return {}
+
+        def cleanup_external_errors(self, **kwargs):
+            return {}
+
+        def prune_task_status_events(self, **kwargs):
+            return {}
+
+        def prune_feed_history_evidence(self, *, limit):
+            self.feed_gc_limit = limit
+            return {"scanned": 0, "removed": 0}
+
+        def connect(self):
+            raise RuntimeError("database calls are outside this unit test")
+
+    store = Store()
+    projector = PostgresSourceStateProjector(store)
+
+    projector._run_retention(now_ms=60_000)
+
+    assert store.feed_gc_limit == 1000
+
+
 def test_external_evidence_file_gc_queue_recovers_after_interruption(postgres_information_store):
     store = postgres_information_store
     import hashlib

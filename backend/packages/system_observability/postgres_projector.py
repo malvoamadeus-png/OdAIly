@@ -313,7 +313,7 @@ class PostgresSourceStateProjector:
         except Exception as exc:
             self.store.set_state("status_retention_error", f"{type(exc).__name__}: {exc}"[:500])
         try:
-            feed_evidence = self.store.prune_feed_history_evidence(limit=10000)
+            feed_evidence = self.store.prune_feed_history_evidence(limit=1000)
             self.store.set_state("feed_evidence_gc_last_result", json.dumps(feed_evidence, separators=(",", ":")))
             self.store.set_state("feed_evidence_gc_error", "")
         except Exception as exc:
