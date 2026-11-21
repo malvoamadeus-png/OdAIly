@@ -1511,7 +1511,15 @@ export type AITextSelfUpgradeItem = {
   audit_model: string | null;
   audited_title: string | null;
   audited_content: string;
-  audit_result: { summary?: string; issues?: Array<Record<string, unknown>> };
+  audit_result: {
+    summary?: string;
+    issues?: Array<Record<string, unknown>>;
+    manual_rejection?: {
+      authoring_path?: 'manual_publication' | 'unknown_publication';
+      authoring_basis?: string;
+      writer1_snapshot?: string;
+    };
+  };
   published_at: string | null;
   source_url: string | null;
   source_title: string | null;

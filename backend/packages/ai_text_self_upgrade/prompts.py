@@ -5,7 +5,7 @@ from typing import Any
 
 
 MODEL = "gpt-6-luna"
-PROMPT_VERSION = "ai_text_self_upgrade_v3"
+PROMPT_VERSION = "ai_text_self_upgrade_v4"
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
     "name": "odaily_ai_text_self_upgrade",
@@ -63,6 +63,18 @@ def build_prompt(case: dict[str, Any]) -> str:
     is_fact_review = case.get("source_type") == "fact_auditor"
     audit_result = case.get("audit_result") if isinstance(case.get("audit_result"), dict) else {}
     manual_rejection = audit_result.get("manual_rejection") if isinstance(audit_result.get("manual_rejection"), dict) else {}
+    authoring_path = manual_rejection.get("authoring_path")
+    if (authoring_path == "unknown_publication"
+            and manual_rejection.get("writer1_snapshot") == "unavailable"
+            and manual_rejection.get("authoring_basis") not in {
+                "explicit_non_manual_metadata", "ambiguous_writer1_mapping",
+            }):
+        authoring_path = "manual_publication"
+    manual_rejection_input = dict(manual_rejection)
+    if manual_rejection_input and authoring_path == "manual_publication":
+        if manual_rejection_input.get("authoring_path") == "unknown_publication" and not manual_rejection_input.get("authoring_basis"):
+            manual_rejection_input["authoring_basis"] = "manual_rejection_without_writer1_snapshot"
+        manual_rejection_input["authoring_path"] = "manual_publication"
     payload = {
         "published_newsflash": {
             "title": case.get("audited_title"),
@@ -76,7 +88,7 @@ def build_prompt(case: dict[str, Any]) -> str:
             "reason": case.get("fact_reason") if is_fact_review else None,
             "summary": case.get("fact_summary") if is_fact_review else audit_result.get("summary"),
             "text_issues": audit_result.get("issues") if not is_fact_review else [],
-            "manual_rejection": audit_result.get("manual_rejection") if not is_fact_review else None,
+            "manual_rejection": manual_rejection_input if not is_fact_review else None,
             "original_material": {
                 "url": case.get("fact_original_url"),
                 "text": case.get("fact_original_text"),
@@ -87,7 +99,11 @@ def build_prompt(case: dict[str, Any]) -> str:
             "authoring_path": {
                 "manual_publication": "manual_publication_without_writer1_snapshot",
                 "unknown_publication": "unknown_source_without_writer1_snapshot",
-            }.get(manual_rejection.get("authoring_path"), "writer1"),
+            }.get(authoring_path, "writer1"),
+            "writer1_attribution": {
+                "manual_publication": "not_applicable_human_written",
+                "unknown_publication": "unknown_source",
+            }.get(authoring_path, "applicable_with_writer1_evidence"),
             "source_url": case.get("source_url"),
             "source_title": case.get("source_title"),
             "source_material": case.get("source_content"),
@@ -104,11 +120,13 @@ def build_prompt(case: dict[str, Any]) -> str:
         "你是 OdAIly 的 AI 文本自我审核者。请根据审核来源判断审核意见是否成立，并核对问题能否归因于编写者1。"
         "输入中的审核者可能是文本审查者或事实审查者；按其职责范围分别判断。只使用存档证据，不得把审核结论直接当作事实。\n"
         "verdict=writer1_error：审核者指出的问题成立，且问题已存在于编写者1草稿中。"
-        "verdict=reviewer_correct_unattributed：审核者指出的问题成立，但来源为人工稿、来源未知或没有可核验的 Writer1 草稿，不能把问题归给 Writer1。"
+        "verdict=reviewer_correct_unattributed：审核意见成立，但没有依据归因给 Writer1。人工稿和来源未知必须分开表述。"
         "verdict=auditor_false_positive：有直接证据证明审核意见不成立或超出该审核者职责。不能仅因原始材料缺失而判误报。"
         "verdict=inconclusive：现有证据不足以判断审核意见本身是否成立，或存在冲突/无法核验。"
         "人工拒绝动作本身不证明审核者正确，也不证明作者有错。若 authoring_path 不是 writer1，绝不可判 writer1_error；若能直接核实审核意见成立，判 reviewer_correct_unattributed；仅能核实审核意见不成立时判 auditor_false_positive；无法核实审核意见本身时判 inconclusive。"
         "Writer1 案例只有确认问题存在于 Writer1 草稿时才归因给 Writer1；若问题只在后续环节出现但审核意见成立，判 reviewer_correct_unattributed。"
+        "writer1_attribution=not_applicable_human_written 表示已确认由人工撰写，Writer1 归因不适用；若审核意见成立，理由应明确写‘人工稿，Writer1不适用’，不得写‘作者责任未确认’或暗示作者身份未知。"
+        "writer1_attribution=unknown_source 表示来源确实未知；不得据此断言稿件为人工稿，也不要把‘未归因 Writer1’扩大成‘作者责任未确认’。"
         "文本审查者只检查明确的中文语法、错字和格式错误，不把风格偏好当成错误；事实审查者只按来源和可核对证据判断事实主张。"
         "不得把编写者1之后新增的问题归给编写者1；不得因无法确认就判审核者错误。"
         "涉及交易决策或主体身份的判断要求直接证据；证据不足时不得强行归因。"
@@ -130,6 +148,10 @@ def parse_output(raw: str, case: dict[str, Any]) -> dict[str, Any]:
         verdict = "auditor_false_positive"
     if verdict not in {"writer1_error", "reviewer_correct_unattributed", "auditor_false_positive", "inconclusive"}:
         raise ValueError("自我审核者 verdict 无效")
+    audit_result = case.get("audit_result") if isinstance(case.get("audit_result"), dict) else {}
+    manual_rejection = audit_result.get("manual_rejection") if isinstance(audit_result.get("manual_rejection"), dict) else {}
+    if verdict == "writer1_error" and manual_rejection.get("authoring_path") in {"manual_publication", "unknown_publication"}:
+        raise ValueError("没有 Writer1 草稿的案例不能归因为 Writer1 错误")
     confidence = value.get("confidence")
     if confidence not in {"low", "medium", "high"}:
         raise ValueError("自我审核者 confidence 无效")

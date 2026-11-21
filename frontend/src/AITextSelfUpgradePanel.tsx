@@ -11,13 +11,15 @@ import {
 import './aiTextSelfUpgrade.css';
 
 const PAGE_SIZE = 30;
+const API_PAGE_SIZE = 100;
+const LOOKBACK_MS = 72 * 60 * 60 * 1000;
 const DECISION_LABELS: Record<string, string> = {
   pending: '待审', accepted: '历史决定：接受AI判断', rejected: '历史决定：驳回AI判断', ignored: '已忽略',
-  reviewer_correct: '审核者正确', writer_correct: '编写者正确',
+  reviewer_correct: '审核者正确', writer_correct: '原文正确',
 };
 const VERDICT_LABELS: Record<string, string> = {
   writer1_error: '审核者意见成立，Writer1稿件有误',
-  reviewer_correct_unattributed: '审核者意见成立，作者责任未确认',
+  reviewer_correct_unattributed: '审核者意见成立，未归因 Writer1',
   auditor_false_positive: '审核者意见不成立',
   fact_auditor_error: '事实审查者意见不成立',
   inconclusive: '现有证据无法定论',
@@ -44,7 +46,25 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
     setLoading(true);
     setError('');
     try {
-      setPage(await listAITextSelfUpgradeItems({ status, offset, limit: PAGE_SIZE }));
+      const first = await listAITextSelfUpgradeItems({ status: 'all', offset: 0, limit: API_PAGE_SIZE });
+      const allItems = [...first.items];
+      for (let nextOffset = first.items.length; nextOffset < first.total; nextOffset += API_PAGE_SIZE) {
+        const next = await listAITextSelfUpgradeItems({ status: 'all', offset: nextOffset, limit: API_PAGE_SIZE });
+        if (!next.items.length) break;
+        allItems.push(...next.items);
+      }
+
+      const cutoff = Date.now() - LOOKBACK_MS;
+      const retained = allItems.filter((item) => isRecentManualRejection(item, cutoff));
+      const matching = retained.filter((item) => matchesStatus(item, status));
+      setPage({
+        ...first,
+        items: matching.slice(offset, offset + PAGE_SIZE),
+        total: matching.length,
+        offset,
+        limit: PAGE_SIZE,
+        confirmed_count: retained.filter((item) => item.human_resolution === 'reviewer_correct' || item.human_resolution === 'writer_correct').length,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -102,7 +122,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
         <label><span>人工决定</span><select value={status} onChange={(event) => { setStatus(event.target.value); setOffset(0); }}>
           <option value="pending">待审</option>
           <option value="reviewer_correct">审核者正确</option>
-          <option value="writer_correct">编写者正确</option>
+          <option value="writer_correct">原文正确</option>
           <option value="ignored">已忽略</option>
           <option value="legacy">历史决定</option>
           <option value="all">全部</option>
@@ -129,7 +149,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
             >
               <span className="aiTextUpgradeRowTitle"><strong>{item.audited_title || '无标题'}</strong><span className={`aiTextUpgradeStatus ${item.human_resolution || item.human_decision}`}>{decisionLabel(item)}</span></span>
               <span className="aiTextUpgradeRowMeta">
-                <span>{item.analysis_status === 'completed' ? VERDICT_LABELS[item.verdict || ''] || '已完成' : analysisLabel(item.analysis_status)}</span>
+                <span>{item.analysis_status === 'completed' ? verdictLabel(item) : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
               </span>
               <span className="aiTextUpgradeSummary">{item.source_type === 'text_auditor'
@@ -154,8 +174,11 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
             <button className="secondaryButton" type="button" disabled={saving} onClick={() => void removeSelected()}><Trash2 size={16} /> 删除此案例</button>
             {selected.analysis_status === 'completed' ? (
               <section className="aiTextUpgradeVerdict">
-                <div><strong>{VERDICT_LABELS[selected.verdict || ''] || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'} · {selected.analysis_prompt_version || '未知Prompt版本'}</span></div>
-                <p>{selected.rationale}</p>
+                <div><strong>{verdictLabel(selected) || '判断完成'}</strong><span>置信度：{confidenceLabel(selected.confidence)}</span><span>{selected.analysis_model || 'gpt-6-luna'} · {selected.analysis_prompt_version || '未知Prompt版本'}</span></div>
+                {isManualPublication(selected) && selected.analysis_prompt_version !== 'ai_text_self_upgrade_v4' ? <>
+                  <p>本案为人工稿，Writer1 归因不适用。以下保留旧版模型理由。</p>
+                  <details className="aiTextUpgradeSection aiTextUpgradeSource"><summary>旧版模型理由</summary><p>{selected.rationale}</p></details>
+                </> : <p>{selected.rationale}</p>}
                 {uniqueEvidence(selected.evidence).map((item, index) => <blockquote key={`${item.location}-${index}`}>
                   <span>{EVIDENCE_LABELS[item.location] || item.location}</span>
                   <q>{item.quote}</q>
@@ -228,17 +251,15 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 <pre>{selected.source_content || '无写作素材正文'}</pre>
               </div>
             </details>
-            {selected.analysis_status === 'completed' && <>
-              <div className="aiTextUpgradeDecisionMeaning">
-                人工确认审核者或编写者正确的案例计入研究样本。
-              </div>
-              <label className="aiTextUpgradeNote"><span>决定备注（可选）</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={2} maxLength={2000} /></label>
-              <div className="aiTextUpgradeActions">
-                <button className="primaryButton" type="button" disabled={saving} onClick={() => void decide('reviewer_correct')}><Check size={16} /> 审核者正确</button>
-                <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('writer_correct')}><X size={16} /> 编写者正确</button>
-                <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('ignored')}><EyeOff size={16} /> 忽略</button>
-              </div>
-            </>}
+            <div className="aiTextUpgradeDecisionMeaning">
+              人工确认审核意见正确或原文无误的案例计入研究样本。
+            </div>
+            <label className="aiTextUpgradeNote"><span>决定备注（可选）</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={2} maxLength={2000} /></label>
+            <div className="aiTextUpgradeActions">
+              <button className="primaryButton" type="button" disabled={saving} onClick={() => void decide('reviewer_correct')}><Check size={16} /> 审核者正确</button>
+              <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('writer_correct')}><X size={16} /> 原文正确</button>
+              <button className="secondaryButton" type="button" disabled={saving} onClick={() => void decide('ignored')}><EyeOff size={16} /> 忽略</button>
+            </div>
             {selected.decisions?.length ? <section className="aiTextUpgradeHistory"><h3>决定历史</h3>{selected.decisions.map((decision, index) => <article key={`${decision.decided_at}-${index}`}>
               <time>{formatDate(decision.decided_at)}</time><strong>{decision.actor} · {decision.legacy && decision.decision === 'ignored' ? '历史决定：忽略' : DECISION_LABELS[decision.decision] || decision.decision}</strong><p>{decision.note || '无备注'}</p>
             </article>)}</section> : null}
@@ -253,6 +274,48 @@ function decisionLabel(item: AITextSelfUpgradeItem): string {
   if (item.human_resolution) return DECISION_LABELS[item.human_resolution];
   if (item.human_decision === 'ignored') return '历史决定：忽略';
   return DECISION_LABELS[item.human_decision];
+}
+
+function verdictLabel(item: AITextSelfUpgradeItem): string {
+  if (item.verdict === 'reviewer_correct_unattributed') {
+    const path = effectiveAuthoringPath(item);
+    if (path === 'manual_publication') return '审核者意见成立，人工稿，Writer1不适用';
+    if (path === 'unknown_publication') return '审核者意见成立，来源未知，未归因 Writer1';
+  }
+  return VERDICT_LABELS[item.verdict || ''] || (item.verdict ? '已完成' : '判断完成');
+}
+
+function effectiveAuthoringPath(item: AITextSelfUpgradeItem): string | undefined {
+  const rejection = item.audit_result.manual_rejection;
+  if (rejection?.authoring_path === 'unknown_publication'
+      && rejection.writer1_snapshot === 'unavailable'
+      && rejection.authoring_basis !== 'explicit_non_manual_metadata'
+      && rejection.authoring_basis !== 'ambiguous_writer1_mapping') {
+    return 'manual_publication';
+  }
+  return rejection?.authoring_path;
+}
+
+function isManualPublication(item: AITextSelfUpgradeItem): boolean {
+  return effectiveAuthoringPath(item) === 'manual_publication';
+}
+
+function isRecentManualRejection(item: AITextSelfUpgradeItem, cutoff: number): boolean {
+  const rejection = item.audit_result?.manual_rejection;
+  if (item.source_type !== 'text_auditor' || !rejection) return false;
+  if (rejection.authoring_basis === 'explicit_non_manual_metadata'
+      || rejection.authoring_basis === 'ambiguous_writer1_mapping') return false;
+  const timestamp = Date.parse(item.published_at || item.created_at);
+  return Number.isFinite(timestamp) && timestamp >= cutoff;
+}
+
+function matchesStatus(item: AITextSelfUpgradeItem, status: string): boolean {
+  if (status === 'all') return true;
+  if (status === 'pending') return !item.human_resolution && item.human_decision === 'pending';
+  if (status === 'legacy') {
+    return !item.human_resolution && ['accepted', 'rejected', 'ignored'].includes(item.human_decision);
+  }
+  return item.human_resolution === status;
 }
 
 function uniqueEvidence(evidence: AITextSelfUpgradeItem['evidence']) {

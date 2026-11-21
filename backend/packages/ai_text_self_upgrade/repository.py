@@ -406,20 +406,55 @@ class AITextSelfUpgradeRepository:
                     return "__deleted__"
             source_tables = {str(item[0]) for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             metadata_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(newsflash_production_metadata)")}
-            manual_rows = []
-            if {"outlet_category", "odaily_id"} <= metadata_columns:
-                manual_rows = conn.execute(
-                    "SELECT * FROM newsflash_production_metadata WHERE odaily_id=? AND outlet_category='manual'",
+            publication_rows = []
+            if "odaily_id" in metadata_columns:
+                publication_rows = conn.execute(
+                    "SELECT * FROM newsflash_production_metadata WHERE odaily_id=?",
                     (str(row["source_item_id"]),),
                 ).fetchall()
+            explicit_categories = {
+                str(item["outlet_category"] or "") for item in publication_rows
+                if "outlet_category" in item.keys() and item["outlet_category"]
+            }
+            explicit_non_manual = bool(explicit_categories - {"manual"})
+            ambiguous_writer1_metadata = any(
+                ("id_match_status" in item.keys() and item["id_match_status"] == "ambiguous")
+                or ("delivery_key" in item.keys() and str(item["delivery_key"] or "").startswith("odaily-task-"))
+                for item in publication_rows
+            )
+            manual_rows = [item for item in publication_rows
+                           if item["outlet_category"] == "manual"] if "outlet_category" in metadata_columns else []
+            manual_origin = any(
+                "origin_key" in item.keys() and item["origin_key"] == "manual"
+                for item in publication_rows
+            )
+            publisher_kind = None
+            if "newsflash_operation_facts" in source_tables:
+                fact_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(newsflash_operation_facts)")}
+                if "publisher_kind" in fact_columns:
+                    fact = conn.execute(
+                        "SELECT publisher_kind FROM newsflash_operation_facts WHERE source_item_id=?",
+                        (str(row["source_item_id"]),),
+                    ).fetchone()
+                    publisher_kind = str(fact["publisher_kind"] or "") if fact else None
+            manual_publication = not explicit_non_manual and (
+                bool(manual_rows) or manual_origin or publisher_kind in {"human", "human_unmapped"}
+            )
+            unknown_authoring_basis = (
+                "explicit_non_manual_metadata" if explicit_non_manual
+                else "ambiguous_writer1_mapping" if ambiguous_writer1_metadata and not manual_publication
+                else None
+            )
             task = None
-            if len(manual_rows) == 1:
-                metadata = manual_rows[0]
+            if manual_publication:
+                metadata = manual_rows[0] if manual_rows else next(
+                    (item for item in publication_rows if "title" in item.keys()), None
+                )
                 task = {
                     "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
                     "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
                     "final_content": str(row["content"] or ""), "source_url": row["source_url"],
-                    "source_title": str(metadata["title"] or "") if "title" in metadata.keys() else "", "source_content": "",
+                    "source_title": str(metadata["title"] or "") if metadata is not None and "title" in metadata.keys() else "", "source_content": "",
                     "authoring_path": "manual_publication",
                 }
             pipeline_columns = {str(item[1]) for item in conn.execute("PRAGMA table_info(x_task_pipeline)")}
@@ -453,7 +488,8 @@ class AITextSelfUpgradeRepository:
                     "task_id": None, "writer_model": None, "prompt_template_key": None, "prompt_version_id": None,
                     "draft_title": None, "draft_content": None, "final_title": str(row["title"] or ""),
                     "final_content": str(row["content"] or ""), "source_url": row["source_url"],
-                    "source_title": "", "source_content": "", "authoring_path": "unknown_publication",
+                    "source_title": "", "source_content": "",
+                    "authoring_path": "unknown_publication" if unknown_authoring_basis else "manual_publication",
                 }
             audit_result = _decode(row["audit_result"], {})
             if not isinstance(audit_result, dict):
@@ -463,6 +499,7 @@ class AITextSelfUpgradeRepository:
                 "actor": actor[:200], "rejected_at": _now(),
                 **({"authoring_path": authoring_path, "writer1_snapshot": "unavailable"}
                    if authoring_path in {"manual_publication", "unknown_publication"} else {}),
+                **({"authoring_basis": unknown_authoring_basis} if unknown_authoring_basis else {}),
                 **({"audit_snapshot_integrity": "content_hash_mismatch"} if not hash_matches else {}),
             }
             case = {

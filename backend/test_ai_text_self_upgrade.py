@@ -372,7 +372,7 @@ def test_sqlite_manual_publication_rejection_creates_independent_inconclusive_ca
         assert repository.manual_rejection_status(77) == "completed"
 
 
-def test_sqlite_rejection_is_snapshotted_when_publication_metadata_is_missing() -> None:
+def test_sqlite_rejection_without_writer_snapshot_defaults_to_manual_publication() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         primary = root / "main.sqlite"
@@ -398,12 +398,12 @@ def test_sqlite_rejection_is_snapshotted_when_publication_metadata_is_missing() 
         item = repository.list_items({})["items"][0]
         case = repository.detail(item["case_key"])
         assert case["task_id"] is None
-        assert case["audit_result"]["manual_rejection"]["authoring_path"] == "unknown_publication"
-        assert "unknown_source_without_writer1_snapshot" in build_prompt(case)
+        assert case["audit_result"]["manual_rejection"]["authoring_path"] == "manual_publication"
+        assert "manual_publication_without_writer1_snapshot" in build_prompt(case)
 
         result = parse_output(json.dumps({
             "verdict": "reviewer_correct_unattributed", "confidence": "medium",
-            "rationale": "审核意见可由已发布文本确认，但来源未知且没有 Writer1 草稿。",
+            "rationale": "审核意见可由已发布文本确认；人工稿不属于 Writer1 写作。",
             "evidence": [{"location": "published_text", "quote": "typoo", "explanation": "正文中存在被指出的拼写错误。"}],
         }, ensure_ascii=False), case)
         repository.complete_analysis(case["case_key"], model="gpt-6-luna", prompt_version="test", result=result)
