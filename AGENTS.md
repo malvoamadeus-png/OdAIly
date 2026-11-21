@@ -66,8 +66,8 @@
 
 ## 生产数据核查原则
 
-- 任何反馈“生产中遇到某种问题”、询问线上当前数据或要求调整已有生产数据的任务，第一步必须登录 `odaily-official`，在 `/opt/OdAIly` 检查生产 SQLite、服务状态、日志和实际运行结果；不得先用本地工作区的数据判断生产是否存在该问题。
-- 本地工作区永远不运行任何 OdAIly 产品服务、worker、API 或产品 SQLite 状态。`data/runtime` 等本地运行文件只能用于代码测试、迁移演练和离线回放，不能作为生产数据缺失、线上行为或当前业务结果的证据。
+- 任何反馈“生产中遇到某种问题”、询问线上当前数据或要求调整已有生产数据的任务，第一步必须登录 `odaily-official`，在 `/opt/OdAIly` 按服务实际配置检查 PostgreSQL 主库、相关独立运行资产、服务状态、日志和运行结果；不得先用本地工作区的数据判断生产是否存在该问题。
+- 本地工作区永远不运行任何 OdAIly 产品服务、worker、API 或产品运行状态。`data/runtime` 等本地运行文件只能用于代码测试、迁移演练和离线回放，不能作为生产数据缺失、线上行为或当前业务结果的证据。
 - 生产数据核查默认只读，使用 Windows OpenSSH 入口并在进度更新中说明 `odaily-official`、Linux 用户、`/opt/OdAIly` 和核查目的；只有用户明确要求部署、修复或维护时才执行对应的远程写操作。
 - 如果本地没有用户提到的话题、任务、账号或结果，必须先检查官方服务器；只有确认官方服务器也没有，或远程连接/查询失败，才能向用户报告“无法找到数据”，并说明检查范围和失败原因。
 - 代码修改仍只发生在本地；生产代码同步必须遵守本文件的提交、推送、`git pull --ff-only` 和服务重启规则。生产查询得到的样本应脱敏后写入本地研究记录或测试夹具，不把生产数据库复制进仓库。
@@ -76,6 +76,6 @@
 
 - 按 `docs/OdAIly代码与整体设计/控制台.md` 等控制台文档说明，AI 可以操作前端。
 - 按 `docs/OdAIly代码与整体设计/完整程序架构.md` 及各模块文档说明，AI 可以操作后端。
-- 当前生产仍使用 Linux 本地 SQLite。用户已授权低峰停机迁移至 OdAIly 官方服务器上的本机 PostgreSQL，迁移实施中、尚未部署；实施阶段以 ADR `docs/adr/0003-local-postgresql-primary-storage.md` 和 `docs/讨论与修改日志/调研与测试/2026-11-18-PostgreSQL全面迁移实施清单.md` 为目标契约。完成所有业务域、数据导入/校验和停机切换演练后，按该授权执行迁移；在部署切换前，生产证据仍来自 SQLite。
+- 当前官方生产的活动业务服务使用 OdAIly 官方服务器上的本机 PostgreSQL，并显式设置 `ODAILY_STORAGE_BACKEND=postgres`；连接配置只从专用 `/etc/odaily/postgresql.env` / `ODAILY_POSTGRES_DSN` 读取。当前生产证据以 PostgreSQL 和对应服务状态、日志为准。仍存在的独立 SQLite 运行资产须按具体服务文档核查，不代表主业务库仍使用 SQLite。
 - 新 PostgreSQL 仅使用专用 `ODAILY_POSTGRES_DSN` 和本机连接池。新运行代码不得读取 `SUPABASE_DB_URL` 或 `DATABASE_URL`；旧 Supabase/Postgres helper 仅限冻结旧库的一次性迁移、灾难回切审计或用户明确要求的历史核查。
-- Supabase 相关文档、旧诊断脚本和 `storage-import-legacy` 只保留给冻结旧库的一次性迁移、灾难回切审计或用户明确要求的历史核查；执行这些操作必须显式说明 legacy 范围，不得改变当前 SQLite 运行路径。
+- Supabase 相关文档、旧诊断脚本和 `storage-import-legacy` 只保留给冻结旧库的一次性迁移、灾难回切审计或用户明确要求的历史核查；执行这些操作必须显式说明 legacy 范围，不得改变当前 PostgreSQL 主存储路径。

@@ -1,5 +1,7 @@
 # SQLite 主存储迁移
 
+> 历史记录：本文描述从旧 Supabase 运行方式迁移至 SQLite 的阶段，不代表当前生产架构。当前生产主存储已迁至 OdAIly 官方服务器本机 PostgreSQL；迁移完成情况见 `docs/讨论与修改日志/调研与测试/2026-11-19-PostgreSQL独立库逐项收尾记录.md`。
+
 ## 目标与边界
 
 生产业务数据库迁到单台 Linux 主机的本地 SQLite。Supabase 在切换点冻结，保留为可回切基线；SQLite 时期新增的数据不要求回灌 Supabase，也不采用持续双写。

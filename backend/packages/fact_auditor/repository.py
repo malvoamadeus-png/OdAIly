@@ -46,7 +46,7 @@ def locator_sql(alias: str = "r") -> str:
 def current_check_id_sql() -> str:
     return f"""(SELECT c.id FROM fact_checks c
         WHERE c.source_item_id=r.source_item_id AND c.title IS r.title AND c.content=r.content
-        AND c.source_locator={locator_sql()} AND c.policy_version='{POLICY_VERSION}' ORDER BY c.id DESC LIMIT 1)"""
+        AND c.source_locator={locator_sql()} ORDER BY c.id DESC LIMIT 1)"""
 
 
 def current_join() -> str:
@@ -100,10 +100,9 @@ class FactReviewRepository:
                 AND julianday(r.published_at)<=julianday(?)
                 AND (?='' OR julianday(r.published_at)>=julianday(?))
                 AND NOT EXISTS(SELECT 1 FROM fact_checks c WHERE c.source_item_id=r.source_item_id
-                  AND c.title IS r.title AND c.content=r.content AND c.source_locator={locator_sql()}
-                  AND c.policy_version=?)
+                  AND c.title IS r.title AND c.content=r.content AND c.source_locator={locator_sql()})
                 ORDER BY julianday(r.published_at) DESC LIMIT 1""",
-                (cutoff, now_iso, start_after, start_after, POLICY_VERSION)).fetchone()
+                (cutoff, now_iso, start_after, start_after)).fetchone()
             if row:
                 digest = hashlib.sha256(json.dumps([row["title"], row["content"], row["source_locator"]], ensure_ascii=False).encode()).hexdigest()
                 conn.execute("""INSERT OR IGNORE INTO fact_checks
@@ -138,16 +137,23 @@ class FactReviewRepository:
     def retry(self, check_id: int) -> dict[str, Any]:
         with connect_sqlite(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(f"SELECT fc.id,fc.status,fc.source_item_id FROM odaily_reference_items r {current_join()} WHERE fc.id=?", (check_id,)).fetchone()
+            row = conn.execute(f"SELECT fc.* FROM odaily_reference_items r {current_join()} WHERE fc.id=?", (check_id,)).fetchone()
             if row is None:
                 raise ValueError("只能重新审查当前稿件版本")
             if row["status"] in {"pending", "processing"}:
                 raise ValueError("该稿件已在等待或执行审查")
+            if row["policy_version"] != POLICY_VERSION:
+                reference = conn.execute(f"SELECT r.*, {locator_sql()} AS source_locator FROM odaily_reference_items r WHERE r.source_item_id=?", (row["source_item_id"],)).fetchone()
+                digest = hashlib.sha256(json.dumps([reference["title"], reference["content"], reference["source_locator"]], ensure_ascii=False).encode()).hexdigest()
+                conn.execute("""INSERT OR IGNORE INTO fact_checks
+                    (source_item_id,content_hash,policy_version,title,content,source_url,source_locator,published_at)
+                    VALUES(?,?,?,?,?,?,?,?)""", (reference["source_item_id"], digest, POLICY_VERSION, reference["title"], reference["content"], reference["source_url"], reference["source_locator"], reference["published_at"]))
+                row = conn.execute("SELECT * FROM fact_checks WHERE source_item_id=? AND content_hash=? AND policy_version=?", (reference["source_item_id"], digest, POLICY_VERSION)).fetchone()
             conn.execute("""UPDATE fact_checks SET status='pending',attempts=0,next_attempt_at=NULL,last_error=NULL,
                 locked_by=NULL,locked_until=NULL,result_json='{}',summary='已请求重新审查',updated_at=? WHERE id=?""",
-                (datetime.now(UTC).isoformat(), check_id))
+                (datetime.now(UTC).isoformat(), row["id"]))
             conn.commit()
-            return {"check_id": check_id, "source_item_id": row["source_item_id"], "status": "pending"}
+            return {"check_id": row["id"], "source_item_id": row["source_item_id"], "status": "pending"}
 
     def detail(self, source_item_id: str, check_id: int | None = None) -> dict[str, Any]:
         with connect_sqlite(self.path) as conn:

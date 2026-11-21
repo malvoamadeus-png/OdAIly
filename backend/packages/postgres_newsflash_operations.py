@@ -525,8 +525,7 @@ class PostgresNewsflashOperationsRepository:
         if first_source:clauses.append("(f.first_source_override=%s OR EXISTS(SELECT 1 FROM newsflash_event_sources es JOIN newsflash_items ni ON ni.id=es.item_id JOIN newsflash_events ne ON ne.event_id=es.event_id WHERE ni.source='odaily' AND ni.source_item_id=r.source_item_id AND ne.status='active' AND (%s=ANY(ne.first_sources) OR ne.first_source=%s)))");params.extend([first_source,first_source,first_source])
         where=" AND ".join(clauses)
         from packages.fact_auditor.postgres_repository import _locator
-        from packages.fact_auditor.prompts import POLICY_VERSION
-        check_id=f"(SELECT c.id FROM fact_checks c WHERE c.source_item_id=r.source_item_id AND c.title IS NOT DISTINCT FROM r.title AND c.content=r.content AND c.source_locator={_locator()} AND c.policy_version='{POLICY_VERSION}' ORDER BY c.id DESC LIMIT 1)"
+        check_id=f"(SELECT c.id FROM fact_checks c WHERE c.source_item_id=r.source_item_id AND c.title IS NOT DISTINCT FROM r.title AND c.content=r.content AND c.source_locator={_locator()} ORDER BY c.id DESC LIMIT 1)"
         with self._connect() as conn:
             has_text_reviews = conn.execute("SELECT to_regclass('main.auditor_checks') IS NOT NULL AS present").fetchone()["present"]
             text_select = ("ac.status AS text_status,ac.audit_result AS audit_result,ac.updated_at AS text_updated_at"

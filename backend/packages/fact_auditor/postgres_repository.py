@@ -118,11 +118,11 @@ class PostgresFactReviewRepository:
                   AND NOT EXISTS (
                     SELECT 1 FROM fact_checks c WHERE c.source_item_id=r.source_item_id
                       AND c.title IS NOT DISTINCT FROM r.title AND c.content=r.content
-                      AND c.source_locator={_locator()} AND c.policy_version=%s
+                      AND c.source_locator={_locator()}
                   )
                 ORDER BY r.published_at DESC,r.source_item_id
                 FOR UPDATE OF r SKIP LOCKED LIMIT 1""",
-                (cutoff, now, start_boundary, start_boundary, POLICY_VERSION),
+                (cutoff, now, start_boundary, start_boundary),
             ).fetchone()
             if source_rows:
                 digest = _digest(source_rows["title"], source_rows["content"], source_rows["source_locator"])
@@ -136,12 +136,11 @@ class PostgresFactReviewRepository:
                 f"""SELECT fc.* FROM fact_checks fc JOIN odaily_reference_items r ON r.source_item_id=fc.source_item_id
                 WHERE fc.status IN ('pending','failed','processing') AND fc.attempts < %s
                   AND fc.title IS NOT DISTINCT FROM r.title AND fc.content=r.content AND fc.source_locator={_locator()}
-                  AND fc.policy_version=%s
                   AND (fc.status='pending' OR (fc.status='failed' AND fc.next_attempt_at<=%s)
                     OR (fc.status='processing' AND fc.locked_until<%s))
                 ORDER BY CASE WHEN fc.status='pending' THEN 0 ELSE 1 END,fc.published_at DESC
                 FOR UPDATE OF fc SKIP LOCKED LIMIT 1""",
-                (max_attempts, POLICY_VERSION, now, now),
+                (max_attempts, now, now),
             ).fetchone()
             if candidate is None:
                 return None
@@ -179,28 +178,44 @@ class PostgresFactReviewRepository:
         self.init_schema()
         current_id = f"""(SELECT c.id FROM fact_checks c WHERE c.source_item_id=r.source_item_id
             AND c.title IS NOT DISTINCT FROM r.title AND c.content=r.content AND c.source_locator={_locator()}
-            AND c.policy_version=%s ORDER BY c.id DESC LIMIT 1)"""
+            ORDER BY c.id DESC LIMIT 1)"""
         with self._connect() as connection:
             row = connection.execute(
-                f"SELECT fc.id,fc.status,fc.source_item_id FROM odaily_reference_items r JOIN fact_checks fc ON fc.id={current_id} WHERE fc.id=%s",
-                (POLICY_VERSION, check_id),
+                f"SELECT fc.* FROM odaily_reference_items r JOIN fact_checks fc ON fc.id={current_id} WHERE fc.id=%s",
+                (check_id,),
             ).fetchone()
             if row is None:
                 raise ValueError("只能重新审查当前稿件版本")
             if row["status"] in {"pending", "processing"}:
                 raise ValueError("该稿件已在等待或执行审查")
+            if row["policy_version"] != POLICY_VERSION:
+                reference = connection.execute(
+                    f"SELECT r.*, {_locator()} AS source_locator FROM odaily_reference_items r WHERE r.source_item_id=%s",
+                    (row["source_item_id"],),
+                ).fetchone()
+                digest = _digest(reference["title"], reference["content"], reference["source_locator"])
+                connection.execute(
+                    """INSERT INTO fact_checks(source_item_id,content_hash,policy_version,title,content,source_url,source_locator,published_at)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(source_item_id,content_hash,policy_version) DO NOTHING""",
+                    (reference["source_item_id"], digest, POLICY_VERSION, reference["title"], reference["content"],
+                     reference["source_url"], reference["source_locator"], reference["published_at"]),
+                )
+                row = connection.execute(
+                    "SELECT * FROM fact_checks WHERE source_item_id=%s AND content_hash=%s AND policy_version=%s",
+                    (reference["source_item_id"], digest, POLICY_VERSION),
+                ).fetchone()
             connection.execute(
                 """UPDATE fact_checks SET status='pending',attempts=0,next_attempt_at=NULL,last_error=NULL,
                 locked_by=NULL,locked_until=NULL,result_json='{}'::jsonb,summary='已请求重新审查',updated_at=now() WHERE id=%s""",
-                (check_id,),
+                (row["id"],),
             )
-        return {"check_id": check_id, "source_item_id": row["source_item_id"], "status": "pending"}
+        return {"check_id": row["id"], "source_item_id": row["source_item_id"], "status": "pending"}
 
     def detail(self, source_item_id: str, check_id: int | None = None) -> dict[str, Any]:
         self.init_schema()
         current_id = f"""(SELECT c.id FROM fact_checks c WHERE c.source_item_id=r.source_item_id
             AND c.title IS NOT DISTINCT FROM r.title AND c.content=r.content AND c.source_locator={_locator()}
-            AND c.policy_version='{POLICY_VERSION}' ORDER BY c.id DESC LIMIT 1)"""
+            ORDER BY c.id DESC LIMIT 1)"""
         with self._connect(autocommit=True) as connection:
             current = connection.execute(f"SELECT r.*,fc.id AS current_check_id FROM odaily_reference_items r LEFT JOIN fact_checks fc ON fc.id={current_id} WHERE r.source_item_id=%s", (source_item_id,)).fetchone()
             if current is None:
