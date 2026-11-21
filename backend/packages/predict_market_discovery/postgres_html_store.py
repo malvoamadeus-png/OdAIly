@@ -131,13 +131,11 @@ class PostgresHtmlDiscoveryStore:
         status = values.get("status")
         if token is None:
             raise RuntimeError("Predict HTML topic update requires an active claim")
-        if status in {"processing", "delivering"}:
-            assignments.append("claim_until=now() + interval '5 minutes'")
         if status == "delivering":
             assignments.append("delivery_started_at=now()")
         with self._connect("update") as conn:
             if token:
-                result = conn.execute("UPDATE predict_html_topics SET " + ",".join(assignments) + ",claim_token=CASE WHEN %s IN ('processing','delivering') THEN claim_token ELSE NULL END,claim_until=CASE WHEN %s IN ('processing','delivering') THEN claim_until ELSE NULL END WHERE category_id=%s AND claim_token=%s AND status IN ('processing','delivering') AND claim_until>clock_timestamp()", [*params, status or "", status or "", category_id, token])
+                result = conn.execute("UPDATE predict_html_topics SET " + ",".join(assignments) + ",claim_token=CASE WHEN %s IN ('processing','delivering') THEN claim_token ELSE NULL END,claim_until=CASE WHEN %s IN ('processing','delivering') THEN now() + interval '5 minutes' ELSE NULL END WHERE category_id=%s AND claim_token=%s AND status IN ('processing','delivering') AND claim_until>clock_timestamp()", [*params, status or "", status or "", category_id, token])
                 if not result.rowcount:
                     raise RuntimeError("Predict HTML topic claim expired")
                 if status not in {"processing", "delivering"}:
