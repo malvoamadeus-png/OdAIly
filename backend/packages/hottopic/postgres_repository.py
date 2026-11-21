@@ -1198,6 +1198,57 @@ class HotTopicPostgresRepository:
             "mentionCount": int(row["account_count"]), "latestAt": row["latest_at"].isoformat(), "reason": row["reason"],
         } for row in rows], "total": total}
 
+    def snapshot_market_sentiment(self, current: datetime) -> int:
+        current = current.astimezone(UTC)
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            with connection.transaction():
+                latest = connection.execute(
+                    "SELECT MAX(snapshot_at) AS snapshot_at FROM x_agent_sentiment_snapshots"
+                ).fetchone()["snapshot_at"]
+                if latest and current - latest < timedelta(hours=12):
+                    return 0
+                rows = connection.execute(
+                    """
+                    WITH filtered AS (
+                      SELECT instrument_key,instrument_name,ticker,account_lower,
+                        CASE sentiment
+                          WHEN '极度恐慌' THEN -2 WHEN '偏空/谨慎' THEN -1 WHEN '中性/分歧' THEN 0
+                          WHEN '偏多/乐观' THEN 1 WHEN '极度狂热' THEN 2
+                        END AS score
+                      FROM x_agent_sentiment_results
+                      WHERE posted_at>=%s AND sentiment<>'证据不足'
+                    ), grouped AS (
+                      SELECT instrument_key,MAX(instrument_name) AS instrument_name,MAX(ticker) AS ticker,
+                        COUNT(DISTINCT account_lower) AS mention_count,COUNT(*) AS source_count,AVG(score) AS average_score
+                      FROM filtered GROUP BY instrument_key
+                    )
+                    SELECT instrument_key,instrument_name,ticker,mention_count,source_count,
+                      ROUND(average_score*50)::integer AS score,
+                      CASE
+                        WHEN average_score>=1.5 THEN '极度狂热'
+                        WHEN average_score>0.25 THEN '偏多/乐观'
+                        WHEN average_score<=-1.5 THEN '极度恐慌'
+                        WHEN average_score<-0.25 THEN '偏空/谨慎'
+                        ELSE '中性/分歧'
+                      END AS sentiment
+                    FROM grouped
+                    """,
+                    (current - timedelta(hours=12),),
+                ).fetchall()
+                for row in rows:
+                    connection.execute(
+                        """INSERT INTO x_agent_sentiment_snapshots
+                        (instrument_key,snapshot_at,instrument_name,ticker,sentiment,score,mention_count,source_count)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(instrument_key,snapshot_at) DO UPDATE SET
+                          instrument_name=EXCLUDED.instrument_name,ticker=EXCLUDED.ticker,
+                          sentiment=EXCLUDED.sentiment,score=EXCLUDED.score,
+                          mention_count=EXCLUDED.mention_count,source_count=EXCLUDED.source_count""",
+                        (row["instrument_key"], current, row["instrument_name"], row["ticker"],
+                         row["sentiment"], row["score"], row["mention_count"], row["source_count"]),
+                    )
+                return len(rows)
+
     def market_sentiment_history(self, instrument_key: str, *, limit: int = 120) -> dict[str, Any]:
         if not instrument_key.strip():
             raise ValueError("instrument_key 不能为空")

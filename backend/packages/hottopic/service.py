@@ -2482,6 +2482,7 @@ class HotTopicService:
             state = self.postgres_repository.prune_transient_state(
                 at=current, retention_hours=TRANSIENT_RETENTION_HOURS, batch_size=100,
             )
+            sentiment_snapshots = self.postgres_repository.snapshot_market_sentiment(current)
             with connect_postgres(
                 schema=self.postgres_repository.schema,
                 application_name="odaily-hottopic-maintenance",
@@ -2500,6 +2501,7 @@ class HotTopicService:
                 "retention_prune_pending": int(bool(state.get("has_more"))),
                 "merged_topics": len(reconciled.get("topic_merges", [])),
                 "semantic_review_pending": self.aggregator._count_pending_claim_reviews() if self.aggregator else 0,
+                "sentiment_snapshots": sentiment_snapshots,
             }
         with self.lock:
             row = self.db.execute(
