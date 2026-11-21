@@ -5,7 +5,7 @@ from typing import Any
 
 
 MODEL = "gpt-6-luna"
-PROMPT_VERSION = "ai_text_self_upgrade_v4"
+PROMPT_VERSION = "ai_text_self_upgrade_v5"
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "json_schema",
     "name": "odaily_ai_text_self_upgrade",
@@ -119,6 +119,7 @@ def build_prompt(case: dict[str, Any]) -> str:
     return (
         "你是 OdAIly 的 AI 文本自我审核者。请根据审核来源判断审核意见是否成立，并核对问题能否归因于编写者1。"
         "输入中的审核者可能是文本审查者或事实审查者；按其职责范围分别判断。只使用存档证据，不得把审核结论直接当作事实。\n"
+        "逐条判断审核者实际提出的问题及其证据；有多项意见时分别说明成立与否。不能用审核者未提出的其他错误或可补充信息，证明原审核意见成立。"
         "verdict=writer1_error：审核者指出的问题成立，且问题已存在于编写者1草稿中。"
         "verdict=reviewer_correct_unattributed：审核意见成立，但没有依据归因给 Writer1。人工稿和来源未知必须分开表述。"
         "verdict=auditor_false_positive：有直接证据证明审核意见不成立或超出该审核者职责。不能仅因原始材料缺失而判误报。"

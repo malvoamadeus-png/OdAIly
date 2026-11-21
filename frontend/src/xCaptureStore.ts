@@ -1479,6 +1479,7 @@ export async function decideSystemReviewItem(itemKey: string, decision: 'accepte
 }
 
 export type AITextSelfUpgradeItem = {
+  id: number;
   case_key: string;
   source_type: 'text_auditor' | 'fact_auditor';
   source_item_id: string;

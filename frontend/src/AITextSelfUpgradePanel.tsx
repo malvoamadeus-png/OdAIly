@@ -121,8 +121,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
       <div className="aiTextUpgradeToolbar">
         <label><span>人工决定</span><select value={status} onChange={(event) => { setStatus(event.target.value); setOffset(0); }}>
           <option value="pending">待审</option>
-          <option value="reviewer_correct">审核者正确</option>
-          <option value="writer_correct">原文正确</option>
+          <option value="confirmed">已最终审核</option>
           <option value="ignored">已忽略</option>
           <option value="legacy">历史决定</option>
           <option value="all">全部</option>
@@ -149,7 +148,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
             >
               <span className="aiTextUpgradeRowTitle"><strong>{item.audited_title || '无标题'}</strong><span className={`aiTextUpgradeStatus ${item.human_resolution || item.human_decision}`}>{decisionLabel(item)}</span></span>
               <span className="aiTextUpgradeRowMeta">
-                <span>{item.analysis_status === 'completed' ? verdictLabel(item) : analysisLabel(item.analysis_status)}</span>
+                <span>#{item.id} · {item.analysis_status === 'completed' ? verdictLabel(item) : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
               </span>
               <span className="aiTextUpgradeSummary">{item.source_type === 'text_auditor'
@@ -168,7 +167,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
         <aside className="aiTextUpgradeDetail">
           {!selected ? <div className="aiTextUpgradeEmpty">选择一条案例查看稿件和审核意见。</div> : <>
             <header className="aiTextUpgradeDetailHeader">
-              <div><span>{REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {decisionLabel(selected)}</span><h2>{selected.audited_title || '无标题'}</h2></div>
+              <div><span>#{selected.id} · {REVIEWER_LABELS[selected.source_type]} · {formatDate(selected.published_at || selected.created_at)} · {decisionLabel(selected)}</span><h2>{selected.audited_title || '无标题'}</h2></div>
               <a href={auditedUrl} target="_blank" rel="noreferrer" title="打开已发布快讯"><ExternalLink size={16} /></a>
             </header>
             <button className="secondaryButton" type="button" disabled={saving} onClick={() => void removeSelected()}><Trash2 size={16} /> 删除此案例</button>
@@ -311,6 +310,7 @@ function isRecentManualRejection(item: AITextSelfUpgradeItem, cutoff: number): b
 
 function matchesStatus(item: AITextSelfUpgradeItem, status: string): boolean {
   if (status === 'all') return true;
+  if (status === 'confirmed') return item.human_resolution === 'reviewer_correct' || item.human_resolution === 'writer_correct';
   if (status === 'pending') return !item.human_resolution && item.human_decision === 'pending';
   if (status === 'legacy') {
     return !item.human_resolution && ['accepted', 'rejected', 'ignored'].includes(item.human_decision);

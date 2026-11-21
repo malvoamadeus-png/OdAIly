@@ -7,7 +7,7 @@ from typing import Any
 from .models import AuditorIssue, AuditorResult, AuditorTask
 
 
-AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v11"
+AUDITOR_PROMPT_VERSION = "auditor_zh_quality_v12"
 
 
 FIXED_TRAILING_SLOGANS = ("在定价之前，看见变化",)
@@ -100,6 +100,7 @@ def build_auditor_prompt(task: AuditorTask) -> str:
 - 正文尾部固定标语，例如“在定价之前，看见变化”。
 - 可省略的结构助词“的”，例如“14.25%消费税”“应 Shielded Labs 请求”这类表达不要提示补“的”。
 - 新闻标题中的常见省略式表达，例如“一男子”“一女子”“一地址”“一新创建地址”等标题体量词省略，不按语法残缺处理。
+- “此前消息，……”可作为新闻背景提示语直接引出已有消息，不必补“据”。
 - 链上、钱包、地址、交易所资金流转语境中的动作词误判；对“提出 / 转出 / 转入 / 提取 / 存入”等表述，若上下文可解释为 transfer、withdraw、deposit 等链上动作，不要擅自改成“买入 / 购入 / 加仓”。
 - DeFi 借贷语境中的“借入 / 借出”用法不作为问题检查，不要仅因这些词而建议改成“买入 / 购入 / 加仓”或其他交易动作词。
 - 风格润色、标题吸引力、表达是否更优雅。
