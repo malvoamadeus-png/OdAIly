@@ -17,3 +17,5 @@ python backend/src/main.py predict-html run
 生产 unit 依赖本机 `postgresql.service`，从 `/etc/odaily/postgresql.env` 读取 `ODAILY_POSTGRES_DSN`，并设置 `ODAILY_STORAGE_BACKEND=postgres`。
 
 `--dry-run` 不投递，但会写扫描、基线和草稿状态；验证时必须使用单独的 `PREDICT_HTML_DB_PATH`。服务为 `odaily-predict-html.service`。旧 REST 扫描服务 `odaily-predict-market.service` 停用，不作为新功能的数据源；其官方服务器 unit 在重新启用时使用专用 PostgreSQL 环境文件和 `ODAILY_STORAGE_BACKEND=postgres`。控制台接口 `/console/predict-html/get` 要求控制台管理员认证，仅只读访问新库。
+
+上新界面读取最近最多 200 条非基线记录，并在当前这批记录内按状态筛选；接口包含官方规则、草稿和处理结果，较大的响应支持 gzip 压缩。
