@@ -120,7 +120,7 @@ class PostgresEventTrackingRepository:
         cancelled=[];published=[];terminal=[]; at=_dt(dismissed_at)
         with connect_postgres(schema="main",application_name="odaily-event-task-dismiss") as conn:
             with conn.transaction():
-                rows=conn.execute("SELECT id,status,metadata FROM tasks WHERE source='event_tracking' AND metadata->'event_tracking'->>'event_id'=%s AND (%s IS NULL OR lower(metadata->'event_tracking'->>'candidate_handle')=lower(%s)) FOR UPDATE",(event_id,handle,handle)).fetchall()
+                rows=conn.execute("SELECT id,status,metadata FROM tasks WHERE source='event_tracking' AND metadata->'event_tracking'->>'event_id'=%s AND (%s::text IS NULL OR lower(metadata->'event_tracking'->>'candidate_handle')=lower(%s)) FOR UPDATE",(event_id,handle,handle)).fetchall()
                 for row in rows:
                     meta=row["metadata"] if isinstance(row["metadata"],dict) else {}; et=meta.setdefault("event_tracking",{}); et["dismissed_at"]=dismissed_at; et["dismissed_by"]=dismissed_by; status=str(row["status"]); task_id=int(row["id"])
                     if status=="auto_published": published.append(task_id)

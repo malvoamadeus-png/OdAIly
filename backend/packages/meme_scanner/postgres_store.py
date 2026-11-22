@@ -431,6 +431,9 @@ class PostgresMemeStore:
             WHERE status IN ('processing','publishing')
             AND (claim_expires_at IS NULL OR claim_expires_at < clock_timestamp())""",(stamp,stamp))
 
+    def recover_expired_inflight(self) -> int:
+        return self.recover_inflight()
+
     def retry_job(self,job: Any,reason: str,*,narrative: dict[str,Any]|None=None) -> str:
         from .scanner import (MAX_JOB_ATTEMPTS,RETRY_DELAYS_SECONDS,now_iso,fomo_login_retry_seconds)
         attempts=int(job['attempts'] or 0); special=reason=='narrative_fomo_login_required'
@@ -440,7 +443,7 @@ class PostgresMemeStore:
         next_at=(datetime.now(UTC)+timedelta(seconds=delay)).isoformat(); stamp=now_iso()
         changed=self._execute("""UPDATE jobs SET status='retry_wait',reason=%s,narrative_json=COALESCE(%s,narrative_json),
             next_attempt_at=%s,updated_at=%s,claim_token=NULL,claim_expires_at=NULL
-            WHERE id=%s AND status='processing' AND %s IS NOT NULL AND claim_token=%s AND claim_expires_at>clock_timestamp()""",
+            WHERE id=%s AND status='processing' AND %s::text IS NOT NULL AND claim_token=%s AND claim_expires_at>clock_timestamp()""",
             (reason,json.dumps(narrative,ensure_ascii=False) if narrative else None,next_at,stamp,job['id'],job.get('claim_token'),job.get('claim_token')))
         if not changed:
             from .scanner import JobClaimLost
@@ -466,7 +469,7 @@ class PostgresMemeStore:
             claim_expires_at=CASE WHEN %s IN ('processing','publishing') THEN clock_timestamp()+interval '20 minutes'
                                   WHEN %s IN ('publisher_pending','discarded','publish_failed') THEN NULL ELSE claim_expires_at END
             WHERE id=%s AND claim_token IS NOT DISTINCT FROM %s
-              AND (%s IS NULL OR claim_expires_at>clock_timestamp())""",
+              AND (%s::text IS NULL OR claim_expires_at>clock_timestamp())""",
             (status,reason,json.dumps(narrative,ensure_ascii=False) if narrative else None,title,content,
              json.dumps(publish,ensure_ascii=False) if publish else None,started,completed,stamp,status,status,job_id,claim_token,claim_token))
         if not changed:

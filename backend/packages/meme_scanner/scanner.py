@@ -2279,6 +2279,7 @@ def run(args: argparse.Namespace) -> int:
     from .daily_hot import worker as hot_worker, scan as hot_scan
     store = Store(Path(args.db))
     last_retention = -3600.0
+    last_claim_recovery = time.monotonic()
     recovered = store.recover_inflight()
     if recovered:
         print(f"[meme-scan] recovered={recovered}")
@@ -2321,6 +2322,11 @@ def run(args: argparse.Namespace) -> int:
                             print(f"[meme-scan] worker failed: {exc}", file=sys.stderr)
                         worker = None
                     try:
+                        if hasattr(store, "recover_expired_inflight") and time.monotonic() - last_claim_recovery >= 60:
+                            recovered = store.recover_expired_inflight()
+                            last_claim_recovery = time.monotonic()
+                            if recovered:
+                                print(f"[meme-scan] recovered_expired={recovered}")
                         if time.monotonic() - last_retention >= 3600:
                             retention = store.prune_history() if hasattr(store, "prune_history") else prune_history(store.conn)
                             print(f"[meme-scan] retention={retention}")

@@ -114,6 +114,39 @@ def test_hyperliquid_native_test_case_store_preserves_isolated_preview_rows(isol
     assert store.metadata("editorial_preview:live-event", {}) == {"title": "live"}
 
 
+def test_hyperliquid_observation_commits_decimal_candidate_and_baseline(isolated_pg):
+    from decimal import Decimal
+    from packages.hyperliquid_news.postgres_store import PostgresNewsStore
+    from packages.common.storage import load_hyperliquid_storage_path
+    from packages.common.pg_native import connect_postgres
+
+    store = PostgresNewsStore(load_hyperliquid_storage_path())
+    address = "0x" + "1" * 40
+    candidate = {"key": "decimal-event", "observed_ms": 100, "addresses": [address],
+                 "coin": "BTC", "kinds": ["large_reversal"],
+                 "evidence": {"threshold_rules": {"minimum": Decimal("123.45")}, "highlights": []}}
+    store.commit_observation(address=address, now_ms=100, state={"positions": {}},
+                             history={}, coverage={}, fills=[], candidates=[candidate])
+    assert store.candidates()[0]["evidence"]["threshold_rules"]["minimum"] == "123.45"
+    with connect_postgres(schema="hyperliquid_news", application_name="test-hl-baseline") as conn:
+        assert conn.execute("SELECT observed_ms FROM hl_news_state WHERE address=%s", (address,)).fetchone()["observed_ms"] == 100
+
+
+@pytest.mark.parametrize("handle", [None, "alice"])
+def test_hottopic_dismiss_primary_tasks_accepts_optional_handle(isolated_pg, handle):
+    from packages.common.pg_native import connect_postgres
+    from packages.hottopic.postgres_event_tracking import PostgresEventTrackingRepository
+
+    with connect_postgres(schema="main", application_name="test-event-dismiss") as conn:
+        conn.execute("CREATE SCHEMA IF NOT EXISTS main")
+        conn.execute("CREATE TABLE tasks (id bigint PRIMARY KEY, source text, status text, metadata jsonb, locked_by text, locked_until timestamptz, updated_at timestamptz)")
+        conn.execute("INSERT INTO tasks(id,source,status,metadata) VALUES (1,'event_tracking','queued',%s::jsonb)",
+                     ('{"event_tracking":{"event_id":"event-1","candidate_handle":"Alice"}}',))
+    result = PostgresEventTrackingRepository().dismiss_primary_tasks(
+        event_id="event-1", dismissed_at=datetime.now(UTC).isoformat(), dismissed_by="test", handle=handle)
+    assert result["cancelledTaskIds"] == [1]
+
+
 def test_hyperliquid_preview_uses_native_prompt_repository_without_network(isolated_pg, monkeypatch):
     from packages.common.paths import get_paths
     from packages.hyperliquid_news import test_cases

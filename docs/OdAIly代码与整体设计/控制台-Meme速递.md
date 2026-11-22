@@ -115,7 +115,7 @@ python backend/src/main.py meme tg-watch
 - `queued -> processing -> publishing -> publisher_pending`：正常挂后台路径。
 - 临时叙事错误进入 `retry_wait`，最多 3 次，退避 60/300/900 秒；耗尽后 `discarded`。
 - `volume_gate_failed`、`tg_market_cap_gate_failed`、`kol_count_zero`、`no_usable_narrative`、`queue_expired` 为明确不播报原因。GMGN 查询失败或没有可解析的 KOL 数量时任务进入 `retry_wait`；只有成功确认计数为 0 才跳过。
-- 服务重启会把遗留 `processing/publishing` 恢复为可重试状态。
+- PostgreSQL 模式启动时及运行中每分钟检查过期租约：`processing` 转为 `retry_wait`，`publishing` 转为 `publish_uncertain` 等待核查，避免重复投递；未过期租约不会被其他 worker 抢占。超过入队一小时的任务恢复后按 `queue_expired` 终止。
 - OKX 网页发现成功后只更新最新发现窗口并释放 Chromium；网页页面失败会保留明确错误，不把空结果或浏览器异常当成“没有迁移代币”，也不会回退官方发现。Dexscreener 市场适配器成功后更新当前市值、24 小时成交量、最高水位和动态调度周期；发现阶段按链批量请求，列表外跟踪按单币请求。任一市场适配器失败只增加 `token_info_failures`、记录 `last_token_info_error` 并按原周期重试，不把失败当作零成交量或诈骗；调度积压写入 worker 日志。
 - FOMO 的 `login_required` 不阻断已有 Telegram、FxTwitter、GMGN 账号或网站材料；若其他来源均无正文且 FOMO 登录缺失，任务进入 `retry_wait`，每 `MEME_FOMO_LOGIN_RETRY_SECONDS`（默认 300 秒）再试一次，不受通常 3 次临时重试上限限制，但仍在入队 1 小时后按 `queue_expired` 结束；同时通知在冷却窗口内只发一次。FOMO 其他浏览器或页面错误保留安全错误码，不导出会话或上游原始响应。
 - `observations` 的跟踪字段包括代币 `chain`、`tracking_status`、首次开始时间、滑动窗口锚点与截止时间、永久成交量资格、最近 `completed` 时间、最近 `token_info` 时间、下一次调度时间、周期、来源、成交量和失败信息；服务重启后按持久化截止时间、资格和 `next_token_info_at` 恢复，并使用记录的 `chain` 选择对应的 Dexscreener 查询。旧库新增锚点时从原始开始时间回填，新增档位不会依据历史最高市值补发；原 `market_cap_milestones` 档位账本保持不变，避免旧档重触发。历史库的 `chain` 字段优先从该代币最新 `token_snapshots.chain` 回填，找不到时按 BSC 兼容默认值处理。

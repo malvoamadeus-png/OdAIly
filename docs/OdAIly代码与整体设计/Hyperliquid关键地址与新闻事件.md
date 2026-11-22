@@ -2,7 +2,7 @@
 
 ## PostgreSQL 迁移实现状态
 
-Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。当前生产仍使用 SQLite，只有全量导入与验收通过后才可切换。PostgreSQL 服务初始化只应用版本化 schema，不在启动时全量重建候选索引或遍历命名记录；迁移导入器负责保留并核验既有数据与主键。名称分配在短事务中串行化。
+生产的 Hyperliquid 新闻域使用 PostgreSQL 独立 `hyperliquid_news` schema，任务及共享流水线使用 `main` schema。PostgreSQL 服务初始化只应用版本化 schema，不在启动时全量重建候选索引或遍历命名记录；迁移导入器负责保留并核验既有数据与主键。名称分配在短事务中串行化。候选证据中的 Decimal 数值按 SQLite 原有契约序列化为字符串，候选和观察基线在同一事务中提交。
 
 ## 已确认的产品范围（2026-10-13）
 
@@ -40,7 +40,7 @@ Hyperliquid 新闻域的 PostgreSQL 目标为独立 `hyperliquid_news` schema，
 
 ## 底层实现边界
 
-独立包 `backend/packages/hyperliquid_news/`；复用公开 HTTP client，不改变旧手工地址成交提醒。正式监测状态、成交历史、候选和投递记录使用 `ODAILY_HYPERLIQUID_SQLITE_PATH` 指定的独立 SQLite，默认 `data/runtime/hyperliquid.sqlite`；官方服务器配置到 `/data/OdAIly/hyperliquid/hyperliquid.sqlite`，相关 systemd 服务声明该数据盘挂载为启动依赖。任务和 Prompt 版本仍写入主 `odaily.sqlite`。控制台、写作 worker、投递器和信息流投影都读取同一 Hyperliquid 路径。测试仅使用临时库。网络采集不在事务内执行，成功响应才替换基线，失败不推断清仓。候选层只存结构化事实；由独立投递步骤创建任务，复用写作及强制挂后台分支。
+独立包 `backend/packages/hyperliquid_news/`；复用公开 HTTP client，不改变旧手工地址成交提醒。生产监测状态、成交历史、候选和投递记录写入 PostgreSQL `hyperliquid_news` schema，任务和 Prompt 使用 `main` schema；SQLite 路径仅用于 SQLite 模式和离线测试。网络采集不在事务内执行，成功响应才替换基线，失败不推断清仓。候选层只存结构化事实；由独立投递步骤创建任务，复用写作及强制挂后台分支。
 
 接口与能力核验、统计口径、命令、失败处理和实际限制在本文件后续章节同步维护。未通过公开接口核验的能力必须标明，不能宣称已实现全网监测或完整历史。
 

@@ -146,7 +146,7 @@ class PostgresNewsStore:
         if self.event_blocked(payload, conn=conn):
             return False
         result = conn.execute("INSERT INTO hl_news_candidates(event_key,observed_ms,coin,payload) VALUES(%s,%s,%s,%s) ON CONFLICT(event_key) DO NOTHING",
-                              (str(payload["key"]), int(payload["observed_ms"]), str(payload["coin"]), json.dumps(payload, ensure_ascii=False)))
+                              (str(payload["key"]), int(payload["observed_ms"]), str(payload["coin"]), encode(payload)))
         if result.rowcount:
             self._index_candidate(conn, str(payload["key"]), payload)
         return bool(result.rowcount)

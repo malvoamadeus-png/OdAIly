@@ -131,6 +131,25 @@ def test_postgres_meme_claims_are_exclusive_and_expiry_fenced(isolated_postgres)
         first.update_job_evidence(job["id"], "{}", datetime.now(UTC).isoformat(), job["claim_token"])
 
 
+def test_postgres_meme_claimed_job_can_finish_and_retry(isolated_postgres):
+    from packages.meme_scanner.postgres_store import PostgresMemeStore
+    from packages.meme_scanner.scanner import Token
+
+    store = PostgresMemeStore()
+    token = Token("finish", "test", "Finish", "FIN", 600_000, 300_000, None,
+                  {"address": "finish", "chain": "bsc"})
+    assert store.add_job(token, "test", "queued", trigger_key="finish")
+    job = store.claim_job()
+    store.update_job(job["id"], "discarded", reason="queue_expired", claim_token=job["claim_token"])
+    assert store._one("SELECT status,reason FROM jobs WHERE id=%s", (job["id"],)) == {
+        "status": "discarded", "reason": "queue_expired"}
+
+    assert store.add_job(token, "test", "queued", trigger_key="retry")
+    job = store.claim_job()
+    assert store.retry_job(job, "temporary") == "retry_wait"
+    assert store._one("SELECT status FROM jobs WHERE id=%s", (job["id"],))["status"] == "retry_wait"
+
+
 def test_postgres_meme_tracking_lifecycle_and_token_info_failure(isolated_postgres):
     from packages.common.pg_native import connect_postgres
     from packages.meme_scanner.postgres_store import PostgresMemeStore
