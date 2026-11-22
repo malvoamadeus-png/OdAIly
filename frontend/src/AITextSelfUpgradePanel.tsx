@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, ExternalLink, RefreshCcw, X, EyeOff, Trash2 } from 'lucide-react';
 import {
   decideAITextSelfUpgradeItem,
@@ -6,13 +6,12 @@ import {
   getAITextSelfUpgradeItem,
   listAITextSelfUpgradeItems,
   type AITextSelfUpgradeItem,
+  type AITextSelfUpgradeListItem,
   type AITextSelfUpgradePage,
 } from './xCaptureStore';
 import './aiTextSelfUpgrade.css';
 
 const PAGE_SIZE = 30;
-const API_PAGE_SIZE = 100;
-const LOOKBACK_MS = 72 * 60 * 60 * 1000;
 const DECISION_LABELS: Record<string, string> = {
   pending: '待审', accepted: '历史决定：接受AI判断', rejected: '历史决定：驳回AI判断', ignored: '已忽略',
   reviewer_correct: '审核者正确', writer_correct: '原文正确',
@@ -41,40 +40,25 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const requestVersion = useRef(0);
 
   async function load() {
+    const version = ++requestVersion.current;
     setLoading(true);
     setError('');
     try {
-      const first = await listAITextSelfUpgradeItems({ status: 'all', offset: 0, limit: API_PAGE_SIZE });
-      const allItems = [...first.items];
-      for (let nextOffset = first.items.length; nextOffset < first.total; nextOffset += API_PAGE_SIZE) {
-        const next = await listAITextSelfUpgradeItems({ status: 'all', offset: nextOffset, limit: API_PAGE_SIZE });
-        if (!next.items.length) break;
-        allItems.push(...next.items);
-      }
-
-      const cutoff = Date.now() - LOOKBACK_MS;
-      const retained = allItems.filter((item) => isRecentManualRejection(item, cutoff));
-      const matching = retained.filter((item) => matchesStatus(item, status));
-      setPage({
-        ...first,
-        items: matching.slice(offset, offset + PAGE_SIZE),
-        total: matching.length,
-        offset,
-        limit: PAGE_SIZE,
-        confirmed_count: retained.filter((item) => item.human_resolution === 'reviewer_correct' || item.human_resolution === 'writer_correct').length,
-      });
+      const result = await listAITextSelfUpgradeItems({ scope: 'manual_recent', status, offset, limit: PAGE_SIZE });
+      if (version === requestVersion.current) setPage(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (version === requestVersion.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   }
 
-  useEffect(() => { void load(); }, [refreshToken, status, offset]);
+  useEffect(() => { void load(); return () => { requestVersion.current += 1; }; }, [refreshToken, status, offset]);
 
-  async function openItem(item: AITextSelfUpgradeItem) {
+  async function openItem(item: AITextSelfUpgradeListItem) {
     try {
       const detail = await getAITextSelfUpgradeItem(item.case_key);
       setSelected(detail);
@@ -151,9 +135,7 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
                 <span>#{item.id} · {item.analysis_status === 'completed' ? verdictLabel(item) : analysisLabel(item.analysis_status)}</span>
                 <time>{formatDate(item.published_at || item.created_at)}</time>
               </span>
-              <span className="aiTextUpgradeSummary">{item.source_type === 'text_auditor'
-                ? item.audit_result.summary || '文本审查者标记待复核问题'
-                : item.fact_summary || item.fact_reason || '事实审查者标记待复核问题'}</span>
+              <span className="aiTextUpgradeSummary">{item.audit_result.summary || '文本审查者标记待复核问题'}</span>
             </button>
           ))}
           {!loading && !page?.items.length && <div className="aiTextUpgradeEmpty">当前筛选没有案例。</div>}
@@ -269,13 +251,13 @@ export default function AITextSelfUpgradePanel({ refreshToken = 0 }: { refreshTo
   );
 }
 
-function decisionLabel(item: AITextSelfUpgradeItem): string {
+function decisionLabel(item: AITextSelfUpgradeListItem): string {
   if (item.human_resolution) return DECISION_LABELS[item.human_resolution];
   if (item.human_decision === 'ignored') return '历史决定：忽略';
   return DECISION_LABELS[item.human_decision];
 }
 
-function verdictLabel(item: AITextSelfUpgradeItem): string {
+function verdictLabel(item: AITextSelfUpgradeListItem): string {
   if (item.verdict === 'reviewer_correct_unattributed') {
     const path = effectiveAuthoringPath(item);
     if (path === 'manual_publication') return '审核者意见成立，人工稿，Writer1不适用';
@@ -284,7 +266,7 @@ function verdictLabel(item: AITextSelfUpgradeItem): string {
   return VERDICT_LABELS[item.verdict || ''] || (item.verdict ? '已完成' : '判断完成');
 }
 
-function effectiveAuthoringPath(item: AITextSelfUpgradeItem): string | undefined {
+function effectiveAuthoringPath(item: AITextSelfUpgradeListItem): string | undefined {
   const rejection = item.audit_result.manual_rejection;
   if (rejection?.authoring_path === 'unknown_publication'
       && rejection.writer1_snapshot === 'unavailable'
@@ -297,25 +279,6 @@ function effectiveAuthoringPath(item: AITextSelfUpgradeItem): string | undefined
 
 function isManualPublication(item: AITextSelfUpgradeItem): boolean {
   return effectiveAuthoringPath(item) === 'manual_publication';
-}
-
-function isRecentManualRejection(item: AITextSelfUpgradeItem, cutoff: number): boolean {
-  const rejection = item.audit_result?.manual_rejection;
-  if (item.source_type !== 'text_auditor' || !rejection) return false;
-  if (rejection.authoring_basis === 'explicit_non_manual_metadata'
-      || rejection.authoring_basis === 'ambiguous_writer1_mapping') return false;
-  const timestamp = Date.parse(item.published_at || item.created_at);
-  return Number.isFinite(timestamp) && timestamp >= cutoff;
-}
-
-function matchesStatus(item: AITextSelfUpgradeItem, status: string): boolean {
-  if (status === 'all') return true;
-  if (status === 'confirmed') return item.human_resolution === 'reviewer_correct' || item.human_resolution === 'writer_correct';
-  if (status === 'pending') return !item.human_resolution && item.human_decision === 'pending';
-  if (status === 'legacy') {
-    return !item.human_resolution && ['accepted', 'rejected', 'ignored'].includes(item.human_decision);
-  }
-  return item.human_resolution === status;
 }
 
 function uniqueEvidence(evidence: AITextSelfUpgradeItem['evidence']) {

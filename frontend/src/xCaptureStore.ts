@@ -1551,8 +1551,12 @@ export type AITextSelfUpgradeItem = {
   decisions?: Array<{ decision: string; actor: string; note: string; decided_at: string; legacy: number }>;
 };
 
+export type AITextSelfUpgradeListItem = Pick<AITextSelfUpgradeItem,
+  'id' | 'case_key' | 'source_type' | 'audited_title' | 'published_at' | 'created_at' |
+  'analysis_status' | 'verdict' | 'human_decision' | 'human_resolution' | 'audit_result'>;
+
 export type AITextSelfUpgradePage = {
-  items: AITextSelfUpgradeItem[];
+  items: AITextSelfUpgradeListItem[];
   total: number;
   offset: number;
   limit: number;
@@ -1570,7 +1574,7 @@ export type AITextSelfUpgradePage = {
   } | null;
 };
 
-export async function listAITextSelfUpgradeItems(filters: { status?: string; offset?: number; limit?: number } = {}) {
+export async function listAITextSelfUpgradeItems(filters: { scope?: 'manual_recent'; status?: string; offset?: number; limit?: number } = {}) {
   return consoleApiPost<AITextSelfUpgradePage>('/console/ai-text-self-upgrade', { action: 'list', ...filters });
 }
 
