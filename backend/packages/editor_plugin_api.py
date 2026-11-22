@@ -1641,7 +1641,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
         self._send_common_headers()
-        if urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail'}:
+        if urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail', '/console/ai-text-self-upgrade'}:
             self.send_header('Access-Control-Max-Age', '600')
         self.end_headers()
 
@@ -2098,7 +2098,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any], *, no_store: bool = False) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
         compressed = False
-        compressible = urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail'}
+        compressible = urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail', '/console/ai-text-self-upgrade'}
         if compressible and len(body) > 4096:
             accepts = self.headers.get('Accept-Encoding', '')
             for encoding in accepts.split(','):

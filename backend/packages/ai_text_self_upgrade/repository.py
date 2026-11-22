@@ -663,12 +663,30 @@ class AITextSelfUpgradeRepository:
 
     def list_items(self, payload: dict[str, Any]) -> dict[str, Any]:
         status = str(payload.get("status") or "pending")
-        clauses: list[str] = []
-        params: list[Any] = []
+        scope = str(payload.get("scope") or "all")
+        if scope not in {"all", "manual_recent"}:
+            raise ValueError("不支持的案例范围")
+        scope_clauses: list[str] = []
+        scope_params: list[Any] = []
+        if scope == "manual_recent":
+            scope_clauses = [
+                "source_type='text_auditor'",
+                "json_valid(audit_result_json)",
+                "(json_type(audit_result_json,'$.manual_rejection') IN ('object','array','true') OR "
+                "(json_type(audit_result_json,'$.manual_rejection')='text' AND json_extract(audit_result_json,'$.manual_rejection')<>'') OR "
+                "(json_type(audit_result_json,'$.manual_rejection') IN ('integer','real') AND json_extract(audit_result_json,'$.manual_rejection')<>0))",
+                "COALESCE(json_extract(audit_result_json,'$.manual_rejection.authoring_basis'),'') NOT IN ('explicit_non_manual_metadata','ambiguous_writer1_mapping')",
+                "julianday(COALESCE(NULLIF(published_at,''),created_at))>=julianday(?)",
+            ]
+            scope_params = [(datetime.now(UTC) - timedelta(hours=72)).isoformat()]
+        clauses = list(scope_clauses)
+        params: list[Any] = list(scope_params)
         if status != "all":
-            if status not in {"pending", "reviewer_correct", "writer_correct", "ignored", "legacy"}:
+            if status not in {"pending", "reviewer_correct", "writer_correct", "ignored", "legacy", "confirmed"}:
                 raise ValueError("不支持的案例状态")
-            if status == "legacy":
+            if status == "confirmed":
+                clauses.append("human_resolution IN ('reviewer_correct','writer_correct')")
+            elif status == "legacy":
                 clauses.append("human_resolution IS NULL AND human_decision IN ('accepted','rejected','ignored')")
             elif status == "pending":
                 clauses.append("human_resolution IS NULL AND human_decision='pending'")
@@ -678,17 +696,28 @@ class AITextSelfUpgradeRepository:
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         limit = max(1, min(100, int(payload.get("limit") or 30)))
         offset = max(0, int(payload.get("offset") or 0))
+        columns = "*"
+        if scope == "manual_recent":
+            columns = ("id,case_key,source_type,audited_title,published_at,created_at,analysis_status,verdict,"
+                       "human_decision,human_resolution,"
+                       "json_object('summary',json_extract(audit_result_json,'$.summary'),"
+                       "'manual_rejection',json_object("
+                       "'authoring_path',json_extract(audit_result_json,'$.manual_rejection.authoring_path'),"
+                       "'authoring_basis',json_extract(audit_result_json,'$.manual_rejection.authoring_basis'),"
+                       "'writer1_snapshot',json_extract(audit_result_json,'$.manual_rejection.writer1_snapshot'))) AS audit_result_json,"
+                       "'{}' AS fact_result_json,'[]' AS evidence_json")
         with self.connect() as conn:
             total = int(conn.execute(
                 f"SELECT COUNT(*) FROM ai_text_self_upgrade_items{where}", params
             ).fetchone()[0])
             rows = conn.execute(
-                f"SELECT * FROM ai_text_self_upgrade_items{where} "
+                f"SELECT {columns} FROM ai_text_self_upgrade_items{where} "
                 "ORDER BY CASE WHEN human_resolution IS NULL AND human_decision='pending' THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT ? OFFSET ?",
                 [*params, limit, offset],
             ).fetchall()
+            confirmed_where = " AND ".join([*scope_clauses, "human_resolution IN ('reviewer_correct','writer_correct')"])
             confirmed_count = int(conn.execute(
-                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE human_resolution IN ('reviewer_correct','writer_correct')"
+                "SELECT COUNT(*) FROM ai_text_self_upgrade_items WHERE " + confirmed_where, scope_params
             ).fetchone()[0])
         runs = self.recent_runs(limit=1, since=self.enabled_at())
         return {
