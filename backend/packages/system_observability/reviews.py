@@ -677,7 +677,6 @@ class SystemReviewService:
             ("non_mainstream_media", self.competitor_database_path, "SELECT COUNT(*) FROM non_mainstream_media_sources WHERE enabled=1", "SELECT global_interval_seconds FROM non_mainstream_media_settings LIMIT 1"),
             ("jin10_monitor", self.primary_database_path, "SELECT COUNT(*) FROM jin10_settings WHERE enabled=1", "SELECT interval_seconds FROM jin10_settings LIMIT 1"),
             ("whale_watch", self.primary_database_path, "SELECT COUNT(*) FROM whale_watch_addresses WHERE enabled=1", None),
-            ("whale_watch_hyperliquid", self.primary_database_path, "SELECT COUNT(*) FROM whale_watch_hyperliquid_addresses WHERE enabled=1", None),
             ("binance_square", self.primary_database_path, "SELECT COUNT(*) FROM binance_square_accounts WHERE enabled=1 AND (SELECT enabled FROM binance_square_settings WHERE singleton_key='global')=1", "SELECT interval_seconds FROM binance_square_settings WHERE singleton_key='global'"),
         )
         for component, path, enabled_query, interval_query in configs:

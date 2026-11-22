@@ -4,7 +4,7 @@ import re
 import time
 from typing import Any
 
-from packages.whale_watch.hyperliquid_client import HyperliquidClient
+from .http_client import HyperliquidClient
 
 ADDRESS = re.compile(r'^0x[0-9a-fA-F]{40}$')
 

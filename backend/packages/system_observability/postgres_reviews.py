@@ -278,7 +278,6 @@ class PostgresSystemReviewService(SystemReviewService):
             "non_mainstream_media": ("non_mainstream_media_sources", "SELECT global_interval_seconds AS interval FROM main.non_mainstream_media_settings LIMIT 1"),
             "jin10_monitor": ("jin10_settings", "SELECT interval_seconds AS interval FROM main.jin10_settings LIMIT 1"),
             "whale_watch": ("whale_watch_addresses", None),
-            "whale_watch_hyperliquid": ("whale_watch_hyperliquid_addresses", None),
             "binance_square": ("binance_square_accounts", "SELECT interval_seconds AS interval,enabled FROM main.binance_square_settings WHERE singleton_key='global'"),
         }
         result: dict[str, dict[str, Any]] = {}

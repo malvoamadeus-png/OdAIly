@@ -97,8 +97,7 @@ NATIVE_SOURCES = {
             "non_mainstream_media_settings", "non_mainstream_media_sources",
             "non_mainstream_media_seen_items", "jin10_settings", "jin10_seen_items",
             "whale_watch_addresses", "whale_watch_chain_states", "whale_watch_activities",
-            "whale_watch_hyperliquid_settings", "whale_watch_hyperliquid_addresses",
-            "whale_watch_hyperliquid_states", "whale_watch_hyperliquid_activities", "writer3_contexts",
+            "writer3_contexts",
             "binance_square_accounts", "binance_square_attempts", "binance_square_seen_posts", "binance_square_settings",
             "local_auth_sessions", "local_auth_users", "newsflash_daily_modes", "newsflash_metadata_state",
             "newsflash_operation_audit", "newsflash_operation_facts", "newsflash_production_metadata",
@@ -721,7 +720,6 @@ def _initialize_main_schema() -> None:
             PostgresMigration(1, "newsflash operations native schema", CHECKSUM, lambda c: c.execute(SCHEMA_SQL)),
         ))
     __import__("packages.whale_watch.repository", fromlist=["PostgresWhaleWatchRepository"]).PostgresWhaleWatchRepository.initialize_schema()
-    __import__("packages.whale_watch.postgres_hyperliquid_repository", fromlist=["PostgresWhaleWatchHyperliquidRepository"]).PostgresWhaleWatchHyperliquidRepository.initialize_schema()
 
 
 def _initialize_editor_plugin_history_schema() -> None:
@@ -776,8 +774,6 @@ def _initialize_hyperliquid_schema() -> None:
     PostgresNewsStore.initialize_schema()
     from packages.hyperliquid_news.postgres_naming import PostgresNamingStore
     PostgresNamingStore.initialize_schema()
-    from packages.whale_watch.postgres_hyperliquid_repository import PostgresWhaleWatchHyperliquidRepository
-    PostgresWhaleWatchHyperliquidRepository.initialize_schema()
 
 
 def _initialize_hottopic_schema() -> None:

@@ -23,7 +23,6 @@ from packages.common.config import (  # noqa: E402
     load_pipeline_supervisor_settings,
     load_settings,
     load_telegram_discovery_settings,
-    load_whale_watch_hyperliquid_settings,
     load_whale_watch_settings,
     load_writer3_settings,
     load_x_capture_worker_settings,
@@ -397,12 +396,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually delete rows. Omit for dry-run.",
     )
-
-    whale_watch_hyperliquid_worker = subparsers.add_parser(
-        "whale-watch-hyperliquid-worker",
-        help="Run whale Hyperliquid activity monitor.",
-    )
-    whale_watch_hyperliquid_worker.add_argument("--once", action="store_true", help="Run one Hyperliquid whale pass and exit.")
 
     supervisor = subparsers.add_parser("pipeline-supervisor", help="Run pipeline health checks and Telegram alerts.")
     supervisor.add_argument("--once", action="store_true", help="Run one supervisor pass and exit.")
@@ -1588,10 +1581,9 @@ def competitor_monitor_worker_command(args: argparse.Namespace) -> int:
 
 
 def whale_watch_init_db_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import create_whale_watch_hyperliquid_repository, create_whale_watch_repository
+    from packages.whale_watch import create_whale_watch_repository
 
     create_whale_watch_repository(None).init_schema()
-    create_whale_watch_hyperliquid_repository(None).init_schema()
     print("[odaily] whale watch database schema initialized")
     return 0
 
@@ -1663,24 +1655,6 @@ def whale_watch_delete_addresses_command(args: argparse.Namespace) -> int:
     deleted = repository.delete_addresses(ids=unique_ids)
     print(f"[odaily] whale watch delete completed deleted={deleted} requested={len(unique_ids)}")
     return 0 if deleted == len(unique_ids) else 1
-
-
-def whale_watch_hyperliquid_worker_command(args: argparse.Namespace) -> int:
-    from packages.whale_watch import WhaleWatchHyperliquidWorker, create_whale_watch_hyperliquid_repository
-
-    repository = create_whale_watch_hyperliquid_repository(None)
-    worker = WhaleWatchHyperliquidWorker(repository=repository, settings=load_whale_watch_hyperliquid_settings())
-    if args.once:
-        result = worker.run_once()
-        print(
-            "[odaily] whale watch hyperliquid once "
-            f"addresses={result.addresses} processed={result.processed} seeded={result.seeded} "
-            f"detected={result.detected} inserted={result.inserted} sent={result.sent} "
-            f"suppressed={result.suppressed} failed={len(result.failed)}"
-        )
-        return 0 if not result.failed else 1
-    worker.run_forever()
-    return 0
 
 
 def pipeline_supervisor_command(args: argparse.Namespace) -> int:
@@ -2407,8 +2381,6 @@ def main() -> int:
             return whale_watch_list_addresses_command(args)
         if args.command == "whale-watch-delete-addresses":
             return whale_watch_delete_addresses_command(args)
-        if args.command == "whale-watch-hyperliquid-worker":
-            return whale_watch_hyperliquid_worker_command(args)
         if args.command == "pipeline-supervisor":
             return pipeline_supervisor_command(args)
         if args.command == "telegram-test":

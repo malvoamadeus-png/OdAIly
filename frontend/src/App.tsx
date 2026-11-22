@@ -43,13 +43,10 @@ import {
   createAccount,
   createBinanceSquareAccount,
   createWhaleWatchAddress,
-  createWhaleWatchHyperliquidAddress,
   deleteSourceExclusionRuleGroup,
   deleteAccount as deleteLocalAccount,
   deleteBinanceSquareAccount,
   deleteWhaleWatchAddress,
-  deleteWhaleWatchHyperliquidAddress,
-  getWhaleWatchHyperliquidSettings,
   getJin10Settings,
   getCurrentConsoleAdmin,
   getCurrentSession,
@@ -94,8 +91,6 @@ import {
   updatePromptTemplateFeatureMode,
   updateSettings,
   updateWhaleWatchAddress,
-  updateWhaleWatchHyperliquidAddress,
-  updateWhaleWatchHyperliquidSettings,
   type Account,
   type AccountMonitorGroup,
   type AccountPatch,
@@ -125,11 +120,6 @@ import {
   type WhaleWatchAddress,
   type WhaleWatchAddressPatch,
   type WhaleWatchChainState,
-  type WhaleWatchHyperliquidActivity,
-  type WhaleWatchHyperliquidAddress,
-  type WhaleWatchHyperliquidAddressPatch,
-  type WhaleWatchHyperliquidSettings,
-  type WhaleWatchHyperliquidState,
   type PromptTemplate,
   type PromptVersion,
   type RuntimeRuleEntry,
@@ -997,20 +987,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [whaleAddresses, setWhaleAddresses] = useState<WhaleWatchAddress[]>([]);
   const [whaleStates, setWhaleStates] = useState<WhaleWatchChainState[]>([]);
   const [whaleActivities, setWhaleActivities] = useState<WhaleWatchActivity[]>([]);
-  const [whaleHyperliquidSettings, setWhaleHyperliquidSettings] = useState<WhaleWatchHyperliquidSettings>({
-    single_fill_min_notional_usd: 500000,
-    aggregate_min_notional_usd: 1000000,
-    aggregate_window_seconds: 600,
-    updated_at: null,
-  });
-  const [whaleHyperliquidAddresses, setWhaleHyperliquidAddresses] = useState<WhaleWatchHyperliquidAddress[]>([]);
-  const [whaleHyperliquidStates, setWhaleHyperliquidStates] = useState<WhaleWatchHyperliquidState[]>([]);
-  const [whaleHyperliquidActivities, setWhaleHyperliquidActivities] = useState<WhaleWatchHyperliquidActivity[]>([]);
   const [newWhaleAddress, setNewWhaleAddress] = useState({ address: '', label: '' });
   const [savingWhaleAddress, setSavingWhaleAddress] = useState(false);
-  const [newWhaleHyperliquidAddress, setNewWhaleHyperliquidAddress] = useState({ address: '', label: '' });
-  const [savingWhaleHyperliquidAddress, setSavingWhaleHyperliquidAddress] = useState(false);
-  const [savingWhaleHyperliquidSettings, setSavingWhaleHyperliquidSettings] = useState(false);
   const [selectedPromptKey, setSelectedPromptKey] = useState('');
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [promptContent, setPromptContent] = useState('');
@@ -1262,10 +1240,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     setWhaleAddresses(dashboard.addresses);
     setWhaleStates(dashboard.states);
     setWhaleActivities(dashboard.activities);
-    setWhaleHyperliquidSettings(dashboard.hyperliquidSettings);
-    setWhaleHyperliquidAddresses(dashboard.hyperliquidAddresses);
-    setWhaleHyperliquidStates(dashboard.hyperliquidStates);
-    setWhaleHyperliquidActivities(dashboard.hyperliquidActivities);
     setLoadingWhaleWatch(false);
   }
 
@@ -1651,68 +1625,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function addWhaleHyperliquidAddress(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (savingWhaleHyperliquidAddress) {
-      return;
-    }
-    setSavingWhaleHyperliquidAddress(true);
-    setError('');
-    try {
-      await createWhaleWatchHyperliquidAddress({ ...newWhaleHyperliquidAddress, enabled: true });
-      setNewWhaleHyperliquidAddress({ address: '', label: '' });
-      setMessage('Hyperliquid 地址已保存');
-      await loadWhaleWatchAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingWhaleHyperliquidAddress(false);
-    }
-  }
-
-  async function saveWhaleHyperliquidSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSavingWhaleHyperliquidSettings(true);
-    setError('');
-    const form = new FormData(event.currentTarget);
-    try {
-      const updated = await updateWhaleWatchHyperliquidSettings({
-        single_fill_min_notional_usd: Number(form.get('single_fill_min_notional_usd')),
-        aggregate_min_notional_usd: Number(form.get('aggregate_min_notional_usd')),
-        aggregate_window_seconds: Number(form.get('aggregate_window_seconds')),
-      });
-      setWhaleHyperliquidSettings(updated);
-      setMessage('Hyperliquid 设置已保存');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSavingWhaleHyperliquidSettings(false);
-    }
-  }
-
-  async function patchWhaleHyperliquidAddress(
-    address: WhaleWatchHyperliquidAddress,
-    patch: WhaleWatchHyperliquidAddressPatch,
-  ) {
-    setError('');
-    try {
-      await updateWhaleWatchHyperliquidAddress(address.id, patch);
-      await loadWhaleWatchAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function removeWhaleHyperliquidAddress(address: WhaleWatchHyperliquidAddress) {
-    setError('');
-    try {
-      await deleteWhaleWatchHyperliquidAddress(address.id);
-      await loadWhaleWatchAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   async function selectPrompt(templateKey: string) {
     await loadPrompts(templateKey);
   }
@@ -1986,7 +1898,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'workflow'
         ? '自动化主链路全景 · 分流、查重、发布后审核一图看清'
       : view === 'whale'
-        ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址 · ${whaleHyperliquidAddresses.filter((item) => item.enabled).length} 个 Hyperliquid 地址`
+        ? `${whaleAddresses.filter((item) => item.enabled).length} 个链上地址`
       : view === 'prompts'
         ? `${promptTemplates.length} 个模板 · ${selectedPromptKey || '-'}`
         : `${exclusionGroups.filter((item) => item.enabled).length} 个启用规则组`;
@@ -2501,25 +2413,13 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             addresses={whaleAddresses}
             states={whaleStates}
             activities={whaleActivities}
-            hyperliquidSettings={whaleHyperliquidSettings}
-            hyperliquidAddresses={whaleHyperliquidAddresses}
-            hyperliquidStates={whaleHyperliquidStates}
-            hyperliquidActivities={whaleHyperliquidActivities}
             loading={loadingWhaleWatch}
             newAddress={newWhaleAddress}
             saving={savingWhaleAddress}
-            newHyperliquidAddress={newWhaleHyperliquidAddress}
-            savingHyperliquidAddress={savingWhaleHyperliquidAddress}
-            savingHyperliquidSettings={savingWhaleHyperliquidSettings}
             onNewAddressChange={setNewWhaleAddress}
-            onNewHyperliquidAddressChange={setNewWhaleHyperliquidAddress}
             onAdd={addWhaleAddress}
-            onAddHyperliquid={addWhaleHyperliquidAddress}
-            onSaveHyperliquidSettings={saveWhaleHyperliquidSettings}
             onPatch={patchWhaleAddress}
-            onPatchHyperliquid={patchWhaleHyperliquidAddress}
             onDelete={removeWhaleAddress}
-            onDeleteHyperliquid={removeWhaleHyperliquidAddress}
           />
         ) : view === 'prompts' ? (
           <PromptPanel
@@ -3861,50 +3761,25 @@ function WhaleWatchPanel({
   addresses,
   states,
   activities,
-  hyperliquidSettings,
-  hyperliquidAddresses,
-  hyperliquidStates,
-  hyperliquidActivities,
   loading,
   newAddress,
   saving,
-  newHyperliquidAddress,
-  savingHyperliquidAddress,
-  savingHyperliquidSettings,
   onNewAddressChange,
-  onNewHyperliquidAddressChange,
   onAdd,
-  onAddHyperliquid,
-  onSaveHyperliquidSettings,
   onPatch,
-  onPatchHyperliquid,
   onDelete,
-  onDeleteHyperliquid,
 }: {
   addresses: WhaleWatchAddress[];
   states: WhaleWatchChainState[];
   activities: WhaleWatchActivity[];
-  hyperliquidSettings: WhaleWatchHyperliquidSettings;
-  hyperliquidAddresses: WhaleWatchHyperliquidAddress[];
-  hyperliquidStates: WhaleWatchHyperliquidState[];
-  hyperliquidActivities: WhaleWatchHyperliquidActivity[];
   loading: boolean;
   newAddress: { address: string; label: string };
   saving: boolean;
-  newHyperliquidAddress: { address: string; label: string };
-  savingHyperliquidAddress: boolean;
-  savingHyperliquidSettings: boolean;
   onNewAddressChange: (value: { address: string; label: string }) => void;
-  onNewHyperliquidAddressChange: (value: { address: string; label: string }) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  onAddHyperliquid: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  onSaveHyperliquidSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onPatch: (address: WhaleWatchAddress, patch: WhaleWatchAddressPatch) => Promise<void>;
-  onPatchHyperliquid: (address: WhaleWatchHyperliquidAddress, patch: WhaleWatchHyperliquidAddressPatch) => Promise<void>;
   onDelete: (address: WhaleWatchAddress) => Promise<void>;
-  onDeleteHyperliquid: (address: WhaleWatchHyperliquidAddress) => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<'onchain' | 'hyperliquid'>('onchain');
   const statesByAddress = useMemo(() => {
     const grouped: Record<number, WhaleWatchChainState[]> = {};
     for (const state of states) {
@@ -3912,33 +3787,9 @@ function WhaleWatchPanel({
     }
     return grouped;
   }, [states]);
-  const hyperliquidStatesByAddress = useMemo(() => {
-    const grouped: Record<number, WhaleWatchHyperliquidState[]> = {};
-    for (const state of hyperliquidStates) {
-      grouped[state.address_id] = [...(grouped[state.address_id] || []), state];
-    }
-    return grouped;
-  }, [hyperliquidStates]);
 
   return (
     <section className="whaleLayout">
-      <div className="whaleTabs">
-        <button className={activeTab === 'onchain' ? 'promptTab active' : 'promptTab'} type="button" onClick={() => setActiveTab('onchain')}>
-          <strong>链上</strong>
-          <span>地址活动监控</span>
-        </button>
-        <button
-          className={activeTab === 'hyperliquid' ? 'promptTab active' : 'promptTab'}
-          type="button"
-          onClick={() => setActiveTab('hyperliquid')}
-        >
-          <strong>Hyperliquid</strong>
-          <span>开仓 / 平仓监控</span>
-        </button>
-      </div>
-
-      {activeTab === 'onchain' ? (
-        <>
           <form className="whaleAddressForm" onSubmit={onAdd}>
             <input
               placeholder="0x..."
@@ -3991,99 +3842,6 @@ function WhaleWatchPanel({
               </article>
             ))}
           </div>
-        </>
-      ) : (
-        <>
-          <form className="settingsForm" onSubmit={onSaveHyperliquidSettings}>
-            <label>
-              <span>单次门槛</span>
-              <input
-                name="single_fill_min_notional_usd"
-                type="number"
-                min="0"
-                step="1000"
-                defaultValue={hyperliquidSettings.single_fill_min_notional_usd}
-              />
-            </label>
-            <label>
-              <span>聚合门槛</span>
-              <input
-                name="aggregate_min_notional_usd"
-                type="number"
-                min="0"
-                step="1000"
-                defaultValue={hyperliquidSettings.aggregate_min_notional_usd}
-              />
-            </label>
-            <label>
-              <span>聚合时长（秒）</span>
-              <input
-                name="aggregate_window_seconds"
-                type="number"
-                min="60"
-                step="60"
-                defaultValue={hyperliquidSettings.aggregate_window_seconds}
-              />
-            </label>
-            <button className="primaryButton" type="submit" disabled={savingHyperliquidSettings}>
-              <Save size={17} /> 保存设置
-            </button>
-          </form>
-
-          <form className="whaleAddressForm" onSubmit={onAddHyperliquid}>
-            <input
-              placeholder="0x..."
-              value={newHyperliquidAddress.address}
-              onChange={(event) => onNewHyperliquidAddressChange({ ...newHyperliquidAddress, address: event.target.value })}
-            />
-            <input
-              placeholder="自定义标签，例如 BTC 趋势账户"
-              value={newHyperliquidAddress.label}
-              onChange={(event) => onNewHyperliquidAddressChange({ ...newHyperliquidAddress, label: event.target.value })}
-            />
-            <button className="primaryButton" type="submit" disabled={savingHyperliquidAddress}>
-              <Plus size={17} /> 添加地址
-            </button>
-          </form>
-
-          <div className="sectionHeader">
-            <h2>Hyperliquid 地址</h2>
-            <span>{loading ? '加载中...' : `${hyperliquidAddresses.length} 个地址`}</span>
-          </div>
-          <div className="whaleAddressList">
-            {!loading && hyperliquidAddresses.length === 0 && <div className="emptyState">暂无 Hyperliquid 地址，先添加一个地址。</div>}
-            {hyperliquidAddresses.map((address) => (
-              <WhaleHyperliquidAddressRow
-                key={address.id}
-                address={address}
-                states={hyperliquidStatesByAddress[address.id] || []}
-                onPatch={onPatchHyperliquid}
-                onDelete={onDeleteHyperliquid}
-              />
-            ))}
-          </div>
-
-          <div className="sectionHeader">
-            <h2>最近播报</h2>
-            <span>{hyperliquidActivities.length} 条</span>
-          </div>
-          <div className="taskList">
-            {hyperliquidActivities.length === 0 && <div className="emptyState">暂无 Hyperliquid 播报记录。</div>}
-            {hyperliquidActivities.map((activity) => (
-              <article className="taskItem" key={activity.id}>
-                <a href={activity.tx_url} target="_blank" rel="noreferrer">
-                  {activity.direction} · {activity.coin}
-                </a>
-                <p>{activity.telegram_text}</p>
-                <div>
-                  <span>{activity.summary}</span>
-                  <time>{fmtTime(activity.created_at)}</time>
-                </div>
-              </article>
-            ))}
-          </div>
-        </>
-      )}
     </section>
   );
 }
@@ -4115,54 +3873,6 @@ function WhaleAddressRow({
           states.map((state) => (
             <span key={`${address.id}-${state.chain_key}`}>
               {state.chain_key}: {state.last_error || `区块 ${state.last_seen_block ?? '-'}`} · {fmtTime(state.last_success_at)}
-            </span>
-          ))
-        )}
-      </div>
-      <div className="rowActions">
-        <button
-          className="iconButton"
-          type="button"
-          onClick={() => onPatch(address, { enabled: !address.enabled })}
-          title={address.enabled ? '停用' : '启用'}
-        >
-          {address.enabled ? <Pause size={17} /> : <Zap size={17} />}
-        </button>
-        <button className="iconButton danger" type="button" onClick={() => onDelete(address)} title="删除">
-          <Trash2 size={17} />
-        </button>
-      </div>
-    </article>
-  );
-}
-
-function WhaleHyperliquidAddressRow({
-  address,
-  states,
-  onPatch,
-  onDelete,
-}: {
-  address: WhaleWatchHyperliquidAddress;
-  states: WhaleWatchHyperliquidState[];
-  onPatch: (address: WhaleWatchHyperliquidAddress, patch: WhaleWatchHyperliquidAddressPatch) => Promise<void>;
-  onDelete: (address: WhaleWatchHyperliquidAddress) => Promise<void>;
-}) {
-  return (
-    <article className={address.enabled ? 'accountRow' : 'accountRow disabled'}>
-      <div className="accountIdentity">
-        <div className="statusDot" />
-        <div>
-          <strong>{address.label}</strong>
-          <span>{address.address}</span>
-        </div>
-      </div>
-      <div className="whaleStateList">
-        {states.length === 0 ? (
-          <span>等待 worker 初始化</span>
-        ) : (
-          states.map((state) => (
-            <span key={`${address.id}-${state.last_seen_time ?? 0}`}>
-              {state.last_error || `最近成交 ${fmtUnixMs(state.last_seen_time)}`} · {fmtTime(state.last_success_at)}
             </span>
           ))
         )}

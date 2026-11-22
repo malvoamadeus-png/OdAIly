@@ -19,8 +19,6 @@ ALLOWED_TABLES = {
     "prompt_template_versions", "prompt_templates", "publisher_channels",
     "publisher_rule_config", "publisher_settings", "source_exclusion_rule_groups", "tasks",
     "whale_watch_activities", "whale_watch_addresses", "whale_watch_chain_states",
-    "whale_watch_hyperliquid_activities", "whale_watch_hyperliquid_addresses",
-    "whale_watch_hyperliquid_settings", "whale_watch_hyperliquid_states",
     "x_capture_accounts", "x_capture_attempts", "x_capture_settings",
 }
 FILTER_OPERATORS = {"eq": "=", "neq": "!=", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<"}

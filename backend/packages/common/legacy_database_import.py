@@ -24,7 +24,7 @@ from packages.jin10_monitor.repository import create_jin10_monitor_repository
 from packages.non_mainstream_media import create_non_mainstream_media_repository
 from packages.pipeline_supervisor import create_pipeline_supervisor_repository
 from packages.pipeline_timing import create_pipeline_timing_repository
-from packages.whale_watch import create_whale_watch_hyperliquid_repository, create_whale_watch_repository
+from packages.whale_watch import create_whale_watch_repository
 from packages.writer3 import create_writer3_repository
 from packages.x_capture.repository import create_x_capture_repository
 from packages.x_processing.repository import create_x_processing_repository
@@ -36,12 +36,11 @@ LEGACY_TABLES = (
     "x_capture_settings", "x_capture_accounts", "publisher_settings", "publisher_channels",
     "publisher_rule_config", "prompt_templates", "prompt_template_versions",
     "source_exclusion_rule_groups", "non_mainstream_media_settings", "non_mainstream_media_sources",
-    "jin10_settings", "whale_watch_addresses", "whale_watch_hyperliquid_settings",
-    "whale_watch_hyperliquid_addresses", "tasks", "odaily_reference_items", "newsflash_items",
+    "jin10_settings", "whale_watch_addresses", "tasks", "odaily_reference_items", "newsflash_items",
     "newsflash_events", "newsflash_event_sources", "x_task_pipeline", "external_media_alert_pipeline", "search_event_candidates",
     "search_event_sources", "x_capture_attempts", "x_seen_tweets", "media_newsflash",
     "non_mainstream_media_seen_items", "jin10_seen_items", "whale_watch_chain_states",
-    "whale_watch_activities", "whale_watch_hyperliquid_states", "whale_watch_hyperliquid_activities",
+    "whale_watch_activities",
     "auditor_checks", "writer3_contexts", "pipeline_worker_heartbeats", "pipeline_alerts",
     "pipeline_timing_snapshots", "editor_plugin_users", "editor_plugin_generation_logs",
     "editor_plugin_receipts", "editor_plugin_feedbacks",
@@ -63,7 +62,7 @@ def initialize_sqlite_schema() -> Path:
         create_x_capture_repository(), create_x_processing_repository(), create_source_exclusion_repository(),
         create_non_mainstream_media_repository(), create_external_media_alert_repository(),
         create_competitor_monitor_repository(), create_jin10_monitor_repository(),
-        create_whale_watch_repository(), create_whale_watch_hyperliquid_repository(),
+        create_whale_watch_repository(),
         create_writer3_repository(), create_auditor_repository(), create_pipeline_supervisor_repository(),
         create_console_auth_repository(), create_editor_plugin_auth_repository(), create_pipeline_timing_repository(),
     )

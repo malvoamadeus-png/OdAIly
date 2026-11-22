@@ -13,7 +13,6 @@ BUSINESS_SOURCES = (
     _source("hyperliquid_news", "hl_news_candidates", "event_key", "coin"),
     _source("hyperliquid_news", "hl_news_dispatch", "event_key", "task_id", "status", "error"),
     _source("main", "whale_watch_activities", "id", "summary", "telegram_sent_at"),
-    _source("main", "whale_watch_hyperliquid_activities", "id", "summary", "telegram_sent_at"),
     _source("main", "binance_square_attempts", "id", "slug_lower", "status", "error", "finished_at"),
     _source("main", "auditor_checks", "id", "status", "last_error"),
     _source("main", "fact_checks", "id", "status", "reason", "summary", "last_error"),

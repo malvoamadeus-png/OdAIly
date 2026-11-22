@@ -35,7 +35,6 @@ EXPECTED_HEARTBEAT_COMPONENTS = [
     "competitor_monitor",
     "jin10_monitor",
     "whale_watch",
-    "whale_watch_hyperliquid",
     "local_pipeline",
     "fact_auditor",
 ]

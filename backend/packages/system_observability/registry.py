@@ -42,9 +42,8 @@ BUSINESS_REGISTRY: tuple[dict[str, object], ...] = (
         {"key": "alert", "label": "普通提醒", "steps": ["读取地址活动和状态基线", "核对变化、覆盖完整性与提醒门槛", "去重后发送提醒", "不进入快讯写作"]},
         {"key": "news", "label": "新闻场景", "steps": ["按注册场景读取地址与事件材料", "通过确定性门槛生成候选", "候选创建任务并关联来源", "复用查重、写作与格式整理", "强制挂后台", "区分正式运行与预览测试"]},
     ]},
-    {"key": "whale", "label": "巨鲸提醒", "kind": "alert_only", "sources": ["whale_watch", "whale_watch_hyperliquid"], "entry": "链上与Hyperliquid地址", "scenarios": [
+    {"key": "whale", "label": "巨鲸提醒", "kind": "alert_only", "sources": ["whale_watch"], "entry": "链上地址", "scenarios": [
         {"key": "chain", "label": "链上活动", "steps": ["轮询启用地址", "识别大额转账并检查单次门槛", "应用聚合窗口与去重", "发送提醒并保存回执"]},
-        {"key": "hyperliquid", "label": "Hyperliquid活动", "steps": ["读取地址成交和账户变化", "比较基线并检查数据完整性", "应用提醒门槛与去重", "发送提醒；不上虚构的写稿步骤"]},
     ]},
     {"key": "meme", "label": "Meme速递", "kind": "write_flow", "sources": ["meme_scanner", "meme_tg", "daily_hot"], "entry": "迁移 / TG热议 / 今日热门", "scenarios": [
         {"key": "migration", "label": "迁移发现", "steps": ["监听迁移或新池事件", "通过流动性和安全准入", "采集行情和项目材料", "等待Grok叙事分析", "超时按降级规则继续或暂停", "生成稿件并挂后台"]},

@@ -431,48 +431,6 @@ class LocalEditorPluginFeedWriter:
             ]
         )
 
-    def upsert_whale_hyperliquid(
-        self,
-        *,
-        feed_item_id: str,
-        address: str,
-        address_label: str,
-        coin: str,
-        direction: str,
-        notional_usd: str,
-        alert_kind: str,
-        summary: str,
-        detail_url: str | None,
-        occurred_at: datetime | None = None,
-    ) -> None:
-        self.store.upsert_feed_items(
-            [
-                {
-                    "feed_item_id": feed_item_id,
-                    "feed_kind": "whale_hyperliquid",
-                    "lane": "high",
-                    "priority": 48,
-                    "title": address_label or f"{address[:6]}...{address[-4:]}",
-                    "summary": summary or "Hyperliquid 巨鲸信号",
-                    "badges": [],
-                    "status_label": "新信号",
-                    "status_tone": "info",
-                    "occurred_at": occurred_at or _now(),
-                    "source_url": detail_url,
-                    "detail_url": detail_url,
-                    "action_schema": {"type": "read"},
-                    "meta_json": {
-                        "address": address,
-                        "address_label": address_label,
-                        "coin": coin,
-                        "direction": direction,
-                        "notional_usd": notional_usd,
-                        "alert_kind": alert_kind,
-                    },
-                }
-            ]
-        )
-
     def upsert_gate_market(
         self,
         *,
