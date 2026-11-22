@@ -4,7 +4,7 @@ import os
 import signal
 import time
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import FrameType
 from typing import Iterator
@@ -18,6 +18,8 @@ from .hyperliquid_client import HyperliquidClient
 from .hyperliquid_detector import detect_hyperliquid_activity, format_money
 from .hyperliquid_sqlite_repository import WhaleWatchHyperliquidRepository
 from .models import HyperliquidActivity, HyperliquidRunResult, HyperliquidRuntimeSettings, HyperliquidWindowEntry
+
+MAX_UNOBSERVED_INTERVAL = timedelta(hours=24)
 
 
 class WhaleWatchHyperliquidWorker:
@@ -125,6 +127,9 @@ class WhaleWatchHyperliquidWorker:
         fills = self.client.user_fills(whale.address)
         fills.sort(key=lambda item: (_int(item.get("time")) or 0, str(item.get("tid") or ""), str(item.get("hash") or "")))
         max_seen_time = max((_int(item.get("time")) or 0 for item in fills), default=state.last_seen_time if state else None)
+        stale = state is not None and state.last_success_at is not None and polled_at - state.last_success_at > MAX_UNOBSERVED_INTERVAL
+        if stale:
+            max_seen_time = max(max_seen_time or 0, int(polled_at.timestamp() * 1000))
         seeded_window_entries: list[HyperliquidWindowEntry] = []
         for fill in fills:
             activity = detect_hyperliquid_activity(whale=whale, fill=fill)
@@ -136,7 +141,7 @@ class WhaleWatchHyperliquidWorker:
             now_ms=max_seen_time,
             window_seconds=runtime.aggregate_window_seconds,
         )
-        if state is None or state.seeded_at is None:
+        if state is None or state.seeded_at is None or stale:
             self.repository.mark_seeded(
                 address_id=whale.id,
                 last_seen_time=max_seen_time,
@@ -144,6 +149,8 @@ class WhaleWatchHyperliquidWorker:
                 aggregate_window_entries=seeded_window,
                 aggregate_alert_active=self._sum_window_entries(seeded_window) >= runtime.aggregate_min_notional_usd,
             )
+            if stale:
+                print(f"[odaily] whale watch hyperliquid reseeded stale address={whale.address_lower}")
             return {"seeded": True, "detected": 0, "inserted": 0, "sent": 0, "suppressed": 0}
 
         detected = 0
