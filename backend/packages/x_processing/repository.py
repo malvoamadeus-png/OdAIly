@@ -725,7 +725,7 @@ class PostgresXProcessingRepository:
                     OR (t.source = %(jin10_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(search_first_sources)s) AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
                     OR (t.source = %(event_tracking_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
-                    OR (t.source = %(hyperliquid_source)s AND t.status IN ('pending', %(processing_status)s, %(failure_status)s))
+                    OR (t.source = %(hyperliquid_source)s AND t.status IN (%(claim_status)s, %(processing_status)s, %(failure_status)s))
                     OR (t.source = ANY(%(sources)s) AND t.status IN (%(processing_status)s, %(failure_status)s))
                 )
             """

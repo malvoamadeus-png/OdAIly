@@ -190,7 +190,7 @@ Hyperliquid 按场景使用独立、可版本化 Prompt：大仓持仓变化、�
 
 编写者2来源分支复用 `format_brief`，定稿固定开头 `Odaily星球日报讯 据Odaily监测，`。程序尾部始终附地址；账户总盈亏只显示事件观察时刻前 1 小时内的官方 Portfolio `perpAllTime` / `allTime` 样本，不显示样本时间，过旧或缺失时不补盈亏占位。候选样本须带 `hyperliquid_portfolio` 来源和包含未实现盈亏的官方口径；在事件观察时刻之前选最新一条，旧的 `official_account_total_pnl` 不得遮住较新的合规 allTime 样本。公开排行榜、成交窗口自算盈亏和来源不明的旧字段均不作为总盈亏。账户累计盈利或亏损标题必须明确出现地址主体；定稿清除“官方口径含浮盈亏”等机械括号声明。完整证据仍保留 `dex:coin`；新闻标题与正文展示冒号后的 ticker（例如 `xyz:SKHY` 显示为 `SKHY`），不据此合并不同 DEX 的市场。单资产高胜率标题加“近期”，统计轮数、胜率和周期在正文只写一次。原文链接使用首个目标地址的 Hyperbot 页面，`sourceUrl` 不让模型生成。
 
-`hyperliquid_news` 以 `judged` 状态进入共享 `search / write / format_publish / publish`；该状态表示硬规则已准入，不执行判断者。搜索者通过后为 `deduped`，重复为 `duplicate`，失败为 `search_failed`。发布阶段强制挂后台，与常规/AI信源发布开关无关，`isPublish=false / isPush=false`，使用稳定 task Idempotency-Key。正文、Prompt 版本、模型、流程时间及提交结果都复用共享流水线留存。
+`hyperliquid_news` 以 `judged` 状态进入共享 `search / write / format_publish / publish`；该状态表示硬规则已准入，不执行判断者。PostgreSQL 搜索阶段必须将 `judged` 作为可领取状态；不能把 Hyperliquid 重映射为 `pending`，否则任务会在 claim 前失败并耗尽本地流水线重试。搜索者通过后为 `deduped`，重复为 `duplicate`，失败为 `search_failed`。发布阶段强制挂后台，与常规/AI信源发布开关无关，`isPublish=false / isPush=false`，使用稳定 task Idempotency-Key。正文、Prompt 版本、模型、流程时间及提交结果都复用共享流水线留存。
 
 控制台独立一级标签细节见 `控制台-Hyperliquid监测.md`。正式常驻 worker 同时运行普通八方向和账户高盈利/总亏损方向；十方向投递限制对手工 dispatch 同样生效。
 

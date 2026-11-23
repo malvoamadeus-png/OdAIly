@@ -34,7 +34,7 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
         raise ValueError('Invalid view')
     if view == 'timeline' and dataset != 'live':
         raise ValueError('Timeline only supports the live dataset')
-    page_size = page_size if page_size is not None else (10 if view == 'timeline' else 30)
+    page_size = page_size if page_size is not None else (10 if view == 'timeline' else 15)
     if not 1 <= page_size <= 100:
         raise ValueError('Invalid page size')
     if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
@@ -135,6 +135,9 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
                 })
                 continue
             item = json.loads(row['payload'])
+            actions = (item.get('evidence') or {}).get('actions')
+            if isinstance(actions, dict) and isinstance(actions.get('fill_keys'), list):
+                actions['fill_count'] = len(actions.pop('fill_keys'))
             pipeline = {key: row[key] for key in row.keys() if key != 'payload'}
             if pipeline.get('search_result'):
                 pipeline['search_result'] = json.loads(pipeline['search_result'])
@@ -263,7 +266,14 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
         else:
             pipeline_join = "LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key LEFT JOIN main.tasks t ON t.id=d.task_id LEFT JOIN main.x_task_pipeline p ON p.task_id=t.id LEFT JOIN main.prompt_template_versions v ON v.id=p.prompt_version_id" if dataset == "live" else ""
             pipeline_columns = ",d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code" if dataset == "live" else ",NULL AS task_id"
-            rows = conn.execute(f"SELECT c.event_key,c.observed_ms,c.coin,c.payload{pipeline_columns} FROM {source} c {pipeline_join} WHERE true{scenario_filter} ORDER BY c.observed_ms DESC,c.event_key LIMIT %s OFFSET %s",
+            payload_projection = """CASE
+                WHEN jsonb_typeof(c.payload #> '{evidence,actions,fill_keys}') = 'array' THEN
+                    jsonb_set(c.payload #- '{evidence,actions,fill_keys}',
+                        '{evidence,actions,fill_count}',
+                        to_jsonb(jsonb_array_length(c.payload #> '{evidence,actions,fill_keys}')), true)
+                ELSE c.payload #- '{evidence,actions,fill_keys}'
+            END"""
+            rows = conn.execute(f"SELECT c.event_key,c.observed_ms,c.coin,{payload_projection} AS payload{pipeline_columns} FROM {source} c {pipeline_join} WHERE true{scenario_filter} ORDER BY c.observed_ms DESC,c.event_key LIMIT %s OFFSET %s",
                                 (*params, page_size + 1, page * page_size)).fetchall()
         events = []
         for row in rows[:page_size]:
@@ -287,12 +297,14 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
             payload["source_url"] = "https://hyperbot.network/trader/" + payload.get("addresses", [""])[0]
             events.append(payload)
         addresses = []
-        for row in conn.execute("""SELECT a.*,m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,n.manual_locked AS name_manual_locked
+        address_limit = 100 if view == "addresses" else 1 if view == "timeline" and address_query.strip() else 0
+        address_rows = conn.execute("""SELECT a.*,m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,n.manual_locked AS name_manual_locked
             FROM hl_news_addresses a LEFT JOIN hl_news_metadata m ON m.key='address_note:'||a.address
             LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address LEFT JOIN hl_news_address_names n USING(address)
             WHERE a.address ILIKE %s AND (%s='all' OR (%s='blocked' AND COALESCE(b.payload->>'blocked','false')='true')
                 OR (%s='active' AND COALESCE(b.payload->>'blocked','false')<>'true')) ORDER BY a.last_polled_ms DESC,a.address LIMIT %s""",
-            (f"%{address_query.strip().lower()}%" if address_query.strip() else "%",address_status,address_status,address_status,100 if view != "timeline" else 1 if address_query.strip() else 0)).fetchall():
+            (f"%{address_query.strip().lower()}%" if address_query.strip() else "%",address_status,address_status,address_status,address_limit)).fetchall() if address_limit else []
+        for row in address_rows:
             note = row["note_payload"] if isinstance(row["note_payload"], dict) else json.loads(row["note_payload"] or "{}")
             block = row["block_payload"] if isinstance(row["block_payload"], dict) else json.loads(row["block_payload"] or "{}")
             if address_status == "blocked" and not block.get("blocked"): continue
@@ -303,10 +315,15 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
         counts["test_cases"] = int(conn.execute("SELECT count(*) AS n FROM hl_news_test_cases").fetchone()["n"]) if dataset == "live" else counts["events"]
         visible = {card['key'] for card in scenario_cards(dataset=dataset)}
         selected = [item for item in SCENARIOS if item[0] in visible]
-        scenario_counts = {}
-        for item in selected:
-            card_filter = "payload->'test_scenarios' ? %s" if dataset == "test" else "EXISTS (SELECT 1 FROM hl_news_candidate_scenarios cs WHERE cs.event_key=c.event_key AND cs.scenario_key=%s)"
-            scenario_counts[item[0]] = int(conn.execute(f"SELECT count(*) AS n FROM {source} c WHERE {card_filter}", (item[0],)).fetchone()["n"])
+        scenario_counts = {item[0]: 0 for item in selected}
+        if dataset == "live":
+            for row in conn.execute("SELECT scenario_key,count(*) AS n FROM hl_news_candidate_scenarios WHERE scenario_key=ANY(%s) GROUP BY scenario_key",
+                                    (list(visible),)).fetchall():
+                scenario_counts[row["scenario_key"]] = int(row["n"])
+        else:
+            for item in selected:
+                scenario_counts[item[0]] = int(conn.execute("SELECT count(*) AS n FROM hl_news_test_cases c WHERE payload->'test_scenarios' ? %s",
+                                                            (item[0],)).fetchone()["n"])
     scenarios = scenario_cards(scenario_counts, dataset=dataset)
     return {"initialized": True, "events": events, "addresses": addresses, "rules": asdict(Rules()), "labels": KIND_LABELS,
             "last_pass": store.metadata("last_pass", {}) if view != "timeline" else {}, "has_next": len(rows) > page_size,
