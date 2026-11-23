@@ -4849,7 +4849,7 @@ class ModelBriefWriter:
         payload = [
             {
                 "claim_id": row["claim_id"],
-                "created_at": row.get("created_at", ""),
+                "created_at": iso(row["created_at"]) if row.get("created_at") else "",
                 "context_only": bool(row.get("context_only")),
                 "text": row["claim_text"],
                 "tweet_id": row["tweet_id"],
