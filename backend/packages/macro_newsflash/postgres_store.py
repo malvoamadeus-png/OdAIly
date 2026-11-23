@@ -64,18 +64,23 @@ class PostgresMacroNewsflashStore:
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro') as c:rows=c.execute('SELECT * FROM macro_release_schedule WHERE scheduled_at >= %s ORDER BY scheduled_at LIMIT %s',(cutoff,limit)).fetchall()
         return [self._release(r) for r in rows]
     def observe_update(self,update:MacroUpdate,*,title:str,content:str,publish_latest:bool)->str:
-        now=datetime.now(UTC).isoformat(timespec='seconds');raw={**update.raw_payload,'reported_actual':update.actual,'reported_previous':update.previous,'rate_action':update.rate_action};raw_json=json.dumps(raw,ensure_ascii=False,separators=(',',':'))
+        now=datetime.now(UTC).isoformat(timespec='seconds');raw={**update.raw_payload,'reported_actual':update.actual,'reported_previous':update.previous,'reported_expected':update.expected,'rate_action':update.rate_action};raw_json=json.dumps(raw,ensure_ascii=False,separators=(',',':'))
+        is_scheduled_jin10=bool(update.raw_payload.get('jin10_release_id'))
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-observe') as c:
             with c.transaction():
                 c.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))', (update.metric_id,))
                 state=c.execute('SELECT last_reference_period FROM macro_metric_state WHERE metric_id=%s FOR UPDATE',(update.metric_id,)).fetchone()
                 if state is None:
                     c.execute('INSERT INTO macro_metric_state VALUES(%s,%s,%s,%s,%s,%s,%s)',(update.metric_id,update.reference_period,update.event_key,update.observed_at,update.source_name,update.source_url,raw_json))
-                    if not publish_latest:return 'baselined'
-                elif update.reference_period<=state['last_reference_period']:return 'unchanged'
+                    if not publish_latest and not is_scheduled_jin10:return 'baselined'
+                elif update.reference_period<=state['last_reference_period']:
+                    if not is_scheduled_jin10:return 'unchanged'
                 else:c.execute('UPDATE macro_metric_state SET last_reference_period=%s,last_event_key=%s,last_observed_at=%s,last_source_name=%s,last_source_url=%s,last_raw_json=%s WHERE metric_id=%s',(update.reference_period,update.event_key,update.observed_at,update.source_name,update.source_url,raw_json,update.metric_id))
-                c.execute("INSERT INTO macro_newsflash_events(event_key,metric_id,reference_period,source_name,source_url,actual,previous,title,content,status,raw_json,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s) ON CONFLICT(event_key) DO NOTHING",(update.event_key,update.metric_id,update.reference_period,update.source_name,update.source_url,update.actual,update.previous,title,content,raw_json,now))
-        return 'queued'
+                inserted=c.execute("INSERT INTO macro_newsflash_events(event_key,metric_id,reference_period,source_name,source_url,actual,previous,title,content,status,raw_json,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s) ON CONFLICT(event_key) DO NOTHING",(update.event_key,update.metric_id,update.reference_period,update.source_name,update.source_url,update.actual,update.previous,title,content,raw_json,now))
+                queued=inserted.rowcount > 0
+        return 'queued' if queued else 'unchanged'
+    def event_exists(self,event_key:str)->bool:
+        with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-event-check') as c:return c.execute('SELECT 1 FROM macro_newsflash_events WHERE event_key=%s LIMIT 1',(event_key,)).fetchone() is not None
     def claim_pending(self,*,limit=50):
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-delivery') as c:
             with c.transaction():
@@ -89,12 +94,20 @@ class PostgresMacroNewsflashStore:
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-recovery') as c:return c.execute("UPDATE macro_newsflash_events SET status='uncertain',error='worker stopped during delivery; check the feed before manual recovery' WHERE status='publishing' AND delivery_started_at<%s",(stale,)).rowcount
     def dashboard(self,*,limit=50):
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-dashboard') as c:
-            states=c.execute('SELECT * FROM macro_metric_state ORDER BY metric_id').fetchall();events=c.execute('SELECT event_key,metric_id,reference_period,actual,previous,title,status,error,created_at,published_at FROM macro_newsflash_events ORDER BY created_at DESC LIMIT %s',(limit,)).fetchall();meta={r['meta_key']:r['meta_value'] for r in c.execute('SELECT * FROM macro_newsflash_meta').fetchall()};cut=(datetime.now(UTC)-timedelta(hours=4)).isoformat(timespec='seconds');releases=c.execute('SELECT * FROM macro_release_schedule WHERE scheduled_at >= %s ORDER BY scheduled_at LIMIT 30',(cut,)).fetchall()
+            states=c.execute('SELECT * FROM macro_metric_state ORDER BY metric_id').fetchall();events=c.execute('SELECT event_key,metric_id,reference_period,actual,previous,title,status,error,created_at,published_at,raw_json FROM macro_newsflash_events ORDER BY created_at DESC LIMIT %s',(limit,)).fetchall();meta={r['meta_key']:r['meta_value'] for r in c.execute('SELECT * FROM macro_newsflash_meta').fetchall()};cut=(datetime.now(UTC)-timedelta(hours=4)).isoformat(timespec='seconds');releases=c.execute('SELECT * FROM macro_release_schedule WHERE scheduled_at >= %s ORDER BY scheduled_at LIMIT 30',(cut,)).fetchall()
         metrics=[]
         for r in states:
             try:snap=json.loads(r['last_raw_json'])
             except (TypeError,ValueError):snap={}
-            metrics.append({'metric_id':r['metric_id'],'last_reference_period':r['last_reference_period'],'last_observed_at':r['last_observed_at'],'source_name':r['last_source_name'],'source_url':r['last_source_url'],'actual':snap.get('reported_actual'),'previous':snap.get('reported_previous'),'rate_action':snap.get('rate_action')})
-        return {'available':True,'database_path':f'postgres:{self.path}','metrics':metrics,'events':[dict(r) for r in events],'scheduled_releases':[self._release(r) for r in releases],'schedule_refreshed_at':meta.get('schedule_refreshed_at'),'schedule_errors':json.loads(meta.get('schedule_errors') or '{}'),'source_checked_at':meta.get('source_checked_at'),'source_errors':json.loads(meta.get('source_errors') or '{}')}
+            metrics.append({'metric_id':r['metric_id'],'last_reference_period':r['last_reference_period'],'last_observed_at':r['last_observed_at'],'source_name':r['last_source_name'],'source_url':r['last_source_url'],'actual':snap.get('reported_actual'),'previous':snap.get('reported_previous'),'expected':snap.get('reported_expected'),'rate_action':snap.get('rate_action')})
+        event_rows=[]
+        for r in events:
+            item=dict(r)
+            try:snap=json.loads(item.pop('raw_json'))
+            except (TypeError,ValueError):snap={}
+            item['expected']=snap.get('reported_expected') or ''
+            item['release_id']=snap.get('jin10_release_id')
+            event_rows.append(item)
+        return {'available':True,'database_path':f'postgres:{self.path}','metrics':metrics,'events':event_rows,'scheduled_releases':[self._release(r) for r in releases],'schedule_refreshed_at':meta.get('schedule_refreshed_at'),'schedule_errors':json.loads(meta.get('schedule_errors') or '{}'),'source_checked_at':meta.get('source_checked_at'),'source_errors':json.loads(meta.get('source_errors') or '{}')}
 
 __all__=['PostgresMacroNewsflashStore','SCHEMA_SQL']

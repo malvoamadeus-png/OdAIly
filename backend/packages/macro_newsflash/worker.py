@@ -9,9 +9,16 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from packages.publisher import PushClient
+from packages.jin10_monitor.fetcher import fetch_jin10_items
+from packages.jin10_monitor.models import DEFAULT_JIN10_ENDPOINT_URL, DEFAULT_JIN10_HEADERS
 from packages.x_processing.formatter import format_brief
 from packages.x_processing.models import DraftBrief
 
+from .jin10_release import (
+    JIN10_RELEASE_END_AFTER,
+    JIN10_RELEASE_START_BEFORE,
+    release_update_from_items,
+)
 from .models import MacroUpdate
 from .schedule import fetch_release_schedule
 from .settings import MacroNewsflashSettings
@@ -20,6 +27,9 @@ from .store import MacroNewsflashStore
 
 
 EASTERN_TZ = ZoneInfo("America/New_York")
+JIN10_TRACKED_METRICS = {"initial_claims", "pce_yoy"}
+JIN10_SOURCE_NAMES = {"initial_claims", "pce"}
+INITIAL_NON_JIN10_SOURCES = {"bls", "retail_sales", "fomc"}
 
 
 class MacroNewsflashWorker:
@@ -57,18 +67,50 @@ class MacroNewsflashWorker:
             else self.settings
         )
         recovered = self.store.recover_inflight()
-        updates, errors = collect_updates(settings, source_names=source_names)
-        checked_sources = (
-            {"bls", "retail_sales", "initial_claims", "pce", "fomc"}
-            if source_names is None
-            else source_names
-        )
-        self.store.record_source_refresh(checked_sources=checked_sources, errors=errors)
+        now = datetime.now(UTC)
+        releases = self.store.upcoming_releases()
+        active_releases = self._active_jin10_releases(releases, now)
         calendar_errors: dict[str, str] = {}
-        if self.store.schedule_refresh_due():
+        if self.store.schedule_refresh_due() and not active_releases:
             releases, calendar_errors, refreshed_sources = fetch_release_schedule(settings)
             self.store.replace_release_schedule(releases, refreshed_sources=refreshed_sources)
             self.store.record_schedule_refresh(errors=calendar_errors)
+            releases = self.store.upcoming_releases()
+            active_releases = self._active_jin10_releases(releases, now)
+
+        requested_sources = (
+            INITIAL_NON_JIN10_SOURCES | JIN10_SOURCE_NAMES
+            if source_names is None
+            else set(source_names)
+        )
+        macro_sources = requested_sources - JIN10_SOURCE_NAMES
+        updates, errors = collect_updates(settings, source_names=macro_sources)
+        checked_sources = set(macro_sources)
+        if active_releases:
+            checked_sources.add("jin10_macro")
+            active_metrics = {
+                metric_id
+                for release in active_releases
+                for metric_id in release["metric_ids"]
+            }
+            if "initial_claims" in active_metrics:
+                checked_sources.add("initial_claims")
+            if "pce_yoy" in active_metrics:
+                checked_sources.add("pce")
+            try:
+                items = fetch_jin10_items(
+                    endpoint_url=DEFAULT_JIN10_ENDPOINT_URL,
+                    headers=DEFAULT_JIN10_HEADERS,
+                    channel=None,
+                    timeout_seconds=settings.release_request_timeout_seconds,
+                )
+                for release in active_releases:
+                    update = release_update_from_items(release, items, observed_at=now)
+                    if update is not None:
+                        updates.append(update)
+            except Exception as exc:
+                errors["jin10_macro"] = str(exc)
+        self.store.record_source_refresh(checked_sources=checked_sources, errors=errors)
         queued = 0
         baselined = 0
         unchanged = 0
@@ -77,7 +119,7 @@ class MacroNewsflashWorker:
                 update,
                 title=update.headline(),
                 content=self._format_content(update),
-                publish_latest=publish_latest,
+                publish_latest=publish_latest or bool(update.raw_payload.get("jin10_release_id")),
             )
             queued += result == "queued"
             baselined += result == "baselined"
@@ -158,16 +200,26 @@ class MacroNewsflashWorker:
             remaining = max(0.0, interval - (time.monotonic() - started))
             self._stop.wait(remaining)
 
-    def _poll_interval(self, now: datetime) -> int:
+    def _poll_interval(self, now: datetime) -> float:
+        now_utc = now.astimezone(UTC)
+        releases = self.store.upcoming_releases()
+        if self._active_jin10_releases(releases, now_utc):
+            return 1
         if self._fast_poll_due(now):
             return self.settings.release_poll_interval_seconds
-        if self._sources_due(now):
+        if self._sources_due(now) - JIN10_SOURCE_NAMES:
             return self.settings.poll_interval_seconds
-        return self.settings.quiet_poll_interval_seconds
+        next_start = self._next_jin10_tracking_start(releases, now_utc)
+        if next_start is None:
+            return self.settings.quiet_poll_interval_seconds
+        seconds_until_start = max(0.1, (next_start - now_utc).total_seconds())
+        return min(self.settings.quiet_poll_interval_seconds, seconds_until_start)
 
     def _fast_poll_due(self, now: datetime) -> bool:
         now_utc = now.astimezone(UTC)
         for release in self.store.upcoming_releases():
+            if JIN10_TRACKED_METRICS.intersection(release["metric_ids"]):
+                continue
             scheduled_at = datetime.fromisoformat(release["scheduled_at"]).astimezone(UTC)
             delta = scheduled_at - now_utc
             if -timedelta(minutes=2) <= delta <= timedelta(minutes=15):
@@ -179,6 +231,45 @@ class MacroNewsflashWorker:
             wall_time(8, 28) <= local_time <= wall_time(8, 45)
             or wall_time(13, 58) <= local_time <= wall_time(14, 15)
         )
+
+    def _active_jin10_releases(
+        self,
+        releases: list[dict[str, Any]],
+        now_utc: datetime,
+    ) -> list[dict[str, Any]]:
+        active: list[dict[str, Any]] = []
+        for release in releases:
+            if not JIN10_TRACKED_METRICS.intersection(release["metric_ids"]):
+                continue
+            if self.store.event_exists(f"jin10:{release['release_id']}"):
+                continue
+            scheduled_at = datetime.fromisoformat(release["scheduled_at"])
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=UTC)
+            scheduled_at = scheduled_at.astimezone(UTC)
+            delta = scheduled_at - now_utc
+            if -JIN10_RELEASE_END_AFTER <= delta <= JIN10_RELEASE_START_BEFORE:
+                active.append(release)
+        return active
+
+    def _next_jin10_tracking_start(
+        self,
+        releases: list[dict[str, Any]],
+        now_utc: datetime,
+    ) -> datetime | None:
+        starts: list[datetime] = []
+        for release in releases:
+            if not JIN10_TRACKED_METRICS.intersection(release["metric_ids"]):
+                continue
+            if self.store.event_exists(f"jin10:{release['release_id']}"):
+                continue
+            scheduled_at = datetime.fromisoformat(release["scheduled_at"])
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=UTC)
+            start_at = scheduled_at.astimezone(UTC) - JIN10_RELEASE_START_BEFORE
+            if start_at > now_utc:
+                starts.append(start_at)
+        return min(starts) if starts else None
 
     def _sources_due(self, now: datetime) -> set[str]:
         now_utc = now.astimezone(UTC)

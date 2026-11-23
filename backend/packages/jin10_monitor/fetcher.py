@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from time import time_ns
 from typing import Any
 
 import requests
 
 from .models import Jin10Item
+
+JIN10_TIMEZONE_UTC8 = timezone(timedelta(hours=8))
 
 
 def fetch_jin10_items(
@@ -18,7 +21,7 @@ def fetch_jin10_items(
     channel: str | None,
     timeout_seconds: float,
 ) -> list[Jin10Item]:
-    params: dict[str, str] = {}
+    params: dict[str, str] = {"_ts": str(time_ns())}
     if channel:
         params["channel"] = channel
     response = requests.get(endpoint_url, params=params, headers=headers, timeout=timeout_seconds)
@@ -163,6 +166,6 @@ def parse_jin10_datetime(value: str | None) -> datetime | None:
             return datetime.fromtimestamp(number, tz=UTC)
         normalized = text.replace("/", "-").replace("Z", "+00:00")
         parsed = datetime.fromisoformat(normalized)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=JIN10_TIMEZONE_UTC8)
     except Exception:
         return None

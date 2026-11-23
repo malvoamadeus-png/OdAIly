@@ -953,6 +953,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const requestedView = new URLSearchParams(window.location.search).get('view');
   const initialView = resolveInitialView(requestedView);
   const [view, setView] = useState<ConsoleView>(initialView);
+  const [jin10MenuOpen, setJin10MenuOpen] = useState(initialView === 'macro_newsflash');
   const [newsflashRefreshToken, setNewsflashRefreshToken] = useState(0);
   const [businessNewsRefreshToken, setBusinessNewsRefreshToken] = useState(0);
   const [xAgentRefreshToken, setXAgentRefreshToken] = useState(0);
@@ -1968,7 +1969,26 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
           </div>
           <div className="navGroup"><span className="navGroupTitle">信源与监测</span>
             <NavButton active={isSourceManagementView(view)} onClick={() => switchView('x')} icon={<Globe2 size={18} />}>账号与网站</NavButton>
-            <NavButton active={view === 'jin10'} onClick={() => switchView('jin10')} icon={<Radio size={18} />}>金十</NavButton>
+            <div className="navExpandable">
+              <div className="navExpandableRow">
+                <NavButton active={view === 'jin10'} onClick={() => switchView('jin10')} icon={<Radio size={18} />}>金十</NavButton>
+                <button
+                  className={jin10MenuOpen ? 'navExpandToggle open' : 'navExpandToggle'}
+                  type="button"
+                  title={jin10MenuOpen ? '收起金十子页' : '展开金十子页'}
+                  aria-label={jin10MenuOpen ? '收起金十子页' : '展开金十子页'}
+                  aria-expanded={jin10MenuOpen}
+                  onClick={() => setJin10MenuOpen((open) => !open)}
+                ><ChevronDown size={15} /></button>
+              </div>
+              {jin10MenuOpen && (
+                <button
+                  className={view === 'macro_newsflash' ? 'navSubItem active' : 'navSubItem'}
+                  type="button"
+                  onClick={() => switchView('macro_newsflash')}
+                ><CalendarDays size={16} /><span>美国数据追踪</span></button>
+              )}
+            </div>
             <NavButton active={view === 'whale'} onClick={() => switchView('whale')} icon={<Wallet size={18} />}>巨鲸</NavButton>
             <NavButton active={view === 'hyperliquid_news'} onClick={() => switchView('hyperliquid_news')} icon={<Wallet size={18} />}>Hyperliquid监测</NavButton>
             <NavButton active={view === 'meme'} onClick={() => switchView('meme')} icon={<Megaphone size={18} />}>Meme速递</NavButton>
@@ -1979,7 +1999,6 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             <NavButton active={view === 'gate_market'} onClick={() => switchView('gate_market')} icon={<Activity size={18} />}>Gate行情播报</NavButton>
             <NavButton active={view === 'stock_market'} onClick={() => switchView('stock_market')} icon={<Activity size={18} />}>股票行情播报</NavButton>
             <NavButton active={view === 'scheduled_brief'} onClick={() => switchView('scheduled_brief')} icon={<Timer size={18} />}>定时行情简报</NavButton>
-            <NavButton active={view === 'macro_newsflash'} onClick={() => switchView('macro_newsflash')} icon={<CalendarDays size={18} />}>美国数据追踪</NavButton>
           </div>
           <div className="navGroup"><span className="navGroupTitle">内容与发布规则</span>
             <NavButton active={view === 'prompts'} onClick={() => switchView('prompts')} icon={<FileText size={18} />}>Prompt及规则管理</NavButton>

@@ -2500,6 +2500,69 @@ nav a.active,
   color: #0f7a55;
 }
 
+.navExpandableRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+}
+
+.navExpandableRow > .navItem {
+  width: 100%;
+  min-width: 0;
+}
+
+.navExpandToggle {
+  display: grid;
+  width: 28px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #66717d;
+  cursor: pointer;
+}
+
+.navExpandToggle:hover,
+.navExpandToggle:focus-visible {
+  background: #f0f4f5;
+  color: #24323b;
+}
+
+.navExpandToggle svg {
+  transition: transform 140ms ease;
+}
+
+.navExpandToggle.open svg {
+  transform: rotate(180deg);
+}
+
+.navSubItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 12px);
+  min-height: 34px;
+  margin: 2px 0 2px 12px;
+  padding: 0 10px 0 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #5c6871;
+  cursor: pointer;
+  text-align: left;
+}
+
+.navSubItem span {
+  font-size: 13px;
+}
+
+.navSubItem:hover,
+.navSubItem.active {
+  background: #e8f5ef;
+  color: #0f7a55;
+}
+
 .content {
   min-width: 0;
   padding: 22px 24px 40px;
@@ -3118,6 +3181,10 @@ h2 {
 .macroNewsflashEventList article small {
   grid-column: 1 / -1;
   color: #a43b2e;
+}
+
+.macroNewsflashEventList article .macroNewsflashEventValues {
+  color: #6b7680;
 }
 
 .memeLayout {
@@ -6007,6 +6074,27 @@ textarea:focus {
   nav a,
   .navItem {
     justify-content: center;
+    padding: 0;
+  }
+
+  .navExpandableRow {
+    grid-template-columns: minmax(0, 1fr) 24px;
+  }
+
+  .navExpandableRow > .navItem span,
+  .navSubItem span {
+    display: none;
+  }
+
+  .navExpandToggle {
+    width: 24px;
+    height: 28px;
+  }
+
+  .navSubItem {
+    justify-content: center;
+    width: 100%;
+    margin-left: 0;
     padding: 0;
   }
 

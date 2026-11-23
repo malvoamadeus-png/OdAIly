@@ -207,9 +207,11 @@ class MacroNewsflashStore:
             **update.raw_payload,
             "reported_actual": update.actual,
             "reported_previous": update.previous,
+            "reported_expected": update.expected,
             "rate_action": update.rate_action,
         }
         raw_json = json.dumps(raw_snapshot, ensure_ascii=False, separators=(",", ":"))
+        is_scheduled_jin10 = bool(update.raw_payload.get("jin10_release_id"))
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             state = connection.execute(
@@ -232,10 +234,11 @@ class MacroNewsflashStore:
                         raw_json,
                     ),
                 )
-                if not publish_latest:
+                if not publish_latest and not is_scheduled_jin10:
                     return "baselined"
             elif update.reference_period <= state["last_reference_period"]:
-                return "unchanged"
+                if not is_scheduled_jin10:
+                    return "unchanged"
             else:
                 connection.execute(
                     """UPDATE macro_metric_state SET last_reference_period = ?, last_event_key = ?,
@@ -251,7 +254,7 @@ class MacroNewsflashStore:
                         update.metric_id,
                     ),
                 )
-            connection.execute(
+            cursor = connection.execute(
                 """INSERT OR IGNORE INTO macro_newsflash_events (
                     event_key, metric_id, reference_period, source_name, source_url, actual,
                     previous, title, content, status, raw_json, created_at
@@ -270,7 +273,15 @@ class MacroNewsflashStore:
                     now,
                 ),
             )
-        return "queued"
+        return "queued" if cursor.rowcount else "unchanged"
+
+    def event_exists(self, event_key: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM macro_newsflash_events WHERE event_key = ? LIMIT 1",
+                (event_key,),
+            ).fetchone()
+        return row is not None
 
     def claim_pending(self, *, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -344,7 +355,7 @@ class MacroNewsflashStore:
                 "SELECT * FROM macro_metric_state ORDER BY metric_id"
             ).fetchall()
             events = connection.execute(
-                "SELECT event_key, metric_id, reference_period, actual, previous, title, status, error, created_at, published_at "
+                "SELECT event_key, metric_id, reference_period, actual, previous, title, status, error, created_at, published_at, raw_json "
                 "FROM macro_newsflash_events ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -372,13 +383,22 @@ class MacroNewsflashStore:
                 }
                 for row in states
             ],
-            "events": [dict(row) for row in events],
+            "events": [],
             "scheduled_releases": [],
             "schedule_refreshed_at": metadata.get("schedule_refreshed_at"),
             "schedule_errors": json.loads(metadata.get("schedule_errors") or "{}"),
             "source_checked_at": metadata.get("source_checked_at"),
             "source_errors": json.loads(metadata.get("source_errors") or "{}"),
         }
+        for row in events:
+            event = dict(row)
+            try:
+                snapshot = json.loads(event.pop("raw_json"))
+            except (TypeError, ValueError):
+                snapshot = {}
+            event["expected"] = snapshot.get("reported_expected") or ""
+            event["release_id"] = snapshot.get("jin10_release_id")
+            result["events"].append(event)
         for metric, row in zip(result["metrics"], states):
             try:
                 snapshot = json.loads(row["last_raw_json"])
@@ -386,6 +406,7 @@ class MacroNewsflashStore:
                 snapshot = {}
             metric["actual"] = snapshot.get("reported_actual")
             metric["previous"] = snapshot.get("reported_previous")
+            metric["expected"] = snapshot.get("reported_expected")
             metric["rate_action"] = snapshot.get("rate_action")
         for row in releases:
             item = dict(row)

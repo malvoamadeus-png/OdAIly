@@ -2160,6 +2160,7 @@ export type MacroNewsflashMetricState = {
   source_url: string;
   actual: string | null;
   previous: string | null;
+  expected: string | null;
   rate_action: string | null;
 };
 
@@ -2169,6 +2170,8 @@ export type MacroNewsflashEvent = {
   reference_period: string;
   actual: string;
   previous: string;
+  expected: string;
+  release_id: string | null;
   title: string;
   status: string;
   error: string | null;
