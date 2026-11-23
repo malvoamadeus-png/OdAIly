@@ -1601,7 +1601,10 @@ class HotTopicService:
                 rows = self.db.execute(
                     "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i JOIN hottopic_accounts a "
                     "ON a.screen_name_lower=i.screen_name_lower WHERE i.processed_at IS NULL AND a.hot_topic_enabled=1 "
-                    "ORDER BY i.collected_at LIMIT ?",
+                    "ORDER BY CASE WHEN julianday(i.collected_at)>=julianday('now','-48 hours') THEN 0 ELSE 1 END,"
+                    "CASE WHEN julianday(i.collected_at)>=julianday('now','-48 hours') THEN julianday(i.collected_at) END DESC,"
+                    "CASE WHEN julianday(i.collected_at)<julianday('now','-48 hours') THEN julianday(i.collected_at) END ASC,i.tweet_id "
+                    "LIMIT ?",
                     (AGGREGATION_BATCH_SIZE,),
                 ).fetchall()
         now = utc_now()

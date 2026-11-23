@@ -1545,7 +1545,10 @@ class HotTopicPostgresRepository:
             rows = connection.execute(
                 "SELECT i.tweet_id,i.payload_json FROM hottopic_inbox i JOIN hottopic_accounts a "
                 "ON a.screen_name_lower=i.screen_name_lower WHERE i.processed_at IS NULL AND a.hot_topic_enabled=true "
-                "ORDER BY i.collected_at LIMIT %s", (max(1, int(limit)),),
+                "ORDER BY CASE WHEN i.collected_at>=now()-interval '48 hours' THEN 0 ELSE 1 END,"
+                "CASE WHEN i.collected_at>=now()-interval '48 hours' THEN i.collected_at END DESC,"
+                "CASE WHEN i.collected_at<now()-interval '48 hours' THEN i.collected_at END ASC,i.tweet_id "
+                "LIMIT %s", (max(1, int(limit)),),
             ).fetchall()
             return [dict(row) for row in rows]
 
