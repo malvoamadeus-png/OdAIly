@@ -1608,7 +1608,10 @@ class HotTopicService:
         if not rows and not self.aggregator.has_due_topic_refresh(now):
             return None
         try:
-            payloads = [json.loads(row["payload_json"]) for row in rows]
+            payloads = []
+            for row in rows:
+                payload = row["payload_json"]
+                payloads.append(payload if isinstance(payload, dict) else json.loads(payload))
             result = self.aggregator.process_batch(payloads, now)
             self.scan_visible_topic_merges()
             if self.event_tracker is not None:
