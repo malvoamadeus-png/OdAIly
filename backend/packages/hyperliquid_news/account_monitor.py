@@ -7,7 +7,13 @@ from typing import Any
 
 from .client import NewsClient
 from .detector import evaluate_address
-from .discovery import LEADERBOARD_WINDOWS, trade_candidates
+from .discovery import (
+    HFT_AUTO_BLOCK_ACTOR,
+    HFT_DISCOVERY_POSITION_PROBE_THRESHOLD,
+    LEADERBOARD_WINDOWS,
+    detect_high_frequency_quant,
+    trade_candidates,
+)
 from .history import fill_key
 from .models import Rules, Position, number
 from .store import NewsStore, encode
@@ -261,6 +267,26 @@ class AccountProfitMonitor:
                 size_changed = ({c: str(p.size) for c, p in positions.items()} !=
                     {c: p['size'] for c, p in previous_positions.items()})
                 query_history = bool(baseline and (size_changed or pending or observed-history_checked >= 900000))
+                if not baseline and len(positions) >= HFT_DISCOVERY_POSITION_PROBE_THRESHOLD and not self.store.is_manual_protected(address):
+                    stage = 'hft_discovery_probe'
+                    stage_started = time.monotonic()
+                    _log('account_monitor.address_stage_started', address=address, stage=stage,
+                         position_count=len(positions), observed_ms=clock_ms())
+                    probe_fills, probe_coverage = self.client.history(address, max(started, observed - DAY), observed, max_pages=2)
+                    hft = detect_high_frequency_quant(
+                        probe_fills,
+                        now_ms=observed,
+                        pagination_complete=probe_coverage.get('pagination_complete', True),
+                    )
+                    _log('account_monitor.address_stage_completed', address=address, stage=stage,
+                         fill_count=len(probe_fills), flagged=bool(hft),
+                         elapsed_ms=int((time.monotonic() - stage_started) * 1000))
+                    if hft:
+                        self.store.save_address_block(address, True, updated_by=HFT_AUTO_BLOCK_ACTOR)
+                        report.setdefault('auto_blocked_hft', []).append({'address': address, **hft})
+                        _log('account_monitor.address_auto_blocked', address=address, **hft,
+                             elapsed_ms=int((time.monotonic() - address_started) * 1000))
+                        continue
                 history_end_ms = observed
                 if query_history:
                     stage = 'fill_history'
@@ -277,6 +303,17 @@ class AccountProfitMonitor:
                         'coverage': 'production_action_monitoring_no_historical_backfill'}
                 pending_fills = [f for f in pending.get('fills', []) if int(f['time']) >= window_floor]
                 fetched = list({fill_key(f): f for f in pending_fills + fetched}.values())
+                hft = detect_high_frequency_quant(
+                    fetched,
+                    now_ms=observed,
+                    pagination_complete=coverage.get('pagination_complete', True),
+                ) if query_history else None
+                if hft and not self.store.is_manual_protected(address):
+                    self.store.save_address_block(address, True, updated_by=HFT_AUTO_BLOCK_ACTOR)
+                    report.setdefault('auto_blocked_hft', []).append({'address': address, **hft})
+                    _log('account_monitor.address_auto_blocked', address=address, **hft,
+                         elapsed_ms=int((time.monotonic() - address_started) * 1000))
+                    continue
                 if not coverage.get('pagination_complete', True):
                     # Never publish a partial action and then publish its remaining
                     # pages as another action. Keep the successful baseline intact.

@@ -620,6 +620,19 @@ class NewsStore:
                            ('address_block:' + address_key(address),)).fetchone()
         return bool(row and json.loads(row[0]).get('blocked'))
 
+    def is_manual_protected(self, address: str) -> bool:
+        address = address_key(address)
+        with connect_sqlite(self.path) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hl_news_address_names'").fetchone():
+                row = conn.execute('SELECT manual_locked FROM hl_news_address_names WHERE address=?', (address,)).fetchone()
+                if row and bool(row[0]):
+                    return True
+            note_row = conn.execute('SELECT payload FROM hl_news_metadata WHERE key=?', ('address_note:' + address,)).fetchone()
+        if not note_row:
+            return False
+        note = json.loads(note_row[0])
+        return isinstance(note, dict) and (note.get('origin') == 'manual' or (bool(note.get('note')) and 'origin' not in note))
+
     def event_blocked(self, event: dict[str, Any], *, conn=None) -> bool:
         if conn is None:
             with connect_sqlite(self.path) as connection:

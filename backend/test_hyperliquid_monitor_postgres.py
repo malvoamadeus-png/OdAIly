@@ -241,3 +241,122 @@ def test_account_monitor_prunes_expired_pending_fills_outside_day_window(tmp_pat
     assert report["incomplete_history"] == [addr]
     saved = store.metadata("account_pending_fills:" + addr, {})
     assert [f["tid"] for f in saved["fills"]] == [11, 12]
+
+
+def test_detect_high_frequency_quant_distinguishes_bots_from_twap_whales():
+    from packages.hyperliquid_news.discovery import detect_high_frequency_quant
+
+    now_ms = 20 * 86_400_000
+    # Directional whale: 1,200 fills from only 100 distinct orders in 18 seconds -> must NOT block.
+    twap_fills = [
+        {"coin": "BTC", "time": now_ms - (i % 18) * 1000, "tid": i, "oid": i % 100}
+        for i in range(1200)
+    ]
+    assert detect_high_frequency_quant(twap_fills, now_ms=now_ms, pagination_complete=True) is None
+    assert detect_high_frequency_quant(twap_fills, now_ms=now_ms, pagination_complete=False) is None
+
+    # High-frequency quant bot: 3,000 distinct orders in 24h -> block immediately.
+    bot_oids = [
+        {"coin": f"C{i % 20}", "time": now_ms - i * 1000, "tid": i, "oid": 10000 + i}
+        for i in range(3000)
+    ]
+    hit = detect_high_frequency_quant(bot_oids, now_ms=now_ms, pagination_complete=True)
+    assert hit is not None and hit["reason"] == "oids_24h_exceeded"
+
+    # Early-stop saturated 2-page burst: 2,000 fills / 1,600 oids within 1 hour -> extrapolated >= 6,000/day.
+    burst_bot = [
+        {"coin": f"C{i % 15}", "time": now_ms - i * 1500, "tid": i, "oid": 20000 + (i % 1600)}
+        for i in range(2000)
+    ]
+    early = detect_high_frequency_quant(burst_bot, now_ms=now_ms, pagination_complete=False)
+    assert early is not None and early["reason"] == "extrapolated_oids_24h_exceeded"
+
+
+def test_normal_monitor_auto_blocks_hft_unless_manual_protected(tmp_path):
+    from packages.hyperliquid_news.naming import NamingStore
+
+    bot_addr = "0x4444444444444444444444444444444444444444"
+    vip_addr = "0x5555555555555555555555555555555555555555"
+    now_ms = 200 * 86_400_000
+    bot_fills = [
+        {"coin": "ETH", "time": now_ms - i * 1000, "tid": i, "oid": 50000 + i, "hash": f"0x{i:x}",
+         "side": "B", "sz": "1", "px": "100", "dir": "Open Long", "startPosition": "0", "closedPnl": "0", "fee": "0"}
+        for i in range(3005)
+    ]
+
+    store = NewsStore(tmp_path / "hft_normal.sqlite")
+    store.initialize()
+    NamingStore(store.path).initialize()
+    store.discover(bot_addr, source={"kind": "manual"}, now_ms=now_ms - 1000, limit=None)
+    store.discover(vip_addr, source={"kind": "manual"}, now_ms=now_ms - 1000, limit=None)
+    store.save_address_note(vip_addr, "VIP巨鲸", updated_by="editor")
+
+    class BotClient(FakeClient):
+        def recent_trades(self, coin):
+            return []
+
+        def history(self, address, start_ms, end_ms, *, max_pages=6):
+            return bot_fills, {"pagination_complete": False, "next_start_ms": end_ms - 1000, "reason": "page_budget"}
+
+    monitor = NewsMonitor(store=store, client=BotClient(), leaderboard_seeds=0, addresses_per_pass=2)
+    report = monitor.run_once(now_ms=now_ms)
+
+    assert [item["address"] for item in report["auto_blocked_hft"]] == [bot_addr]
+    assert store.blocked(bot_addr) is True
+    assert store.metadata("normal_pending_fills:" + bot_addr, {}) == {}
+    assert store.blocked(vip_addr) is False
+    assert vip_addr in report["incomplete_history"]
+
+
+def test_account_monitor_discovery_probe_auto_blocks_mega_mm_on_first_poll(tmp_path):
+    from packages.hyperliquid_news.account_monitor import AccountProfitMonitor, DAY
+    from packages.hyperliquid_news.naming import NamingStore
+
+    mm_addr = "0x6666666666666666666666666666666666666666"
+    started = 10 * DAY
+    now_ms = 20 * DAY
+    probe_fills = [
+        {"coin": f"C{i % 20}", "time": now_ms - i * 1000, "tid": i, "oid": 90000 + i, "hash": f"0x{i:x}",
+         "side": "B", "sz": "1", "px": "100", "dir": "Open Long", "startPosition": "0", "closedPnl": "0", "fee": "0"}
+        for i in range(3005)
+    ]
+
+    store = NewsStore(tmp_path / "hft_acct.sqlite")
+    store.initialize()
+    NamingStore(store.path).initialize()
+    store.save_global("production_account_profit", {"enabled": True, "started_ms": started, "enabled_scenarios": ["account_profit"]}, [])
+    store.discover(mm_addr, source={"kind": "leaderboard"}, now_ms=now_ms, limit=None)
+    store.schedule_account(mm_addr, now_ms=now_ms, leaderboard_qualified=True)
+
+    class MegaMMClient(FakeClient):
+        def leaderboard(self):
+            return []
+
+        def recent_trades(self, coin):
+            return []
+
+        def dex_names(self):
+            return [""]
+
+        def markets(self, dex):
+            return {f"C{i}": {"dex": "", "mark": "100"} for i in range(85)}
+
+        def portfolio(self, address):
+            return [["perpAllTime", {"pnlHistory": [[now_ms, "25000000"]]}]]
+
+        def positions(self, address, dex):
+            return {
+                "assetPositions": [
+                    {"position": {"coin": f"C{i}", "szi": "10", "positionValue": "1000", "unrealizedPnl": "0", "liquidationPx": None}}
+                    for i in range(85)
+                ]
+            }
+
+        def history(self, address, start_ms, end_ms, **kwargs):
+            return probe_fills, {"pagination_complete": False, "next_start_ms": end_ms - 1000, "reason": "page_budget"}
+
+    monitor = AccountProfitMonitor(store, MegaMMClient())
+    report = monitor.run_once(now_ms=now_ms)
+    assert [item["address"] for item in report["auto_blocked_hft"]] == [mm_addr]
+    assert store.blocked(mm_addr) is True
+    assert store.account_due(now_ms + DAY, 10) == []

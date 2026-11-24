@@ -5,7 +5,13 @@ import time
 from typing import Any
 
 from .client import NewsClient, address_key
-from .discovery import enrichment_reasons, leaderboard_candidates, trade_candidates
+from .discovery import (
+    HFT_AUTO_BLOCK_ACTOR,
+    detect_high_frequency_quant,
+    enrichment_reasons,
+    leaderboard_candidates,
+    trade_candidates,
+)
 from .detector import evaluate_address, evaluate_divergence
 from .history import fill_key, summarize
 from .compact_history import extend_compact, summarize_compact
@@ -133,6 +139,15 @@ class NewsMonitor:
                 min_pending_ms = max(start_ms, boundary + 1) if boundary is not None else start_ms
                 pending_fills = [f for f in pending.get('fills', []) if int(f['time']) >= min_pending_ms]
                 fetched = list({fill_key(f): f for f in pending_fills + fetched}.values())
+                hft = detect_high_frequency_quant(
+                    fetched,
+                    now_ms=now_ms,
+                    pagination_complete=coverage.get('pagination_complete', True),
+                ) if (reasons or pending) else None
+                if hft and not self.store.is_manual_protected(address):
+                    self.store.save_address_block(address, True, updated_by=HFT_AUTO_BLOCK_ACTOR)
+                    result.setdefault('auto_blocked_hft', []).append({'address': address, **hft})
+                    continue
                 if not coverage.get('pagination_complete', True):
                     self.store.save_global(pending_key, {'fills': fetched, 'coverage': coverage}, [])
                     self.store.record_error(address, now_ms, 'incomplete_history: baseline preserved', normal_schedule=True)

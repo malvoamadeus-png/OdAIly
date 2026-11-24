@@ -321,7 +321,16 @@ systemctl enable --now odaily-hyperliquid-account-profit.service
 
 ## 人工地址拉黑边界
 
-所有发现与监测方向共用 SQLite address_block 元数据。拉黑从轮询池移除地址，发现、读取监测池、观察提交、全局多地址候选、派发及快讯任务阶段均拦截；发布与插件提醒前再次复核。未完成任务使用既有 discarded 终态，历史完成结果保留。解除后清除旧观察基线，重新发现只产生后续新操作，last_blocked_ms 永久阻止旧事件回放。搜索与认证维护接口见 `控制台-Hyperliquid监测.md`。
+所有发现与监测方向共用 `address_block` 元数据。拉黑从轮询池移除地址，并同步清理 `account_pending_fills` / `normal_pending_fills` 积压记录；发现、读取监测池、观察提交、全局多地址候选、派发及快讯任务阶段均拦截；发布与插件提醒前再次复核。未完成任务使用既有 discarded 终态，历史完成结果保留。解除后清除旧观察基线，重新发现只产生后续新操作，last_blocked_ms 永久阻止旧事件回放。搜索与认证维护接口见 `控制台-Hyperliquid监测.md`。
+
+### 高频量化地址源头自动拦截（2026-11-24）
+
+为防止高频做市/量化机器人无限撑大 `pending_fills` 与 `hl_news_fills`、`AccountProfitMonitor` 与 `NewsMonitor` 复用 `discovery.detect_high_frequency_quant()` 在以下两个时机自动识别并拉黑（`updated_by='auto:high_frequency_quant'`）：
+
+- 首次建基线时若单地址同时持仓数 `>= 80`，执行一次 2 页最近 24h 成交探针；
+- 后续每次拉取 `userFillsByTime` 后、写入 `pending_fills` 或提交基线之前复核最近 24h 活动。
+
+命中任一阈值即触发自动拉黑：24h 独立订单数 `oids >= 3,000`、24h 成交笔数 `fills >= 10,000`、24h 活跃秒数 `>= 3,600`；或分页未完且单批已满 `>= 2,000` 笔 / `>= 1,500` 个独立订单，按时间跨度外推 24h 订单 `>= 6,000`（或成交 `>= 20,000`）。以独立订单数为主指标，避免把单笔大额 TWAP 拆单的定向巨鲸误判为高频机器人。已人工锁定备注（`manual_locked = true` 或人工 `address_note`）的地址默认豁免，不自动拉黑。
 
 ## 账户总亏损高地址操作：正式接入（2026-10-15）
 

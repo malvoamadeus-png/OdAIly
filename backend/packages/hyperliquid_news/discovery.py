@@ -7,6 +7,63 @@ from .client import address_key
 from .models import Position, Rules, ZERO, number
 
 LEADERBOARD_WINDOWS = ('day', 'week', 'month', 'allTime')
+HFT_MAX_24H_OIDS = 3000
+HFT_MAX_24H_FILLS = 10000
+HFT_MAX_24H_ACTIVE_SECONDS = 3600
+HFT_EARLY_MIN_OIDS = 1500
+HFT_EARLY_MIN_FILLS = 2000
+HFT_EARLY_EXTRAPOLATED_24H_OIDS = 6000
+HFT_EARLY_EXTRAPOLATED_24H_FILLS = 20000
+HFT_DISCOVERY_POSITION_PROBE_THRESHOLD = 80
+HFT_AUTO_BLOCK_ACTOR = 'auto:high_frequency_quant'
+
+
+def detect_high_frequency_quant(
+    fills: list[dict[str, Any]],
+    *,
+    now_ms: int,
+    pagination_complete: bool = True,
+) -> dict[str, Any] | None:
+    """Detect high-frequency quant/market-making addresses from 24h fill activity.
+
+    Uses distinct order IDs (oid) as primary signal so single large directional TWAP orders
+    split into many partial fills are not misclassified, plus hard fills/active-second caps
+    and an early-stop extrapolated check when a bounded page fetch is already saturated.
+    """
+    window_start = now_ms - 86_400_000
+    recent = [f for f in fills if int(f['time']) >= window_start]
+    if not recent:
+        return None
+    fill_count = len(recent)
+    oid_count = len({f.get('oid') for f in recent if f.get('oid') is not None})
+    active_secs = len({int(f['time']) // 1000 for f in recent})
+    coins = len({str(f.get('coin') or '') for f in recent if f.get('coin')})
+
+    reason = None
+    if oid_count >= HFT_MAX_24H_OIDS:
+        reason = 'oids_24h_exceeded'
+    elif fill_count >= HFT_MAX_24H_FILLS:
+        reason = 'fills_24h_exceeded'
+    elif active_secs >= HFT_MAX_24H_ACTIVE_SECONDS:
+        reason = 'active_seconds_24h_exceeded'
+    elif not pagination_complete and fill_count >= HFT_EARLY_MIN_FILLS and oid_count >= HFT_EARLY_MIN_OIDS:
+        times = [int(f['time']) for f in recent]
+        span_ms = max(60_000, max(times) - min(times))
+        scale = 86_400_000 / span_ms
+        if oid_count * scale >= HFT_EARLY_EXTRAPOLATED_24H_OIDS:
+            reason = 'extrapolated_oids_24h_exceeded'
+        elif fill_count * scale >= HFT_EARLY_EXTRAPOLATED_24H_FILLS:
+            reason = 'extrapolated_fills_24h_exceeded'
+    if not reason:
+        return None
+    return {
+        'reason': reason,
+        'fills_24h': fill_count,
+        'oids_24h': oid_count,
+        'active_seconds_24h': active_secs,
+        'coins_24h': coins,
+        'pagination_complete': bool(pagination_complete),
+    }
 
 
 def leaderboard_candidates(rows: list[dict[str, Any]], per_side: int, now_ms: int):
