@@ -91,6 +91,20 @@ STATE_TABLES = {"hl_news_state", "hl_news_normal_state"}
 TERMINAL_TASK_STATUSES = ("ready_review", "auto_published", "published", "discarded", "duplicate", "expired", "legacy_skipped")
 
 
+def address_not_blocked_sql(address_expr: str) -> str:
+    """Exclude blocked addresses without detoasting or casting non-block metadata rows."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM hl_news_metadata b "
+        f"WHERE b.key='address_block:' || {address_expr} "
+        f"AND starts_with(b.key,'address_block:') "
+        f"AND CASE WHEN starts_with(b.key,'address_block:') THEN b.payload->>'blocked'='true' ELSE false END) "
+        f"AND NOT EXISTS (SELECT 1 FROM hl_news_metadata_large b "
+        f"WHERE b.key='address_block:' || {address_expr} "
+        f"AND starts_with(b.key,'address_block:') "
+        f"AND CASE WHEN starts_with(b.key,'address_block:') THEN (b.payload::jsonb)->>'blocked'='true' ELSE false END)"
+    )
+
+
 class PostgresNewsStore:
     def __init__(self, path: Path) -> None:
         self.backend = "postgres"
@@ -157,7 +171,7 @@ class PostgresNewsStore:
             if self.blocked(address, conn=conn):
                 return False
             row = conn.execute("SELECT sources FROM hl_news_addresses WHERE address=%s", (address,)).fetchone()
-            if row is None and limit is not None and conn.execute("SELECT count(*) AS count FROM hl_news_addresses WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_addresses.address AND (b.payload::jsonb)->>'blocked'='true')").fetchone()["count"] >= limit:
+            if row is None and limit is not None and conn.execute(f"SELECT count(*) AS count FROM hl_news_addresses WHERE {address_not_blocked_sql('hl_news_addresses.address')}").fetchone()["count"] >= limit:
                 return False
             sources = row["sources"] if row else []
             if isinstance(sources, str):
@@ -192,11 +206,12 @@ class PostgresNewsStore:
         return {"address": address, "created": row is None, "already_manual": already}
 
     def addresses(self, limit: int, *, normal_schedule: bool = False) -> list[dict[str, Any]]:
+        blocked = address_not_blocked_sql("a.address")
         with self._connect() as conn:
             if normal_schedule:
-                rows = conn.execute("SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address) WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND (b.payload::jsonb)->>'blocked'='true') ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s", (limit,)).fetchall()
+                rows = conn.execute(f"SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address) WHERE {blocked} ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s", (limit,)).fetchall()
             else:
-                rows = conn.execute("SELECT a.* FROM hl_news_addresses a WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || a.address AND (b.payload::jsonb)->>'blocked'='true') ORDER BY a.last_polled_ms,a.address LIMIT %s", (limit,)).fetchall()
+                rows = conn.execute(f"SELECT a.* FROM hl_news_addresses a WHERE {blocked} ORDER BY a.last_polled_ms,a.address LIMIT %s", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     def load(self, address: str, *, state_table: str = "hl_news_state") -> dict[str, Any] | None:
@@ -404,8 +419,9 @@ class PostgresNewsStore:
 
     def recent_states(self, since_ms: int, *, state_table: str = "hl_news_state") -> dict[str, dict[str, Any]]:
         table = self._state_table(state_table)
+        blocked = address_not_blocked_sql(f"{table}.address")
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT address,state,history FROM {table} WHERE observed_ms>=%s AND NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || {table}.address AND (b.payload::jsonb)->>'blocked'='true')", (since_ms,)).fetchall()
+            rows = conn.execute(f"SELECT address,state,history FROM {table} WHERE observed_ms>=%s AND {blocked}", (since_ms,)).fetchall()
         return {row["address"]: {"state": row["state"], "history": row["history"]} for row in rows}
 
     def candidates(self) -> list[dict[str, Any]]:
@@ -543,7 +559,7 @@ class PostgresNewsStore:
     def account_due(self, now_ms: int, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
-        blocked = "NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || hl_news_account_pool.address AND (b.payload::jsonb)->>'blocked'='true')"
+        blocked = address_not_blocked_sql("hl_news_account_pool.address")
         with self._connect() as conn:
             probe = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT 1", (now_ms,)).fetchall()
             active = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=true AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT %s", (now_ms, limit-len(probe))).fetchall()

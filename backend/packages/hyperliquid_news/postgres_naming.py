@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any
 
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres, postgres_transaction
+from .postgres_store import address_not_blocked_sql
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS hl_news_address_names (
@@ -65,12 +66,12 @@ class PostgresNamingStore:
 
     def claim_due(self, *, now_ms: int, limit: int=100) -> list[dict[str,Any]]:
         token=uuid.uuid4().hex
+        blocked=address_not_blocked_sql("n.address")
         with self._connect() as conn:
             conn.execute("UPDATE hl_news_address_names SET inflight_token=NULL,inflight_started_ms=NULL WHERE inflight_started_ms IS NOT NULL AND inflight_started_ms<%s",(now_ms-3600000,))
-            rows=conn.execute("""SELECT n.* FROM hl_news_address_names n JOIN hl_news_addresses a USING(address)
+            rows=conn.execute(f"""SELECT n.* FROM hl_news_address_names n JOIN hl_news_addresses a USING(address)
                 WHERE n.manual_locked=false AND n.status<>'blocked' AND n.inflight_token IS NULL AND n.next_check_ms<=%s AND n.retry_after_ms<=%s
-                AND NOT EXISTS(SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:'||n.address AND b.payload->>'blocked'='true')
-                AND NOT EXISTS(SELECT 1 FROM hl_news_metadata_large b WHERE b.key='address_block:'||n.address AND (b.payload::jsonb)->>'blocked'='true')
+                AND {blocked}
                 ORDER BY n.next_check_ms,n.address FOR UPDATE OF n SKIP LOCKED LIMIT %s""",(now_ms,now_ms,max(1,min(limit,20)))).fetchall()
             addresses=[row["address"] for row in rows]
             if addresses:
