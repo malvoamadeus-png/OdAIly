@@ -589,6 +589,7 @@ class TopicAggregator:
         semantic_review_batch_size: int = SEMANTIC_REVIEW_BATCH_SIZE,
         semantic_review_backfill_limit: int = SEMANTIC_REVIEW_BACKFILL_LIMIT,
         postgres_repository: Any | None = None,
+        load_retrieval_cache: bool = True,
     ) -> None:
         self.postgres_repository = postgres_repository
         self.database = str(database)
@@ -619,7 +620,9 @@ class TopicAggregator:
             self._migrate_topic_claim_reviews()
         self._retrieval_cache: dict[str, dict[str, Any]] = {}
         self._feature_index: defaultdict[str, set[str]] = defaultdict(set)
-        self._load_retrieval_cache()
+        self._retrieval_cache_loaded = False
+        if load_retrieval_cache:
+            self._load_retrieval_cache()
         self.extractor = extractor or self._extract_claims
         self.resolver = resolver
         self.brief_writer = brief_writer
@@ -2110,6 +2113,7 @@ class TopicAggregator:
         )
 
     def _retrieve_candidates(self, claim: Claim, item: ContentItem, at: str) -> list[Candidate]:
+        self._ensure_retrieval_cache_loaded()
         claim_tokens = tokens(claim.claim_text)
         claim_keys = hard_keys(item, claim.claim_text)
         # A long original can be split into several claims.  A later claim
@@ -3142,6 +3146,7 @@ class TopicAggregator:
     def _review_topic_pairs(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
         if not self.topic_merge_reviewer:
             return []
+        self._ensure_retrieval_cache_loaded()
         if self.postgres_repository is not None:
             return self._review_topic_pairs_postgres(dirty_topic_ids, at)
         visible_ids = {
@@ -3243,6 +3248,7 @@ class TopicAggregator:
         return requests
 
     def _review_topic_pairs_postgres(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        self._ensure_retrieval_cache_loaded()
         visible_ids = self.postgres_repository.visible_open_topic_ids(dirty_topic_ids)
         pairs: dict[tuple[str, str], dict[str, Any]] = {}
         for topic_id in sorted(visible_ids):
@@ -3328,6 +3334,7 @@ class TopicAggregator:
                              for row in profile["rows"][-6:]]}
 
     def _consolidate_dirty_topics(self, dirty_topic_ids: set[str], at: str) -> list[dict[str, str]]:
+        self._ensure_retrieval_cache_loaded()
         if self.postgres_repository is not None:
             label_support: defaultdict[str, set[str]] = defaultdict(set)
             dollar_support: set[str] = set()
@@ -3570,7 +3577,12 @@ class TopicAggregator:
                 "primary_contracts": primary_contracts,
             })
 
+    def _ensure_retrieval_cache_loaded(self) -> None:
+        if not self._retrieval_cache_loaded:
+            self._load_retrieval_cache()
+
     def _load_retrieval_cache(self) -> None:
+        self._retrieval_cache_loaded = True
         if self.postgres_repository is not None:
             rows = self.postgres_repository.load_topic_retrieval_cache()
             for row in rows:
@@ -3597,9 +3609,12 @@ class TopicAggregator:
     def _reload_retrieval_cache(self) -> None:
         self._retrieval_cache.clear()
         self._feature_index.clear()
+        self._retrieval_cache_loaded = False
         self._load_retrieval_cache()
 
     def _cache_topic(self, topic_id: str, value: dict[str, Any]) -> None:
+        if not self._retrieval_cache_loaded:
+            return
         old = self._retrieval_cache.get(topic_id)
         if old:
             for feature in old["tokens"]:

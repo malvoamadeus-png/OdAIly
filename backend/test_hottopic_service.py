@@ -501,3 +501,30 @@ def test_maintain_records_sqlite_lock_and_leaves_the_worker_alive(service: HotTo
     ).fetchone()
     assert event is not None
     assert "database is locked" in event["detail_json"]
+
+
+def test_hottopic_service_can_defer_retrieval_cache_until_retrieval(tmp_path: Path) -> None:
+    db_path = tmp_path / "lazy_hottopic.sqlite"
+    seeded = HotTopicService(database_path=db_path, model="")
+    seeded.aggregator.connection.execute(
+        "INSERT INTO topics(topic_id,canonical_subject,core_entities_json,event_or_issue,working_title,matching_status,visibility,started_at,first_seen_at,seed_expires_at,last_evidence_at) "
+        "VALUES('t-lazy','btc','[\"BTC\"]','btc rally','BTC Rally','active','visible','2026-11-24T00:00:00+00:00','2026-11-24T00:00:00+00:00','2026-11-25T00:00:00+00:00','2026-11-24T01:00:00+00:00')"
+    )
+    seeded.aggregator.connection.execute(
+        "INSERT INTO retrieval_state(scope_type,scope_id,tokens_json,hard_keys_json,entities_json,representative_claim_ids_json,recent_claim_ids_json,updated_at) "
+        "VALUES('topic','t-lazy','[\"btc\",\"rally\"]','[\"asset:btc\"]','[\"BTC\"]','[]','[]','2026-11-24T01:00:00+00:00')"
+    )
+    seeded.aggregator.connection.commit()
+    seeded.close()
+
+    reader = HotTopicService(database_path=db_path, model="", load_retrieval_cache=False)
+    try:
+        assert reader.aggregator._retrieval_cache_loaded is False
+        assert reader.aggregator._retrieval_cache == {}
+        assert reader.dashboard()["topics"]
+        assert reader.aggregator._retrieval_cache_loaded is False
+        reader.aggregator._ensure_retrieval_cache_loaded()
+        assert reader.aggregator._retrieval_cache_loaded is True
+        assert "t-lazy" in reader.aggregator._retrieval_cache
+    finally:
+        reader.close()

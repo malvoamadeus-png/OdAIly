@@ -428,9 +428,10 @@ class EditorPluginNewsGenService:
 
             self.hottopic = HotTopicService(
                 postgres_repository=HotTopicPostgresRepository(settings=load_postgres_settings()),
+                load_retrieval_cache=False,
             )
         else:
-            self.hottopic = HotTopicService()
+            self.hottopic = HotTopicService(load_retrieval_cache=False)
         self.system_observability_dir = system_observability_directory(self.paths.runtime_dir)
         self.system_observability_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.system_observability_dir.chmod(0o700)

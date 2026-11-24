@@ -289,6 +289,7 @@ class HotTopicService:
         event_tracking_dispatcher: EventTrackingTaskDispatcher | None = None,
         semantic_reviewer: Any | None = None,
         postgres_repository: HotTopicPostgresRepository | None = None,
+        load_retrieval_cache: bool = True,
     ) -> None:
         paths = get_paths()
         if postgres_repository is None and load_storage_settings().backend == "postgres":
@@ -398,6 +399,7 @@ class HotTopicService:
                 visible_merge_reviewer=visible_merge_reviewer,
                 semantic_review_batch_size=configured_integer("HOTTOPIC_CLAIM_REVIEW_BATCH_SIZE", 40, minimum=1, maximum=100),
                 semantic_review_backfill_limit=configured_integer("HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000),
+                load_retrieval_cache=load_retrieval_cache,
             )
         else:
             self.aggregator = TopicAggregator(
@@ -412,6 +414,7 @@ class HotTopicService:
                 semantic_review_backfill_limit=configured_integer(
                     "HOTTOPIC_CLAIM_REVIEW_BACKFILL_LIMIT", 120, minimum=0, maximum=1000
                 ),
+                load_retrieval_cache=load_retrieval_cache,
             )
         # The console HTTP server is threaded while this service intentionally
         # owns one long-lived SQLite connection. All exposed read/write methods
