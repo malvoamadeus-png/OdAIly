@@ -1663,11 +1663,16 @@ class HotTopicPostgresRepository:
                     (cutoff, batch_size),
                 ).fetchall()]
                 contents = [row["content_item_id"] for row in connection.execute(
+                    "WITH perm_topics AS ("
+                    "SELECT topic_id FROM topics WHERE retention_tier='permanent'"
+                    "), perm_claims AS ("
+                    "SELECT m.claim_id FROM memberships m JOIN perm_topics t ON t.topic_id=m.topic_id WHERE m.superseded_by IS NULL "
+                    "UNION ALL "
+                    "SELECT te.claim_id FROM topic_evidence te JOIN perm_topics t ON t.topic_id=te.topic_id"
+                    ") "
                     "SELECT ci.content_item_id FROM content_items ci WHERE ci.created_at<%s "
-                    "AND NOT EXISTS (SELECT 1 FROM claims cl JOIN memberships m ON m.claim_id=cl.claim_id JOIN topics t ON t.topic_id=m.topic_id "
-                    "WHERE cl.content_item_id=ci.content_item_id AND m.superseded_by IS NULL AND t.retention_tier='permanent') "
-                    "AND NOT EXISTS (SELECT 1 FROM claims cl JOIN topic_evidence te ON te.claim_id=cl.claim_id JOIN topics t ON t.topic_id=te.topic_id "
-                    "WHERE cl.content_item_id=ci.content_item_id AND t.retention_tier='permanent') ORDER BY ci.content_item_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                    "AND NOT EXISTS (SELECT 1 FROM claims cl JOIN perm_claims pc ON pc.claim_id=cl.claim_id WHERE cl.content_item_id=ci.content_item_id) "
+                    "ORDER BY ci.content_item_id LIMIT %s FOR UPDATE OF ci SKIP LOCKED",
                     (cutoff, batch_size),
                 ).fetchall()]
                 claim_ids = [row["claim_id"] for row in connection.execute(

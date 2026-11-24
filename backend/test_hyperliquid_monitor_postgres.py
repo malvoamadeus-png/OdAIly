@@ -360,3 +360,56 @@ def test_account_monitor_discovery_probe_auto_blocks_mega_mm_on_first_poll(tmp_p
     assert [item["address"] for item in report["auto_blocked_hft"]] == [mm_addr]
     assert store.blocked(mm_addr) is True
     assert store.account_due(now_ms + DAY, 10) == []
+
+
+def test_postgres_dashboard_test_dataset_reads_coin_from_payload():
+    from packages.hyperliquid_news.dashboard import _postgres_dashboard
+
+    executed: list[str] = []
+
+    class FakeResult:
+        def __init__(self, one=None, many=None):
+            self._one = one
+            self._many = many or []
+
+        def fetchone(self):
+            return self._one
+
+        def fetchall(self):
+            return self._many
+
+    class FakeConn:
+        def execute(self, sql, params=()):
+            executed.append(sql)
+            if "to_regclass" in sql:
+                return FakeResult(one={"relation": "hyperliquid_news.hl_news_test_cases"})
+            if "SELECT count(*) AS n" in sql:
+                return FakeResult(one={"n": 0})
+            if "FROM hl_news_test_cases c" in sql:
+                return FakeResult(many=[])
+            return FakeResult(many=[])
+
+    store = PostgresNewsStore.__new__(PostgresNewsStore)
+
+    @contextmanager
+    def fake_connect(*, autocommit: bool = False):
+        yield FakeConn()
+
+    store._connect = fake_connect
+    store.metadata = lambda key, default: {}
+    store.account_pool_stats = lambda now_ms: {"tiers": {}, "qualified_due": 0, "max_qualified_delay_ms": 0}
+
+    data = _postgres_dashboard(
+        store,
+        page=0,
+        page_size=20,
+        scenario="reversal",
+        dataset="test",
+        view="events",
+        address_query="",
+        address_status="all",
+    )
+    assert data["dataset"] == "test"
+    queries = [q for q in executed if "FROM hl_news_test_cases c" in q and "COALESCE(c.payload->>'coin'" in q]
+    assert len(queries) == 1
+    assert "c.coin" not in queries[0]

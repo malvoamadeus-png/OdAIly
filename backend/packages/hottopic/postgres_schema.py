@@ -313,8 +313,21 @@ def initialize_hottopic_schema(*, schema: str = "hottopic", settings: PostgresSe
             2, "event_tracking_fenced_work_leases",
             sha256(lease_sql.encode("utf-8")).hexdigest(), lambda conn: conn.execute(lease_sql),
         )
+        retention_indexes_sql = """
+        CREATE INDEX IF NOT EXISTS idx_membership_thread ON memberships(thread_id) WHERE thread_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_topic_merge_source ON topic_merges(source_topic_id);
+        CREATE INDEX IF NOT EXISTS idx_topic_pair_reviews_right ON topic_pair_reviews(right_topic_id);
+        CREATE INDEX IF NOT EXISTS idx_topics_permanent_id ON topics(topic_id) WHERE retention_tier = 'permanent';
+        CREATE INDEX IF NOT EXISTS idx_topics_transient_archived ON topics(topic_id) WHERE retention_tier = 'transient' AND matching_status = 'archived';
+        """
+        retention_indexes_migration = PostgresMigration(
+            3, "hottopic_retention_fk_indexes",
+            sha256(retention_indexes_sql.encode("utf-8")).hexdigest(),
+            lambda conn: conn.execute(retention_indexes_sql),
+        )
         versions = apply_schema_migrations(
-            connection, schema=schema, component="hottopic", migrations=(migration, lease_migration), settings=settings,
+            connection, schema=schema, component="hottopic",
+            migrations=(migration, lease_migration, retention_indexes_migration), settings=settings,
         )
         return versions
 

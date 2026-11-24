@@ -44,12 +44,14 @@ def test_hottopic_and_investment_schemas_apply_in_dependency_order(postgres_sett
     from packages.hottopic.postgres_schema import initialize_hottopic_schema
     from packages.investment_leads.postgres_schema import initialize_investment_leads_schema
 
-    assert initialize_hottopic_schema(schema=hottopic_schema, settings=postgres_settings) == (1, 2)
+    assert initialize_hottopic_schema(schema=hottopic_schema, settings=postgres_settings) == (1, 2, 3)
     assert initialize_hottopic_schema(schema=hottopic_schema, settings=postgres_settings) == ()
     assert initialize_investment_leads_schema(schema=hottopic_schema, settings=postgres_settings) == (1,)
     with connect_postgres(schema=hottopic_schema, application_name="odaily-hottopic-schema-test", settings=postgres_settings) as conn:
         tables = {row["tablename"] for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname=%s", (hottopic_schema,)).fetchall()}
         assert {"hottopic_accounts", "hottopic_inbox", "topics", "claims", "investment_lead_tasks"} <= tables
+        indexes = {row["indexname"] for row in conn.execute("SELECT indexname FROM pg_indexes WHERE schemaname=%s", (hottopic_schema,)).fetchall()}
+        assert {"idx_membership_thread", "idx_topic_merge_source", "idx_topic_pair_reviews_right", "idx_topics_permanent_id", "idx_topics_transient_archived"} <= indexes
         assert conn.execute("SELECT singleton_key FROM hottopic_meta").fetchone() is None
 
 

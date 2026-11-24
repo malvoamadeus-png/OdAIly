@@ -266,6 +266,7 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
         else:
             pipeline_join = "LEFT JOIN hl_news_dispatch d ON d.event_key=c.event_key LEFT JOIN main.tasks t ON t.id=d.task_id LEFT JOIN main.x_task_pipeline p ON p.task_id=t.id LEFT JOIN main.prompt_template_versions v ON v.id=p.prompt_version_id" if dataset == "live" else ""
             pipeline_columns = ",d.status AS dispatch_status,d.error AS dispatch_error,d.task_id,t.status AS task_status,p.draft_title,p.draft_content,p.final_title,p.final_content,p.writer_model,p.search_result,p.search_completed_at,p.prompt_version_id,v.version_number AS prompt_version_number,p.write_completed_at,p.format_completed_at,p.publish_completed_at,v.template_key AS prompt_template_key,p.push_result,p.last_error,p.publisher_reason_code" if dataset == "live" else ",NULL AS task_id"
+            coin_column = "c.coin" if dataset == "live" else "COALESCE(c.payload->>'coin', '') AS coin"
             payload_projection = """CASE
                 WHEN jsonb_typeof(c.payload #> '{evidence,actions,fill_keys}') = 'array' THEN
                     jsonb_set(c.payload #- '{evidence,actions,fill_keys}',
@@ -273,7 +274,7 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
                         to_jsonb(jsonb_array_length(c.payload #> '{evidence,actions,fill_keys}')), true)
                 ELSE c.payload #- '{evidence,actions,fill_keys}'
             END"""
-            rows = conn.execute(f"SELECT c.event_key,c.observed_ms,c.coin,{payload_projection} AS payload{pipeline_columns} FROM {source} c {pipeline_join} WHERE true{scenario_filter} ORDER BY c.observed_ms DESC,c.event_key LIMIT %s OFFSET %s",
+            rows = conn.execute(f"SELECT c.event_key,c.observed_ms,{coin_column},{payload_projection} AS payload{pipeline_columns} FROM {source} c {pipeline_join} WHERE true{scenario_filter} ORDER BY c.observed_ms DESC,c.event_key LIMIT %s OFFSET %s",
                                 (*params, page_size + 1, page * page_size)).fetchall()
         events = []
         for row in rows[:page_size]:
